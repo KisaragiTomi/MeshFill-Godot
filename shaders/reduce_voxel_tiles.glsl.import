@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://co5clvsurlcut"
+path="res://.godot/imported/reduce_voxel_tiles.glsl-18fcc83aee91eec98dd2977e9c82c365.res"
+
+[deps]
+
+source_file="res://shaders/reduce_voxel_tiles.glsl"
+dest_files=["res://.godot/imported/reduce_voxel_tiles.glsl-18fcc83aee91eec98dd2977e9c82c365.res"]
+
+[params]
+

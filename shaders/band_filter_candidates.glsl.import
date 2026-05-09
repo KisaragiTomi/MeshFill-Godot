@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://coe21a3bd43b"
+path="res://.godot/imported/band_filter_candidates.glsl-f120705149e649db7049e4b667ce195f.res"
+
+[deps]
+
+source_file="res://shaders/band_filter_candidates.glsl"
+dest_files=["res://.godot/imported/band_filter_candidates.glsl-f120705149e649db7049e4b667ce195f.res"]
+
+[params]
+

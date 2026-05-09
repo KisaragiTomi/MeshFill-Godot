@@ -1,0 +1,140 @@
+#[compute]
+#version 450
+
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D t_scene_depth;
+layout(set = 0, binding = 1) uniform sampler2D t_target_height;
+layout(set = 0, binding = 2) uniform sampler2D t_rock_mask;
+
+layout(set = 1, binding = 0, std430) restrict buffer TargetVisual {
+    vec4 target_visual[];
+};
+
+layout(set = 1, binding = 1, std430) restrict buffer TargetCollision {
+    float target_collision[];
+};
+
+layout(rgba16f, set = 2, binding = 0) uniform image2D rw_preview;
+
+layout(push_constant, std430) uniform Params {
+    float max_height;
+    float capture_size;
+    float vertical_span;
+    float slope_start;
+    float slope_full;
+    int texture_size;
+    int slice_count;
+    int dirty_x;
+    int dirty_y;
+    int dirty_w;
+    int dirty_h;
+    int _pad0;
+};
+
+struct TargetVoxel {
+    vec3 color;
+    float value;
+    float collision;
+};
+
+int voxel_index(ivec2 p, int slice_index) {
+    return p.x + texture_size * (p.y + texture_size * slice_index);
+}
+
+float terrain_height(ivec2 p) {
+    return max_height - texelFetch(t_scene_depth, p, 0).r;
+}
+
+float surface_slope(ivec2 p) {
+    ivec2 tex_size = textureSize(t_scene_depth, 0);
+    ivec2 max_cell = tex_size - ivec2(1);
+    ivec2 left_p = clamp(p + ivec2(-1, 0), ivec2(0), max_cell);
+    ivec2 right_p = clamp(p + ivec2(1, 0), ivec2(0), max_cell);
+    ivec2 down_p = clamp(p + ivec2(0, 1), ivec2(0), max_cell);
+    ivec2 up_p = clamp(p + ivec2(0, -1), ivec2(0), max_cell);
+    float left_h = terrain_height(left_p);
+    float right_h = terrain_height(right_p);
+    float down_h = terrain_height(down_p);
+    float up_h = terrain_height(up_p);
+    float pixel_size = capture_size / max(float(texture_size - 1), 1.0);
+    vec3 dx = vec3(pixel_size * 2.0, 0.0, right_h - left_h);
+    vec3 dz = vec3(0.0, pixel_size * 2.0, down_h - up_h);
+    vec3 n = normalize(cross(dx, dz));
+    return clamp(length(n.xy), 0.0, 1.0);
+}
+
+TargetVoxel evaluate_voxel(ivec2 p, int slice_index) {
+    float terrain_h = terrain_height(p);
+    float target_h = texelFetch(t_target_height, p, 0).r;
+    float rock_mask = clamp(texelFetch(t_rock_mask, p, 0).r, 0.0, 1.0);
+    float slope = surface_slope(p);
+    float slope_signal = smoothstep(slope_start, slope_full, slope);
+    float height_delta = max(target_h - terrain_h, 0.0);
+    float fill_signal = smoothstep(0.25, max(vertical_span * 0.35, 0.5), height_delta);
+    float rock_signal = clamp(max(max(slope_signal, fill_signal), rock_mask), 0.0, 1.0);
+    float local_y = (float(slice_index) + 0.5) / max(float(slice_count), 1.0) * vertical_span;
+
+    float rock_top = clamp(max(1.5, height_delta + 3.0), 1.5, vertical_span);
+    float rock_vertical = 1.0 - smoothstep(rock_top, min(rock_top + 1.5, vertical_span + 0.01), local_y);
+    float rock_value = clamp(rock_signal * rock_vertical, 0.0, 1.0);
+
+    float flat_signal = 1.0 - smoothstep(slope_start, slope_full, slope);
+    float grass_vertical = 1.0 - smoothstep(0.15, 1.1, local_y);
+    float grass_value = clamp(flat_signal * grass_vertical * (1.0 - rock_signal) * 0.45, 0.0, 1.0);
+
+    vec3 rock_color = vec3(0.56, 0.52, 0.46);
+    vec3 grass_color = vec3(0.20, 0.48, 0.18);
+    float visual_weight = rock_value + grass_value;
+    vec3 color = visual_weight > 0.0001
+        ? (rock_color * rock_value + grass_color * grass_value) / visual_weight
+        : vec3(0.0);
+    float value = clamp(max(rock_value, grass_value), 0.0, 1.0);
+    float collision = clamp(max(rock_value * 0.95, grass_value * 0.08), 0.0, 1.0);
+
+    TargetVoxel voxel;
+    voxel.color = color;
+    voxel.value = value;
+    voxel.collision = collision;
+    return voxel;
+}
+
+vec4 evaluate_preview(ivec2 p) {
+    vec3 color_sum = vec3(0.0);
+    float weight_sum = 0.0;
+    float peak_value = 0.0;
+    float peak_collision = 0.0;
+    for (int s = 0; s < slice_count; s++) {
+        TargetVoxel v = evaluate_voxel(p, s);
+        float w = v.value * v.value;
+        color_sum += v.color * w;
+        weight_sum += w;
+        peak_value = max(peak_value, v.value);
+        peak_collision = max(peak_collision, v.collision);
+    }
+    vec3 color = weight_sum > 0.0001 ? color_sum / weight_sum : vec3(0.0);
+    color = mix(color, vec3(0.72, 0.68, 0.60), peak_collision * 0.35);
+    return vec4(color, max(peak_value, peak_collision));
+}
+
+void main() {
+    ivec3 id = ivec3(gl_GlobalInvocationID.xyz);
+    if (id.x >= dirty_w || id.z >= dirty_h || id.y >= slice_count) {
+        return;
+    }
+
+    ivec2 p = ivec2(dirty_x + id.x, dirty_y + id.z);
+    ivec2 tex_size = textureSize(t_scene_depth, 0);
+    if (p.x < 0 || p.y < 0 || p.x >= tex_size.x || p.y >= tex_size.y || p.x >= texture_size || p.y >= texture_size) {
+        return;
+    }
+
+    TargetVoxel voxel = evaluate_voxel(p, id.y);
+    int idx = voxel_index(p, id.y);
+    target_visual[idx] = vec4(voxel.color, voxel.value);
+    target_collision[idx] = voxel.collision;
+
+    if (id.y == 0) {
+        imageStore(rw_preview, p, evaluate_preview(p));
+    }
+}

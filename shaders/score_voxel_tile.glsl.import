@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://buvip57xa61dq"
+path="res://.godot/imported/score_voxel_tile.glsl-0730d1efc8a4efafd85c30696c224d8a.res"
+
+[deps]
+
+source_file="res://shaders/score_voxel_tile.glsl"
+dest_files=["res://.godot/imported/score_voxel_tile.glsl-0730d1efc8a4efafd85c30696c224d8a.res"]
+
+[params]
+

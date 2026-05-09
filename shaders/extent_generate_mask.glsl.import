@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cer82jlj1q6ie"
+path="res://.godot/imported/extent_generate_mask.glsl-2d5969c9afc93c91627c042c02fcb01f.res"
+
+[deps]
+
+source_file="res://shaders/extent_generate_mask.glsl"
+dest_files=["res://.godot/imported/extent_generate_mask.glsl-2d5969c9afc93c91627c042c02fcb01f.res"]
+
+[params]
+

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dq7u6huml5lwx"
+path="res://.godot/imported/generate_target_height.glsl-bcf373240017e90d79680a2bbf13022d.res"
+
+[deps]
+
+source_file="res://shaders/generate_target_height.glsl"
+dest_files=["res://.godot/imported/generate_target_height.glsl-bcf373240017e90d79680a2bbf13022d.res"]
+
+[params]
+

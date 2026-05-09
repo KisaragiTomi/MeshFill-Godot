@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://5pdjtbjbe23u"
+path="res://.godot/imported/fill_vertical_rock.glsl-6b82970b8fe37a28376ae1a6d87222f2.res"
+
+[deps]
+
+source_file="res://shaders/fill_vertical_rock.glsl"
+dest_files=["res://.godot/imported/fill_vertical_rock.glsl-6b82970b8fe37a28376ae1a6d87222f2.res"]
+
+[params]
+

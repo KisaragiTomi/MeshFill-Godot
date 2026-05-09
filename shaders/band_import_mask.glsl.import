@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cgco56k42hi3y"
+path="res://.godot/imported/band_import_mask.glsl-5589edbe76a46282c2a20f10c2fd23db.res"
+
+[deps]
+
+source_file="res://shaders/band_import_mask.glsl"
+dest_files=["res://.godot/imported/band_import_mask.glsl-5589edbe76a46282c2a20f10c2fd23db.res"]
+
+[params]
+

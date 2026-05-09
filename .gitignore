@@ -1,0 +1,13 @@
+.godot/
+_archive/
+
+geo/SM_Cliff_06.FBX
+
+*.tmp
+*.log
+__pycache__/
+*.pyc
+
+# Local editor state
+.vscode/
+.windsurf/workflows/huggingface-key.md

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://b5bxharmnvs46"
+path="res://.godot/imported/invalidate_override.glsl-1092b7f6e2acb52850788c9ec7ac769e.res"
+
+[deps]
+
+source_file="res://shaders/invalidate_override.glsl"
+dest_files=["res://.godot/imported/invalidate_override.glsl-1092b7f6e2acb52850788c9ec7ac769e.res"]
+
+[params]
+

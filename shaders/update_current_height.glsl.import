@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://ch88pxinnwy2i"
+path="res://.godot/imported/update_current_height.glsl-d7be8f4ab8a15494060cb757d8d10811.res"
+
+[deps]
+
+source_file="res://shaders/update_current_height.glsl"
+dest_files=["res://.godot/imported/update_current_height.glsl-d7be8f4ab8a15494060cb757d8d10811.res"]
+
+[params]
+

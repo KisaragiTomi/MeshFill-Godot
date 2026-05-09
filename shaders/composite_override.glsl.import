@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://q6e80g54wyrm"
+path="res://.godot/imported/composite_override.glsl-15081176e506c8ca2c8d525796bc7e8f.res"
+
+[deps]
+
+source_file="res://shaders/composite_override.glsl"
+dest_files=["res://.godot/imported/composite_override.glsl-15081176e506c8ca2c8d525796bc7e8f.res"]
+
+[params]
+
