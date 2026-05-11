@@ -12,6 +12,7 @@ var max_collision_occupancy: float = 0.05
 var min_support: float = 0.25
 var min_target_interest: float = 0.01
 var min_prefilter_score: float = 0.35
+const UNDERGROUND_OCC_THRESHOLD := 0.5
 
 
 func run_probe_prefilter(
@@ -121,8 +122,17 @@ func score_autoobject(
 		var offset := _vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
 		var sample_pos := anchor_pos + _voxelize_offset(offset, gvf.voxel_size)
 		if not gvf.is_in_bounds(sample_pos):
-			continue
+			sample_pos = Vector3i(
+				clampi(sample_pos.x, 0, gvf.grid_size.x - 1),
+				clampi(sample_pos.y, 0, gvf.grid_size.y - 1),
+				clampi(sample_pos.z, 0, gvf.grid_size.z - 1))
 		var weight := maxf(float(probe.get("weight", 1.0)), 0.000001)
+		# Underground: non-collision probes have zero weight (skip entirely)
+		var sample_idx := gvf.voxel_index(sample_pos)
+		if gvf.scene_occupancy[sample_idx] >= UNDERGROUND_OCC_THRESHOLD:
+			var p_flags := int(probe.get("flags", SemanticProbeProfileScript.FLAG_COLOR | SemanticProbeProfileScript.FLAG_COMPLEXITY))
+			if (p_flags & SemanticProbeProfileScript.FLAG_COLLISION) == 0:
+				continue
 		var probe_score := score_probe(sample_pos, probe, gvf, target_occupancy, target_color)
 		total_score += probe_score * weight
 		total_weight += weight
@@ -143,6 +153,16 @@ func score_probe(
 	var sample_complexity := sample_color.a
 	var sample_collision := _target_value(target_occupancy, idx)
 	var sample_scene := gvf.scene_occupancy[idx]
+	# Underground: only collision scoring contributes, all other weights are zero
+	if sample_scene >= UNDERGROUND_OCC_THRESHOLD:
+		if (flags & SemanticProbeProfileScript.FLAG_COLLISION) == 0:
+			return 0.0
+		if (flags & SemanticProbeProfileScript.FLAG_EMPTY) != 0 or kind == "negative":
+			return 0.0
+		if (flags & SemanticProbeProfileScript.FLAG_SUPPORT) != 0:
+			return 0.0
+		var expected_collision_ug := clampf(float(probe.get("expected_collision", 0.0)), 0.0, 1.0)
+		return clampf(1.0 - absf(sample_collision - expected_collision_ug), 0.0, 1.0)
 	if (flags & SemanticProbeProfileScript.FLAG_EMPTY) != 0 or kind == "negative":
 		return clampf(1.0 - maxf(sample_complexity, maxf(sample_collision, sample_scene)), 0.0, 1.0)
 	if (flags & SemanticProbeProfileScript.FLAG_SUPPORT) != 0:

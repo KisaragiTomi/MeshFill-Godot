@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://nkcf6kgnrvjx"
+path="res://.godot/imported/select_anchor_topk.glsl-c18aa1fb057d89fc66701339ba57e37a.res"
+
+[deps]
+
+source_file="res://shaders/select_anchor_topk.glsl"
+dest_files=["res://.godot/imported/select_anchor_topk.glsl-c18aa1fb057d89fc66701339ba57e37a.res"]
+
+[params]
+

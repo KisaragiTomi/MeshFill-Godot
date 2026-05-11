@@ -27,6 +27,7 @@ const ANCHOR_KIND_TARGET_TOP := "target_top"
 @export_range(0.0, 16.0, 0.1) var vertical_pivot_upper_min_height: float = 3.0
 @export var semantic_probe_profile: Resource
 @export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0
+@export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0
 @export var allowed_anchor_kinds: PackedStringArray = PackedStringArray()
 var voxel_record: Dictionary = {}
 var min_spacing_auto: bool = true
@@ -53,6 +54,7 @@ func _sync_descriptor_from_legacy_fields() -> void:
 	voxel_descriptor.vertical_pivot_middle_min_height = vertical_pivot_middle_min_height
 	voxel_descriptor.vertical_pivot_upper_min_height = vertical_pivot_upper_min_height
 	voxel_descriptor.semantic_probe_density = semantic_probe_density
+	voxel_descriptor.context_sensing_radius = context_sensing_radius
 	if semantic_probe_profile != null:
 		voxel_descriptor.semantic_probe_profile = semantic_probe_profile
 
@@ -69,6 +71,7 @@ func _sync_legacy_fields_from_descriptor() -> void:
 	vertical_pivot_middle_min_height = voxel_descriptor.vertical_pivot_middle_min_height
 	vertical_pivot_upper_min_height = voxel_descriptor.vertical_pivot_upper_min_height
 	semantic_probe_density = voxel_descriptor.semantic_probe_density
+	context_sensing_radius = voxel_descriptor.context_sensing_radius
 	semantic_probe_profile = voxel_descriptor.semantic_probe_profile
 
 
@@ -416,7 +419,8 @@ func rebuild_semantic_probes(density_override: float = -1.0) -> Array[Dictionary
 		descriptor.get_color(),
 		descriptor.get_complexity(),
 		density_override,
-		Vector3.ONE
+		Vector3.ONE,
+		descriptor.context_sensing_radius
 	)
 	semantic_probe_profile = descriptor.semantic_probe_profile
 	_sync_auto_metadata()

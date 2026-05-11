@@ -13,6 +13,7 @@ const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profil
 @export_range(0.0, 16.0, 0.1) var vertical_pivot_upper_min_height: float = 3.0
 @export var semantic_probe_profile: Resource
 @export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0
+@export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0
 
 
 func get_color() -> Color:
@@ -97,7 +98,8 @@ func get_semantic_probes(
 		get_color(),
 		get_complexity(),
 		d,
-		world_scale
+		world_scale,
+		context_sensing_radius
 	)
 
 

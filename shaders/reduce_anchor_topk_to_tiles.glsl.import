@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://b0u1v4mxfnarg"
+path="res://.godot/imported/reduce_anchor_topk_to_tiles.glsl-f903bf5c576291af60759165915b791c.res"
+
+[deps]
+
+source_file="res://shaders/reduce_anchor_topk_to_tiles.glsl"
+dest_files=["res://.godot/imported/reduce_anchor_topk_to_tiles.glsl-f903bf5c576291af60759165915b791c.res"]
+
+[params]
+

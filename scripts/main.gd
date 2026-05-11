@@ -105,6 +105,7 @@ var _target_sv_collision_bytes: PackedByteArray
 var _target_sv_metadata: Dictionary = {}
 var _target_sv_debug_terrain: MeshInstance3D
 var _target_sv_debug_showing: bool = false
+var _probe_inspect_mode: bool = false
 
 
 func _get_level_root() -> Node:
@@ -542,6 +543,13 @@ func _print_batch_summary() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if _probe_inspect_mode:
+		if event is InputEventMouseButton:
+			var mb := event as InputEventMouseButton
+			if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+				_probe_inspect_at_screen(mb.position)
+				get_viewport().set_input_as_handled()
+		return
 	if _tile_refresh_mode:
 		if event is InputEventMouseButton:
 			var mb := event as InputEventMouseButton
@@ -619,6 +627,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_toggle_brush_mode()
 		elif ke.pressed and ke.keycode == KEY_T:
 			_toggle_tile_refresh_mode()
+		elif ke.pressed and ke.keycode == KEY_I:
+			_toggle_probe_inspect_mode()
 		elif ke.pressed and ke.keycode == KEY_N:
 			_cycle_brush_target()
 		elif ke.pressed and ke.keycode == KEY_Z and ke.ctrl_pressed:
@@ -2407,8 +2417,8 @@ func _build_target_scene_voxel_overlay() -> void:
 			)
 			var h := max_height - depth_img.get_pixelv(depth_px).r + 0.45
 			var c := img.get_pixelv(px)
-			var signal := clampf(maxf(c.a, maxf(c.r, maxf(c.g, c.b))), 0.0, 1.0)
-			var alpha := 0.7 * signal if signal > 0.01 else 0.0
+			var voxel_signal := clampf(maxf(c.a, maxf(c.r, maxf(c.g, c.b))), 0.0, 1.0)
+			var alpha := 0.7 * voxel_signal if voxel_signal > 0.01 else 0.0
 			st.set_color(Color(c.r, c.g, c.b, alpha))
 			st.set_uv(Vector2(float(x) / float(maxi(res - 1, 1)), float(y) / float(maxi(res - 1, 1))))
 			st.add_vertex(Vector3(float(x) * cell_size - half, h, float(y) * cell_size - half))
@@ -2658,10 +2668,12 @@ func _update_brush_label() -> void:
 	var target_name := "Height" if _brush_target == BRUSH_TARGET_HEIGHT else "Rock"
 	if _brush_active:
 		_brush_label.text = "Brush ON [%s] | Str: %.1f | Rad: %d\nLMB: + | RMB: - | N: switch" % [target_name, _brush_strength, _brush_radius]
+	elif _probe_inspect_mode:
+		_brush_label.text = "Probe Inspect ON | Click terrain to sample TargetSV"
 	elif _tile_refresh_mode:
 		_brush_label.text = "Tile Refresh ON | Click to clear"
 	else:
-		_brush_label.text = "[B] Brush  [T] Tile  [N] Layer: %s" % target_name
+		_brush_label.text = "[B] Brush  [T] Tile  [I] Inspect  [J] TargetSV  [Ctrl+J] Recompute  [N] Layer: %s" % target_name
 
 
 func _toggle_delta_overlay() -> void:
@@ -3959,3 +3971,170 @@ func _toggle_mask_overlay() -> void:
 			print("[MeshFill] Combined mask overlay: ON (R=rock G=tree B=bush)")
 	else:
 		print("[MeshFill] No vegetation data. Use TEST ONLY P or the UI vegetation button first.")
+
+
+# ---------------------------------------------------------------------------
+# Probe Inspect Tool
+# ---------------------------------------------------------------------------
+
+func _toggle_probe_inspect_mode() -> void:
+	if _painting:
+		_painting = false
+		_finish_brush_stroke()
+	_probe_inspect_mode = not _probe_inspect_mode
+	if _probe_inspect_mode:
+		_brush_active = false
+		_tile_refresh_mode = false
+		_update_brush_label()
+		print("[ProbeInspect] ON — click terrain to inspect TargetSV at that voxel")
+	else:
+		if _probe_debug_label != null:
+			_probe_debug_label.text = ""
+		print("[ProbeInspect] OFF")
+
+
+func _probe_inspect_at_screen(screen_pos: Vector2) -> void:
+	var pixel := _screen_to_terrain_pixel(screen_pos)
+	if pixel.x < 0:
+		return
+	var tex_size := int(_target_sv_metadata.get("texture_size", TEX_RES))
+	var slice_count := int(_target_sv_metadata.get("slice_count", TARGET_SV_SLICE_COUNT))
+	var vertical_span := float(_target_sv_metadata.get("vertical_span", TARGET_SV_VERTICAL_SPAN))
+
+	if _target_sv_visual_bytes.is_empty() or _target_sv_collision_bytes.is_empty():
+		_show_probe_inspect("No TargetSV data. Press Ctrl+J to generate.")
+		return
+
+	var voxel_count := tex_size * tex_size * slice_count
+	if _target_sv_visual_bytes.size() != voxel_count * 16:
+		_show_probe_inspect("TargetSV buffer size mismatch")
+		return
+
+	var lines: PackedStringArray = PackedStringArray()
+	lines.append("Pixel (%d, %d)  slices=%d  vert_span=%.1fm" % [pixel.x, pixel.y, slice_count, vertical_span])
+	lines.append("Slice | Y(m)  | R    G    B   | Value | Collision")
+	lines.append("------+-------+---------------+-------+----------")
+
+	var peak_value := 0.0
+	var peak_collision := 0.0
+	var color_sum := Vector3.ZERO
+	var weight_sum := 0.0
+
+	for s in range(slice_count):
+		var idx := pixel.x + tex_size * (pixel.y + tex_size * s)
+		var vis_offset := idx * 16
+		var col_offset := idx * 4
+		var r := _target_sv_visual_bytes.decode_float(vis_offset)
+		var g := _target_sv_visual_bytes.decode_float(vis_offset + 4)
+		var b := _target_sv_visual_bytes.decode_float(vis_offset + 8)
+		var value := _target_sv_visual_bytes.decode_float(vis_offset + 12)
+		var collision := _target_sv_collision_bytes.decode_float(col_offset)
+		var y_mid := (float(s) + 0.5) / float(slice_count) * vertical_span
+		lines.append("  %d   | %5.1f | %.2f %.2f %.2f | %.3f | %.3f" % [s, y_mid, r, g, b, value, collision])
+		peak_value = maxf(peak_value, value)
+		peak_collision = maxf(peak_collision, collision)
+		var w := value * value
+		color_sum += Vector3(r, g, b) * w
+		weight_sum += w
+
+	lines.append("------+-------+---------------+-------+----------")
+	var avg_color := color_sum / maxf(weight_sum, 0.0001)
+	lines.append("Peak: value=%.3f collision=%.3f  Weighted color=(%.2f,%.2f,%.2f)" % [
+		peak_value, peak_collision, avg_color.x, avg_color.y, avg_color.z])
+
+	var candidate_lines := _score_candidates_at_pixel(pixel, tex_size, slice_count, vertical_span)
+	if not candidate_lines.is_empty():
+		lines.append("")
+		lines.append("--- Candidate Assets (top 5) ---")
+		lines.append_array(candidate_lines)
+
+	_show_probe_inspect("\n".join(lines))
+	print("[ProbeInspect] %s" % lines[0])
+
+
+func _score_candidates_at_pixel(pixel: Vector2i, tex_size: int, slice_count: int, vertical_span: float) -> PackedStringArray:
+	var result: PackedStringArray = PackedStringArray()
+	var pixel_size := capture_size / float(tex_size)
+	var slice_height := vertical_span / float(slice_count)
+	var asset_entries: Array[Dictionary] = []
+	for asset in _cached_assets:
+		if asset != null:
+			asset_entries.append({"name": asset.name, "probes": asset.get_semantic_probes(semantic_probe_density)})
+	for veg_res in _vegetation_assets:
+		if veg_res != null:
+			asset_entries.append({"name": veg_res.asset_id, "probes": veg_res.get_semantic_probes(semantic_probe_density)})
+
+	var scored: Array[Dictionary] = []
+	for entry in asset_entries:
+		var probes: Array = entry.probes
+		if probes.is_empty():
+			continue
+		var total_score := 0.0
+		var total_weight := 0.0
+		for raw_probe in probes:
+			if not raw_probe is Dictionary:
+				continue
+			var probe := raw_probe as Dictionary
+			var offset: Vector3 = SemanticProbeProfileScript.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
+			var probe_px := clampi(pixel.x + roundi(offset.x / pixel_size), 0, tex_size - 1)
+			var probe_py := clampi(pixel.y + roundi(offset.z / pixel_size), 0, tex_size - 1)
+			var probe_slice := clampi(floori(offset.y / slice_height), 0, slice_count - 1)
+			var idx := probe_px + tex_size * (probe_py + tex_size * probe_slice)
+			var vis_off := idx * 16
+			var col_off := idx * 4
+			if vis_off + 16 > _target_sv_visual_bytes.size() or col_off + 4 > _target_sv_collision_bytes.size():
+				continue
+			var sv_r := _target_sv_visual_bytes.decode_float(vis_off)
+			var sv_g := _target_sv_visual_bytes.decode_float(vis_off + 4)
+			var sv_b := _target_sv_visual_bytes.decode_float(vis_off + 8)
+			var sv_value := _target_sv_visual_bytes.decode_float(vis_off + 12)
+			var sv_collision := _target_sv_collision_bytes.decode_float(col_off)
+			var weight := maxf(float(probe.get("weight", 1.0)), 0.000001)
+			var flags := int(probe.get("flags", SemanticProbeProfileScript.FLAG_COLOR | SemanticProbeProfileScript.FLAG_COMPLEXITY))
+			var kind := str(probe.get("kind", "positive"))
+			var score := 0.0
+			var w_sum := 0.0
+			if kind == "negative" or (flags & SemanticProbeProfileScript.FLAG_EMPTY) != 0:
+				score = clampf(1.0 - maxf(sv_value, sv_collision), 0.0, 1.0)
+				w_sum = 1.0
+			else:
+				if (flags & SemanticProbeProfileScript.FLAG_COLOR) != 0:
+					var expected_color: Color = probe.get("expected_color", Color.WHITE)
+					var dist := Vector3(sv_r, sv_g, sv_b).distance_to(Vector3(expected_color.r, expected_color.g, expected_color.b))
+					score += clampf(1.0 - dist / sqrt(3.0), 0.0, 1.0)
+					w_sum += 1.0
+				if (flags & SemanticProbeProfileScript.FLAG_COMPLEXITY) != 0:
+					var expected_c := clampf(float(probe.get("expected_complexity", 1.0)), 0.0, 1.0)
+					score += clampf(1.0 - absf(sv_value - expected_c), 0.0, 1.0)
+					w_sum += 1.0
+				if (flags & SemanticProbeProfileScript.FLAG_COLLISION) != 0:
+					var expected_col := clampf(float(probe.get("expected_collision", 0.0)), 0.0, 1.0)
+					score += clampf(1.0 - absf(sv_collision - expected_col), 0.0, 1.0)
+					w_sum += 1.0
+			var probe_score := score / maxf(w_sum, 0.000001)
+			total_score += probe_score * weight
+			total_weight += weight
+		var final_score := total_score / maxf(total_weight, 0.000001)
+		scored.append({"name": entry.name, "score": final_score, "probe_count": probes.size()})
+
+	scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.score) > float(b.score))
+	for i in range(mini(scored.size(), 5)):
+		var s: Dictionary = scored[i]
+		result.append("  %d. %s  score=%.3f  (%d probes)" % [i + 1, s.name, s.score, s.probe_count])
+	return result
+
+
+func _show_probe_inspect(text: String) -> void:
+	if _probe_debug_label == null:
+		_probe_debug_label = Label.new()
+		_probe_debug_label.name = "ProbeInspectLabel"
+		_probe_debug_label.add_theme_font_size_override("font_size", 13)
+		_probe_debug_label.add_theme_color_override("font_color", Color.WHITE)
+		_probe_debug_label.position = Vector2(10, 60)
+		_probe_debug_label.z_index = 100
+		var canvas := CanvasLayer.new()
+		canvas.name = "ProbeInspectCanvas"
+		canvas.layer = 100
+		add_child(canvas)
+		canvas.add_child(_probe_debug_label)
+	_probe_debug_label.text = text

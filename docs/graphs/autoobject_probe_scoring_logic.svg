@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="1060" viewBox="0 0 1480 1060">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#3b4a5a"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.18"/>
+    </filter>
+    <style>
+      .bg { fill: #f7fafc; }
+      .title { font: 700 34px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #102033; }
+      .subtitle { font: 500 16px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #56687a; }
+      .section { font: 700 20px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #25364a; }
+      .box { fill: #ffffff; stroke: #cbd7e3; stroke-width: 2; rx: 16; filter: url(#shadow); }
+      .box-blue { fill: #eaf3ff; stroke: #7fb2f0; stroke-width: 2; rx: 16; filter: url(#shadow); }
+      .box-green { fill: #eaf8ee; stroke: #75c58c; stroke-width: 2; rx: 16; filter: url(#shadow); }
+      .box-yellow { fill: #fff8df; stroke: #e5be4d; stroke-width: 2; rx: 16; filter: url(#shadow); }
+      .box-red { fill: #fff0f0; stroke: #e28282; stroke-width: 2; rx: 16; filter: url(#shadow); }
+      .box-purple { fill: #f4efff; stroke: #a995e8; stroke-width: 2; rx: 16; filter: url(#shadow); }
+      .box-gray { fill: #f2f5f8; stroke: #9aa8b7; stroke-width: 2; rx: 16; filter: url(#shadow); }
+      .text { font: 500 16px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #203043; }
+      .small { font: 500 13px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #4c5d70; }
+      .mono { font: 600 14px Consolas, 'Cascadia Mono', monospace; fill: #27364a; }
+      .label { font: 700 13px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #ffffff; }
+      .arrow { stroke: #3b4a5a; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #7890a8; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke-dasharray: 7 6; }
+      .badge { rx: 10; }
+      .formula { font: 600 15px Consolas, 'Cascadia Mono', monospace; fill: #14324d; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1480" height="1060"/>
+
+  <text class="title" x="60" y="62">AutoObject Probe 当前评分计算逻辑</text>
+  <text class="subtitle" x="62" y="94">来源：scripts/autoobject_probe_prefilter.gd ｜ 重点：地下 probe 只保留 collision 评分，其余权重归零</text>
+
+  <rect class="box-blue" x="50" y="132" width="410" height="110"/>
+  <text class="section" x="78" y="170">输入</text>
+  <text class="text" x="78" y="199">anchor.voxel_pos + semantic_probes</text>
+  <text class="small" x="78" y="224">SV: scene/collision ｜ TargetSV: target_color/target_occupancy</text>
+
+  <rect class="box" x="535" y="132" width="390" height="110"/>
+  <text class="section" x="563" y="170">遍历每条 probe</text>
+  <text class="mono" x="563" y="200">sample_pos = anchor + voxelize(offset)</text>
+  <text class="small" x="563" y="224">越界 probe 直接跳过，不参与权重累计</text>
+
+  <rect class="box-yellow" x="1000" y="132" width="405" height="110"/>
+  <text class="section" x="1028" y="170">准备累计</text>
+  <text class="mono" x="1028" y="200">weight = max(probe.weight, 1e-6)</text>
+  <text class="small" x="1028" y="224">默认 flags = COLOR | COMPLEXITY</text>
+
+  <path class="arrow" d="M460 187 H535"/>
+  <path class="arrow" d="M925 187 H1000"/>
+
+  <rect class="box-red" x="535" y="310" width="390" height="120"/>
+  <text class="section" x="563" y="348">地下判定</text>
+  <text class="mono" x="563" y="379">scene_occupancy[sample_pos] &gt;= 0.5</text>
+  <text class="small" x="563" y="406">UNDERGROUND_OCC_THRESHOLD = 0.5</text>
+
+  <path class="arrow" d="M730 242 V310"/>
+
+  <rect class="box-red" x="80" y="492" width="410" height="130"/>
+  <text class="section" x="108" y="531">地下 + 无 FLAG_COLLISION</text>
+  <text class="text" x="108" y="563">整条 probe 权重 = 0</text>
+  <text class="mono" x="108" y="592">continue</text>
+  <text class="small" x="108" y="612">不增加 total_score，也不增加 total_weight</text>
+
+  <rect class="box-purple" x="535" y="492" width="390" height="130"/>
+  <text class="section" x="563" y="531">地下 + 有 FLAG_COLLISION</text>
+  <text class="text" x="563" y="563">进入 score_probe，但只允许碰撞语义</text>
+  <text class="mono" x="563" y="592">collision_fit only</text>
+  <text class="small" x="563" y="612">EMPTY / NEGATIVE / SUPPORT 在地下返回 0</text>
+
+  <rect class="box-green" x="980" y="492" width="410" height="130"/>
+  <text class="section" x="1008" y="531">非地下</text>
+  <text class="text" x="1008" y="563">按 probe 类型和 flags 正常评分</text>
+  <text class="small" x="1008" y="592">EMPTY / SUPPORT / POSITIVE 分支</text>
+  <text class="small" x="1008" y="612">每个启用 flag 贡献 1 份内部权重</text>
+
+  <path class="arrow" d="M535 370 C380 370 285 430 285 492"/>
+  <path class="arrow" d="M730 430 V492"/>
+  <path class="arrow" d="M925 370 C1080 370 1185 430 1185 492"/>
+
+  <rect class="badge" x="220" y="447" width="130" height="30" fill="#c94949"/>
+  <text class="label" x="238" y="467">地下 / 无碰撞</text>
+  <rect class="badge" x="664" y="447" width="132" height="30" fill="#805ad5"/>
+  <text class="label" x="681" y="467">地下 / 有碰撞</text>
+  <rect class="badge" x="1124" y="447" width="122" height="30" fill="#2f9e55"/>
+  <text class="label" x="1144" y="467">非地下</text>
+
+  <rect class="box-gray" x="80" y="696" width="360" height="150"/>
+  <text class="section" x="108" y="734">Empty / Negative</text>
+  <text class="formula" x="108" y="767">1 - max(complexity,</text>
+  <text class="formula" x="108" y="792">        target_collision, scene_occ)</text>
+  <text class="small" x="108" y="823">触发：FLAG_EMPTY 或 kind == negative</text>
+
+  <rect class="box-gray" x="560" y="696" width="360" height="150"/>
+  <text class="section" x="588" y="734">Support</text>
+  <text class="formula" x="588" y="767">support = max(scene[p-down],</text>
+  <text class="formula" x="588" y="792">              collision[p-down])</text>
+  <text class="small" x="588" y="823">触发：FLAG_SUPPORT</text>
+
+  <rect class="box-gray" x="1040" y="696" width="360" height="150"/>
+  <text class="section" x="1068" y="734">Positive flags</text>
+  <text class="formula" x="1068" y="765">COLOR: 1 - dist(rgb)/sqrt(3)</text>
+  <text class="formula" x="1068" y="790">COMPLEXITY: 1 - |a - expected_a|</text>
+  <text class="formula" x="1068" y="815">COLLISION: 1 - |target - expected|</text>
+
+  <path class="arrow-soft" d="M1185 622 C1185 655 260 655 260 696"/>
+  <path class="arrow-soft" d="M1185 622 C1185 660 740 660 740 696"/>
+  <path class="arrow-soft" d="M1185 622 V696"/>
+  <path class="arrow-soft" d="M730 622 C730 650 1220 650 1220 696"/>
+
+  <rect class="box-blue" x="360" y="850" width="760" height="130"/>
+  <text class="section" x="388" y="890">AutoObject 总分聚合</text>
+  <text class="formula" x="388" y="924">total_score  += probe_score * probe.weight</text>
+  <text class="formula" x="388" y="954">total_weight += probe.weight</text>
+  <text class="formula" x="388" y="978">autoobject_score = total_score / max(total_weight, 1e-6)</text>
+
+  <path class="arrow" d="M285 622 C285 830 450 830 450 850"/>
+  <path class="arrow" d="M730 622 C730 790 650 820 650 850"/>
+  <path class="arrow" d="M260 846 C260 850 520 850 520 850"/>
+  <path class="arrow" d="M740 846 V850"/>
+  <path class="arrow" d="M1220 846 C1220 850 960 850 960 850"/>
+
+  <rect class="box" x="1180" y="850" width="240" height="130"/>
+  <text class="section" x="1208" y="890">后续筛选</text>
+  <text class="text" x="1208" y="922">低于阈值丢弃</text>
+  <text class="mono" x="1208" y="951">score &lt; 0.35</text>
+  <text class="small" x="1208" y="974">通过后进入 anchor Top-K</text>
+
+  <path class="arrow" d="M1120 915 H1180"/>
+
+  <rect x="58" y="998" width="520" height="42" rx="12" fill="#e6edf5" stroke="#b6c4d4"/>
+  <text class="small" x="78" y="1024">注意：地下非碰撞 probe 是 skip，不增加 total_weight，不稀释平均权重。</text>
+
+  <rect x="840" y="998" width="580" height="42" rx="12" fill="#e6edf5" stroke="#b6c4d4"/>
+  <text class="small" x="860" y="1024">当前实现读取：target_color.a = complexity，target_occupancy = collision。</text>
+</svg>

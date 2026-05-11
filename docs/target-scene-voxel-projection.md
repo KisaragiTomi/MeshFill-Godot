@@ -263,6 +263,228 @@ AutoObject visual/collision/probes/profile
 
 ---
 
+## 外部 VDB 导入
+
+除 landscape 程序化生成和 AutoObject stamp 外，TargetSV 还应支持从外部 DCC 工具（Houdini 等）导入 VDB 体积作为目标场。这是最高保真的路径：美术在 DCC 中精确雕刻目标视觉效果，导出 VDB，Godot 侧合并为 TargetSV。
+
+外部 VDB 的原始体素分辨率可能远高于运行时 `TargetSV`。转换阶段必须先把 VDB 采样到项目使用的 TargetSV 网格，再写入持久化 flat buffer。运行时不应直接加载高维 dense VDB。
+
+### 流程
+
+```text
+Houdini / DCC
+  ↓ 导出多个 VDB 文件（每个 VDB 对应一种 stamp / 一个区域 / 一个 asset 类型的目标体积）
+  ↓
+Python 离线转换脚本 (tools/vdb_to_target_sv.py)
+  ↓ 读取 VDB grid → 重采样到非均匀 Y TargetSV 网格 → 合并多个 VDB → 输出 flat binary
+  ↓
+TargetSV flat buffers (visual.rgba32f + collision.r32f)
+  ↓ 放入 target_scene_voxel/ 目录或 res:// 下
+  ↓
+Godot 运行时加载
+  ↓ _load_persisted_target_scene_voxel() 或 _load_external_target_sv()
+  ↓
+TargetSV buffer → prefilter / placement pipeline
+```
+
+### VDB 通道约定
+
+每个 VDB 文件包含 5 个标量 grid，共 5 维：
+
+| VDB Grid Name | 维度 | 类型 | TargetSV 映射 |
+|----------------|------|------|---------------|
+| `Cd.x` / `color.r` | 1 | `float` | `target_visual[].r` |
+| `Cd.y` / `color.g` | 2 | `float` | `target_visual[].g` |
+| `Cd.z` / `color.b` | 3 | `float` | `target_visual[].b` |
+| `density` / `value` | 4 | `float` | `target_visual[].a` (complexity/value) |
+| `collision` | 5 | `float` | `target_collision[]` |
+
+Houdini 中 `Cd` 属性通常拆为 3 个标量 grid（`Cd.x`, `Cd.y`, `Cd.z`）导出。转换脚本应同时支持拆分命名和 `Vec3f` 单 grid 两种形式：
+
+```text
+# 优先查找拆分标量 grid
+if has_grid('Cd.x'):
+    color = (grid['Cd.x'], grid['Cd.y'], grid['Cd.z'])
+# 兼容 Vec3f 单 grid
+elif has_grid('Cd'):
+    color = grid['Cd']  # Vec3f → split to r, g, b
+elif has_grid('color'):
+    color = grid['color']
+else:
+    color = default_color  # fallback
+```
+
+5 维完整时直接映射；如果 VDB 缺少部分 grid，转换脚本按以下规则填充：
+
+| 缺少的 grid | 填充策略 |
+|-------------|----------|
+| `Cd.*` / `color` | 使用 `--default-color` 参数或 `(0.5, 0.5, 0.5)` |
+| `density` / `value` | 从 collision 派生：`value = collision` |
+| `collision` | 从 density 派生：`collision = density * collision_scale` |
+
+### 多 VDB 合并
+
+多个 VDB 按 stamp blend rule 合并到同一个 TargetSV 网格：
+
+```text
+for each vdb_file in input_vdbs:
+    transform = vdb_file.metadata.get('transform', identity)
+    opacity   = vdb_file.metadata.get('opacity', 1.0)
+    collision_opacity = vdb_file.metadata.get('collision_opacity', 1.0)
+
+    for each active voxel in vdb_file:
+        target_pos = world_to_target_grid(voxel.world_pos, transform)
+        if not in_bounds(target_pos): continue
+
+        alpha = source.value * opacity
+        target.rgb        = lerp(target.rgb, source.rgb, alpha)
+        target.complexity = lerp(target.complexity, source.value, alpha)
+        target.collision  = max(target.collision, source.collision * collision_opacity)
+```
+
+合并顺序和优先级由 VDB 文件列表顺序或元数据 `priority` 字段决定。collision 使用 `max` 保证强碰撞不被后续低碰撞 VDB 稀释。
+
+### 坐标系与重采样
+
+VDB 使用 Houdini 默认坐标系（Y-up, 右手），TargetSV 使用 Godot 坐标系（Y-up, 左手？需确认）。转换脚本需处理：
+
+| 项 | 处理 |
+|----|------|
+| 坐标轴翻转 | Z 轴方向，根据 DCC 导出设置确定 |
+| XZ voxel size 对齐 | VDB voxel size → TargetSV `capture_size / texture_size` |
+| Y voxel size 对齐 | VDB world height → TargetSV 非均匀 Y 层边界 |
+| 原点对齐 | VDB world origin → TargetSV grid origin（通常 landscape center） |
+| 重采样 | VDB 分辨率可能远高于 TargetSV，需要离线下采样 |
+| Grid bounds | VDB sparse grid → dense TargetSV flat buffer，空区域填 0 |
+
+重采样应以 TargetSV 目标 voxel 为主循环，而不是遍历所有高分辨率 VDB voxel 后直接写入。对每个目标 voxel，用它的 world-space 中心和 bounds 去采样源 VDB：
+
+```text
+for z in 0..texture_size:
+    for y in 0..slice_count:
+        for x in 0..texture_size:
+            bounds = target_voxel_world_bounds(x, y, z)
+            sample = resample_vdb(source_vdb, bounds)
+            write_target_sv(x, y, z, sample)
+```
+
+推荐采样策略：
+
+| 源 grid | 重采样策略 | 原因 |
+|---------|------------|------|
+| `Cd.*` / `color` | 按 `density` 或 `collision` 加权平均 | 保留主导视觉颜色，避免空 voxel 污染颜色 |
+| `density` / `value` | box filter 平均 + 可选 peak | 高分辨率细节下采样为稳定复杂度 |
+| `collision` | `max` 或 high percentile | 保留细树干、岩石边缘等强碰撞意图 |
+
+如果源 VDB 明显高于 TargetSV 分辨率，转换脚本应使用 box filter / supersampling，而不是只在目标 voxel 中心点做单次三线性采样。中心点采样只适合作为低成本预览模式。
+
+### 非均匀 Y 体素层
+
+TargetSV 的 XZ 方向保持均匀网格，Y 方向建议使用自下而上逐渐变大的体素层。低处需要更高精度表达地面、草、树干根部、岩石接触面；高处通常表达树冠、悬崖体块或大形状，可以使用更厚的 voxel。
+
+```text
+xz_voxel_size = capture_size / texture_size
+y_edges[0] = 0
+y_edges[i + 1] = y_edges[i] + y_voxel_size(i)
+y_voxel_size(i + 1) >= y_voxel_size(i)
+```
+
+第一版推荐用归一化指数分布生成 Y 层边界：
+
+```text
+t0 = i / slice_count
+t1 = (i + 1) / slice_count
+y0 = vertical_span * pow(t0, y_growth_power)
+y1 = vertical_span * pow(t1, y_growth_power)
+```
+
+推荐默认：
+
+| 参数 | 默认值 | 含义 |
+|------|--------|------|
+| `y_distribution` | `progressive` | Y 方向使用渐进层高 |
+| `y_growth_power` | `1.6` | 大于 1 时，下层更密、上层更疏 |
+| `y_edges` | metadata 数组 | 每个 Y 层的 world-space 下/上边界 |
+
+转换脚本、GPU shader、debug overlay 和 semantic probe 采样都必须通过 `y_edges` 做 world Y 与 slice index 的互转，不能再假设 `vertical_span / slice_count` 是固定层高。
+
+```text
+slice_to_world_y(y) = 0.5 * (y_edges[y] + y_edges[y + 1])
+world_y_to_slice(world_y) = upper_bound(y_edges, world_y) - 1
+```
+
+当前实现仍使用均匀 `slice_count` 与 `vertical_span`。引入非均匀 Y 层时，需要在 `target_scene_voxel.json` 中保存 `y_distribution`、`y_growth_power`、`y_edges`，并让旧 metadata 缺少这些字段时回退为 uniform Y。
+
+### 转换脚本接口
+
+```text
+python tools/vdb_to_target_sv.py \
+    --input rock_target.vdb grass_target.vdb tree_target.vdb \
+    --output-dir target_scene_voxel/ \
+    --texture-size 256 \
+    --slice-count 8 \
+    --vertical-span 16.0 \
+    --y-distribution progressive \
+    --y-growth-power 1.6 \
+    --capture-size 120.0 \
+    --max-height 50.0 \
+    --origin 0,0,0 \
+    --coordinate-system godot
+```
+
+输出文件与现有持久化格式完全兼容：
+
+| 输出文件 | 格式 |
+|----------|------|
+| `target_scene_voxel_visual.rgba32f` | flat binary, `texture_size × texture_size × slice_count × 16` bytes |
+| `target_scene_voxel_collision.r32f` | flat binary, `texture_size × texture_size × slice_count × 4` bytes |
+| `target_scene_voxel_preview.png` | RGBA8 PNG, 全切片加权合成俯视预览 |
+| `target_scene_voxel.json` | 元数据 (version, dims, source_files, transforms, y_edges) |
+
+### Godot 侧加载接口
+
+GDScript 侧新增 `_load_external_target_sv(dir_path: String)` 方法，与现有 `_load_persisted_target_scene_voxel()` 共享后续流程：
+
+```text
+func _load_external_target_sv(dir_path: String) -> bool:
+    # 读取 visual.rgba32f + collision.r32f + metadata.json
+    # 校验 texture_size, slice_count 与当前配置兼容
+    # 填充 _target_sv_visual_bytes, _target_sv_collision_bytes
+    # 生成 preview image（如果 dir 中没有）
+    # 标记全量 dirty → 触发 prefilter 重算
+```
+
+加载优先级（启动时）：
+
+```text
+1. 检查 res://target_scene_voxel/ 下是否有外部导入的 TargetSV（source == "vdb_import"）
+2. 检查 user://target_scene_voxel/ 下是否有持久化的 TargetSV
+3. 都没有时由 Ctrl+J 触发程序化生成
+```
+
+### 与 stamp 系统的关系
+
+VDB 导入和 AutoObject stamp 不互斥。可以将 VDB 作为 TargetSV 的基底层，stamp 系统在其上叠加增量修改：
+
+```text
+VDB base layer (offline, high fidelity)
+  ↓ load as initial TargetSV
+AutoObject stamps (runtime, dirty update)
+  ↓ blend on top of VDB base
+Final TargetSV → prefilter → placement
+```
+
+元数据应记录 `generation_mode`：
+
+| 值 | 含义 |
+|----|------|
+| `procedural` | 当前程序化生成（过渡版） |
+| `vdb_import` | 外部 VDB 导入 |
+| `stamp` | AutoObject stamp 生成 |
+| `vdb_import+stamp` | VDB 基底 + stamp 叠加 |
+
+---
+
 ## Projection Cache
 
 推荐新增 semantic cache：

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dmft8kgr65apd"
+path="res://.godot/imported/collect_sv_anchors.glsl-7f6d2d43050c3de33ffa7878894c7db6.res"
+
+[deps]
+
+source_file="res://shaders/collect_sv_anchors.glsl"
+dest_files=["res://.godot/imported/collect_sv_anchors.glsl-7f6d2d43050c3de33ffa7878894c7db6.res"]
+
+[params]
+

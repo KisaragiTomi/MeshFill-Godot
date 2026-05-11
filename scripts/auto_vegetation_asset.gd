@@ -16,6 +16,7 @@ const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.
 @export var pivot_variants: Array[Dictionary] = []
 @export var semantic_probe_profile: Resource
 @export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0
+@export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0
 @export var mesh: Mesh
 @export var source_mesh: Mesh
 @export var source_mesh_path: String = ""
@@ -39,6 +40,7 @@ func _ensure_voxel_descriptor():
 			voxel_descriptor.set_collision_voxels(collision_voxels)
 		voxel_descriptor.semantic_probe_profile = semantic_probe_profile
 		voxel_descriptor.semantic_probe_density = semantic_probe_density
+		voxel_descriptor.context_sensing_radius = context_sensing_radius
 	return voxel_descriptor
 
 

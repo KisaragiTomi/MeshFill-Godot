@@ -19,7 +19,7 @@ their 1D workgroup index through the compact tile list.
 ## Template Files
 
 ```powershell
-$skill = "$HOME\.cursor\skills\sparse-tile-dispatch\template"
+$skill = "D:\.aidata\skills\sparse-tile-dispatch\template"
 $proj  = "<PROJECT_ROOT>"
 
 Copy-Item "$skill\sparse_tile_dispatch.gd" "$proj\scripts\"

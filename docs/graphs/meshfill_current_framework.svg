@@ -1,257 +1,247 @@
-﻿<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200" role="img" aria-labelledby="title desc">
-  <title id="title">MeshFill Framework Overview</title>
-  <desc id="desc">Overview of MeshFill-Godot data ownership, generation tick flow, source voxel deltas, AutoObject probe prefiltering, final SceneVoxel state, and GlobalVoxelField cache.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200" role="img" aria-labelledby="title desc">
+  <title id="title">MeshFill Current Framework</title>
+  <desc id="desc">Current MeshFill-Godot framework: TargetSceneVoxel target canvas, AutoObject semantic probes, candidate-only routing, candidate_tiles_by_asset, physical voxel placement, committed SceneVoxel state, and GlobalVoxelField dirty cache.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
       <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#059669"/>
     </marker>
     <marker id="arrow-soft" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
       <path d="M1,1 L11,6 L1,11 Z" fill="#64748b"/>
     </marker>
     <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
-      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.14"/>
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.14"/>
     </filter>
     <style>
       .bg { fill: #f8fafc; }
       .grid { stroke: #e2e8f0; stroke-width: 1; }
       .title { fill: #0f172a; font: 700 34px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
       .subtitle { fill: #475569; font: 15px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
-      .lane-title { fill: #334155; font: 700 14px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; letter-spacing: .05em; }
+      .band-title { fill: #334155; font: 700 14px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; letter-spacing: .05em; }
       .label { fill: #0f172a; font: 700 17px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
       .small { fill: #334155; font: 13px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
       .tiny { fill: #475569; font: 12px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
+      .mono { fill: #1e3a8a; font: 700 12px Consolas, "Cascadia Mono", monospace; }
       .pill-text { fill: #0f172a; font: 700 13px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
-      .node { stroke-width: 1.6; rx: 14; ry: 14; filter: url(#shadow); }
-      .asset { fill: #eaf4ff; stroke: #3b82f6; }
-      .system { fill: #eef7ed; stroke: #16a34a; }
-      .record { fill: #fff7e6; stroke: #f59e0b; }
-      .source { fill: #f3e8ff; stroke: #8b5cf6; }
-      .final { fill: #ffe8e8; stroke: #ef4444; }
-      .query { fill: #ecfeff; stroke: #0891b2; }
-      .cache { fill: #ecfdf5; stroke: #059669; }
+      .band { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; filter: url(#shadow); }
+      .target-band { fill: #eff6ff; stroke: #60a5fa; stroke-width: 1.4; }
+      .asset-band { fill: #f0fdf4; stroke: #22c55e; stroke-width: 1.4; }
+      .route-band { fill: #f5f3ff; stroke: #8b5cf6; stroke-width: 1.4; }
+      .place-band { fill: #fff7ed; stroke: #f97316; stroke-width: 1.4; }
+      .state-band { fill: #f8fafc; stroke: #94a3b8; stroke-width: 1.4; }
+      .node { stroke-width: 1.6; filter: url(#shadow); }
+      .target { fill: #dbeafe; stroke: #2563eb; }
+      .asset { fill: #dcfce7; stroke: #16a34a; }
+      .route { fill: #ede9fe; stroke: #7c3aed; }
+      .hardgate { fill: #fee2e2; stroke: #ef4444; }
+      .placement { fill: #ffedd5; stroke: #f97316; }
+      .state { fill: #e0f2fe; stroke: #0284c7; }
+      .cache { fill: #ccfbf1; stroke: #0f766e; }
+      .record { fill: #fef3c7; stroke: #d97706; }
       .support { fill: #f1f5f9; stroke: #64748b; }
-      .lane { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; rx: 18; ry: 18; }
+      .tick { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.4; }
       .edge { stroke: #334155; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .edge-blue { stroke: #2563eb; stroke-width: 2.4; fill: none; marker-end: url(#arrow-blue); }
+      .edge-green { stroke: #059669; stroke-width: 2.4; fill: none; marker-end: url(#arrow-green); }
       .edge-soft { stroke: #64748b; stroke-width: 2; fill: none; marker-end: url(#arrow-soft); stroke-dasharray: 7 7; }
-      .edge-band { stroke: #0f766e; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
-      .tick { fill: #ffffff; stroke: #475569; stroke-width: 1.5; rx: 18; ry: 18; }
+      .edge-loop { stroke: #7c3aed; stroke-width: 2.3; fill: none; marker-end: url(#arrow); stroke-dasharray: 8 6; }
     </style>
   </defs>
 
   <rect class="bg" width="1600" height="1200"/>
-  <path class="grid" d="M0 120H1600M0 270H1600M0 420H1600M0 570H1600M0 720H1600M0 870H1600M0 1020H1600M0 1170H1600"/>
+  <path class="grid" d="M0 120H1600M0 300H1600M0 480H1600M0 660H1600M0 840H1600M0 1020H1600M0 1160H1600"/>
   <path class="grid" d="M320 120V1160M640 120V1160M960 120V1160M1280 120V1160"/>
 
-  <text class="title" x="48" y="58">MeshFill Framework Overview</text>
-  <text class="subtitle" x="48" y="88">Assets own defaults; SceneVoxel is committed state; probe prefilter routes AutoObjects; VoxelPlacementGenerator performs physical GPU scoring.</text>
+  <text class="title" x="48" y="58">MeshFill Current Framework</text>
+  <text class="subtitle" x="48" y="88">TargetSV is a neutral target canvas; AutoObject probes create candidate routes; GPU placement physically scores routed asset/tile pairs.</text>
 
-  <rect class="lane" x="32" y="120" width="296" height="810"/>
-  <rect class="lane" x="352" y="120" width="296" height="810"/>
-  <rect class="lane" x="672" y="120" width="296" height="810"/>
-  <rect class="lane" x="992" y="120" width="296" height="810"/>
-  <rect class="lane" x="1312" y="120" width="256" height="810"/>
+  <rect class="band target-band" x="32" y="124" width="326" height="548" rx="20" ry="20"/>
+  <rect class="band asset-band" x="388" y="124" width="326" height="548" rx="20" ry="20"/>
+  <rect class="band route-band" x="744" y="124" width="386" height="548" rx="20" ry="20"/>
+  <rect class="band place-band" x="1160" y="124" width="408" height="548" rx="20" ry="20"/>
+  <rect class="band state-band" x="32" y="714" width="1536" height="318" rx="20" ry="20"/>
 
-  <text class="lane-title" x="56" y="150">ASSET DEFAULTS</text>
-  <text class="lane-title" x="376" y="150">PLACEMENT LAYER</text>
-  <text class="lane-title" x="696" y="150">RUNTIME RECORD</text>
-  <text class="lane-title" x="1016" y="150">SOURCE DELTA</text>
-  <text class="lane-title" x="1336" y="150">FINAL / CACHE</text>
+  <text class="band-title" x="56" y="156">TARGET INTENT</text>
+  <text class="band-title" x="412" y="156">ASSET DEFAULTS</text>
+  <text class="band-title" x="768" y="156">CANDIDATE ROUTING</text>
+  <text class="band-title" x="1184" y="156">PHYSICAL PLACEMENT</text>
+  <text class="band-title" x="56" y="746">COMMITTED STATE / DIRTY CACHE</text>
 
-  <rect class="node asset" x="58" y="178" width="244" height="102"/>
-  <text class="label" x="78" y="210">AutoObject + Descriptor</text>
-  <text class="small" x="78" y="234">voxel_color, complexity</text>
-  <text class="small" x="78" y="254">affected_bands, collision</text>
-  <text class="tiny" x="78" y="272">semantic_probes, pivots</text>
+  <rect class="node target" x="58" y="184" width="274" height="112" rx="16" ry="16"/>
+  <text class="label" x="78" y="216">TargetSceneVoxel</text>
+  <text class="small" x="78" y="240">neutral visual target canvas</text>
+  <text class="small" x="78" y="262">color + complexity + collision</text>
+  <text class="tiny" x="78" y="282">no tree / rock / grass asset labels</text>
 
-  <rect class="node asset" x="58" y="310" width="244" height="118"/>
-  <text class="label" x="78" y="344">Typed assets</text>
-  <text class="small" x="78" y="368">AutoRock / AutoCliffRock</text>
-  <text class="small" x="78" y="388">AutoVegetationAsset</text>
-  <text class="small" x="78" y="408">AutoVegetation subclasses</text>
+  <rect class="node target" x="58" y="324" width="274" height="104" rx="16" ry="16"/>
+  <text class="label" x="78" y="356">TargetSV Generation</text>
+  <text class="small" x="78" y="380">GPU height / slope / mask path</text>
+  <text class="small" x="78" y="402">optional VDB resample import</text>
+  <text class="tiny" x="78" y="420">supports dirty target updates</text>
 
-  <rect class="node asset" x="58" y="458" width="244" height="92"/>
-  <text class="label" x="78" y="492">AutoVoxelProfile</text>
-  <text class="small" x="78" y="516">optional preset fallback</text>
-  <text class="tiny" x="78" y="535">not a second state source</text>
+  <rect class="node support" x="58" y="456" width="274" height="128" rx="16" ry="16"/>
+  <text class="label" x="78" y="488">Sampling Boundary Rule</text>
+  <text class="small" x="78" y="512">probe / context samples clamp</text>
+  <text class="small" x="78" y="534">to nearest valid TargetSV voxel</text>
+  <text class="mono" x="78" y="558">sample_pos = clamp(...)</text>
+  <text class="tiny" x="78" y="576">not empty, not auto failure</text>
 
-  <rect class="node support" x="58" y="742" width="244" height="104"/>
-  <text class="label" x="78" y="776">Asset tooling</text>
-  <text class="small" x="78" y="800">AutoAssetFactory</text>
-  <text class="small" x="78" y="820">tools/scaffold_auto_asset.gd</text>
+  <rect class="node asset" x="414" y="184" width="274" height="118" rx="16" ry="16"/>
+  <text class="label" x="434" y="216">AutoObject + Descriptor</text>
+  <text class="small" x="434" y="240">default color / complexity</text>
+  <text class="small" x="434" y="262">collision voxels, pivots</text>
+  <text class="tiny" x="434" y="284">profile is optional fallback only</text>
 
-  <rect class="node system" x="378" y="178" width="244" height="110"/>
-  <text class="label" x="398" y="212">Placement Fitting</text>
-  <text class="small" x="398" y="236">generate_placement()</text>
-  <text class="small" x="398" y="256">generate_surface_placement()</text>
-  <text class="tiny" x="398" y="276">legacy CliffGenerator runtime</text>
+  <rect class="node asset" x="414" y="330" width="274" height="112" rx="16" ry="16"/>
+  <text class="label" x="434" y="362">semantic_probes</text>
+  <text class="small" x="434" y="386">asset-local sample offsets</text>
+  <text class="small" x="434" y="408">expected color / value / empty</text>
+  <text class="tiny" x="434" y="426">used by prefilter and rerank</text>
 
-  <rect class="node system" x="378" y="312" width="244" height="96"/>
-  <text class="label" x="398" y="344">Placement Consumers</text>
-  <text class="small" x="398" y="368">rock path: AutoRock</text>
-  <text class="small" x="398" y="388">future AutoObject types</text>
-  <text class="tiny" x="398" y="406">object-specific records</text>
+  <rect class="node asset" x="414" y="470" width="274" height="112" rx="16" ry="16"/>
+  <text class="label" x="434" y="502">Placement Footprint</text>
+  <text class="small" x="434" y="526">support / collision / clearance</text>
+  <text class="small" x="434" y="548">asset target preference optional</text>
+  <text class="tiny" x="434" y="566">physical validity stays in score pass</text>
 
-  <rect class="node system" x="378" y="430" width="244" height="96"/>
-  <text class="label" x="398" y="462">Vegetation Scatter</text>
-  <text class="small" x="398" y="486">VegetationExclusion</text>
-  <text class="small" x="398" y="506">outputs AutoVegetation</text>
-  <text class="tiny" x="398" y="524">occupancy + volume checks</text>
+  <rect class="node route" x="770" y="178" width="334" height="90" rx="16" ry="16"/>
+  <text class="label" x="790" y="210">Upstream Probe Prefilter</text>
+  <text class="small" x="790" y="234">SV anchors + TargetSV + probes</text>
+  <text class="tiny" x="790" y="252">filtered candidate assets per anchor</text>
 
-  <rect class="node system" x="378" y="548" width="244" height="84"/>
-  <text class="label" x="398" y="578">Brush / Override</text>
-  <text class="small" x="398" y="602">dirty rect edit</text>
-  <text class="tiny" x="398" y="620">manual source intent</text>
+  <rect class="node hardgate" x="770" y="296" width="334" height="92" rx="16" ry="16"/>
+  <text class="label" x="790" y="328">anchor_autoobject_topk</text>
+  <text class="small" x="790" y="352">hard gate for semantic matching</text>
+  <text class="tiny" x="790" y="370">no full asset library search</text>
 
-  <rect class="node system" x="378" y="654" width="244" height="112"/>
-  <text class="label" x="398" y="686">Probe Prefilter</text>
-  <text class="small" x="398" y="710">SV anchors + TargetSV</text>
-  <text class="small" x="398" y="730">AutoObject probes topK</text>
-  <text class="tiny" x="398" y="750">outputs candidate tiles</text>
+  <rect class="node route" x="770" y="416" width="334" height="104" rx="16" ry="16"/>
+  <text class="label" x="790" y="448">Candidate-only Rerank</text>
+  <text class="small" x="790" y="472">semantic_score / target_score</text>
+  <text class="small" x="790" y="494">route_score / EMPTY pruning</text>
+  <text class="tiny" x="790" y="512">rerank, validate, prune only</text>
 
-  <rect class="node system" x="378" y="790" width="244" height="108"/>
-  <text class="label" x="398" y="822">3D Voxel Placement</text>
-  <text class="small" x="398" y="846">VoxelPlacementGenerator</text>
-  <text class="small" x="398" y="866">GPU score 鈫?reduce 鈫?stamp</text>
-  <text class="tiny" x="398" y="884">physical final check</text>
+  <rect class="node route" x="770" y="548" width="334" height="82" rx="16" ry="16"/>
+  <text class="label" x="790" y="580">candidate_tiles_by_asset</text>
+  <text class="small" x="790" y="604">asset_index -> tile_ids</text>
+  <text class="tiny" x="790" y="622">assets without routed tiles are skipped</text>
 
-  <rect class="node record" x="698" y="188" width="244" height="122"/>
-  <text class="label" x="718" y="222">Record builders</text>
-  <text class="small" x="718" y="246">make_*_scene_voxel_record()</text>
-  <text class="small" x="718" y="266">main.gd attach helpers</text>
-  <text class="tiny" x="718" y="286">build / update voxel_record</text>
+  <rect class="node placement" x="1186" y="184" width="354" height="104" rx="16" ry="16"/>
+  <text class="label" x="1206" y="216">VoxelPlacementGenerator</text>
+  <text class="small" x="1206" y="240">run_multi_asset(common_settings)</text>
+  <text class="mono" x="1206" y="264">reads candidate_tiles_by_asset</text>
 
-  <rect class="node record" x="698" y="352" width="244" height="132"/>
-  <text class="label" x="718" y="386">voxel_record</text>
-  <text class="small" x="718" y="410">runtime Dictionary</text>
-  <text class="small" x="718" y="430">position, base_pixel, slices</text>
-  <text class="small" x="718" y="450">bands, collision, ids</text>
-  <text class="tiny" x="718" y="468">bridge to occupancy / volume</text>
+  <rect class="node placement" x="1186" y="316" width="354" height="132" rx="16" ry="16"/>
+  <text class="label" x="1206" y="348">GPU Score / Reduce / Stamp</text>
+  <text class="small" x="1206" y="372">score_voxel_tile.glsl</text>
+  <text class="small" x="1206" y="394">support / collision / clearance</text>
+  <text class="small" x="1206" y="416">overlap / target occupancy / color</text>
+  <text class="tiny" x="1206" y="436">no semantic dot / MLP in score shader</text>
 
-  <rect class="node query" x="698" y="526" width="244" height="112"/>
-  <text class="label" x="718" y="560">metadata</text>
-  <text class="small" x="718" y="584">index-only projection</text>
-  <text class="small" x="718" y="604">ids + voxel_record handle</text>
-  <text class="tiny" x="718" y="622">debug, MCP, selection</text>
+  <rect class="node placement" x="1186" y="476" width="354" height="112" rx="16" ry="16"/>
+  <text class="label" x="1206" y="508">Placement Results</text>
+  <text class="small" x="1206" y="532">accepted asset / tile placements</text>
+  <text class="small" x="1206" y="554">stamp deltas into voxel field</text>
+  <text class="tiny" x="1206" y="572">CPU instantiates after GPU decision</text>
 
-  <rect class="node query" x="698" y="680" width="244" height="106"/>
-  <text class="label" x="718" y="714">AutoObjectManager</text>
-  <text class="small" x="718" y="738">get_record_by_id()</text>
-  <text class="small" x="718" y="758">get_record_by_instance_id()</text>
+  <path class="edge-blue" d="M332 240 H360 V170 H744 V210 H770"/>
+  <text class="tiny" x="508" y="162">TargetSV samples</text>
+  <path class="edge-blue" d="M332 520 C380 604 700 604 744 604 L744 468 L770 468"/>
+  <text class="tiny" x="468" y="616">clamped TargetSV samples</text>
+  <path class="edge-green" d="M688 386 C728 386 730 242 770 242"/>
+  <text class="tiny" x="704" y="274">semantic probes</text>
+  <path class="edge-green" d="M688 526 L724 526 L724 166 L1170 166 L1170 382 L1186 382"/>
+  <text class="tiny" x="910" y="158">footprint buffers</text>
+  <path class="edge" d="M937 268 V296"/>
+  <path class="edge" d="M937 388 V416"/>
+  <path class="edge" d="M937 520 V548"/>
+  <path class="edge-green" d="M1104 589 L1132 589 L1132 252 L1186 252"/>
+  <text class="tiny" x="1138" y="578">routed tiles only</text>
+  <path class="edge" d="M1363 288 V316"/>
+  <path class="edge" d="M1363 448 V476"/>
 
-  <rect class="node source" x="1018" y="178" width="244" height="92"/>
-  <text class="label" x="1038" y="210">AutoSceneVoxelDelta</text>
-  <text class="small" x="1038" y="234">meshfill / scatter</text>
-  <text class="small" x="1038" y="252">automatic candidates</text>
+  <rect class="node record" x="58" y="778" width="244" height="106" rx="16" ry="16"/>
+  <text class="label" x="78" y="810">Record Builders</text>
+  <text class="small" x="78" y="834">make_*_scene_voxel_record()</text>
+  <text class="small" x="78" y="856">voxel_record runtime data</text>
+  <text class="tiny" x="78" y="874">position, ids, bands, collision</text>
 
-  <rect class="node source" x="1018" y="290" width="244" height="92"/>
-  <text class="label" x="1038" y="322">TargetSceneVoxelDelta</text>
-  <text class="small" x="1038" y="346">guidance pipeline</text>
-  <text class="small" x="1038" y="364">target_mix / target_pipeline</text>
+  <rect class="node state" x="338" y="778" width="244" height="106" rx="16" ry="16"/>
+  <text class="label" x="358" y="810">Source Deltas</text>
+  <text class="small" x="358" y="834">AutoSceneVoxelDelta</text>
+  <text class="small" x="358" y="856">BrushSceneVoxelDelta</text>
+  <text class="tiny" x="358" y="874">per-tick intent writes</text>
 
-  <rect class="node source" x="1018" y="402" width="244" height="92"/>
-  <text class="label" x="1038" y="434">BrushSceneVoxelDelta</text>
-  <text class="small" x="1038" y="458">auto_mix affects auto + target</text>
-  <text class="small" x="1038" y="476">erase = 0</text>
+  <rect class="node state" x="618" y="778" width="244" height="106" rx="16" ry="16"/>
+  <text class="label" x="638" y="810">blend_scene_voxels()</text>
+  <text class="small" x="638" y="834">merge target / auto / brush</text>
+  <text class="small" x="638" y="856">commit final voxel meaning</text>
+  <text class="tiny" x="638" y="874">next systems read committed state</text>
 
-  <rect class="tick" x="1018" y="514" width="244" height="82"/>
-  <text class="tiny" x="1038" y="538">Rule: 3-way blend</text>
-  <text class="tiny" x="1038" y="556">target + auto 鈫?brush override</text>
-  <text class="tiny" x="1038" y="574">per-tick source deltas</text>
+  <rect class="node state" x="898" y="778" width="244" height="106" rx="16" ry="16"/>
+  <text class="label" x="918" y="810">SceneVoxel + CollisionVoxel</text>
+  <text class="small" x="918" y="834">committed read model</text>
+  <text class="small" x="918" y="856">occupancy / collision volume</text>
+  <text class="tiny" x="918" y="874">single source for next tick</text>
 
-  <rect class="node final" x="1338" y="218" width="204" height="112"/>
-  <text class="label" x="1358" y="252">blend_scene_voxels</text>
-  <text class="small" x="1358" y="276">3-way: target+auto+brush</text>
-  <text class="small" x="1358" y="296">auto_mix / target_mix</text>
+  <rect class="node cache" x="1178" y="778" width="244" height="106" rx="16" ry="16"/>
+  <text class="label" x="1198" y="810">GlobalVoxelField</text>
+  <text class="small" x="1198" y="834">sparse tile occupancy cache</text>
+  <text class="small" x="1198" y="856">dirty tile / rect tracking</text>
+  <text class="tiny" x="1198" y="874">rebuild affected routes</text>
 
-  <rect class="node final" x="1338" y="382" width="204" height="116"/>
-  <text class="label" x="1358" y="416">SceneVoxel</text>
-  <text class="small" x="1358" y="440">committed result</text>
-  <text class="small" x="1358" y="460">next tick read model</text>
-  <text class="tiny" x="1358" y="478">single final meaning</text>
+  <rect class="node support" x="58" y="914" width="244" height="70" rx="16" ry="16"/>
+  <text class="label" x="78" y="944">Metadata / Manager</text>
+  <text class="tiny" x="78" y="968">index handle only, not default source</text>
 
-  <rect class="node cache" x="1338" y="540" width="204" height="122"/>
-  <text class="label" x="1358" y="574">GlobalVoxelField</text>
-  <text class="small" x="1358" y="598">dirty tile tracking</text>
-  <text class="small" x="1358" y="618">run_placement_dirty()</text>
-  <text class="small" x="1358" y="638">apply_stamp_deltas()</text>
-  <text class="tiny" x="1358" y="654">SceneVoxel + Collision cache</text>
+  <rect class="node support" x="338" y="914" width="244" height="70" rx="16" ry="16"/>
+  <text class="label" x="358" y="944">Legacy Producers</text>
+  <text class="tiny" x="358" y="968">fitting / scatter / brush write deltas</text>
 
-  <rect class="node query" x="1338" y="690" width="204" height="112"/>
-  <text class="label" x="1358" y="724">Validate / Query</text>
-  <text class="small" x="1358" y="748">validate_voxel()</text>
-  <text class="small" x="1358" y="768">query_voxel()</text>
-  <text class="tiny" x="1358" y="786">debug preview / tools</text>
+  <rect class="node support" x="618" y="914" width="244" height="70" rx="16" ry="16"/>
+  <text class="label" x="638" y="944">Validation / Debug</text>
+  <text class="tiny" x="638" y="968">query_voxel(), preview, inspect tools</text>
 
-  <rect class="tick" x="120" y="948" width="1360" height="66"/>
-  <text class="pill-text" x="150" y="986">generation_tick:</text>
-  <text class="small" x="288" y="986">read SceneState[t - 1]</text>
-  <path class="edge-soft" d="M468 980 H610"/>
-  <text class="small" x="638" y="986">write source deltas[t]</text>
-  <path class="edge-soft" d="M814 980 H954"/>
-  <text class="small" x="982" y="986">commit SceneVoxel[t]</text>
-  <path class="edge-soft" d="M1168 980 H1308"/>
-  <text class="small" x="1336" y="986">next tick reads state</text>
+  <rect class="node hardgate" x="898" y="914" width="244" height="70" rx="16" ry="16"/>
+  <text class="label" x="918" y="944">Forbidden Path</text>
+  <text class="tiny" x="918" y="968">no full-library semantic lookup</text>
 
-  <rect class="tick" x="120" y="1044" width="1360" height="70"/>
-  <text class="pill-text" x="150" y="1085">voxel update:</text>
-  <text class="small" x="288" y="1085">apply record / GPU stamp</text>
-  <path class="edge-soft" d="M488 1079 H596"/>
-  <text class="small" x="624" y="1085">stamp bands + collision</text>
-  <path class="edge-soft" d="M804 1079 H900"/>
-  <text class="small" x="928" y="1085">write source delta</text>
-  <path class="edge-soft" d="M1076 1079 H1168"/>
-  <text class="small" x="1196" y="1085">blend + rebuild tiles</text>
+  <rect class="node support" x="1178" y="914" width="244" height="70" rx="16" ry="16"/>
+  <text class="label" x="1198" y="944">Dirty Update Loop</text>
+  <text class="tiny" x="1198" y="968">affected anchors / tiles only</text>
 
-  <path class="edge-soft" d="M302 504 C330 504 342 240 378 234"/>
-  <text class="tiny" x="312" y="286">profile fallback</text>
+  <path class="edge" d="M1363 588 C1363 690 318 690 318 831 H302"/>
+  <text class="tiny" x="972" y="684">accepted placements build records</text>
+  <path class="edge" d="M302 831 H338"/>
+  <path class="edge" d="M582 831 H618"/>
+  <path class="edge" d="M862 831 H898"/>
+  <path class="edge" d="M1142 831 H1178"/>
+  <path class="edge-soft" d="M1020 884 V914"/>
+  <path class="edge-soft" d="M740 884 V914"/>
+  <path class="edge-soft" d="M460 914 V884"/>
+  <path class="edge-loop" d="M1300 778 C1300 704 1164 704 1010 674 C884 648 810 646 770 630"/>
+  <text class="tiny" x="1010" y="662">dirty anchors -> reroute affected assets</text>
 
-  <path class="edge" d="M302 230 C334 230 344 240 378 242"/>
-  <path class="edge" d="M302 370 C334 370 344 370 378 370"/>
-  <path class="edge" d="M302 230 C334 230 344 700 378 710"/>
-  <text class="tiny" x="312" y="676">semantic probes</text>
-  <path class="edge" d="M302 798 C336 798 344 844 378 844"/>
+  <rect class="tick" x="120" y="1060" width="1360" height="70" rx="18" ry="18"/>
+  <text class="pill-text" x="150" y="1102">generation_tick:</text>
+  <text class="small" x="286" y="1102">read SceneVoxel[t - 1]</text>
+  <path class="edge-soft" d="M474 1096 H594"/>
+  <text class="small" x="622" y="1102">route candidate tiles</text>
+  <path class="edge-soft" d="M790 1096 H910"/>
+  <text class="small" x="938" y="1102">GPU physical placement</text>
+  <path class="edge-soft" d="M1112 1096 H1232"/>
+  <text class="small" x="1260" y="1102">commit SceneVoxel[t]</text>
 
-  <path class="edge" d="M500 288 V312"/>
-  <text class="tiny" x="512" y="304">placement result</text>
-  <path class="edge" d="M622 360 C662 360 664 254 698 250"/>
-  <text class="tiny" x="642" y="302">consumer record build</text>
-  <path class="edge" d="M622 486 C656 486 664 286 698 276"/>
-  <text class="tiny" x="642" y="438">scatter record build</text>
-  <path class="edge" d="M622 590 C666 590 688 502 820 484"/>
-  <path class="edge" d="M500 766 V790"/>
-  <text class="tiny" x="512" y="782">candidate tiles</text>
-  <path class="edge-soft" d="M622 844 C662 844 668 738 698 730"/>
-
-  <path class="edge" d="M820 310 V352"/>
-  <path class="edge-soft" d="M820 484 V526"/>
-  <path class="edge-soft" d="M820 638 V680"/>
-
-  <path class="edge" d="M942 418 C982 418 982 224 1018 224"/>
-  <text class="tiny" x="958" y="280">auto source</text>
-  <path class="edge" d="M942 418 C982 418 982 336 1018 336"/>
-  <text class="tiny" x="958" y="330">target source</text>
-  <path class="edge" d="M942 418 C982 418 982 448 1018 448"/>
-  <text class="tiny" x="958" y="440">brush source</text>
-
-  <path class="edge" d="M1262 224 C1302 224 1304 260 1338 260"/>
-  <path class="edge" d="M1262 336 C1302 336 1304 280 1338 280"/>
-  <path class="edge" d="M1262 448 C1302 448 1304 300 1338 300"/>
-
-  <path class="edge" d="M1440 330 V382"/>
-  <path class="edge" d="M1440 498 V548"/>
-  <path class="edge-soft" d="M1338 602 C1130 602 760 690 622 710"/>
-  <text class="tiny" x="1034" y="632">SV / dirty tiles</text>
-  <path class="edge" d="M1440 654 V690"/>
-  <path class="edge-soft" d="M1338 746 C1290 746 1290 732 942 732"/>
-  <text class="tiny" x="1070" y="818">debug lookup through manager / metadata</text>
-
-  <rect class="tick" x="58" y="872" width="244" height="36"/>
-  <text class="tiny" x="78" y="895">Rule: assets answer "what am I"</text>
-  <rect class="tick" x="698" y="828" width="244" height="52"/>
-  <text class="tiny" x="718" y="852">Rule: metadata is a handle</text>
-  <text class="tiny" x="718" y="870">not authoritative state</text>
-  <rect class="tick" x="1338" y="830" width="204" height="58"/>
-  <text class="tiny" x="1358" y="854">Rule: SceneVoxel is</text>
-  <text class="tiny" x="1358" y="872">the committed read model</text>
+  <rect class="tick" x="58" y="626" width="274" height="28" rx="14" ry="14"/>
+  <text class="tiny" x="78" y="645">Rule: TargetSV answers desired appearance</text>
+  <rect class="tick" x="414" y="626" width="274" height="28" rx="14" ry="14"/>
+  <text class="tiny" x="434" y="645">Rule: assets answer what they are</text>
+  <rect class="tick" x="770" y="642" width="334" height="28" rx="14" ry="14"/>
+  <text class="tiny" x="790" y="661">Rule: routing reduces candidate asset/tile pairs</text>
+  <rect class="tick" x="1186" y="626" width="354" height="28" rx="14" ry="14"/>
+  <text class="tiny" x="1206" y="645">Rule: physical scoring decides if it can be placed</text>
 </svg>
-

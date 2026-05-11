@@ -48,6 +48,151 @@ Buffer 映射：
 
 ---
 
+## TargetSV 生成
+
+TargetSV 描述每个体素位置应填充的颜色、复杂度（value）和碰撞意图，不包含 asset 标签。目标架构使用 **AutoObject stamp** 绘制 TargetSV；当前实现为纯程序化过渡版。
+
+详细设计见 [`target-scene-voxel-projection.md`](target-scene-voxel-projection.md)。
+
+三条生成路径（可叠加）：
+
+| 路径 | 来源 | 保真度 | 阶段 |
+| --- | --- | --- | --- |
+| **VDB 导入** | Houdini / DCC 离线导出 | 最高 | 离线基底层 |
+| **AutoObject Stamp** | landscape 规则 + AutoObject voxel records | 高 | 运行时 stamp |
+| **程序化生成** | landscape slope / height / rock_mask | 低（过渡版） | 当前实现 |
+
+VDB 可作为基底层，stamp 在其上叠加增量修改，程序化版为无外部数据时的回退。
+
+### 外部 VDB 导入
+
+通过 `tools/vdb_to_target_sv.py` 将多个 VDB 离线合并为 TargetSV flat buffer，输出格式与持久化完全兼容。Godot 侧通过 `_load_external_target_sv()` 加载。
+
+每个 VDB 包含 5 维标量 grid：`Cd.x`/`Cd.y`/`Cd.z` → visual.rgb (3), `density` → visual.a/complexity (1), `collision` → target_collision (1)。多 VDB 按顺序合并：visual lerp, collision max。
+
+详见 [`target-scene-voxel-projection.md` § 外部 VDB 导入](target-scene-voxel-projection.md#外部-vdb-导入)。
+
+### 目标架构：AutoObject Stamp
+
+TargetSV 应由 stamp 系统绘制：landscape 规则调度 stamp，每个 stamp 使用 AutoObject 烘焙的 voxel records 作为画笔 kernel，将中性的 color + complexity + collision intent 写入 TargetSV。
+
+```text
+landscape height / slope / masks / rules
+  ↓ target stamp scheduler
+AutoObject voxel records (color, complexity, collision, local_pos)
+  ↓ transform by stamp origin / basis / scale
+  ↓ blend into TargetSV
+TargetSV: color.rgb + complexity/value + collision intent
+```
+
+每个 AutoObject voxel 提供：
+
+| Source voxel field | TargetSV usage |
+| --- | --- |
+| `local_pos` | 变换到目标 voxel 坐标 |
+| `color` | 写入目标颜色 |
+| `complexity` | 写入目标视觉复杂度 |
+| `collision` / occupancy | 写入目标碰撞/solid intent |
+| `weight` | 控制该 source voxel 对混合的贡献 |
+
+Blend rule（visual 加权平均，collision 取 max）：
+
+```text
+target.rgb        = lerp(target.rgb, source.rgb, alpha)
+target.complexity = lerp(target.complexity, source.complexity, alpha)
+target.collision  = max(target.collision, source.collision * stamp.collision_opacity)
+```
+
+这样能保证 stamp 的目标形状和候选 AutoObject 的视觉/碰撞体积同构，probe 采样时自然匹配。低碰撞 stamp（草、树叶）不会抹掉已有的强碰撞（树干、岩石）。
+
+### 当前实现（程序化过渡版）
+
+当前使用 `target_scene_voxel.glsl` 从 landscape 参数程序化推导 rock/grass 信号，**不使用 AutoObject stamp**。后续应替换为 stamp-based 生成。
+
+```text
+scene_depth + target_height + rock_mask
+         ↓  target_scene_voxel.glsl (GPU compute)
+    evaluate_voxel() per (x, y, slice)
+         ↓
+    visual[]:    vec4(color.rgb, value)   — rgba32f, 16 bytes/voxel
+    collision[]: float                    — r32f, 4 bytes/voxel
+    preview:     image2D (rgba16f)        — 调试俯视图
+```
+
+| 文件 | 作用 |
+| --- | --- |
+| `scripts/target_scene_voxel_generator.gd` | GPU 宿主：创建 local RD、上传纹理、dispatch、回读 buffer |
+| `shaders/target_scene_voxel.glsl` | compute shader：per-voxel 程序化材质评估 |
+
+参数：
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `texture_size` | 256 | XZ 分辨率，从 scene_depth 宽度取 |
+| `slice_count` | 8 (`TARGET_SV_SLICE_COUNT`) | 垂直切片数 |
+| `vertical_span` | 16.0 (`TARGET_SV_VERTICAL_SPAN`) | 垂直跨度 (m)，每切片 2m |
+| `max_height` | 50.0 | 深度图最大高度 |
+| `capture_size` | 120.0 | 正交捕获范围 (m) |
+| `slope_start` / `slope_full` | `landscape_cliff_slope_*` | 坡度阈值 |
+
+Per-voxel 程序化评估：
+
+```text
+terrain_h    = max_height - scene_depth.r
+height_delta = max(target_h - terrain_h, 0)
+slope        = length(surface_normal.xy)          // 0=平坦, 1=垂直
+rock_signal  = max(smoothstep(slope), smoothstep(fill), rock_mask)
+local_y      = (slice + 0.5) / slice_count * vertical_span
+
+rock_value   = rock_signal × vertical_falloff(rock_top)
+grass_value  = flat_signal × grass_vertical × (1 - rock_signal) × 0.45
+
+color     = weighted blend(rock_color, grass_color)
+value     = max(rock_value, grass_value)
+collision = max(rock_value × 0.95, grass_value × 0.08)
+```
+
+局限性：
+- **颜色/复杂度固定** — rock (0.56,0.52,0.46) / grass (0.20,0.48,0.18) 硬编码，不反映实际 AutoObject 材质。
+- **无 asset 形状信息** — 纯 2D 高度差 + 坡度推导，不包含树干/树冠/灌木等 3D 结构。
+- **probe 匹配精度受限** — stamp-based 生成时 probe 采样到的 TargetSV 与候选 AutoObject 同构，程序化版无此保证。
+
+### TargetSV → Prefilter Buffer 映射
+
+无论由 stamp 还是程序化生成，TargetSV 输出到 prefilter 的映射相同：
+
+| TargetSV 输出 | Prefilter Buffer | 转换 |
+| --- | --- | --- |
+| `target_visual[].rgb` (color) | `target_color` 的 RGB 通道 | pack 为 RGBA8 高位字节序 |
+| `target_visual[].a` (value) | `target_color` 的 A 通道 (complexity) | pack 为 RGBA8 低 8 位 |
+| `target_collision[]` | `target_occupancy` | 直接使用 float |
+
+TargetSV 的 `value`（视觉密度）在 prefilter 中作为 `complexity` 参与评分，`collision`（碰撞强度）作为 `target_occupancy` 参与评分。
+
+### Probe 越界处理
+
+当 probe 采样位置超出 GVF grid 边界时（例如大型 asset 的高处或边缘 probe），采样位置 **clamp 到最近的 in-bounds voxel**，而非跳过。这保证所有 probe 都参与评分，避免边缘处因 probe 被跳过导致评分失真。
+
+```text
+if not in_bounds(sample_pos):
+    sample_pos = clamp(sample_pos, (0,0,0), grid_size - 1)
+```
+
+实现见 `scripts/autoobject_probe_prefilter.gd` `score_autoobject()`。
+
+### 持久化
+
+生成结果保存到 `user://target_scene_voxel/`：
+
+| 文件 | 格式 |
+| --- | --- |
+| `target_scene_voxel_visual.rgba32f` | flat binary, `voxel_count × 16` bytes |
+| `target_scene_voxel_collision.r32f` | flat binary, `voxel_count × 4` bytes |
+| `target_scene_voxel_preview.png` | RGBA8 PNG 俯视预览 |
+| `target_scene_voxel.json` | 元数据 (version, dims, paths) |
+
+---
+
 ## 阶段 1：Anchor 提取
 
 Anchor 分两层提取：
@@ -115,7 +260,26 @@ PlaceableAnchor {
 | `flags` | 控制参与哪些评分项 |
 | `weight` | probe 权重 |
 | `kind` | `positive` / `negative` |
-| `source` | `convex` / `voxel_interior` / `surface` |
+| `source` | `convex` / `voxel_interior` / `surface` / `context` |
+
+### Context Sensing Probes
+
+小型资产（草、灌木）的 mesh AABB 很小，标准 probe 感受野有限，难以检测周围残余 TargetSV。通过 `AutoObject.context_sensing_radius` 在 mesh AABB 外围生成额外 probe：
+
+```text
+context_sensing_radius = 0.0  → 禁用（默认，适合大型 rock）
+context_sensing_radius = 2.0  → 感受野向外扩展 2m（适合 grass）
+context_sensing_radius = 1.0  → 中等扩展（适合 bush）
+```
+
+Context probe 特征：
+- **offset 超出 mesh AABB**，分布在 `[inner_r, inner_r + sensing_radius]` 环形区域
+- **flags**: `FLAG_COLLISION | FLAG_COLOR`，主要检测残余 target collision
+- **weight 随距离衰减**：`w = r_decay * y_decay * 0.35`，避免远处信号喧宾夺主
+- **优先级最低**（Phase 4），核心 mesh probe 先占满预算，剩余位置给 context probe
+- `target_count` 按 `context_sensing_radius * density * 4` 追加额外预算（上限 32）
+
+典型场景：石头放置后周围残余 collision voxel 不足以注册新石头，草的 context probe 采样到残余 target → 得分高 → 入 top-K → 精筛通过 → 间隙被填。
 
 `AutoObject.allowed_anchor_kinds` 控制资产参与哪类 anchor：
 
@@ -144,6 +308,23 @@ score_autoobject(anchor, auto_object):
 ```
 
 采样字段：`target_color.rgb` → color, `target_color.a` → complexity, `target_occupancy` → collision, `scene_occupancy` → occupied, `SV[p+down]` → support。
+
+### 地下 Probe 规则
+
+当 probe 采样位置处于地面以下（`scene_occupancy[sample_pos] >= UNDERGROUND_OCC_THRESHOLD`，默认 0.5）时：
+
+- **除碰撞检测以外的所有评分内容权重归零**。
+- 没有 `FLAG_COLLISION` 的 probe：整条 probe 的 weight = 0（在 `score_autoobject` 中 skip）。
+- 有 `FLAG_COLLISION` 的 positive probe：仅计算 `collision_fit`，color/complexity 权重 = 0。
+- Empty/negative/support probe 即使带 `FLAG_COLLISION`：返回 0（这些 probe 类型无碰撞评分含义）。
+
+```text
+if scene_occupancy[sample_pos] >= UNDERGROUND_OCC_THRESHOLD:
+  if !(flags & FLAG_COLLISION): weight = 0, skip
+  if flags & FLAG_EMPTY or kind == negative: return 0
+  if flags & FLAG_SUPPORT: return 0
+  return collision_fit_only
+```
 
 ### 评分公式
 
@@ -193,22 +374,41 @@ tile_autoobject_topK = topK(vote)
 
 ---
 
-## 实现伪代码
+## 实现
 
-基于现有 `GlobalVoxelField`、`AutoObject`、`SemanticProbeProfile` 接口。
+基于现有 `GlobalVoxelField`、`AutoObject`、`SemanticProbeProfile` 接口。GPU 为主路径，CPU 保留用于对照验证。
 
-当前 CPU 落地实现：
+GPU 落地实现（主路径）：
+
+| 文件 | 作用 |
+| --- | --- |
+| `scripts/autoobject_probe_prefilter_gpu.gd` | GPU 宿主：probe 打包、4-pass dispatch、结果回读 |
+| `shaders/collect_sv_anchors.glsl` | Dispatch 1 — dirty tile → ground + target_top anchor 收集（atomic append） |
+| `shaders/score_anchor_asset_probes.glsl` | Dispatch 2 (Pass A) — 16×16 workgroup，anchor×asset probe 评分 |
+| `shaders/select_anchor_topk.glsl` | Dispatch 3 (Pass B) — 256 线程/anchor，top-K asset 选择 |
+| `shaders/reduce_anchor_topk_to_tiles.glsl` | Dispatch 4 — anchor top-K → per-asset tile vote 聚合 |
+
+CPU 参考实现（保留，用于对照验证）：
 
 | 文件 | 作用 |
 | --- | --- |
 | `scripts/autoobject_probe_prefilter.gd` | CPU 版双 anchor 层收集、probe 评分、anchor top-K、tile 聚合 |
+
+共享模块：
+
+| 文件 | 作用 |
+| --- | --- |
 | `scripts/auto_object.gd` | `allowed_anchor_kinds`、pivot → anchor kind 推导、按 anchor kind remap semantic probe offset |
 | `scripts/global_voxel_field.gd` | `run_prefiltered_placement_dirty()` 将 prefilter 输出接到 `candidate_tiles_by_asset` |
 | `scripts/voxel_placement_generator.gd` | `candidate_tiles_by_asset` 按 asset 限定 GPU footprint scoring tile |
 
 `autoobject_candidate_tiles` 的 CPU API 输出为 `Vector3i` tile 坐标，而不是 GPU shader 内部的线性 `tile_id`。`VoxelPlacementGenerator` 会在 `_candidate_tile_to_id()` 中按自身 `tile_counts` 转换，避免不同模块的线性 tile 展开顺序耦合。
 
-### 常量与数据结构
+### CPU 参考伪代码
+
+以下为 CPU 版 GDScript 参考实现逻辑（`autoobject_probe_prefilter.gd`），GPU 版逻辑等价但在 4 个 compute shader 中执行。
+
+#### 常量与数据结构
 
 ```gdscript
 const TILE_SIZE := 8
@@ -218,6 +418,7 @@ const MAX_COLLISION_OCC := 0.05
 const MIN_SUPPORT := 0.25
 const MIN_TARGET_INTEREST := 0.01
 const MIN_PREFILTER_SCORE := 0.35
+const UNDERGROUND_OCC_THRESHOLD := 0.5
 const EPSILON := 1e-6
 
 const ANCHOR_KIND_GROUND := "ground"
@@ -233,7 +434,7 @@ const FLAG_EMPTY := 8
 const FLAG_SUPPORT := 16
 ```
 
-### 入口函数
+#### 入口函数
 
 ```gdscript
 func run_probe_prefilter(
@@ -256,7 +457,7 @@ func run_probe_prefilter(
     }
 ```
 
-### 阶段 1：Anchor 提取
+#### 阶段 1：Anchor 提取
 
 ```gdscript
 func _collect_anchors(
@@ -383,7 +584,7 @@ func _append_anchor(
     })
 ```
 
-### 阶段 2-3：Probe 采样评分与 Top-K 选择
+#### 阶段 2-3：Probe 采样评分与 Top-K 选择
 
 ```gdscript
 func _score_and_select(
@@ -447,6 +648,12 @@ func _score_autoobject(
             continue
 
         var w := maxf(float(probe.get("weight", 1.0)), EPSILON)
+        # Underground: non-collision probes have zero weight
+        var s_idx := gvf.voxel_index(sample_pos)
+        if gvf.scene_occupancy[s_idx] >= UNDERGROUND_OCC_THRESHOLD:
+            var p_flags := int(probe.get("flags", FLAG_COLOR | FLAG_COMPLEXITY))
+            if (p_flags & FLAG_COLLISION) == 0:
+                continue
         var ps := _score_probe(sample_pos, probe, gvf, target_occ, target_color)
         total_score += ps * w
         total_weight += w
@@ -462,7 +669,7 @@ func _voxelize_offset(offset: Vector3, voxel_size: Vector3) -> Vector3i:
     )
 ```
 
-### Probe 单点评分
+#### Probe 单点评分
 
 ```gdscript
 func _score_probe(
@@ -481,6 +688,17 @@ func _score_probe(
     var s_complexity := s_color.a
     var s_collision := target_occ[idx] if idx < target_occ.size() else 0.0
     var s_scene_occ := gvf.scene_occupancy[idx]
+
+    # Underground: only collision scoring contributes
+    if s_scene_occ >= UNDERGROUND_OCC_THRESHOLD:
+        if (flags & FLAG_COLLISION) == 0:
+            return 0.0
+        if (flags & FLAG_EMPTY) != 0 or kind == "negative":
+            return 0.0
+        if (flags & FLAG_SUPPORT) != 0:
+            return 0.0
+        var e_coll := clampf(float(probe.get("expected_collision", 0.0)), 0.0, 1.0)
+        return clampf(1.0 - absf(s_collision - e_coll), 0.0, 1.0)
 
     # Empty / negative probe
     if flags & FLAG_EMPTY or kind == "negative":
@@ -522,7 +740,7 @@ func _score_probe(
     return score / maxf(weight_sum, EPSILON)
 ```
 
-### 阶段 4：Tile 聚合
+#### 阶段 4：Tile 聚合
 
 ```gdscript
 func _reduce_to_tiles(
@@ -634,14 +852,19 @@ probes             ≤ 128 / asset
 总采样             = anchor_count × 256 × 128 (上界，实际按 anchor 层、asset mask、probe 数缩减)
 ```
 
-### Dispatch 策略：两 Pass, Sharedgroup 归约 Probe
+### Dispatch 策略：四 Pass Pipeline
 
-单 Pass 不同时做 "按 asset 的 probe 统计" 和 "每个 anchor 内 256 个 asset 评分筛选"。拆成两个 dispatch：
+完整 GPU 管线拆为 4 个 dispatch：
 
-`anchor_grid_x` 可取 256，`anchor_grid_y = ceil(anchor_count / anchor_grid_x)`。
+1. **Collect** — 从 dirty tiles 收集 anchor，atomic append，回读 anchor_count。
+2. **Score (Pass A)** — 16 asset lanes × 16 probe lanes，sharedgroup 归约 probe 评分。
+3. **Top-K (Pass B)** — 每 anchor 256 线程加载 asset scores，串行 top-K 选择。
+4. **Reduce** — 串行扫描 anchor top-K，累加 per-asset tile vote。
+
+Pass A/B 使用二维 anchor dispatch：`anchor_grid_x = ceil(sqrt(anchor_count))`，`anchor_grid_y = ceil(anchor_count / anchor_grid_x)`。
 
 ```text
-Pass A — score_anchor_asset_probe_groups.glsl (sharedgroup 统计 probe)
+Pass A — score_anchor_asset_probes.glsl (sharedgroup 统计 probe)
   dispatch       = (anchor_grid_x, anchor_grid_y, ceil(asset_count / 16))
   workgroup_size = (16, 16, 1)
   local_x        = asset lane，1 个 workgroup 覆盖 16 个 asset
@@ -649,7 +872,7 @@ Pass A — score_anchor_asset_probe_groups.glsl (sharedgroup 统计 probe)
   sharedgroup    = shared_score[16][16] + shared_weight[16][16]
   输出           = asset_scores[anchor_id * 256 + asset_id]
 
-Pass B — select_anchor_quality_topk.glsl (anchor 内 asset 筛选)
+Pass B — select_anchor_topk.glsl (anchor 内 asset 筛选)
   dispatch       = (anchor_grid_x, anchor_grid_y, 1)
   workgroup_size = (16, 16, 1)
   local_id       = local_y * 16 + local_x = asset_id 0..255
@@ -699,28 +922,58 @@ collision_occupancy[voxel_count] // float
 target_occupancy[voxel_count]    // float
 target_color[voxel_count]        // uint (packed RGBA8)
 
-// Anchor 输入 (Shader 1 输出)
-anchor_buffer[anchor_count]      // uvec4: { voxel_x, voxel_y, voxel_z, anchor_kind_id }
-anchor_tile_id[anchor_count]     // uint: tile_id，用于后续 tile 聚合
+// Dispatch 1 输出
+anchor_buffer[ANCHOR_CAPACITY]   // uvec4: { voxel_x, voxel_y, voxel_z, anchor_kind_id }
+anchor_count                     // uint: atomic counter，Dispatch 1 后回读确定实际 anchor 数
 
 // 中间 (Pass A 输出 → Pass B 输入)
-asset_scores[anchor_count * 256] // float: 每 anchor 固定保留 256 个 asset 汇总评分
+asset_scores[ANCHOR_CAPACITY * 256] // float: 每 anchor 固定保留 256 个 asset 汇总评分
 
-// 最终输出
-anchor_topk[anchor_count * TOPK] // uvec2: { asset_id, score_as_float_bits }
+// Pass B 输出 → Dispatch 4 输入
+anchor_topk[ANCHOR_CAPACITY * TOPK] // uvec2: { asset_id, score_as_float_bits }
+
+// Dispatch 4 输出
+tile_votes[asset_count * tile_count] // float: 每个 (asset, tile) 的累计 vote 分数
 ```
 
 ### Shader 总览
 
-| Shader | Dispatch | Workgroup | 说明 |
-| --- | --- | --- | --- |
-| `collect_ground_sv_anchors.glsl` | `(tile_count, 1, 1)` | `(512, 1, 1)` | tile per workgroup, thread per voxel, append `ground` anchor |
-| `collect_target_top_anchors.glsl` | `(dirty_xz_column_count, 1, 1)` | `(64, 1, 1)` | thread per XZ column, scan global Y top-down, append `target_top` anchor |
-| `score_anchor_asset_probe_groups.glsl` | `(anchor_grid_x, anchor_grid_y, ceil(asset_count / 16))` | `(16, 16, 1)` | **Pass A** — 16 asset lanes × 16 probe lanes，sharedgroup 归约 |
-| `select_anchor_quality_topk.glsl` | `(anchor_grid_x, anchor_grid_y, 1)` | `(16, 16, 1)` | **Pass B** — 每 anchor 检查 256 asset 分数，阈值过滤 + top-K |
-| `reduce_anchor_topk_to_tiles.glsl` | `(anchor_count, 1, 1)` | `(TOPK, 1, 1)` | tile 聚合 vote |
+| # | Shader | Dispatch | Workgroup | 说明 |
+| --- | --- | --- | --- | --- |
+| 1 | `collect_sv_anchors.glsl` | `(dirty_tile_count, 1, 1)` | `(8, 8, 8)` | tile per workgroup, ground + target_top anchor 合并收集，atomic append |
+| 2 | `score_anchor_asset_probes.glsl` | `(anchor_grid_x, anchor_grid_y, ceil(asset_count / 16))` | `(16, 16, 1)` | **Pass A** — 16 asset lanes × 16 probe lanes，sharedgroup 归约 |
+| 3 | `select_anchor_topk.glsl` | `(anchor_grid_x, anchor_grid_y, 1)` | `(16, 16, 1)` | **Pass B** — 每 anchor 检查 256 asset 分数，阈值过滤 + top-K |
+| 4 | `reduce_anchor_topk_to_tiles.glsl` | `(1, 1, 1)` | `(1, 1, 1)` | 串行扫描 anchor top-K，累加 per-asset tile vote |
 
-### Pass A 伪代码: `score_anchor_asset_probe_groups.glsl`
+Dispatch 1 收集 anchor 后需 `submit()+sync()` 回读 `anchor_count`，确定后续 Pass A/B 的 dispatch 维度。
+
+### Dispatch 1 伪代码: `collect_sv_anchors.glsl`
+
+```glsl
+#version 450
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0, std430) restrict readonly  buffer SceneOcc    { float scene_occ[];    };
+layout(set = 0, binding = 1, std430) restrict readonly  buffer CollisionOcc{ float collision_occ[]; };
+layout(set = 0, binding = 2, std430) restrict readonly  buffer TargetOcc   { float target_occ[];   };
+layout(set = 0, binding = 3, std430) restrict readonly  buffer DirtyTiles  { uint  dirty_tile_ids[];};
+layout(set = 0, binding = 4, std430) restrict           buffer AnchorOut   { uvec4 anchors[];      };
+layout(set = 0, binding = 5, std430) restrict           buffer AnchorCount { uint  anchor_count;   };
+
+layout(push_constant, std430) uniform Params {
+    ivec4 grid_size_pad;          // xyz = grid dims, w = dirty_tile_count
+    ivec4 tile_grid_size_pad;     // xyz = tile grid dims, w = anchor_capacity
+    vec4  thresholds;             // x=max_scene, y=max_coll, z=min_support, w=min_target
+};
+
+shared int s_top_y[8][8];        // target_top: highest Y per (lx, lz) column
+
+// 每个 workgroup 处理一个 dirty tile (8×8×8 voxels)
+// ground: 逐 voxel 检查可放置条件 + support_below，atomic append
+// target_top: 用 shared atomicMax 找每列最高 target voxel，ly==0 线程 emit
+```
+
+### Pass A 伪代码: `score_anchor_asset_probes.glsl`
 
 ```glsl
 #version 450
@@ -736,11 +989,13 @@ layout(set = 0, binding = 6) readonly  buffer TargetOcc    { float target_occ[];
 layout(set = 0, binding = 7) readonly  buffer TargetColor  { uint  target_color[];      };
 layout(set = 0, binding = 8) writeonly buffer ScoresOut    { float asset_scores[];      };
 
-layout(push_constant) uniform Params {
-    ivec4 grid_size;       // xyz = grid dims, w = asset_count
-    vec4  voxel_size_inv;  // xyz = 1/voxel_size
+layout(push_constant, std430) uniform Params {
+    ivec4 grid_size_asset_count;  // xyz = grid dims, w = asset_count
+    vec4  voxel_size_inv;         // xyz = 1/voxel_size, w = unused
     uint  anchor_count;
     uint  anchor_grid_x;
+    float min_prefilter_score;
+    float _pad0;
 };
 
 const uint MAX_ASSETS      = 256u;
@@ -758,29 +1013,40 @@ shared float shared_score[16][16];
 shared float shared_weight[16][16];
 
 int voxel_index(ivec3 p) {
-    return p.x + p.y * grid_size.x + p.z * grid_size.x * grid_size.y;
+    return p.x + grid_size_asset_count.x * (p.z + grid_size_asset_count.z * p.y);  // XZY order
 }
 
 bool in_bounds(ivec3 p) {
-    return all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, grid_size.xyz));
+    return all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, grid_size_asset_count.xyz));
 }
 
 vec4 unpack_rgba8(uint packed) {
     return vec4(
-        float(packed & 0xFFu) / 255.0,
-        float((packed >> 8u) & 0xFFu) / 255.0,
-        float((packed >> 16u) & 0xFFu) / 255.0,
-        float((packed >> 24u) & 0xFFu) / 255.0
+        float((packed >> 24u) & 0xFFu) / 255.0,  // R
+        float((packed >> 16u) & 0xFFu) / 255.0,  // G
+        float((packed >>  8u) & 0xFFu) / 255.0,  // B
+        float((packed >>  0u) & 0xFFu) / 255.0   // A
     );
 }
 
+const float UNDERGROUND_OCC_THRESHOLD = 0.5;
+
 float eval_probe(ivec3 sp, uint flags, uint kind, vec4 e_col, float e_coll) {
     int idx = voxel_index(sp);
+    float s_scene = scene_occ[idx];
+
+    // Underground: only collision scoring contributes
+    if (s_scene >= UNDERGROUND_OCC_THRESHOLD) {
+        if ((flags & FLAG_COLLISION) == 0u) return 0.0;
+        if ((flags & FLAG_EMPTY) != 0u || kind == 1u) return 0.0;
+        if ((flags & FLAG_SUPPORT) != 0u || kind == 2u) return 0.0;
+        return clamp(1.0 - abs(target_occ[idx] - e_coll), 0.0, 1.0);
+    }
 
     // Empty / negative
     if ((flags & FLAG_EMPTY) != 0u || kind == 1u) {
         vec4 sc = unpack_rgba8(target_color[idx]);
-        return 1.0 - max(sc.a, max(target_occ[idx], scene_occ[idx]));
+        return 1.0 - max(sc.a, max(target_occ[idx], s_scene));
     }
 
     // Support
@@ -815,7 +1081,7 @@ void main() {
     uint asset_block = gl_WorkGroupID.z;
     uint asset_lane  = gl_LocalInvocationID.x; // 0..15
     uint probe_lane  = gl_LocalInvocationID.y; // 0..15
-    uint asset_count = min(uint(grid_size.w), MAX_ASSETS);
+    uint asset_count = min(uint(grid_size_asset_count.w), MAX_ASSETS);
     uint asset_id    = asset_block * ASSET_LANES + asset_lane;
 
     float lane_score  = 0.0;
@@ -847,6 +1113,11 @@ void main() {
 
                 ivec3 sp = anchor_pos + ivec3(round(offset * voxel_size_inv.xyz));
                 if (in_bounds(sp)) {
+                    // Underground: skip non-collision probes (weight = 0)
+                    float s_scene = scene_occ[voxel_index(sp)];
+                    if (s_scene >= UNDERGROUND_OCC_THRESHOLD && (flags & FLAG_COLLISION) == 0u) {
+                        continue;
+                    }
                     vec4 e_col = unpack_rgba8(rgba8);
                     float ps = eval_probe(sp, flags, kind, e_col, e_coll);
                     lane_score  += ps * weight;
@@ -873,7 +1144,7 @@ void main() {
 }
 ```
 
-### Pass B 伪代码: `select_anchor_quality_topk.glsl`
+### Pass B 伪代码: `select_anchor_topk.glsl`
 
 ```glsl
 #version 450
@@ -932,6 +1203,46 @@ void main() {
 }
 ```
 
+### Dispatch 4 伪代码: `reduce_anchor_topk_to_tiles.glsl`
+
+```glsl
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) restrict readonly  buffer AnchorBuf { uvec4 anchors[];      };
+layout(set = 0, binding = 1, std430) restrict readonly  buffer TopKIn    { uvec2 anchor_topk[];  };
+layout(set = 0, binding = 2, std430) restrict           buffer TileVotes { float tile_votes[];   };
+
+layout(push_constant, std430) uniform Params {
+    ivec4 tile_grid_size_pad;   // xyz = tile grid dims, w = tile_count
+    uint  anchor_count;
+    uint  asset_count;
+    uint  topk;
+    uint  _pad0;
+};
+
+// 串行扫描所有 anchor 的 top-K 结果
+// anchor.xyz → tile_id → tile_votes[asset_id * tile_count + tile_id] += score
+// 输出由 CPU 回读后按 asset 降序排列为 Vector3i tile 坐标列表
+```
+
+### GPU 宿主调度流程
+
+```text
+1. _pack_all_probes()      — 将所有 AutoObject probe 扁平打包为 GPU buffer
+2. Dispatch 1: collect     — dirty tiles → anchor buffer (atomic append)
+3. submit() + sync()       — 回读 anchor_count
+4. anchor_grid_x = ceil(sqrt(anchor_count))
+   anchor_grid_y = ceil(anchor_count / anchor_grid_x)
+5. Dispatch 2: score       — (anchor_grid_x, anchor_grid_y, ceil(asset_count/16))
+6. submit() + sync()
+7. Dispatch 3: topk        — (anchor_grid_x, anchor_grid_y, 1)
+8. submit() + sync()
+9. Dispatch 4: reduce      — (1, 1, 1)
+10. submit() + sync()      — 回读 tile_votes
+11. _decode_results()      — tile_votes → per-asset sorted Vector3i tile 列表
+```
+
 ---
 
 ## 与现有放置流程的关系
@@ -963,17 +1274,27 @@ SV/TargetSV → probe prefilter → autoobject_candidate_tiles → run_multi_ass
 
 ## 验收标准
 
+### 功能正确性
+
 - 从 `SV` 稳定提取 `ground` anchor。
 - 从 `TargetSV` 每个 dirty XZ column 稳定提取最高 `target_top` anchor。
 - `anchor_topk` 按 `anchor.id` 存储，不因同一 voxel 的不同 `anchor_kind` 互相覆盖。
 - `AutoObject.allowed_anchor_kinds` 能限制资产只参与匹配的 anchor 层。
 - 每个 anchor 遍历所有 `AutoObject.semantic_probes` 并计算分数。
-- Pass A 使用 `16×16` 线程组，结合每个 asset 的 `probe_count` 分配 probe lane，并在 sharedgroup 内完成 score/weight 统计。
-- Pass B 让每个 anchor voxel 检查自身 256 个 asset 的 probe 汇总评分，过滤低质量结果后输出 anchor 级 top-K。
 - 不同 asset 按 probe 匹配得到不同排序。
 - 空白/低目标区域不输出大量 asset。
 - 粗筛输出转换为 `autoobject_candidate_tiles` 限定 dispatch。
 - 最终放置由 footprint scoring 物理确认。
+
+### GPU 管线
+
+- 4 个 compute shader 编译成功，无 GLSL → SPIR-V 错误。
+- Dispatch 1 atomic counter 正确累计 anchor 数，不超过 `ANCHOR_CAPACITY`。
+- Pass A 使用 `16×16` 线程组，结合每个 asset 的 `probe_count` 分配 probe lane，并在 sharedgroup 内完成 score/weight 统计。
+- Pass B 让每个 anchor voxel 检查自身 256 个 asset 的 probe 汇总评分，过滤低质量结果后输出 anchor 级 top-K。
+- Dispatch 4 tile vote 聚合结果与 CPU 版一致（误差 < 1e-4）。
+- GPU 版 `run_probe_prefilter()` 输出的 `autoobject_candidate_tiles` 字典格式与 CPU 版兼容，可直接接入 `VoxelPlacementGenerator`。
+- `voxel_index` 使用 XZY 展开顺序，`unpack_rgba8` 使用 R=bits[24:31] 高位优先字节序。
 
 ---
 

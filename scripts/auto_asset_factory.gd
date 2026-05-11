@@ -141,7 +141,8 @@ static func create_voxel_descriptor(
 	collision_voxels: Array = [],
 	pivot_variants: Array = [],
 	semantic_probe_profile: Resource = null,
-	semantic_probe_density: float = 1.0
+	semantic_probe_density: float = 1.0,
+	context_sensing_radius: float = 0.0
 ) -> Resource:
 	var profile := create_voxel_profile(entry_color, entry_complexity, affected_bands, default_radius, collision_voxels)
 	var descriptor = load("res://scripts/auto_voxel_descriptor.gd").from_profile(profile, default_radius)
@@ -149,6 +150,7 @@ static func create_voxel_descriptor(
 		descriptor.set_pivot_variants(pivot_variants)
 	descriptor.semantic_probe_profile = semantic_probe_profile
 	descriptor.semantic_probe_density = clampf(semantic_probe_density, 0.1, 8.0)
+	descriptor.context_sensing_radius = maxf(context_sensing_radius, 0.0)
 	return descriptor
 
 

@@ -21,11 +21,12 @@ func rebuild_from_mesh(
 	fallback_color: Color = Color.WHITE,
 	fallback_complexity: float = 1.0,
 	density_override: float = -1.0,
-	world_scale: Vector3 = Vector3.ONE
+	world_scale: Vector3 = Vector3.ONE,
+	context_sensing_radius: float = 0.0
 ) -> Array[Dictionary]:
 	var d := density if density_override <= 0.0 else density_override
 	density = clampf(d, 0.1, 8.0)
-	probes = generate_from_mesh(mesh, affected_bands, collision_voxels, fallback_color, fallback_complexity, density, max_probe_count, world_scale)
+	probes = generate_from_mesh(mesh, affected_bands, collision_voxels, fallback_color, fallback_complexity, density, max_probe_count, world_scale, context_sensing_radius)
 	return duplicate_probe_array(probes)
 
 
@@ -49,7 +50,8 @@ static func generate_from_mesh(
 	fallback_complexity: float = 1.0,
 	density_value: float = 1.0,
 	max_count: int = 128,
-	world_scale: Vector3 = Vector3.ONE
+	world_scale: Vector3 = Vector3.ONE,
+	context_sensing_radius: float = 0.0
 ) -> Array[Dictionary]:
 	if mesh == null:
 		return [make_probe(Vector3.ZERO, fallback_color, 0.0, 1.0, FLAG_COLOR | FLAG_COMPLEXITY, "positive", "fallback")]
@@ -61,6 +63,9 @@ static func generate_from_mesh(
 	var fallback := fallback_color
 	fallback.a = clampf(fallback_complexity, 0.0, 1.0)
 	var target_count := mesh_probe_target_count(mesh, density_value, max_count)
+	if context_sensing_radius > 0.0:
+		var context_extra := clampi(ceili(context_sensing_radius * density_value * 4.0), 4, 32)
+		target_count = clampi(target_count + context_extra, target_count, max_count)
 	var triangles := collect_mesh_triangles(mesh)
 	var convex_points := collect_mesh_convex_points(mesh)
 	var band_ref := collect_mesh_vertices(mesh)
@@ -77,9 +82,13 @@ static func generate_from_mesh(
 	if not collision_voxels.is_empty():
 		candidates.append_array(_make_voxel_interior_candidates(collision_voxels, band_ref, affected_bands, fallback, fallback.a, density_value, world_scale))
 
-	# Priority 3 (lowest): Poisson disk surface sampling
+	# Priority 3: Poisson disk surface sampling
 	if not triangles.is_empty():
 		candidates.append_array(_make_poisson_surface_candidates(triangles, band_ref, affected_bands, fallback, fallback.a, density_value))
+
+	# Priority 4 (lowest): Context sensing probes beyond mesh AABB
+	if context_sensing_radius > 0.0:
+		candidates.append_array(_make_context_sensing_candidates(aabb, context_sensing_radius, fallback, fallback.a, density_value))
 
 	if candidates.is_empty():
 		return [make_probe(aabb.get_center(), fallback, 0.0, 1.0, FLAG_COLOR | FLAG_COMPLEXITY, "positive", "fallback")]
@@ -313,6 +322,57 @@ static func _world_scale_max_axis(world_scale: Vector3) -> float:
 	return maxf(maxf(absf(world_scale.x), absf(world_scale.y)), maxf(absf(world_scale.z), 0.0001))
 
 
+# --- Priority 4: Context sensing probes beyond mesh AABB ---
+
+static func _make_context_sensing_candidates(
+	mesh_aabb: AABB,
+	sensing_radius: float,
+	fallback_color: Color,
+	fallback_complexity: float,
+	density_value: float
+) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	if sensing_radius <= 0.0:
+		return result
+
+	var center := mesh_aabb.get_center()
+	var half_size := mesh_aabb.size * 0.5
+	var inner_r := maxf(maxf(half_size.x, half_size.z), 0.05)
+	var outer_r := inner_r + sensing_radius
+	var y_base := mesh_aabb.position.y
+	var y_top := mesh_aabb.position.y + mesh_aabb.size.y
+	var y_mid := (y_base + y_top) * 0.5
+
+	# Ring sample spacing based on density
+	var spacing := maxf(PROBE_WORLD_MIN_DISTANCE / sqrt(maxf(density_value, 0.1)), 0.15)
+	var ring_steps := clampi(ceili(TAU * outer_r / spacing), 6, 24)
+	var radial_steps := clampi(ceili((outer_r - inner_r) / spacing), 1, 4)
+	var y_levels: PackedFloat32Array = [y_base, y_mid]
+	if y_top - y_base > spacing * 1.5:
+		y_levels.append(y_top)
+
+	for y in y_levels:
+		var y_dist := absf(y - y_mid)
+		var y_decay := 1.0 / (1.0 + y_dist * 0.5)
+		for ri in range(1, radial_steps + 1):
+			var r := lerpf(inner_r, outer_r, float(ri) / float(radial_steps))
+			var r_decay := 1.0 / (1.0 + (r - inner_r) * 0.5)
+			for ai in range(ring_steps):
+				var angle := TAU * float(ai) / float(ring_steps)
+				var x := center.x + cos(angle) * r
+				var z := center.z + sin(angle) * r
+				var pos := Vector3(x, y, z)
+				var w := maxf(0.02, r_decay * y_decay * 0.35)
+				result.append(make_probe_candidate(
+					pos, fallback_color, 0.0, w,
+					FLAG_COLLISION | FLAG_COLOR,
+					"positive", "context",
+					w * 0.5, "context"
+				))
+
+	return result
+
+
 # --- Priority 3: Poisson disk surface sampling ---
 
 static func _make_poisson_surface_candidates(
@@ -449,13 +509,19 @@ static func select_layered_topk(
 		selected = select_with_min_distance(buckets, limit, min_distance * 0.5, selected, "voxel_interior")
 	if selected.size() < limit:
 		selected = select_with_min_distance(buckets, limit, 0.0, selected, "voxel_interior")
-	# Phase 3: Poisson surface (lowest priority)
+	# Phase 3: Poisson surface
 	if selected.size() < limit:
 		selected = select_with_min_distance(buckets, limit, min_distance, selected, "surface")
 	if selected.size() < limit:
 		selected = select_with_min_distance(buckets, limit, min_distance * 0.5, selected, "surface")
+	# Phase 4 (lowest priority): Context sensing probes
 	if selected.size() < limit:
-		selected = select_with_min_distance(buckets, limit, 0.0, selected)
+		selected = select_with_min_distance(buckets, limit, min_distance, selected, "context")
+	if selected.size() < limit:
+		selected = select_with_min_distance(buckets, limit, min_distance * 0.5, selected, "context")
+	# Final fallback: any remaining candidate
+	if selected.size() < limit:
+		selected = select_with_min_distance(buckets, limit, min_distance * 0.5, selected)
 	var result: Array[Dictionary] = []
 	for candidate in selected:
 		result.append(probe_from_candidate(candidate))
@@ -554,6 +620,8 @@ static func probe_candidate_priority(candidate: Dictionary) -> int:
 		return 2
 	if shape_source == "surface":
 		return 1
+	if shape_source == "context":
+		return 0
 	return 0
 
 

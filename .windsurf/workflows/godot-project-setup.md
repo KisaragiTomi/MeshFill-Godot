@@ -9,7 +9,7 @@ description: Create new Godot 4.x projects from a standardized template with one
 Run the setup script to create a new project from template:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$HOME\.cursor\skills\godot-project-setup\new-godot-project.ps1" -ProjectPath "<path>" -ProjectName "<name>" -Import
+powershell -ExecutionPolicy Bypass -File "D:\.aidata\skills\godot-project-setup\new-godot-project.ps1" -ProjectPath "<path>" -ProjectName "<name>" -Import
 ```
 
 Parameters:

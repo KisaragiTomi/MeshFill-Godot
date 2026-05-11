@@ -9,7 +9,7 @@ description: 引擎开发统一技能：软件路径解析、Godot 编译/运行
 所有路径通过环境变量管理，先运行脚本获取当前机器的实际值：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$HOME\.cursor\skills\engine-dev\resolve-paths.ps1"
+powershell -ExecutionPolicy Bypass -File "D:\.aidata\skills\engine-dev\resolve-paths.ps1"
 # -Validate: 检查路径存在性 | -Json: JSON 输出
 ```
 
@@ -143,7 +143,7 @@ rg "#\[compute\]" "$env:GODOT_SOURCE\servers\rendering\renderer_rd\shaders" --gl
 ## UE: 编译项目（仅编译，不启动）
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$HOME\.cursor\skills\engine-dev\build-ue.ps1"
+powershell -ExecutionPolicy Bypass -File "D:\.aidata\skills\engine-dev\build-ue.ps1"
 # 自动发现 .uproject，调用 Build.bat 编译 Editor Target
 # -ProjectDir "D:\path\to\project" : 指定项目路径（默认当前目录）
 # -Config Development|DebugGame    : 编译配置（默认 Development）
@@ -154,7 +154,7 @@ powershell -ExecutionPolicy Bypass -File "$HOME\.cursor\skills\engine-dev\build-
 ## UE: 启动项目
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$HOME\.cursor\skills\engine-dev\launch-ue.ps1"
+powershell -ExecutionPolicy Bypass -File "D:\.aidata\skills\engine-dev\launch-ue.ps1"
 # 自动发现 .uproject，用 UE_ROOT 找到 UnrealEditor.exe 并启动
 # -ProjectDir "D:\path\to\project" : 指定项目路径（默认当前目录）
 # -Game     : 以独立游戏模式启动
@@ -167,7 +167,7 @@ powershell -ExecutionPolicy Bypass -File "$HOME\.cursor\skills\engine-dev\launch
 ## UE: 调试项目（一键编译+启动+附加）
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$HOME\.cursor\skills\engine-dev\debug-ue.ps1"
+powershell -ExecutionPolicy Bypass -File "D:\.aidata\skills\engine-dev\debug-ue.ps1"
 # 自动: 生成调试配置(如缺失) → 编译 → 启动 UE Editor(-debug) → 打印 PID
 # -ProjectDir "D:\path\to\project" : 指定项目路径
 # -Config DebugGame : 使用 DebugGame 配置（更完整的调试符号）
@@ -180,7 +180,7 @@ powershell -ExecutionPolicy Bypass -File "$HOME\.cursor\skills\engine-dev\debug-
 ## UE: 调试配置生成（单独使用）
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$HOME\.cursor\skills\engine-dev\setup-ue-debug.ps1"
+powershell -ExecutionPolicy Bypass -File "D:\.aidata\skills\engine-dev\setup-ue-debug.ps1"
 # 生成 .vscode/launch.json + tasks.json + c_cpp_properties.json
 # -ProjectDir "D:\path\to\project" : 指定项目路径
 # -Force : 覆盖已有配置
