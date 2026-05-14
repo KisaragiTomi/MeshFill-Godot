@@ -16,6 +16,7 @@ var grid_origin: Vector3
 
 var scene_occupancy: PackedFloat32Array
 var collision_occupancy: PackedFloat32Array
+var auto_object_manager: AutoObjectManager
 
 var _tile_grid_size: Vector3i
 var _dirty_tiles: Dictionary = {}
@@ -238,15 +239,46 @@ func apply_multi_asset_output(multi_output: Dictionary) -> void:
 	_mark_all_dirty()
 
 
+func set_auto_object_manager(manager: AutoObjectManager) -> void:
+	auto_object_manager = manager
+
+
+func _settings_with_auto_object_manager(common_settings: Dictionary) -> Dictionary:
+	var settings := common_settings.duplicate(true)
+	if auto_object_manager != null and not settings.has("auto_object_manager"):
+		settings["auto_object_manager"] = auto_object_manager
+	return settings
+
+
+func _asset_defs_with_autoobject_metadata(asset_defs: Array, autoobjects: Array) -> Array:
+	var result: Array = []
+	for i in range(asset_defs.size()):
+		var asset_def: Dictionary = asset_defs[i].duplicate(true)
+		if i < autoobjects.size() and autoobjects[i] is AutoObject:
+			var auto_object := autoobjects[i] as AutoObject
+			if not asset_def.has("asset"):
+				asset_def["asset"] = auto_object
+			if not asset_def.has("object_type"):
+				asset_def["object_type"] = auto_object.object_type
+			if not asset_def.has("object_subtype"):
+				asset_def["object_subtype"] = auto_object.object_subtype
+			if not asset_def.has("min_spacing"):
+				asset_def["min_spacing"] = auto_object.min_spacing
+		result.append(asset_def)
+	return result
+
+
 func run_placement(
 	generator: RefCounted,
 	asset_defs: Array,
 	common_settings: Dictionary = {}
 ) -> Dictionary:
+	var settings := _settings_with_auto_object_manager(common_settings)
+	var routed_asset_defs := _asset_defs_with_autoobject_metadata(asset_defs, settings.get("autoobjects", []))
 	return generator.run_multi_asset(
 		scene_occupancy, collision_occupancy,
-		asset_defs, grid_size, voxel_size, grid_origin,
-		common_settings)
+		routed_asset_defs, grid_size, voxel_size, grid_origin,
+		settings)
 
 
 func run_placement_dirty(
@@ -261,12 +293,13 @@ func run_placement_dirty(
 		return {"asset_results": [], "total_placed": 0, "dirty_tile_count": 0}
 
 	var dirty_positions := get_dirty_tile_positions()
-	var settings := common_settings.duplicate(true)
+	var settings := _settings_with_auto_object_manager(common_settings)
 	settings["candidate_tiles"] = dirty_positions
 
+	var routed_asset_defs := _asset_defs_with_autoobject_metadata(asset_defs, settings.get("autoobjects", []))
 	var result: Dictionary = generator.run_multi_asset(
 		scene_occupancy, collision_occupancy,
-		asset_defs, grid_size, voxel_size, grid_origin,
+		routed_asset_defs, grid_size, voxel_size, grid_origin,
 		settings)
 
 	if result.is_empty():
@@ -311,14 +344,15 @@ func run_prefiltered_placement_dirty(
 		dirty_ids
 	)
 
-	var settings := common_settings.duplicate(true)
+	var settings := _settings_with_auto_object_manager(common_settings)
 	settings["candidate_tiles_by_asset"] = prefilter_result.get("autoobject_candidate_tiles", {})
 	settings["target_occupancy"] = target_occupancy
 	settings["target_color"] = target_color
 
+	var routed_asset_defs := _asset_defs_with_autoobject_metadata(asset_defs, autoobjects)
 	var result: Dictionary = generator.run_multi_asset(
 		scene_occupancy, collision_occupancy,
-		asset_defs, grid_size, voxel_size, grid_origin,
+		routed_asset_defs, grid_size, voxel_size, grid_origin,
 		settings)
 
 	if result.is_empty():

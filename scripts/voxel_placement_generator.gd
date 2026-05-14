@@ -82,6 +82,7 @@ var _pipeline_stamp: RID
 # common_settings may contain:
 #   global_quota (int, default -1 = unlimited): max total placements
 #   seed (int, default -1 = nondeterministic): RNG seed for weight shuffle
+#   auto_object_manager (AutoObjectManager): optional same-type exclusion gate
 # Returns: {asset_results: [{asset_index, results, world_results, result_count}],
 #           scene_occupancy_out, collision_occupancy_out, total_placed,
 #           processing_order: [original indices in execution order]}
@@ -154,6 +155,25 @@ func run_multi_asset(
 		if asset_def.has("min_distance_voxels"):
 			per_asset_settings["min_distance_voxels"] = float(asset_def.min_distance_voxels)
 		per_asset_settings["asset_index"] = orig_idx
+		var same_type_filter := _filter_candidate_tiles_by_same_type_exclusion(
+			per_asset_settings,
+			asset_def,
+			grid_size,
+			voxel_size,
+			grid_origin
+		)
+		if not same_type_filter.is_empty():
+			var kept_tiles: Array = same_type_filter.get("candidate_tiles", [])
+			if kept_tiles.is_empty():
+				result_by_index[orig_idx] = {
+					"asset_index": orig_idx,
+					"results": [], "world_results": [], "result_count": 0,
+					"stamp_deltas": [], "skipped_same_type_exclusion": true,
+					"same_type_exclusion": same_type_filter,
+				}
+				continue
+			per_asset_settings["candidate_tiles"] = kept_tiles
+			per_asset_settings["same_type_exclusion"] = same_type_filter
 
 		if global_quota >= 0:
 			var remaining := global_quota - total_placed
@@ -197,6 +217,7 @@ func run_multi_asset(
 			"stamp_deltas": best_gpu_out.get("stamp_deltas", []),
 			"pivot_variant": best_pivot,
 			"pivot_variant_count": pivot_variants.size(),
+			"same_type_exclusion": per_asset_settings.get("same_type_exclusion", {}),
 		}
 
 	var asset_results: Array[Dictionary] = []
@@ -259,6 +280,288 @@ static func _sort_asset_defs_by_priority_weight(
 
 		group_start = group_end
 	return result
+
+
+static func _filter_candidate_tiles_by_same_type_exclusion(
+	per_asset_settings: Dictionary,
+	asset_def: Dictionary,
+	grid_size: Vector3i,
+	voxel_size: Vector3,
+	grid_origin: Vector3
+) -> Dictionary:
+	var manager = per_asset_settings.get("auto_object_manager", null)
+	if manager == null or not manager.has_method("find_same_type_exclusion"):
+		return {}
+	if not bool(per_asset_settings.get("enable_same_type_exclusion", true)):
+		return {}
+
+	var type_info := _asset_type_info(asset_def)
+	var object_type := str(type_info.get("object_type", ""))
+	var object_subtype := str(type_info.get("object_subtype", ""))
+	if object_type.is_empty() and object_subtype.is_empty():
+		return {}
+
+	var candidate_spacing := _asset_min_spacing(asset_def, voxel_size)
+	if candidate_spacing <= 0.0:
+		return {}
+
+	var tile_counts := Vector3i(
+		ceili(float(grid_size.x) / float(TILE_SIZE)),
+		ceili(float(grid_size.y) / float(TILE_SIZE)),
+		ceili(float(grid_size.z) / float(TILE_SIZE))
+	)
+	var tile_count := tile_counts.x * tile_counts.y * tile_counts.z
+	var raw_tiles: Array = per_asset_settings.get("candidate_tiles", [])
+	if raw_tiles.is_empty():
+		for tile_id in range(tile_count):
+			raw_tiles.append(_candidate_tile_to_pos(tile_id, tile_counts))
+	var filtered_tiles: Array = []
+	var blocked_count := 0
+	var first_block: Dictionary = {}
+	var seen := {}
+	var manager_cell_size := float(manager.get("spatial_cell_size"))
+	var search_radius := float(per_asset_settings.get("same_type_exclusion_search_radius", -1.0))
+	var placement_search_radius := _normalize_search_radius(per_asset_settings.get("search_radius", Vector3i.ZERO))
+
+	for raw_tile in raw_tiles:
+		var tile_pos := _candidate_tile_to_pos(raw_tile, tile_counts)
+		var tile_id := _candidate_tile_to_id(tile_pos, tile_counts)
+		if tile_id < 0 or tile_id >= tile_count or seen.has(tile_id):
+			continue
+		seen[tile_id] = true
+		var conflict := _find_same_type_tile_exclusion(
+			manager,
+			tile_pos,
+			grid_size,
+			voxel_size,
+			grid_origin,
+			placement_search_radius,
+			object_type,
+			object_subtype,
+			candidate_spacing,
+			search_radius,
+			manager_cell_size
+		)
+		if bool(conflict.get("blocked", false)):
+			blocked_count += 1
+			if first_block.is_empty():
+				first_block = conflict.duplicate(true)
+				first_block["tile"] = tile_pos
+				first_block.erase("neighbor")
+			continue
+		filtered_tiles.append(tile_pos)
+
+	if blocked_count <= 0:
+		return {}
+	return {
+		"candidate_tiles": filtered_tiles,
+		"input_tile_count": seen.size(),
+		"kept_tile_count": filtered_tiles.size(),
+		"blocked_tile_count": blocked_count,
+		"object_type": object_type,
+		"object_subtype": object_subtype,
+		"candidate_min_spacing": candidate_spacing,
+		"search_radius": search_radius if search_radius >= 0.0 else "auto",
+		"first_block": first_block,
+	}
+
+
+static func _find_same_type_tile_exclusion(
+	manager: Object,
+	tile_pos: Vector3i,
+	grid_size: Vector3i,
+	voxel_size: Vector3,
+	grid_origin: Vector3,
+	placement_search_radius: Vector3i,
+	object_type: String,
+	object_subtype: String,
+	candidate_spacing: float,
+	search_radius: float,
+	manager_cell_size: float
+) -> Dictionary:
+	if not manager.has_method("query_same_type_objects"):
+		return {}
+
+	var bounds := _candidate_tile_world_xz_bounds(tile_pos, grid_size, voxel_size, grid_origin, placement_search_radius)
+	var center: Vector3 = bounds.center
+	var half_diag := Vector2(float(bounds.max_x) - center.x, float(bounds.max_z) - center.z).length()
+	var query_radius := search_radius
+	if query_radius < 0.0:
+		query_radius = half_diag + candidate_spacing + manager_cell_size
+	var neighbors: Array = manager.call(
+		"query_same_type_objects",
+		center,
+		query_radius,
+		object_type,
+		object_subtype,
+		true
+	)
+	for raw_neighbor in neighbors:
+		if not raw_neighbor is AutoObject:
+			continue
+		var neighbor := raw_neighbor as AutoObject
+		var record: Dictionary = manager.call("get_record_by_instance_id", neighbor.refresh_instance_id())
+		var neighbor_pos := neighbor.global_position if neighbor.is_inside_tree() else neighbor.position
+		var closest_x := clampf(neighbor_pos.x, float(bounds.min_x), float(bounds.max_x))
+		var closest_z := clampf(neighbor_pos.z, float(bounds.min_z), float(bounds.max_z))
+		var distance := Vector2(neighbor_pos.x, neighbor_pos.z).distance_to(Vector2(closest_x, closest_z))
+		var neighbor_spacing := maxf(float(record.get("min_spacing", neighbor.min_spacing)), neighbor.min_spacing)
+		var required_distance := candidate_spacing + neighbor_spacing
+		if required_distance <= 0.0:
+			continue
+		if distance < required_distance:
+			return {
+				"blocked": true,
+				"neighbor_instance_id": neighbor.refresh_instance_id(),
+				"neighbor_id": str(record.get("id", neighbor.auto_id)),
+				"distance": distance,
+				"required_distance": required_distance,
+				"candidate_min_spacing": candidate_spacing,
+				"neighbor_min_spacing": neighbor_spacing,
+				"object_type": object_type,
+				"object_subtype": object_subtype,
+			}
+	return {"blocked": false}
+
+
+static func _asset_type_info(asset_def: Dictionary) -> Dictionary:
+	var object_type := str(asset_def.get("object_type", ""))
+	var object_subtype := str(asset_def.get("object_subtype", asset_def.get("node_class", "")))
+	var asset = asset_def.get("asset", null)
+	if asset != null:
+		if object_type.is_empty():
+			object_type = str(asset.get("object_type")) if _object_has_property(asset, "object_type") else ""
+		if object_subtype.is_empty():
+			object_subtype = str(asset.get("object_subtype")) if _object_has_property(asset, "object_subtype") else ""
+		if object_type.is_empty() and asset is AutoRock:
+			object_type = "rock"
+		elif object_type.is_empty() and asset is AutoVegetationAsset:
+			object_type = "vegetation"
+		elif object_type.is_empty() and asset is AutoVegetation:
+			object_type = "vegetation"
+	if object_type.is_empty() and not object_subtype.is_empty():
+		object_type = "rock" if ["rock", "cliff"].has(object_subtype) else "vegetation"
+	return {
+		"object_type": object_type.strip_edges().to_lower(),
+		"object_subtype": object_subtype.strip_edges().to_lower(),
+	}
+
+
+static func _asset_min_spacing(asset_def: Dictionary, voxel_size: Vector3) -> float:
+	if asset_def.has("min_spacing"):
+		return maxf(float(asset_def.get("min_spacing", 0.0)), 0.0)
+	if asset_def.has("minimum_spacing"):
+		return maxf(float(asset_def.get("minimum_spacing", 0.0)), 0.0)
+	var asset = asset_def.get("asset", null)
+	if asset != null and _object_has_property(asset, "min_spacing"):
+		return maxf(float(asset.get("min_spacing")), 0.0)
+	if asset is AutoVegetationAsset:
+		return maxf(float((asset as AutoVegetationAsset).scatter_min_distance) * 0.5, 0.0)
+	return _collision_xz_radius_from_voxels(asset_def.get("collision_voxels", []), voxel_size)
+
+
+static func _collision_xz_radius_from_voxels(collision_voxels: Array, voxel_size: Vector3) -> float:
+	var result := 0.0
+	for raw_collision in collision_voxels:
+		if not raw_collision is Dictionary:
+			continue
+		var collision := raw_collision as Dictionary
+		var radius := maxf(float(collision.get("radius", 0.0)), 0.0)
+		var dilation := maxf(float(collision.get("dilation_radius", 0.0)), 0.0)
+		var offset := _vector3_from_value(collision.get("offset", collision.get("center", collision.get("position", Vector3.ZERO))), Vector3.ZERO)
+		var half_extents := _vector3_from_value(collision.get("half_extents", Vector3.ZERO), Vector3.ZERO)
+		if half_extents.length_squared() <= 0.0001:
+			var size := _vector3_from_value(collision.get("size", Vector3.ZERO), Vector3.ZERO)
+			if size.length_squared() > 0.0001:
+				half_extents = size * 0.5
+		var shape_radius := radius
+		if half_extents.length_squared() > 0.0001:
+			shape_radius = Vector2(absf(half_extents.x), absf(half_extents.z)).length()
+		result = maxf(result, Vector2(offset.x, offset.z).length() + shape_radius + dilation)
+	if result <= 0.0:
+		result = maxf(voxel_size.x, voxel_size.z)
+	return result
+
+
+static func _candidate_tile_to_pos(tile: Variant, tile_counts: Vector3i) -> Vector3i:
+	if tile is Vector3i:
+		return tile as Vector3i
+	if tile is Vector3:
+		var v := tile as Vector3
+		return Vector3i(int(v.x), int(v.y), int(v.z))
+	var tile_id := int(tile)
+	var tx := tile_id % tile_counts.x
+	var ty := (tile_id / tile_counts.x) % tile_counts.y
+	var tz := tile_id / (tile_counts.x * tile_counts.y)
+	return Vector3i(tx, ty, tz)
+
+
+static func _candidate_tile_world_center(
+	tile_pos: Vector3i,
+	grid_size: Vector3i,
+	voxel_size: Vector3,
+	grid_origin: Vector3
+) -> Vector3:
+	var vmin := Vector3i(
+		tile_pos.x * TILE_SIZE,
+		tile_pos.y * TILE_SIZE,
+		tile_pos.z * TILE_SIZE
+	)
+	var vmax := Vector3i(
+		mini(vmin.x + TILE_SIZE, grid_size.x),
+		mini(vmin.y + TILE_SIZE, grid_size.y),
+		mini(vmin.z + TILE_SIZE, grid_size.z)
+	)
+	var center_voxel := Vector3(
+		(float(vmin.x) + float(vmax.x)) * 0.5,
+		(float(vmin.y) + float(vmax.y)) * 0.5,
+		(float(vmin.z) + float(vmax.z)) * 0.5
+	)
+	return grid_origin + Vector3(
+		center_voxel.x * voxel_size.x,
+		center_voxel.y * voxel_size.y,
+		center_voxel.z * voxel_size.z
+	)
+
+
+static func _candidate_tile_world_xz_bounds(
+	tile_pos: Vector3i,
+	grid_size: Vector3i,
+	voxel_size: Vector3,
+	grid_origin: Vector3,
+	search_radius: Vector3i = Vector3i.ZERO
+) -> Dictionary:
+	var vmin := Vector3i(
+		maxi(tile_pos.x * TILE_SIZE - search_radius.x, 0),
+		maxi(tile_pos.y * TILE_SIZE - search_radius.y, 0),
+		maxi(tile_pos.z * TILE_SIZE - search_radius.z, 0)
+	)
+	var vmax := Vector3i(
+		mini((tile_pos.x + 1) * TILE_SIZE + search_radius.x, grid_size.x),
+		mini((tile_pos.y + 1) * TILE_SIZE + search_radius.y, grid_size.y),
+		mini((tile_pos.z + 1) * TILE_SIZE + search_radius.z, grid_size.z)
+	)
+	var min_x := grid_origin.x + float(vmin.x) * voxel_size.x
+	var max_x := grid_origin.x + float(vmax.x) * voxel_size.x
+	var min_z := grid_origin.z + float(vmin.z) * voxel_size.z
+	var max_z := grid_origin.z + float(vmax.z) * voxel_size.z
+	var center := Vector3((min_x + max_x) * 0.5, grid_origin.y, (min_z + max_z) * 0.5)
+	return {
+		"center": center,
+		"min_x": min_x,
+		"max_x": max_x,
+		"min_z": min_z,
+		"max_z": max_z,
+	}
+
+
+static func _object_has_property(object: Object, property_name: String) -> bool:
+	if object == null:
+		return false
+	for property in object.get_property_list():
+		if str((property as Dictionary).get("name", "")) == property_name:
+			return true
+	return false
 
 
 static func _weighted_shuffle(
@@ -941,7 +1244,7 @@ func _build_candidate_tile_ids(settings: Dictionary, tile_counts: Vector3i, tile
 	return ids
 
 
-func _candidate_tile_to_id(tile: Variant, tile_counts: Vector3i) -> int:
+static func _candidate_tile_to_id(tile: Variant, tile_counts: Vector3i) -> int:
 	if tile is Vector3i:
 		return tile.x + tile_counts.x * (tile.y + tile_counts.y * tile.z)
 	if tile is Vector3:
@@ -950,7 +1253,7 @@ func _candidate_tile_to_id(tile: Variant, tile_counts: Vector3i) -> int:
 	return int(tile)
 
 
-func _normalize_search_radius(value: Variant) -> Vector3i:
+static func _normalize_search_radius(value: Variant) -> Vector3i:
 	if value is Vector3i:
 		return Vector3i(
 			clampi(value.x, 0, 4),

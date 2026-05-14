@@ -1,0 +1,193 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="980" viewBox="0 0 1500 980" role="img" aria-labelledby="title desc">
+  <title id="title">AutoObject Asset Properties Map</title>
+  <desc id="desc">Class hierarchy, descriptor-owned asset defaults, AutoObject compatibility mirrors, voxel_record output, metadata projection, and AutoAssetFactory ownership for docs/core/asset-properties.md.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#ea580c"/>
+    </marker>
+    <filter id="shadow" x="-7%" y="-7%" width="114%" height="114%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.11"/>
+    </filter>
+    <style>
+      .bg { fill: #f8fafc; }
+      .grid { stroke: #e2e8f0; stroke-width: 1; }
+      .title { fill: #0f172a; font: 700 34px "Segoe UI", Arial, sans-serif; }
+      .subtitle { fill: #475569; font: 15px "Segoe UI", Arial, sans-serif; }
+      .lane-title { fill: #334155; font: 700 13px "Segoe UI", Arial, sans-serif; letter-spacing: .08em; }
+      .node-title { fill: #0f172a; font: 700 17px "Segoe UI", Arial, sans-serif; }
+      .label { fill: #334155; font: 13px "Segoe UI", Arial, sans-serif; }
+      .tiny { fill: #475569; font: 12px "Segoe UI", Arial, sans-serif; }
+      .mono { fill: #1e3a8a; font: 700 12px Consolas, "Cascadia Mono", monospace; }
+      .rule { fill: #0f172a; font: 700 14px "Segoe UI", Arial, sans-serif; }
+      .lane { stroke-width: 1.4; filter: url(#shadow); }
+      .lane-type { fill: #ecfeff; stroke: #06b6d4; }
+      .lane-resource { fill: #f0fdf4; stroke: #22c55e; }
+      .lane-field { fill: #eff6ff; stroke: #3b82f6; }
+      .lane-runtime { fill: #fff7ed; stroke: #f97316; }
+      .node { stroke-width: 1.6; filter: url(#shadow); }
+      .type { fill: #cffafe; stroke: #0891b2; }
+      .resource { fill: #dcfce7; stroke: #16a34a; }
+      .field { fill: #dbeafe; stroke: #2563eb; }
+      .runtime { fill: #ffedd5; stroke: #f97316; }
+      .record { fill: #fef3c7; stroke: #d97706; }
+      .meta { fill: #ccfbf1; stroke: #0f766e; }
+      .support { fill: #f1f5f9; stroke: #64748b; }
+      .warn { fill: #fee2e2; stroke: #dc2626; }
+      .edge { stroke: #334155; stroke-width: 2.1; fill: none; marker-end: url(#arrow); }
+      .edge-blue { stroke: #2563eb; stroke-width: 2.3; fill: none; marker-end: url(#arrow-blue); }
+      .edge-green { stroke: #059669; stroke-width: 2.3; fill: none; marker-end: url(#arrow-green); }
+      .edge-orange { stroke: #ea580c; stroke-width: 2.3; fill: none; marker-end: url(#arrow-orange); }
+      .edge-soft { stroke: #64748b; stroke-width: 2; fill: none; marker-end: url(#arrow); stroke-dasharray: 7 7; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1500" height="980"/>
+  <path class="grid" d="M0 120H1500M0 300H1500M0 480H1500M0 660H1500M0 840H1500"/>
+  <path class="grid" d="M380 120V930M745 120V930M1110 120V930"/>
+
+  <text class="title" x="48" y="58">AutoObject Asset Properties Map</text>
+  <text class="subtitle" x="48" y="88">Descriptor ownership, compatibility mirrors, and runtime records behind docs/core/asset-properties.md.</text>
+
+  <rect class="lane lane-type" x="32" y="132" width="328" height="688" rx="20" ry="20"/>
+  <rect class="lane lane-resource" x="392" y="132" width="328" height="688" rx="20" ry="20"/>
+  <rect class="lane lane-field" x="752" y="132" width="328" height="688" rx="20" ry="20"/>
+  <rect class="lane lane-runtime" x="1112" y="132" width="356" height="688" rx="20" ry="20"/>
+
+  <text class="lane-title" x="58" y="164">CLASS AND ASSET TYPES</text>
+  <text class="lane-title" x="418" y="164">DEFAULT DATA RESOURCES</text>
+  <text class="lane-title" x="778" y="164">AUTOOBJECT ACCESS / MIRRORS</text>
+  <text class="lane-title" x="1138" y="164">RUNTIME OUTPUTS</text>
+
+  <rect class="node type" x="58" y="190" width="276" height="94" rx="14" ry="14"/>
+  <text class="node-title" x="78" y="222">AutoObject</text>
+  <text class="label" x="78" y="246">runtime base node</text>
+  <text class="mono" x="78" y="266">scripts/auto_object.gd</text>
+
+  <rect class="node type" x="50" y="318" width="140" height="132" rx="14" ry="14"/>
+  <text class="node-title" x="66" y="350">AutoRock</text>
+  <text class="label" x="66" y="374">typed class</text>
+  <text class="label" x="66" y="394">rock asset</text>
+  <text class="mono" x="66" y="420">AutoCliffRock</text>
+  <text class="mono" x="66" y="438">no subtype</text>
+
+  <rect class="node type" x="202" y="318" width="140" height="172" rx="14" ry="14"/>
+  <text class="node-title" x="218" y="350">AutoVegetation</text>
+  <text class="label" x="218" y="374">typed class</text>
+  <text class="label" x="218" y="394">vegetation</text>
+  <text class="mono" x="218" y="420">AutoGrass</text>
+  <text class="mono" x="218" y="438">AutoBush</text>
+  <text class="mono" x="218" y="456">AutoMidstoryTree</text>
+  <text class="mono" x="218" y="474">AutoCanopyTree</text>
+
+  <rect class="node support" x="58" y="614" width="276" height="126" rx="14" ry="14"/>
+  <text class="node-title" x="78" y="646">AutoVegetationAsset</text>
+  <text class="label" x="78" y="670">Resource definition</text>
+  <text class="label" x="78" y="692">can instantiate vegetation node</text>
+  <text class="mono" x="78" y="714">instantiate_vegetation()</text>
+
+  <path class="edge" d="M196 284 V302 H120 V318"/>
+  <path class="edge" d="M196 284 V302 H272 V318"/>
+  <path class="edge-soft" d="M334 677 C370 677 370 530 392 530"/>
+
+  <rect class="node resource" x="418" y="190" width="276" height="118" rx="14" ry="14"/>
+  <text class="node-title" x="438" y="222">AutoVoxelDescriptor</text>
+  <text class="label" x="438" y="246">primary asset semantics struct</text>
+  <text class="mono" x="438" y="268">color, complexity, bands</text>
+  <text class="mono" x="438" y="288">collision, pivots, probes</text>
+
+  <rect class="node resource" x="418" y="342" width="276" height="104" rx="14" ry="14"/>
+  <text class="node-title" x="438" y="374">AutoVoxelProfile</text>
+  <text class="label" x="438" y="398">shared lightweight profile</text>
+  <text class="mono" x="438" y="420">normalize_* helpers</text>
+
+  <rect class="node resource" x="418" y="480" width="276" height="104" rx="14" ry="14"/>
+  <text class="node-title" x="438" y="512">SemanticProbeProfile</text>
+  <text class="label" x="438" y="536">stored or generated probes</text>
+  <text class="mono" x="438" y="558">density + context radius</text>
+
+  <rect class="node support" x="418" y="618" width="276" height="106" rx="14" ry="14"/>
+  <text class="node-title" x="438" y="650">Source Mesh Inputs</text>
+  <text class="label" x="438" y="674">mesh / source_mesh</text>
+  <text class="label" x="438" y="696">source_mesh_path</text>
+
+  <path class="edge-green" d="M556 308 V342"/>
+  <path class="edge-green" d="M556 446 V480"/>
+
+  <rect class="node field" x="778" y="178" width="276" height="108" rx="14" ry="14"/>
+  <text class="node-title" x="798" y="210">Identity And Type</text>
+  <text class="mono" x="798" y="234">auto_id, instance_id</text>
+  <text class="mono" x="798" y="254">auto_source, visual_layer</text>
+  <text class="mono" x="798" y="274">object_type disabled</text>
+
+  <rect class="node field" x="778" y="318" width="276" height="122" rx="14" ry="14"/>
+  <text class="node-title" x="798" y="350">Descriptor Access</text>
+  <text class="mono" x="798" y="374">voxel_descriptor</text>
+  <text class="mono" x="798" y="394">legacy color / complexity</text>
+  <text class="mono" x="798" y="414">legacy bands / collision mirrors</text>
+
+  <rect class="node field" x="778" y="472" width="276" height="124" rx="14" ry="14"/>
+  <text class="node-title" x="798" y="504">Placement Anchors</text>
+  <text class="mono" x="798" y="528">min_spacing, bound_min_length</text>
+  <text class="mono" x="798" y="548">legacy pivot mirrors</text>
+  <text class="mono" x="798" y="568">allowed_anchor_kinds</text>
+
+  <rect class="node field" x="778" y="628" width="276" height="128" rx="14" ry="14"/>
+  <text class="node-title" x="798" y="660">Probe / SDF Extension</text>
+  <text class="mono" x="798" y="684">legacy probe mirrors</text>
+  <text class="mono" x="798" y="704">semantic_probe_density</text>
+  <text class="mono" x="798" y="724">context_sensing_radius</text>
+  <text class="mono" x="798" y="744">sdf_stamp / sdf_opacity</text>
+
+  <path class="edge-blue" d="M334 237 C370 237 370 114 736 114 C764 114 764 232 778 232"/>
+  <path class="edge-green" d="M694 249 C728 249 728 379 778 379"/>
+  <path class="edge-green" d="M694 394 H736 V379 H778"/>
+  <path class="edge-green" d="M694 532 H736 V687 H778"/>
+  <path class="edge" d="M694 671 H736 V534 H778"/>
+
+  <rect class="node runtime" x="1138" y="178" width="304" height="114" rx="14" ry="14"/>
+  <text class="node-title" x="1158" y="210">Configure Methods</text>
+  <text class="mono" x="1158" y="234">configure_auto_object()</text>
+  <text class="mono" x="1158" y="254">configure_rock()</text>
+  <text class="mono" x="1158" y="274">configure_vegetation()</text>
+
+  <rect class="node record" x="1138" y="324" width="304" height="132" rx="14" ry="14"/>
+  <text class="node-title" x="1158" y="356">voxel_record</text>
+  <text class="label" x="1158" y="380">runtime placement/source record</text>
+  <text class="mono" x="1158" y="402">position, rotation, scale</text>
+  <text class="mono" x="1158" y="422">SenceLayerVoxel</text>
+  <text class="mono" x="1158" y="442">source_voxel_type, producer_stage</text>
+
+  <rect class="node meta" x="1138" y="488" width="304" height="112" rx="14" ry="14"/>
+  <text class="node-title" x="1158" y="520">Metadata Projection</text>
+  <text class="label" x="1158" y="544">id, type, probe count, handles</text>
+  <text class="tiny" x="1158" y="564">debug and lookup index only</text>
+  <text class="mono" x="1158" y="584">set_meta("voxel_record", record)</text>
+
+  <rect class="node runtime" x="1138" y="632" width="304" height="112" rx="14" ry="14"/>
+  <text class="node-title" x="1158" y="664">AutoAssetFactory</text>
+  <text class="label" x="1158" y="688">creates profile, descriptor, assets</text>
+  <text class="mono" x="1158" y="710">make_profile_scene_voxel_record()</text>
+
+  <path class="edge-orange" d="M1054 232 H1138"/>
+  <path class="edge-orange" d="M1054 379 H1090 V390 H1138"/>
+  <path class="edge-orange" d="M1054 534 H1090 V390 H1138"/>
+  <path class="edge-orange" d="M1054 687 H1090 V390 H1138"/>
+  <path class="edge" d="M1290 292 V324"/>
+  <path class="edge" d="M1290 456 V488"/>
+  <path class="edge-soft" d="M1290 632 V600"/>
+  <path class="edge-green" d="M1138 688 C1088 688 1088 390 1054 390"/>
+
+  <rect class="node warn" x="78" y="842" width="1344" height="90" rx="18" ry="18"/>
+  <text class="rule" x="108" y="876">Ownership rule:</text>
+  <text class="label" x="228" y="876">AutoVoxelDescriptor owns asset defaults; AutoObject mirrors legacy export/config fields; voxel_record owns runtime placement and source voxel data.</text>
+  <text class="tiny" x="108" y="906">When adding a field, decide whether it belongs to defaults, runtime record, source delta, TargetSV guidance, final SceneVoxel state, or cache/query metadata.</text>
+</svg>

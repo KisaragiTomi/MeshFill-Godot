@@ -113,7 +113,6 @@ func score_autoobject(
 	if probes.is_empty():
 		return -INF
 	var total_score := 0.0
-	var total_weight := 0.0
 	var anchor_pos: Vector3i = anchor.get("voxel_pos", Vector3i.ZERO)
 	for raw_probe in probes:
 		if not raw_probe is Dictionary:
@@ -135,8 +134,7 @@ func score_autoobject(
 				continue
 		var probe_score := score_probe(sample_pos, probe, gvf, target_occupancy, target_color)
 		total_score += probe_score * weight
-		total_weight += weight
-	return total_score / maxf(total_weight, 0.000001)
+	return total_score
 
 
 func score_probe(

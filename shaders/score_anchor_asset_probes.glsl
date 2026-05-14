@@ -87,7 +87,6 @@ const float UNDERGROUND_OCC_THRESHOLD = 0.5;
 // --- Shared memory ---
 
 shared float shared_score[16][16];
-shared float shared_weight[16][16];
 
 // --- Helpers ---
 
@@ -167,7 +166,6 @@ void main() {
     uint asset_id    = asset_block * ASSET_LANES + asset_lane;
 
     float lane_score  = 0.0;
-    float lane_weight = 0.0;
 
     if (anchor_id < anchor_count && asset_id < asset_count) {
         uvec4 anchor = anchors[anchor_id];
@@ -197,36 +195,31 @@ void main() {
                 uint  kind   = floatBitsToUint(d1.w);
 
                 ivec3 sp = anchor_pos + ivec3(round(offset * voxel_size_inv.xyz));
-                if (in_bounds(sp)) {
-                    // Underground early-skip for non-collision probes
-                    float s_scene = scene_occ[voxel_index(sp)];
-                    if (s_scene >= UNDERGROUND_OCC_THRESHOLD && (flags & FLAG_COLLISION) == 0u) {
-                        continue;
-                    }
-                    vec4 e_col = unpack_rgba8(rgba8);
-                    float ps = eval_probe(sp, flags, kind, e_col, e_coll);
-                    lane_score  += ps * weight;
-                    lane_weight += weight;
+                sp = clamp(sp, ivec3(0), grid_size_asset_count.xyz - ivec3(1));
+                // Underground early-skip for non-collision probes
+                float s_scene = scene_occ[voxel_index(sp)];
+                if (s_scene >= UNDERGROUND_OCC_THRESHOLD && (flags & FLAG_COLLISION) == 0u) {
+                    continue;
                 }
+                vec4 e_col = unpack_rgba8(rgba8);
+                float ps = eval_probe(sp, flags, kind, e_col, e_coll);
+                lane_score  += ps * weight;
             }
         }
     }
 
     // Write per-lane results to shared memory
     shared_score[asset_lane][probe_lane]  = lane_score;
-    shared_weight[asset_lane][probe_lane] = lane_weight;
     barrier();
 
     // Reduce across probe lanes (probe_lane == 0 accumulates)
     if (probe_lane == 0u && anchor_id < anchor_count && asset_id < MAX_ASSETS) {
         float sum_score  = 0.0;
-        float sum_weight = 0.0;
         for (uint py = 0u; py < PROBE_LANES; py++) {
             sum_score  += shared_score[asset_lane][py];
-            sum_weight += shared_weight[asset_lane][py];
         }
         float final_score = asset_id < asset_count
-            ? sum_score / max(sum_weight, 1e-6)
+            ? sum_score
             : -1.0;
         asset_scores[anchor_id * MAX_ASSETS + asset_id] = final_score;
     }

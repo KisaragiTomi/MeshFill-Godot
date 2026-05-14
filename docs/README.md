@@ -2,38 +2,55 @@
 
 This folder keeps MeshFill architecture notes, data schemas, pipeline plans, generated diagrams, and historical migration notes out of the project root. The root [`../README.md`](../README.md) is the GitHub entry page; this file is the detailed documentation index.
 
+## Folder Map
+
+| Folder | Purpose |
+| --- | --- |
+| [`core/`](core/) | Framework ownership, asset fields, source voxel state, and asset authoring notes |
+| [`placement/`](placement/) | TargetSV, probe prefiltering, semantic routing, placement, and exclusion-field plans |
+| [`graphs/`](graphs/) | SVG, GraphML, and rendered QA previews |
+| [`history/`](history/) | Completed migration records and temporarily discarded design notes |
+
 ## Core Framework
 
 | File | Purpose |
 | --- | --- |
-| `meshfill-framework.md` | MeshFill ownership model, runtime flow, current modules, and framework rules |
-| `asset-properties.md` | `AutoObject`, persistent asset fields, `voxel_record`, source voxel, and `SceneVoxel` schema notes |
-| `scene-voxel-field-system.md` | Source deltas, final `SceneVoxel`, and `GlobalVoxelField` cache design |
-| `auto-asset-scripting.md` | Scripted rock and vegetation asset creation through Godot headless tools |
-| `asset-semantic-probes.md` | Semantic probe generation and asset-side probe conventions |
+| [`core/meshfill-framework.md`](core/meshfill-framework.md) | MeshFill ownership model, runtime flow, current modules, and framework rules |
+| [`core/asset-properties.md`](core/asset-properties.md) | Current `AutoObject`, descriptor, profile, and metadata field reference |
+| [`core/scene-voxel-field-system.md`](core/scene-voxel-field-system.md) | Runtime `voxel_record`, source deltas, final `SceneVoxel`, and `GlobalVoxelField` cache design |
+| [`core/auto-asset-scripting.md`](core/auto-asset-scripting.md) | Scripted rock and vegetation asset creation through Godot headless tools |
+| [`core/asset-semantic-probes.md`](core/asset-semantic-probes.md) | Asset-side semantic probes used by prefilter and candidate-only route validation |
 
 ## Placement And Target Fields
 
 | File | Purpose |
 | --- | --- |
-| `meshfill-rock-placement-flow.md` | Rock placement compute pipeline walkthrough |
-| `vegetation-pipeline.md` | Vegetation occupancy, voxel, scatter, and validation pipeline notes |
-| `target-scene-voxel-projection.md` | `TargetSceneVoxel` canvas, stamp model, VDB import plan, projection cache, and current GPU persistence |
-| `target-scene-voxel-current.svg` | Current TargetSV GPU generation, persistence, and debug display flow |
-| `autoobject-probe-prefilter.md` | AutoObject semantic probe prefilter, CPU/GPU responsibilities, anchor collection, and candidate tile output |
-| `voxel-semantic-routing.md` | Candidate asset routing and tile routing after upstream prefilter |
-| `voxel-semantic-routing-todo.md` | Deferred semantic routing and MLP-related work |
-| `voxel-3d-migration-plan.md` | Historical 3D voxel migration checklist |
+| [`placement/meshfill-rock-placement-flow.md`](placement/meshfill-rock-placement-flow.md) | Rock placement compute pipeline walkthrough |
+| [`placement/target-scene-voxel-projection.md`](placement/target-scene-voxel-projection.md) | `TargetSceneVoxel` canvas, stamp model, planned VDB import, projection cache, and current GPU persistence |
+| [`placement/collision-sdf-exclusion-field.md`](placement/collision-sdf-exclusion-field.md) | Draft collision SDF / exclusion field design where propagation radius is driven by `AutoObject.min_spacing`; text still needs mojibake recovery |
+| [`placement/autoobject-probe-prefilter.md`](placement/autoobject-probe-prefilter.md) | AutoObject semantic probe prefilter, CPU/GPU responsibilities, anchor collection, and candidate tile output |
+| [`placement/voxel-semantic-routing.md`](placement/voxel-semantic-routing.md) | Candidate asset routing and tile routing after upstream prefilter |
+| [`placement/voxel-semantic-routing-todo.md`](placement/voxel-semantic-routing-todo.md) | Current candidate-routing TODOs; excludes old full-asset semantic lookup tasks |
 
 ## Diagrams
 
 | Path | Purpose |
 | --- | --- |
-| `graphs/README.md` | Graph inventory and editing notes |
-| `graphs/meshfill_current_framework.svg` | Current framework overview |
-| `graphs/meshfill_compute_shader_3d_placement.svg` | Compute shader 3D placement flow |
-| `graphs/autoobject_probe_scoring_logic.svg` | AutoObject probe scoring logic |
-| `voxel-semantic-routing.svg` | Semantic routing overview |
+| [`graphs/README.md`](graphs/README.md) | Graph inventory and editing notes |
+| [`graphs/autoobject_system.svg`](graphs/autoobject_system.svg) | AutoObject ownership, placement, record, and query boundary overview |
+| [`graphs/autoobject_asset_properties.svg`](graphs/autoobject_asset_properties.svg) | AutoObject class, resource, field, record, and metadata property map |
+| [`graphs/meshfill_current_framework.svg`](graphs/meshfill_current_framework.svg) | Current framework overview |
+| [`graphs/meshfill_compute_shader_3d_placement.svg`](graphs/meshfill_compute_shader_3d_placement.svg) | Compute shader 3D placement flow |
+| [`graphs/autoobject_probe_scoring_logic.svg`](graphs/autoobject_probe_scoring_logic.svg) | AutoObject probe scoring logic |
+| [`graphs/target-scene-voxel-current.svg`](graphs/target-scene-voxel-current.svg) | Current TargetSV GPU generation, persistence, and debug display flow |
+| [`graphs/voxel-semantic-routing.svg`](graphs/voxel-semantic-routing.svg) | Semantic routing overview |
+
+## History
+
+| File | Purpose |
+| --- | --- |
+| [`history/voxel-3d-migration-plan.md`](history/voxel-3d-migration-plan.md) | Completed historical 3D voxel placement implementation record |
+| [`history/vegetation-pipeline-暂时丢弃.md`](history/vegetation-pipeline-%E6%9A%82%E6%97%B6%E4%B8%A2%E5%BC%83.md) | Temporarily discarded vegetation pipeline note |
 
 ## Documentation Rules
 

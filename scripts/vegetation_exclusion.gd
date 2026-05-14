@@ -372,6 +372,43 @@ func _normalize_collision_voxels(collision_voxels: Array, base_px: Vector2i = Ve
 	return result
 
 
+func _make_source_collision_voxels(base_px: Vector2i, collision_voxels: Array, rec: Dictionary = {}) -> Array[Dictionary]:
+	var updated: Array[Dictionary] = []
+	var source_type := _source_type_from_record(rec)
+	if source_type == "TargetSceneVoxel":
+		return updated
+	var xz_res := _base_res
+	var voxel_px := base_px
+	if not _volume.is_empty():
+		xz_res = int(_volume.get("xz_res", _base_res))
+		voxel_px = _volume_px_from_base(base_px, xz_res)
+	var layers := _normalize_collision_voxels(collision_voxels, base_px)
+	for layer in layers:
+		var value := clampf(float(layer.get("value", 1.0)), 0.0, 1.0)
+		var radius_px := _collision_radius_px(layer)
+		var source_layer := layer.duplicate(true)
+		source_layer["type"] = "CollisionVoxel"
+		source_layer["occupied"] = value > VOXEL_OCCUPIED_EPSILON
+		source_layer["value"] = value
+		source_layer["base_pixel"] = base_px
+		source_layer["voxel_xz"] = voxel_px
+		source_layer["volume_xz_resolution"] = xz_res
+		source_layer["radius_px"] = radius_px
+		source_layer["collision_shape"] = str(layer.get("shape", "cylinder"))
+		source_layer["collision_radius"] = layer.get("radius", 0.0)
+		source_layer["effective_radius"] = layer.get("effective_radius", 0.0)
+		source_layer["source_voxel_type"] = source_type
+		source_layer["source_kind"] = _source_kind_from_record(rec)
+		source_layer["producer_stage"] = _producer_stage_from_record(rec)
+		source_layer["record_id"] = str(rec.get("id", ""))
+		source_layer["auto_object_id"] = str(rec.get("auto_object_id", rec.get("auto_id", rec.get("id", ""))))
+		source_layer["auto_instance_id"] = int(rec.get("auto_instance_id", rec.get("instance_id", 0)))
+		source_layer["instance_mesh_id"] = int(rec.get("instance_mesh_id", rec.get("mesh_instance_id", rec.get("instance_id", 0))))
+		source_layer["collision_buffer_applied"] = false
+		updated.append(source_layer)
+	return updated
+
+
 func _collision_area_blocked(base_px: Vector2i, collision_voxels: Array) -> bool:
 	var layers := _normalize_collision_voxels(collision_voxels, base_px)
 	if layers.is_empty():
@@ -447,6 +484,10 @@ func _stamp_collision_volume(base_px: Vector2i, radius_px: int, value: float, re
 					"collision_shape": str(layer.get("shape", "cylinder")),
 					"collision_radius": layer.get("radius", 0.0),
 					"effective_radius": layer.get("effective_radius", 0.0),
+					"source_voxel_type": str(layer.get("source_voxel_type", rec.get("source_voxel_type", ""))),
+					"source_kind": str(layer.get("source_kind", rec.get("source_kind", ""))),
+					"producer_stage": str(layer.get("producer_stage", rec.get("producer_stage", ""))),
+					"record_id": str(layer.get("record_id", rec.get("id", ""))),
 					"auto_object_id": str(rec.get("auto_object_id", rec.get("auto_id", rec.get("id", "")))),
 					"auto_instance_id": int(rec.get("auto_instance_id", rec.get("instance_id", 0))),
 					"instance_mesh_id": int(rec.get("instance_mesh_id", rec.get("mesh_instance_id", 0))),
@@ -491,6 +532,43 @@ func _stamp_collision_voxels(base_px: Vector2i, collision_voxels: Array, rec: Di
 		if not stamped.is_empty():
 			updated.append(stamped)
 	return updated
+
+
+func _clear_collision_cache() -> void:
+	_collision_occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
+	if _volume.is_empty():
+		return
+	var xz_res: int = _volume.xz_res
+	var img := Image.create(xz_res, xz_res, false, Image.FORMAT_RF)
+	img.fill(Color(0.0, 0.0, 0.0, 0.0))
+	_volume["collision_occupancy"] = img
+	_volume["collision_voxels"] = {}
+
+
+func _rebuild_collision_cache_from_scene_voxels(scene_voxels: Dictionary) -> void:
+	_clear_collision_cache()
+	if _volume.is_empty():
+		return
+	var stamped_records: Dictionary = {}
+	for key in scene_voxels.keys():
+		var scene_voxel = scene_voxels[key]
+		if not scene_voxel is Dictionary:
+			continue
+		var voxel := scene_voxel as Dictionary
+		var collision_layers: Array = voxel.get("collision_voxels", [])
+		if collision_layers.is_empty():
+			continue
+		var base_px = voxel.get("base_pixel", voxel.get("voxel_xz", Vector2i.ZERO))
+		if not base_px is Vector2i:
+			continue
+		var stamp_key := str(voxel.get("record_id", ""))
+		if stamp_key.is_empty():
+			stamp_key = str(key)
+		stamp_key = "%s:%d:%d" % [stamp_key, base_px.x, base_px.y]
+		if stamped_records.has(stamp_key):
+			continue
+		stamped_records[stamp_key] = true
+		_stamp_collision_voxels(base_px, collision_layers, voxel)
 
 
 func _stamp_occupancy_channel(base_px: Vector2i, channel: int, radius_px: int, complexity: float) -> void:
@@ -636,7 +714,16 @@ func scatter(
 
 		placed_positions.append(pos2)
 		_stamp_occupancy(cpx, profile)
-		var inst_collision_voxels := _stamp_collision_voxels(cpx, collision_voxels)
+		var mesh_id := "%s_%d" % [veg_type, _mesh_voxel_records.size()]
+		var source_collision_record := {
+			"id": mesh_id,
+			"type": veg_type,
+			"source_voxel_type": "AutoSceneVoxel",
+			"source_kind": "scatter",
+			"producer_stage": "vegetation_scatter",
+		}
+		_stamp_collision_voxels(cpx, collision_voxels, source_collision_record)
+		var inst_collision_voxels := _make_source_collision_voxels(cpx, collision_voxels, source_collision_record)
 
 		var terrain_h := max_height - scene_depth_img.get_pixelv(cpx).r
 		var scale_val := randf_range(max_scale * 0.4, max_scale)
@@ -670,7 +757,6 @@ func scatter(
 			inst_color /= float(inst_bands.size())
 			inst_color.a = inst_complexity
 
-		var mesh_id := "%s_%d" % [veg_type, _mesh_voxel_records.size()]
 		var voxel_record := _register_mesh_voxel_record(_make_mesh_voxel_record(
 			mesh_id,
 			veg_type,
@@ -765,7 +851,16 @@ func scatter_from_mask(
 
 		placed_positions.append(pos2)
 		_stamp_occupancy(cpx, profile)
-		var inst_collision_voxels := _stamp_collision_voxels(cpx, collision_voxels)
+		var mesh_id := "%s_%d" % [veg_type, _mesh_voxel_records.size()]
+		var source_collision_record := {
+			"id": mesh_id,
+			"type": veg_type,
+			"source_voxel_type": "AutoSceneVoxel",
+			"source_kind": "scatter",
+			"producer_stage": "vegetation_scatter",
+		}
+		_stamp_collision_voxels(cpx, collision_voxels, source_collision_record)
+		var inst_collision_voxels := _make_source_collision_voxels(cpx, collision_voxels, source_collision_record)
 
 		var terrain_h := max_height - scene_depth_img.get_pixelv(cpx).r
 		var scale_val := randf_range(max_scale * 0.4, max_scale)
@@ -798,7 +893,6 @@ func scatter_from_mask(
 			inst_color /= float(inst_bands.size())
 			inst_color.a = inst_complexity
 
-		var mesh_id := "%s_%d" % [veg_type, _mesh_voxel_records.size()]
 		var voxel_record := _register_mesh_voxel_record(_make_mesh_voxel_record(
 			mesh_id,
 			veg_type,
@@ -1263,6 +1357,10 @@ func _make_source_scene_voxel(
 	source_voxel["generation_tick"] = source_write_tick
 	source_voxel["read_tick"] = clampi(int(record.get("read_tick", max_read_tick)), 0, max_read_tick)
 	source_voxel["write_tick"] = source_write_tick
+	if source_type != "TargetSceneVoxel":
+		var collision_layers: Array = record.get("collision_voxels", [])
+		if not collision_layers.is_empty():
+			source_voxel["collision_voxels"] = collision_layers.duplicate(true)
 	if source_type == "BrushSceneVoxel":
 		source_voxel["brush_stroke_id"] = str(record.get("brush_stroke_id", record.get("id", "")))
 		source_voxel["auto_mix"] = clampf(float(record.get("auto_mix", 0.0)), 0.0, 1.0)
@@ -1621,6 +1719,9 @@ func apply_mesh_voxel_record(record: Dictionary, defer_blend: bool = false, gene
 	var updated_layers: Array[Dictionary] = []
 	var applied_channels: Array[int] = []
 	var rec_base_px: Vector2i = rec.get("base_pixel", Vector2i.ZERO)
+	var collision_layers: Array = rec.get("collision_voxels", [])
+	var updated_collision_layers := _make_source_collision_voxels(rec_base_px, collision_layers, rec)
+	rec["collision_voxels"] = updated_collision_layers
 
 	for layer_raw in layers:
 		if not layer_raw is Dictionary:
@@ -1667,9 +1768,6 @@ func apply_mesh_voxel_record(record: Dictionary, defer_blend: bool = false, gene
 		if not applied_channels.has(ch):
 			applied_channels.append(ch)
 
-	var collision_layers: Array = rec.get("collision_voxels", [])
-	var updated_collision_layers := _stamp_collision_voxels(rec_base_px, collision_layers, rec)
-
 	rec["base_pixel"] = rec_base_px
 	if _volume.is_empty():
 		rec["voxel_xz"] = rec_base_px
@@ -1682,7 +1780,8 @@ func apply_mesh_voxel_record(record: Dictionary, defer_blend: bool = false, gene
 	rec["collision_voxels"] = updated_collision_layers
 	rec["height_buffer_applied"] = not applied_channels.is_empty()
 	rec["height_buffer_channels"] = applied_channels
-	rec["collision_buffer_applied"] = not updated_collision_layers.is_empty()
+	rec["collision_source_attached"] = not updated_collision_layers.is_empty()
+	rec["collision_buffer_applied"] = false
 
 	if _mesh_voxel_record_index.has(record_id):
 		var idx: int = _mesh_voxel_record_index[record_id]
@@ -1972,6 +2071,7 @@ func blend_scene_voxels(tick: int = -1) -> Dictionary:
 			final_scene_voxels[key] = _finalize_scene_voxel_from_source(brush_voxel, commit_tick)
 
 	_volume["scene_voxels"] = final_scene_voxels
+	_rebuild_collision_cache_from_scene_voxels(final_scene_voxels)
 	_scene_state_by_tick[commit_tick] = final_scene_voxels.duplicate(true)
 	_committed_tick = max(_committed_tick, commit_tick)
 	_generation_tick = max(_generation_tick, commit_tick + 1)

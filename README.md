@@ -84,14 +84,14 @@ These scripts are useful for local checks and resource generation. They are not 
 
 | Document | Topic |
 | --- | --- |
-| [`docs/meshfill-framework.md`](docs/meshfill-framework.md) | Current framework ownership model and runtime flow |
-| [`docs/asset-properties.md`](docs/asset-properties.md) | AutoObject, persistent asset fields, `voxel_record`, and `SceneVoxel` schema notes |
-| [`docs/scene-voxel-field-system.md`](docs/scene-voxel-field-system.md) | Source voxel deltas, final `SceneVoxel`, and `GlobalVoxelField` cache |
-| [`docs/target-scene-voxel-projection.md`](docs/target-scene-voxel-projection.md) | TargetSV canvas, stamp model, VDB import plan, projection cache, and persistence |
-| [`docs/autoobject-probe-prefilter.md`](docs/autoobject-probe-prefilter.md) | AutoObject probe prefilter and GPU candidate tile output |
-| [`docs/voxel-semantic-routing.md`](docs/voxel-semantic-routing.md) | Candidate asset routing and tile routing |
-| [`docs/vegetation-pipeline.md`](docs/vegetation-pipeline.md) | Vegetation occupancy, scatter, and voxel pipeline |
-| [`docs/auto-asset-scripting.md`](docs/auto-asset-scripting.md) | Scripted rock and vegetation asset creation |
+| [`docs/README.md`](docs/README.md) | Full documentation index |
+| [`docs/core/meshfill-framework.md`](docs/core/meshfill-framework.md) | Current framework ownership model and runtime flow |
+| [`docs/core/asset-properties.md`](docs/core/asset-properties.md) | Current AutoObject, descriptor, profile, `voxel_record`, and metadata field reference |
+| [`docs/core/scene-voxel-field-system.md`](docs/core/scene-voxel-field-system.md) | Source voxel deltas, final `SceneVoxel`, and `GlobalVoxelField` cache |
+| [`docs/placement/target-scene-voxel-projection.md`](docs/placement/target-scene-voxel-projection.md) | TargetSV canvas, stamp model, VDB import plan, projection cache, and persistence |
+| [`docs/placement/autoobject-probe-prefilter.md`](docs/placement/autoobject-probe-prefilter.md) | AutoObject probe prefilter and GPU candidate tile output |
+| [`docs/placement/voxel-semantic-routing.md`](docs/placement/voxel-semantic-routing.md) | Candidate asset routing and tile routing |
+| [`docs/core/auto-asset-scripting.md`](docs/core/auto-asset-scripting.md) | Scripted rock and vegetation asset creation |
 | [`docs/graphs/README.md`](docs/graphs/README.md) | Architecture graph index |
 
 ## Notes

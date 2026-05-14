@@ -5,9 +5,14 @@ geo/SM_Cliff_06.FBX
 
 *.tmp
 *.log
+*-冲突-*
+docs/*-暂时丢弃.md
 __pycache__/
 *.pyc
 
 # Local editor state
 .vscode/
 .windsurf/workflows/huggingface-key.md
+
+# Local assistant notes
+mempalace.md

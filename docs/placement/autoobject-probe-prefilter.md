@@ -66,7 +66,7 @@ VDB 可作为基底层，stamp 在其上叠加增量修改，程序化版为无�
 
 ### 外部 VDB 导入
 
-通过 `tools/vdb_to_target_sv.py` 将多个 VDB 离线合并为 TargetSV flat buffer，输出格式与持久化完全兼容。Godot 侧通过 `_load_external_target_sv()` 加载。
+计划路径：未来用 `tools/vdb_to_target_sv.py` 转换器把多个 VDB 离线合并为 TargetSV flat buffer，输出格式与持久化兼容；Godot 侧再通过 `_load_external_target_sv()` 加载。当前仓库还没有这些文件/函数。
 
 每个 VDB 包含 5 维标量 grid：`Cd.x`/`Cd.y`/`Cd.z` → visual.rgb (3), `density` → visual.a/complexity (1), `collision` → target_collision (1)。多 VDB 按顺序合并：visual lerp, collision max。
 

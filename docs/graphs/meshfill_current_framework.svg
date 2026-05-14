@@ -183,7 +183,7 @@
   <text class="tiny" x="638" y="874">next systems read committed state</text>
 
   <rect class="node state" x="898" y="778" width="244" height="106" rx="16" ry="16"/>
-  <text class="label" x="918" y="810">SceneVoxel + CollisionVoxel</text>
+  <text class="label" x="918" y="810">SceneVoxel + Collision Cache</text>
   <text class="small" x="918" y="834">committed read model</text>
   <text class="small" x="918" y="856">occupancy / collision volume</text>
   <text class="tiny" x="918" y="874">single source for next tick</text>

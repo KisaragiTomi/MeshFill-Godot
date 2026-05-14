@@ -45,7 +45,7 @@ godot --headless --path . --script tools/scaffold_auto_asset.gd -- --config res:
 | --- | --- |
 | `asset_path` | `AutoRock` / `AutoCliffRock` 场景资产，包含 `mesh`、`mesh_height_texture`、`mesh_size`、随机参数和对象体素字段 |
 | `profile_path` | 可选 `AutoVoxelProfile` 预设，方便多个资产复用同一组 `color`、`complexity`、band 和 collision voxels |
-| Object voxel fields | `voxel_color`、`voxel_complexity`、`affected_bands`、`collision_voxels` 是运行时和持久化的主数据 |
+| Object voxel fields | `voxel_descriptor` / `voxel_profile` 是资产体素语义主数据；`voxel_color`、`voxel_complexity`、`affected_bands`、`collision_voxels` 仍作为旧入口和配置字典兼容 |
 
 `Main.rock_asset_dir` 默认扫描 `res://assets/rocks` 下的 `.tscn` / `.scn` / `.tres` / `.res`。推荐新岩石资产保存为 `AutoRock` 场景资产；旧 `MeshDataAsset` 仍会在加载时转换为 `AutoCliffRock` 兼容原型。
 
@@ -54,7 +54,6 @@ godot --headless --path . --script tools/scaffold_auto_asset.gd -- --config res:
 ```json
 {
   "type": "vegetation",
-  "subtype": "flower",
   "class_name": "AutoFlower",
   "script_path": "res://scripts/auto_flower.gd",
   "asset_path": "res://assets/vegetation/flower_asset.tres",
@@ -72,6 +71,8 @@ godot --headless --path . --script tools/scaffold_auto_asset.gd -- --config res:
   "mesh_create_method": "create_flower_mesh"
 }
 ```
+
+当前不使用 `subtype`。资产差异通过 `class_name`、具体资产文件、`voxel_descriptor`、probe、band 和 collision 语义表达。
 
 结果：
 

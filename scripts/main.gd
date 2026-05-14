@@ -4070,7 +4070,6 @@ func _score_candidates_at_pixel(pixel: Vector2i, tex_size: int, slice_count: int
 		if probes.is_empty():
 			continue
 		var total_score := 0.0
-		var total_weight := 0.0
 		for raw_probe in probes:
 			if not raw_probe is Dictionary:
 				continue
@@ -4113,8 +4112,7 @@ func _score_candidates_at_pixel(pixel: Vector2i, tex_size: int, slice_count: int
 					w_sum += 1.0
 			var probe_score := score / maxf(w_sum, 0.000001)
 			total_score += probe_score * weight
-			total_weight += weight
-		var final_score := total_score / maxf(total_weight, 0.000001)
+		var final_score := total_score
 		scored.append({"name": entry.name, "score": final_score, "probe_count": probes.size()})
 
 	scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.score) > float(b.score))
