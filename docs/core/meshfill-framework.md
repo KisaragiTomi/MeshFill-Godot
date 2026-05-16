@@ -7,46 +7,48 @@
 ## 核心约束
 
 - `TargetSceneVoxel` 只表达目标视觉 / 复杂度 / 碰撞意图，不写入 `tree`、`rock`、`grass` 等 asset 标签。
-- `AutoObject` 和 descriptor 回答“资产是什么”，包括默认体素语义、碰撞 footprint、pivot、anchor kind 和 `semantic_probes`。
+- `AutoVoxelDescriptor` 是“资产是什么”的唯一语义主来源，包括默认体素颜色、复杂度、band、collision footprint、pivot 和 `semantic_probes`；`AutoObject` 只持有 descriptor 入口、运行时身份、mesh、放置约束和兼容字段。
 - 运行时 record 回答“本次实例放在哪里”，包括世界位置、像素坐标、band、collision、source 和回查 id。
-- source delta 回答“本 tick 想写什么”，最终 `SceneVoxel` 回答“已经提交给后续系统读取的结果是什么”。
-- probe prefilter 只减少候选 `AutoObject` / tile，不直接写最终 `SceneVoxel`。
+- source voxel delta 回答“本 tick 想写什么”，最终 `SceneVoxel` 回答“已经提交给后续系统读取的结果是什么”。
+- probe prefilter 只减少候选 `AutoObject` / voxel 区域，不直接写最终 `SceneVoxel`。
+- 候选 voxel 区域必须保守扩张，覆盖 asset footprint、probe 插值采样半径、context 半径和插值 guard，宁可让更多 voxel 进入候选，也不要漏掉可能得分高的位置。
 - 语义向量匹配只在每个 anchor 的粗筛候选资产内做 rerank / validate / prune，不遍历全资产库。
 - 物理可放置性仍由 `score_voxel_tile.glsl` 的 footprint、support、collision、clearance、overlap 和 target fit 决定。
-- 同类型 `AutoObject` 的 `min_spacing` 互斥可在 physical placement 前通过 `AutoObjectManager` 做低成本 candidate tile 剪枝；最终 footprint / collision 仍由 GPU score 确认。
+- 同类型 `AutoObject` 的 `min_spacing` 互斥可在 physical placement 前通过 `AutoObjectManager` 做低成本候选 voxel 区域剪枝；最终 footprint / collision 仍由 GPU score 确认。
 
 ## Ownership
 
 | Layer | Owner | Responsibility |
 | --- | --- | --- |
 | Target canvas | `TargetSceneVoxel` / `TargetSceneVoxelGenerator` | 保存中性的目标颜色、复杂度、占用和碰撞意图；支持 GPU 生成、dirty 更新和可选 VDB 重采样导入。 |
-| Asset defaults | `AutoObject` / `AutoVoxelDescriptor` / typed assets | 保存资产默认语义、体素颜色、复杂度、碰撞 footprint、pivot variants、anchor kind、semantic probes 和可选 profile fallback。 |
-| Probe prefilter | `AutoObject.semantic_probes` / `AutoObjectProbePrefilter` | 从 `SceneVoxel` / `TargetSV` 读取可放置 anchor，按资产 probes 采样，输出 `anchor_autoobject_topk` 和 candidate tiles。 |
-| Candidate routing | `anchor_autoobject_topk` / `candidate_tiles_by_asset` | 把上游候选归一化、去重、可选 rerank，并聚合为每个 asset 的 routed tile 列表。 |
-| Physical placement | `VoxelPlacementGenerator` / placement shaders | 只对 routed asset / tile 做 GPU score、reduce、stamp；可在 GPU scoring 前执行同类型 AutoObject tile 剪枝；如果 asset 没有 routed tiles，本轮可跳过。 |
+| Asset defaults | `AutoVoxelDescriptor` / `AutoObject.voxel_descriptor` / typed assets | descriptor 保存资产默认语义、体素颜色、复杂度、碰撞 footprint、pivot variants、semantic probes 和可选 profile fallback；`AutoObject` 同名字段只作为 legacy / Inspector / 配置字典兼容入口。 |
+| Probe prefilter | `AutoVoxelDescriptor.semantic_probe_profile` / `AutoObjectProbePrefilterGPU` | 从 `SceneVoxel` / `TargetSV` 读取可放置 anchor，按 descriptor 提供的资产 probes 采样，输出 `anchor_autoobject_topk` 和候选 voxel 区域。 |
+| Candidate routing | `anchor_autoobject_topk` / `candidate_voxel_regions_by_asset` | 把上游候选归一化、去重、可选 rerank，并聚合为每个 asset 的候选 voxel 区域列表。 |
+| Physical placement | `VoxelPlacementGenerator` / placement shaders | 只对 routed asset / 候选 voxel 区域做 GPU score、reduce、stamp；可在 GPU scoring 前执行同类型 AutoObject 候选区域剪枝；如果 asset 没有候选区域，本轮可跳过。 |
 | Runtime record | record builders / `voxel_record` | 统一创建或更新实例 record，保存位置、像素、band、collision、source 和 debug handle。 |
-| Source voxel | `AutoSceneVoxelDelta` / `BrushSceneVoxelDelta` | 表达当前 tick 的自动生成或手动编辑 delta；包含 visual layers 和 `collision_voxels` 成员。 |
-| Final state | `blend_scene_voxels()` / `SceneVoxel` | 统一混合并提交给下一 tick、验证、查询和预览；collision 会提交为 occupancy/cache 视图。 |
-| Global cache | `GlobalVoxelField` | 基于已提交 `SceneVoxel` 和 collision occupancy 重建 sparse tile occupancy cache，并记录 dirty tile / rect。 |
+| Source voxel | `SourceSceneVoxelDelta` / `AutoSceneVoxel` / `BrushSceneVoxel` / `TargetSceneVoxel` | 表达当前 tick 的写入意图；继承 `SceneVoxel` 基类字段，再追加 source 上下文、visual layers 和 `collision_voxels` 成员。 |
+| Final state | `blend_scene_voxels()` / `SceneVoxel` | 统一混合并提交给下一 tick、验证、查询和预览；collision cache 是 `SceneVoxel` 提交后的内部 / 派生 occupancy 视图。 |
+| Global cache | `GlobalVoxelField` | 读取已提交 `SceneVoxel` 的 scene / collision occupancy 视图，重建 sparse tile occupancy cache，并记录 dirty tile / rect。 |
 | Query projection | metadata / `AutoObjectManager` | 提供运行时索引、调试查询、record handle、低分辨率 cell 查询和同类型互斥预检，不作为资产默认值来源。 |
 
 ## Runtime Flow
 
 ```text
-SceneVoxel[tick - 1] + collision occupancy cache
+SceneVoxel[tick - 1] (scene / collision occupancy views)
   -> GlobalVoxelField sparse tile cache
   -> collect dirty anchors / affected target bounds
   -> AutoObject probe prefilter
   -> anchor_autoobject_topk
   -> optional candidate-only semantic rerank / route validation
-  -> candidate_tiles_by_asset
+  -> candidate_voxel_regions_by_asset
   -> VoxelPlacementGenerator.run_multi_asset()
   -> optional same-type AutoObject exclusion gate
   -> score_voxel_tile.glsl physical score / reduce / stamp
   -> record builders
-  -> AutoSceneVoxelDelta[tick] / BrushSceneVoxelDelta[tick]
+  -> SourceSceneVoxelDelta[tick]
+     SceneVoxel base fields + source fields
   -> blend_scene_voxels(tick)
-  -> SceneVoxel[tick] + collision occupancy cache
+  -> SceneVoxel[tick] (includes collision occupancy cache/view)
   -> dirty tile / rect invalidation
 ```
 
@@ -72,7 +74,7 @@ sample_value = TargetSV[sample_pos]
 ```text
 upstream prefilter
   -> collect anchors
-  -> score AutoObject.semantic_probes
+  -> score descriptor-backed semantic probes
   -> anchor_autoobject_topk
 
 candidate routing
@@ -80,25 +82,27 @@ candidate routing
   -> optional semantic_score / target_score
   -> route_score rerank
   -> EMPTY pruning
-  -> candidate_tiles_by_asset
+  -> candidate_voxel_regions_by_asset
 
 placement
-  -> each asset reads only its routed candidate_tiles
-  -> optional same-type AutoObject exclusion gate prunes blocked tiles
+  -> each asset reads only its routed voxel regions
+  -> optional same-type AutoObject exclusion gate prunes blocked voxel regions
   -> score_voxel_tile.glsl remains physical scoring
 ```
 
 路由阶段的 hard gate 是每个 anchor 已筛选成功的候选资产。后续语义向量匹配不能重新遍历全资产库，也不能生成新的 asset candidate。它只能在候选集内部调整排序、降低置信度或剔除 route。
 
-`candidate_tiles_by_asset` 作为当前 placement 主接口：
+`candidate_voxel_regions_by_asset` 是保守候选集合，不是精确采样点集合。构建时应从 anchor voxel 出发，按 asset footprint AABB、semantic probe offset 范围、`context_sensing_radius` 和至少 1 voxel 的插值 guard 扩张到候选 voxel 区域；最终是否放置仍由 `score_voxel_tile.glsl` 精筛决定。
+
+`candidate_voxel_regions_by_asset` 作为当前 placement 主接口：
 
 ```gdscript
 {
-    asset_index: PackedInt32Array(tile_ids)
+    asset_index: Array[Vector3i]  # voxel_region_coords
 }
 ```
 
-该字典传入 `VoxelPlacementGenerator.run_multi_asset()` 的 `common_settings["candidate_tiles_by_asset"]`。如果某个 asset 没有 routed tiles，则该 asset 本轮 placement 跳过并可标记为 prefilter skip。
+该字典传入 `VoxelPlacementGenerator.run_multi_asset()` 的 `common_settings["candidate_voxel_regions_by_asset"]`。对外语义是“每个 asset 本轮要检查哪些 voxel 区域”；当前实现用 `Vector3i` 表示离散 voxel 块坐标，生成器内部会再归一化成紧凑 id。它应偏向召回而非精确裁剪；若某个 asset 没有候选 voxel 区域，则该 asset 本轮 placement 跳过并可标记为 prefilter skip。
 
 ## Current Modules
 
@@ -106,9 +110,9 @@ placement
 | --- | --- | --- |
 | TargetSV generation | `scripts/target_scene_voxel_generator.gd` / `shaders/target_scene_voxel.glsl` | 当前 GPU 生成 TargetSV visual / collision buffers 和 debug preview。 |
 | TargetSV persistence | `scripts/main.gd` | 保存、加载、重算和显示 TargetSV overlay。 |
-| Asset model | `scripts/auto_object.gd` / `scripts/auto_voxel_descriptor.gd` / typed asset scripts | `AutoObject` 是共同基类；descriptor 和 profile 管理资产默认语义。 |
-| Probe prefilter | `scripts/autoobject_probe_prefilter.gd` / `scripts/autoobject_probe_prefilter_gpu.gd` / `docs/placement/autoobject-probe-prefilter.md` | CPU / GPU 粗筛路径，输出 `anchor_autoobject_topk` 和 `autoobject_candidate_tiles`。 |
-| Semantic routing | `docs/placement/voxel-semantic-routing.md` | 定义候选内 rerank、route validation、EMPTY pruning、TargetSV clamp 采样和 `candidate_tiles_by_asset` 合约。 |
+| Asset model | `scripts/auto_object.gd` / `scripts/auto_voxel_descriptor.gd` / typed asset scripts | `AutoObject` 是共同运行时基类；`AutoVoxelDescriptor` 是资产默认语义唯一权威来源，profile 只作为共享数据和生成辅助。 |
+| Probe prefilter | `scripts/autoobject_probe_prefilter_gpu.gd` / `docs/placement/autoobject-probe-prefilter.md` | GPU-only 粗筛路径，输出 `anchor_autoobject_topk` 和 `autoobject_candidate_voxel_regions`；不保留 CPU fallback。 |
+| Semantic routing | `docs/placement/voxel-semantic-routing.md` | 定义候选内 rerank、route validation、EMPTY pruning、TargetSV clamp 采样和 `candidate_voxel_regions_by_asset` 的候选 voxel 区域合约。 |
 | 3D voxel placement | `scripts/voxel_placement_generator.gd` / `shaders/score_voxel_tile.glsl` / `shaders/reduce_voxel_tiles.glsl` / `shaders/stamp_voxel_field.glsl` | 物理精筛和 stamp 主路径；不负责全库语义查找。 |
 | Global voxel cache | `scripts/global_voxel_field.gd` | dirty tile tracking、prefiltered placement、stamp delta apply 和 sparse tile cache。 |
 | Placement fitting | `scripts/cliff_generator.gd` / fitting shaders | 通用同类资产 fitting producer；当前类名保留历史命名。 |
@@ -122,8 +126,8 @@ placement
 ```text
 dirty tile
   -> rerun upstream prefilter for affected anchors
-  -> rebuild candidate_tiles_by_asset entries touched by dirty tile
-  -> skip assets whose routed tile list becomes empty
+  -> rebuild candidate_voxel_regions_by_asset entries touched by dirty voxel region
+  -> skip assets whose routed voxel region list becomes empty
 ```
 
 Target color / complexity 变化：
@@ -131,23 +135,25 @@ Target color / complexity 变化：
 ```text
 dirty target bounds
   -> expand by local / wide context radius
-  -> update affected context tiles
+  -> expand by probe interpolation guard
+  -> update affected context voxel regions
   -> rerun route validation for affected anchors
-  -> rebuild affected candidate_tiles_by_asset
+  -> rebuild affected candidate_voxel_regions_by_asset
 ```
 
-更新完成后不需要对所有 asset 重新生成 voxel 级 top-K；只需要处理 dirty / affected tiles 和相关 asset routes。
+更新完成后不需要对所有 asset 重新生成 voxel 级 top-K；只需要处理 dirty / affected voxel 区域和相关 asset routes。
 
 ## Maintenance Rules
 
-- 新增资产字段时，先判断它属于资产默认值、运行时 record、source delta、TargetSV 目标画布还是最终 `SceneVoxel` 状态。
+- 新增资产语义字段时默认加入 `AutoVoxelDescriptor`，不要在 `AutoObject` 上新增第二套同名语义状态。
+- 新增资产字段时，先判断它属于资产默认值、运行时 record、source voxel delta、TargetSV 目标画布还是最终 `SceneVoxel` 状态。
 - metadata 只能挂索引、调试字段和 `voxel_record` handle，不能成为对象默认值的主来源。
-- 自动生成和画笔修改只写本 tick delta，后续系统只读 commit 后的 `SceneVoxel`。
+- 自动生成和画笔修改只写本 tick source voxel delta，后续系统只读 commit 后的 `SceneVoxel`。
 - `TargetSceneVoxel` 不写资产标签；资产选择只能通过 prefilter / routing / placement 形成。
 - `GlobalVoxelField` 只做 sparse occupancy tile 缓存和 dirty 更新足迹，不直接承担最终编辑语义。
-- `CollisionVoxel` 是 `AutoSceneVoxel` / `BrushSceneVoxel` 的 `collision_voxels` 成员；提交后的 collision occupancy 是查询缓存视图。
+- `CollisionVoxel` 是 `AutoSceneVoxel` / `BrushSceneVoxel` 的 `collision_voxels` 成员；提交后的 collision occupancy 是 `SceneVoxel` 的内部 / 派生查询缓存视图。
 - `AutoObject` 不应使用运行时缩放；`_configure_auto_object()` 强制 `scale = Vector3.ONE`，semantic probes 按 unscaled asset/local space 生成和采样。
-- Probe 粗筛只减少候选 `AutoObject` / tile，不直接写最终 `SceneVoxel`。
+- Probe 粗筛只减少候选 `AutoObject` / voxel 区域，不直接写最终 `SceneVoxel`。
 - `score_voxel_tile.glsl` 不新增 semantic dot / MLP / target neighborhood pooling。
 - 文档读写统一使用 UTF-8，避免中文内容出现乱码。
 - 流程变更时同步更新本文档、`docs/placement/voxel-semantic-routing.md` 和 `docs/graphs/meshfill_current_framework.svg`。

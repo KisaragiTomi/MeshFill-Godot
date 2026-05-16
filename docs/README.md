@@ -17,7 +17,7 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | --- | --- |
 | [`core/meshfill-framework.md`](core/meshfill-framework.md) | MeshFill ownership model, runtime flow, current modules, and framework rules |
 | [`core/asset-properties.md`](core/asset-properties.md) | Current `AutoObject`, descriptor, profile, and metadata field reference |
-| [`core/scene-voxel-field-system.md`](core/scene-voxel-field-system.md) | Runtime `voxel_record`, source deltas, final `SceneVoxel`, and `GlobalVoxelField` cache design |
+| [`core/scene-voxel-field-system.md`](core/scene-voxel-field-system.md) | Runtime `voxel_record`, source voxel deltas, final `SceneVoxel`, and `GlobalVoxelField` cache design |
 | [`core/auto-asset-scripting.md`](core/auto-asset-scripting.md) | Scripted rock and vegetation asset creation through Godot headless tools |
 | [`core/asset-semantic-probes.md`](core/asset-semantic-probes.md) | Asset-side semantic probes used by prefilter and candidate-only route validation |
 
@@ -28,8 +28,8 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | [`placement/meshfill-rock-placement-flow.md`](placement/meshfill-rock-placement-flow.md) | Rock placement compute pipeline walkthrough |
 | [`placement/target-scene-voxel-projection.md`](placement/target-scene-voxel-projection.md) | `TargetSceneVoxel` canvas, stamp model, planned VDB import, projection cache, and current GPU persistence |
 | [`placement/collision-sdf-exclusion-field.md`](placement/collision-sdf-exclusion-field.md) | Draft collision SDF / exclusion field design where propagation radius is driven by `AutoObject.min_spacing`; text still needs mojibake recovery |
-| [`placement/autoobject-probe-prefilter.md`](placement/autoobject-probe-prefilter.md) | AutoObject semantic probe prefilter, CPU/GPU responsibilities, anchor collection, and candidate tile output |
-| [`placement/voxel-semantic-routing.md`](placement/voxel-semantic-routing.md) | Candidate asset routing and tile routing after upstream prefilter |
+| [`placement/autoobject-probe-prefilter.md`](placement/autoobject-probe-prefilter.md) | AutoObject semantic probe prefilter, CPU/GPU responsibilities, anchor collection, and candidate voxel-region output |
+| [`placement/voxel-semantic-routing.md`](placement/voxel-semantic-routing.md) | Candidate asset routing and voxel-region routing after upstream prefilter |
 | [`placement/voxel-semantic-routing-todo.md`](placement/voxel-semantic-routing-todo.md) | Current candidate-routing TODOs; excludes old full-asset semantic lookup tasks |
 
 ## Diagrams
@@ -37,7 +37,6 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | Path | Purpose |
 | --- | --- |
 | [`graphs/README.md`](graphs/README.md) | Graph inventory and editing notes |
-| [`graphs/autoobject_system.svg`](graphs/autoobject_system.svg) | AutoObject ownership, placement, record, and query boundary overview |
 | [`graphs/autoobject_asset_properties.svg`](graphs/autoobject_asset_properties.svg) | AutoObject class, resource, field, record, and metadata property map |
 | [`graphs/meshfill_current_framework.svg`](graphs/meshfill_current_framework.svg) | Current framework overview |
 | [`graphs/meshfill_compute_shader_3d_placement.svg`](graphs/meshfill_compute_shader_3d_placement.svg) | Compute shader 3D placement flow |

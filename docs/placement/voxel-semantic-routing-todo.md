@@ -2,15 +2,18 @@
 
 本文只保留当前候选路由方案的后续事项。旧版“全资产语义查找”任务已移除；语义匹配只能在 `anchor_autoobject_topk` 的候选集内部 rerank、validate 或 prune。
 
+![Voxel semantic routing overview](../graphs/voxel-semantic-routing.svg)
+
 ## Voxel Semantic Routing
 
 ### P0：候选路由主线
 
 - [ ] 将 `anchor_autoobject_topk` 的候选记录统一为 `{asset_index, score, anchor_kind, tile_id}`。
 - [ ] 实现候选 route 归一化、去重和低置信度剔除。
-- [ ] 聚合 surviving routes 为 `candidate_tiles_by_asset`。
-- [ ] 确认 `VoxelPlacementGenerator.run_multi_asset()` 对空 routed tiles 的 asset 直接 skip。
-- [ ] 增加集成测试：prefilter route、empty route skip、dirty tile route rebuild。
+- [ ] 聚合 surviving routes 为 `candidate_voxel_regions_by_asset`。
+- [ ] 聚合候选 voxel 区域时按 footprint、probe offset bounds、context 半径和 interpolation guard 保守扩张。
+- [ ] 确认 `VoxelPlacementGenerator.run_multi_asset()` 对空候选 voxel 区域的 asset 直接 skip。
+- [ ] 增加集成测试：prefilter route、empty route skip、dirty voxel 区域 route rebuild。
 
 ### P1：候选集内部验证
 
@@ -18,7 +21,7 @@
 - [ ] 可选生成 `target_scene_context_rgba8_buffer`，用于局部 / wide TargetSV 颜色与复杂度验证。
 - [ ] 为所有 TargetSV probe / context 采样应用 clamp 边界规则。
 - [ ] 在 debug 输出中记录 `clamped_sample_count`。
-- [ ] 评估 `route_score` 默认阈值和 `empty_tile_threshold`。
+- [ ] 评估 `route_score` 默认阈值和 `empty_region_threshold`。
 
 ### P2：TargetSceneVoxel Projection
 

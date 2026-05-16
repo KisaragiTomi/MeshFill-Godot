@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1800" viewBox="0 0 1800 1800" role="img" aria-labelledby="title desc">
   <title id="title">MeshFill Compute Placement Flow</title>
-  <desc id="desc">Complete 3D voxel placement pipeline: multi-asset GPU scoring with priority/weight/quota, dirty tile integration, and instantiation (CPU creates nodes only, no filtering).</desc>
+  <desc id="desc">Complete 3D voxel placement pipeline: multi-asset GPU scoring with priority/weight/quota, dirty voxel-region integration, and instantiation (CPU creates nodes only, no filtering).</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
       <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
@@ -49,7 +49,7 @@
   <path class="grid" d="M300 120V1780M600 120V1780M900 120V1780M1200 120V1780M1500 120V1780"/>
 
   <text class="title" x="48" y="58">MeshFill 3D Voxel Placement — Complete Pipeline</text>
-  <text class="subtitle" x="48" y="88">GPU score/reduce/stamp + multi-asset priority/weight/quota + dirty tile integration + CPU instantiation only. All items implemented.</text>
+  <text class="subtitle" x="48" y="88">GPU score/reduce/stamp + multi-asset priority/weight/quota + dirty voxel-region integration + CPU instantiation only. All items implemented.</text>
 
   <!-- ===== BAND 1: GPU PROTOTYPE ===== -->
   <rect class="band3d" x="32" y="124" width="1736" height="610" rx="20" ry="20"/>
@@ -112,9 +112,9 @@
   <!-- Compute column -->
   <rect class="node gpu" x="638" y="238" width="214" height="128" rx="14" ry="14"/>
   <text class="label" x="658" y="270">score_voxel_tile</text>
-  <text class="small" x="658" y="294">1 workgroup = 8x8x8 tile</text>
+  <text class="small" x="658" y="294">1 workgroup = 8x8x8 voxel block</text>
   <text class="small" x="658" y="314">1 invocation = candidate</text>
-  <text class="tiny" x="658" y="334">writes per-tile top K</text>
+  <text class="tiny" x="658" y="334">writes per-block top K</text>
   <text class="tiny" x="658" y="350">debug score components</text>
 
   <rect class="node buffer" x="890" y="254" width="184" height="92" rx="14" ry="14"/>
@@ -236,10 +236,10 @@
   <!-- ===== BAND 3: GLOBALVOXELFIELD INTEGRATION ===== -->
   <rect class="band-field" x="32" y="1016" width="1736" height="230" rx="20" ry="20"/>
   <text class="section-title" x="56" y="1048">GLOBALVOXELFIELD INTEGRATION</text>
-  <text class="tiny" x="370" y="1048">global_voxel_field.gd — dirty tile driven on-demand placement + selective stamp delta writeback</text>
+  <text class="tiny" x="370" y="1048">global_voxel_field.gd — dirty voxel-region driven on-demand placement + selective stamp delta writeback</text>
 
   <rect class="node field" x="82" y="1076" width="260" height="132" rx="14" ry="14"/>
-  <text class="label" x="102" y="1106">Dirty tile tracking</text>
+  <text class="label" x="102" y="1106">Dirty voxel-region tracking</text>
   <text class="small" x="102" y="1130">_mark_dirty(voxel)</text>
   <text class="small" x="102" y="1150">get_dirty_tile_positions()</text>
   <text class="small" x="102" y="1170">tile_id_to_pos() roundtrip</text>
@@ -247,27 +247,27 @@
 
   <rect class="node field" x="398" y="1076" width="260" height="132" rx="14" ry="14"/>
   <text class="label" x="418" y="1106">run_placement_dirty()</text>
-  <text class="small" x="418" y="1130">dirty tiles → candidate_tiles</text>
+  <text class="small" x="418" y="1130">dirty regions → candidate_voxel_regions</text>
   <text class="small" x="418" y="1150">calls run_multi_asset()</text>
   <text class="small" x="418" y="1170">optional apply_stamp_deltas</text>
-  <text class="tiny" x="418" y="1190">optional clear processed tiles</text>
+  <text class="tiny" x="418" y="1190">optional clear processed regions</text>
 
   <rect class="node field" x="714" y="1076" width="256" height="132" rx="14" ry="14"/>
   <text class="label" x="734" y="1106">apply_stamp_deltas()</text>
   <text class="small" x="734" y="1130">per-voxel scene/collision write</text>
   <text class="small" x="734" y="1150">max-merge semantics</text>
-  <text class="small" x="734" y="1170">auto-marks affected tiles dirty</text>
+  <text class="small" x="734" y="1170">auto-marks affected regions dirty</text>
   <text class="tiny" x="734" y="1190">skips out-of-bounds deltas</text>
 
   <rect class="node support" x="1026" y="1076" width="240" height="132" rx="14" ry="14"/>
-  <text class="label" x="1046" y="1106">Tile helpers</text>
+  <text class="label" x="1046" y="1106">Voxel-block helpers</text>
   <text class="small" x="1046" y="1130">tile_pos_to_id()</text>
   <text class="small" x="1046" y="1150">get_tile_voxel_bounds()</text>
   <text class="small" x="1046" y="1170">get_dirty_tile_count()</text>
   <text class="tiny" x="1046" y="1190">TILE_SIZE = 8 voxels</text>
 
   <rect class="node contract" x="1322" y="1076" width="222" height="132" rx="14" ry="14"/>
-  <text class="label" x="1342" y="1106">Dirty tile tests</text>
+  <text class="label" x="1342" y="1106">Dirty voxel-region tests</text>
   <text class="small" x="1342" y="1130">tile_id roundtrip</text>
   <text class="small" x="1342" y="1150">dirty tracking + clear</text>
   <text class="small" x="1342" y="1170">stamp delta apply</text>
@@ -281,7 +281,7 @@
 
   <!-- Field ↔ GPU loop -->
   <path class="edge-green" d="M528 1076 C528 1010 451 1010 451 738"/>
-  <text class="tiny" x="470" y="1004">dirty tiles feed GPU pipeline as candidate_tiles</text>
+  <text class="tiny" x="470" y="1004">dirty voxel regions feed GPU pipeline as candidate_voxel_regions</text>
   <path class="edge-green" d="M842 1076 C842 1006 1284 1006 1284 596"/>
   <text class="tiny" x="912" y="1000">stamp deltas flow back to voxel field</text>
 
@@ -335,7 +335,7 @@
   <!-- ===== BAND 5: CONTRACT ===== -->
   <rect class="band-field" x="32" y="1558" width="1736" height="210" rx="20" ry="20"/>
   <text class="section-title" x="56" y="1590">PLACEMENT CONTRACT — ALL INTEGRATION COMPLETE</text>
-  <text class="tiny" x="500" y="1590">GlobalVoxelField upload, dirty tile pipeline, instantiation, and voxel_record commit are all implemented and tested</text>
+  <text class="tiny" x="500" y="1590">GlobalVoxelField upload, dirty voxel-region pipeline, instantiation, and voxel_record commit are all implemented and tested</text>
 
   <rect class="node contract" x="78" y="1626" width="258" height="94" rx="14" ry="14"/>
   <text class="label" x="98" y="1658">Separated occupancy</text>
@@ -348,7 +348,7 @@
   <text class="small" x="408" y="1702">seeded reproducibility</text>
 
   <rect class="node contract" x="698" y="1626" width="258" height="94" rx="14" ry="14"/>
-  <text class="label" x="718" y="1658">Dirty tile pipeline</text>
+  <text class="label" x="718" y="1658">Dirty voxel-region pipeline</text>
   <text class="small" x="718" y="1682">on-demand candidate upload</text>
   <text class="small" x="718" y="1702">selective delta writeback</text>
 

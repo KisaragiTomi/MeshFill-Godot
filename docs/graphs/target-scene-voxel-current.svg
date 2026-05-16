@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
   <title id="title">TargetSceneVoxel Current Pipeline and Candidate Routing</title>
-  <desc id="desc">Diagram of the current GPU TargetSceneVoxel generation path, optional offline VDB resampling path, persistence, debug preview, and candidate tile routing into placement.</desc>
+  <desc id="desc">Diagram of the current GPU TargetSceneVoxel generation path, optional offline VDB resampling path, persistence, debug preview, and candidate voxel-region routing into placement.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#06101f"/>
@@ -73,7 +73,7 @@
   <circle cx="860" cy="150" r="150" fill="#7c3aed" opacity="0.09"/>
 
   <text x="58" y="58" class="title">TargetSceneVoxel 当前实现 + 导入 / 路由设计</text>
-  <text x="58" y="88" class="subtitle">当前 GPU 路径生成中性目标体素；外部 VDB 离线重采样；上游筛选后输出 candidate_tiles_by_asset 给 placement。</text>
+  <text x="58" y="88" class="subtitle">当前 GPU 路径生成中性目标体素；外部 VDB 离线重采样；上游筛选后输出候选 voxel 区域给 placement。</text>
 
   <rect x="48" y="126" width="268" height="466" class="card"/>
   <text x="76" y="164" class="section">当前 GPU 输入</text>
@@ -182,9 +182,9 @@
   <text x="1310" y="370" class="small">ground / target_top anchors</text>
 
   <rect x="1288" y="420" width="220" height="80" fill="#064e3b" stroke="#bbf7d0" stroke-width="1.2" rx="14"/>
-  <text x="1310" y="448" class="label">candidate_tiles_by_asset</text>
+  <text x="1310" y="448" class="label">candidate_voxel_regions</text>
   <text x="1310" y="472" class="small">route + dedupe + EMPTY prune</text>
-  <text x="1310" y="492" class="small">只 dispatch 命中 tile</text>
+  <text x="1310" y="492" class="small">只 dispatch 命中 voxel 区域</text>
 
   <path d="M 1398 544 C 1398 594 1398 624 1398 654" class="arrow-green"/>
 

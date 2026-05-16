@@ -1,5 +1,7 @@
 # Vegetation Placement Pipeline
 
+![MeshFill current framework](../graphs/meshfill_current_framework.svg)
+
 ## Overview
 
 植被放置系统基于 **高度分带（Height-Band）** 的互斥占用机制，所有波段打包在一张 **RGBA16F** 纹理中，通过 GPU Compute Shader 加速处理。粗树干等刚体部分另写独立 `collision_occupancy`，用于最终放置互斥。

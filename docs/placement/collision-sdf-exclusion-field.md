@@ -2,6 +2,8 @@
 
 本文记录碰撞互斥排斥场的设计。目标是把碰撞从二值 `block` 升级为 2D (XZ) 可传播、可累积的软排斥场，并让传播范围与 `AutoObject.min_spacing` 挂钩。
 
+![MeshFill current framework](../graphs/meshfill_current_framework.svg)
+
 互斥判断只需要在 **2D XZ 平面**上进行——这和现有 `AutoObject.get_required_axis_center_distance_to()` 的语义一致。
 
 ## 背景
@@ -10,13 +12,13 @@
 
 | Buffer | 当前含义 |
 | --- | --- |
-| `scene_occupancy` | 已提交 `SceneVoxel` 的可视/占用缓存（3D）。 |
-| `collision_occupancy` | 已提交 collision 的查询缓存（3D）。 |
+| `scene_occupancy` | 从已提交 `SceneVoxel` 读取的可视 / 占用查询缓存（3D）。 |
+| `collision_occupancy` | 从已提交 `SceneVoxel` 内部 collision cache/view 读取的碰撞查询缓存（3D）。 |
 
 这两个 buffer 适合直接碰撞检查，但不适合让小窗口 scorer 感知远处碰撞源。为了解决这个问题，需要在 XZ 平面上额外构建排斥场：
 
 ```text
-committed collision_voxels + terrain base collision
+committed SceneVoxel collision cache/view + terrain base collision
   -> 2D XZ collision source grid
   -> 双通道迭代扩散 (energy + budget)
   -> 2D exclusion_energy field
@@ -106,7 +108,7 @@ JFA 适合做 `collision_distance`（"最近碰撞有多远"本身就是单源�
 
 ### 1. 初始化：source seed 写入
 
-每个已提交 collision 源写入 2D XZ grid：
+每个已提交 `SceneVoxel` collision 源写入 2D XZ grid：
 
 ```text
 energy = collision_value * exclusion_strength
@@ -221,61 +223,6 @@ required_center_distance ≈ A.min_spacing + B.min_spacing
 
 B 的 `min_spacing` 已经编码在扩散场的传播距离中；A 的 `min_spacing` 在 scoring 时补充。
 
-## 暂定方案：候选自 SDF 采样
-
-以下是当前设计备忘，不作为最终定案。目标是在尽量避免增加 SDF 维度的前提下，让大树、小树、灌木等不同尺度对象都能正确靠近或互斥。后续如果想到更好的方案，可以替换本节。
-
-核心思路是：**全局 SDF 保持单通道，候选对象用自己的持久化 SDF stamp 作为采样核去读取全局 SDF**。全局 SDF 只表达当前已经提交对象写入的基础互斥场；具体候选能不能放置，由候选自己的 SDF 范围和阈值决定。
-
-构建总场时使用类似透明图像渲染的逻辑：
-
-```text
-for each accepted AutoObject:
-    stamp = autoobject.persistent_sdf_stamp
-    transform stamp by autoobject pose
-    global_sdf = max(global_sdf, stamp.value * stamp.alpha * stamp.opacity)
-```
-
-测试候选时，不只采样候选中心点，而是在候选自身 SDF 覆盖范围内扫描全局 SDF：
-
-```text
-candidate = small_tree
-stamp = candidate.persistent_sdf_stamp
-
-for each sample inside stamp bounds:
-    world_pos = candidate_transform * stamp_local_pos
-    global_v  = global_sdf.sample(world_pos)
-    self_v    = stamp.sample(stamp_local_pos)
-
-    conflict = max(conflict, global_v * self_v)
-    penalty += global_v * self_v
-```
-
-判定可以拆成硬拒绝和软扣分：
-
-```text
-if conflict > hard_threshold:
-    reject candidate
-else:
-    final_score = base_score - penalty * penalty_weight
-```
-
-候选通过后，再把它自己的 SDF stamp 写回单通道全局场：
-
-```text
-global_sdf = max(global_sdf, candidate_sdf_stamp)
-```
-
-这个方案的关键性质：
-
-- 不增加 SDF 维度，全局仍可保持为单通道 `R32F` 或等价 float field。
-- 大树放置时，用大树自己的大范围 stamp 检查已有小树。
-- 小树放置时，用小树自己的小范围 stamp 检查已有大树。
-- 小树只要没有和大树的高值核心区域重叠，就可以在大树边上生成。
-- 互斥规则不由已放置对象单方面决定，而由“候选自身 SDF 核 × 当前全局 SDF”共同决定。
-
-这使得“先生成小树再生成大树”和“先生成大树再生成小树”都能读到同一个全局场，但用各自的采样核得到不同尺度的合理判断。
-
 ## 与硬碰撞的关系
 
 软排斥不能替代现有 3D 硬碰撞。推荐分层：
@@ -311,16 +258,16 @@ Level N: 更大尺度趋势
 
 | 约束 | 说明 |
 | --- | --- |
-| 只读 committed collision | 排斥场应从已提交 `SceneVoxel` collision 和 terrain base collision 重建，不直接读取未提交 source delta。 |
+| 只读 committed `SceneVoxel` collision view | 排斥场应从已提交 `SceneVoxel` 的 collision cache/view 和 terrain base collision 重建，不直接读取未提交 source voxel delta。 |
 | 保留 terrain base collision | 地形高度以下 collision 必须进入 2D source grid（XZ 投影全占用），不能被普通 auto/brush/target 清除。 |
 | `TargetSceneVoxel` 不直接产出最终 collision | Target 可影响候选和 scoring，但只有实际放置或画笔 source 才写最终 collision。 |
-| `GlobalVoxelField` 保持 3D occupancy cache | 2D 排斥场是新增的独立 buffer，不替换现有 3D `collision_occupancy`。 |
+| `GlobalVoxelField` 保持 3D occupancy cache | 2D 排斥场是新增的独立 buffer，不替换从 `SceneVoxel` collision cache/view 派生的 3D `collision_occupancy`。 |
 
 ## 推荐实现顺序
 
 1. 新增 2D XZ exclusion grid（双通道 `energy` + `budget`），挂在 `GlobalVoxelField` 或独立管理。
 2. 在 source record 或 placement asset def 中携带 `min_spacing` 作为 `budget` 来源。
-3. 对象 commit 时，把 collision 投影到 2D XZ grid 并写入初始 `energy` 和 `budget`。
+3. `SceneVoxel` commit 后，把 collision cache/view 投影到 2D XZ grid 并写入初始 `energy` 和 `budget`。
 4. 运行迭代扩散（ping-pong compute shader），直到 budget 耗尽或达到 max iterations。
 5. 在 GPU scoring 中采样 `exclusion_energy` 作为 penalty。
 6. 保留现有 3D footprint 硬碰撞作为最终确认。

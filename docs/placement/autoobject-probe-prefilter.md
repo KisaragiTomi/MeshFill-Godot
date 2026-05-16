@@ -1,18 +1,20 @@
 # AutoObject Probe 粗筛选
 
-从 `SceneVoxel`（`SV`）中提取可放置 anchor，用 `AutoObject.semantic_probes` 对目标体素采样评分，输出每个 anchor 的候选 `AutoObject` top-K，减少后续 GPU footprint scoring 的 dispatch 数量。
+从 `SceneVoxel`（`SV`）中提取可放置 anchor，用 descriptor-backed semantic probes 对目标体素采样评分，输出每个 anchor 的候选 `AutoObject` top-K，减少后续 GPU footprint scoring 的 dispatch 数量。
 
 粗筛只负责语义匹配筛选，物理可行性由 `score_voxel_tile.glsl` 精筛完成。
+
+![AutoObject probe scoring logic](../graphs/autoobject_probe_scoring_logic.svg)
 
 ---
 
 ## 目标与非目标
 
 ```text
-SV / TargetSV → anchor 提取 → probe 采样 → top-K 选择 → tile 聚合 → dispatch
+SV / TargetSV → anchor 提取 → probe 采样 → top-K 选择 → voxel 区域聚合 → dispatch
 ```
 
-- **目标** — 排除不可放置位置；按 probe 语义匹配排序 asset；输出 `autoobject_candidate_tiles` 限定 dispatch。
+- **目标** — 排除不可放置位置；按 probe 语义匹配排序 asset；输出 `autoobject_candidate_voxel_regions` 候选 voxel 区域以限定 dispatch。
 - **非目标** — 不替代 footprint 精筛；不做 mesh/SDF 精确检测；不使用 `AutoObject.scale`（强制 `Vector3.ONE`）。
 
 ---
@@ -25,8 +27,8 @@ SV / TargetSV → anchor 提取 → probe 采样 → top-K 选择 → tile 聚�
 | --- | --- | --- |
 | `SV` | 当前场景体素 | anchor 可放置性、占用/碰撞/支撑 |
 | `TargetSV` | 目标场景体素 | probe 采样目标结构 |
-| `AutoObject[]` | 可用资产列表 | `semantic_probes`、`allowed_anchor_kinds`、颜色、复杂度、碰撞 voxel |
-| `dirty_tiles` | 编辑/生成阶段 | 限制粗筛范围 |
+| `AutoObject[]` | 可用资产列表 | 通过 `AutoObject.get_semantic_probes()` 读取 descriptor-backed probes；`allowed_anchor_kinds`、颜色、复杂度、碰撞 voxel 也应来自 descriptor-backed getter 或明确的运行时约束字段 |
+| `dirty_tiles` | 编辑/生成阶段 | 限制粗筛 voxel 区域范围 |
 
 Buffer 映射：
 
@@ -43,7 +45,7 @@ Buffer 映射：
 | --- | --- |
 | `placeable_anchor_buffer` | 通过可放置测试的 anchor voxel |
 | `anchor_autoobject_topk` | 每个 anchor 的优质 `AutoObject` top-K |
-| `autoobject_candidate_tiles` | 按 `AutoObject` 聚合的 tile 坐标列表 |
+| `autoobject_candidate_voxel_regions` | 按 `AutoObject` 聚合的候选 voxel 区域列表；底层仍以离散 voxel 块坐标表示，并应为 probe 插值采样保留扩张边界 |
 | `debug_prefilter_score` | 可选调试体素 |
 
 ---
@@ -178,7 +180,7 @@ if not in_bounds(sample_pos):
     sample_pos = clamp(sample_pos, (0,0,0), grid_size - 1)
 ```
 
-实现见 `scripts/autoobject_probe_prefilter.gd` `score_autoobject()`。
+GPU 实现见 `shaders/score_anchor_asset_probes.glsl`；GDScript 只负责 buffer 打包、dispatch 和结果回读。
 
 ### 持久化
 
@@ -243,7 +245,7 @@ PlaceableAnchor {
 
 ## 阶段 2：Probe 定义
 
-通过 `auto_object.get_semantic_probes(density, anchor_kind)` 获取。约束：`scale = Vector3.ONE`，`offset` 按 asset/local space 使用。
+通过 `auto_object.get_semantic_probes(density, anchor_kind)` 获取。该 getter 从 `AutoVoxelDescriptor.semantic_probe_profile` 读取或生成 probes；`AutoObject` 上的同名字段只作为 legacy / Inspector / 配置字典兼容入口。约束：`scale = Vector3.ONE`，`offset` 按 asset/local space 使用。
 
 `probe.offset` 必须相对当前资产声明的 anchor 原点生成：
 
@@ -264,7 +266,7 @@ PlaceableAnchor {
 
 ### Context Sensing Probes
 
-小型资产（草、灌木）的 mesh AABB 很小，标准 probe 感受野有限，难以检测周围残余 TargetSV。通过 `AutoObject.context_sensing_radius` 在 mesh AABB 外围生成额外 probe：
+小型资产（草、灌木）的 mesh AABB 很小，标准 probe 感受野有限，难以检测周围残余 TargetSV。通过 descriptor 上的 `context_sensing_radius` 在 mesh AABB 外围生成额外 probe；`AutoObject.context_sensing_radius` 只作为 legacy / Inspector / 配置字典兼容入口：
 
 ```text
 context_sensing_radius = 0.0  → 禁用（默认，适合大型 rock）
@@ -298,7 +300,7 @@ generic assets             → [ground, target_top]
 ```text
 score_autoobject(anchor, auto_object):
   total_score = 0, total_weight = 0
-  for probe in auto_object.semantic_probes:
+  for probe in auto_object.get_semantic_probes(density, anchor.kind):
     sample_pos = anchor.voxel_pos + voxelize(probe.offset)
     sample = read TargetSV at sample_pos
     probe_score = score_probe(sample, probe)
@@ -353,482 +355,48 @@ probe_score    = color_fit * w_color + complexity_fit * w_complexity + collision
 
 ---
 
-## 阶段 4：Top-K 选择与 Tile 聚合
+## 阶段 4：Top-K 选择与 Voxel 区域聚合
 
 每个 anchor 先检查自身 256 个 asset 的 probe 汇总评分，过滤低质量结果，再按得分降序取 top-K（`top_k = 4`）。最终是否放置仍由后续 placement 精筛决定。
 
-Tile 聚合：
+Voxel 区域聚合：
 
 ```text
-for anchor in tile:
+for anchor in voxel_region:
   for autoobject in anchor.topK:
-    for affected_tile in asset_footprint_tiles(anchor, autoobject):
-      vote[autoobject][affected_tile] += anchor.score
-tile_autoobject_topK = topK(vote)
-// 输出: autoobject_candidate_tiles[autoobject_id] = [tile_pos: Vector3i...]
+    for affected_region in asset_footprint_regions(anchor, autoobject):
+      vote[autoobject][affected_region] += anchor.score
+region_autoobject_topK = topK(vote)
+// 输出: autoobject_candidate_voxel_regions[autoobject_id] = [voxel_region_pos: Vector3i...]
 ```
 
-`run_multi_asset()` 只对命中 tile 运行 footprint scoring。
+`run_multi_asset()` 只对命中的候选 voxel 区域运行 footprint scoring。
 
-`target_top` anchor 的资产 footprint 可能位于 anchor 下方，因此 tile 聚合必须按 asset 的 anchor-relative footprint AABB 扩展候选 tile，不能只使用 anchor 所在 tile。
+`target_top` anchor 的资产 footprint 可能位于 anchor 下方，因此 voxel 区域聚合必须按 asset 的 anchor-relative footprint AABB 扩展候选区域，不能只使用 anchor 所在区域。
+
+聚合输出不是精确采样点集合。由于 asset probes 会对 `TargetSV` / `SceneVoxel` 做插值采样，候选 voxel 区域还应覆盖 semantic probe offset bounds、`context_sensing_radius` 和至少 1 voxel 的 interpolation guard；宁可让更多 voxel 进入候选，再交给 footprint scoring 精筛。
 
 ---
 
 ## 实现
 
-基于现有 `GlobalVoxelField`、`AutoObject`、`SemanticProbeProfile` 接口。GPU 为主路径，CPU 保留用于对照验证。
+基于现有 `GlobalVoxelField`、`AutoObject`、`SemanticProbeProfile` 接口。Probe prefilter 只保留 GPU 路径；CPU 版已删除，因为 `anchor_count × asset_count × probe_count` 的完整采样量会在 GDScript 上造成过高运算压力。
 
-GPU 落地实现（主路径）：
+GPU 落地实现：
 
 | 文件 | 作用 |
 | --- | --- |
 | `scripts/autoobject_probe_prefilter_gpu.gd` | GPU 宿主：probe 打包、4-pass dispatch、结果回读 |
-| `shaders/collect_sv_anchors.glsl` | Dispatch 1 — dirty tile → ground + target_top anchor 收集（atomic append） |
+| `shaders/collect_sv_anchors.glsl` | Dispatch 1 — dirty voxel 区域 → ground + target_top anchor 收集（atomic append） |
 | `shaders/score_anchor_asset_probes.glsl` | Dispatch 2 (Pass A) — 16×16 workgroup，anchor×asset probe 评分 |
 | `shaders/select_anchor_topk.glsl` | Dispatch 3 (Pass B) — 256 线程/anchor，top-K asset 选择 |
-| `shaders/reduce_anchor_topk_to_tiles.glsl` | Dispatch 4 — anchor top-K → per-asset tile vote 聚合 |
+| `shaders/reduce_anchor_topk_to_tiles.glsl` | Dispatch 4 — anchor top-K → per-asset 候选 voxel 区域 vote 聚合 |
 
-CPU 参考实现（保留，用于对照验证）：
+GPU-only 约束：
 
-| 文件 | 作用 |
-| --- | --- |
-| `scripts/autoobject_probe_prefilter.gd` | CPU 版双 anchor 层收集、probe 评分、anchor top-K、tile 聚合 |
-
-共享模块：
-
-| 文件 | 作用 |
-| --- | --- |
-| `scripts/auto_object.gd` | `allowed_anchor_kinds`、pivot → anchor kind 推导、按 anchor kind remap semantic probe offset |
-| `scripts/global_voxel_field.gd` | `run_prefiltered_placement_dirty()` 将 prefilter 输出接到 `candidate_tiles_by_asset` |
-| `scripts/voxel_placement_generator.gd` | `candidate_tiles_by_asset` 按 asset 限定 GPU footprint scoring tile |
-
-`autoobject_candidate_tiles` 的 CPU API 输出为 `Vector3i` tile 坐标，而不是 GPU shader 内部的线性 `tile_id`。`VoxelPlacementGenerator` 会在 `_candidate_tile_to_id()` 中按自身 `tile_counts` 转换，避免不同模块的线性 tile 展开顺序耦合。
-
-### CPU 参考伪代码
-
-以下为 CPU 版 GDScript 参考实现逻辑（`autoobject_probe_prefilter.gd`），GPU 版逻辑等价但在 4 个 compute shader 中执行。
-
-#### 常量与数据结构
-
-```gdscript
-const TILE_SIZE := 8
-const ANCHOR_TOPK := 4
-const MAX_SCENE_OCC := 0.15
-const MAX_COLLISION_OCC := 0.05
-const MIN_SUPPORT := 0.25
-const MIN_TARGET_INTEREST := 0.01
-const MIN_PREFILTER_SCORE := 0.35
-const UNDERGROUND_OCC_THRESHOLD := 0.5
-const EPSILON := 1e-6
-
-const ANCHOR_KIND_GROUND := "ground"
-const ANCHOR_KIND_TARGET_TOP := "target_top"
-const ANCHOR_KIND_GROUND_ID := 0
-const ANCHOR_KIND_TARGET_TOP_ID := 1
-
-# SemanticProbeProfile flags
-const FLAG_COLOR := 1
-const FLAG_COMPLEXITY := 2
-const FLAG_COLLISION := 4
-const FLAG_EMPTY := 8
-const FLAG_SUPPORT := 16
-```
-
-#### 入口函数
-
-```gdscript
-func run_probe_prefilter(
-    gvf: GlobalVoxelField,                   # scene_occupancy, collision_occupancy
-    target_occupancy: PackedFloat32Array,     # 目标强度 (flat, same layout as gvf)
-    target_color: PackedColorArray,           # 目标颜色+复杂度 (RGBA)
-    autoobjects: Array[AutoObject],
-    dirty_tile_ids: Array[int]
-) -> Dictionary:
-    # 阶段 1
-    var anchors := _collect_anchors(gvf, target_occupancy, dirty_tile_ids)
-    # 阶段 2-3
-    var anchor_topk := _score_and_select(anchors, autoobjects, gvf, target_occupancy, target_color)
-    # 阶段 4
-    var tile_candidates := _reduce_to_tiles(anchors, anchor_topk, autoobjects, gvf)
-    return {
-        "anchors": anchors,
-        "anchor_autoobject_topk": anchor_topk,
-        "autoobject_candidate_tiles": tile_candidates,
-    }
-```
-
-#### 阶段 1：Anchor 提取
-
-```gdscript
-func _collect_anchors(
-    gvf: GlobalVoxelField,
-    target_occ: PackedFloat32Array,
-    dirty_tile_ids: Array[int]
-) -> Array[Dictionary]:
-    var anchors: Array[Dictionary] = []
-    var seen: Dictionary = {}  # "x:y:z:kind" -> true
-    for tile_id in dirty_tile_ids:
-        var tile_origin := gvf.tile_id_to_pos(tile_id) * TILE_SIZE
-
-        # Ground anchors: scan every voxel in dirty tile.
-        for lz in range(TILE_SIZE):
-            for ly in range(TILE_SIZE):
-                for lx in range(TILE_SIZE):
-                    var p := tile_origin + Vector3i(lx, ly, lz)
-                    _try_append_ground_anchor(anchors, seen, gvf, target_occ, p, tile_id)
-
-        # Target top anchors: one highest TargetSV anchor per whole XZ column.
-        for lz in range(TILE_SIZE):
-            for lx in range(TILE_SIZE):
-                _try_append_target_top_anchor(anchors, seen, gvf, target_occ, tile_origin, lx, lz)
-
-    return anchors
-
-
-func _try_append_ground_anchor(
-    anchors: Array[Dictionary],
-    seen: Dictionary,
-    gvf: GlobalVoxelField,
-    target_occ: PackedFloat32Array,
-    p: Vector3i,
-    tile_id: int,
-) -> void:
-    if not gvf.is_in_bounds(p):
-        return
-    var idx := gvf.voxel_index(p)
-    var scene_val := gvf.scene_occupancy[idx]
-    var coll_val := gvf.collision_occupancy[idx]
-    var target_val := target_occ[idx] if idx < target_occ.size() else 0.0
-
-    if scene_val > MAX_SCENE_OCC:
-        return
-    if coll_val > MAX_COLLISION_OCC:
-        return
-    if target_val < MIN_TARGET_INTEREST:
-        return
-
-    var p_down := p + Vector3i(0, -1, 0)
-    var support := 0.0
-    if gvf.is_in_bounds(p_down):
-        support = maxf(gvf.get_scene(p_down), gvf.get_collision(p_down))
-    if support < MIN_SUPPORT:
-        return
-
-    _append_anchor(anchors, seen, p, tile_id, ANCHOR_KIND_GROUND, support, target_val)
-
-
-func _try_append_target_top_anchor(
-    anchors: Array[Dictionary],
-    seen: Dictionary,
-    gvf: GlobalVoxelField,
-    target_occ: PackedFloat32Array,
-    tile_origin: Vector3i,
-    lx: int,
-    lz: int,
-) -> void:
-    var x := tile_origin.x + lx
-    var z := tile_origin.z + lz
-    for y in range(gvf.grid_size.y - 1, -1, -1):
-        var p := Vector3i(x, y, z)
-        if not gvf.is_in_bounds(p):
-            continue
-        var idx := gvf.voxel_index(p)
-        var target_val := target_occ[idx] if idx < target_occ.size() else 0.0
-        if target_val < MIN_TARGET_INTEREST:
-            continue
-
-        var p_up := p + Vector3i(0, 1, 0)
-        if gvf.is_in_bounds(p_up):
-            var up_idx := gvf.voxel_index(p_up)
-            var up_target := target_occ[up_idx] if up_idx < target_occ.size() else 0.0
-            if up_target >= MIN_TARGET_INTEREST:
-                continue
-
-        var scene_val := gvf.scene_occupancy[idx]
-        var coll_val := gvf.collision_occupancy[idx]
-        if scene_val > MAX_SCENE_OCC:
-            return
-        if coll_val > MAX_COLLISION_OCC:
-            return
-
-        var p_down := p + Vector3i(0, -1, 0)
-        var support := 0.0
-        if gvf.is_in_bounds(p_down):
-            support = maxf(gvf.get_scene(p_down), gvf.get_collision(p_down))
-
-        var tile_id := gvf._tile_id(p)
-        _append_anchor(anchors, seen, p, tile_id, ANCHOR_KIND_TARGET_TOP, support, target_val)
-        return
-
-
-func _append_anchor(
-    anchors: Array[Dictionary],
-    seen: Dictionary,
-    p: Vector3i,
-    tile_id: int,
-    anchor_kind: String,
-    support: float,
-    target_value: float,
-) -> void:
-    var key := "%d:%d:%d:%s" % [p.x, p.y, p.z, anchor_kind]
-    if seen.has(key):
-        return
-    seen[key] = true
-    anchors.append({
-        "id": anchors.size(),
-        "voxel_pos": p,
-        "tile_id": tile_id,
-        "anchor_kind": anchor_kind,
-        "support": support,
-        "target_value": target_value,
-    })
-```
-
-#### 阶段 2-3：Probe 采样评分与 Top-K 选择
-
-```gdscript
-func _score_and_select(
-    anchors: Array[Dictionary],
-    autoobjects: Array[AutoObject],
-    gvf: GlobalVoxelField,
-    target_occ: PackedFloat32Array,
-    target_color: PackedColorArray,
-) -> Dictionary:
-    # 预取所有 AutoObject × anchor_kind 的 probes
-    var all_probes: Dictionary = {}
-    for obj_idx in range(autoobjects.size()):
-        var obj := autoobjects[obj_idx]
-        for anchor_kind in obj.get("allowed_anchor_kinds", [ANCHOR_KIND_GROUND]):
-            var probe_key := _probe_cache_key(obj_idx, str(anchor_kind))
-            all_probes[probe_key] = obj.get_semantic_probes(obj.semantic_probe_density, str(anchor_kind))
-
-    var anchor_topk: Dictionary = {}  # anchor_id -> Array[{autoobject_idx, score}]
-    for anchor in anchors:
-        var candidates: Array[Dictionary] = []
-        var anchor_kind := str(anchor.anchor_kind)
-        for obj_idx in range(autoobjects.size()):
-            if not _autoobject_accepts_anchor_kind(autoobjects[obj_idx], anchor_kind):
-                continue
-            var probes: Array = all_probes.get(_probe_cache_key(obj_idx, anchor_kind), [])
-            var score := _score_autoobject(anchor, probes, gvf, target_occ, target_color)
-            if score < MIN_PREFILTER_SCORE:
-                continue
-            candidates.append({"autoobject_idx": obj_idx, "score": score})
-
-        candidates.sort_custom(func(a, b): return float(a.score) > float(b.score))
-        anchor_topk[int(anchor.id)] = candidates.slice(0, ANCHOR_TOPK)
-
-    return anchor_topk
-
-
-func _autoobject_accepts_anchor_kind(autoobject: AutoObject, anchor_kind: String) -> bool:
-    var allowed: Array = autoobject.get("allowed_anchor_kinds", [ANCHOR_KIND_GROUND])
-    return allowed.has(anchor_kind)
-
-
-func _probe_cache_key(obj_idx: int, anchor_kind: String) -> String:
-    return "%d:%s" % [obj_idx, anchor_kind]
-
-
-func _score_autoobject(
-    anchor: Dictionary,
-    probes: Array,
-    gvf: GlobalVoxelField,
-    target_occ: PackedFloat32Array,
-    target_color: PackedColorArray,
-) -> float:
-    var total_score := 0.0
-    var total_weight := 0.0
-    var anchor_pos: Vector3i = anchor.voxel_pos
-
-    for probe in probes:
-        var offset: Vector3 = probe.get("offset", Vector3.ZERO)
-        var sample_pos := anchor_pos + _voxelize_offset(offset, gvf.voxel_size)
-        if not gvf.is_in_bounds(sample_pos):
-            continue
-
-        var w := maxf(float(probe.get("weight", 1.0)), EPSILON)
-        # Underground: non-collision probes have zero weight
-        var s_idx := gvf.voxel_index(sample_pos)
-        if gvf.scene_occupancy[s_idx] >= UNDERGROUND_OCC_THRESHOLD:
-            var p_flags := int(probe.get("flags", FLAG_COLOR | FLAG_COMPLEXITY))
-            if (p_flags & FLAG_COLLISION) == 0:
-                continue
-        var ps := _score_probe(sample_pos, probe, gvf, target_occ, target_color)
-        total_score += ps * w
-        total_weight += w
-
-    return total_score / maxf(total_weight, EPSILON)
-
-
-func _voxelize_offset(offset: Vector3, voxel_size: Vector3) -> Vector3i:
-    return Vector3i(
-        roundi(offset.x / voxel_size.x),
-        roundi(offset.y / voxel_size.y),
-        roundi(offset.z / voxel_size.z),
-    )
-```
-
-#### Probe 单点评分
-
-```gdscript
-func _score_probe(
-    p: Vector3i,
-    probe: Dictionary,
-    gvf: GlobalVoxelField,
-    target_occ: PackedFloat32Array,
-    target_color: PackedColorArray,
-) -> float:
-    var idx := gvf.voxel_index(p)
-    var flags := int(probe.get("flags", FLAG_COLOR | FLAG_COMPLEXITY))
-    var kind := str(probe.get("kind", "positive"))
-
-    # 读取采样值
-    var s_color := target_color[idx] if idx < target_color.size() else Color.BLACK
-    var s_complexity := s_color.a
-    var s_collision := target_occ[idx] if idx < target_occ.size() else 0.0
-    var s_scene_occ := gvf.scene_occupancy[idx]
-
-    # Underground: only collision scoring contributes
-    if s_scene_occ >= UNDERGROUND_OCC_THRESHOLD:
-        if (flags & FLAG_COLLISION) == 0:
-            return 0.0
-        if (flags & FLAG_EMPTY) != 0 or kind == "negative":
-            return 0.0
-        if (flags & FLAG_SUPPORT) != 0:
-            return 0.0
-        var e_coll := clampf(float(probe.get("expected_collision", 0.0)), 0.0, 1.0)
-        return clampf(1.0 - absf(s_collision - e_coll), 0.0, 1.0)
-
-    # Empty / negative probe
-    if flags & FLAG_EMPTY or kind == "negative":
-        return 1.0 - maxf(s_complexity, maxf(s_collision, s_scene_occ))
-
-    # Support probe
-    if flags & FLAG_SUPPORT:
-        var p_down := p + Vector3i(0, -1, 0)
-        var s_support := 0.0
-        if gvf.is_in_bounds(p_down):
-            s_support = maxf(gvf.get_scene(p_down), gvf.get_collision(p_down))
-        return clampf(s_support, 0.0, 1.0)
-
-    # Positive probe — 加权混合 color / complexity / collision
-    var e_color: Color = probe.get("expected_color", Color.WHITE)
-    var e_complexity := float(probe.get("expected_complexity", e_color.a))
-    var e_collision := float(probe.get("expected_collision", 0.0))
-
-    var score := 0.0
-    var weight_sum := 0.0
-
-    if flags & FLAG_COLOR:
-        var dist := sqrt(
-            (s_color.r - e_color.r) ** 2 +
-            (s_color.g - e_color.g) ** 2 +
-            (s_color.b - e_color.b) ** 2
-        )
-        score += (1.0 - dist / sqrt(3.0))
-        weight_sum += 1.0
-
-    if flags & FLAG_COMPLEXITY:
-        score += (1.0 - absf(s_complexity - e_complexity))
-        weight_sum += 1.0
-
-    if flags & FLAG_COLLISION:
-        score += (1.0 - absf(s_collision - e_collision))
-        weight_sum += 1.0
-
-    return score / maxf(weight_sum, EPSILON)
-```
-
-#### 阶段 4：Tile 聚合
-
-```gdscript
-func _reduce_to_tiles(
-    anchors: Array[Dictionary],
-    anchor_topk: Dictionary,
-    autoobjects: Array[AutoObject],
-    gvf: GlobalVoxelField,
-) -> Dictionary:
-    # autoobject_idx -> { tile_id -> accumulated_score }
-    var vote: Dictionary = {}
-
-    for anchor_id in anchor_topk:
-        var anchor: Dictionary = anchors[int(anchor_id)]
-        var candidates: Array = anchor_topk[anchor_id]
-        for c in candidates:
-            var obj_idx: int = c.autoobject_idx
-            var affected_tiles := _asset_footprint_tiles(anchor, autoobjects[obj_idx], gvf)
-            if not vote.has(obj_idx):
-                vote[obj_idx] = {}
-            var tile_map: Dictionary = vote[obj_idx]
-            for tile_id in affected_tiles:
-                tile_map[tile_id] = float(tile_map.get(tile_id, 0.0)) + float(c.score)
-
-    # 输出: autoobject_idx -> [tile_pos: Vector3i, ...] (按得分降序)
-    var result: Dictionary = {}
-    for obj_idx in vote:
-        var tile_map: Dictionary = vote[obj_idx]
-        var entries: Array[Dictionary] = []
-        for tid in tile_map:
-            entries.append({"tile_id": tid, "score": tile_map[tid]})
-        entries.sort_custom(func(a, b): return float(a.score) > float(b.score))
-        var tile_positions: Array[Vector3i] = []
-        for e in entries:
-            tile_positions.append(gvf.tile_id_to_pos(int(e.tile_id)))
-        result[obj_idx] = tile_positions
-
-    return result
-
-
-func _asset_footprint_tiles(
-    anchor: Dictionary,
-    autoobject: AutoObject,
-    gvf: GlobalVoxelField,
-) -> Array[int]:
-    var anchor_pos: Vector3i = anchor.voxel_pos
-    var anchor_kind := str(anchor.anchor_kind)
-    var aabb: AABB = autoobject.get_anchor_relative_footprint_aabb(anchor_kind)
-    var min_p := anchor_pos + _voxelize_offset(aabb.position, gvf.voxel_size)
-    var max_p := anchor_pos + _voxelize_offset(aabb.position + aabb.size, gvf.voxel_size)
-    min_p = _clamp_voxel_pos(min_p, gvf)
-    max_p = _clamp_voxel_pos(max_p, gvf)
-    var min_tile := _voxel_to_tile_coord(min_p)
-    var max_tile := _voxel_to_tile_coord(max_p)
-    var tiles: Array[int] = []
-    var seen_tiles: Dictionary = {}
-
-    for tz in range(min_tile.z, max_tile.z + 1):
-        for ty in range(min_tile.y, max_tile.y + 1):
-            for tx in range(min_tile.x, max_tile.x + 1):
-                var p := Vector3i(tx, ty, tz) * TILE_SIZE
-                var tile_id := gvf._tile_id(p)
-                if seen_tiles.has(tile_id):
-                    continue
-                seen_tiles[tile_id] = true
-                tiles.append(tile_id)
-
-    if tiles.is_empty():
-        tiles.append(int(anchor.tile_id))
-    return tiles
-
-
-func _clamp_voxel_pos(p: Vector3i, gvf: GlobalVoxelField) -> Vector3i:
-    return Vector3i(
-        clampi(p.x, 0, gvf.grid_size.x - 1),
-        clampi(p.y, 0, gvf.grid_size.y - 1),
-        clampi(p.z, 0, gvf.grid_size.z - 1),
-    )
-
-
-func _voxel_to_tile_coord(p: Vector3i) -> Vector3i:
-    return Vector3i(
-        floori(float(p.x) / float(TILE_SIZE)),
-        floori(float(p.y) / float(TILE_SIZE)),
-        floori(float(p.z) / float(TILE_SIZE)),
-    )
-```
-
----
+- 不保留 `scripts/autoobject_probe_prefilter.gd` CPU fallback。
+- 不在 GDScript 中遍历完整 `anchor × asset × probe` 组合。
+- 调试验证通过 GPU readback、debug overlay、少量 fixture 和 RenderDoc 完成。
 
 ## GPU Compute Shader
 
@@ -1223,14 +791,14 @@ layout(push_constant, std430) uniform Params {
 
 // 串行扫描所有 anchor 的 top-K 结果
 // anchor.xyz → tile_id → tile_votes[asset_id * tile_count + tile_id] += score
-// 输出由 CPU 回读后按 asset 降序排列为 Vector3i tile 坐标列表
+// 输出由 CPU 回读后按 asset 降序排列为 Vector3i voxel 区域坐标列表
 ```
 
 ### GPU 宿主调度流程
 
 ```text
 1. _pack_all_probes()      — 将所有 AutoObject probe 扁平打包为 GPU buffer
-2. Dispatch 1: collect     — dirty tiles → anchor buffer (atomic append)
+2. Dispatch 1: collect     — dirty voxel 区域 → anchor buffer (atomic append)
 3. submit() + sync()       — 回读 anchor_count
 4. anchor_grid_x = ceil(sqrt(anchor_count))
    anchor_grid_y = ceil(anchor_count / anchor_grid_x)
@@ -1240,7 +808,7 @@ layout(push_constant, std430) uniform Params {
 8. submit() + sync()
 9. Dispatch 4: reduce      — (1, 1, 1)
 10. submit() + sync()      — 回读 tile_votes
-11. _decode_results()      — tile_votes → per-asset sorted Vector3i tile 列表
+11. _decode_results()      — tile_votes → per-asset sorted Vector3i voxel 区域列表
 ```
 
 ---
@@ -1252,7 +820,7 @@ layout(push_constant, std430) uniform Params {
 collision_voxels → bake_footprint → run_minimal → score_voxel_tile → reduce → stamp
 
 // 加入粗筛
-SV/TargetSV → probe prefilter → autoobject_candidate_tiles → run_multi_asset (routed tiles) → score_voxel_tile
+SV/TargetSV → probe prefilter → autoobject_candidate_voxel_regions → run_multi_asset (routed voxel regions) → score_voxel_tile
 ```
 
 粗筛只减少候选，不直接写入场景。
@@ -1280,10 +848,10 @@ SV/TargetSV → probe prefilter → autoobject_candidate_tiles → run_multi_ass
 - 从 `TargetSV` 每个 dirty XZ column 稳定提取最高 `target_top` anchor。
 - `anchor_topk` 按 `anchor.id` 存储，不因同一 voxel 的不同 `anchor_kind` 互相覆盖。
 - `AutoObject.allowed_anchor_kinds` 能限制资产只参与匹配的 anchor 层。
-- 每个 anchor 遍历所有 `AutoObject.semantic_probes` 并计算分数。
+- 每个 anchor 遍历对应 asset 的 descriptor-backed semantic probes 并计算分数。
 - 不同 asset 按 probe 匹配得到不同排序。
 - 空白/低目标区域不输出大量 asset。
-- 粗筛输出转换为 `autoobject_candidate_tiles` 限定 dispatch。
+- 粗筛输出转换为 `autoobject_candidate_voxel_regions` 候选 voxel 区域以限定 dispatch，并为 probe 插值采样保留扩张边界。
 - 最终放置由 footprint scoring 物理确认。
 
 ### GPU 管线
@@ -1292,8 +860,8 @@ SV/TargetSV → probe prefilter → autoobject_candidate_tiles → run_multi_ass
 - Dispatch 1 atomic counter 正确累计 anchor 数，不超过 `ANCHOR_CAPACITY`。
 - Pass A 使用 `16×16` 线程组，结合每个 asset 的 `probe_count` 分配 probe lane，并在 sharedgroup 内完成 score/weight 统计。
 - Pass B 让每个 anchor voxel 检查自身 256 个 asset 的 probe 汇总评分，过滤低质量结果后输出 anchor 级 top-K。
-- Dispatch 4 tile vote 聚合结果与 CPU 版一致（误差 < 1e-4）。
-- GPU 版 `run_probe_prefilter()` 输出的 `autoobject_candidate_tiles` 字典格式与 CPU 版兼容，可直接接入 `VoxelPlacementGenerator`。
+- Dispatch 4 候选 voxel 区域 vote 聚合结果能稳定解码为按 asset 分组的 `Vector3i` voxel 区域列表。
+- GPU 版 `run_probe_prefilter()` 输出的 `autoobject_candidate_voxel_regions` 字典可直接接入 `VoxelPlacementGenerator`。
 - `voxel_index` 使用 XZY 展开顺序，`unpack_rgba8` 使用 R=bits[24:31] 高位优先字节序。
 
 ---
@@ -1304,7 +872,7 @@ SV/TargetSV → probe prefilter → autoobject_candidate_tiles → run_multi_ass
 
 ### P0：Asset 粗分流
 
-- [ ] 为 anchor / tile 计算 cheap context signature。
+- [ ] 为 anchor / voxel 区域计算 cheap context signature。
 - [ ] 为每个 `AutoObject` 预烘焙 `asset_context_signature`。
 - [ ] 先用 context dot / distance 从 256 个 asset 缩到 16~32 个 asset shortlist。
 - [ ] 后续 full probe scoring 只处理 shortlist 内 asset。
@@ -1334,12 +902,12 @@ SV/TargetSV → probe prefilter → autoobject_candidate_tiles → run_multi_ass
 - [ ] 将 probe buffer 从 `2 × vec4` 压缩为半精度 / packed 格式。
 - [ ] 评估 `offset` 使用 `int16` 或 `snorm16`。
 - [ ] 评估 `weight` / `expected_collision` 使用 `float16`。
-- [ ] 评估 tile-local expanded TargetSV preload，减少相邻 anchor 重复采样。
+- [ ] 评估 voxel 区域内 expanded TargetSV preload，减少相邻 anchor 重复采样。
 
 ### P5：结构级优化
 
-- [ ] 增加 tile 级 prefilter：`tile_context → tile_asset_shortlist`。
-- [ ] anchor probe scoring 只处理所属 tile 的 asset shortlist。
+- [ ] 增加 voxel 区域级 prefilter：`region_context → region_asset_shortlist`。
+- [ ] anchor probe scoring 只处理所属 voxel 区域的 asset shortlist。
 - [ ] 将 asset 按语义 probe 聚类成 group。
 - [ ] 先选择 group top-K，再在 group 内选择 asset top-K。
 

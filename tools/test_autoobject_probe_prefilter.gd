@@ -1,7 +1,7 @@
 extends SceneTree
 
 const GVF := preload("res://scripts/global_voxel_field.gd")
-const Prefilter := preload("res://scripts/autoobject_probe_prefilter.gd")
+const Prefilter := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
 const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
 
 
@@ -61,8 +61,7 @@ func _test_dual_anchor_layers() -> bool:
 	prefilter.min_prefilter_score = 0.9
 	var result: Dictionary = prefilter.run_probe_prefilter(field, target, target_color, [ground_asset, upper_asset], field.get_dirty_tile_ids())
 	var anchors: Array = result.get("anchors", [])
-	var topk: Dictionary = result.get("anchor_autoobject_topk", {})
-	var candidate_tiles: Dictionary = result.get("autoobject_candidate_tiles", {})
+	var candidate_voxel_regions: Dictionary = result.get("autoobject_candidate_voxel_regions", {})
 	if int(result.get("ground_anchor_count", 0)) <= 0:
 		push_error("  FAIL: expected ground anchors")
 		return false
@@ -70,45 +69,19 @@ func _test_dual_anchor_layers() -> bool:
 		push_error("  FAIL: expected target_top anchors")
 		return false
 
-	var saw_ground_candidate := false
-	var saw_top_candidate := false
-	for anchor in anchors:
-		var anchor_id := int(anchor.get("id", -1))
-		var anchor_kind := str(anchor.get("anchor_kind", ""))
-		var candidates: Array = topk.get(anchor_id, [])
-		for raw_candidate in candidates:
-			var candidate := raw_candidate as Dictionary
-			var obj_idx := int(candidate.get("autoobject_idx", -1))
-			if anchor_kind == AutoObject.ANCHOR_KIND_GROUND:
-				if obj_idx == 1:
-					push_error("  FAIL: upper asset appeared in ground anchor topK")
-					return false
-				if obj_idx == 0:
-					saw_ground_candidate = true
-			elif anchor_kind == AutoObject.ANCHOR_KIND_TARGET_TOP:
-				if obj_idx == 0:
-					push_error("  FAIL: ground asset appeared in target_top anchor topK")
-					return false
-				if obj_idx == 1:
-					saw_top_candidate = true
-
-	if not saw_ground_candidate:
-		push_error("  FAIL: ground asset was not selected by ground anchors")
-		return false
-	if not saw_top_candidate:
-		push_error("  FAIL: upper asset was not selected by target_top anchors")
-		return false
+	# GPU-only prefilter does not read back per-anchor topK. The supported
+	# GDScript contract is per-asset routed voxel-region output.
 	for obj_idx in [0, 1]:
-		if not candidate_tiles.has(obj_idx):
-			push_error("  FAIL: expected routed candidate tiles for asset %d" % obj_idx)
+		if not candidate_voxel_regions.has(obj_idx):
+			push_error("  FAIL: expected routed candidate voxel regions for asset %d" % obj_idx)
 			return false
-		var routed_tiles: Array = candidate_tiles.get(obj_idx, [])
-		if routed_tiles.is_empty():
-			push_error("  FAIL: empty routed candidate tiles for asset %d" % obj_idx)
+		var routed_regions: Array = candidate_voxel_regions.get(obj_idx, [])
+		if routed_regions.is_empty():
+			push_error("  FAIL: empty routed candidate voxel regions for asset %d" % obj_idx)
 			return false
-		for tile_pos in routed_tiles:
-			if not tile_pos is Vector3i:
-				push_error("  FAIL: routed candidate tiles must be Vector3i tile positions")
+		for voxel_region_pos in routed_regions:
+			if not voxel_region_pos is Vector3i:
+				push_error("  FAIL: routed candidate voxel regions must be Vector3i region positions")
 				return false
 
 	ground_asset.free()

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200" role="img" aria-labelledby="title desc">
   <title id="title">MeshFill Current Framework</title>
-  <desc id="desc">Current MeshFill-Godot framework: TargetSceneVoxel target canvas, AutoObject semantic probes, candidate-only routing, candidate_tiles_by_asset, physical voxel placement, committed SceneVoxel state, and GlobalVoxelField dirty cache.</desc>
+  <desc id="desc">Current MeshFill-Godot framework: TargetSceneVoxel target canvas, AutoObject semantic probes, sparse candidate voxel-region indices, physical placement sampling committed SceneVoxel occupancy views, SceneVoxel base fields, internal collision cache/view, and GlobalVoxelField addressable cache.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
       <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
@@ -58,19 +58,19 @@
   <path class="grid" d="M320 120V1160M640 120V1160M960 120V1160M1280 120V1160"/>
 
   <text class="title" x="48" y="58">MeshFill Current Framework</text>
-  <text class="subtitle" x="48" y="88">TargetSV is a neutral target canvas; AutoObject probes create candidate routes; GPU placement physically scores routed asset/tile pairs.</text>
+  <text class="subtitle" x="48" y="88">TargetSV is a neutral target canvas; routing outputs sparse candidate voxel-region indices; GPU scoring samples committed SceneVoxel views by coordinate.</text>
 
   <rect class="band target-band" x="32" y="124" width="326" height="548" rx="20" ry="20"/>
   <rect class="band asset-band" x="388" y="124" width="326" height="548" rx="20" ry="20"/>
   <rect class="band route-band" x="744" y="124" width="386" height="548" rx="20" ry="20"/>
   <rect class="band place-band" x="1160" y="124" width="408" height="548" rx="20" ry="20"/>
-  <rect class="band state-band" x="32" y="714" width="1536" height="318" rx="20" ry="20"/>
+  <rect class="band state-band" x="32" y="714" width="1536" height="332" rx="20" ry="20"/>
 
   <text class="band-title" x="56" y="156">TARGET INTENT</text>
   <text class="band-title" x="412" y="156">ASSET DEFAULTS</text>
   <text class="band-title" x="768" y="156">CANDIDATE ROUTING</text>
   <text class="band-title" x="1184" y="156">PHYSICAL PLACEMENT</text>
-  <text class="band-title" x="56" y="746">COMMITTED STATE / DIRTY CACHE</text>
+  <text class="band-title" x="56" y="746">COMMITTED SCENEVOXEL STATE / DIRTY CACHE</text>
 
   <rect class="node target" x="58" y="184" width="274" height="112" rx="16" ry="16"/>
   <text class="label" x="78" y="216">TargetSceneVoxel</text>
@@ -126,26 +126,26 @@
   <text class="tiny" x="790" y="512">rerank, validate, prune only</text>
 
   <rect class="node route" x="770" y="548" width="334" height="82" rx="16" ry="16"/>
-  <text class="label" x="790" y="580">candidate_tiles_by_asset</text>
-  <text class="small" x="790" y="604">asset_index -> tile_ids</text>
-  <text class="tiny" x="790" y="622">assets without routed tiles are skipped</text>
+  <text class="label" x="790" y="576">candidate_voxel_regions</text>
+  <text class="label" x="790" y="598">_by_asset</text>
+  <text class="small" x="790" y="618">asset_index -> sparse voxel-region ids</text>
 
   <rect class="node placement" x="1186" y="184" width="354" height="104" rx="16" ry="16"/>
   <text class="label" x="1206" y="216">VoxelPlacementGenerator</text>
   <text class="small" x="1206" y="240">run_multi_asset(common_settings)</text>
-  <text class="mono" x="1206" y="264">reads candidate_tiles_by_asset</text>
+  <text class="mono" x="1206" y="264">reads sparse candidate region list</text>
 
   <rect class="node placement" x="1186" y="316" width="354" height="132" rx="16" ry="16"/>
   <text class="label" x="1206" y="348">GPU Score / Reduce / Stamp</text>
   <text class="small" x="1206" y="372">score_voxel_tile.glsl</text>
-  <text class="small" x="1206" y="394">support / collision / clearance</text>
-  <text class="small" x="1206" y="416">overlap / target occupancy / color</text>
-  <text class="tiny" x="1206" y="436">no semantic dot / MLP in score shader</text>
+  <text class="small" x="1206" y="394">sample SceneVoxel views by coord</text>
+  <text class="small" x="1206" y="416">support / collision / clearance</text>
+  <text class="tiny" x="1206" y="436">candidate list is not the sample field</text>
 
   <rect class="node placement" x="1186" y="476" width="354" height="112" rx="16" ry="16"/>
   <text class="label" x="1206" y="508">Placement Results</text>
-  <text class="small" x="1206" y="532">accepted asset / tile placements</text>
-  <text class="small" x="1206" y="554">stamp deltas into voxel field</text>
+  <text class="small" x="1206" y="532">accepted asset / voxel-region placements</text>
+  <text class="small" x="1206" y="554">stamp source voxel deltas</text>
   <text class="tiny" x="1206" y="572">CPU instantiates after GPU decision</text>
 
   <path class="edge-blue" d="M332 240 H360 V170 H744 V210 H770"/>
@@ -160,7 +160,7 @@
   <path class="edge" d="M937 388 V416"/>
   <path class="edge" d="M937 520 V548"/>
   <path class="edge-green" d="M1104 589 L1132 589 L1132 252 L1186 252"/>
-  <text class="tiny" x="1138" y="578">routed tiles only</text>
+  <text class="tiny" x="1138" y="578">sparse routed regions only</text>
   <path class="edge" d="M1363 288 V316"/>
   <path class="edge" d="M1363 448 V476"/>
 
@@ -170,11 +170,12 @@
   <text class="small" x="78" y="856">voxel_record runtime data</text>
   <text class="tiny" x="78" y="874">position, ids, bands, collision</text>
 
-  <rect class="node state" x="338" y="778" width="244" height="106" rx="16" ry="16"/>
-  <text class="label" x="358" y="810">Source Deltas</text>
-  <text class="small" x="358" y="834">AutoSceneVoxelDelta</text>
-  <text class="small" x="358" y="856">BrushSceneVoxelDelta</text>
-  <text class="tiny" x="358" y="874">per-tick intent writes</text>
+  <rect class="node state" x="338" y="766" width="244" height="140" rx="16" ry="16"/>
+  <text class="label" x="358" y="798">SourceSceneVoxelDelta</text>
+  <text class="small" x="358" y="822">inherits SceneVoxel fields</text>
+  <text class="small" x="358" y="844">source_voxel_type / kind</text>
+  <text class="tiny" x="358" y="864">producer_stage / read-write ticks</text>
+  <text class="tiny" x="358" y="884">collision_voxels: auto / brush</text>
 
   <rect class="node state" x="618" y="778" width="244" height="106" rx="16" ry="16"/>
   <text class="label" x="638" y="810">blend_scene_voxels()</text>
@@ -182,55 +183,59 @@
   <text class="small" x="638" y="856">commit final voxel meaning</text>
   <text class="tiny" x="638" y="874">next systems read committed state</text>
 
-  <rect class="node state" x="898" y="778" width="244" height="106" rx="16" ry="16"/>
-  <text class="label" x="918" y="810">SceneVoxel + Collision Cache</text>
-  <text class="small" x="918" y="834">committed read model</text>
-  <text class="small" x="918" y="856">occupancy / collision volume</text>
-  <text class="tiny" x="918" y="874">single source for next tick</text>
+  <rect class="node state" x="898" y="738" width="320" height="206" rx="16" ry="16"/>
+  <text class="label" x="918" y="770">SceneVoxel</text>
+  <text class="small" x="918" y="794">committed read model</text>
+  <text class="small" x="918" y="816">base: type / occupied / value</text>
+  <text class="tiny" x="918" y="838">color / complexity / band / channel</text>
+  <text class="tiny" x="918" y="858">coords: slice_index / voxel_xz / base_pixel</text>
+  <text class="tiny" x="918" y="878">ids: record_id / auto_id / instance_id</text>
+  <text class="tiny" x="918" y="898">commit: source_voxel_types / blend_mode</text>
+  <text class="tiny" x="918" y="918">commit_tick + internal collision cache/view</text>
 
-  <rect class="node cache" x="1178" y="778" width="244" height="106" rx="16" ry="16"/>
-  <text class="label" x="1198" y="810">GlobalVoxelField</text>
-  <text class="small" x="1198" y="834">sparse tile occupancy cache</text>
-  <text class="small" x="1198" y="856">dirty tile / rect tracking</text>
-  <text class="tiny" x="1198" y="874">rebuild affected routes</text>
+  <rect class="node cache" x="1248" y="778" width="292" height="106" rx="16" ry="16"/>
+  <text class="label" x="1268" y="810">GlobalVoxelField</text>
+  <text class="small" x="1268" y="834">addressable occupancy views</text>
+  <text class="small" x="1268" y="856">dirty voxel-region / rect tracking</text>
+  <text class="tiny" x="1268" y="874">physical samples read by voxel coord</text>
 
-  <rect class="node support" x="58" y="914" width="244" height="70" rx="16" ry="16"/>
-  <text class="label" x="78" y="944">Metadata / Manager</text>
-  <text class="tiny" x="78" y="968">index handle only, not default source</text>
+  <rect class="node support" x="58" y="964" width="244" height="54" rx="16" ry="16"/>
+  <text class="label" x="78" y="994">Metadata / Manager</text>
+  <text class="tiny" x="78" y="1012">index handle only, not default source</text>
 
-  <rect class="node support" x="338" y="914" width="244" height="70" rx="16" ry="16"/>
-  <text class="label" x="358" y="944">Legacy Producers</text>
-  <text class="tiny" x="358" y="968">fitting / scatter / brush write deltas</text>
+  <rect class="node support" x="338" y="964" width="244" height="54" rx="16" ry="16"/>
+  <text class="label" x="358" y="994">Legacy Producers</text>
+  <text class="tiny" x="358" y="1012">fitting / scatter / brush write deltas</text>
 
-  <rect class="node support" x="618" y="914" width="244" height="70" rx="16" ry="16"/>
-  <text class="label" x="638" y="944">Validation / Debug</text>
-  <text class="tiny" x="638" y="968">query_voxel(), preview, inspect tools</text>
+  <rect class="node support" x="618" y="964" width="244" height="54" rx="16" ry="16"/>
+  <text class="label" x="638" y="994">Validation / Debug</text>
+  <text class="tiny" x="638" y="1012">query_voxel(), preview, inspect tools</text>
 
-  <rect class="node hardgate" x="898" y="914" width="244" height="70" rx="16" ry="16"/>
-  <text class="label" x="918" y="944">Forbidden Path</text>
-  <text class="tiny" x="918" y="968">no full-library semantic lookup</text>
+  <rect class="node hardgate" x="898" y="964" width="244" height="54" rx="16" ry="16"/>
+  <text class="label" x="918" y="994">Forbidden Path</text>
+  <text class="tiny" x="918" y="1012">no full-library semantic lookup</text>
 
-  <rect class="node support" x="1178" y="914" width="244" height="70" rx="16" ry="16"/>
-  <text class="label" x="1198" y="944">Dirty Update Loop</text>
-  <text class="tiny" x="1198" y="968">affected anchors / tiles only</text>
+  <rect class="node support" x="1248" y="964" width="292" height="54" rx="16" ry="16"/>
+  <text class="label" x="1268" y="994">Dirty Update Loop</text>
+  <text class="tiny" x="1268" y="1012">affected anchors / voxel regions only</text>
 
-  <path class="edge" d="M1363 588 C1363 690 318 690 318 831 H302"/>
+  <path class="edge" d="M1363 588 C1363 690 318 690 318 836 H302"/>
   <text class="tiny" x="972" y="684">accepted placements build records</text>
-  <path class="edge" d="M302 831 H338"/>
-  <path class="edge" d="M582 831 H618"/>
-  <path class="edge" d="M862 831 H898"/>
-  <path class="edge" d="M1142 831 H1178"/>
-  <path class="edge-soft" d="M1020 884 V914"/>
-  <path class="edge-soft" d="M740 884 V914"/>
-  <path class="edge-soft" d="M460 914 V884"/>
-  <path class="edge-loop" d="M1300 778 C1300 704 1164 704 1010 674 C884 648 810 646 770 630"/>
+  <path class="edge" d="M302 836 H338"/>
+  <path class="edge" d="M582 836 H618"/>
+  <path class="edge" d="M862 836 H898"/>
+  <path class="edge" d="M1218 836 H1248"/>
+  <path class="edge-soft" d="M1020 944 V964"/>
+  <path class="edge-soft" d="M740 884 V964"/>
+  <path class="edge-soft" d="M460 964 V906"/>
+  <path class="edge-loop" d="M1394 778 C1394 704 1164 704 1010 674 C884 648 810 646 770 630"/>
   <text class="tiny" x="1010" y="662">dirty anchors -> reroute affected assets</text>
 
   <rect class="tick" x="120" y="1060" width="1360" height="70" rx="18" ry="18"/>
   <text class="pill-text" x="150" y="1102">generation_tick:</text>
   <text class="small" x="286" y="1102">read SceneVoxel[t - 1]</text>
   <path class="edge-soft" d="M474 1096 H594"/>
-  <text class="small" x="622" y="1102">route candidate tiles</text>
+  <text class="small" x="622" y="1102">route candidate voxel regions</text>
   <path class="edge-soft" d="M790 1096 H910"/>
   <text class="small" x="938" y="1102">GPU physical placement</text>
   <path class="edge-soft" d="M1112 1096 H1232"/>
@@ -241,7 +246,7 @@
   <rect class="tick" x="414" y="626" width="274" height="28" rx="14" ry="14"/>
   <text class="tiny" x="434" y="645">Rule: assets answer what they are</text>
   <rect class="tick" x="770" y="642" width="334" height="28" rx="14" ry="14"/>
-  <text class="tiny" x="790" y="661">Rule: routing reduces candidate asset/tile pairs</text>
+  <text class="tiny" x="790" y="661">Rule: routing outputs sparse candidate region indices</text>
   <rect class="tick" x="1186" y="626" width="354" height="28" rx="14" ry="14"/>
   <text class="tiny" x="1206" y="645">Rule: physical scoring decides if it can be placed</text>
 </svg>

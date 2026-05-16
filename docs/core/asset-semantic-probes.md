@@ -1,6 +1,8 @@
 # Asset Semantic Probes — 资产语义采样点
 
-本文记录当前 `AutoObject.semantic_probes` 的资产侧约定。Probe 用于上游 prefilter 和候选集内部 rerank / validation，不负责从全资产库发现新候选。
+本文记录当前 `AutoVoxelDescriptor.semantic_probe_profile` 的资产侧约定。Probe 通过 `AutoObject.get_semantic_probes()` 读取或生成，但资产语义主来源仍是 descriptor；Probe 用于上游 prefilter 和候选集内部 rerank / validation，不负责从全资产库发现新候选。
+
+![AutoObject probe scoring logic](../graphs/autoobject_probe_scoring_logic.svg)
 
 ## 当前边界
 
@@ -13,6 +15,8 @@
 | TargetSV 采样 | 越界 sample 先 clamp 到最近的有效 TargetSV voxel。 |
 
 旧版“每个 ground anchor 遍历所有 asset 并输出 voxel 级 top-K”的方案已废弃；当前 hard gate 是每个 anchor 的粗筛候选集。
+
+`AutoObject.semantic_probe_profile`、`semantic_probe_density` 和 `context_sensing_radius` 只作为 legacy / Inspector / 配置字典兼容入口；新逻辑应通过 descriptor-backed getter 读取 probes。
 
 ## Probe 数据结构
 
@@ -28,7 +32,7 @@
 | `kind` | `positive` / `negative` 等 probe 类型。 |
 | `source` | `convex`、`voxel_interior`、`surface`、`context` 等生成来源。 |
 
-GPU / CPU buffer 可以按 SoA 保存：
+GPU prefilter buffer 按 SoA 保存：
 
 ```text
 asset_probe_offset_buffer
@@ -106,8 +110,8 @@ route_score = combine(candidate_score, probe_score, support_hint)
 
 ## 与其他文档的关系
 
-- `../placement/autoobject-probe-prefilter.md`：说明 CPU / GPU prefilter 如何生成 `anchor_autoobject_topk` 和 candidate tiles。
-- `../placement/voxel-semantic-routing.md`：说明候选路由、TargetSV clamp 采样和 `candidate_tiles_by_asset` 合约。
+- `../placement/autoobject-probe-prefilter.md`：说明 GPU prefilter 如何生成 `anchor_autoobject_topk` 和候选 voxel 区域。
+- `../placement/voxel-semantic-routing.md`：说明候选路由、TargetSV clamp 采样和 `candidate_voxel_regions_by_asset` 的候选 voxel 区域合约。
 - `../placement/target-scene-voxel-projection.md`：说明 TargetSV 作为中性目标画布，以及 projection cache 的后续方向。
 
 ## 验收标准

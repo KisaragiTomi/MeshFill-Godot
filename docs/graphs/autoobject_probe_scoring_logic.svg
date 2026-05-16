@@ -33,7 +33,7 @@
   <rect class="bg" x="0" y="0" width="1480" height="1060"/>
 
   <text class="title" x="60" y="62">AutoObject Probe 当前评分计算逻辑</text>
-  <text class="subtitle" x="62" y="94">来源：scripts/autoobject_probe_prefilter.gd ｜ 重点：地下 probe 只保留 collision 评分，其余权重归零</text>
+  <text class="subtitle" x="62" y="94">来源：shaders/score_anchor_asset_probes.glsl ｜ GPU-only：地下 probe 只保留 collision 评分</text>
 
   <rect class="box-blue" x="50" y="132" width="410" height="110"/>
   <text class="section" x="78" y="170">输入</text>
@@ -43,7 +43,7 @@
   <rect class="box" x="535" y="132" width="390" height="110"/>
   <text class="section" x="563" y="170">遍历每条 probe</text>
   <text class="mono" x="563" y="200">sample_pos = anchor + voxelize(offset)</text>
-  <text class="small" x="563" y="224">越界 probe 直接跳过，不参与权重累计</text>
+  <text class="small" x="563" y="224">越界 probe clamp 到最近有效 voxel</text>
 
   <rect class="box-yellow" x="1000" y="132" width="405" height="110"/>
   <text class="section" x="1028" y="170">准备累计</text>

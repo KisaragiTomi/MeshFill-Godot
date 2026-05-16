@@ -10,7 +10,7 @@ The project is an engineering prototype rather than a finished game. Its main go
 - `voxel_record` stores per-instance runtime placement data, source voxel intent, and lookup fields.
 - `SceneVoxel` and `GlobalVoxelField` represent committed scene state and sparse occupancy cache for later placement, validation, and debug queries.
 - `TargetSceneVoxel` is a neutral target canvas for color, complexity, and collision intent. It does not store labels such as `tree`, `rock`, or `grass`.
-- `AutoObjectProbePrefilter` and `AutoObjectProbePrefilterGPU` collect anchors from `SV` / `TargetSV`, score asset probes, and output candidate `AutoObject` top-K plus candidate tiles.
+- `AutoObjectProbePrefilterGPU` collects anchors from `SV` / `TargetSV`, scores asset probes, and outputs candidate `AutoObject` top-K plus candidate voxel regions.
 - `VoxelPlacementGenerator` remains responsible for physical scoring: footprint, support, collision, clearance, and final stamping.
 
 ## Project Layout
@@ -79,6 +79,7 @@ godot --headless --path . --script tools/scaffold_auto_asset.gd -- --config res:
 ```
 
 These scripts are useful for local checks and resource generation. They are not a complete CI suite.
+`tools/test_autoobject_probe_prefilter.gd` exercises the GPU-only prefilter path and requires a working RenderingDevice.
 
 ## Documentation Map
 
@@ -89,8 +90,8 @@ These scripts are useful for local checks and resource generation. They are not 
 | [`docs/core/asset-properties.md`](docs/core/asset-properties.md) | Current AutoObject, descriptor, profile, `voxel_record`, and metadata field reference |
 | [`docs/core/scene-voxel-field-system.md`](docs/core/scene-voxel-field-system.md) | Source voxel deltas, final `SceneVoxel`, and `GlobalVoxelField` cache |
 | [`docs/placement/target-scene-voxel-projection.md`](docs/placement/target-scene-voxel-projection.md) | TargetSV canvas, stamp model, VDB import plan, projection cache, and persistence |
-| [`docs/placement/autoobject-probe-prefilter.md`](docs/placement/autoobject-probe-prefilter.md) | AutoObject probe prefilter and GPU candidate tile output |
-| [`docs/placement/voxel-semantic-routing.md`](docs/placement/voxel-semantic-routing.md) | Candidate asset routing and tile routing |
+| [`docs/placement/autoobject-probe-prefilter.md`](docs/placement/autoobject-probe-prefilter.md) | AutoObject probe prefilter and GPU candidate voxel-region output |
+| [`docs/placement/voxel-semantic-routing.md`](docs/placement/voxel-semantic-routing.md) | Candidate asset routing and voxel-region routing |
 | [`docs/core/auto-asset-scripting.md`](docs/core/auto-asset-scripting.md) | Scripted rock and vegetation asset creation |
 | [`docs/graphs/README.md`](docs/graphs/README.md) | Architecture graph index |
 

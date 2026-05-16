@@ -2,6 +2,8 @@
 
 这份文档把“新增岩石 / 新增植被”的手工步骤收拢到脚本入口。核心文件：
 
+![AutoObject asset properties map](../graphs/autoobject_asset_properties.svg)
+
 | File | Purpose |
 | --- | --- |
 | `scripts/auto_asset_factory.gd` | 创建 `AutoRock` / `AutoVegetation` 子类资产，同步对象体素字段，并可生成共享 profile 预设 |

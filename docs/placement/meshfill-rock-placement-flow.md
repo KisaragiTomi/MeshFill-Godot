@@ -1,5 +1,7 @@
 # MeshFill Placement Fitting：石头 Consumer 流程
 
+![MeshFill compute shader 3D placement flow](../graphs/meshfill_compute_shader_3d_placement.svg)
+
 ## 核心思路
 
 **当前石头 consumer 使用石头的高度图（mesh_height_texture）来填充放置区域。**

@@ -6,8 +6,8 @@ const GVF := preload("res://scripts/global_voxel_field.gd")
 
 func _init() -> void:
 	var ok := true
-	ok = ok and _test_same_type_neighbor_skips_candidate_tile()
-	ok = ok and _test_different_subtype_keeps_candidate_tile()
+	ok = ok and _test_same_type_neighbor_skips_candidate_voxel_region()
+	ok = ok and _test_different_subtype_keeps_candidate_voxel_region()
 	ok = ok and _test_global_field_autoobject_metadata_gate()
 	if ok:
 		print("[VoxelSameTypeExclusion] ALL TESTS PASSED")
@@ -17,8 +17,8 @@ func _init() -> void:
 		quit(1)
 
 
-func _test_same_type_neighbor_skips_candidate_tile() -> bool:
-	print("[VoxelSameTypeExclusion] test_same_type_neighbor_skips_candidate_tile...")
+func _test_same_type_neighbor_skips_candidate_voxel_region() -> bool:
+	print("[VoxelSameTypeExclusion] test_same_type_neighbor_skips_candidate_voxel_region...")
 	var manager := AutoObjectManager.new()
 	manager.configure_spatial_index(4.0)
 	var existing := _make_object("existing_bush", "vegetation", "bush", Vector3(2.0, 0.0, 2.0), 3.0)
@@ -29,7 +29,7 @@ func _test_same_type_neighbor_skips_candidate_tile() -> bool:
 		"min_spacing": 3.0,
 	})
 
-	var result := _run_single_tile_placement(manager, "bush")
+	var result := _run_single_voxel_region_placement(manager, "bush")
 	var asset_results: Array = result.get("asset_results", [])
 	var a0: Dictionary = asset_results[0]
 	if not bool(a0.get("skipped_same_type_exclusion", false)):
@@ -38,8 +38,8 @@ func _test_same_type_neighbor_skips_candidate_tile() -> bool:
 		manager.free()
 		return false
 	var exclusion: Dictionary = a0.get("same_type_exclusion", {})
-	if int(exclusion.get("blocked_tile_count", 0)) != 1:
-		push_error("  FAIL: expected one blocked tile, got %s" % str(exclusion))
+	if int(exclusion.get("blocked_voxel_region_count", 0)) != 1:
+		push_error("  FAIL: expected one blocked voxel region, got %s" % str(exclusion))
 		existing.free()
 		manager.free()
 		return false
@@ -50,8 +50,8 @@ func _test_same_type_neighbor_skips_candidate_tile() -> bool:
 	return true
 
 
-func _test_different_subtype_keeps_candidate_tile() -> bool:
-	print("[VoxelSameTypeExclusion] test_different_subtype_keeps_candidate_tile...")
+func _test_different_subtype_keeps_candidate_voxel_region() -> bool:
+	print("[VoxelSameTypeExclusion] test_different_subtype_keeps_candidate_voxel_region...")
 	var manager := AutoObjectManager.new()
 	manager.configure_spatial_index(4.0)
 	var existing := _make_object("existing_bush", "vegetation", "bush", Vector3(2.0, 0.0, 2.0), 3.0)
@@ -64,7 +64,7 @@ func _test_different_subtype_keeps_candidate_tile() -> bool:
 
 	var exclusion := _run_same_type_filter(manager, "grass")
 	if not exclusion.is_empty():
-		push_error("  FAIL: grass candidate should not have blocked tiles: %s" % str(exclusion))
+		push_error("  FAIL: grass candidate should not have blocked voxel regions: %s" % str(exclusion))
 		existing.free()
 		manager.free()
 		return false
@@ -96,7 +96,7 @@ func _test_global_field_autoobject_metadata_gate() -> bool:
 			"collision_voxels": [
 				{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "value": 1.0}
 			],
-			"candidate_tiles": [Vector3i(0, 0, 0)],
+			"candidate_voxel_regions": [Vector3i(0, 0, 0)],
 			"result_capacity": 1,
 		},
 	]
@@ -127,7 +127,7 @@ func _test_global_field_autoobject_metadata_gate() -> bool:
 	return true
 
 
-func _run_single_tile_placement(manager: AutoObjectManager, subtype: String) -> Dictionary:
+func _run_single_voxel_region_placement(manager: AutoObjectManager, subtype: String) -> Dictionary:
 	var grid_size := Vector3i(16, 8, 16)
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
 	var voxel_size := Vector3(0.5, 0.5, 0.5)
@@ -149,7 +149,7 @@ func _run_single_tile_placement(manager: AutoObjectManager, subtype: String) -> 
 			"collision_voxels": [
 				{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "value": 1.0}
 			],
-			"candidate_tiles": [Vector3i(0, 0, 0)],
+			"candidate_voxel_regions": [Vector3i(0, 0, 0)],
 			"result_capacity": 1,
 			"min_distance_voxels": 0.0,
 		},
@@ -176,10 +176,10 @@ func _run_same_type_filter(manager: AutoObjectManager, subtype: String) -> Dicti
 		],
 	}
 	var settings := {
-		"candidate_tiles": [Vector3i(0, 0, 0)],
+		"candidate_voxel_regions": [Vector3i(0, 0, 0)],
 		"auto_object_manager": manager,
 	}
-	return VPG._filter_candidate_tiles_by_same_type_exclusion(
+	return VPG._filter_candidate_voxel_regions_by_same_type_exclusion(
 		settings,
 		asset_def,
 		grid_size,

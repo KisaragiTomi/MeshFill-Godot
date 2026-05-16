@@ -4,27 +4,36 @@
 
 本文是当前资产字段、descriptor 兼容入口和 metadata 规则的可靠速查。旧版同名文档曾因编码问题变成 mojibake，已不再作为来源；本版以当前 GDScript 为准。
 
+资产语义唯一主来源规则：
+
+- `AutoVoxelDescriptor` 是资产体素语义的唯一权威来源。
+- `AutoObject.voxel_descriptor` 是运行时节点持有 descriptor 的入口。
+- `AutoObject` 上与 descriptor 重复的语义字段只保留为 legacy / Inspector / 配置字典兼容入口。
+- 新代码读取资产语义时必须走 descriptor 或 `AutoObject` 的 descriptor-backed getter。
+- 新代码写入资产语义时应优先写 descriptor，再按兼容需要同步旧字段；不要把旧字段当成第二套状态。
+- 新增语义字段时默认加到 `AutoVoxelDescriptor`；除非明确是运行时身份、放置约束或调试索引，否则不要再加到 `AutoObject`。
+
 相关边界：
 
 - `meshfill-framework.md` 说明数据归属和主流程。
-- `scene-voxel-field-system.md` 说明 `voxel_record`、source delta、`SceneVoxel` 和 collision cache。
+- `scene-voxel-field-system.md` 说明 `voxel_record`、source voxel delta、`SceneVoxel` 和 collision cache。
 - `asset-semantic-probes.md` 说明资产侧 semantic probes。
 
 ## 资产层级
 
 | 类型 | 角色 | 主要文件 |
 | --- | --- | --- |
-| `AutoObject` | 所有自动放置对象的运行时基类 | `scripts/auto_object.gd` |
+| `AutoObject` | 所有自动放置对象的运行时基类；持有 descriptor 入口和运行时状态 | `scripts/auto_object.gd` |
 | `AutoRock` / `AutoCliffRock` | 岩石对象类型 | `scripts/auto_rock.gd` / `scripts/auto_cliff_rock.gd` |
 | `AutoVegetation` 及子类 | 植被对象类型 | `scripts/auto_vegetation.gd` 等 |
 | `AutoVegetationAsset` | 植被资源定义，可实例化运行时节点 | `scripts/auto_vegetation_asset.gd` |
-| `AutoVoxelDescriptor` | 资产默认体素语义、pivot 和 semantic probe 配置 | `scripts/auto_voxel_descriptor.gd` |
+| `AutoVoxelDescriptor` | 资产默认体素语义、pivot 和 semantic probe 配置的唯一权威来源 | `scripts/auto_voxel_descriptor.gd` |
 | `AutoVoxelProfile` | 轻量共享体素 profile，保存颜色、复杂度、bands 和 collision | `scripts/auto_voxel_profile.gd` |
 | `AutoAssetFactory` | 脚本化创建资产、profile、descriptor 和 `voxel_record` | `scripts/auto_asset_factory.gd` |
 
 ## `AutoObject` 运行时字段 / descriptor 兼容入口
 
-`AutoObject` 是场景里的运行时节点，负责对象身份、来源、mesh、放置约束和运行时 `voxel_record`。资产侧体素语义的主结构是 `voxel_descriptor`；表中标为“兼容入口”的字段会同步到 descriptor，用来支持旧资产、Inspector 编辑和配置字典。
+`AutoObject` 是场景里的运行时节点，负责对象身份、来源、mesh、放置约束和运行时 `voxel_record`。资产侧体素语义的唯一权威来源是 `voxel_descriptor`；表中标为“兼容入口”的字段会同步到 descriptor，用来支持旧资产、Inspector 编辑和配置字典，不能作为新的语义状态来源。
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
@@ -36,19 +45,28 @@
 | `min_spacing` | `float` | XZ 中心间距约束；`0` 表示自动计算。 |
 | `bound_min_length` | `float` | mesh bounds 最小轴长度，用于默认间距。 |
 | `source_mesh` / `source_mesh_path` | `Mesh` / `String` | 原始 mesh 或资源路径。 |
-| `voxel_descriptor` | `AutoVoxelDescriptor` / `Resource` | 资产体素语义主结构；集中持有 color、complexity、bands、collision、pivots 和 probes。 |
-| `voxel_color` | `Color` | descriptor 兼容入口；同步到 `voxel_descriptor.color`，`a` 与 complexity 同步。 |
-| `voxel_complexity` | `float` | descriptor 兼容入口；同步到 `voxel_descriptor.complexity`，范围 `0.0-1.0`。 |
-| `affected_bands` | `Array[Dictionary]` | descriptor 兼容入口；同步到 `voxel_descriptor.affected_bands`。 |
-| `collision_voxels` | `Array[Dictionary]` | descriptor 兼容入口；同步到 `voxel_descriptor.collision_voxels`。 |
-| `pivot_variants` | `Array[Dictionary]` | descriptor 兼容入口；同步到 `voxel_descriptor.pivot_variants`。 |
-| `semantic_probe_profile` | `Resource` | descriptor 兼容入口；同步到 `voxel_descriptor.semantic_probe_profile`。 |
-| `semantic_probe_density` | `float` | descriptor 兼容入口；同步到 `voxel_descriptor.semantic_probe_density`。 |
-| `context_sensing_radius` | `float` | descriptor 兼容入口；同步到 `voxel_descriptor.context_sensing_radius`。 |
+| `voxel_descriptor` | `AutoVoxelDescriptor` / `Resource` | 资产体素语义唯一权威来源；集中持有 color、complexity、bands、collision、pivots 和 probes。 |
+| `voxel_color` | `Color` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.color`，`a` 与 complexity 同步。 |
+| `voxel_complexity` | `float` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.complexity`，范围 `0.0-1.0`。 |
+| `affected_bands` | `Array[Dictionary]` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.affected_bands`。 |
+| `collision_voxels` | `Array[Dictionary]` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.collision_voxels`。 |
+| `pivot_variants` | `Array[Dictionary]` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.pivot_variants`。 |
+| `semantic_probe_profile` | `Resource` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.semantic_probe_profile`。 |
+| `semantic_probe_density` | `float` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.semantic_probe_density`。 |
+| `context_sensing_radius` | `float` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.context_sensing_radius`。 |
 | `allowed_anchor_kinds` | `PackedStringArray` | 限制资产可参与的 anchor 类型，如 `ground`、`target_top`。 |
 | `voxel_record` | `Dictionary` | 运行时 placement / source voxel record handle；字段结构见 `scene-voxel-field-system.md`。 |
 
-读取资产语义时优先走 `get_voxel_color()`、`get_affected_bands()`、`get_collision_voxels()`、`get_pivot_variants()` 等 getter；这些 getter 会通过 `_ensure_voxel_descriptor()` 使用 descriptor，并返回归一化后的结果。
+读取资产语义时必须走 `voxel_descriptor` 或 `get_voxel_color()`、`get_affected_bands()`、`get_collision_voxels()`、`get_pivot_variants()` 等 getter；这些 getter 会通过 `_ensure_voxel_descriptor()` 使用 descriptor，并返回归一化后的结果。不要在新逻辑中直接读取 `voxel_color`、`voxel_complexity`、`affected_bands`、`collision_voxels`、`pivot_variants`、`semantic_probe_profile`、`semantic_probe_density` 或 `context_sensing_radius` 作为权威语义。
+
+兼容入口降级计划：
+
+| 阶段 | 规则 |
+| --- | --- |
+| 当前 | 保留 `AutoObject` 同名字段的 export 和双向同步，保证旧资产、Inspector 和配置字典仍可工作。 |
+| 新代码 | 只把同名字段当作输入兼容层；读取和运行时决策都使用 descriptor-backed getter。 |
+| 迁移后 | 资产文件全部带 `voxel_descriptor` 后，可逐步隐藏或移除同名 export 字段，只保留必要的导入转换。 |
+| 禁止 | 不再新增 `AutoObject` 同名语义字段，不把 metadata、`voxel_record` 或旧字段当作 descriptor 的替代来源。 |
 
 `AutoObject.configure_auto_object()` 会强制 `scale = Vector3.ONE`。资产运行时缩放不作为 semantic probe 或 voxel 语义来源。
 
@@ -56,7 +74,7 @@
 
 ## `AutoVoxelDescriptor`
 
-`AutoVoxelDescriptor` 是当前优先使用的资产侧体素描述资源。
+`AutoVoxelDescriptor` 是资产侧体素描述资源，也是资产语义唯一权威来源。它保存会影响 routing、probe、footprint、source voxel 写入和 target fit 的默认语义。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -96,11 +114,11 @@
 | `dilation_radius` | `float` | 默认 `0.0`。 |
 | `value` | `float` | 默认 `1.0`；用于 collision 强度。 |
 
-Collision 的最终归属见 `scene-voxel-field-system.md`：自动生成和画笔 source voxel 保存 `collision_voxels` 成员，提交后的 collision occupancy 只是查询缓存。
+Collision 的最终归属见 `scene-voxel-field-system.md`：自动生成和画笔 source voxel 保存 `collision_voxels` 成员，提交后的 collision occupancy 是 `SceneVoxel` 内部 / 派生查询缓存视图。
 
 ## 运行时 record 边界
 
-`voxel_record` 属于运行时 SV/source delta 数据，不是资产默认值主结构。本文件只记录它在 `AutoObject` 和 metadata 上的查询入口；字段 schema、source 类型和提交规则见 `scene-voxel-field-system.md`。
+`voxel_record` 属于运行时 SceneVoxel / source voxel delta 数据，不是资产默认值主结构。本文件只记录它在 `AutoObject` 和 metadata 上的查询入口；字段 schema、source 类型和提交规则见 `scene-voxel-field-system.md`。
 
 ## Metadata 规则
 
@@ -115,4 +133,4 @@ Collision 的最终归属见 `scene-voxel-field-system.md`：自动生成和画�
 | `auto_object_type` | 禁用 / 兼容索引；不作为资产分类依据 |
 | `voxel_record` | 当前实例写入场景体素系统的 record handle；字段结构见 `scene-voxel-field-system.md` |
 
-维护规则：新增字段时先判断它属于资产默认值、运行时 record、source delta、TargetSV 目标画布还是最终 `SceneVoxel` 状态，不要把 metadata 当成第二套状态系统。当前不要新增 `subtype` / `object_subtype` 分类字段。
+维护规则：新增字段时先判断它属于资产默认值、运行时 record、source voxel delta、TargetSV 目标画布还是最终 `SceneVoxel` 状态，不要把 metadata 当成第二套状态系统。当前不要新增 `subtype` / `object_subtype` 分类字段。

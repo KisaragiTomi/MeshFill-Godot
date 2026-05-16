@@ -189,5 +189,5 @@
   <rect class="node warn" x="78" y="842" width="1344" height="90" rx="18" ry="18"/>
   <text class="rule" x="108" y="876">Ownership rule:</text>
   <text class="label" x="228" y="876">AutoVoxelDescriptor owns asset defaults; AutoObject mirrors legacy export/config fields; voxel_record owns runtime placement and source voxel data.</text>
-  <text class="tiny" x="108" y="906">When adding a field, decide whether it belongs to defaults, runtime record, source delta, TargetSV guidance, final SceneVoxel state, or cache/query metadata.</text>
+  <text class="tiny" x="108" y="906">When adding a field, decide whether it belongs to defaults, runtime record, source voxel delta, TargetSV guidance, final SceneVoxel state, or cache/query metadata.</text>
 </svg>

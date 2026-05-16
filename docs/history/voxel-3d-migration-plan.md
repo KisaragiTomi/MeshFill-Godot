@@ -2,6 +2,8 @@
 
 Status: historical record. The migration checklist in this document has been completed; current placement ownership is summarized in `../core/meshfill-framework.md` and `../core/scene-voxel-field-system.md`.
 
+![MeshFill compute shader 3D placement flow](../graphs/meshfill_compute_shader_3d_placement.svg)
+
 本文只保留 3D voxel-space placement 的历史设计摘要。实现细节以当前代码和主文档为准：
 
 - **框架归属**：`docs/../core/meshfill-framework.md`
@@ -27,7 +29,7 @@ AssetFootprint
 
 - **footprint 烘焙**：从 `collision_voxels` 生成局部 footprint，支持 support / clearance / solid 标记。
 - **离散旋转**：预烘焙绕 Godot `Y` 轴的 `24` 个 yaw 版本，每个 candidate 只测试一个 `rotation_index`。
-- **GPU 评分**：`score_voxel_tile.glsl` 使用 `8x8x8` workgroup，对 candidate tile 做 support / collision / overlap / clearance / ignored sample 累计。
+- **GPU 评分**：`score_voxel_tile.glsl` 使用 `8x8x8` workgroup，对候选 voxel 区域做 support / collision / overlap / clearance / ignored sample 累计。
 - **Tile top K 与汇总**：tile 内输出 top K，`reduce_voxel_tiles.glsl` 做跨 tile 汇总、去重和 quota 处理。
 - **GPU stamp**：`stamp_voxel_field.glsl` 将结果写回 scene / collision occupancy，并输出 `VoxelStampDeltaBuffer`。
 - **多 asset 顺序放置**：`run_multi_asset()` 按优先级、权重和 quota 顺序处理，前一 asset 的 stamp 会影响后一 asset。

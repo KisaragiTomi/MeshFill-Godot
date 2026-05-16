@@ -136,26 +136,26 @@ func run_multi_asset(
 		var overrides: Dictionary = asset_def.get("settings", {})
 		for key in overrides:
 			per_asset_settings[key] = overrides[key]
-		var routed_tiles_by_asset: Dictionary = common_settings.get("candidate_tiles_by_asset", {})
-		if asset_def.has("candidate_tiles"):
-			per_asset_settings["candidate_tiles"] = asset_def.candidate_tiles
-		elif common_settings.has("candidate_tiles_by_asset"):
-			var route_key = orig_idx if routed_tiles_by_asset.has(orig_idx) else str(orig_idx)
-			var routed_tiles = routed_tiles_by_asset.get(route_key, [])
-			if routed_tiles.is_empty():
+		var routed_regions_by_asset: Dictionary = common_settings.get("candidate_voxel_regions_by_asset", {})
+		if asset_def.has("candidate_voxel_regions"):
+			per_asset_settings["candidate_voxel_regions"] = asset_def.candidate_voxel_regions
+		elif common_settings.has("candidate_voxel_regions_by_asset"):
+			var route_key = orig_idx if routed_regions_by_asset.has(orig_idx) else str(orig_idx)
+			var routed_regions = routed_regions_by_asset.get(route_key, [])
+			if routed_regions.is_empty():
 				result_by_index[orig_idx] = {
 					"asset_index": orig_idx, "results": [], "world_results": [], "result_count": 0,
 					"stamp_deltas": [],
 					"skipped_prefilter": true,
 				}
 				continue
-			per_asset_settings["candidate_tiles"] = routed_tiles
+			per_asset_settings["candidate_voxel_regions"] = routed_regions
 		if asset_def.has("result_capacity"):
 			per_asset_settings["result_capacity"] = int(asset_def.result_capacity)
 		if asset_def.has("min_distance_voxels"):
 			per_asset_settings["min_distance_voxels"] = float(asset_def.min_distance_voxels)
 		per_asset_settings["asset_index"] = orig_idx
-		var same_type_filter := _filter_candidate_tiles_by_same_type_exclusion(
+		var same_type_filter := _filter_candidate_voxel_regions_by_same_type_exclusion(
 			per_asset_settings,
 			asset_def,
 			grid_size,
@@ -163,8 +163,8 @@ func run_multi_asset(
 			grid_origin
 		)
 		if not same_type_filter.is_empty():
-			var kept_tiles: Array = same_type_filter.get("candidate_tiles", [])
-			if kept_tiles.is_empty():
+			var kept_regions: Array = same_type_filter.get("candidate_voxel_regions", [])
+			if kept_regions.is_empty():
 				result_by_index[orig_idx] = {
 					"asset_index": orig_idx,
 					"results": [], "world_results": [], "result_count": 0,
@@ -172,7 +172,7 @@ func run_multi_asset(
 					"same_type_exclusion": same_type_filter,
 				}
 				continue
-			per_asset_settings["candidate_tiles"] = kept_tiles
+			per_asset_settings["candidate_voxel_regions"] = kept_regions
 			per_asset_settings["same_type_exclusion"] = same_type_filter
 
 		if global_quota >= 0:
@@ -282,7 +282,7 @@ static func _sort_asset_defs_by_priority_weight(
 	return result
 
 
-static func _filter_candidate_tiles_by_same_type_exclusion(
+static func _filter_candidate_voxel_regions_by_same_type_exclusion(
 	per_asset_settings: Dictionary,
 	asset_def: Dictionary,
 	grid_size: Vector3i,
@@ -311,11 +311,11 @@ static func _filter_candidate_tiles_by_same_type_exclusion(
 		ceili(float(grid_size.z) / float(TILE_SIZE))
 	)
 	var tile_count := tile_counts.x * tile_counts.y * tile_counts.z
-	var raw_tiles: Array = per_asset_settings.get("candidate_tiles", [])
-	if raw_tiles.is_empty():
+	var raw_regions: Array = per_asset_settings.get("candidate_voxel_regions", [])
+	if raw_regions.is_empty():
 		for tile_id in range(tile_count):
-			raw_tiles.append(_candidate_tile_to_pos(tile_id, tile_counts))
-	var filtered_tiles: Array = []
+			raw_regions.append(_voxel_region_to_tile_pos(tile_id, tile_counts))
+	var filtered_regions: Array = []
 	var blocked_count := 0
 	var first_block: Dictionary = {}
 	var seen := {}
@@ -323,13 +323,13 @@ static func _filter_candidate_tiles_by_same_type_exclusion(
 	var search_radius := float(per_asset_settings.get("same_type_exclusion_search_radius", -1.0))
 	var placement_search_radius := _normalize_search_radius(per_asset_settings.get("search_radius", Vector3i.ZERO))
 
-	for raw_tile in raw_tiles:
-		var tile_pos := _candidate_tile_to_pos(raw_tile, tile_counts)
-		var tile_id := _candidate_tile_to_id(tile_pos, tile_counts)
+	for raw_region in raw_regions:
+		var tile_pos := _voxel_region_to_tile_pos(raw_region, tile_counts)
+		var tile_id := _voxel_region_to_tile_id(tile_pos, tile_counts)
 		if tile_id < 0 or tile_id >= tile_count or seen.has(tile_id):
 			continue
 		seen[tile_id] = true
-		var conflict := _find_same_type_tile_exclusion(
+		var conflict := _find_same_type_voxel_region_exclusion(
 			manager,
 			tile_pos,
 			grid_size,
@@ -346,18 +346,18 @@ static func _filter_candidate_tiles_by_same_type_exclusion(
 			blocked_count += 1
 			if first_block.is_empty():
 				first_block = conflict.duplicate(true)
-				first_block["tile"] = tile_pos
+				first_block["voxel_region"] = tile_pos
 				first_block.erase("neighbor")
 			continue
-		filtered_tiles.append(tile_pos)
+		filtered_regions.append(tile_pos)
 
 	if blocked_count <= 0:
 		return {}
 	return {
-		"candidate_tiles": filtered_tiles,
-		"input_tile_count": seen.size(),
-		"kept_tile_count": filtered_tiles.size(),
-		"blocked_tile_count": blocked_count,
+		"candidate_voxel_regions": filtered_regions,
+		"input_voxel_region_count": seen.size(),
+		"kept_voxel_region_count": filtered_regions.size(),
+		"blocked_voxel_region_count": blocked_count,
 		"object_type": object_type,
 		"object_subtype": object_subtype,
 		"candidate_min_spacing": candidate_spacing,
@@ -366,7 +366,7 @@ static func _filter_candidate_tiles_by_same_type_exclusion(
 	}
 
 
-static func _find_same_type_tile_exclusion(
+static func _find_same_type_voxel_region_exclusion(
 	manager: Object,
 	tile_pos: Vector3i,
 	grid_size: Vector3i,
@@ -382,7 +382,7 @@ static func _find_same_type_tile_exclusion(
 	if not manager.has_method("query_same_type_objects"):
 		return {}
 
-	var bounds := _candidate_tile_world_xz_bounds(tile_pos, grid_size, voxel_size, grid_origin, placement_search_radius)
+	var bounds := _voxel_region_world_xz_bounds(tile_pos, grid_size, voxel_size, grid_origin, placement_search_radius)
 	var center: Vector3 = bounds.center
 	var half_diag := Vector2(float(bounds.max_x) - center.x, float(bounds.max_z) - center.z).length()
 	var query_radius := search_radius
@@ -483,7 +483,7 @@ static func _collision_xz_radius_from_voxels(collision_voxels: Array, voxel_size
 	return result
 
 
-static func _candidate_tile_to_pos(tile: Variant, tile_counts: Vector3i) -> Vector3i:
+static func _voxel_region_to_tile_pos(tile: Variant, tile_counts: Vector3i) -> Vector3i:
 	if tile is Vector3i:
 		return tile as Vector3i
 	if tile is Vector3:
@@ -496,7 +496,7 @@ static func _candidate_tile_to_pos(tile: Variant, tile_counts: Vector3i) -> Vect
 	return Vector3i(tx, ty, tz)
 
 
-static func _candidate_tile_world_center(
+static func _voxel_region_tile_world_center(
 	tile_pos: Vector3i,
 	grid_size: Vector3i,
 	voxel_size: Vector3,
@@ -524,7 +524,7 @@ static func _candidate_tile_world_center(
 	)
 
 
-static func _candidate_tile_world_xz_bounds(
+static func _voxel_region_world_xz_bounds(
 	tile_pos: Vector3i,
 	grid_size: Vector3i,
 	voxel_size: Vector3,
@@ -1005,16 +1005,16 @@ func run_minimal(
 		ceili(float(grid_size.z) / float(TILE_SIZE))
 	)
 	var tile_count := tile_counts.x * tile_counts.y * tile_counts.z
-	var candidate_tile_ids := _build_candidate_tile_ids(settings, tile_counts, tile_count)
-	var candidate_tile_count := candidate_tile_ids.size()
-	var candidate_count := candidate_tile_count * top_k
+	var candidate_voxel_region_ids := _build_candidate_voxel_region_ids(settings, tile_counts, tile_count)
+	var candidate_voxel_region_count := candidate_voxel_region_ids.size()
+	var candidate_count := candidate_voxel_region_count * top_k
 	var stamp_capacity := result_capacity * footprint.size()
 
 	var scene_buffer := _storage_buffer_from_floats(scene_data)
 	var collision_buffer := _storage_buffer_from_floats(collision_data)
 	var footprint_pos_buffer := _storage_buffer_from_bytes(footprint_buffers.pos_bytes)
 	var footprint_weight_buffer := _storage_buffer_from_bytes(footprint_buffers.weight_bytes)
-	var candidate_tile_buffer := _storage_buffer_from_bytes(_pack_u32_array(candidate_tile_ids))
+	var candidate_voxel_region_buffer := _storage_buffer_from_bytes(_pack_u32_array(candidate_voxel_region_ids))
 	var tile_topk_buffer := _storage_buffer_zero(candidate_count * RECORD_STRIDE * 16)
 	var result_buffer := _storage_buffer_zero(result_capacity * RECORD_STRIDE * 16)
 	var result_count_buffer := _storage_buffer_zero(4)
@@ -1037,7 +1037,7 @@ func run_minimal(
 		collision_buffer,
 		footprint_pos_buffer,
 		footprint_weight_buffer,
-		candidate_tile_buffer,
+		candidate_voxel_region_buffer,
 		tile_topk_buffer,
 		target_buffer,
 		target_color_buffer,
@@ -1045,7 +1045,7 @@ func run_minimal(
 		grid_size,
 		tile_counts,
 		tile_count,
-		candidate_tile_count,
+		candidate_voxel_region_count,
 		footprint.size(),
 		has_target,
 		settings
@@ -1089,8 +1089,8 @@ func run_minimal(
 		"debug_channel_count": NUM_DEBUG_CHANNELS,
 		"tile_count": tile_count,
 		"tile_counts": tile_counts,
-		"candidate_tile_count": candidate_tile_count,
-		"candidate_tile_ids": candidate_tile_ids,
+		"candidate_voxel_region_count": candidate_voxel_region_count,
+		"candidate_voxel_region_ids": candidate_voxel_region_ids,
 		"candidate_count": candidate_count,
 	}
 
@@ -1099,7 +1099,7 @@ func run_minimal(
 		collision_buffer,
 		footprint_pos_buffer,
 		footprint_weight_buffer,
-		candidate_tile_buffer,
+		candidate_voxel_region_buffer,
 		tile_topk_buffer,
 		result_buffer,
 		result_count_buffer,
@@ -1219,38 +1219,38 @@ func _pack_u32_array(values: PackedInt32Array) -> PackedByteArray:
 	return bytes
 
 
-func _build_candidate_tile_ids(settings: Dictionary, tile_counts: Vector3i, tile_count: int) -> PackedInt32Array:
+func _build_candidate_voxel_region_ids(settings: Dictionary, tile_counts: Vector3i, tile_count: int) -> PackedInt32Array:
 	var ids := PackedInt32Array()
-	var raw_tiles: Variant = settings.get("candidate_tiles", null)
-	if raw_tiles == null:
+	var raw_regions: Variant = settings.get("candidate_voxel_regions", null)
+	if raw_regions == null:
 		ids.resize(tile_count)
 		for i in range(tile_count):
 			ids[i] = i
 		return ids
 
 	var seen := {}
-	for tile in raw_tiles:
-		var tile_id := _candidate_tile_to_id(tile, tile_counts)
+	for region in raw_regions:
+		var tile_id := _voxel_region_to_tile_id(region, tile_counts)
 		if tile_id < 0 or tile_id >= tile_count or seen.has(tile_id):
 			continue
 		seen[tile_id] = true
 		ids.append(tile_id)
 
 	if ids.is_empty():
-		push_warning("VoxelPlacementGenerator: candidate_tiles produced no valid tiles; using full grid")
+		push_warning("VoxelPlacementGenerator: candidate_voxel_regions produced no valid regions; using full grid")
 		ids.resize(tile_count)
 		for i in range(tile_count):
 			ids[i] = i
 	return ids
 
 
-static func _candidate_tile_to_id(tile: Variant, tile_counts: Vector3i) -> int:
-	if tile is Vector3i:
-		return tile.x + tile_counts.x * (tile.y + tile_counts.y * tile.z)
-	if tile is Vector3:
-		var v := Vector3i(int(tile.x), int(tile.y), int(tile.z))
+static func _voxel_region_to_tile_id(region: Variant, tile_counts: Vector3i) -> int:
+	if region is Vector3i:
+		return region.x + tile_counts.x * (region.y + tile_counts.y * region.z)
+	if region is Vector3:
+		var v := Vector3i(int(region.x), int(region.y), int(region.z))
 		return v.x + tile_counts.x * (v.y + tile_counts.y * v.z)
-	return int(tile)
+	return int(region)
 
 
 static func _normalize_search_radius(value: Variant) -> Vector3i:
@@ -1275,7 +1275,7 @@ func _dispatch_score(
 	collision_buffer: RID,
 	footprint_pos_buffer: RID,
 	footprint_weight_buffer: RID,
-	candidate_tile_buffer: RID,
+	candidate_voxel_region_buffer: RID,
 	tile_topk_buffer: RID,
 	target_buffer: RID,
 	target_color_buffer: RID,
@@ -1283,7 +1283,7 @@ func _dispatch_score(
 	grid_size: Vector3i,
 	tile_counts: Vector3i,
 	tile_count: int,
-	candidate_tile_count: int,
+	candidate_voxel_region_count: int,
 	footprint_count: int,
 	has_target: int,
 	settings: Dictionary
@@ -1294,7 +1294,7 @@ func _dispatch_score(
 		_make_storage_uniform(2, footprint_pos_buffer),
 		_make_storage_uniform(3, footprint_weight_buffer),
 		_make_storage_uniform(4, tile_topk_buffer),
-		_make_storage_uniform(5, candidate_tile_buffer),
+		_make_storage_uniform(5, candidate_voxel_region_buffer),
 		_make_storage_uniform(6, target_buffer),
 		_make_storage_uniform(7, target_color_buffer),
 		_make_storage_uniform(8, debug_voxel_buffer),
@@ -1334,7 +1334,7 @@ func _dispatch_score(
 	push.encode_float(100, collision_penalty)
 	push.encode_float(104, overlap_penalty)
 	push.encode_float(108, clearance_penalty)
-	push.encode_s32(112, candidate_tile_count)
+	push.encode_s32(112, candidate_voxel_region_count)
 	push.encode_s32(116, search_radius.x)
 	push.encode_s32(120, search_radius.y)
 	push.encode_s32(124, search_radius.z)
@@ -1343,7 +1343,7 @@ func _dispatch_score(
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_score)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, candidate_tile_count, 1, 1)
+	_rd.compute_list_dispatch(cl, candidate_voxel_region_count, 1, 1)
 	_rd.compute_list_end()
 
 
