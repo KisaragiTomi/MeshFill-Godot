@@ -1,5 +1,5 @@
 class_name VoxelPlacementGenerator
-extends RefCounted
+extends "res://scripts/godot_compute_shader_base.gd"
 ## Minimal GPU prototype for 3D voxel-space object placement.
 ##
 ## This is intentionally independent from the current 2.5D CliffGenerator path:
@@ -62,8 +62,6 @@ var rotation_index: int = 0
 var scale_index: int = 0
 var asset_color: Color = Color.WHITE
 
-var _rd: RenderingDevice
-var _is_local_rd: bool = false
 var _shader_score: RID
 var _shader_reduce: RID
 var _shader_stamp: RID
@@ -983,15 +981,9 @@ func run_minimal(
 	var collision_data := _normalize_float_array(collision_occupancy, voxel_count)
 	var footprint_buffers := _pack_footprint(footprint)
 
-	_rd = RenderingServer.create_local_rendering_device()
-	if _rd == null:
-		push_warning("VoxelPlacementGenerator: local RenderingDevice failed, falling back to global device")
-		_rd = RenderingServer.get_rendering_device()
-		_is_local_rd = false
-	else:
-		_is_local_rd = true
-	if _rd == null:
-		push_error("VoxelPlacementGenerator: no RenderingDevice available")
+	log_name = "VoxelPlacementGenerator"
+	sync_global_device = true
+	if not ensure_device(true, true):
 		return {}
 
 	_load_shaders()
@@ -1010,27 +1002,27 @@ func run_minimal(
 	var candidate_count := candidate_voxel_region_count * top_k
 	var stamp_capacity := result_capacity * footprint.size()
 
-	var scene_buffer := _storage_buffer_from_floats(scene_data)
-	var collision_buffer := _storage_buffer_from_floats(collision_data)
-	var footprint_pos_buffer := _storage_buffer_from_bytes(footprint_buffers.pos_bytes)
-	var footprint_weight_buffer := _storage_buffer_from_bytes(footprint_buffers.weight_bytes)
-	var candidate_voxel_region_buffer := _storage_buffer_from_bytes(_pack_u32_array(candidate_voxel_region_ids))
-	var tile_topk_buffer := _storage_buffer_zero(candidate_count * RECORD_STRIDE * 16)
-	var result_buffer := _storage_buffer_zero(result_capacity * RECORD_STRIDE * 16)
-	var result_count_buffer := _storage_buffer_zero(4)
-	var stamp_delta_buffer := _storage_buffer_zero(maxi(stamp_capacity, 1) * DELTA_STRIDE * 16)
+	var scene_buffer := storage_buffer_from_floats(scene_data)
+	var collision_buffer := storage_buffer_from_floats(collision_data)
+	var footprint_pos_buffer := storage_buffer_from_bytes(footprint_buffers.pos_bytes)
+	var footprint_weight_buffer := storage_buffer_from_bytes(footprint_buffers.weight_bytes)
+	var candidate_voxel_region_buffer := storage_buffer_from_bytes(_pack_u32_array(candidate_voxel_region_ids))
+	var tile_topk_buffer := storage_buffer_zero(candidate_count * RECORD_STRIDE * 16)
+	var result_buffer := storage_buffer_zero(result_capacity * RECORD_STRIDE * 16)
+	var result_count_buffer := storage_buffer_zero(4)
+	var stamp_delta_buffer := storage_buffer_zero(maxi(stamp_capacity, 1) * DELTA_STRIDE * 16)
 
 	var raw_target: PackedFloat32Array = settings.get("target_occupancy", PackedFloat32Array())
 	var target_data := _normalize_float_array(raw_target, voxel_count) if raw_target.size() > 0 else PackedFloat32Array()
 	if target_data.size() == 0:
 		target_data.resize(voxel_count)
 	var has_target := 1 if raw_target.size() > 0 else 0
-	var target_buffer := _storage_buffer_from_floats(target_data)
+	var target_buffer := storage_buffer_from_floats(target_data)
 
 	var raw_target_color: PackedColorArray = settings.get("target_color", PackedColorArray())
-	var target_color_buffer := _storage_buffer_from_bytes(_pack_color_array_rgba8(raw_target_color, voxel_count))
+	var target_color_buffer := storage_buffer_from_bytes(_pack_color_array_rgba8(raw_target_color, voxel_count))
 
-	var debug_voxel_buffer := _storage_buffer_zero(voxel_count * NUM_DEBUG_CHANNELS * 4)
+	var debug_voxel_buffer := storage_buffer_zero(voxel_count * NUM_DEBUG_CHANNELS * 4)
 
 	_dispatch_score(
 		scene_buffer,
@@ -1064,8 +1056,7 @@ func run_minimal(
 		settings
 	)
 
-	_rd.submit()
-	_rd.sync()
+	submit_and_sync(true)
 
 	var result_count_data := _rd.buffer_get_data(result_count_buffer)
 	var result_count := int(result_count_data.decode_u32(0))
@@ -1094,22 +1085,6 @@ func run_minimal(
 		"candidate_count": candidate_count,
 	}
 
-	for rid in [
-		scene_buffer,
-		collision_buffer,
-		footprint_pos_buffer,
-		footprint_weight_buffer,
-		candidate_voxel_region_buffer,
-		tile_topk_buffer,
-		result_buffer,
-		result_count_buffer,
-		stamp_delta_buffer,
-		target_buffer,
-		target_color_buffer,
-		debug_voxel_buffer,
-	]:
-		if rid.is_valid():
-			_rd.free_rid(rid)
 	_free_gpu()
 	return output
 
@@ -1137,78 +1112,15 @@ func _apply_settings(settings: Dictionary) -> void:
 
 
 func _load_shaders() -> void:
-	_shader_score = _load_shader("res://shaders/score_voxel_tile.glsl")
-	_shader_reduce = _load_shader("res://shaders/reduce_voxel_tiles.glsl")
-	_shader_stamp = _load_shader("res://shaders/stamp_voxel_field.glsl")
+	_shader_score = load_compute_shader("res://shaders/score_voxel_tile.glsl")
+	_shader_reduce = load_compute_shader("res://shaders/reduce_voxel_tiles.glsl")
+	_shader_stamp = load_compute_shader("res://shaders/stamp_voxel_field.glsl")
 	if _shader_score.is_valid():
-		_pipeline_score = _rd.compute_pipeline_create(_shader_score)
+		_pipeline_score = create_compute_pipeline(_shader_score)
 	if _shader_reduce.is_valid():
-		_pipeline_reduce = _rd.compute_pipeline_create(_shader_reduce)
+		_pipeline_reduce = create_compute_pipeline(_shader_reduce)
 	if _shader_stamp.is_valid():
-		_pipeline_stamp = _rd.compute_pipeline_create(_shader_stamp)
-
-
-func _load_shader(path: String) -> RID:
-	var spirv: RDShaderSPIRV
-	var source_text := _read_compute_shader_source(path)
-	if not source_text.is_empty():
-		var source := RDShaderSource.new()
-		source.language = RenderingDevice.SHADER_LANGUAGE_GLSL
-		source.set_stage_source(RenderingDevice.SHADER_STAGE_COMPUTE, source_text)
-		spirv = _rd.shader_compile_spirv_from_source(source)
-	else:
-		var shader_file := load(path) as RDShaderFile
-		if shader_file != null:
-			spirv = shader_file.get_spirv()
-	if spirv == null:
-		push_error("VoxelPlacementGenerator: failed to compile shader source: " + path)
-		return RID()
-	var err_msg := spirv.get_stage_compile_error(RenderingDevice.SHADER_STAGE_COMPUTE)
-	if err_msg != "":
-		push_error("VoxelPlacementGenerator GLSL compile error [%s]: %s" % [path, err_msg])
-		return RID()
-	var shader := _rd.shader_create_from_spirv(spirv)
-	if not shader.is_valid():
-		push_error("VoxelPlacementGenerator: SPIR-V create failed: " + path)
-	return shader
-
-
-func _read_compute_shader_source(path: String) -> String:
-	var absolute_path := ProjectSettings.globalize_path(path)
-	var source_text := FileAccess.get_file_as_string(absolute_path)
-	if source_text.is_empty():
-		source_text = FileAccess.get_file_as_string(path)
-	if source_text.is_empty():
-		return ""
-	var lines := source_text.split("\n")
-	var filtered: Array[String] = []
-	for line in lines:
-		if line.strip_edges() == "#[compute]":
-			continue
-		filtered.append(line)
-	return "\n".join(filtered)
-
-
-func _make_storage_uniform(binding: int, buffer: RID) -> RDUniform:
-	var uniform := RDUniform.new()
-	uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER
-	uniform.binding = binding
-	uniform.add_id(buffer)
-	return uniform
-
-
-func _storage_buffer_from_floats(values: PackedFloat32Array) -> RID:
-	return _storage_buffer_from_bytes(_pack_float_array(values))
-
-
-func _storage_buffer_from_bytes(bytes: PackedByteArray) -> RID:
-	return _rd.storage_buffer_create(bytes.size(), bytes)
-
-
-func _storage_buffer_zero(byte_count: int) -> RID:
-	var bytes := PackedByteArray()
-	bytes.resize(maxi(byte_count, 4))
-	return _rd.storage_buffer_create(bytes.size(), bytes)
+		_pipeline_stamp = create_compute_pipeline(_shader_stamp)
 
 
 func _pack_u32_array(values: PackedInt32Array) -> PackedByteArray:
@@ -1288,16 +1200,16 @@ func _dispatch_score(
 	has_target: int,
 	settings: Dictionary
 ) -> void:
-	var set0 := _rd.uniform_set_create([
-		_make_storage_uniform(0, scene_buffer),
-		_make_storage_uniform(1, collision_buffer),
-		_make_storage_uniform(2, footprint_pos_buffer),
-		_make_storage_uniform(3, footprint_weight_buffer),
-		_make_storage_uniform(4, tile_topk_buffer),
-		_make_storage_uniform(5, candidate_voxel_region_buffer),
-		_make_storage_uniform(6, target_buffer),
-		_make_storage_uniform(7, target_color_buffer),
-		_make_storage_uniform(8, debug_voxel_buffer),
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, scene_buffer),
+		make_storage_uniform(1, collision_buffer),
+		make_storage_uniform(2, footprint_pos_buffer),
+		make_storage_uniform(3, footprint_weight_buffer),
+		make_storage_uniform(4, tile_topk_buffer),
+		make_storage_uniform(5, candidate_voxel_region_buffer),
+		make_storage_uniform(6, target_buffer),
+		make_storage_uniform(7, target_color_buffer),
+		make_storage_uniform(8, debug_voxel_buffer),
 	], _shader_score, 0)
 
 	var sample_min: Vector3i = settings.get("sample_min", Vector3i.ZERO)
@@ -1348,10 +1260,10 @@ func _dispatch_score(
 
 
 func _dispatch_reduce(tile_topk_buffer: RID, result_buffer: RID, result_count_buffer: RID, candidate_count: int) -> void:
-	var set0 := _rd.uniform_set_create([
-		_make_storage_uniform(0, tile_topk_buffer),
-		_make_storage_uniform(1, result_buffer),
-		_make_storage_uniform(2, result_count_buffer),
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, tile_topk_buffer),
+		make_storage_uniform(1, result_buffer),
+		make_storage_uniform(2, result_count_buffer),
 	], _shader_reduce, 0)
 
 	var push := PackedByteArray()
@@ -1385,14 +1297,14 @@ func _dispatch_stamp(
 	footprint_count: int,
 	settings: Dictionary
 ) -> void:
-	var set0 := _rd.uniform_set_create([
-		_make_storage_uniform(0, scene_buffer),
-		_make_storage_uniform(1, collision_buffer),
-		_make_storage_uniform(2, result_buffer),
-		_make_storage_uniform(3, result_count_buffer),
-		_make_storage_uniform(4, footprint_pos_buffer),
-		_make_storage_uniform(5, footprint_weight_buffer),
-		_make_storage_uniform(6, stamp_delta_buffer),
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, scene_buffer),
+		make_storage_uniform(1, collision_buffer),
+		make_storage_uniform(2, result_buffer),
+		make_storage_uniform(3, result_count_buffer),
+		make_storage_uniform(4, footprint_pos_buffer),
+		make_storage_uniform(5, footprint_weight_buffer),
+		make_storage_uniform(6, stamp_delta_buffer),
 	], _shader_stamp, 0)
 
 	var write_min: Vector3i = settings.get("write_min", Vector3i.ZERO)
@@ -1823,19 +1735,10 @@ static func make_voxel_records(
 
 
 func _free_gpu() -> void:
-	if _rd == null:
-		return
-	for rid in [
-		_pipeline_score,
-		_pipeline_reduce,
-		_pipeline_stamp,
-		_shader_score,
-		_shader_reduce,
-		_shader_stamp,
-	]:
-		if rid.is_valid():
-			_rd.free_rid(rid)
-	if _is_local_rd:
-		_rd.free()
-	_rd = null
-	_is_local_rd = false
+	dispose()
+	_pipeline_score = RID()
+	_pipeline_reduce = RID()
+	_pipeline_stamp = RID()
+	_shader_score = RID()
+	_shader_reduce = RID()
+	_shader_stamp = RID()

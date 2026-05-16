@@ -1,5 +1,5 @@
 class_name VegetationExclusion
-extends RefCounted
+extends "res://scripts/godot_compute_shader_base.gd"
 ## Height-band occupancy system for vegetation placement.
 ##
 ## The space above terrain is divided into height bands, each a 2D occupancy mask
@@ -52,7 +52,6 @@ var _occupancy: Image
 var _collision_occupancy: Image
 
 ## GPU resources
-var _rd: RenderingDevice
 var _sampler: RID
 var _shader_import: RID
 var _pipeline_import: RID
@@ -75,27 +74,24 @@ func _init(base_resolution: int, capture_size: float, enable_gpu: bool = true) -
 
 
 func _init_gpu() -> void:
-	_rd = RenderingServer.create_local_rendering_device()
-	if _rd == null:
+	log_name = "VegetationExclusion"
+	if not ensure_device(true, false):
 		_gpu_fatal("Failed to create RenderingDevice — GPU compute required")
 		return
 
-	var ss := RDSamplerState.new()
-	ss.mag_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
-	ss.min_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
-	_sampler = _rd.sampler_create(ss)
+	_sampler = create_linear_sampler()
 
-	_shader_import = _load_shader("res://shaders/band_import_mask.glsl")
+	_shader_import = load_compute_shader("res://shaders/band_import_mask.glsl")
 	if _shader_import.is_valid():
-		_pipeline_import = _rd.compute_pipeline_create(_shader_import)
+		_pipeline_import = create_compute_pipeline(_shader_import)
 
-	_shader_filter = _load_shader("res://shaders/band_filter_candidates.glsl")
+	_shader_filter = load_compute_shader("res://shaders/band_filter_candidates.glsl")
 	if _shader_filter.is_valid():
-		_pipeline_filter = _rd.compute_pipeline_create(_shader_filter)
+		_pipeline_filter = create_compute_pipeline(_shader_filter)
 
-	_shader_stamp = _load_shader("res://shaders/band_stamp.glsl")
+	_shader_stamp = load_compute_shader("res://shaders/band_stamp.glsl")
 	if _shader_stamp.is_valid():
-		_pipeline_stamp = _rd.compute_pipeline_create(_shader_stamp)
+		_pipeline_stamp = create_compute_pipeline(_shader_stamp)
 
 	_gpu_ready = _shader_import.is_valid() and _shader_filter.is_valid() and _shader_stamp.is_valid()
 	if _gpu_ready:
@@ -111,66 +107,15 @@ func _gpu_fatal(msg: String) -> void:
 	_gpu_ready = false
 
 
-func _load_shader(path: String) -> RID:
-	var shader_file := load(path) as RDShaderFile
-	if shader_file == null:
-		push_error("[VegetationExclusion] Failed to load: %s" % path)
-		return RID()
-	var spirv := shader_file.get_spirv()
-	var err_msg := spirv.get_stage_compile_error(RenderingDevice.SHADER_STAGE_COMPUTE)
-	if err_msg != "":
-		push_error("[VegetationExclusion] GLSL error in %s: %s" % [path, err_msg])
-		return RID()
-	return _rd.shader_create_from_spirv(spirv)
-
-
-func _upload_texture(image: Image) -> RID:
-	var img := image
-	if img.get_format() != Image.FORMAT_RGBAH:
-		img = img.duplicate()
-		img.convert(Image.FORMAT_RGBAH)
-	var tf := RDTextureFormat.new()
-	tf.width = img.get_width()
-	tf.height = img.get_height()
-	tf.depth = 1
-	tf.array_layers = 1
-	tf.mipmaps = 1
-	tf.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
-	tf.texture_type = RenderingDevice.TEXTURE_TYPE_2D
-	tf.usage_bits = (
-		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT |
-		RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT
-	)
-	return _rd.texture_create(tf, RDTextureView.new(), [img.get_data()])
-
-
-func _create_rw_texture(w: int, h: int) -> RID:
-	var tf := RDTextureFormat.new()
-	tf.width = w
-	tf.height = h
-	tf.depth = 1
-	tf.array_layers = 1
-	tf.mipmaps = 1
-	tf.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
-	tf.texture_type = RenderingDevice.TEXTURE_TYPE_2D
-	tf.usage_bits = (
-		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT |
-		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT |
-		RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT |
-		RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT
-	)
-	return _rd.texture_create(tf, RDTextureView.new())
-
-
 func _free_gpu() -> void:
-	if _rd == null:
-		return
-	for rid in [_pipeline_import, _shader_import, _pipeline_filter, _shader_filter,
-				 _pipeline_stamp, _shader_stamp, _sampler]:
-		if rid.is_valid():
-			_rd.free_rid(rid)
-	_rd.free()
-	_rd = null
+	dispose()
+	_pipeline_import = RID()
+	_shader_import = RID()
+	_pipeline_filter = RID()
+	_shader_filter = RID()
+	_pipeline_stamp = RID()
+	_shader_stamp = RID()
+	_sampler = RID()
 	_gpu_ready = false
 
 
@@ -210,26 +155,16 @@ func import_mask(band_name: String, mask_img: Image) -> void:
 
 
 func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
-	var tex_src := _upload_texture(mask_img)
-	var tex_occ := _create_rw_texture(_base_res, _base_res)
+	var tex_src := upload_texture_2d(mask_img)
+	var tex_occ := create_rw_texture_2d(_base_res, _base_res, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT, RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)
 	# Upload current occupancy into rw texture
 	var occ_rgba := _occupancy.duplicate()
 	if occ_rgba.get_format() != Image.FORMAT_RGBAH:
 		occ_rgba.convert(Image.FORMAT_RGBAH)
 	_rd.texture_update(tex_occ, 0, occ_rgba.get_data())
 
-	var u_src := RDUniform.new()
-	u_src.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
-	u_src.binding = 0
-	u_src.add_id(_sampler)
-	u_src.add_id(tex_src)
-	var set0 := _rd.uniform_set_create([u_src], _shader_import, 0)
-
-	var u_occ := RDUniform.new()
-	u_occ.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
-	u_occ.binding = 0
-	u_occ.add_id(tex_occ)
-	var set1 := _rd.uniform_set_create([u_occ], _shader_import, 1)
+	var set0 := create_uniform_set([make_sampler_uniform(0, _sampler, tex_src)], _shader_import, 0)
+	var set1 := create_uniform_set([make_image_uniform(0, tex_occ)], _shader_import, 1)
 
 	var push := PackedByteArray()
 	push.resize(16)
@@ -246,15 +181,13 @@ func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, groups, groups, 1)
 	_rd.compute_list_end()
-	_rd.submit()
-	_rd.sync()
+	submit_and_sync()
 
 	# Read back packed occupancy
 	var data := _rd.texture_get_data(tex_occ, 0)
 	_occupancy = Image.create_from_data(_base_res, _base_res, false, Image.FORMAT_RGBAH, data)
 
-	_rd.free_rid(tex_src)
-	_rd.free_rid(tex_occ)
+	gc_frame()
 
 
 ## ─── Vegetation Profile ───
@@ -603,22 +536,11 @@ func _stamp_occupancy(base_px: Vector2i, profile: Array[Dictionary]) -> void:
 ## Use compute shader to produce a candidate mask (band unblocked only).
 ## Returns an Image at _base_res where R = 1.0 if candidate, 0.0 if blocked.
 func _gpu_filter_candidates(profile: Array[Dictionary]) -> Image:
-	var tex_occ := _upload_texture(_occupancy)
-	var tex_out := _create_rw_texture(_base_res, _base_res)
+	var tex_occ := upload_texture_2d(_occupancy)
+	var tex_out := create_rw_texture_2d(_base_res, _base_res, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT, RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)
 
-	var u_occ := RDUniform.new()
-	u_occ.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
-	u_occ.binding = 0
-	u_occ.add_id(_sampler)
-	u_occ.add_id(tex_occ)
-
-	var set0 := _rd.uniform_set_create([u_occ], _shader_filter, 0)
-
-	var u_out := RDUniform.new()
-	u_out.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
-	u_out.binding = 0
-	u_out.add_id(tex_out)
-	var set1 := _rd.uniform_set_create([u_out], _shader_filter, 1)
+	var set0 := create_uniform_set([make_sampler_uniform(0, _sampler, tex_occ)], _shader_filter, 0)
+	var set1 := create_uniform_set([make_image_uniform(0, tex_out)], _shader_filter, 1)
 
 	var pmask := _profile_to_mask(profile)
 	var push := PackedByteArray()
@@ -640,14 +562,12 @@ func _gpu_filter_candidates(profile: Array[Dictionary]) -> Image:
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, groups, groups, 1)
 	_rd.compute_list_end()
-	_rd.submit()
-	_rd.sync()
+	submit_and_sync()
 
 	var data := _rd.texture_get_data(tex_out, 0)
 	var result := Image.create_from_data(_base_res, _base_res, false, Image.FORMAT_RGBAH, data)
 
-	_rd.free_rid(tex_occ)
-	_rd.free_rid(tex_out)
+	gc_frame()
 	return result
 
 

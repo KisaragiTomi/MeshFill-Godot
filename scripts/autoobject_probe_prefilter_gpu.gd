@@ -1,5 +1,5 @@
 class_name AutoObjectProbePrefilterGPU
-extends RefCounted
+extends "res://scripts/godot_compute_shader_base.gd"
 
 ## GPU-accelerated AutoObject probe prefilter.
 ## This is the only supported prefilter path. The CPU fallback was removed
@@ -27,10 +27,6 @@ var max_collision_occupancy: float = 0.05
 var min_support: float = 0.25
 var min_target_interest: float = 0.01
 var min_prefilter_score: float = 0.35
-
-# RenderingDevice handles
-var _rd: RenderingDevice
-var _is_local_rd: bool = false
 
 # Shaders & pipelines
 var _shader_collect: RID
@@ -64,16 +60,9 @@ func run_probe_prefilter(
 	if voxel_region_ids.is_empty():
 		return _empty_result()
 
-	# Init GPU
-	_rd = RenderingServer.create_local_rendering_device()
-	if _rd == null:
-		push_warning("AutoObjectProbePrefilterGPU: local RD failed, trying global")
-		_rd = RenderingServer.get_rendering_device()
-		_is_local_rd = false
-	else:
-		_is_local_rd = true
-	if _rd == null:
-		push_error("AutoObjectProbePrefilterGPU: no RenderingDevice available")
+	log_name = "AutoObjectProbePrefilterGPU"
+	sync_global_device = true
+	if not ensure_device(true, true):
 		return _empty_result()
 
 	_load_shaders()
@@ -120,22 +109,22 @@ func _run_gpu_pipeline(
 
 	# ---- Create GPU buffers ----
 
-	var scene_buf := _buf_floats(scene_data)
-	var collision_buf := _buf_floats(collision_data)
-	var target_occ_buf := _buf_floats(target_occ_data)
-	var target_color_buf := _buf_bytes(target_color_data)
-	var dirty_tile_buf := _buf_bytes(_pack_u32_array_from_int(tile_ids))
-	var anchor_buf := _buf_zero(ANCHOR_CAPACITY * 16)  # uvec4 per anchor
-	var anchor_count_buf := _buf_zero(4)
+	var scene_buf := storage_buffer_from_floats(scene_data)
+	var collision_buf := storage_buffer_from_floats(collision_data)
+	var target_occ_buf := storage_buffer_from_floats(target_occ_data)
+	var target_color_buf := storage_buffer_from_bytes(target_color_data)
+	var dirty_tile_buf := storage_buffer_from_bytes(_pack_u32_array_from_int(tile_ids))
+	var anchor_buf := storage_buffer_zero(ANCHOR_CAPACITY * 16)  # uvec4 per anchor
+	var anchor_count_buf := storage_buffer_zero(4)
 
-	var probe_data_buf := _buf_bytes(probe_pack.probe_bytes)
-	var probe_range_buf := _buf_bytes(probe_pack.range_bytes)
-	var anchor_mask_buf := _buf_bytes(probe_pack.mask_bytes)
+	var probe_data_buf := storage_buffer_from_bytes(probe_pack.probe_bytes)
+	var probe_range_buf := storage_buffer_from_bytes(probe_pack.range_bytes)
+	var anchor_mask_buf := storage_buffer_from_bytes(probe_pack.mask_bytes)
 
 	var score_buf_size := ANCHOR_CAPACITY * MAX_ASSETS * 4
-	var asset_scores_buf := _buf_zero(score_buf_size)
-	var topk_buf := _buf_zero(ANCHOR_CAPACITY * TOPK * 8)  # uvec2 per entry
-	var voxel_region_votes_buf := _buf_zero(asset_count * tile_count * 4)
+	var asset_scores_buf := storage_buffer_zero(score_buf_size)
+	var topk_buf := storage_buffer_zero(ANCHOR_CAPACITY * TOPK * 8)  # uvec2 per entry
+	var voxel_region_votes_buf := storage_buffer_zero(asset_count * tile_count * 4)
 
 	# ---- Dispatch 1: Collect anchors ----
 
@@ -144,16 +133,13 @@ func _run_gpu_pipeline(
 		anchor_buf, anchor_count_buf,
 		grid_size, tile_grid, tile_ids.size()
 	)
-	_rd.submit()
-	_rd.sync()
+	submit_and_sync(true)
 
 	# Read anchor count
 	var anchor_count_bytes := _rd.buffer_get_data(anchor_count_buf, 0, 4)
 	var actual_anchor_count := mini(int(anchor_count_bytes.decode_u32(0)), ANCHOR_CAPACITY)
 	if actual_anchor_count == 0:
-		_free_buffers([scene_buf, collision_buf, target_occ_buf, target_color_buf,
-			dirty_tile_buf, anchor_buf, anchor_count_buf, probe_data_buf,
-			probe_range_buf, anchor_mask_buf, asset_scores_buf, topk_buf, voxel_region_votes_buf])
+		_free_gpu()
 		return _empty_result()
 
 	# ---- Dispatch 2: Score probes (Pass A) ----
@@ -169,8 +155,7 @@ func _run_gpu_pipeline(
 		grid_size, voxel_size, asset_count, actual_anchor_count,
 		anchor_grid_x, anchor_grid_y, asset_blocks
 	)
-	_rd.submit()
-	_rd.sync()
+	submit_and_sync(true)
 
 	# ---- Dispatch 3: Top-K selection (Pass B) ----
 
@@ -178,8 +163,7 @@ func _run_gpu_pipeline(
 		asset_scores_buf, topk_buf,
 		actual_anchor_count, asset_count, anchor_grid_x, anchor_grid_y
 	)
-	_rd.submit()
-	_rd.sync()
+	submit_and_sync(true)
 
 	# ---- Dispatch 4: Voxel-region reduction ----
 
@@ -187,17 +171,14 @@ func _run_gpu_pipeline(
 		anchor_buf, topk_buf, voxel_region_votes_buf,
 		tile_grid, tile_count, actual_anchor_count, asset_count
 	)
-	_rd.submit()
-	_rd.sync()
+	submit_and_sync(true)
 
 	# ---- Read back results ----
 
 	var anchors_bytes := _rd.buffer_get_data(anchor_buf, 0, actual_anchor_count * 16)
 	var votes_bytes := _rd.buffer_get_data(voxel_region_votes_buf, 0, asset_count * tile_count * 4)
 
-	_free_buffers([scene_buf, collision_buf, target_occ_buf, target_color_buf,
-		dirty_tile_buf, anchor_buf, anchor_count_buf, probe_data_buf,
-		probe_range_buf, anchor_mask_buf, asset_scores_buf, topk_buf, voxel_region_votes_buf])
+	_free_gpu()
 
 	return _decode_results(anchors_bytes, votes_bytes, actual_anchor_count, asset_count, tile_count, gvf)
 
@@ -211,13 +192,13 @@ func _dispatch_collect(
 	dirty_tile_buf: RID, anchor_buf: RID, anchor_count_buf: RID,
 	grid_size: Vector3i, tile_grid: Vector3i, dirty_count: int
 ) -> void:
-	var set0 := _rd.uniform_set_create([
-		_make_uniform(0, scene_buf),
-		_make_uniform(1, collision_buf),
-		_make_uniform(2, target_occ_buf),
-		_make_uniform(3, dirty_tile_buf),
-		_make_uniform(4, anchor_buf),
-		_make_uniform(5, anchor_count_buf),
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, scene_buf),
+		make_storage_uniform(1, collision_buf),
+		make_storage_uniform(2, target_occ_buf),
+		make_storage_uniform(3, dirty_tile_buf),
+		make_storage_uniform(4, anchor_buf),
+		make_storage_uniform(5, anchor_count_buf),
 	], _shader_collect, 0)
 
 	var push := PackedByteArray()
@@ -251,16 +232,16 @@ func _dispatch_score(
 	anchor_count: int, anchor_grid_x: int, anchor_grid_y: int,
 	asset_blocks: int
 ) -> void:
-	var set0 := _rd.uniform_set_create([
-		_make_uniform(0, anchor_buf),
-		_make_uniform(1, probe_range_buf),
-		_make_uniform(2, anchor_mask_buf),
-		_make_uniform(3, probe_data_buf),
-		_make_uniform(4, scene_buf),
-		_make_uniform(5, collision_buf),
-		_make_uniform(6, target_occ_buf),
-		_make_uniform(7, target_color_buf),
-		_make_uniform(8, asset_scores_buf),
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, anchor_buf),
+		make_storage_uniform(1, probe_range_buf),
+		make_storage_uniform(2, anchor_mask_buf),
+		make_storage_uniform(3, probe_data_buf),
+		make_storage_uniform(4, scene_buf),
+		make_storage_uniform(5, collision_buf),
+		make_storage_uniform(6, target_occ_buf),
+		make_storage_uniform(7, target_color_buf),
+		make_storage_uniform(8, asset_scores_buf),
 	], _shader_score, 0)
 
 	var push := PackedByteArray()
@@ -293,9 +274,9 @@ func _dispatch_topk(
 	anchor_count: int, asset_count: int,
 	anchor_grid_x: int, anchor_grid_y: int
 ) -> void:
-	var set0 := _rd.uniform_set_create([
-		_make_uniform(0, asset_scores_buf),
-		_make_uniform(1, topk_buf),
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, asset_scores_buf),
+		make_storage_uniform(1, topk_buf),
 	], _shader_topk, 0)
 
 	var push := PackedByteArray()
@@ -318,10 +299,10 @@ func _dispatch_reduce(
 	tile_grid: Vector3i, tile_count: int,
 	anchor_count: int, asset_count: int
 ) -> void:
-	var set0 := _rd.uniform_set_create([
-		_make_uniform(0, anchor_buf),
-		_make_uniform(1, topk_buf),
-		_make_uniform(2, voxel_region_votes_buf),
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, anchor_buf),
+		make_storage_uniform(1, topk_buf),
+		make_storage_uniform(2, voxel_region_votes_buf),
 	], _shader_reduce, 0)
 
 	var push := PackedByteArray()
@@ -496,99 +477,22 @@ func _decode_results(
 
 
 func _load_shaders() -> void:
-	_shader_collect = _load_shader("res://shaders/collect_sv_anchors.glsl")
-	_shader_score = _load_shader("res://shaders/score_anchor_asset_probes.glsl")
-	_shader_topk = _load_shader("res://shaders/select_anchor_topk.glsl")
-	_shader_reduce = _load_shader("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl")
+	_shader_collect = load_compute_shader("res://shaders/collect_sv_anchors.glsl")
+	_shader_score = load_compute_shader("res://shaders/score_anchor_asset_probes.glsl")
+	_shader_topk = load_compute_shader("res://shaders/select_anchor_topk.glsl")
+	_shader_reduce = load_compute_shader("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl")
 	if _shader_collect.is_valid():
-		_pipeline_collect = _rd.compute_pipeline_create(_shader_collect)
+		_pipeline_collect = create_compute_pipeline(_shader_collect)
 	if _shader_score.is_valid():
-		_pipeline_score = _rd.compute_pipeline_create(_shader_score)
+		_pipeline_score = create_compute_pipeline(_shader_score)
 	if _shader_topk.is_valid():
-		_pipeline_topk = _rd.compute_pipeline_create(_shader_topk)
+		_pipeline_topk = create_compute_pipeline(_shader_topk)
 	if _shader_reduce.is_valid():
-		_pipeline_reduce = _rd.compute_pipeline_create(_shader_reduce)
-
-
-func _load_shader(path: String) -> RID:
-	var spirv: RDShaderSPIRV
-	var source_text := _read_compute_shader_source(path)
-	if not source_text.is_empty():
-		var source := RDShaderSource.new()
-		source.language = RenderingDevice.SHADER_LANGUAGE_GLSL
-		source.set_stage_source(RenderingDevice.SHADER_STAGE_COMPUTE, source_text)
-		spirv = _rd.shader_compile_spirv_from_source(source)
-	else:
-		var shader_file := load(path) as RDShaderFile
-		if shader_file != null:
-			spirv = shader_file.get_spirv()
-	if spirv == null:
-		push_error("AutoObjectProbePrefilterGPU: failed to compile shader: " + path)
-		return RID()
-	var err_msg := spirv.get_stage_compile_error(RenderingDevice.SHADER_STAGE_COMPUTE)
-	if err_msg != "":
-		push_error("AutoObjectProbePrefilterGPU GLSL compile error [%s]: %s" % [path, err_msg])
-		return RID()
-	var shader := _rd.shader_create_from_spirv(spirv)
-	if not shader.is_valid():
-		push_error("AutoObjectProbePrefilterGPU: SPIR-V create failed: " + path)
-	return shader
-
-
-func _read_compute_shader_source(path: String) -> String:
-	var absolute_path := ProjectSettings.globalize_path(path)
-	var source_text := FileAccess.get_file_as_string(absolute_path)
-	if source_text.is_empty():
-		source_text = FileAccess.get_file_as_string(path)
-	if source_text.is_empty():
-		return ""
-	var lines := source_text.split("\n")
-	var filtered: Array[String] = []
-	for line in lines:
-		if line.strip_edges() == "#[compute]":
-			continue
-		filtered.append(line)
-	return "\n".join(filtered)
-
-
-func _make_uniform(binding: int, buffer: RID) -> RDUniform:
-	var uniform := RDUniform.new()
-	uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER
-	uniform.binding = binding
-	uniform.add_id(buffer)
-	return uniform
-
-
-func _buf_floats(values: PackedFloat32Array) -> RID:
-	var bytes := PackedByteArray()
-	bytes.resize(maxi(values.size(), 1) * 4)
-	for i in range(values.size()):
-		bytes.encode_float(i * 4, values[i])
-	return _rd.storage_buffer_create(bytes.size(), bytes)
-
-
-func _buf_bytes(bytes: PackedByteArray) -> RID:
-	var safe := bytes if bytes.size() > 0 else PackedByteArray([0, 0, 0, 0])
-	return _rd.storage_buffer_create(safe.size(), safe)
-
-
-func _buf_zero(byte_count: int) -> RID:
-	var bytes := PackedByteArray()
-	bytes.resize(maxi(byte_count, 4))
-	return _rd.storage_buffer_create(bytes.size(), bytes)
-
-
-func _free_buffers(buffers: Array) -> void:
-	for buf in buffers:
-		if buf is RID and buf.is_valid():
-			_rd.free_rid(buf)
+		_pipeline_reduce = create_compute_pipeline(_shader_reduce)
 
 
 func _free_gpu() -> void:
-	for rid in [_pipeline_collect, _pipeline_score, _pipeline_topk, _pipeline_reduce,
-				_shader_collect, _shader_score, _shader_topk, _shader_reduce]:
-		if rid is RID and rid.is_valid():
-			_rd.free_rid(rid)
+	dispose()
 	_pipeline_collect = RID()
 	_pipeline_score = RID()
 	_pipeline_topk = RID()
@@ -597,9 +501,6 @@ func _free_gpu() -> void:
 	_shader_score = RID()
 	_shader_topk = RID()
 	_shader_reduce = RID()
-	if _is_local_rd and _rd != null:
-		_rd.free()
-	_rd = null
 
 
 # ---------------------------------------------------------------------------
