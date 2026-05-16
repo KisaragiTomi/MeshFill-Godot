@@ -85,7 +85,7 @@
 
   <rect class="node entry" x="82" y="542" width="182" height="94" rx="14" ry="14"/>
   <text class="label" x="100" y="572">Footprint Baking</text>
-  <text class="small" x="100" y="596">simple primitive → voxel</text>
+  <text class="small" x="100" y="596">float voxels → footprint</text>
   <text class="small" x="100" y="616">24 yaw pre-bake</text>
   <text class="tiny" x="100" y="630">support / clearance auto-tag</text>
 

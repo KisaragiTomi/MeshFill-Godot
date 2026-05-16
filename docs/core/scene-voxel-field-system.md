@@ -64,7 +64,7 @@ BrushSceneVoxel
 
 - 自动放置的岩石、树干等刚性部分写入 `AutoSceneVoxel.collision_voxels`。
 - 画笔、擦除、手动 blocker 等写入 `BrushSceneVoxel.collision_voxels`。
-- 当前 collision 逻辑只使用简单碰撞体 primitive：`cylinder` 用半径和高度，`box` / `cube` 用 `half_extents` 或 `size`。
+- 当前 collision 逻辑以浮点 voxel 样本为主：每个 `CollisionVoxel` 记录局部 voxel 坐标和 `0.0-1.0` collision 强度；旧 `shape` / `radius` 字段只作为兼容输入。
 - `collision_voxels` 在 source record、source voxel 和 committed `SceneVoxel` 中都应按同级字段理解；不要把它画成 `SceneVoxel` 的子层级。
 - commit 后可以生成 `_collision_occupancy`、`_volume["collision_occupancy"]` 或 `GlobalVoxelField.collision_occupancy`，但这些是由 committed `SceneVoxel.collision_voxels` 派生的查询缓存，不是新的 source layer，也不是新的语义归属。
 

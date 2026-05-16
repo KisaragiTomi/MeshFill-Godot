@@ -50,13 +50,13 @@
 | `voxel_color` | `Color` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.color`，`a` 与 complexity 同步。 |
 | `voxel_complexity` | `float` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.complexity`，范围 `0.0-1.0`。 |
 | `affected_bands` | `Array[Dictionary]` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.affected_bands`。 |
-| `collision_voxels` | `Array[Dictionary]` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.collision_voxels`；当前只用于简单碰撞体 footprint。 |
+| `collision_voxels` | `Array[Dictionary]` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.collision_voxels`；当前表示浮点 collision voxel 样本。 |
 | `pivot_variants` | `Array[Dictionary]` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.pivot_variants`。 |
 | `semantic_probe_profile` | `Resource` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.semantic_probe_profile`。 |
 | `semantic_probe_density` | `float` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.semantic_probe_density`。 |
 | `context_sensing_radius` | `float` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.context_sensing_radius`。 |
 | `allowed_anchor_kinds` | `PackedStringArray` | 限制资产可参与的 anchor 类型，如 `ground`、`target_top`。 |
-| `voxel_record` | `Dictionary` | 运行时 placement / source voxel record handle；字段结构见 `scene-voxel-field-system.md`。 |
+| `voxel_record` | `Dictionary` | SceneVoxel record handle；字段结构见 `scene-voxel-field-system.md`。 |
 
 读取资产语义时必须走 `voxel_descriptor` 或 `get_voxel_color()`、`get_affected_bands()`、`get_collision_voxels()`、`get_pivot_variants()` 等 getter；这些 getter 会通过 `_ensure_voxel_descriptor()` 使用 descriptor，并返回归一化后的结果。不要在新逻辑中直接读取 `voxel_color`、`voxel_complexity`、`affected_bands`、`collision_voxels`、`pivot_variants`、`semantic_probe_profile`、`semantic_probe_density` 或 `context_sensing_radius` 作为权威语义。
 
@@ -81,7 +81,7 @@
 | --- | --- |
 | `color` / `complexity` | 默认颜色与复杂度；`get_color()` 会把 alpha 设为 complexity。 |
 | `affected_bands` | 可视 / 生态 band 写入声明。 |
-| `collision_voxels` | 简单 collision primitive 声明；与 `color` / `complexity` 同级，归一化后供 footprint、source voxel 写入和 probe 使用。 |
+| `collision_voxels` | 浮点 collision voxel 样本；与 `color` / `complexity` 同级，归一化后供 footprint、source voxel 写入和 probe 使用。 |
 | `pivot_variants` | 显式 pivot 列表；为空时可从 collision 高度自动生成。 |
 | `auto_generate_vertical_pivots` | 根据 collision 高度生成 bottom / middle / upper pivot。 |
 | `semantic_probe_profile` | 保存或生成 `semantic_probes`。 |
@@ -104,24 +104,23 @@
 
 ## Collision 记录
 
-`collision_voxels` 会通过 `AutoVoxelProfile.normalize_collision_voxels()` 归一化。当前只按简单碰撞体处理，不引入复杂距离场、扩散场或软排斥缓存。
+`collision_voxels` 会通过 `AutoVoxelProfile.normalize_collision_voxels()` 归一化。当前主表示是局部体素坐标上的浮点 collision 强度，不引入复杂距离场、扩散场或软排斥缓存。旧的 `shape` / `radius` 字段仍可作为资产编写辅助输入，但进入 placement 前会被烘焙为浮点 voxel footprint。
 
 | 字段 | 类型 | 默认 / 说明 |
 | --- | --- | --- |
-| `shape` | `String` | 默认 `cylinder`；placement footprint 当前支持 `cylinder`、`box` / `cube`。 |
-| `radius` | `float` | cylinder 半径；缺失或 `<= 0` 时使用调用方默认半径。 |
-| `offset` / `center` / `position` | `Vector3` / `Array` / `Dictionary` | 可选局部偏移；缺失时为 `Vector3.ZERO`。 |
-| `half_extents` / `size` | `Vector3` / `Array` / `Dictionary` | box / cube 尺寸；`size` 会转换为 `half_extents = size * 0.5`。 |
-| `y_min` / `y_max` | `float` | 默认 `0.0` / `2.0`。 |
-| `erosion_radius` | `float` | 默认 `0.0`。 |
-| `dilation_radius` | `float` | 默认 `0.0`。 |
-| `value` | `float` | 默认 `1.0`；用于 collision 强度。 |
+| `voxel` / `local_pos` / `voxel_offset` | `Vector3i` / `Vector3` / `Array` / `Dictionary` | 局部 voxel 坐标；归一化后写入 `voxel` 和 `local_pos`。 |
+| `value` | `float` | 默认 `1.0`；collision 强度，范围 `0.0-1.0`。 |
+| `collision_degree` | `int` | 可选；`0-255` 的内部碰撞强度，缺少 `value` 时会转换为 `value`。 |
+| `weight` | `float` | 默认 `1.0`；placement footprint 权重。 |
+| `enabled` | `bool` | 默认 `true`；为 `false` 时消费端跳过该 voxel。 |
+| `shape` / `radius` / `y_min` / `y_max` | legacy authoring helper | 兼容旧资产；`cylinder` 会烘焙为多个浮点 voxel footprint 样本。 |
+| `half_extents` / `size` | legacy authoring helper | 兼容旧资产；`box` / `cube` 会烘焙为多个浮点 voxel footprint 样本。 |
 
 Collision 的最终归属见 `scene-voxel-field-system.md`：`collision_voxels` 与 `color` / `complexity` 同级，从资产默认值进入 record / source voxel，并可作为 committed `SceneVoxel` 的同级字段保留；提交后的 `collision_occupancy` 是由它重建的派生查询缓存视图。
 
 ## 运行时 record 边界
 
-`voxel_record` 属于运行时 SceneVoxel / source voxel delta 数据，不是资产默认值主结构。本文件只记录它在 `AutoObject` 和 metadata 上的查询入口；字段 schema、source 类型和提交规则见 `scene-voxel-field-system.md`。
+`voxel_record` 属于 SceneVoxel record / source voxel delta 数据，不是资产默认值主结构。本文件只记录它在 `AutoObject` 和 metadata 上的查询入口；字段 schema、source 类型和提交规则见 `scene-voxel-field-system.md`。
 
 ## Metadata 规则
 

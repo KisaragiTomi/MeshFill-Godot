@@ -80,6 +80,9 @@ func _sync_legacy_fields_from_descriptor() -> void:
 func _vector3_from_config_value(value, fallback: Vector3) -> Vector3:
 	if value is Vector3:
 		return value as Vector3
+	if value is Vector3i:
+		var vi := value as Vector3i
+		return Vector3(float(vi.x), float(vi.y), float(vi.z))
 	if value is Array:
 		var arr := value as Array
 		if arr.size() >= 3:
@@ -665,6 +668,9 @@ func _collision_local_aabb() -> AABB:
 
 
 func _collision_bounds(collision: Dictionary) -> AABB:
+	if collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset"):
+		var voxel_pos := _vector3_from_config_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
+		return AABB(voxel_pos - Vector3(0.5, 0.5, 0.5), Vector3.ONE)
 	var shape := str(collision.get("shape", collision.get("collision_shape", "cylinder"))).to_lower()
 	var center := _vector3_from_config_value(collision.get("offset", collision.get("center", collision.get("position", Vector3.ZERO))), Vector3.ZERO)
 	if shape == "box" or shape == "cube":

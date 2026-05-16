@@ -1493,21 +1493,87 @@ static func bake_footprint_from_collision_voxels(
 	clearance_slices: int = 1
 ) -> Array[Dictionary]:
 	var combined: Array[Dictionary] = []
+	var float_voxels: Array[Dictionary] = []
 	for cv in collision_voxels:
 		if not cv is Dictionary:
 			continue
-		var shape := str((cv as Dictionary).get("shape", "cylinder")).to_lower()
+		var collision := cv as Dictionary
+		if _is_float_collision_voxel(collision):
+			float_voxels.append(collision)
+			continue
+		var shape := str(collision.get("shape", "cylinder")).to_lower()
 		if shape == "cylinder":
 			combined.append_array(
-				_bake_cylinder(cv as Dictionary, voxel_size, add_support, clearance_slices))
+				_bake_cylinder(collision, voxel_size, add_support, clearance_slices))
 		elif shape == "box" or shape == "cube":
 			combined.append_array(
-				_bake_box(cv as Dictionary, voxel_size, add_support, clearance_slices))
+				_bake_box(collision, voxel_size, add_support, clearance_slices))
+	if not float_voxels.is_empty():
+		combined.append_array(_bake_float_collision_voxels(float_voxels, add_support, clearance_slices))
 	var result := _deduplicate_footprint(combined)
 	if result.size() > FOOTPRINT_CAPACITY:
 		push_warning("VoxelPlacementGenerator: footprint has %d voxels, truncating to %d" % [
 			result.size(), FOOTPRINT_CAPACITY])
 		result.resize(FOOTPRINT_CAPACITY)
+	return result
+
+
+static func _is_float_collision_voxel(collision: Dictionary) -> bool:
+	return collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset")
+
+
+static func _collision_voxel_position(collision: Dictionary) -> Vector3i:
+	return _vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
+
+
+static func _collision_voxel_degree(collision: Dictionary) -> int:
+	if collision.has("collision_degree"):
+		return clampi(int(collision.get("collision_degree", 255)), 0, 255)
+	return clampi(int(clampf(float(collision.get("value", 1.0)), 0.0, 1.0) * 255.0), 0, 255)
+
+
+static func _bake_float_collision_voxels(
+	collision_voxels: Array[Dictionary],
+	add_support: bool,
+	clearance_slices: int
+) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var min_y := 2147483647
+	var top_by_xz := {}
+	for collision in collision_voxels:
+		if not bool(collision.get("enabled", true)):
+			continue
+		var local_pos := _collision_voxel_position(collision)
+		var collision_degree := _collision_voxel_degree(collision)
+		var flags := int(collision.get("flags", 0))
+		var weight := maxf(float(collision.get("weight", 1.0)), 0.0)
+		result.append({
+			"local_pos": local_pos,
+			"collision_degree": collision_degree,
+			"flags": flags,
+			"weight": weight,
+		})
+		if collision_degree <= 0:
+			continue
+		min_y = mini(min_y, local_pos.y)
+		var key := "%d,%d" % [local_pos.x, local_pos.z]
+		if not top_by_xz.has(key) or local_pos.y > int(top_by_xz[key].y):
+			top_by_xz[key] = local_pos
+	if add_support and min_y < 2147483647:
+		for entry in result:
+			var pos: Vector3i = entry.local_pos
+			if pos.y == min_y and int(entry.collision_degree) > 0:
+				entry["flags"] = int(entry.flags) | FLAG_SUPPORT
+	if clearance_slices > 0:
+		for top in top_by_xz.values():
+			var pos := top as Vector3i
+			for cy in range(pos.y + 1, pos.y + 1 + clearance_slices):
+				result.append({
+					"local_pos": Vector3i(pos.x, cy, pos.z),
+					"collision_degree": 0,
+					"flags": FLAG_CLEARANCE,
+					"weight": 0.5,
+				})
 	return result
 
 

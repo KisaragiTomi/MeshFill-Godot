@@ -231,6 +231,9 @@ static func _make_voxel_interior_candidates(
 
 
 static func _sample_collision_voxel_points(collision: Dictionary, sample_spacing: float) -> PackedVector3Array:
+	if collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset"):
+		var point := vector3_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
+		return PackedVector3Array([point])
 	var shape := str(collision.get("shape", collision.get("collision_shape", "cylinder"))).to_lower()
 	if shape == "box" or shape == "cube":
 		return _sample_box_collision_points(collision, sample_spacing)
@@ -734,6 +737,9 @@ static func color_from_value(value, fallback: Color = Color.WHITE) -> Color:
 static func vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vector3:
 	if value is Vector3:
 		return value as Vector3
+	if value is Vector3i:
+		var vi := value as Vector3i
+		return Vector3(float(vi.x), float(vi.y), float(vi.z))
 	if value is Array:
 		var arr := value as Array
 		if arr.size() >= 3:

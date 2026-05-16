@@ -160,7 +160,7 @@
 
   <rect class="node record" x="1138" y="324" width="304" height="132" rx="14" ry="14"/>
   <text class="node-title" x="1158" y="356">voxel_record</text>
-  <text class="label" x="1158" y="380">runtime placement/source record</text>
+  <text class="label" x="1158" y="380">scene voxel record</text>
   <text class="mono" x="1158" y="402">position, rotation, scale</text>
   <text class="mono" x="1158" y="422">collision_voxels, source_voxel_type</text>
   <text class="mono" x="1158" y="442">DEPRECATED_SENCE_LAYER_VOXEL_KEY</text>

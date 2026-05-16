@@ -275,7 +275,47 @@ func _collision_effective_radius(collision: Dictionary) -> float:
 	return maxf(radius - erosion, 0.0) + dilation
 
 
+func _is_float_collision_voxel(collision: Dictionary) -> bool:
+	return collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset")
+
+
+func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
+	if value is Vector3i:
+		return value as Vector3i
+	if value is Vector3:
+		var v := value as Vector3
+		return Vector3i(roundi(v.x), roundi(v.y), roundi(v.z))
+	if value is Array:
+		var arr := value as Array
+		if arr.size() >= 3:
+			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
+	if value is Dictionary:
+		var dict := value as Dictionary
+		return Vector3i(
+			int(dict.get("x", fallback.x)),
+			int(dict.get("y", fallback.y)),
+			int(dict.get("z", fallback.z))
+		)
+	return fallback
+
+
+func _collision_local_voxel(collision: Dictionary) -> Vector3i:
+	return _vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
+
+
+func _collision_layer_base_px(base_px: Vector2i, collision: Dictionary) -> Vector2i:
+	if not _is_float_collision_voxel(collision):
+		return base_px
+	var local := _collision_local_voxel(collision)
+	return Vector2i(
+		clampi(base_px.x + local.x, 0, _base_res - 1),
+		clampi(base_px.y + local.z, 0, _base_res - 1)
+	)
+
+
 func _collision_radius_px(collision: Dictionary) -> int:
+	if _is_float_collision_voxel(collision):
+		return maxi(int(collision.get("radius_px", 0)), 0)
 	if collision.has("radius_px"):
 		return maxi(int(collision.radius_px), 1)
 	return maxi(1, _radius_to_px(_collision_effective_radius(collision)))
@@ -288,6 +328,21 @@ func _normalize_collision_voxels(collision_voxels: Array, base_px: Vector2i = Ve
 			continue
 		var collision := (raw_collision as Dictionary).duplicate(true)
 		if not bool(collision.get("enabled", true)):
+			continue
+		if _is_float_collision_voxel(collision):
+			var local := _collision_local_voxel(collision)
+			collision["voxel"] = local
+			collision["local_pos"] = local
+			if not collision.has("value") and collision.has("collision_degree"):
+				collision["value"] = clampf(float(collision.get("collision_degree", 255)) / 255.0, 0.0, 1.0)
+			collision["value"] = clampf(float(collision.get("value", 1.0)), 0.0, 1.0)
+			collision["radius_px"] = maxi(int(collision.get("radius_px", 0)), 0)
+			collision["effective_radius"] = 0.0
+			if not collision.has("slice_index"):
+				collision["slice_index"] = local.y
+			if base_px.x >= 0 and base_px.y >= 0:
+				collision["base_pixel"] = _collision_layer_base_px(base_px, collision)
+			result.append(collision)
 			continue
 		var effective_radius := _collision_effective_radius(collision)
 		if effective_radius <= 0.0:
@@ -313,23 +368,22 @@ func _make_source_collision_voxels(base_px: Vector2i, collision_voxels: Array, r
 	if source_type == "TargetSceneVoxel":
 		return updated
 	var xz_res := _base_res
-	var voxel_px := base_px
 	if not _volume.is_empty():
 		xz_res = int(_volume.get("xz_res", _base_res))
-		voxel_px = _volume_px_from_base(base_px, xz_res)
 	var layers := _normalize_collision_voxels(collision_voxels, base_px)
 	for layer in layers:
 		var value := clampf(float(layer.get("value", 1.0)), 0.0, 1.0)
 		var radius_px := _collision_radius_px(layer)
+		var layer_base_px := _collision_layer_base_px(base_px, layer)
 		var source_layer := layer.duplicate(true)
 		source_layer["type"] = "CollisionVoxel"
 		source_layer["occupied"] = value > VOXEL_OCCUPIED_EPSILON
 		source_layer["value"] = value
-		source_layer["base_pixel"] = base_px
-		source_layer["voxel_xz"] = voxel_px
+		source_layer["base_pixel"] = layer_base_px
+		source_layer["voxel_xz"] = _volume_px_from_base(layer_base_px, xz_res)
 		source_layer["volume_xz_resolution"] = xz_res
 		source_layer["radius_px"] = radius_px
-		source_layer["collision_shape"] = str(layer.get("shape", "cylinder"))
+		source_layer["collision_shape"] = str(layer.get("shape", "voxel" if _is_float_collision_voxel(layer) else "cylinder"))
 		source_layer["collision_radius"] = layer.get("radius", 0.0)
 		source_layer["effective_radius"] = layer.get("effective_radius", 0.0)
 		source_layer["source_voxel_type"] = source_type
@@ -350,12 +404,13 @@ func _collision_area_blocked(base_px: Vector2i, collision_voxels: Array) -> bool
 		return false
 	for layer in layers:
 		var radius_px := _collision_radius_px(layer)
+		var layer_base_px := _collision_layer_base_px(base_px, layer)
 		for dy in range(-radius_px, radius_px + 1):
 			for dx in range(-radius_px, radius_px + 1):
 				if dx * dx + dy * dy > radius_px * radius_px:
 					continue
-				var tx := clampi(base_px.x + dx, 0, _base_res - 1)
-				var ty := clampi(base_px.y + dy, 0, _base_res - 1)
+				var tx := clampi(layer_base_px.x + dx, 0, _base_res - 1)
+				var ty := clampi(layer_base_px.y + dy, 0, _base_res - 1)
 				if _collision_occupancy.get_pixelv(Vector2i(tx, ty)).r > 0.01:
 					return true
 	return false
@@ -416,7 +471,7 @@ func _stamp_collision_volume(base_px: Vector2i, radius_px: int, value: float, re
 					"voxel_xz": px,
 					"slice_index": int(layer.get("slice_index", 0)),
 					"radius_px": radius_px,
-					"collision_shape": str(layer.get("shape", "cylinder")),
+					"collision_shape": str(layer.get("shape", "voxel" if _is_float_collision_voxel(layer) else "cylinder")),
 					"collision_radius": layer.get("radius", 0.0),
 					"effective_radius": layer.get("effective_radius", 0.0),
 					"source_voxel_type": str(layer.get("source_voxel_type", rec.get("source_voxel_type", ""))),
@@ -441,18 +496,19 @@ func _stamp_collision_voxel_layer(base_px: Vector2i, source_layer: Dictionary, r
 	var layer := normalized[0]
 	var radius_px := _collision_radius_px(layer)
 	var value := clampf(float(layer.get("value", 1.0)), 0.0, 1.0)
+	var layer_base_px := _collision_layer_base_px(base_px, layer)
 	for dy in range(-radius_px, radius_px + 1):
 		for dx in range(-radius_px, radius_px + 1):
 			if dx * dx + dy * dy > radius_px * radius_px:
 				continue
-			var tx := clampi(base_px.x + dx, 0, _base_res - 1)
-			var ty := clampi(base_px.y + dy, 0, _base_res - 1)
+			var tx := clampi(layer_base_px.x + dx, 0, _base_res - 1)
+			var ty := clampi(layer_base_px.y + dy, 0, _base_res - 1)
 			var px := Vector2i(tx, ty)
 			var cur := _collision_occupancy.get_pixelv(px).r
 			if value > cur:
 				_collision_occupancy.set_pixelv(px, Color(value, 0.0, 0.0, 0.0))
-	var voxel_px := _stamp_collision_volume(base_px, radius_px, value, rec, layer)
-	layer["base_pixel"] = base_px
+	var voxel_px := _stamp_collision_volume(layer_base_px, radius_px, value, rec, layer)
+	layer["base_pixel"] = layer_base_px
 	layer["voxel_xz"] = voxel_px
 	layer["volume_xz_resolution"] = int(_volume.xz_res) if not _volume.is_empty() else _base_res
 	layer["collision_buffer_applied"] = true
@@ -947,6 +1003,8 @@ func _volume_px_from_base(base_px: Vector2i, xz_res: int) -> Vector2i:
 
 
 func _volume_radius_from_base_radius(radius_px: int, xz_res: int) -> int:
+	if radius_px <= 0:
+		return 0
 	return maxi(1, ceili(float(radius_px) / float(_base_res) * float(xz_res)))
 
 

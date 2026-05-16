@@ -7,6 +7,7 @@ const FLAG_CLEARANCE := 2
 
 func _init() -> void:
 	var ok := true
+	ok = ok and _test_bake_float_voxels()
 	ok = ok and _test_bake_cylinder()
 	ok = ok and _test_bake_box()
 	ok = ok and _test_bake_rotation()
@@ -25,6 +26,47 @@ func _init() -> void:
 	else:
 		push_error("[VoxelFootprintBake] SOME TESTS FAILED")
 		quit(1)
+
+
+func _test_bake_float_voxels() -> bool:
+	print("[VoxelFootprintBake] test_bake_float_voxels...")
+	var collision_voxels: Array = [
+		{"voxel": Vector3i(0, 0, 0), "value": 0.25},
+		{"voxel": Vector3i(0, 1, 0), "value": 1.0},
+		{"local_pos": Vector3i(1, 1, 0), "collision_degree": 128},
+	]
+	var footprint := VPG.bake_footprint_from_collision_voxels(
+		collision_voxels, Vector3(0.5, 0.5, 0.5), true, 1)
+	var has_support := false
+	var has_clearance := false
+	var has_full_collision := false
+	var has_degree_collision := false
+	for entry in footprint:
+		var pos: Vector3i = entry.local_pos
+		var degree := int(entry.collision_degree)
+		var flags := int(entry.flags)
+		if pos == Vector3i(0, 0, 0) and flags & FLAG_SUPPORT:
+			has_support = true
+		if pos == Vector3i(0, 1, 0) and degree == 255:
+			has_full_collision = true
+		if pos == Vector3i(1, 1, 0) and degree == 128:
+			has_degree_collision = true
+		if flags & FLAG_CLEARANCE:
+			has_clearance = true
+	if not has_support:
+		push_error("  FAIL: float voxels did not infer support")
+		return false
+	if not has_clearance:
+		push_error("  FAIL: float voxels did not generate clearance")
+		return false
+	if not has_full_collision:
+		push_error("  FAIL: value did not convert to collision degree")
+		return false
+	if not has_degree_collision:
+		push_error("  FAIL: collision_degree was not preserved")
+		return false
+	print("  OK: %d float voxel entries" % footprint.size())
+	return true
 
 
 func _test_bake_cylinder() -> bool:

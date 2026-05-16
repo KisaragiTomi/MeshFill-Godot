@@ -55,6 +55,19 @@ static func normalize_collision_voxels(source: Array, default_radius: float = 0.
 		if not raw_collision is Dictionary:
 			continue
 		var collision := (raw_collision as Dictionary).duplicate(true)
+		if _is_float_collision_voxel(collision):
+			var voxel := _vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
+			collision["voxel"] = voxel
+			collision["local_pos"] = voxel
+			if not collision.has("value") and collision.has("collision_degree"):
+				collision["value"] = clampf(float(collision.get("collision_degree", 255)) / 255.0, 0.0, 1.0)
+			if not collision.has("value"):
+				collision["value"] = 1.0
+			collision["value"] = clampf(float(collision.get("value", 1.0)), 0.0, 1.0)
+			if not collision.has("weight"):
+				collision["weight"] = 1.0
+			result.append(collision)
+			continue
 		if not collision.has("shape"):
 			collision["shape"] = "cylinder"
 		if not collision.has("radius") or float(collision.radius) <= 0.0:
@@ -71,6 +84,30 @@ static func normalize_collision_voxels(source: Array, default_radius: float = 0.
 			collision["value"] = 1.0
 		result.append(collision)
 	return result
+
+
+static func _is_float_collision_voxel(collision: Dictionary) -> bool:
+	return collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset")
+
+
+static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
+	if value is Vector3i:
+		return value as Vector3i
+	if value is Vector3:
+		var v := value as Vector3
+		return Vector3i(roundi(v.x), roundi(v.y), roundi(v.z))
+	if value is Array:
+		var arr := value as Array
+		if arr.size() >= 3:
+			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
+	if value is Dictionary:
+		var dict := value as Dictionary
+		return Vector3i(
+			int(dict.get("x", fallback.x)),
+			int(dict.get("y", fallback.y)),
+			int(dict.get("z", fallback.z))
+		)
+	return fallback
 
 
 static func make_all_band_entries(entry_color: Color, entry_complexity: float, radius: float = 0.0) -> Array[Dictionary]:
@@ -92,6 +129,19 @@ static func create_all_bands(entry_color: Color, entry_complexity: float, radius
 
 
 static func make_collision_voxel(
+	voxel: Vector3i,
+	value: float = 1.0,
+	weight: float = 1.0
+) -> Dictionary:
+	return {
+		"voxel": voxel,
+		"local_pos": voxel,
+		"value": clampf(value, 0.0, 1.0),
+		"weight": maxf(weight, 0.0),
+	}
+
+
+static func make_legacy_cylinder_collision(
 	radius: float,
 	y_min: float = 0.0,
 	y_max: float = 2.0,
