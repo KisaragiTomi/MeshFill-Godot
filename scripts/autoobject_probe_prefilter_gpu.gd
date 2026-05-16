@@ -216,12 +216,12 @@ func _dispatch_collect(
 	push.encode_float(40, min_support)
 	push.encode_float(44, min_target_interest)
 
-	var cl := _rd.compute_list_begin()
+	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_collect)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, dirty_count, 1, 1)
-	_rd.compute_list_end()
+	end_compute_list()
 
 
 func _dispatch_score(
@@ -261,12 +261,12 @@ func _dispatch_score(
 	push.encode_float(40, min_prefilter_score)
 	push.encode_float(44, 0.0)  # pad
 
-	var cl := _rd.compute_list_begin()
+	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_score)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, anchor_grid_x, anchor_grid_y, asset_blocks)
-	_rd.compute_list_end()
+	end_compute_list()
 
 
 func _dispatch_topk(
@@ -286,12 +286,12 @@ func _dispatch_topk(
 	push.encode_u32(8, anchor_grid_x)
 	push.encode_float(12, min_prefilter_score)
 
-	var cl := _rd.compute_list_begin()
+	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_topk)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, anchor_grid_x, anchor_grid_y, 1)
-	_rd.compute_list_end()
+	end_compute_list()
 
 
 func _dispatch_reduce(
@@ -316,12 +316,12 @@ func _dispatch_reduce(
 	push.encode_u32(24, TOPK)
 	push.encode_u32(28, 0)
 
-	var cl := _rd.compute_list_begin()
+	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_reduce)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, 1, 1, 1)
-	_rd.compute_list_end()
+	end_compute_list()
 
 
 # ---------------------------------------------------------------------------

@@ -174,13 +174,13 @@ func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
 	push.encode_s32(12, _base_res)
 
 	var groups := ceili(float(_base_res) / 32.0)
-	var cl := _rd.compute_list_begin()
+	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_import)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_bind_uniform_set(cl, set1, 1)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, groups, groups, 1)
-	_rd.compute_list_end()
+	end_compute_list()
 	submit_and_sync()
 
 	# Read back packed occupancy
@@ -555,13 +555,13 @@ func _gpu_filter_candidates(profile: Array[Dictionary]) -> Image:
 	push.encode_s32(28, 0)  # pad1
 
 	var groups := ceili(float(_base_res) / 32.0)
-	var cl := _rd.compute_list_begin()
+	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_filter)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_bind_uniform_set(cl, set1, 1)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, groups, groups, 1)
-	_rd.compute_list_end()
+	end_compute_list()
 	submit_and_sync()
 
 	var data := _rd.texture_get_data(tex_out, 0)

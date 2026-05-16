@@ -1251,12 +1251,12 @@ func _dispatch_score(
 	push.encode_s32(120, search_radius.y)
 	push.encode_s32(124, search_radius.z)
 
-	var cl := _rd.compute_list_begin()
+	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_score)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, candidate_voxel_region_count, 1, 1)
-	_rd.compute_list_end()
+	end_compute_list()
 
 
 func _dispatch_reduce(tile_topk_buffer: RID, result_buffer: RID, result_count_buffer: RID, candidate_count: int) -> void:
@@ -1277,12 +1277,12 @@ func _dispatch_reduce(tile_topk_buffer: RID, result_buffer: RID, result_count_bu
 	push.encode_float(24, 0.0)
 	push.encode_float(28, 0.0)
 
-	var cl := _rd.compute_list_begin()
+	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_reduce)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, 1, 1, 1)
-	_rd.compute_list_end()
+	end_compute_list()
 
 
 func _dispatch_stamp(
@@ -1330,12 +1330,12 @@ func _dispatch_stamp(
 
 	var total_threads := result_capacity * footprint_count
 	var groups := ceili(float(maxi(total_threads, 1)) / 64.0)
-	var cl := _rd.compute_list_begin()
+	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_stamp)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, groups, 1, 1)
-	_rd.compute_list_end()
+	end_compute_list()
 
 
 func _pack_footprint(footprint: Array) -> Dictionary:
