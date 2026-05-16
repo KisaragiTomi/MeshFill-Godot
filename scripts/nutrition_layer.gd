@@ -1,7 +1,10 @@
 class_name NutritionLayer
 extends PCGLayer
 
+const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
+
 var _rd: RenderingDevice
+var _compute
 var _shader: RID
 var _pipeline: RID
 var _sampler: RID
@@ -25,10 +28,11 @@ func generate(dirty_rect: Rect2i = Rect2i()) -> void:
 		rock_mask_img = Image.create(texture_size, texture_size, false, Image.FORMAT_RGBAF)
 		rock_mask_img.fill(Color(0.0, 0.0, 0.0, 0.0))
 
-	_rd = RenderingServer.create_local_rendering_device()
-	if _rd == null:
-		push_error("[NutritionLayer] Failed to create RenderingDevice")
+	_compute = ComputeShaderBaseScript.new()
+	_compute.log_name = "NutritionLayer"
+	if not _compute.ensure_device():
 		return
+	_rd = _compute.get_rendering_device()
 
 	_load_shader()
 
@@ -36,34 +40,19 @@ func generate(dirty_rect: Rect2i = Rect2i()) -> void:
 	if dr.size.x <= 0 or dr.size.y <= 0:
 		dr = Rect2i(0, 0, texture_size, texture_size)
 
-	var ss := RDSamplerState.new()
-	ss.mag_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
-	ss.min_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
-	_sampler = _rd.sampler_create(ss)
+	_sampler = _compute.create_linear_sampler()
 
-	var tex_depth := _upload_texture(scene_depth_img)
-	var tex_rock := _upload_texture(rock_mask_img)
-	var tex_output := _create_rw_texture(texture_size, texture_size)
+	var tex_depth: RID = _compute.upload_texture_2d(scene_depth_img)
+	var tex_rock: RID = _compute.upload_texture_2d(rock_mask_img)
+	var tex_output: RID = _compute.create_rw_texture_2d(texture_size, texture_size)
 
-	var u_depth := RDUniform.new()
-	u_depth.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
-	u_depth.binding = 0
-	u_depth.add_id(_sampler)
-	u_depth.add_id(tex_depth)
-
-	var u_rock := RDUniform.new()
-	u_rock.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
-	u_rock.binding = 1
-	u_rock.add_id(_sampler)
-	u_rock.add_id(tex_rock)
-
-	var set0 := _rd.uniform_set_create([u_depth, u_rock], _shader, 0)
-
-	var u_out := RDUniform.new()
-	u_out.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
-	u_out.binding = 0
-	u_out.add_id(tex_output)
-	var set1 := _rd.uniform_set_create([u_out], _shader, 1)
+	var set0: RID = _compute.create_uniform_set([
+		_compute.make_sampler_uniform(0, _sampler, tex_depth),
+		_compute.make_sampler_uniform(1, _sampler, tex_rock),
+	], _shader, 0)
+	var set1: RID = _compute.create_uniform_set([
+		_compute.make_image_uniform(0, tex_output),
+	], _shader, 1)
 
 	var push_buf := PackedByteArray()
 	push_buf.resize(32)
@@ -77,75 +66,28 @@ func generate(dirty_rect: Rect2i = Rect2i()) -> void:
 	var groups_x := ceili(float(dr.size.x) / 32.0)
 	var groups_y := ceili(float(dr.size.y) / 32.0)
 
-	var cl := _rd.compute_list_begin()
+	var cl: int = _compute.begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_bind_uniform_set(cl, set1, 1)
 	_rd.compute_list_set_push_constant(cl, push_buf, push_buf.size())
 	_rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
-	_rd.compute_list_end()
-	_rd.submit()
-	_rd.sync()
+	_compute.end_compute_list()
+	_compute.submit_and_sync()
 
 	var data := _rd.texture_get_data(tex_output, 0)
 	var result_img := Image.create_from_data(texture_size, texture_size, false, Image.FORMAT_RGBAH, data)
 	outputs["nutrition"] = result_img
 
-	_rd.free_rid(tex_depth)
-	_rd.free_rid(tex_rock)
-	_rd.free_rid(tex_output)
-	_rd.free_rid(_pipeline)
-	_rd.free_rid(_shader)
-	_rd.free_rid(_sampler)
-	_rd.free()
+	_compute.dispose()
 	_rd = null
+	_compute = null
+	_shader = RID()
+	_pipeline = RID()
+	_sampler = RID()
 
 
 func _load_shader() -> void:
-	var shader_file := load("res://shaders/compute_nutrition.glsl") as RDShaderFile
-	if shader_file == null:
-		push_error("[NutritionLayer] Failed to load shader")
-		return
-	var spirv := shader_file.get_spirv()
-	var err_msg := spirv.get_stage_compile_error(RenderingDevice.SHADER_STAGE_COMPUTE)
-	if err_msg != "":
-		push_error("[NutritionLayer] GLSL compile error: %s" % err_msg)
-		return
-	_shader = _rd.shader_create_from_spirv(spirv)
-	_pipeline = _rd.compute_pipeline_create(_shader)
-
-
-func _upload_texture(image: Image) -> RID:
-	var img := image
-	if img.get_format() != Image.FORMAT_RGBAH:
-		img = img.duplicate()
-		img.convert(Image.FORMAT_RGBAH)
-	var tf := RDTextureFormat.new()
-	tf.width = img.get_width()
-	tf.height = img.get_height()
-	tf.depth = 1
-	tf.array_layers = 1
-	tf.mipmaps = 1
-	tf.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
-	tf.texture_type = RenderingDevice.TEXTURE_TYPE_2D
-	tf.usage_bits = (
-		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT |
-		RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT
-	)
-	return _rd.texture_create(tf, RDTextureView.new(), [img.get_data()])
-
-
-func _create_rw_texture(w: int, h: int) -> RID:
-	var tf := RDTextureFormat.new()
-	tf.width = w
-	tf.height = h
-	tf.depth = 1
-	tf.array_layers = 1
-	tf.mipmaps = 1
-	tf.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
-	tf.texture_type = RenderingDevice.TEXTURE_TYPE_2D
-	tf.usage_bits = (
-		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT |
-		RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT
-	)
-	return _rd.texture_create(tf, RDTextureView.new())
+	_shader = _compute.load_compute_shader("res://shaders/compute_nutrition.glsl")
+	if _shader.is_valid():
+		_pipeline = _compute.create_compute_pipeline(_shader)
