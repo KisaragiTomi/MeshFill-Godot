@@ -74,13 +74,6 @@ func _test_convex_probe_generation() -> bool:
 
 	var probes := SemanticProbeProfileScript.generate_from_mesh(
 		mesh,
-		[{
-			"band": "understory",
-			"channel": 1,
-			"radius": 1.0,
-			"color": TEST_LEAF_COLOR,
-			"complexity": TEST_LEAF_COMPLEXITY,
-		}],
 		[],
 		TEST_LEAF_COLOR,
 		TEST_LEAF_COMPLEXITY,
@@ -119,13 +112,6 @@ func _test_collision_voxel_probe_generation() -> bool:
 	mesh.size = Vector3(2.0, 2.0, 2.0)
 	var probes := SemanticProbeProfileScript.generate_from_mesh(
 		mesh,
-		[{
-			"band": "collision",
-			"channel": 2,
-			"radius": 1.0,
-			"color": TEST_LEAF_COLOR,
-			"complexity": TEST_LEAF_COMPLEXITY,
-		}],
 		[{
 			"shape": "cylinder",
 			"radius": 0.45,

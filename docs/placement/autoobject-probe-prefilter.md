@@ -14,7 +14,7 @@
 SV / TargetSV → anchor 提取 → probe 采样 → top-K 选择 → voxel 区域聚合 → dispatch
 ```
 
-- **目标** — 排除不可放置位置；按 probe 语义匹配排序 asset；输出 `autoobject_candidate_voxel_regions` 候选 voxel 区域以限定 dispatch。
+- **目标** — 排除不可放置位置；按 probe 语义匹配排序 asset；输出 `autoobject_candidate_voxel_sparses` 候选 voxel 区域以限定 dispatch。
 - **非目标** — 不替代 footprint 精筛；不做精确几何碰撞检测；不使用 `AutoObject.scale`（强制 `Vector3.ONE`）。
 
 ---
@@ -45,7 +45,7 @@ Buffer 映射：
 | --- | --- |
 | `placeable_anchor_buffer` | 通过可放置测试的 anchor voxel |
 | `anchor_autoobject_topk` | 每个 anchor 的优质 `AutoObject` top-K |
-| `autoobject_candidate_voxel_regions` | 按 `AutoObject` 聚合的候选 voxel 区域列表；底层仍以离散 voxel 块坐标表示，并应为 probe 插值采样保留扩张边界 |
+| `autoobject_candidate_voxel_sparses` | 按 `AutoObject` 聚合的候选 voxel 区域列表；底层仍以离散 voxel 块坐标表示，并应为 probe 插值采样保留扩张边界 |
 | `debug_prefilter_score` | 可选调试体素 |
 
 ---
@@ -61,7 +61,7 @@ TargetSV 描述每个体素位置应填充的颜色、复杂度（value）和碰
 | 路径 | 来源 | 保真度 | 阶段 |
 | --- | --- | --- | --- |
 | **VDB 导入** | Houdini / DCC 离线导出 | 最高 | 离线基底层 |
-| **AutoObject Stamp** | landscape 规则 + AutoObject voxel records | 高 | 运行时 stamp |
+| **AutoObject Stamp** | landscape 规则 + AutoObject `asset_voxel_record` | 高 | 运行时 stamp |
 | **程序化生成** | landscape slope / height / rock_mask | 低（过渡版） | 当前实现 |
 
 VDB 可作为基底层，stamp 在其上叠加增量修改，程序化版为无外部数据时的回退。
@@ -76,12 +76,12 @@ VDB 可作为基底层，stamp 在其上叠加增量修改，程序化版为无�
 
 ### 目标架构：AutoObject Stamp
 
-TargetSV 应由 stamp 系统绘制：landscape 规则调度 stamp，每个 stamp 使用 AutoObject 烘焙的 voxel records 作为画笔 kernel，将中性的 color + complexity + collision intent 写入 TargetSV。
+TargetSV 应由 stamp 系统绘制：landscape 规则调度 stamp，每个 stamp 使用 AutoObject 烘焙的 `asset_voxel_record` 作为画笔 kernel，将中性的 color + complexity + collision intent 写入 TargetSV。
 
 ```text
 landscape height / slope / masks / rules
   ↓ target stamp scheduler
-AutoObject voxel records (color, complexity, collision, local_pos)
+AutoObject asset_voxel_record (color, complexity, collision, local_pos)
   ↓ transform by stamp origin / basis / scale
   ↓ blend into TargetSV
 TargetSV: color.rgb + complexity/value + collision intent
@@ -362,12 +362,12 @@ probe_score    = color_fit * w_color + complexity_fit * w_complexity + collision
 Voxel 区域聚合：
 
 ```text
-for anchor in voxel_region:
+for anchor in voxel_sparse:
   for autoobject in anchor.topK:
     for affected_region in asset_footprint_regions(anchor, autoobject):
       vote[autoobject][affected_region] += anchor.score
 region_autoobject_topK = topK(vote)
-// 输出: autoobject_candidate_voxel_regions[autoobject_id] = [voxel_region_pos: Vector3i...]
+// 输出: autoobject_candidate_voxel_sparses[autoobject_id] = [voxel_sparse_pos: Vector3i...]
 ```
 
 `run_multi_asset()` 只对命中的候选 voxel 区域运行 footprint scoring。
@@ -390,7 +390,7 @@ GPU 落地实现：
 | `shaders/collect_sv_anchors.glsl` | Dispatch 1 — dirty voxel 区域 → ground + target_top anchor 收集（atomic append） |
 | `shaders/score_anchor_asset_probes.glsl` | Dispatch 2 (Pass A) — 16×16 workgroup，anchor×asset probe 评分 |
 | `shaders/select_anchor_topk.glsl` | Dispatch 3 (Pass B) — 256 线程/anchor，top-K asset 选择 |
-| `shaders/reduce_anchor_topk_to_voxel_regions.glsl` | Dispatch 4 — anchor top-K → per-asset 候选 voxel 区域 vote 聚合 |
+| `shaders/reduce_anchor_topk_to_voxel_sparses.glsl` | Dispatch 4 — anchor top-K → per-asset 候选 voxel 区域 vote 聚合 |
 
 GPU-only 约束：
 
@@ -501,7 +501,7 @@ asset_scores[ANCHOR_CAPACITY * 256] // float: 每 anchor 固定保留 256 个 as
 anchor_topk[ANCHOR_CAPACITY * TOPK] // uvec2: { asset_id, score_as_float_bits }
 
 // Dispatch 4 输出
-voxel_region_votes[asset_count * tile_count] // float: 每个 (asset, voxel_region) 的累计 vote 分数
+voxel_sparse_votes[asset_count * tile_count] // float: 每个 (asset, voxel_sparse) 的累计 vote 分数
 ```
 
 ### Shader 总览
@@ -511,7 +511,7 @@ voxel_region_votes[asset_count * tile_count] // float: 每个 (asset, voxel_regi
 | 1 | `collect_sv_anchors.glsl` | `(dirty_tile_count, 1, 1)` | `(8, 8, 8)` | tile per workgroup, ground + target_top anchor 合并收集，atomic append |
 | 2 | `score_anchor_asset_probes.glsl` | `(anchor_grid_x, anchor_grid_y, ceil(asset_count / 16))` | `(16, 16, 1)` | **Pass A** — 16 asset lanes × 16 probe lanes，sharedgroup 归约 |
 | 3 | `select_anchor_topk.glsl` | `(anchor_grid_x, anchor_grid_y, 1)` | `(16, 16, 1)` | **Pass B** — 每 anchor 检查 256 asset 分数，阈值过滤 + top-K |
-| 4 | `reduce_anchor_topk_to_voxel_regions.glsl` | `(1, 1, 1)` | `(1, 1, 1)` | 串行扫描 anchor top-K，累加 per-asset voxel-region vote |
+| 4 | `reduce_anchor_topk_to_voxel_sparses.glsl` | `(1, 1, 1)` | `(1, 1, 1)` | 串行扫描 anchor top-K，累加 per-asset voxel-region vote |
 
 Dispatch 1 收集 anchor 后需 `submit()+sync()` 回读 `anchor_count`，确定后续 Pass A/B 的 dispatch 维度。
 
@@ -771,7 +771,7 @@ void main() {
 }
 ```
 
-### Dispatch 4 伪代码: `reduce_anchor_topk_to_voxel_regions.glsl`
+### Dispatch 4 伪代码: `reduce_anchor_topk_to_voxel_sparses.glsl`
 
 ```glsl
 #version 450
@@ -779,7 +779,7 @@ layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) restrict readonly  buffer AnchorBuf { uvec4 anchors[];      };
 layout(set = 0, binding = 1, std430) restrict readonly  buffer TopKIn    { uvec2 anchor_topk[];  };
-layout(set = 0, binding = 2, std430) restrict           buffer VoxelRegionVotes { float voxel_region_votes[]; };
+layout(set = 0, binding = 2, std430) restrict           buffer VoxelRegionVotes { float voxel_sparse_votes[]; };
 
 layout(push_constant, std430) uniform Params {
     ivec4 tile_grid_size_pad;   // xyz = tile grid dims, w = tile_count
@@ -790,7 +790,7 @@ layout(push_constant, std430) uniform Params {
 };
 
 // 串行扫描所有 anchor 的 top-K 结果
-// anchor.xyz → tile_id → voxel_region_votes[asset_id * tile_count + tile_id] += score
+// anchor.xyz → tile_id → voxel_sparse_votes[asset_id * tile_count + tile_id] += score
 // 输出由 CPU 回读后按 asset 降序排列为 Vector3i voxel 区域坐标列表
 ```
 
@@ -807,8 +807,8 @@ layout(push_constant, std430) uniform Params {
 7. Dispatch 3: topk        — (anchor_grid_x, anchor_grid_y, 1)
 8. submit() + sync()
 9. Dispatch 4: reduce      — (1, 1, 1)
-10. submit() + sync()      — 回读 voxel_region_votes
-11. _decode_results()      — voxel_region_votes → per-asset sorted Vector3i voxel 区域列表
+10. submit() + sync()      — 回读 voxel_sparse_votes
+11. _decode_results()      — voxel_sparse_votes → per-asset sorted Vector3i voxel 区域列表
 ```
 
 ---
@@ -820,7 +820,7 @@ layout(push_constant, std430) uniform Params {
 collision_voxels → bake_footprint → run_minimal → score_voxel_tile → reduce → stamp
 
 // 加入粗筛
-SV/TargetSV → probe prefilter → autoobject_candidate_voxel_regions → run_multi_asset (routed voxel regions) → score_voxel_tile
+SV/TargetSV → probe prefilter → autoobject_candidate_voxel_sparses → run_multi_asset (routed voxel regions) → score_voxel_tile
 ```
 
 粗筛只减少候选，不直接写入场景。
@@ -851,7 +851,7 @@ SV/TargetSV → probe prefilter → autoobject_candidate_voxel_regions → run_m
 - 每个 anchor 遍历对应 asset 的 descriptor-backed semantic probes 并计算分数。
 - 不同 asset 按 probe 匹配得到不同排序。
 - 空白/低目标区域不输出大量 asset。
-- 粗筛输出转换为 `autoobject_candidate_voxel_regions` 候选 voxel 区域以限定 dispatch，并为 probe 插值采样保留扩张边界。
+- 粗筛输出转换为 `autoobject_candidate_voxel_sparses` 候选 voxel 区域以限定 dispatch，并为 probe 插值采样保留扩张边界。
 - 最终放置由 footprint scoring 物理确认。
 
 ### GPU 管线
@@ -861,7 +861,7 @@ SV/TargetSV → probe prefilter → autoobject_candidate_voxel_regions → run_m
 - Pass A 使用 `16×16` 线程组，结合每个 asset 的 `probe_count` 分配 probe lane，并在 sharedgroup 内完成 score/weight 统计。
 - Pass B 让每个 anchor voxel 检查自身 256 个 asset 的 probe 汇总评分，过滤低质量结果后输出 anchor 级 top-K。
 - Dispatch 4 候选 voxel 区域 vote 聚合结果能稳定解码为按 asset 分组的 `Vector3i` voxel 区域列表。
-- GPU 版 `run_probe_prefilter()` 输出的 `autoobject_candidate_voxel_regions` 字典可直接接入 `VoxelPlacementGenerator`。
+- GPU 版 `run_probe_prefilter()` 输出的 `autoobject_candidate_voxel_sparses` 字典可直接接入 `VoxelPlacementGenerator`。
 - `voxel_index` 使用 XZY 展开顺序，`unpack_rgba8` 使用 R=bits[24:31] 高位优先字节序。
 
 ---

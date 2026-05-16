@@ -130,13 +130,6 @@ _surfaces = [{
 script = ExtResource("3_eo445")
 color = Color(0.35, 0.58, 0.24, 0.45)
 complexity = 0.45
-affected_bands = Array[Dictionary]([{
-"band": "understory",
-"channel": 1,
-"color": Color(0.35, 0.58, 0.24, 0.45),
-"complexity": 0.45,
-"radius": 0.65
-}])
 
 [resource]
 script = ExtResource("1_pd6xb")
@@ -146,13 +139,6 @@ vegetation_band = "understory"
 voxel_profile = SubResource("Resource_k1cdt")
 voxel_color = Color(0.35, 0.58, 0.24, 0.45)
 voxel_complexity = 0.45
-affected_bands = Array[Dictionary]([{
-"band": "understory",
-"channel": 1,
-"color": Color(0.35, 0.58, 0.24, 0.45),
-"complexity": 0.45,
-"radius": 0.65
-}])
 mesh = SubResource("ArrayMesh_ir3o4")
 source_mesh = SubResource("ArrayMesh_c4ik0")
 source_mesh_path = "res://geo/SM_TestLeaf_Test2.FBX"

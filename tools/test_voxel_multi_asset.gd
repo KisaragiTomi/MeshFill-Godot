@@ -7,7 +7,7 @@ func _init() -> void:
 	var ok := true
 	ok = ok and _test_multi_asset_pipeline()
 	ok = ok and _test_instantiate_placements()
-	ok = ok and _test_instantiate_placement_voxel_record_commit()
+	ok = ok and _test_instantiate_placement_asset_voxel_record_commit()
 	ok = ok and _test_multi_asset_collision_avoidance()
 
 	if ok:
@@ -189,8 +189,8 @@ func _test_instantiate_placements() -> bool:
 	return true
 
 
-func _test_instantiate_placement_voxel_record_commit() -> bool:
-	print("[VoxelMultiAsset] test_instantiate_placement_voxel_record_commit...")
+func _test_instantiate_placement_asset_voxel_record_commit() -> bool:
+	print("[VoxelMultiAsset] test_instantiate_placement_asset_voxel_record_commit...")
 	var mesh := VegetationScatter.create_bush_mesh()
 	var veg := VegetationExclusion.new(32, 32.0, false)
 	veg.add_band("ground", 0.0, 0.3, 32, Color(0.2, 0.8, 0.2, 1.0))
@@ -209,7 +209,7 @@ func _test_instantiate_placement_voxel_record_commit() -> bool:
 	var node := VPG.instantiate_placement(world_result, "bush", mesh, {
 		"name": "VoxelBushRecord_0",
 		"record_id": "voxel_bush_record_0",
-		"create_voxel_record": true,
+		"create_asset_voxel_record": true,
 		"vegetation_exclusion": veg,
 		"capture_size": 32.0,
 		"volume_xz_resolution": 32,
@@ -218,12 +218,12 @@ func _test_instantiate_placement_voxel_record_commit() -> bool:
 	if node == null:
 		push_error("  FAIL: node was not created")
 		return false
-	if not node.has_meta("voxel_record"):
-		push_error("  FAIL: node has no voxel_record metadata")
+	if not node.has_meta("asset_voxel_record"):
+		push_error("  FAIL: node has no asset_voxel_record metadata")
 		node.free()
 		return false
 
-	var record: Dictionary = node.get_meta("voxel_record")
+	var record: Dictionary = node.get_meta("asset_voxel_record")
 	if str(record.get("id", "")) != "voxel_bush_record_0":
 		push_error("  FAIL: wrong record id: %s" % str(record.get("id", "")))
 		node.free()

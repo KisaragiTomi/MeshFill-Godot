@@ -44,7 +44,7 @@ committed SceneVoxel
 
 ## `CollisionVoxel` 归属
 
-`CollisionVoxel` 不作为独立来源场存在；它在 `SceneVoxel` / `SV` 中对应 `collision_voxels` collision layer/field。该层与 `color`、`complexity`、`affected_bands` 等视觉语义同级，用来描述刚性或互斥占用：
+`CollisionVoxel` 不作为独立来源场存在；它在 `SceneVoxel` / `SV` 中对应 `collision_voxels` collision layer/field。该层与 `color`、`complexity` 等视觉语义同级，用来描述刚性或互斥占用：
 
 ```text
 AutoSceneVoxel
@@ -78,7 +78,7 @@ SceneVoxel
 
 ```text
 AutoVoxelDescriptor / brush edit / target guidance
-  -> make_*_scene_voxel_record()
+  -> make_*_asset_voxel_record()
   -> SourceSceneVoxelDelta[tick]
       SceneVoxel base fields
       AutoSceneVoxel / BrushSceneVoxel / TargetSceneVoxel source fields
@@ -124,9 +124,9 @@ AutoVoxelDescriptor / brush edit / target guidance
 | `BrushSceneVoxel` | `collision_voxels`、legacy `SenceLayerVoxel`、`brush_stroke_id`、`modified_voxels`、`auto_mix` | 画笔或手动编辑写出的同级语义字段和编辑上下文；`SenceLayerVoxel` 已暂时废弃，`modified_voxels` 限定本次编辑接管范围。 |
 | `TargetSceneVoxel` | `target_mix`、`target_pipeline` | 目标引导 source；参与混合、routing 和 scoring，但普通 target source 不提交最终 `collision_voxels` 字段。 |
 
-## `voxel_record`
+## `asset_voxel_record`
 
-`voxel_record` 是本轮写入 `SV` / `SceneVoxel` 的 write payload，由 `AutoAssetFactory.make_profile_scene_voxel_record()`、typed wrapper 或 placement builder 生成。它不是上一轮 `SceneVoxel`；上一轮 committed read model 明确写作 `SceneVoxel[t - 1]`。最终字段归属在 `SourceSceneVoxel` / committed `SceneVoxel`；`AutoObject` 只生成或保存 handle，不拥有最终 record schema。
+`asset_voxel_record` 是本轮写入 `SV` / `SceneVoxel` 的 write payload，由 `AutoAssetFactory.make_profile_asset_voxel_record()`、typed wrapper 或 placement builder 生成。它不是上一轮 `SceneVoxel`；上一轮 committed read model 明确写作 `SceneVoxel[t - 1]`。最终字段归属在 `SourceSceneVoxel` / committed `SceneVoxel`；`AutoObject` 只生成或保存 handle，不拥有最终 record schema。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -136,14 +136,13 @@ AutoVoxelDescriptor / brush edit / target guidance
 | `base_pixel` / `voxel_xz` | XZ 像素 / 体素坐标。 |
 | `volume_xz_resolution` | 目标体素体积 XZ 分辨率。 |
 | `color` / `complexity` | 本次 source visual 默认值。 |
-| `affected_bands` | 从资产 descriptor / profile 取出的 band 声明。 |
 | `collision_voxels` | 与 `color` / `complexity` 同级的 collision 语义字段；由 descriptor / profile 或画笔输入派生。 |
-| `SenceLayerVoxel` | 暂时废弃字段；旧 record 中可能保存由 `affected_bands` 派生的 visual layer 列表，新文档和新数据结构不应继续把它当作标准 schema。 |
+| `SenceLayerVoxel` | 暂时废弃字段；旧 record 中可能保存 visual layer 列表，新文档和新数据结构不应继续把它当作标准 schema。 |
 | `source_voxel_type` | `AutoSceneVoxel`、`BrushSceneVoxel` 或 `TargetSceneVoxel`。 |
 | `source_kind` | 来源种类，如 `rock_placement`、`scatter`、`brush`、`target`。 |
 | `producer_stage` | 生产阶段；默认等于 `source_kind`。 |
 
-`TargetSceneVoxel` record 只作为目标画布 / guidance 输入；普通 target source 不提交最终 `collision_voxels` 字段。`AutoObject` 和 metadata 可以保存 `voxel_record` handle 方便查询，但 record 字段应按 `SV` / `SceneVoxel` schema 理解，不能把它当作资产默认值来源。
+`TargetSceneVoxel` record 只作为目标画布 / guidance 输入；普通 target source 不提交最终 `collision_voxels` 字段。`AutoObject` 和 metadata 可以保存 `asset_voxel_record` handle 方便查询，但 record 字段应按 `SV` / `SceneVoxel` schema 理解，不能把它当作资产默认值来源。
 
 ## 地形保底碰撞
 
@@ -161,7 +160,7 @@ AutoVoxelDescriptor / brush edit / target guidance
 
 | 层 | 关键字段 | 说明 |
 | --- | --- | --- |
-| `AutoVoxelDescriptor` / `AutoObject.voxel_descriptor` | `voxel_descriptor` 持有 `color`、`complexity`、`affected_bands`、`collision_voxels`、`pivot_variants`、`semantic_probe_profile`、`semantic_probe_density`、`context_sensing_radius`；`AutoObject` 保留同名旧入口和 `min_spacing`、`bound_min_length` | descriptor 是资产默认语义唯一权威来源；`AutoObject` 同名字段只作为 legacy / Inspector / 配置字典兼容入口，不能作为新的语义状态来源。 |
+| `AutoVoxelDescriptor` / `AutoObject.voxel_descriptor` | `voxel_descriptor` 持有 `color`、`complexity`、`collision_voxels`、`pivot_variants`、`semantic_probe_profile`、`semantic_probe_density`、`context_sensing_radius`；`AutoObject` 保留同名旧入口和 `min_spacing`、`bound_min_length` | descriptor 是资产默认语义唯一权威来源；`AutoObject` 同名字段只作为 legacy / Inspector / 配置字典兼容入口，不能作为新的语义状态来源。 |
 | `SourceSceneVoxel` | `source_voxel_type`、`source_kind`、`producer_stage`、`generation_tick`、`read_tick`、`write_tick` | `AutoSceneVoxel` / `BrushSceneVoxel` 的共同上下文字段。 |
 | `AutoSceneVoxel` | `color`、`complexity`、`collision_voxels`、legacy `SenceLayerVoxel`、`source_kind` | 自动系统输出的当前 tick source voxel delta；`collision_voxels` 与 `color` / `complexity` 同级，`SenceLayerVoxel` 已暂时废弃，仅保留运行时兼容说明。 |
 | `BrushSceneVoxel` | `color`、`complexity`、`collision_voxels`、legacy `SenceLayerVoxel`、`modified_voxels`、`auto_mix` | 画笔或手动编辑输出的当前 tick source voxel delta；`collision_voxels` 与 `color` / `complexity` 同级，`SenceLayerVoxel` 已暂时废弃，仅保留运行时兼容说明。 |
@@ -175,7 +174,7 @@ AutoVoxelDescriptor / brush edit / target guidance
 
 | 规则 | 代码入口 | 结果 |
 | --- | --- | --- |
-| source 只写当前 tick | `apply_mesh_voxel_record()`、`_prepare_source_record()` | 重复提交旧 `voxel_record` 时会把 `generation_tick` 和 `write_tick` 重新绑定到本次 tick。 |
+| source 只写当前 tick | `apply_mesh_asset_voxel_record()`、`_prepare_source_record()` | 重复提交旧 `asset_voxel_record` 时会把 `generation_tick` 和 `write_tick` 重新绑定到本次 tick。 |
 | source voxel delta 分支 | `_source_delta_branch()`、`_write_source_voxel_delta()` | `AutoSceneVoxel` 写入 `auto`，`BrushSceneVoxel` 写入 `brush`，`TargetSceneVoxel` 写入 `target`。 |
 | 同 key 冲突按来源优先级处理 | `_source_beats_current()` | `BrushSceneVoxel` 默认优先级高于 `TargetSceneVoxel`，`TargetSceneVoxel` 高于 `AutoSceneVoxel`。 |
 | brush 只接管声明范围 | `_source_modifies_key()`、`modified_voxels` | `modified_voxels` 为空表示本次 stamp footprint 全接管；非空时只影响列出的 voxel key。 |

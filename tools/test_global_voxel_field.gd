@@ -10,7 +10,7 @@ func _init() -> void:
 	ok = ok and _test_basic_field()
 	ok = ok and _test_collision_import()
 	ok = ok and _test_gpu_pipeline_integration()
-	ok = ok and _test_voxel_record_creation()
+	ok = ok and _test_asset_voxel_record_creation()
 	ok = ok and _test_full_end_to_end()
 
 	if ok:
@@ -159,8 +159,8 @@ func _test_gpu_pipeline_integration() -> bool:
 	return true
 
 
-func _test_voxel_record_creation() -> bool:
-	print("[GlobalVoxelField] test_voxel_record_creation...")
+func _test_asset_voxel_record_creation() -> bool:
+	print("[GlobalVoxelField] test_asset_voxel_record_creation...")
 	var tree_mesh := VegetationScatter.create_tree_mesh()
 
 	var world_results: Array = [
@@ -191,7 +191,7 @@ func _test_voxel_record_creation() -> bool:
 		"complexity": 0.8,
 	})
 
-	var records := VPG.make_voxel_records(world_results, nodes, {
+	var records := VPG.make_asset_voxel_records(world_results, nodes, {
 		"id_prefix": "gpu_tree",
 		"color": Color(0.3, 0.5, 0.2, 0.8),
 		"complexity": 0.8,
@@ -296,11 +296,11 @@ func _test_full_end_to_end() -> bool:
 		"color": Color(0.4, 0.6, 0.1, 0.6), "complexity": 0.6,
 	})
 
-	var tree_records := VPG.make_voxel_records(tree_world, tree_nodes, {
+	var tree_records := VPG.make_asset_voxel_records(tree_world, tree_nodes, {
 		"id_prefix": "gpu_canopy", "type": "canopy_tree",
 		"color": Color(0.3, 0.5, 0.2, 0.8), "complexity": 0.8,
 	})
-	var bush_records := VPG.make_voxel_records(bush_world, bush_nodes, {
+	var bush_records := VPG.make_asset_voxel_records(bush_world, bush_nodes, {
 		"id_prefix": "gpu_bush", "type": "bush",
 		"color": Color(0.4, 0.6, 0.1, 0.6), "complexity": 0.6,
 	})

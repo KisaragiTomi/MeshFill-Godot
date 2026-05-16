@@ -16,3 +16,4 @@ __pycache__/
 
 # Local assistant notes
 mempalace.md
+docs/graphs/*.svg.import

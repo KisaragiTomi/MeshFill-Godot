@@ -64,13 +64,11 @@ func _scaffold_rock(args: Array, config: Dictionary) -> int:
 		Color(0.55, 0.50, 0.45, 1.0)
 	)
 	var complexity := clampf(float(_get_value(args, config, "complexity", 1.0)), 0.0, 1.0)
-	var affected_bands := _array_value(args, config, "affected_bands", AutoAssetFactoryScript.DEFAULT_ROCK_BANDS)
 	var collision_voxels := _array_value(args, config, "collision_voxels", [])
 	var radius := float(_get_value(args, config, "radius", 0.0))
 	var profile := AutoAssetFactoryScript.create_voxel_profile(
 		color,
 		complexity,
-		affected_bands,
 		radius,
 		collision_voxels
 	)
@@ -117,7 +115,6 @@ func _scaffold_rock(args: Array, config: Dictionary) -> int:
 		profile,
 		color,
 		complexity,
-		affected_bands,
 		collision_voxels,
 		random_rotate,
 		random_scale,
@@ -159,13 +156,7 @@ func _scaffold_vegetation(args: Array, config: Dictionary) -> int:
 	var complexity := clampf(float(_get_value(args, config, "complexity", color.a)), 0.0, 1.0)
 	var radius := float(_get_value(args, config, "radius", 0.25))
 	var collision_voxels := _array_value(args, config, "collision_voxels", [])
-	var profile := AutoAssetFactoryScript.create_single_band_profile(
-		band_name,
-		radius,
-		color,
-		complexity,
-		collision_voxels
-	)
+	var profile := AutoAssetFactoryScript.create_voxel_profile(color, complexity, radius, collision_voxels)
 
 	var err := AutoAssetFactoryScript.save_resource(profile, profile_path)
 	if err != OK:
@@ -190,7 +181,6 @@ func _scaffold_vegetation(args: Array, config: Dictionary) -> int:
 	asset.set("voxel_profile", profile)
 	asset.set("voxel_color", profile.get_color())
 	asset.set("voxel_complexity", profile.get_complexity())
-	asset.set("affected_bands", profile.get_affected_bands(radius))
 	asset.set("collision_voxels", profile.get_collision_voxels(radius))
 	var vegetation_script := load(script_path)
 	if vegetation_script == null:
@@ -321,7 +311,6 @@ Rock JSON:
     "mesh_size": 4.2,
     "color": [0.55, 0.50, 0.45, 1.0],
     "complexity": 1.0,
-    "affected_bands": ["ground", "understory", "midstory", "canopy"],
     "random_rotate": [0.0, 1.0],
     "random_scale": [0.8, 1.2],
     "random_height_offset": [-0.5, 0.5]

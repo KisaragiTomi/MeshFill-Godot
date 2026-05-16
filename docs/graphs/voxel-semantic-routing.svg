@@ -157,9 +157,9 @@
   <text x="1172" y="510" class="section">5. Normalize / Aggregate</text>
   <text x="1172" y="540" class="small">存活 routes 去重并按 asset 聚合</text>
   <rect x="1160" y="566" width="278" height="82" class="soft"/>
-  <text x="1182" y="592" class="mono">candidate_voxel_regions</text>
+  <text x="1182" y="592" class="mono">candidate_voxel_sparses</text>
   <text x="1182" y="616" class="mono">_by_asset = { asset_index:</text>
-  <text x="1182" y="640" class="mono">voxel_region_coords }</text>
+  <text x="1182" y="640" class="mono">voxel_sparse_coords }</text>
   <text x="1172" y="669" class="tiny">asset 无候选 voxel 区域时本轮 placement 直接跳过。</text>
 
   <path d="M 920 410 C 920 438 920 438 920 470" class="dash-green"/>

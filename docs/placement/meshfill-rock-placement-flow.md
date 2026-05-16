@@ -8,7 +8,7 @@
 
 系统通过 Compute Shader 管线迭代地在场景中放置岩石 Mesh，每次放置后将该石头的高度"印"到场景高度图上，使场景实际高度逐步逼近目标高度（target_height）。
 
-`CliffGenerator.generate_placement()` / `generate_surface_placement()` 是通用同类资产 GPU fitting producer，当前类名仍沿用历史命名。石头路径只是它的一个 consumer：输入一组 `AutoRock` / `AutoCliffRock` 资产、目标高度和遮罩，输出满足候选评分、去重和重叠控制的 placement result。后续 `main.gd` 才把这些结果实例化成 `AutoRock` 子类，并派生 `voxel_record` 写入场景体素系统。
+`CliffGenerator.generate_placement()` / `generate_surface_placement()` 是通用同类资产 GPU fitting producer，当前类名仍沿用历史命名。石头路径只是它的一个 consumer：输入一组 `AutoRock` / `AutoCliffRock` 资产、目标高度和遮罩，输出满足候选评分、去重和重叠控制的 placement result。后续 `main.gd` 才把这些结果实例化成 `AutoRock` 子类，并派生 `asset_voxel_record` 写入场景体素系统。
 
 ---
 

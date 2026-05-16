@@ -10,7 +10,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 ##   1. collect_sv_anchors        — find ground + target_top anchor voxels
 ##   2. score_anchor_asset_probes — score each anchor×asset probe set (Pass A)
 ##   3. select_anchor_topk        — per-anchor top-K asset selection   (Pass B)
-##   4. reduce_anchor_topk_to_voxel_regions — aggregate to per-asset voxel-region votes
+##   4. reduce_anchor_topk_to_voxel_sparses — aggregate to per-asset voxel-region votes
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 
@@ -52,12 +52,12 @@ func run_probe_prefilter(
 ) -> Dictionary:
 	if gvf == null:
 		return _empty_result()
-	var voxel_region_ids := dirty_tile_ids.duplicate()
-	if voxel_region_ids.is_empty():
-		voxel_region_ids = gvf.get_dirty_voxel_region_ids() if gvf.has_method("get_dirty_voxel_region_ids") else gvf.get_dirty_tile_ids()
-	if voxel_region_ids.is_empty():
-		voxel_region_ids = _all_tile_ids(gvf)
-	if voxel_region_ids.is_empty():
+	var voxel_sparse_ids := dirty_tile_ids.duplicate()
+	if voxel_sparse_ids.is_empty():
+		voxel_sparse_ids = gvf.get_dirty_voxel_sparse_ids() if gvf.has_method("get_dirty_voxel_sparse_ids") else gvf.get_dirty_tile_ids()
+	if voxel_sparse_ids.is_empty():
+		voxel_sparse_ids = _all_tile_ids(gvf)
+	if voxel_sparse_ids.is_empty():
 		return _empty_result()
 
 	log_name = "AutoObjectProbePrefilterGPU"
@@ -71,7 +71,7 @@ func run_probe_prefilter(
 		_free_gpu()
 		return _empty_result()
 
-	var result := _run_gpu_pipeline(gvf, target_occupancy, target_color, autoobjects, voxel_region_ids)
+	var result := _run_gpu_pipeline(gvf, target_occupancy, target_color, autoobjects, voxel_sparse_ids)
 	_free_gpu()
 	return result
 
@@ -124,7 +124,7 @@ func _run_gpu_pipeline(
 	var score_buf_size := ANCHOR_CAPACITY * MAX_ASSETS * 4
 	var asset_scores_buf := storage_buffer_zero(score_buf_size)
 	var topk_buf := storage_buffer_zero(ANCHOR_CAPACITY * TOPK * 8)  # uvec2 per entry
-	var voxel_region_votes_buf := storage_buffer_zero(asset_count * tile_count * 4)
+	var voxel_sparse_votes_buf := storage_buffer_zero(asset_count * tile_count * 4)
 
 	# ---- Dispatch 1: Collect anchors ----
 
@@ -168,7 +168,7 @@ func _run_gpu_pipeline(
 	# ---- Dispatch 4: Voxel-region reduction ----
 
 	_dispatch_reduce(
-		anchor_buf, topk_buf, voxel_region_votes_buf,
+		anchor_buf, topk_buf, voxel_sparse_votes_buf,
 		tile_grid, tile_count, actual_anchor_count, asset_count
 	)
 	submit_and_sync(true)
@@ -176,7 +176,7 @@ func _run_gpu_pipeline(
 	# ---- Read back results ----
 
 	var anchors_bytes := _rd.buffer_get_data(anchor_buf, 0, actual_anchor_count * 16)
-	var votes_bytes := _rd.buffer_get_data(voxel_region_votes_buf, 0, asset_count * tile_count * 4)
+	var votes_bytes := _rd.buffer_get_data(voxel_sparse_votes_buf, 0, asset_count * tile_count * 4)
 
 	_free_gpu()
 
@@ -295,14 +295,14 @@ func _dispatch_topk(
 
 
 func _dispatch_reduce(
-	anchor_buf: RID, topk_buf: RID, voxel_region_votes_buf: RID,
+	anchor_buf: RID, topk_buf: RID, voxel_sparse_votes_buf: RID,
 	tile_grid: Vector3i, tile_count: int,
 	anchor_count: int, asset_count: int
 ) -> void:
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, anchor_buf),
 		make_storage_uniform(1, topk_buf),
-		make_storage_uniform(2, voxel_region_votes_buf),
+		make_storage_uniform(2, voxel_sparse_votes_buf),
 	], _shader_reduce, 0)
 
 	var push := PackedByteArray()
@@ -449,7 +449,7 @@ func _decode_results(
 		})
 
 	# Decode voxel-region votes → per-asset sorted voxel-region lists
-	var autoobject_candidate_voxel_regions: Dictionary = {}
+	var autoobject_candidate_voxel_sparses: Dictionary = {}
 
 	for asset_id in range(asset_count):
 		var entries: Array[Dictionary] = []
@@ -461,15 +461,15 @@ func _decode_results(
 			continue
 		entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 			return float(a.get("score", 0.0)) > float(b.get("score", 0.0)))
-		var voxel_regions: Array[Vector3i] = []
+		var voxel_sparses: Array[Vector3i] = []
 		for entry in entries:
-			voxel_regions.append(gvf.tile_id_to_pos(int(entry.get("tile_id", 0))))
-		autoobject_candidate_voxel_regions[asset_id] = voxel_regions
+			voxel_sparses.append(gvf.tile_id_to_pos(int(entry.get("tile_id", 0))))
+		autoobject_candidate_voxel_sparses[asset_id] = voxel_sparses
 
 	return {
 		"anchors": anchors,
 		"anchor_autoobject_topk": {},  # Not read back (GPU internal)
-		"autoobject_candidate_voxel_regions": autoobject_candidate_voxel_regions,
+		"autoobject_candidate_voxel_sparses": autoobject_candidate_voxel_sparses,
 
 		"ground_anchor_count": ground_count,
 		"target_top_anchor_count": target_top_count,
@@ -480,7 +480,7 @@ func _load_shaders() -> void:
 	_shader_collect = load_compute_shader("res://shaders/collect_sv_anchors.glsl")
 	_shader_score = load_compute_shader("res://shaders/score_anchor_asset_probes.glsl")
 	_shader_topk = load_compute_shader("res://shaders/select_anchor_topk.glsl")
-	_shader_reduce = load_compute_shader("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl")
+	_shader_reduce = load_compute_shader("res://shaders/reduce_anchor_topk_to_voxel_sparses.glsl")
 	if _shader_collect.is_valid():
 		_pipeline_collect = create_compute_pipeline(_shader_collect)
 	if _shader_score.is_valid():
@@ -511,7 +511,7 @@ func _empty_result() -> Dictionary:
 	return {
 		"anchors": [],
 		"anchor_autoobject_topk": {},
-		"autoobject_candidate_voxel_regions": {},
+		"autoobject_candidate_voxel_sparses": {},
 
 		"ground_anchor_count": 0,
 		"target_top_anchor_count": 0,

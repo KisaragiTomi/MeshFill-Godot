@@ -10,7 +10,7 @@
 
 - [ ] 将 `anchor_autoobject_topk` 的候选记录统一为 `{asset_index, score, anchor_kind, tile_id}`。
 - [ ] 实现候选 route 归一化、去重和低置信度剔除。
-- [ ] 聚合 surviving routes 为 `candidate_voxel_regions_by_asset`。
+- [ ] 聚合 surviving routes 为 `candidate_voxel_sparses_by_asset`。
 - [ ] 聚合候选 voxel 区域时按 footprint、probe offset bounds、context 半径和 interpolation guard 保守扩张。
 - [ ] 确认 `VoxelPlacementGenerator.run_multi_asset()` 对空候选 voxel 区域的 asset 直接 skip。
 - [ ] 增加集成测试：prefilter route、empty route skip、dirty voxel 区域 route rebuild。

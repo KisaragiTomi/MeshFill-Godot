@@ -415,7 +415,7 @@ For 3D, `readback_tile_coords()` returns `Array[Vector3i]`.
 For voxel generation or scatter exclusion:
 
 - Keep visual/ecological height-band occupancy separate from rigid collision occupancy.
-- Store persistent voxel defaults on the object when possible: `voxel_color`, `voxel_complexity`, `affected_bands`, and `collision_voxels`.
+- Store persistent voxel defaults on the object when possible: `voxel_color`, `voxel_complexity`, and `collision_voxels`.
 - Treat shared voxel profiles as presets/fallbacks, not the only source of truth.
 - Write only coarse solid parts to collision voxels, such as trunks or large rock masses.
 - Avoid writing grass, leaves, and thin branches into rigid collision voxels.

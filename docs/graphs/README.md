@@ -13,19 +13,11 @@
 | `target-scene-voxel-current.svg` | 当前 `TargetSceneVoxel` GPU 生成、持久化和调试显示流程 | `docs/placement/target-scene-voxel-projection.md` |
 | `voxel-semantic-routing.svg` | 候选资产路由、candidate voxel region 输出和 physical scoring 边界 | `docs/placement/voxel-semantic-routing.md` |
 
-## QA 预览
-
-| 文件 | 说明 |
-| --- | --- |
-| `autoobject_asset_properties.qa.png` | `autoobject_asset_properties.svg` 的渲染检查图 |
-| `meshfill_current_framework.qa.png` | `meshfill_current_framework.svg` 的渲染检查图 |
-| `meshfill_compute_shader_3d_placement.qa.png` | `meshfill_compute_shader_3d_placement.svg` 的渲染检查图 |
-| `autoobject_probe_scoring_logic.qa.png` | `autoobject_probe_scoring_logic.svg` 的渲染检查图 |
 
 ## 维护规则
 
 - 修改 SVG 后，应同步检查对应 Markdown 文档中的字段名和术语。
 - 图中不要引入未在代码或文档中定义的新 schema 字段。
-- 高层候选区域使用 `voxel_region` 术语；底层 8×8×8 物理块、shader workgroup 和 buffer index 可以继续使用 `tile` / `tile_id`。
+- 高层候选区域使用 `voxel_sparse` 术语；底层 8×8×8 物理块、shader workgroup 和 buffer index 可以继续使用 `tile` / `tile_id`。
 - `collision_voxels` 应画成与 `color` / `complexity` 同级的语义字段；`collision_occupancy` 应标注为由 committed `SceneVoxel.collision_voxels` 重建的派生查询视图，不要画成 `SceneVoxel` 子层级或并列顶层语义状态。
 - `AutoVoxelDescriptor` 是资产体素语义的唯一权威来源；`AutoObject` 上重复字段只表示 legacy / Inspector / 配置兼容入口。

@@ -12,7 +12,6 @@ extends Resource
 @export var voxel_profile: AutoVoxelProfile
 @export var voxel_color: Color = Color(0.55, 0.50, 0.45, 1.0)
 @export_range(0.0, 1.0) var voxel_complexity: float = 1.0
-@export var affected_bands: Array[Dictionary] = []
 @export var collision_voxels: Array[Dictionary] = []
 @export var random_rotate: Vector2 = Vector2(0.0, 0.0)
 @export var random_scale: Vector2 = Vector2(1.0, 1.0)
@@ -31,16 +30,6 @@ func get_voxel_complexity() -> float:
 	if _should_read_profile_average():
 		return voxel_profile.get_complexity()
 	return clampf(voxel_complexity, 0.0, 1.0)
-
-
-func get_affected_bands(default_radius: float) -> Array[Dictionary]:
-	if not affected_bands.is_empty():
-		return AutoVoxelProfile.normalize_affected_bands(affected_bands, default_radius, get_voxel_color(), get_voxel_complexity())
-	if voxel_profile != null:
-		var bands := voxel_profile.get_affected_bands(default_radius)
-		if not bands.is_empty():
-			return bands
-	return AutoVoxelProfile.make_all_band_entries(get_voxel_color(), get_voxel_complexity(), default_radius)
 
 
 func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:

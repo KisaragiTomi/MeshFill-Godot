@@ -40,8 +40,6 @@ func configure_rock(config: Dictionary) -> void:
 	if cfg.has("complexity"):
 		voxel_complexity = clampf(float(cfg.complexity), 0.0, 1.0)
 	voxel_color.a = voxel_complexity
-	if cfg.has("affected_bands"):
-		set_affected_bands(cfg.affected_bands)
 	if cfg.has("collision_voxels"):
 		set_collision_voxels(cfg.collision_voxels)
 	if cfg.has("pivot_variants"):
@@ -70,8 +68,6 @@ func configure_rock(config: Dictionary) -> void:
 	if not cfg.has("complexity"):
 		cfg["complexity"] = get_voxel_complexity()
 	var radius := float(cfg.get("profile_radius", mesh_size * 0.5))
-	if not cfg.has("affected_bands"):
-		cfg["affected_bands"] = get_affected_bands(radius)
 	if not cfg.has("collision_voxels"):
 		cfg["collision_voxels"] = get_collision_voxels(radius)
 	if not cfg.has("pivot_variants"):
@@ -81,20 +77,6 @@ func configure_rock(config: Dictionary) -> void:
 	if cfg.has("mesh_index"):
 		mesh_index = int(cfg.mesh_index)
 	_clear_rock_state_mirror_metadata()
-
-
-func get_affected_bands(default_radius: float = 0.0) -> Array[Dictionary]:
-	var radius := default_radius
-	if radius <= 0.0:
-		radius = mesh_size * 0.5
-	var descriptor_bands := super.get_affected_bands(radius)
-	if not descriptor_bands.is_empty():
-		return descriptor_bands
-	if voxel_profile != null:
-		var bands := voxel_profile.get_affected_bands(radius)
-		if not bands.is_empty():
-			return bands
-	return AutoVoxelProfile.make_all_band_entries(get_voxel_color(), get_voxel_complexity(), radius)
 
 
 func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
@@ -107,6 +89,21 @@ func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
 	if voxel_profile != null:
 		return voxel_profile.get_collision_voxels(radius)
 	return []
+
+
+func get_record_object_type() -> String:
+	return "rock"
+
+
+func get_record_radius() -> float:
+	return maxf(get_xz_radius(), mesh_size * 0.5)
+
+
+func get_asset_voxel_record_extra_fields(extra_fields: Dictionary = {}) -> Dictionary:
+	var fields := super.get_asset_voxel_record_extra_fields(extra_fields)
+	if not fields.has("mesh_index"):
+		fields["mesh_index"] = mesh_index
+	return fields
 
 
 func is_valid_rock_asset() -> bool:
@@ -138,8 +135,6 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 	if not cfg.has("complexity"):
 		cfg["complexity"] = get_voxel_complexity()
 	var radius := float(cfg.get("profile_radius", mesh_size * 0.5))
-	if not cfg.has("affected_bands"):
-		cfg["affected_bands"] = get_affected_bands(radius)
 	if not cfg.has("collision_voxels"):
 		cfg["collision_voxels"] = get_collision_voxels(radius)
 	if not cfg.has("pivot_variants"):

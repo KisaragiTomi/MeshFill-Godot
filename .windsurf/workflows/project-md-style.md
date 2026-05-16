@@ -48,7 +48,7 @@ node.get_meta("auto_object_type")     # "rock"
 node.get_meta("bound_min_length")     # scaled bound minimum axis length
 node.get_meta("min_spacing")          # default bound_min_length * 0.5
 
-var record: Dictionary = node.get_meta("voxel_record")
+var record: Dictionary = node.get_meta("asset_voxel_record")
 record.color                          # Color(0.55, 0.50, 0.45, 1.0)
 record.complexity                     # 1.0
 record.auto_object_id                 # "Cliff_s1_0_m0"
@@ -61,7 +61,7 @@ Use this style for config-like examples:
 asset_type: "rock"                    # primary asset type
 asset_subtype: "cliff"                # asset subtype
 min_spacing: 0.5                      # default spacing multiplier
-affected_bands: ["ground", "canopy"]  # written height bands
+collision_voxels: []                  # optional collision footprint samples
 ```
 
 Use this style for source/type responsibility descriptions:
@@ -79,7 +79,7 @@ Use tables when comparing multiple items, documenting schemas, or replacing comm
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `auto_id` | `String` | generated object id |
-| `voxel_record` | `Dictionary` | record written to voxel/band data |
+| `asset_voxel_record` | `Dictionary` | record written to voxel/band data |
 
 Keep table cells short. Move long explanations to a following paragraph only when necessary.
 

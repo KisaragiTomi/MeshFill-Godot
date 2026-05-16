@@ -54,11 +54,9 @@ func unregister_object(auto_object: AutoObject) -> void:
 	objects_by_instance_id.erase(instance_id)
 	if not auto_object.auto_id.is_empty():
 		records_by_id.erase(auto_object.auto_id)
-	if auto_object.has_meta("voxel_record"):
-		var raw_record = auto_object.get_meta("voxel_record")
-		if raw_record is Dictionary:
-			var record := raw_record as Dictionary
-			records_by_id.erase(str(record.get("id", "")))
+	var meta_record := _get_asset_voxel_record_meta(auto_object)
+	if not meta_record.is_empty():
+		records_by_id.erase(str(meta_record.get("id", "")))
 	auto_object.set_meta("auto_manager_registered", false)
 
 
@@ -85,13 +83,21 @@ func reindex_object(auto_object: AutoObject) -> void:
 		return
 	var instance_id := auto_object.refresh_instance_id()
 	var record := get_record_by_instance_id(instance_id)
-	if record.is_empty() and auto_object.has_meta("voxel_record"):
-		var raw_record = auto_object.get_meta("voxel_record")
-		if raw_record is Dictionary:
-			record = (raw_record as Dictionary).duplicate(true)
+	if record.is_empty():
+		record = _get_asset_voxel_record_meta(auto_object)
 	_unindex_instance(instance_id)
 	objects_by_instance_id[instance_id] = auto_object
 	_index_object(auto_object, record)
+
+
+func _get_asset_voxel_record_meta(auto_object: AutoObject) -> Dictionary:
+	for key in AutoObject.asset_voxel_record_meta_keys():
+		if not auto_object.has_meta(key):
+			continue
+		var raw_record = auto_object.get_meta(key)
+		if raw_record is Dictionary:
+			return (raw_record as Dictionary).duplicate(true)
+	return {}
 
 
 func world_to_cell(world_pos: Vector3) -> Vector2i:

@@ -111,7 +111,7 @@ route_score = combine(candidate_score, probe_score, support_hint)
 ## 与其他文档的关系
 
 - `../placement/autoobject-probe-prefilter.md`：说明 GPU prefilter 如何生成 `anchor_autoobject_topk` 和候选 voxel 区域。
-- `../placement/voxel-semantic-routing.md`：说明候选路由、TargetSV clamp 采样和 `candidate_voxel_regions_by_asset` 的候选 voxel 区域合约。
+- `../placement/voxel-semantic-routing.md`：说明候选路由、TargetSV clamp 采样和 `candidate_voxel_sparses_by_asset` 的候选 voxel 区域合约。
 - `../placement/target-scene-voxel-projection.md`：说明 TargetSV 作为中性目标画布，以及 projection cache 的后续方向。
 
 ## 验收标准

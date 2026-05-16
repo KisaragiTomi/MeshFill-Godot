@@ -126,7 +126,7 @@
   <text class="tiny" x="790" y="512">rerank, validate, prune only</text>
 
   <rect class="node route" x="770" y="548" width="334" height="82" rx="16" ry="16"/>
-  <text class="label" x="790" y="576">candidate_voxel_regions</text>
+  <text class="label" x="790" y="576">candidate_voxel_sparses</text>
   <text class="label" x="790" y="598">_by_asset</text>
   <text class="small" x="790" y="618">asset_index -> sparse voxel-region ids</text>
 
@@ -166,7 +166,7 @@
 
   <rect class="node record" x="58" y="778" width="244" height="106" rx="16" ry="16"/>
   <text class="label" x="78" y="810">Write Payload Builders</text>
-  <text class="small" x="78" y="834">make_*_scene_voxel_record()</text>
+  <text class="small" x="78" y="834">make_*_asset_voxel_record()</text>
   <text class="small" x="78" y="856">build SV write payload</text>
   <text class="tiny" x="78" y="874">position, ids, bands, collision</text>
 

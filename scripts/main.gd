@@ -99,7 +99,7 @@ var _vegetation_generated: bool = false
 var _debug_mask_terrain: MeshInstance3D
 var _debug_probe_root: Node3D
 var _veg_exclusion: VegetationExclusion
-var _mesh_voxel_records: Dictionary = {}
+var _mesh_asset_voxel_records: Dictionary = {}
 var _auto_object_manager: AutoObjectManager
 var _target_sv_preview_image: Image
 var _target_sv_visual_bytes: PackedByteArray
@@ -748,7 +748,7 @@ func _instantiate_rock_asset(asset: AutoRock) -> AutoRock:
 		var duplicated_rock := duplicate_node as AutoRock
 		duplicated_rock.name = ""
 		duplicated_rock.auto_id = ""
-		duplicated_rock.voxel_record = {}
+		duplicated_rock.asset_voxel_record = {}
 		duplicated_rock.instance_id = 0
 		return duplicated_rock
 	if duplicate_node != null:
@@ -779,7 +779,27 @@ func _mesh_bound_min_length(mi: MeshInstance3D) -> float:
 	return 0.0 if result == INF else result
 
 
-func _attach_mesh_voxel_record(mi: MeshInstance3D, record: Dictionary) -> Dictionary:
+func _get_asset_voxel_record_from_meta(node: Node) -> Dictionary:
+	for key in AutoObject.asset_voxel_record_meta_keys():
+		if not node.has_meta(key):
+			continue
+		var raw_record = node.get_meta(key)
+		if raw_record is Dictionary:
+			return (raw_record as Dictionary).duplicate(true)
+	return {}
+
+
+func _get_asset_voxel_record_from_config(config: Dictionary) -> Dictionary:
+	for key in AutoObject.asset_voxel_record_meta_keys():
+		var raw_record = config.get(key, {})
+		if raw_record is Dictionary:
+			var record := raw_record as Dictionary
+			if not record.is_empty():
+				return record.duplicate(true)
+	return {}
+
+
+func _attach_mesh_asset_voxel_record(mi: MeshInstance3D, record: Dictionary) -> Dictionary:
 	var rec: Dictionary = record.duplicate(true)
 	if rec.has(DEPRECATED_VOXEL_LAYERS_KEY) and not rec.has(DEPRECATED_SENCE_LAYER_VOXEL_KEY):
 		rec[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = rec[DEPRECATED_VOXEL_LAYERS_KEY]
@@ -848,8 +868,6 @@ func _attach_mesh_voxel_record(mi: MeshInstance3D, record: Dictionary) -> Dictio
 		rec["auto_id"] = auto_id
 		rec["auto_object_id"] = auto_id
 		rec["auto_source"] = auto_object.auto_source
-		if not rec.has("affected_bands") and not auto_object.affected_bands.is_empty():
-			rec["affected_bands"] = auto_object.affected_bands.duplicate(true)
 		if not rec.has("collision_voxels") and not auto_object.collision_voxels.is_empty():
 			rec["collision_voxels"] = auto_object.collision_voxels.duplicate(true)
 		if not rec.has("semantic_probe_density"):
@@ -879,39 +897,38 @@ func _attach_mesh_voxel_record(mi: MeshInstance3D, record: Dictionary) -> Dictio
 		rec["node_path"] = str(mi.get_path())
 
 	if mi is AutoObject:
-		(mi as AutoObject).set_voxel_record(rec)
+		(mi as AutoObject).set_asset_voxel_record(rec)
 	else:
-		mi.set_meta("voxel_record", rec)
+		mi.set_meta(AutoObject.ASSET_VOXEL_RECORD_META_KEY, rec)
+		for key in [AutoObject.deprecated_asset_voxel_record_key(), AutoObject.legacy_asset_voxel_record_key()]:
+			if mi.has_meta(key):
+				mi.remove_meta(key)
 		mi.set_meta("instance_id", rec.instance_id)
 		mi.set_meta("instance_mesh_id", rec.instance_mesh_id)
-	_mesh_voxel_records[record_id] = rec
+	_mesh_asset_voxel_records[record_id] = rec
 	_register_auto_object(mi, rec)
 	return rec
 
 
-func get_mesh_voxel_records() -> Dictionary:
-	return _mesh_voxel_records.duplicate(true)
+func get_mesh_asset_voxel_records() -> Dictionary:
+	return _mesh_asset_voxel_records.duplicate(true)
 
 
-func get_mesh_voxel_record(record_id: String) -> Dictionary:
-	var record = _mesh_voxel_records.get(record_id, {})
+func get_mesh_asset_voxel_record(record_id: String) -> Dictionary:
+	var record = _mesh_asset_voxel_records.get(record_id, {})
 	if record is Dictionary:
 		var typed_record := record as Dictionary
 		return typed_record.duplicate(true)
 	return {}
 
 
-func _remove_mesh_voxel_record(node: Node) -> void:
+func _remove_mesh_asset_voxel_record(node: Node) -> void:
 	if node is AutoObject:
 		var manager := _ensure_auto_object_manager()
 		manager.unregister_object(node as AutoObject)
-	if not node.has_meta("voxel_record"):
-		return
-	var rec = node.get_meta("voxel_record")
-	if rec is Dictionary:
-		var record := rec as Dictionary
-		if record.has("id"):
-			_mesh_voxel_records.erase(str(record.id))
+	var record := _get_asset_voxel_record_from_meta(node)
+	if record.has("id"):
+		_mesh_asset_voxel_records.erase(str(record.id))
 
 
 func _generate_cliff_placements(generator: CliffGenerator, num_iters: int) -> Array[Dictionary]:
@@ -922,7 +939,7 @@ func _generate_cliff_placements(generator: CliffGenerator, num_iters: int) -> Ar
 	return generator.generate_cliff_vertical(num_iters)
 
 
-func _make_rock_affected_bands(color: Color, complexity: float, radius: float) -> Array[Dictionary]:
+func _make_rock_scene_layers(color: Color, complexity: float, radius: float) -> Array[Dictionary]:
 	return [
 		{"band": "ground", "channel": 0, "radius": radius, "color": color, "complexity": complexity},
 		{"band": "understory", "channel": 1, "radius": radius, "color": color, "complexity": complexity},
@@ -931,7 +948,7 @@ func _make_rock_affected_bands(color: Color, complexity: float, radius: float) -
 	]
 
 
-func _make_cliff_voxel_record(
+func _make_cliff_asset_voxel_record(
 	record_id: String,
 	r: Dictionary,
 	mi: MeshInstance3D,
@@ -950,13 +967,13 @@ func _make_cliff_voxel_record(
 		y_max = tmp
 	var radius := maxf(mesh_aabb.size.x * absf(mi.scale.x), mesh_aabb.size.z * absf(mi.scale.z)) * 0.5
 	radius = maxf(radius, capture_size / float(TEX_RES))
-	var affected_bands := asset.get_affected_bands(radius) if asset != null else _make_rock_affected_bands(color, complexity, radius)
 	var collision_voxels := asset.get_collision_voxels(radius) if asset != null else []
 	var deprecated_sence_layer_voxels: Array[Dictionary] = []
-	for band in affected_bands:
+	for band in _make_rock_scene_layers(color, complexity, radius):
 		var layer := band.duplicate(true)
 		layer["base_pixel"] = base_px
 		layer["voxel_xz"] = base_px
+		layer["volume_xz_resolution"] = TEX_RES
 		layer["y_min"] = y_min
 		layer["y_max"] = y_max
 		layer["slice_indices"] = []
@@ -978,14 +995,13 @@ func _make_cliff_voxel_record(
 		"volume_xz_resolution": TEX_RES,
 		"color": color,
 		"complexity": complexity,
-		"affected_bands": affected_bands,
 		"collision_voxels": collision_voxels,
 	}
 	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = deprecated_sence_layer_voxels
 	return record
 
 
-func _make_terrain_voxel_record(mi: MeshInstance3D, resolution: int) -> Dictionary:
+func _make_terrain_asset_voxel_record(mi: MeshInstance3D, resolution: int) -> Dictionary:
 	var color := TERRAIN_VOXEL_COLOR
 	var height_stats := Vector2.ZERO
 	if mi.has_meta("terrain_height_stats"):
@@ -1018,19 +1034,19 @@ func _make_terrain_voxel_record(mi: MeshInstance3D, resolution: int) -> Dictiona
 	return record
 
 
-func _attach_vegetation_voxel_record(mi: MeshInstance3D, r: Dictionary, apply_to_buffers: bool = true) -> void:
+func _attach_vegetation_asset_voxel_record(mi: MeshInstance3D, r: Dictionary, apply_to_buffers: bool = true) -> void:
 	var record_id := str(r.get("id", mi.name))
-	var voxel_record: Dictionary = {}
+	var asset_voxel_record: Dictionary = {}
 	if _veg_exclusion != null:
-		voxel_record = _veg_exclusion.get_mesh_voxel_record(record_id)
-	if voxel_record.is_empty():
-		voxel_record = r.get("voxel_record", {})
-	if voxel_record.is_empty():
+		asset_voxel_record = _veg_exclusion.get_mesh_asset_voxel_record(record_id)
+	if asset_voxel_record.is_empty():
+		asset_voxel_record = _get_asset_voxel_record_from_config(r)
+	if asset_voxel_record.is_empty():
 		var color: Color = r.get("color", Color.WHITE)
 		var complexity := clampf(float(r.get("complexity", color.a)), 0.0, 1.0)
 		color.a = complexity
 		var base_px := _world_to_texture_pixel(mi.position)
-		voxel_record = {
+		asset_voxel_record = {
 			"id": record_id,
 			"type": r.get("type", "vegetation"),
 			"auto_source": r.get("auto_source", r.get("placement_source", "scatter")),
@@ -1044,14 +1060,14 @@ func _attach_vegetation_voxel_record(mi: MeshInstance3D, r: Dictionary, apply_to
 			"volume_xz_resolution": TEX_RES,
 			"color": color,
 			"complexity": complexity,
-			"affected_bands": r.get("affected_bands", []),
 			"collision_voxels": r.get("collision_voxels", []),
 		}
-		voxel_record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = []
-	var attached := _attach_mesh_voxel_record(mi, voxel_record)
+		var layers: Array = r.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, r.get(DEPRECATED_VOXEL_LAYERS_KEY, []))
+		asset_voxel_record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = layers.duplicate(true)
+	var attached := _attach_mesh_asset_voxel_record(mi, asset_voxel_record)
 	if apply_to_buffers and _veg_exclusion != null:
-		attached = _veg_exclusion.apply_mesh_voxel_record(attached)
-		attached = _attach_mesh_voxel_record(mi, attached)
+		attached = _veg_exclusion.apply_mesh_asset_voxel_record(attached)
+		attached = _attach_mesh_asset_voxel_record(mi, attached)
 
 
 func register_brush_vegetation(mi: AutoVegetation, placement_data: Dictionary = {}) -> void:
@@ -1078,32 +1094,31 @@ func register_brush_vegetation(mi: AutoVegetation, placement_data: Dictionary = 
 		data["color"] = mi.get_voxel_color()
 	if not data.has("complexity"):
 		data["complexity"] = mi.get_voxel_complexity()
-	if not data.has("affected_bands") or not data["affected_bands"] is Array:
-		data["affected_bands"] = mi.get_affected_bands()
 	if not data.has("collision_voxels") or not data["collision_voxels"] is Array:
 		data["collision_voxels"] = mi.get_collision_voxels()
-	var data_bands: Array = data["affected_bands"]
-	if data_bands.is_empty() and not mi.vegetation_band.is_empty():
+	var data_layers: Array = data.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, data.get(DEPRECATED_VOXEL_LAYERS_KEY, []))
+	if data_layers.is_empty() and not mi.vegetation_band.is_empty():
 		var color: Color = data.get("color", Color.WHITE)
 		var complexity := clampf(float(data.get("complexity", color.a)), 0.0, 1.0)
 		color.a = complexity
-		data["affected_bands"] = [_make_vegetation_band_entry(mi.vegetation_band, color, complexity)]
+		data_layers = [_make_vegetation_band_entry(mi.vegetation_band, color, complexity)]
+	data[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = data_layers
 
 	mi.auto_source = "brush"
 	mi.add_to_group("placed_brush_vegetation")
 	if mi.get_parent() == null:
 		_add_level_child(mi)
 	var defer_buffer_update := bool(data.get("defer_voxel_update", _painting))
-	_attach_vegetation_voxel_record(mi, data, not defer_buffer_update)
+	_attach_vegetation_asset_voxel_record(mi, data, not defer_buffer_update)
 	if defer_buffer_update:
 		_brush_voxel_commit_pending = true
 		var brush_px := _world_to_texture_pixel(mi.position)
 		var brush_radius_px := 1
 		var pixel_size := capture_size / float(TEX_RES)
-		for band_raw in data["affected_bands"]:
-			if band_raw is Dictionary:
-				var band := band_raw as Dictionary
-				brush_radius_px = maxi(brush_radius_px, ceili(float(band.get("radius", pixel_size)) / pixel_size))
+		for layer_raw in data_layers:
+			if layer_raw is Dictionary:
+				var layer := layer_raw as Dictionary
+				brush_radius_px = maxi(brush_radius_px, ceili(float(layer.get("radius", pixel_size)) / pixel_size))
 		for collision_raw in data["collision_voxels"]:
 			if collision_raw is Dictionary:
 				var collision := collision_raw as Dictionary
@@ -1241,8 +1256,8 @@ func _apply_scene_mesh_voxels_to_vegetation_buffers() -> int:
 	if _veg_exclusion == null:
 		return 0
 	var applied := 0
-	for record_id in _mesh_voxel_records.keys():
-		var raw_record = _mesh_voxel_records[record_id]
+	for record_id in _mesh_asset_voxel_records.keys():
+		var raw_record = _mesh_asset_voxel_records[record_id]
 		if not raw_record is Dictionary:
 			continue
 		var record := raw_record as Dictionary
@@ -1251,33 +1266,33 @@ func _apply_scene_mesh_voxels_to_vegetation_buffers() -> int:
 		var should_apply := record_type == "rock" or record_source == "brush"
 		if not should_apply:
 			continue
-		var updated := _veg_exclusion.apply_mesh_voxel_record(record)
+		var updated := _veg_exclusion.apply_mesh_asset_voxel_record(record)
 		if bool(updated.get("height_buffer_applied", false)):
 			applied += 1
 			var node_path := str(updated.get("node_path", ""))
 			var node := get_node_or_null(NodePath(node_path)) if not node_path.is_empty() else null
 			if node is MeshInstance3D:
 				var mesh_node := node as MeshInstance3D
-				_attach_mesh_voxel_record(mesh_node, updated)
+				_attach_mesh_asset_voxel_record(mesh_node, updated)
 			else:
-				_mesh_voxel_records[record_id] = updated
+				_mesh_asset_voxel_records[record_id] = updated
 	return applied
 
 
-func _sync_scene_mesh_voxel_records_from_exclusion() -> void:
+func _sync_scene_mesh_asset_voxel_records_from_exclusion() -> void:
 	if _veg_exclusion == null:
 		return
-	for record in _veg_exclusion.get_mesh_voxel_records():
+	for record in _veg_exclusion.get_mesh_asset_voxel_records():
 		var record_id := str(record.get("id", ""))
-		if record_id.is_empty() or not _mesh_voxel_records.has(record_id):
+		if record_id.is_empty() or not _mesh_asset_voxel_records.has(record_id):
 			continue
 		var node_path := str(record.get("node_path", ""))
 		var node := get_node_or_null(NodePath(node_path)) if not node_path.is_empty() else null
 		if node is MeshInstance3D:
 			var mesh_node := node as MeshInstance3D
-			_attach_mesh_voxel_record(mesh_node, record)
+			_attach_mesh_asset_voxel_record(mesh_node, record)
 		else:
-			_mesh_voxel_records[record_id] = record
+			_mesh_asset_voxel_records[record_id] = record
 
 
 func _sync_vegetation_masks_from_exclusion() -> void:
@@ -1308,8 +1323,7 @@ func _record_should_write_vegetation_buffers(record: Dictionary) -> bool:
 	if record_type == "terrain":
 		return false
 	var layers: Array = record.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, record.get(DEPRECATED_VOXEL_LAYERS_KEY, []))
-	var affected: Array = record.get("affected_bands", [])
-	return not layers.is_empty() or not affected.is_empty()
+	return not layers.is_empty()
 
 
 func _rebuild_vegetation_buffers_from_scene_records(_dirty_rect: Rect2i = Rect2i()) -> int:
@@ -1322,27 +1336,27 @@ func _rebuild_vegetation_buffers_from_scene_records(_dirty_rect: Rect2i = Rect2i
 	_import_rock_mask_to_vegetation_buffers()
 
 	var applied := 0
-	for record_id in _mesh_voxel_records.keys():
-		var raw_record = _mesh_voxel_records[record_id]
+	for record_id in _mesh_asset_voxel_records.keys():
+		var raw_record = _mesh_asset_voxel_records[record_id]
 		if not raw_record is Dictionary:
 			continue
 		var record := raw_record as Dictionary
 		if not _record_should_write_vegetation_buffers(record):
 			continue
 
-		var updated := _veg_exclusion.apply_mesh_voxel_record(record)
+		var updated := _veg_exclusion.apply_mesh_asset_voxel_record(record)
 		if updated.is_empty():
 			continue
 		applied += 1
 		var node_path := str(updated.get("node_path", ""))
 		var node := get_node_or_null(NodePath(node_path)) if not node_path.is_empty() else null
 		if node is MeshInstance3D:
-			_attach_mesh_voxel_record(node as MeshInstance3D, updated)
+			_attach_mesh_asset_voxel_record(node as MeshInstance3D, updated)
 		else:
-			_mesh_voxel_records[record_id] = updated
+			_mesh_asset_voxel_records[record_id] = updated
 
 	_veg_exclusion.build_voxel_volume(TEX_RES / 2, [1, 2, 2, 1])
-	_sync_scene_mesh_voxel_records_from_exclusion()
+	_sync_scene_mesh_asset_voxel_records_from_exclusion()
 	_sync_vegetation_masks_from_exclusion()
 
 	if _debug_mask_terrain != null:
@@ -1421,8 +1435,8 @@ func _step_generate() -> void:
 		})
 		_add_level_child(mi)
 		_mark_test_only_generated(mi, "rock")
-		var rock_record := _mark_test_only_record(_make_cliff_voxel_record(mi.name, r, mi, mesh_aabb, asset), "rock")
-		_attach_mesh_voxel_record(mi, rock_record)
+		var rock_record := _mark_test_only_record(_make_cliff_asset_voxel_record(mi.name, r, mi, mesh_aabb, asset), "rock")
+		_attach_mesh_asset_voxel_record(mi, rock_record)
 		if i < 3:
 			print("  [%d] pos=%s aabb_top=%.2f offset_y=%.2f" % [i, r.position, mesh_aabb.position.y + mesh_aabb.size.y, mesh_top_y])
 
@@ -1953,7 +1967,7 @@ func _start_debounce_regen() -> void:
 func _regenerate() -> void:
 	for child in _get_level_children():
 		if child.name.begins_with("Cliff_") or child.name == "DebugTargetHeight" or child.name == "DebugDiffHeight" or child.name == "DebugCombinedMask" or child.name == "DebugSemanticProbes" or child.name == "DebugTargetSceneVoxel" or child.name == "Terrain":
-			_remove_mesh_voxel_record(child)
+			_remove_mesh_asset_voxel_record(child)
 			child.queue_free()
 	_debug_terrain = null
 	_debug_diff_terrain = null
@@ -2083,8 +2097,8 @@ func _generate() -> void:
 		})
 		_add_level_child(mi)
 		_mark_test_only_generated(mi, "rock")
-		var rock_record := _mark_test_only_record(_make_cliff_voxel_record(mi.name, r, mi, mesh_aabb, asset), "rock")
-		_attach_mesh_voxel_record(mi, rock_record)
+		var rock_record := _mark_test_only_record(_make_cliff_asset_voxel_record(mi.name, r, mi, mesh_aabb, asset), "rock")
+		_attach_mesh_asset_voxel_record(mi, rock_record)
 		if i < 5:
 			print("  [%d] pos=%s rot=%.1f掳 scale=%.3f mesh=%d top_offset=%.2f" % [
 				i, r.position, r.rotation_y, mi.scale.x, r.mesh_index, mesh_top_y])
@@ -2811,7 +2825,7 @@ func _commit_brush_edit(dirty_rect: Rect2i, update_generated_layers: bool = true
 	elif update_voxels:
 		var applied := _rebuild_vegetation_buffers_from_scene_records(commit_rect)
 		if applied > 0:
-			print("[MeshFill] Brush commit: refreshed %d scene voxel records" % applied)
+			print("[MeshFill] Brush commit: refreshed %d scene asset_voxel_record entries" % applied)
 
 
 func _paint_at_screen(screen_pos: Vector2) -> void:
@@ -3240,7 +3254,7 @@ func _load_vegetation_assets() -> Array[AutoVegetationAsset]:
 			continue
 		var asset := resource as AutoVegetationAsset
 		if asset.get_scatter_profile().is_empty():
-			push_warning("[MeshFill] Skipping vegetation asset without affected bands: %s" % path)
+			push_warning("[MeshFill] Skipping vegetation asset without scatter profile: %s" % path)
 			continue
 		if asset.get_mesh() == null:
 			push_warning("[MeshFill] Skipping vegetation asset without mesh source: %s" % path)
@@ -3371,7 +3385,7 @@ func _create_cliff_height_image(box_size: Vector3) -> Image:
 func _create_terrain_mesh(height_tex: ImageTexture) -> void:
 	var existing := _get_level_child("Terrain")
 	if existing != null:
-		_remove_mesh_voxel_record(existing)
+		_remove_mesh_asset_voxel_record(existing)
 		existing.queue_free()
 
 	var img := height_tex.get_image()
@@ -3415,7 +3429,7 @@ func _create_terrain_mesh(height_tex: ImageTexture) -> void:
 	mi.name = "Terrain"
 	mi.set_meta("terrain_height_stats", height_stats)
 	_add_level_child(mi)
-	_attach_mesh_voxel_record(mi, _make_terrain_voxel_record(mi, res))
+	_attach_mesh_asset_voxel_record(mi, _make_terrain_asset_voxel_record(mi, res))
 
 	print("[MeshFill] Terrain mesh created (%dx%d, %.0fm x %.0fm, h=%.2f..%.2f)" % [
 		res, res, capture_size, capture_size, height_stats.x, height_stats.y])
@@ -3646,7 +3660,7 @@ func _generate_vegetation() -> void:
 
 		# Build voxel volume
 		_veg_exclusion.build_voxel_volume(TEX_RES / 2, [1, 2, 2, 1])
-		_sync_scene_mesh_voxel_records_from_exclusion()
+		_sync_scene_mesh_asset_voxel_records_from_exclusion()
 
 		# Validate
 		validation = _veg_exclusion.validate_voxel({
@@ -3700,15 +3714,15 @@ func _generate_vegetation() -> void:
 			"visual_layer": VegetationScatter.TREE_VISUAL_LAYER,
 			"color": r.color,
 			"complexity": r.complexity,
-			"affected_bands": r.affected_bands,
 			"collision_voxels": r.get("collision_voxels", []),
+			"SenceLayerVoxel": r.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, []),
 			"material": _make_veg_material(r.color, r.complexity),
 			"auto_source": "scatter",
 			"groups": [TEST_ONLY_GROUP, TEST_ONLY_VEGETATION_GROUP],
 		})
 		_add_level_child(mi)
 		_mark_test_only_generated(mi, "vegetation")
-		_attach_vegetation_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
+		_attach_vegetation_asset_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
 
 	# Midstory trees
 	if _midstory_mesh == null:
@@ -3726,15 +3740,15 @@ func _generate_vegetation() -> void:
 			"visual_layer": VegetationScatter.MIDSTORY_VISUAL_LAYER,
 			"color": r.color,
 			"complexity": r.complexity,
-			"affected_bands": r.affected_bands,
 			"collision_voxels": r.get("collision_voxels", []),
+			"SenceLayerVoxel": r.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, []),
 			"material": _make_veg_material(r.color, r.complexity),
 			"auto_source": "scatter",
 			"groups": [TEST_ONLY_GROUP, TEST_ONLY_VEGETATION_GROUP],
 		})
 		_add_level_child(mi)
 		_mark_test_only_generated(mi, "vegetation")
-		_attach_vegetation_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
+		_attach_vegetation_asset_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
 
 	# Bushes
 	if _bush_mesh == null:
@@ -3752,15 +3766,15 @@ func _generate_vegetation() -> void:
 			"visual_layer": VegetationScatter.BUSH_VISUAL_LAYER,
 			"color": r.color,
 			"complexity": r.complexity,
-			"affected_bands": r.affected_bands,
 			"collision_voxels": r.get("collision_voxels", []),
+			"SenceLayerVoxel": r.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, []),
 			"material": _make_veg_material(r.color, r.complexity),
 			"auto_source": "scatter",
 			"groups": [TEST_ONLY_GROUP, TEST_ONLY_VEGETATION_GROUP],
 		})
 		_add_level_child(mi)
 		_mark_test_only_generated(mi, "vegetation")
-		_attach_vegetation_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
+		_attach_vegetation_asset_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
 
 	# Scripted vegetation assets
 	for entry in scripted_vegetation_results:
@@ -3776,8 +3790,8 @@ func _generate_vegetation() -> void:
 				"scale": r.scale,
 				"color": r.color,
 				"complexity": r.complexity,
-				"affected_bands": r.affected_bands,
 				"collision_voxels": r.get("collision_voxels", []),
+				"SenceLayerVoxel": r.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, []),
 				"auto_source": "scatter",
 				"groups": [TEST_ONLY_GROUP, TEST_ONLY_VEGETATION_GROUP],
 			}
@@ -3786,7 +3800,7 @@ func _generate_vegetation() -> void:
 			var mi := asset.instantiate_vegetation(placement_config)
 			_add_level_child(mi)
 			_mark_test_only_generated(mi, "vegetation")
-			_attach_vegetation_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
+			_attach_vegetation_asset_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
 
 	# Grass
 	if _grass_mesh == null:
@@ -3804,17 +3818,17 @@ func _generate_vegetation() -> void:
 			"visual_layer": VegetationScatter.GRASS_VISUAL_LAYER,
 			"color": r.color,
 			"complexity": r.complexity,
-			"affected_bands": r.affected_bands,
 			"collision_voxels": r.get("collision_voxels", []),
+			"SenceLayerVoxel": r.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, []),
 			"material": _make_veg_material(r.color, r.complexity),
 			"auto_source": "scatter",
 			"groups": [TEST_ONLY_GROUP, TEST_ONLY_VEGETATION_GROUP],
 		})
 		_add_level_child(mi)
 		_mark_test_only_generated(mi, "vegetation")
-		_attach_vegetation_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
+		_attach_vegetation_asset_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
 
-	# Refresh debug masks after scene instances have written their voxel records
+	# Refresh debug masks after scene instances have written their asset_voxel_record entries
 	# back into the height-band buffers.
 	_tree_mask_image = _veg_exclusion.get_band_mask_at_base_res("canopy")
 	_midstory_mask_image = _veg_exclusion.get_band_mask_at_base_res("midstory")
@@ -3833,8 +3847,8 @@ func _generate_vegetation() -> void:
 		vol_stats.occupancy_pct])
 	if vol_stats.has("collision_occupancy_pct"):
 		print("[MeshFill]   Collision voxels: %s occupied" % [vol_stats.collision_occupancy_pct])
-	print("[MeshFill]   Mesh voxel records: %d exclusion-buffer, %d runtime total" % [
-		_veg_exclusion.get_mesh_voxel_record_count(), _mesh_voxel_records.size()])
+	print("[MeshFill]   Mesh asset_voxel_record entries: %d exclusion-buffer, %d runtime total" % [
+		_veg_exclusion.get_mesh_asset_voxel_record_count(), _mesh_asset_voxel_records.size()])
 
 	var elapsed := Time.get_ticks_msec() - t0
 	_vegetation_generated = true
@@ -3863,13 +3877,13 @@ func _make_veg_material(color: Color, complexity: float) -> StandardMaterial3D:
 func _clear_vegetation() -> void:
 	for group in ["placed_canopy_trees", "placed_midstory_trees", "placed_bushes", "placed_grass"]:
 		for node in get_tree().get_nodes_in_group(group):
-			_remove_mesh_voxel_record(node)
+			_remove_mesh_asset_voxel_record(node)
 			node.queue_free()
 	for node in _get_level_children():
 		if node is AutoVegetation and not node.is_queued_for_deletion():
 			var vegetation := node as AutoVegetation
 			if vegetation.auto_source == "scatter":
-				_remove_mesh_voxel_record(vegetation)
+				_remove_mesh_asset_voxel_record(vegetation)
 				vegetation.queue_free()
 	if _veg_exclusion != null:
 		_veg_exclusion._free_gpu()

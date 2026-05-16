@@ -7,8 +7,9 @@ const BAND_CHANNELS := {
 	"midstory": 2,
 	"canopy": 3,
 }
-const DEFAULT_ROCK_BANDS := ["ground", "understory", "midstory", "canopy"]
+const DEFAULT_ROCK_LAYER_NAMES := ["ground", "understory", "midstory", "canopy"]
 const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
+const AutoVoxelSharedFieldsScript := preload("res://scripts/auto_voxel_shared_fields.gd")
 
 
 static func band_channel(band_name: String, fallback: int = 0) -> int:
@@ -16,24 +17,7 @@ static func band_channel(band_name: String, fallback: int = 0) -> int:
 
 
 static func color_from_value(value, fallback: Color = Color.WHITE) -> Color:
-	if value is Color:
-		return value as Color
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			var alpha := float(arr[3]) if arr.size() >= 4 else fallback.a
-			return Color(float(arr[0]), float(arr[1]), float(arr[2]), alpha)
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Color(
-			float(dict.get("r", fallback.r)),
-			float(dict.get("g", fallback.g)),
-			float(dict.get("b", fallback.b)),
-			float(dict.get("a", fallback.a))
-		)
-	if value is String:
-		return Color.from_string(str(value), fallback)
-	return fallback
+	return AutoVoxelSharedFieldsScript.color_from_value(value, fallback)
 
 
 static func vector2_from_value(value, fallback: Vector2) -> Vector2:
@@ -70,74 +54,34 @@ static func vector3_from_value(value, fallback: Vector3) -> Vector3:
 
 
 static func duplicate_dictionary_array(source: Array) -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
-	for raw_entry in source:
-		if raw_entry is Dictionary:
-			result.append((raw_entry as Dictionary).duplicate(true))
-	return result
+	return AutoVoxelSharedFieldsScript.duplicate_dictionary_array(source)
 
 
-static func make_band_entries(
-	bands: Array,
+static func make_scene_layer_entries(
+	layer_specs: Array,
 	entry_color: Color,
 	entry_complexity: float,
-	default_radius: float = 0.0
+	default_radius: float = 0.0,
+	base_pixel: Vector2i = Vector2i.ZERO,
+	volume_xz_resolution: int = 0,
+	y_min: float = 0.0,
+	y_max: float = 0.0
 ) -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
-	var complexity := clampf(entry_complexity, 0.0, 1.0)
-	for raw_band in bands:
-		var band_name := ""
-		var channel := result.size()
-		var radius := default_radius
-		var color := entry_color
-		var band_complexity := complexity
-
-		if raw_band is Dictionary:
-			var dict := raw_band as Dictionary
-			band_name = str(dict.get("band", dict.get("name", "")))
-			channel = int(dict.get("channel", band_channel(band_name, channel)))
-			radius = float(dict.get("radius", default_radius))
-			color = color_from_value(dict.get("color", entry_color), entry_color)
-			band_complexity = clampf(float(dict.get("complexity", complexity)), 0.0, 1.0)
-		else:
-			band_name = str(raw_band)
-			channel = band_channel(band_name, channel)
-
-		if band_name.is_empty():
-			continue
-		color.a = band_complexity
-		result.append({
-			"band": band_name,
-			"channel": channel,
-			"radius": radius,
-			"color": color,
-			"complexity": band_complexity,
-		})
-	return result
+	return AutoObject.make_scene_layer_entries(layer_specs, entry_color, entry_complexity, default_radius, base_pixel, volume_xz_resolution, y_min, y_max)
 
 
 static func create_voxel_profile(
 	entry_color: Color,
 	entry_complexity: float,
-	affected_bands: Array = [],
 	default_radius: float = 0.0,
 	collision_voxels: Array = []
 ) -> AutoVoxelProfile:
-	var profile := AutoVoxelProfile.new()
-	profile.color = entry_color
-	profile.complexity = clampf(entry_complexity, 0.0, 1.0)
-	var bands := affected_bands
-	if bands.is_empty():
-		bands = DEFAULT_ROCK_BANDS
-	profile.affected_bands = make_band_entries(bands, entry_color, profile.complexity, default_radius)
-	profile.collision_voxels = duplicate_dictionary_array(collision_voxels)
-	return profile
+	return AutoObject.create_voxel_profile(entry_color, entry_complexity, default_radius, collision_voxels)
 
 
 static func create_voxel_descriptor(
 	entry_color: Color,
 	entry_complexity: float,
-	affected_bands: Array = [],
 	default_radius: float = 0.0,
 	collision_voxels: Array = [],
 	pivot_variants: Array = [],
@@ -145,7 +89,7 @@ static func create_voxel_descriptor(
 	semantic_probe_density: float = 1.0,
 	context_sensing_radius: float = 0.0
 ) -> Resource:
-	var profile := create_voxel_profile(entry_color, entry_complexity, affected_bands, default_radius, collision_voxels)
+	var profile := create_voxel_profile(entry_color, entry_complexity, default_radius, collision_voxels)
 	var descriptor = load("res://scripts/auto_voxel_descriptor.gd").from_profile(profile, default_radius)
 	if not pivot_variants.is_empty():
 		descriptor.set_pivot_variants(pivot_variants)
@@ -153,23 +97,6 @@ static func create_voxel_descriptor(
 	descriptor.semantic_probe_density = clampf(semantic_probe_density, 0.1, 8.0)
 	descriptor.context_sensing_radius = maxf(context_sensing_radius, 0.0)
 	return descriptor
-
-
-static func create_single_band_profile(
-	band_name: String,
-	radius: float,
-	entry_color: Color,
-	entry_complexity: float,
-	collision_voxels: Array = []
-) -> AutoVoxelProfile:
-	var profile := create_voxel_profile(
-		entry_color,
-		entry_complexity,
-		[{"band": band_name, "channel": band_channel(band_name), "radius": radius}],
-		radius,
-		collision_voxels
-	)
-	return profile
 
 
 static func load_or_new_mesh_data_asset(asset_path: String) -> MeshDataAsset:
@@ -207,7 +134,6 @@ static func rock_from_mesh_data_asset(asset: MeshDataAsset, subtype: String = "c
 		"voxel_profile": asset.voxel_profile,
 		"color": asset.get_voxel_color(),
 		"complexity": asset.get_voxel_complexity(),
-		"affected_bands": asset.get_affected_bands(asset.mesh_size * 0.5),
 		"collision_voxels": asset.get_collision_voxels(asset.mesh_size * 0.5),
 		"random_rotate": asset.random_rotate,
 		"random_scale": asset.random_scale,
@@ -224,7 +150,6 @@ static func create_or_update_rock_asset(
 	profile: AutoVoxelProfile = null,
 	entry_color: Color = Color(0.55, 0.50, 0.45, 1.0),
 	entry_complexity: float = 1.0,
-	affected_bands: Array = [],
 	collision_voxels: Array = [],
 	random_rotate: Vector2 = Vector2(0.0, 1.0),
 	random_scale: Vector2 = Vector2(0.8, 1.2),
@@ -236,25 +161,14 @@ static func create_or_update_rock_asset(
 	var result := asset if asset != null else AutoCliffRock.new()
 	var direct_color := entry_color
 	var direct_complexity := clampf(entry_complexity, 0.0, 1.0)
-	var direct_bands: Array[Dictionary] = []
 	var direct_collision_voxels: Array[Dictionary] = []
 	if profile != null:
 		direct_color = profile.get_color()
 		direct_complexity = profile.get_complexity()
-		direct_bands = profile.get_affected_bands(0.0)
 		direct_collision_voxels = profile.get_collision_voxels(0.0)
-	if not affected_bands.is_empty() or direct_bands.is_empty():
-		direct_bands = make_band_entries(
-			affected_bands if not affected_bands.is_empty() else DEFAULT_ROCK_BANDS,
-			direct_color,
-			direct_complexity,
-			0.0
-		)
 	if not collision_voxels.is_empty():
 		direct_collision_voxels = duplicate_dictionary_array(collision_voxels)
 	direct_color.a = direct_complexity
-	if not direct_bands.is_empty():
-		direct_bands = AutoVoxelProfile.normalize_affected_bands(direct_bands, 0.0, direct_color, direct_complexity)
 	if not direct_collision_voxels.is_empty():
 		direct_collision_voxels = AutoVoxelProfile.normalize_collision_voxels(direct_collision_voxels, 0.0)
 	var cfg := {
@@ -266,7 +180,6 @@ static func create_or_update_rock_asset(
 		"voxel_profile": profile,
 		"color": direct_color,
 		"complexity": direct_complexity,
-		"affected_bands": direct_bands,
 		"collision_voxels": direct_collision_voxels,
 		"random_rotate": random_rotate,
 		"random_scale": random_scale,
@@ -281,7 +194,6 @@ static func create_or_update_rock_asset(
 	if sync_legacy_fields:
 		result.voxel_color = direct_color
 		result.voxel_complexity = direct_complexity
-		result.set_affected_bands(direct_bands)
 		result.set_collision_voxels(direct_collision_voxels)
 	return result
 
@@ -295,8 +207,6 @@ static func configure_rock_instance(rock: AutoRock, asset: AutoRock, config: Dic
 		cfg["color"] = asset.get_voxel_color()
 	if not cfg.has("complexity"):
 		cfg["complexity"] = asset.get_voxel_complexity()
-	if not cfg.has("affected_bands"):
-		cfg["affected_bands"] = asset.get_affected_bands(radius)
 	if not cfg.has("collision_voxels"):
 		cfg["collision_voxels"] = asset.get_collision_voxels(radius)
 	if rock.has_method("configure_asset"):
@@ -336,7 +246,7 @@ static func configure_vegetation_instance(
 		vegetation.configure_vegetation(cfg)
 
 
-static func make_profile_scene_voxel_record(
+static func make_profile_asset_voxel_record(
 	record_id: String,
 	object_type: String,
 	position: Vector3,
@@ -351,75 +261,24 @@ static func make_profile_scene_voxel_record(
 	collision_voxels_override: Array = [],
 	extra_fields: Dictionary = {}
 ) -> Dictionary:
-	var color := Color.WHITE
-	var complexity := 1.0
-	var affected_bands: Array[Dictionary] = []
-	var collision_voxels: Array[Dictionary] = []
-	if profile != null:
-		color = profile.get_color()
-		complexity = profile.get_complexity()
-		affected_bands = profile.get_affected_bands(default_radius)
-		collision_voxels = profile.get_collision_voxels(default_radius)
-	if not collision_voxels_override.is_empty():
-		collision_voxels = duplicate_dictionary_array(collision_voxels_override)
-	color.a = complexity
-
-	var scene_layers: Array[Dictionary] = []
-	for raw_band in affected_bands:
-		var layer := raw_band.duplicate(true)
-		layer["base_pixel"] = base_pixel
-		layer["voxel_xz"] = base_pixel
-		layer["volume_xz_resolution"] = volume_xz_resolution
-		layer["y_min"] = y_min
-		layer["y_max"] = y_max
-		if not layer.has("color"):
-			layer["color"] = color
-		if not layer.has("complexity"):
-			layer["complexity"] = complexity
-		if not layer.has("slice_indices"):
-			layer["slice_indices"] = []
-		scene_layers.append(layer)
-
-	var source_kind := str(extra_fields.get("source_kind", "")).to_lower()
-	if source_kind.is_empty():
-		match object_type:
-			"rock":
-				source_kind = "rock_placement"
-			"vegetation":
-				source_kind = "scatter"
-			_:
-				source_kind = "auto"
-	var source_type := str(extra_fields.get("source_voxel_type", ""))
-	if source_type != "AutoSceneVoxel" and source_type != "BrushSceneVoxel" and source_type != "TargetSceneVoxel":
-		if ["brush", "manual_edit", "erase", "lock"].has(source_kind):
-			source_type = "BrushSceneVoxel"
-		elif ["target", "heightfield_target", "flood_target", "guidance"].has(source_kind):
-			source_type = "TargetSceneVoxel"
-		else:
-			source_type = "AutoSceneVoxel"
-
-	var record := extra_fields.duplicate(true)
-	record["id"] = record_id
-	record["type"] = object_type
-	record["position"] = position
-	record["rotation_mode"] = "XYZ"
-	record["rotation_degrees"] = rotation_degrees
-	record["scale"] = scale
-	record["base_pixel"] = base_pixel
-	record["voxel_xz"] = base_pixel
-	record["volume_xz_resolution"] = volume_xz_resolution
-	record["color"] = color
-	record["complexity"] = complexity
-	record["affected_bands"] = affected_bands
-	record["collision_voxels"] = collision_voxels
-	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = scene_layers
-	record["source_voxel_type"] = source_type
-	record["source_kind"] = source_kind
-	record["producer_stage"] = str(extra_fields.get("producer_stage", source_kind))
-	return record
+	return AutoObject.make_profile_asset_voxel_record(
+		record_id,
+		object_type,
+		position,
+		rotation_degrees,
+		scale,
+		base_pixel,
+		volume_xz_resolution,
+		profile,
+		default_radius,
+		y_min,
+		y_max,
+		collision_voxels_override,
+		extra_fields
+	)
 
 
-static func make_rock_scene_voxel_record(
+static func make_rock_asset_voxel_record(
 	record_id: String,
 	rock: MeshInstance3D,
 	mesh_index: int,
@@ -444,11 +303,10 @@ static func make_rock_scene_voxel_record(
 	var profile := create_voxel_profile(
 		asset.get_voxel_color(),
 		asset.get_voxel_complexity(),
-		asset.get_affected_bands(radius),
 		radius,
 		asset.get_collision_voxels(radius)
 	)
-	return make_profile_scene_voxel_record(
+	return make_profile_asset_voxel_record(
 		record_id,
 		"rock",
 		rock.position,
@@ -465,7 +323,7 @@ static func make_rock_scene_voxel_record(
 	)
 
 
-static func make_vegetation_scene_voxel_record(
+static func make_vegetation_asset_voxel_record(
 	record_id: String,
 	vegetation: AutoVegetation,
 	base_pixel: Vector2i,
@@ -474,32 +332,7 @@ static func make_vegetation_scene_voxel_record(
 ) -> Dictionary:
 	if vegetation == null:
 		return {}
-	var radius := vegetation.min_spacing if vegetation.min_spacing > 0.0 else 0.0
-	var profile := create_voxel_profile(
-		vegetation.get_voxel_color(),
-		vegetation.get_voxel_complexity(),
-		vegetation.get_affected_bands(radius),
-		radius,
-		vegetation.get_collision_voxels(radius)
-	)
-	var fields := extra_fields.duplicate(true)
-	fields["object_subtype"] = vegetation.object_subtype
-	fields["band"] = vegetation.vegetation_band
-	return make_profile_scene_voxel_record(
-		record_id,
-		"vegetation",
-		vegetation.position,
-		vegetation.rotation_degrees,
-		vegetation.scale,
-		base_pixel,
-		volume_xz_resolution,
-		profile,
-		radius,
-		0.0,
-		0.0,
-		[],
-		fields
-	)
+	return vegetation.make_asset_voxel_record(record_id, base_pixel, volume_xz_resolution, extra_fields)
 
 
 static func load_mesh(mesh_path: String) -> Mesh:

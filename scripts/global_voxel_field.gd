@@ -292,11 +292,11 @@ func run_placement_dirty(
 ) -> Dictionary:
 	var dirty_ids := get_dirty_tile_ids()
 	if dirty_ids.is_empty():
-		return {"asset_results": [], "total_placed": 0, "dirty_voxel_region_count": 0, "dirty_tile_count": 0}
+		return {"asset_results": [], "total_placed": 0, "dirty_voxel_sparse_count": 0, "dirty_tile_count": 0}
 
-	var dirty_positions := get_dirty_voxel_region_positions()
+	var dirty_positions := get_dirty_voxel_sparse_positions()
 	var settings := _settings_with_auto_object_manager(common_settings)
-	settings["candidate_voxel_regions"] = dirty_positions
+	settings["candidate_voxel_sparses"] = dirty_positions
 
 	var routed_asset_defs := _asset_defs_with_autoobject_metadata(asset_defs, settings.get("autoobjects", []))
 	var result: Dictionary = generator.run_multi_asset(
@@ -319,7 +319,7 @@ func run_placement_dirty(
 	if clear_processed:
 		clear_dirty_tiles(dirty_ids)
 
-	result["dirty_voxel_region_count"] = dirty_ids.size()
+	result["dirty_voxel_sparse_count"] = dirty_ids.size()
 	result["dirty_tile_count"] = dirty_ids.size()
 	return result
 
@@ -336,7 +336,7 @@ func run_prefiltered_placement_dirty(
 ) -> Dictionary:
 	var dirty_ids := get_dirty_tile_ids()
 	if dirty_ids.is_empty():
-		return {"asset_results": [], "total_placed": 0, "dirty_voxel_region_count": 0, "dirty_tile_count": 0, "prefilter": {}}
+		return {"asset_results": [], "total_placed": 0, "dirty_voxel_sparse_count": 0, "dirty_tile_count": 0, "prefilter": {}}
 
 	var prefilter = AutoObjectProbePrefilterScript.new()
 	var prefilter_result: Dictionary = prefilter.run_probe_prefilter(
@@ -348,7 +348,7 @@ func run_prefiltered_placement_dirty(
 	)
 
 	var settings := _settings_with_auto_object_manager(common_settings)
-	settings["candidate_voxel_regions_by_asset"] = prefilter_result.get("autoobject_candidate_voxel_regions", {})
+	settings["candidate_voxel_sparses_by_asset"] = prefilter_result.get("autoobject_candidate_voxel_sparses", {})
 
 	settings["target_occupancy"] = target_occupancy
 	settings["target_color"] = target_color
@@ -375,7 +375,7 @@ func run_prefiltered_placement_dirty(
 	if clear_processed:
 		clear_dirty_tiles(dirty_ids)
 
-	result["dirty_voxel_region_count"] = dirty_ids.size()
+	result["dirty_voxel_sparse_count"] = dirty_ids.size()
 	result["dirty_tile_count"] = dirty_ids.size()
 	result["prefilter"] = prefilter_result
 	return result
@@ -399,15 +399,15 @@ func get_dirty_tile_positions() -> Array[Vector3i]:
 	return positions
 
 
-func get_dirty_voxel_region_ids() -> Array[int]:
+func get_dirty_voxel_sparse_ids() -> Array[int]:
 	return get_dirty_tile_ids()
 
 
-func get_dirty_voxel_region_positions() -> Array[Vector3i]:
+func get_dirty_voxel_sparse_positions() -> Array[Vector3i]:
 	return get_dirty_tile_positions()
 
 
-func get_dirty_voxel_region_count() -> int:
+func get_dirty_voxel_sparse_count() -> int:
 	return get_dirty_tile_count()
 
 

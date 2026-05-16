@@ -291,10 +291,10 @@ SceneState[N - 1] + candidate _occupancy (2D RGBA)
 | `complexity` | `inst_complexity` | 最高复杂度，来自受影响波段 |
 | `auto_object_id` | 例如 `CanopyTree_12` | 摆放成 `AutoObject` 后写入 `SceneVoxel` 的对象编号 |
 | `instance_mesh_id` | `MeshInstance3D.get_instance_id()` | 摆放成 `MeshInstance3D` 后写入 `SceneVoxel` 的实例 id |
-| `affected_bands` | `inst_bands` | 每个受影响波段的详细信息 |
+| `scene_layers` | `inst_bands` | 每个写入 visual layer 的详细信息 |
 | `collision_voxels` | 粗树干等刚体描述 | 只有需要最终互斥的部分写入；草、树叶、细枝为空 |
 
-`affected_bands` 单项结构：
+`scene_layers` 单项结构：
 
 | 字段 | 类型 | 示例 | 说明 |
 |---|---|---|---|
@@ -322,7 +322,7 @@ SceneState[N - 1] + candidate _occupancy (2D RGBA)
 **Metadata 存储在 MeshInstance3D 上（运行时可查询）：**
 - `mi.get_meta("veg_color")` → Color
 - `mi.get_meta("veg_complexity")` → float
-- `mi.get_meta("veg_affected_bands")` → Array[Dictionary]
+- `mi.get_meta("asset_voxel_record")` → Dictionary
 - `mi.get_meta("veg_collision_voxels")` / `auto_collision_voxels` → Array[Dictionary]
 
 ---

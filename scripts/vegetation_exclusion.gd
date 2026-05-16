@@ -29,6 +29,7 @@ const VOXEL_OCCUPIED_EPSILON := 0.01
 const GLOBAL_VOXEL_TILE_SIZE := 16
 const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
 const DEPRECATED_VOXEL_LAYERS_KEY := "voxel_layers"
+const AutoVoxelSharedFieldsScript := preload("res://scripts/auto_voxel_shared_fields.gd")
 
 ## ─── Height Band ───
 
@@ -692,7 +693,7 @@ func scatter(
 
 		placed_positions.append(pos2)
 		_stamp_occupancy(cpx, profile)
-		var mesh_id := "%s_%d" % [veg_type, _mesh_voxel_records.size()]
+		var mesh_id := "%s_%d" % [veg_type, _mesh_asset_voxel_records.size()]
 		var source_collision_record := {
 			"id": mesh_id,
 			"type": veg_type,
@@ -735,7 +736,7 @@ func scatter(
 			inst_color /= float(inst_bands.size())
 			inst_color.a = inst_complexity
 
-		var voxel_record := _register_mesh_voxel_record(_make_mesh_voxel_record(
+		var asset_voxel_record := _register_mesh_asset_voxel_record(_make_mesh_asset_voxel_record(
 			mesh_id,
 			veg_type,
 			cpx,
@@ -758,9 +759,9 @@ func scatter(
 			"type": veg_type,
 			"color": inst_color,
 			"complexity": inst_complexity,
-			"affected_bands": inst_bands,
 			"collision_voxels": inst_collision_voxels,
-			"voxel_record": voxel_record,
+			"asset_voxel_record": asset_voxel_record,
+			"SenceLayerVoxel": asset_voxel_record.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, []),
 		})
 
 	return results
@@ -829,7 +830,7 @@ func scatter_from_mask(
 
 		placed_positions.append(pos2)
 		_stamp_occupancy(cpx, profile)
-		var mesh_id := "%s_%d" % [veg_type, _mesh_voxel_records.size()]
+		var mesh_id := "%s_%d" % [veg_type, _mesh_asset_voxel_records.size()]
 		var source_collision_record := {
 			"id": mesh_id,
 			"type": veg_type,
@@ -871,7 +872,7 @@ func scatter_from_mask(
 			inst_color /= float(inst_bands.size())
 			inst_color.a = inst_complexity
 
-		var voxel_record := _register_mesh_voxel_record(_make_mesh_voxel_record(
+		var asset_voxel_record := _register_mesh_asset_voxel_record(_make_mesh_asset_voxel_record(
 			mesh_id,
 			veg_type,
 			cpx,
@@ -894,9 +895,9 @@ func scatter_from_mask(
 			"type": veg_type,
 			"color": inst_color,
 			"complexity": inst_complexity,
-			"affected_bands": inst_bands,
 			"collision_voxels": inst_collision_voxels,
-			"voxel_record": voxel_record,
+			"asset_voxel_record": asset_voxel_record,
+			"SenceLayerVoxel": asset_voxel_record.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, []),
 		})
 
 	return results
@@ -954,26 +955,26 @@ func query_collision_voxel(wx: float, wz: float) -> Dictionary:
 	}
 
 
-## Get every placed mesh's voxel record.
-func get_mesh_voxel_records() -> Array[Dictionary]:
+## Get every placed mesh's asset_voxel_record.
+func get_mesh_asset_voxel_records() -> Array[Dictionary]:
 	var records: Array[Dictionary] = []
-	for record in _mesh_voxel_records:
+	for record in _mesh_asset_voxel_records:
 		var typed_record := record as Dictionary
 		records.append(typed_record.duplicate(true))
 	return records
 
 
-## Get one placed mesh's voxel record by id.
-func get_mesh_voxel_record(mesh_id: String) -> Dictionary:
-	if not _mesh_voxel_record_index.has(mesh_id):
+## Get one placed mesh's asset_voxel_record by id.
+func get_mesh_asset_voxel_record(mesh_id: String) -> Dictionary:
+	if not _mesh_asset_voxel_record_index.has(mesh_id):
 		return {}
-	var idx: int = _mesh_voxel_record_index[mesh_id]
-	var record: Dictionary = _mesh_voxel_records[idx]
+	var idx: int = _mesh_asset_voxel_record_index[mesh_id]
+	var record: Dictionary = _mesh_asset_voxel_records[idx]
 	return record.duplicate(true)
 
 
-func get_mesh_voxel_record_count() -> int:
-	return _mesh_voxel_records.size()
+func get_mesh_asset_voxel_record_count() -> int:
+	return _mesh_asset_voxel_records.size()
 
 
 func _layer_channel(layer: Dictionary) -> int:
@@ -1086,7 +1087,10 @@ func _producer_stage_from_record(record: Dictionary) -> String:
 
 
 func _prepare_source_record(record: Dictionary, tick: int) -> Dictionary:
-	var rec := record.duplicate(true)
+	var rec := AutoVoxelSharedFieldsScript.apply_to_record(
+		record,
+		AutoVoxelSharedFieldsScript.normalize_shared_fields(record)
+	)
 	var write_tick := maxi(tick, 0)
 	var max_read_tick := maxi(write_tick - 1, 0)
 	var source_type := _source_type_from_record(rec)
@@ -1286,18 +1290,15 @@ func _make_scene_voxel(
 	voxel_px: Vector2i,
 	complexity: float
 ) -> Dictionary:
-	var color: Color = layer.get("color", record.get("color", Color.WHITE))
-	var value := clampf(complexity, 0.0, 1.0)
-	color.a = value
+	var shared_fields := AutoVoxelSharedFieldsScript.normalize_shared_fields(layer, record, complexity)
+	var value := float(shared_fields.complexity)
 	var auto_object_id := str(record.get("auto_object_id", record.get("auto_id", record.get("id", ""))))
 	var auto_instance_id := int(record.get("auto_instance_id", record.get("instance_id", 0)))
 	var instance_mesh_id := int(record.get("instance_mesh_id", record.get("mesh_instance_id", record.get("instance_id", auto_instance_id))))
-	return {
+	var scene_voxel := {
 		"type": "SceneVoxel",
 		"occupied": value > VOXEL_OCCUPIED_EPSILON,
 		"value": value,
-		"color": color,
-		"complexity": value,
 		"auto_id": auto_object_id,
 		"auto_object_id": auto_object_id,
 		"auto_instance_id": auto_instance_id,
@@ -1317,6 +1318,7 @@ func _make_scene_voxel(
 		"base_pixel": layer.get("base_pixel", record.get("base_pixel", Vector2i.ZERO)),
 		"volume_xz_resolution": int(_volume.get("xz_res", _base_res)),
 	}
+	return AutoVoxelSharedFieldsScript.apply_to_scene_voxel(scene_voxel, shared_fields, value, false)
 
 
 func _make_source_scene_voxel(
@@ -1340,7 +1342,11 @@ func _make_source_scene_voxel(
 	if source_type != "TargetSceneVoxel":
 		var collision_layers: Array = record.get("collision_voxels", [])
 		if not collision_layers.is_empty():
-			source_voxel["collision_voxels"] = collision_layers.duplicate(true)
+			source_voxel = AutoVoxelSharedFieldsScript.apply_to_scene_voxel(
+				source_voxel,
+				{"collision_voxels": collision_layers},
+				float(source_voxel.get("complexity", 1.0))
+			)
 	if source_type == "BrushSceneVoxel":
 		source_voxel["brush_stroke_id"] = str(record.get("brush_stroke_id", record.get("id", "")))
 		source_voxel["auto_mix"] = clampf(float(record.get("auto_mix", 0.0)), 0.0, 1.0)
@@ -1358,11 +1364,8 @@ func _finalize_scene_voxel_from_source(source_voxel: Dictionary, commit_tick: in
 	var value := _voxel_value(scene_voxel)
 	scene_voxel["type"] = "SceneVoxel"
 	scene_voxel["value"] = value
-	scene_voxel["complexity"] = value
 	scene_voxel["occupied"] = value > VOXEL_OCCUPIED_EPSILON
-	var color: Color = scene_voxel.get("color", Color.WHITE)
-	color.a = value
-	scene_voxel["color"] = color
+	scene_voxel = AutoVoxelSharedFieldsScript.apply_to_scene_voxel(scene_voxel, scene_voxel, value, scene_voxel.has("collision_voxels"))
 	scene_voxel["source_voxel_types"] = [source_type]
 	scene_voxel["dominant_source_type"] = source_type
 	scene_voxel["blend_mode"] = str(scene_voxel.get("blend_mode", "copy"))
@@ -1404,7 +1407,7 @@ func _merge_target_with_auto(target_voxel: Dictionary, auto_voxel: Dictionary, c
 	var auto_color: Color = auto_voxel.get("color", target_color)
 	var final_color := _blend_color(auto_color, target_color, target_mix)
 	final_color.a = final_value
-	merged["color"] = final_color
+	merged = AutoVoxelSharedFieldsScript.apply_to_scene_voxel(merged, {"color": final_color, "complexity": final_value}, final_value, merged.has("collision_voxels"))
 	merged["_has_target"] = true
 	merged["_has_auto"] = true
 	return merged
@@ -1471,7 +1474,7 @@ func _merge_voxel_sources(auto_voxel: Dictionary, brush_voxel: Dictionary, commi
 	var effective_color: Color = effective_auto.get("color", brush_color)
 	var final_color := _blend_color(brush_color, effective_color, auto_mix)
 	final_color.a = final_value
-	blended["color"] = final_color
+	blended = AutoVoxelSharedFieldsScript.apply_to_scene_voxel(blended, {"color": final_color, "complexity": final_value}, final_value, blended.has("collision_voxels"))
 	blended["occupied"] = final_value > VOXEL_OCCUPIED_EPSILON
 	return blended
 
@@ -1638,11 +1641,8 @@ func _stamp_volume_slices(
 					scene_voxel["slice_index"] = si
 					scene_voxel["voxel_xz"] = px
 					scene_voxel["value"] = v
-					scene_voxel["complexity"] = v
 					scene_voxel["occupied"] = v > VOXEL_OCCUPIED_EPSILON
-					var color: Color = scene_voxel.get("color", Color.WHITE)
-					color.a = v
-					scene_voxel["color"] = color
+					scene_voxel = AutoVoxelSharedFieldsScript.apply_to_scene_voxel(scene_voxel, scene_voxel, v, scene_voxel.has("collision_voxels"))
 					if write_to_source_delta:
 						scene_voxel = _prepare_source_record(scene_voxel, write_tick if write_tick >= 0 else _generation_tick)
 						_write_source_voxel_delta(scene_voxel)
@@ -1654,47 +1654,18 @@ func _stamp_volume_slices(
 	return voxel_px
 
 
-func _fallback_layers_from_record(record: Dictionary) -> Array[Dictionary]:
-	var layers: Array[Dictionary] = []
-	var base_px: Vector2i = record.get("base_pixel", Vector2i.ZERO)
-	var affected: Array = record.get("affected_bands", [])
-	for entry_raw in affected:
-		if not entry_raw is Dictionary:
-			continue
-		var entry := entry_raw as Dictionary
-		var ch := _layer_channel(entry)
-		if ch < 0:
-			continue
-		var band: Dictionary = _bands[ch]
-		layers.append({
-			"band": band.name,
-			"channel": ch,
-			"base_pixel": base_px,
-			"radius": entry.get("radius", 0.0),
-			"radius_px": _layer_radius_px(entry),
-			"y_min": band.min_h,
-			"y_max": band.max_h,
-			"color": entry.get("color", band.color),
-			"complexity": entry.get("complexity", record.get("complexity", band.color.a)),
-			"slice_indices": [],
-		})
-	return layers
-
-
-## Apply an actual placed mesh's voxel record into source deltas and buffers.
+## Apply an actual placed mesh's asset_voxel_record into source deltas and buffers.
 ## This keeps runtime MeshInstance3D placement and the occupancy/voxel volume in sync.
-func apply_mesh_voxel_record(record: Dictionary, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
+func apply_mesh_asset_voxel_record(record: Dictionary, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
 	if record.is_empty():
 		return {}
 
 	var write_tick := generation_tick if generation_tick >= 0 else _next_write_tick()
 	_ensure_source_delta_tick(write_tick)
 	var rec := _prepare_source_record(record, write_tick)
-	var record_id := str(rec.get("id", "mesh_%d" % _mesh_voxel_records.size()))
+	var record_id := str(rec.get("id", "mesh_%d" % _mesh_asset_voxel_records.size()))
 	rec["id"] = record_id
 	var layers: Array = rec.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, rec.get(DEPRECATED_VOXEL_LAYERS_KEY, []))
-	if layers.is_empty():
-		layers = _fallback_layers_from_record(rec)
 
 	var updated_layers: Array[Dictionary] = []
 	var applied_channels: Array[int] = []
@@ -1763,12 +1734,12 @@ func apply_mesh_voxel_record(record: Dictionary, defer_blend: bool = false, gene
 	rec["collision_source_attached"] = not updated_collision_layers.is_empty()
 	rec["collision_buffer_applied"] = false
 
-	if _mesh_voxel_record_index.has(record_id):
-		var idx: int = _mesh_voxel_record_index[record_id]
-		_mesh_voxel_records[idx] = rec
+	if _mesh_asset_voxel_record_index.has(record_id):
+		var idx: int = _mesh_asset_voxel_record_index[record_id]
+		_mesh_asset_voxel_records[idx] = rec
 	else:
-		_mesh_voxel_record_index[record_id] = _mesh_voxel_records.size()
-		_mesh_voxel_records.append(rec)
+		_mesh_asset_voxel_record_index[record_id] = _mesh_asset_voxel_records.size()
+		_mesh_asset_voxel_records.append(rec)
 
 	if not defer_blend and not _volume.is_empty():
 		blend_scene_voxels(write_tick)
@@ -1845,8 +1816,8 @@ func clear_band(band_name: String) -> void:
 func clear_all() -> void:
 	_occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
 	_volume = {}
-	_mesh_voxel_records.clear()
-	_mesh_voxel_record_index.clear()
+	_mesh_asset_voxel_records.clear()
+	_mesh_asset_voxel_record_index.clear()
 	_source_voxel_deltas.clear()
 	_scene_state_by_tick.clear()
 	_global_voxel_field.clear()
@@ -1901,10 +1872,10 @@ var _volume: Dictionary = {}
 ##                               "complexity": float, "auto_object_id": String,
 ##                               "instance_mesh_id": int, ... }
 
-## Per placed mesh voxel records. These connect runtime MeshInstance3D nodes back
+## Per placed mesh asset_voxel_record entries. These connect runtime MeshInstance3D nodes back
 ## to the voxel/band data that was stamped for them.
-var _mesh_voxel_records: Array[Dictionary] = []
-var _mesh_voxel_record_index: Dictionary = {}
+var _mesh_asset_voxel_records: Array[Dictionary] = []
+var _mesh_asset_voxel_record_index: Dictionary = {}
 var _source_voxel_deltas: Dictionary = {}
 var _scene_state_by_tick: Dictionary = {}
 var _global_voxel_field: Dictionary = {}
@@ -1915,7 +1886,7 @@ var _committed_tick: int = 0
 var _global_field_dirty: bool = true
 
 
-func _make_mesh_voxel_record(
+func _make_mesh_asset_voxel_record(
 	mesh_id: String,
 	mesh_type: String,
 	base_px: Vector2i,
@@ -1956,28 +1927,27 @@ func _make_mesh_voxel_record(
 		"scale": Vector3.ONE * scale_value,
 		"color": inst_color,
 		"complexity": inst_complexity,
-		"affected_bands": inst_bands.duplicate(true),
 		"collision_voxels": collision_voxels.duplicate(true),
 	}
 	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = layers
 	return record
 
 
-func _register_mesh_voxel_record(record: Dictionary) -> Dictionary:
-	var record_id: String = str(record.get("id", "mesh_%d" % _mesh_voxel_records.size()))
+func _register_mesh_asset_voxel_record(record: Dictionary) -> Dictionary:
+	var record_id: String = str(record.get("id", "mesh_%d" % _mesh_asset_voxel_records.size()))
 	record["id"] = record_id
-	_mesh_voxel_record_index[record_id] = _mesh_voxel_records.size()
-	_mesh_voxel_records.append(record)
+	_mesh_asset_voxel_record_index[record_id] = _mesh_asset_voxel_records.size()
+	_mesh_asset_voxel_records.append(record)
 	return record
 
 
-func _update_mesh_voxel_records_for_volume() -> void:
+func _update_mesh_asset_voxel_records_for_volume() -> void:
 	if _volume.is_empty():
 		return
 	var xz_res: int = _volume.xz_res
 	var meta: Array = _volume.slice_meta
-	for ri in range(_mesh_voxel_records.size()):
-		var record: Dictionary = _mesh_voxel_records[ri]
+	for ri in range(_mesh_asset_voxel_records.size()):
+		var record: Dictionary = _mesh_asset_voxel_records[ri]
 		var base_px: Vector2i = record.get("base_pixel", Vector2i.ZERO)
 		var vx := clampi(int(float(base_px.x) / float(_base_res) * float(xz_res)), 0, xz_res - 1)
 		var vz := clampi(int(float(base_px.y) / float(_base_res) * float(xz_res)), 0, xz_res - 1)
@@ -2006,8 +1976,8 @@ func _update_mesh_voxel_records_for_volume() -> void:
 			collision_layer["volume_xz_resolution"] = xz_res
 			collision_layers[ci] = collision_layer
 		record["collision_voxels"] = collision_layers
-		_mesh_voxel_records[ri] = record
-		_mesh_voxel_record_index[str(record.id)] = ri
+		_mesh_asset_voxel_records[ri] = record
+		_mesh_asset_voxel_record_index[str(record.id)] = ri
 
 
 func _rebuild_scene_voxels_from_records() -> void:
@@ -2016,9 +1986,9 @@ func _rebuild_scene_voxels_from_records() -> void:
 	var write_tick := _next_write_tick()
 	begin_generation_tick(write_tick)
 	_volume["scene_voxels"] = {}
-	var records := get_mesh_voxel_records()
+	var records := get_mesh_asset_voxel_records()
 	for record in records:
-		apply_mesh_voxel_record(record, true, write_tick)
+		apply_mesh_asset_voxel_record(record, true, write_tick)
 
 
 func blend_scene_voxels(tick: int = -1) -> Dictionary:
@@ -2130,7 +2100,7 @@ func build_voxel_volume(
 		if dirty_rect is Rect2i:
 			var typed_dirty_rect: Rect2i = dirty_rect
 			_mark_global_rect_dirty(typed_dirty_rect)
-	_update_mesh_voxel_records_for_volume()
+	_update_mesh_asset_voxel_records_for_volume()
 	_rebuild_scene_voxels_from_records()
 	blend_scene_voxels(_generation_tick)
 	return _volume
@@ -2168,21 +2138,16 @@ func query_voxel(wx: float, wz: float, height_above_terrain: float) -> Dictionar
 					var committed_value := clampf(float(typed_scene_voxel.get("value", v)), 0.0, 1.0)
 					typed_scene_voxel["occupied"] = committed_value > 0.01
 					typed_scene_voxel["value"] = committed_value
-					typed_scene_voxel["complexity"] = committed_value
-					var scene_color: Color = typed_scene_voxel.get("color", color)
-					scene_color.a = committed_value
-					typed_scene_voxel["color"] = scene_color
+					typed_scene_voxel = AutoVoxelSharedFieldsScript.apply_to_scene_voxel(typed_scene_voxel, typed_scene_voxel, committed_value, typed_scene_voxel.has("collision_voxels"))
 					typed_scene_voxel["band_name"] = str(typed_scene_voxel.get("band", m.band_name))
 					typed_scene_voxel["slice_index"] = i
 					typed_scene_voxel["voxel_xz"] = Vector2i(px, pz)
 					return typed_scene_voxel
-			return {
+			var query_voxel_record := {
 				"type": "SceneVoxel",
 				"occupied": v > 0.01,
 				"value": v,
 				"band_name": m.band_name,
-				"color": color,
-				"complexity": v,
 				"auto_id": "",
 				"auto_object_id": "",
 				"auto_instance_id": 0,
@@ -2191,6 +2156,7 @@ func query_voxel(wx: float, wz: float, height_above_terrain: float) -> Dictionar
 				"slice_index": i,
 				"voxel_xz": Vector2i(px, pz),
 			}
+			return AutoVoxelSharedFieldsScript.apply_to_scene_voxel(query_voxel_record, {"color": color, "complexity": v}, v, false)
 
 	return {"occupied": false, "value": 0.0, "band_name": "", "color": Color.BLACK, "complexity": 0.0}
 
@@ -2367,8 +2333,8 @@ func reset_occupancy() -> void:
 	_occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
 	_collision_occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
 	_volume = {}
-	_mesh_voxel_records.clear()
-	_mesh_voxel_record_index.clear()
+	_mesh_asset_voxel_records.clear()
+	_mesh_asset_voxel_record_index.clear()
 	_source_voxel_deltas.clear()
 	_scene_state_by_tick.clear()
 	_global_voxel_field.clear()

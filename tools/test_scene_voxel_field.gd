@@ -20,16 +20,27 @@ func _init() -> void:
 		"scale": Vector3.ONE,
 		"color": Color(0.55, 0.50, 0.45, 1.0),
 		"complexity": 1.0,
-		"affected_bands": [{
-			"band": "ground",
-			"channel": 0,
-			"radius": 2.0,
-			"color": Color(0.55, 0.50, 0.45, 1.0),
-			"complexity": 1.0,
+		"collision_voxels": [{
+			"shape": "cylinder",
+			"radius": 1.0,
+			"y_min": 0.0,
+			"y_max": 1.0,
+			"value": 1.0,
 		}],
 	}
+	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = [{
+		"band": "ground",
+		"channel": 0,
+		"base_pixel": Vector2i(16, 16),
+		"voxel_xz": Vector2i(16, 16),
+		"volume_xz_resolution": 32,
+		"radius": 2.0,
+		"color": Color(0.55, 0.50, 0.45, 1.0),
+		"complexity": 1.0,
+		"slice_indices": [],
+	}]
 
-	veg.apply_mesh_voxel_record(record)
+	veg.apply_mesh_asset_voxel_record(record)
 	veg.build_voxel_volume(16, 1)
 
 	var scene_voxels := veg.get_scene_voxels()
@@ -52,13 +63,32 @@ func _init() -> void:
 		push_error("Expected GlobalVoxelField dirty tiles from committed writes")
 		quit(1)
 		return
+	var committed_center := veg.get_scene_voxel(0, Vector2i(8, 8))
+	if committed_center.is_empty():
+		push_error("Expected committed SceneVoxel at center")
+		quit(1)
+		return
+	var committed_color: Color = committed_center.get("color", Color.TRANSPARENT)
+	if absf(committed_color.r - 0.55) > 0.001 or absf(committed_color.a - 1.0) > 0.001:
+		push_error("Expected shared color to propagate to SceneVoxel")
+		quit(1)
+		return
+	if absf(float(committed_center.get("complexity", -1.0)) - 1.0) > 0.001:
+		push_error("Expected shared complexity to propagate to SceneVoxel")
+		quit(1)
+		return
+	var committed_collision = committed_center.get("collision_voxels", [])
+	if not committed_collision is Array or (committed_collision as Array).is_empty():
+		push_error("Expected shared collision_voxels to propagate to SceneVoxel")
+		quit(1)
+		return
 
-	var stale_record := veg.get_mesh_voxel_record("test_rock_0")
+	var stale_record := veg.get_mesh_asset_voxel_record("test_rock_0")
 	var stale_write_tick := int(stale_record.get("write_tick", -1))
 	var next_tick := veg.begin_generation_tick(veg.get_generation_tick())
-	var updated_stale := veg.apply_mesh_voxel_record(stale_record, true, next_tick)
+	var updated_stale := veg.apply_mesh_asset_voxel_record(stale_record, true, next_tick)
 	if int(updated_stale.get("write_tick", -1)) != next_tick:
-		push_error("Expected stale voxel record to be rebound to the current write tick")
+		push_error("Expected stale asset_voxel_record to be rebound to the current write tick")
 		quit(1)
 		return
 	if int(updated_stale.get("write_tick", -1)) == stale_write_tick:
@@ -82,15 +112,18 @@ func _init() -> void:
 	erase_record["auto_mix"] = 0.0
 	erase_record["color"] = erase_color
 	erase_record["complexity"] = 0.0
-	erase_record["affected_bands"] = [{
+	erase_record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = [{
 		"band": "ground",
 		"channel": 0,
+		"base_pixel": Vector2i(16, 16),
+		"voxel_xz": Vector2i(16, 16),
+		"volume_xz_resolution": 32,
 		"radius": 1.0,
 		"color": erase_color,
 		"complexity": 0.0,
+		"slice_indices": [],
 	}]
-	erase_record.erase(DEPRECATED_SENCE_LAYER_VOXEL_KEY)
-	veg.apply_mesh_voxel_record(erase_record, true, erase_tick)
+	veg.apply_mesh_asset_voxel_record(erase_record, true, erase_tick)
 	var erase_delta := veg.get_source_voxel_deltas(erase_tick)
 	if erase_delta.is_empty() or (erase_delta.get("brush", {}) as Dictionary).is_empty():
 		push_error("Expected erase BrushSceneVoxel to write zero-value source voxels")
