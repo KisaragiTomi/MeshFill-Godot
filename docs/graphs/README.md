@@ -25,5 +25,5 @@
 - 修改 SVG 后，应同步检查对应 Markdown 文档中的字段名和术语。
 - 图中不要引入未在代码或文档中定义的新 schema 字段。
 - 高层候选区域使用 `voxel_region` 术语；底层 8×8×8 物理块、shader workgroup 和 buffer index 可以继续使用 `tile` / `tile_id`。
-- `collision_occupancy` 应标注为 committed `SceneVoxel` 的内部 / 派生查询视图，不要画成与 `SceneVoxel` 并列的顶层状态。
+- `collision_voxels` 应画成与 `color` / `complexity` 同级的语义字段；`collision_occupancy` 应标注为由 committed `SceneVoxel.collision_voxels` 重建的派生查询视图，不要画成 `SceneVoxel` 子层级或并列顶层语义状态。
 - `AutoVoxelDescriptor` 是资产体素语义的唯一权威来源；`AutoObject` 上重复字段只表示 legacy / Inspector / 配置兼容入口。

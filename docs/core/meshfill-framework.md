@@ -26,9 +26,9 @@
 | Candidate routing | `anchor_autoobject_topk` / `candidate_voxel_regions_by_asset` | 把上游候选归一化、去重、可选 rerank，并聚合为每个 asset 的候选 voxel 区域列表。 |
 | Physical placement | `VoxelPlacementGenerator` / placement shaders | 只对 routed asset / 候选 voxel 区域做 GPU score、reduce、stamp；可在 GPU scoring 前执行同类型 AutoObject 候选区域剪枝；如果 asset 没有候选区域，本轮可跳过。 |
 | Runtime record | record builders / `voxel_record` | 统一创建或更新实例 record，保存位置、像素、band、collision、source 和 debug handle。 |
-| Source voxel | `SourceSceneVoxelDelta` / `AutoSceneVoxel` / `BrushSceneVoxel` / `TargetSceneVoxel` | 表达当前 tick 的写入意图；继承 `SceneVoxel` 基类字段，再追加 source 上下文、visual layers 和 `collision_voxels` 成员。 |
-| Final state | `blend_scene_voxels()` / `SceneVoxel` | 统一混合并提交给下一 tick、验证、查询和预览；collision cache 是 `SceneVoxel` 提交后的内部 / 派生 occupancy 视图。 |
-| Global cache | `GlobalVoxelField` | 读取已提交 `SceneVoxel` 的 scene / collision occupancy 视图，重建 sparse tile occupancy cache，并记录 dirty tile / rect。 |
+| Source voxel | `SourceSceneVoxelDelta` / `AutoSceneVoxel` / `BrushSceneVoxel` / `TargetSceneVoxel` | 表达当前 tick 的写入意图；`color`、`complexity`、`collision_voxels` 是同级 source 语义字段。 |
+| Final state | `blend_scene_voxels()` / `SceneVoxel` | 统一混合并提交给下一 tick、验证、查询和预览；`collision_voxels` 可作为同级提交字段保留。 |
+| Global cache | `GlobalVoxelField` | 读取已提交 `SceneVoxel` 的 scene occupancy 和派生 collision occupancy 视图，重建 sparse tile occupancy cache，并记录 dirty tile / rect。 |
 | Query projection | metadata / `AutoObjectManager` | 提供运行时索引、调试查询、record handle、低分辨率 cell 查询和同类型互斥预检，不作为资产默认值来源。 |
 
 ## Runtime Flow
@@ -151,7 +151,7 @@ dirty target bounds
 - 自动生成和画笔修改只写本 tick source voxel delta，后续系统只读 commit 后的 `SceneVoxel`。
 - `TargetSceneVoxel` 不写资产标签；资产选择只能通过 prefilter / routing / placement 形成。
 - `GlobalVoxelField` 只做 sparse occupancy tile 缓存和 dirty 更新足迹，不直接承担最终编辑语义。
-- `CollisionVoxel` 是 `AutoSceneVoxel` / `BrushSceneVoxel` 的 `collision_voxels` 成员；提交后的 collision occupancy 是 `SceneVoxel` 的内部 / 派生查询缓存视图。
+- `collision_voxels` 与 `color` / `complexity` 同级，属于资产、record、source voxel 和 committed `SceneVoxel` 的语义字段；提交后的 `collision_occupancy` 是由它重建的查询缓存视图。
 - `AutoObject` 不应使用运行时缩放；`_configure_auto_object()` 强制 `scale = Vector3.ONE`，semantic probes 按 unscaled asset/local space 生成和采样。
 - Probe 粗筛只减少候选 `AutoObject` / voxel 区域，不直接写最终 `SceneVoxel`。
 - `score_voxel_tile.glsl` 不新增 semantic dot / MLP / target neighborhood pooling。

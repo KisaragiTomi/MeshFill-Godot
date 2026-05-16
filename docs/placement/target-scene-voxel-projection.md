@@ -66,7 +66,7 @@
 | `target_scene_voxel_visual.rgba32f` | 持久化 TargetSV visual buffer | 后续 projection / debug / import 流程 |
 | `target_scene_voxel_collision.r32f` | 持久化 TargetSV collision intent | 后续 projection / debug / import 流程 |
 
-`TargetSV` 可以参与 `TargetSceneVoxel` source delta，但普通 `TargetSceneVoxel` source 不生成最终 source collision。最终 collision occupancy 仍由 committed `SceneVoxel` 重建为内部 / 派生查询视图。
+`TargetSV` 可以参与 `TargetSceneVoxel` source delta，但普通 `TargetSceneVoxel` source 不提交最终 `collision_voxels` 字段。最终 `collision_occupancy` 仍由 committed `SceneVoxel.collision_voxels` 重建为派生查询视图。
 
 ## Anchor 语义
 

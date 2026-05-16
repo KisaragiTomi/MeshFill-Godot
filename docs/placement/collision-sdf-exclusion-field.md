@@ -13,12 +13,12 @@
 | Buffer | 当前含义 |
 | --- | --- |
 | `scene_occupancy` | 从已提交 `SceneVoxel` 读取的可视 / 占用查询缓存（3D）。 |
-| `collision_occupancy` | 从已提交 `SceneVoxel` 内部 collision cache/view 读取的碰撞查询缓存（3D）。 |
+| `collision_occupancy` | 从 committed `SceneVoxel.collision_voxels` 重建的碰撞查询缓存（3D）。 |
 
 这两个 buffer 适合直接碰撞检查，但不适合让小窗口 scorer 感知远处碰撞源。为了解决这个问题，需要在 XZ 平面上额外构建排斥场：
 
 ```text
-committed SceneVoxel collision cache/view + terrain base collision
+committed SceneVoxel.collision_voxels + terrain base collision
   -> 2D XZ collision source grid
   -> 双通道迭代扩散 (energy + budget)
   -> 2D exclusion_energy field
@@ -108,7 +108,7 @@ JFA 适合做 `collision_distance`（"最近碰撞有多远"本身就是单源�
 
 ### 1. 初始化：source seed 写入
 
-每个已提交 `SceneVoxel` collision 源写入 2D XZ grid：
+每个已提交 `SceneVoxel.collision_voxels` 源写入 2D XZ grid：
 
 ```text
 energy = collision_value * exclusion_strength
@@ -258,16 +258,16 @@ Level N: 更大尺度趋势
 
 | 约束 | 说明 |
 | --- | --- |
-| 只读 committed `SceneVoxel` collision view | 排斥场应从已提交 `SceneVoxel` 的 collision cache/view 和 terrain base collision 重建，不直接读取未提交 source voxel delta。 |
+| 只读 committed `SceneVoxel.collision_voxels` | 排斥场应从已提交 `SceneVoxel` 的同级 `collision_voxels` 字段和 terrain base collision 重建，不直接读取未提交 source voxel delta。 |
 | 保留 terrain base collision | 地形高度以下 collision 必须进入 2D source grid（XZ 投影全占用），不能被普通 auto/brush/target 清除。 |
-| `TargetSceneVoxel` 不直接产出最终 collision | Target 可影响候选和 scoring，但只有实际放置或画笔 source 才写最终 collision。 |
-| `GlobalVoxelField` 保持 3D occupancy cache | 2D 排斥场是新增的独立 buffer，不替换从 `SceneVoxel` collision cache/view 派生的 3D `collision_occupancy`。 |
+| `TargetSceneVoxel` 不直接提交最终 `collision_voxels` | Target 可影响候选和 scoring，但只有实际放置或画笔 source 才写最终 `collision_voxels`。 |
+| `GlobalVoxelField` 保持 3D occupancy cache | 2D 排斥场是新增的独立 buffer，不替换从 committed `SceneVoxel.collision_voxels` 派生的 3D `collision_occupancy`。 |
 
 ## 推荐实现顺序
 
 1. 新增 2D XZ exclusion grid（双通道 `energy` + `budget`），挂在 `GlobalVoxelField` 或独立管理。
 2. 在 source record 或 placement asset def 中携带 `min_spacing` 作为 `budget` 来源。
-3. `SceneVoxel` commit 后，把 collision cache/view 投影到 2D XZ grid 并写入初始 `energy` 和 `budget`。
+3. `SceneVoxel` commit 后，把同级 `collision_voxels` 字段投影到 2D XZ grid 并写入初始 `energy` 和 `budget`。
 4. 运行迭代扩散（ping-pong compute shader），直到 budget 耗尽或达到 max iterations。
 5. 在 GPU scoring 中采样 `exclusion_energy` 作为 penalty。
 6. 保留现有 3D footprint 硬碰撞作为最终确认。

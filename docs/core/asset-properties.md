@@ -16,7 +16,7 @@
 相关边界：
 
 - `meshfill-framework.md` 说明数据归属和主流程。
-- `scene-voxel-field-system.md` 说明 `voxel_record`、source voxel delta、`SceneVoxel` 和 collision cache。
+- `scene-voxel-field-system.md` 说明 `voxel_record`、source voxel delta、`SceneVoxel`、同级 `collision_voxels` 字段和派生 collision cache。
 - `asset-semantic-probes.md` 说明资产侧 semantic probes。
 
 ## 资产层级
@@ -81,7 +81,7 @@
 | --- | --- |
 | `color` / `complexity` | 默认颜色与复杂度；`get_color()` 会把 alpha 设为 complexity。 |
 | `affected_bands` | 可视 / 生态 band 写入声明。 |
-| `collision_voxels` | collision voxel 声明，归一化后供 footprint、source collision 和 probe 使用。 |
+| `collision_voxels` | collision voxel 声明；与 `color` / `complexity` 同级，归一化后供 footprint、source voxel 写入和 probe 使用。 |
 | `pivot_variants` | 显式 pivot 列表；为空时可从 collision 高度自动生成。 |
 | `auto_generate_vertical_pivots` | 根据 collision 高度生成 bottom / middle / upper pivot。 |
 | `semantic_probe_profile` | 保存或生成 `semantic_probes`。 |
@@ -115,7 +115,7 @@
 | `dilation_radius` | `float` | 默认 `0.0`。 |
 | `value` | `float` | 默认 `1.0`；用于 collision 强度。 |
 
-Collision 的最终归属见 `scene-voxel-field-system.md`：自动生成和画笔 source voxel 保存 `collision_voxels` 成员，提交后的 collision occupancy 是 `SceneVoxel` 内部 / 派生查询缓存视图。
+Collision 的最终归属见 `scene-voxel-field-system.md`：`collision_voxels` 与 `color` / `complexity` 同级，从资产默认值进入 record / source voxel，并可作为 committed `SceneVoxel` 的同级字段保留；提交后的 `collision_occupancy` 是由它重建的派生查询缓存视图。
 
 ## 运行时 record 边界
 
