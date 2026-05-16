@@ -126,7 +126,7 @@ AutoVoxelDescriptor / brush edit / target guidance
 
 ## `voxel_record`
 
-`voxel_record` 是运行时 placement / source voxel record，由 `AutoAssetFactory.make_profile_scene_voxel_record()`、typed wrapper 或 placement builder 生成。它把一次实例落点、视觉 band、collision 声明和 source 上下文交给 `apply_mesh_voxel_record()`，后续再写入 source voxel delta 并由 `blend_scene_voxels()` 提交。
+`voxel_record` 是 scene voxel record 数据，由 `AutoAssetFactory.make_profile_scene_voxel_record()`、typed wrapper 或 placement builder 生成。它把一次实例落点、视觉 band、collision 声明和 source 上下文交给 `apply_mesh_voxel_record()`，后续再写入 source voxel delta 并由 `blend_scene_voxels()` 提交。
 
 | 字段 | 含义 |
 | --- | --- |

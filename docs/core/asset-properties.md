@@ -29,7 +29,7 @@
 | `AutoVegetationAsset` | 植被资源定义，可实例化运行时节点 | `scripts/auto_vegetation_asset.gd` |
 | `AutoVoxelDescriptor` | 资产默认体素语义、pivot 和 semantic probe 配置的唯一权威来源 | `scripts/auto_voxel_descriptor.gd` |
 | `AutoVoxelProfile` | 轻量共享体素 profile，保存颜色、复杂度、bands 和 collision | `scripts/auto_voxel_profile.gd` |
-| `AutoAssetFactory` | 脚本化创建资产、profile、descriptor 和 `voxel_record` | `scripts/auto_asset_factory.gd` |
+| `AutoAssetFactory` | AutoObject 侧脚本化 builder/helper；创建 profile、descriptor 和 scene voxel record | `scripts/auto_asset_factory.gd` |
 
 ## `AutoObject` 运行时字段 / descriptor 兼容入口
 
