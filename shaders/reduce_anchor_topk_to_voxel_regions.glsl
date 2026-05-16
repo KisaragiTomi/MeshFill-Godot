@@ -1,13 +1,13 @@
 #[compute]
 #version 450
 
-// Reduce anchor top-K results into per-asset tile vote scores.
+// Reduce anchor top-K results into per-asset voxel-region vote scores.
 // Single workgroup, serial scan — anchor counts are moderate (< 100K).
 //
 // For each anchor's top-K asset selections, compute which tile the anchor
-// belongs to, and accumulate score into tile_votes[asset_id * tile_count + tile_id].
+// belongs to, and accumulate score into voxel_region_votes[asset_id * tile_count + tile_id].
 //
-// Output is read back to CPU to produce per-asset sorted tile lists.
+// Output is read back to CPU to produce per-asset sorted voxel-region lists.
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
@@ -21,10 +21,10 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer TopKIn {
     uvec2 anchor_topk[];
 };
 
-// Output: tile vote scores per asset
-// Layout: tile_votes[asset_id * tile_count + tile_id] += score
-layout(set = 0, binding = 2, std430) restrict buffer TileVotes {
-    float tile_votes[];
+// Output: voxel-region vote scores per asset
+// Layout: voxel_region_votes[asset_id * tile_count + tile_id] += score
+layout(set = 0, binding = 2, std430) restrict buffer VoxelRegionVotes {
+    float voxel_region_votes[];
 };
 
 layout(push_constant, std430) uniform Params {
@@ -62,7 +62,7 @@ void main() {
             if (asset_id >= a_count || score < 0.0) continue;
 
             uint vote_idx = asset_id * tile_count + uint(tid);
-            tile_votes[vote_idx] += score;
+            voxel_region_votes[vote_idx] += score;
         }
     }
 }

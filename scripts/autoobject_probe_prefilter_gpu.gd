@@ -499,7 +499,7 @@ func _load_shaders() -> void:
 	_shader_collect = _load_shader("res://shaders/collect_sv_anchors.glsl")
 	_shader_score = _load_shader("res://shaders/score_anchor_asset_probes.glsl")
 	_shader_topk = _load_shader("res://shaders/select_anchor_topk.glsl")
-	_shader_reduce = _load_shader("res://shaders/reduce_anchor_topk_to_tiles.glsl")
+	_shader_reduce = _load_shader("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl")
 	if _shader_collect.is_valid():
 		_pipeline_collect = _rd.compute_pipeline_create(_shader_collect)
 	if _shader_score.is_valid():

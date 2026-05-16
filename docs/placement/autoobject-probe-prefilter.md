@@ -390,7 +390,7 @@ GPU 落地实现：
 | `shaders/collect_sv_anchors.glsl` | Dispatch 1 — dirty voxel 区域 → ground + target_top anchor 收集（atomic append） |
 | `shaders/score_anchor_asset_probes.glsl` | Dispatch 2 (Pass A) — 16×16 workgroup，anchor×asset probe 评分 |
 | `shaders/select_anchor_topk.glsl` | Dispatch 3 (Pass B) — 256 线程/anchor，top-K asset 选择 |
-| `shaders/reduce_anchor_topk_to_tiles.glsl` | Dispatch 4 — anchor top-K → per-asset 候选 voxel 区域 vote 聚合 |
+| `shaders/reduce_anchor_topk_to_voxel_regions.glsl` | Dispatch 4 — anchor top-K → per-asset 候选 voxel 区域 vote 聚合 |
 
 GPU-only 约束：
 
@@ -427,7 +427,7 @@ probes             ≤ 128 / asset
 1. **Collect** — 从 dirty tiles 收集 anchor，atomic append，回读 anchor_count。
 2. **Score (Pass A)** — 16 asset lanes × 16 probe lanes，sharedgroup 归约 probe 评分。
 3. **Top-K (Pass B)** — 每 anchor 256 线程加载 asset scores，串行 top-K 选择。
-4. **Reduce** — 串行扫描 anchor top-K，累加 per-asset tile vote。
+4. **Reduce** — 串行扫描 anchor top-K，累加 per-asset voxel-region vote。
 
 Pass A/B 使用二维 anchor dispatch：`anchor_grid_x = ceil(sqrt(anchor_count))`，`anchor_grid_y = ceil(anchor_count / anchor_grid_x)`。
 
@@ -501,7 +501,7 @@ asset_scores[ANCHOR_CAPACITY * 256] // float: 每 anchor 固定保留 256 个 as
 anchor_topk[ANCHOR_CAPACITY * TOPK] // uvec2: { asset_id, score_as_float_bits }
 
 // Dispatch 4 输出
-tile_votes[asset_count * tile_count] // float: 每个 (asset, tile) 的累计 vote 分数
+voxel_region_votes[asset_count * tile_count] // float: 每个 (asset, voxel_region) 的累计 vote 分数
 ```
 
 ### Shader 总览
@@ -511,7 +511,7 @@ tile_votes[asset_count * tile_count] // float: 每个 (asset, tile) 的累计 vo
 | 1 | `collect_sv_anchors.glsl` | `(dirty_tile_count, 1, 1)` | `(8, 8, 8)` | tile per workgroup, ground + target_top anchor 合并收集，atomic append |
 | 2 | `score_anchor_asset_probes.glsl` | `(anchor_grid_x, anchor_grid_y, ceil(asset_count / 16))` | `(16, 16, 1)` | **Pass A** — 16 asset lanes × 16 probe lanes，sharedgroup 归约 |
 | 3 | `select_anchor_topk.glsl` | `(anchor_grid_x, anchor_grid_y, 1)` | `(16, 16, 1)` | **Pass B** — 每 anchor 检查 256 asset 分数，阈值过滤 + top-K |
-| 4 | `reduce_anchor_topk_to_tiles.glsl` | `(1, 1, 1)` | `(1, 1, 1)` | 串行扫描 anchor top-K，累加 per-asset tile vote |
+| 4 | `reduce_anchor_topk_to_voxel_regions.glsl` | `(1, 1, 1)` | `(1, 1, 1)` | 串行扫描 anchor top-K，累加 per-asset voxel-region vote |
 
 Dispatch 1 收集 anchor 后需 `submit()+sync()` 回读 `anchor_count`，确定后续 Pass A/B 的 dispatch 维度。
 
@@ -771,7 +771,7 @@ void main() {
 }
 ```
 
-### Dispatch 4 伪代码: `reduce_anchor_topk_to_tiles.glsl`
+### Dispatch 4 伪代码: `reduce_anchor_topk_to_voxel_regions.glsl`
 
 ```glsl
 #version 450
@@ -779,7 +779,7 @@ layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) restrict readonly  buffer AnchorBuf { uvec4 anchors[];      };
 layout(set = 0, binding = 1, std430) restrict readonly  buffer TopKIn    { uvec2 anchor_topk[];  };
-layout(set = 0, binding = 2, std430) restrict           buffer TileVotes { float tile_votes[];   };
+layout(set = 0, binding = 2, std430) restrict           buffer VoxelRegionVotes { float voxel_region_votes[]; };
 
 layout(push_constant, std430) uniform Params {
     ivec4 tile_grid_size_pad;   // xyz = tile grid dims, w = tile_count
@@ -790,7 +790,7 @@ layout(push_constant, std430) uniform Params {
 };
 
 // 串行扫描所有 anchor 的 top-K 结果
-// anchor.xyz → tile_id → tile_votes[asset_id * tile_count + tile_id] += score
+// anchor.xyz → tile_id → voxel_region_votes[asset_id * tile_count + tile_id] += score
 // 输出由 CPU 回读后按 asset 降序排列为 Vector3i voxel 区域坐标列表
 ```
 
@@ -807,8 +807,8 @@ layout(push_constant, std430) uniform Params {
 7. Dispatch 3: topk        — (anchor_grid_x, anchor_grid_y, 1)
 8. submit() + sync()
 9. Dispatch 4: reduce      — (1, 1, 1)
-10. submit() + sync()      — 回读 tile_votes
-11. _decode_results()      — tile_votes → per-asset sorted Vector3i voxel 区域列表
+10. submit() + sync()      — 回读 voxel_region_votes
+11. _decode_results()      — voxel_region_votes → per-asset sorted Vector3i voxel 区域列表
 ```
 
 ---
