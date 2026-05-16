@@ -49,7 +49,7 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | File | Purpose |
 | --- | --- |
 | [`history/voxel-3d-migration-plan.md`](history/voxel-3d-migration-plan.md) | Completed historical 3D voxel placement implementation record |
-| [`history/vegetation-pipeline-暂时丢弃.md`](history/vegetation-pipeline-%E6%9A%82%E6%97%B6%E4%B8%A2%E5%BC%83.md) | Temporarily discarded vegetation pipeline note |
+| [`history/vegetation-pipeline-暂时丢弃.md`](history/vegetation-pipeline-暂时丢弃.md) | Temporarily discarded vegetation pipeline note |
 
 ## Documentation Rules
 

@@ -99,11 +99,12 @@ candidate_region =
 | 数据 | 来源 | 用途 |
 |------|------|------|
 | `auto_object_manager` | `common_settings` 或 `GlobalVoxelField.auto_object_manager` | 查询已提交的周围 `AutoObject` |
-| `object_type` | disabled legacy field | 不再作为“同类型”判断依据 |
+| `object_type` | `asset_def`、`AutoObject` 或兼容配置 | 运行时 grouping / debug metadata；可作为当前 same-type 查询 key |
+| `object_subtype` | `asset_def`、`AutoObject` 或兼容配置 | 运行时 grouping / debug metadata；细分 same-type 查询 |
 | `min_spacing` | `asset_def` 或对应 `AutoObject` asset | 候选自身互斥半径 |
 | 已放置对象 `min_spacing` | `AutoObjectManager` record | 邻居互斥半径 |
 
-当前不维护 `object_subtype`。同类型互斥预检若继续启用，应改用具体 asset identity、资产类、descriptor / footprint 或显式 grouping key；不要依赖 `object_type` / `object_subtype`。
+当前代码仍维护 `object_type` / `object_subtype`，并用它们作为 same-type exclusion 的运行时 grouping metadata。它们不是资产默认语义来源，也不应替代 `AutoVoxelDescriptor`。如果后续需要更清晰的互斥语义，应引入 `exclusion_group` 或 `placement_group`，再从 `object_type` / `object_subtype` 迁移。
 
 互斥条件：
 
@@ -119,12 +120,13 @@ skipped_same_type_exclusion = true
 same_type_exclusion = {
     "blocked_voxel_region_count": int,
     "candidate_min_spacing": float,
-    "object_type": String,  # disabled legacy debug field
+    "object_type": String,  # runtime grouping/debug metadata
+    "object_subtype": String,  # runtime grouping/debug metadata
     "first_block": Dictionary,
 }
 ```
 
-`GlobalVoxelField.run_placement()` / `run_placement_dirty()` / `run_prefiltered_placement_dirty()` 会在配置了 `auto_object_manager` 时把它转发给 `run_multi_asset()`。`run_prefiltered_placement_dirty()` 可用传入的 `autoobjects` 为 `asset_defs` 自动补齐 `asset` 和 `min_spacing`；`object_type` 只保留为 disabled legacy debug 字段。
+`GlobalVoxelField.run_placement()` / `run_placement_dirty()` / `run_prefiltered_placement_dirty()` 会在配置了 `auto_object_manager` 时把它转发给 `run_multi_asset()`。`run_prefiltered_placement_dirty()` 可用传入的 `autoobjects` 为 `asset_defs` 自动补齐 `asset`、`object_type`、`object_subtype` 和 `min_spacing`。
 
 ### Anchor 粗筛后的语义匹配
 

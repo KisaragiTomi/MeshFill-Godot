@@ -40,7 +40,8 @@
 | `auto_id` | `String` | 稳定对象 id；为空时可回退到节点名。 |
 | `instance_id` | `int` | Godot 运行时实例 id。 |
 | `auto_source` | `String` | 来源标记，如 `generated`、`scatter`、`brush`。 |
-| `object_type` | `String` | 禁用字段；仅保留旧数据 / 调试兼容，不作为资产分类、routing 或同类互斥依据。 |
+| `object_type` | `String` | 运行时 grouping / debug metadata；可用于 same-type exclusion，但不是资产默认语义来源。 |
+| `object_subtype` | `String` | 运行时 grouping / debug metadata；用于细分同类互斥和记录回查，不作为 descriptor 替代来源。 |
 | `visual_layer` | `int` | 调试或可视分层。 |
 | `min_spacing` | `float` | XZ 中心间距约束；`0` 表示自动计算。 |
 | `bound_min_length` | `float` | mesh bounds 最小轴长度，用于默认间距。 |
@@ -70,7 +71,7 @@
 
 `AutoObject.configure_auto_object()` 会强制 `scale = Vector3.ONE`。资产运行时缩放不作为 semantic probe 或 voxel 语义来源。
 
-当前不维护 `object_subtype` 字段。需要表达资产差异时，优先使用具体资产类、`voxel_descriptor`、`semantic_probes`、`allowed_anchor_kinds`、footprint 和 collision 语义。
+`object_type` / `object_subtype` 当前仍由 placement、same-type exclusion 和 debug record 使用。它们的边界是“运行时分组 metadata”，不是资产默认体素语义；需要表达资产视觉、collision、probe 或 routing 偏好时，仍应优先使用具体资产类、`voxel_descriptor`、`semantic_probes`、`allowed_anchor_kinds`、footprint 和 collision 语义。后续如果引入 `exclusion_group` 或 `placement_group`，应先从这些字段迁移。
 
 ## `AutoVoxelDescriptor`
 
@@ -130,7 +131,7 @@ Collision 的最终归属见 `scene-voxel-field-system.md`：自动生成和画�
 | `auto_instance_id` / `instance_id` | `AutoObject.instance_id` |
 | `instance_mesh_id` | 实际 `MeshInstance3D.get_instance_id()` |
 | `auto_source` | `AutoObject.auto_source` |
-| `auto_object_type` | 禁用 / 兼容索引；不作为资产分类依据 |
+| `auto_object_type` | 旧兼容索引；新逻辑优先使用 `object_type` / `object_subtype` 或后续显式 grouping key |
 | `voxel_record` | 当前实例写入场景体素系统的 record handle；字段结构见 `scene-voxel-field-system.md` |
 
-维护规则：新增字段时先判断它属于资产默认值、运行时 record、source voxel delta、TargetSV 目标画布还是最终 `SceneVoxel` 状态，不要把 metadata 当成第二套状态系统。当前不要新增 `subtype` / `object_subtype` 分类字段。
+维护规则：新增字段时先判断它属于资产默认值、运行时 record、source voxel delta、TargetSV 目标画布还是最终 `SceneVoxel` 状态，不要把 metadata 当成第二套状态系统。不要新增另一套 `subtype` 字段；如果现有 `object_type` / `object_subtype` 不够表达互斥或 routing 分组，应新增明确命名的 `exclusion_group` / `placement_group` 并提供迁移路径。
