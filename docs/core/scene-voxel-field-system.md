@@ -44,20 +44,26 @@ committed SceneVoxel
 
 ## `CollisionVoxel` 归属
 
-`CollisionVoxel` 不作为独立来源场存在，也不是 `SceneVoxel` 的下级对象。它是与 `color`、`complexity`、`affected_bands` 同级的 collision 语义字段，用来描述刚性或互斥占用：
+`CollisionVoxel` 不作为独立来源场存在；它在 `SceneVoxel` / `SV` 中对应 `collision_voxels` collision layer/field。该层与 `color`、`complexity`、`affected_bands` 等视觉语义同级，用来描述刚性或互斥占用：
 
 ```text
 AutoSceneVoxel
   color / complexity
   visual layer fields (SenceLayerVoxel legacy/deprecated)
-  collision_voxels: Array[CollisionVoxel]
+  collision layer: collision_voxels: Array[CollisionVoxel]
 
 BrushSceneVoxel
   color / complexity
   visual layer fields (SenceLayerVoxel legacy/deprecated)
-  collision_voxels: Array[CollisionVoxel]
+  collision layer: collision_voxels: Array[CollisionVoxel]
   modified_voxels
   auto_mix
+
+SceneVoxel
+  color / complexity
+  visual layer fields
+  collision layer: collision_voxels: Array[CollisionVoxel]
+  commit fields
 ```
 
 含义：
@@ -65,7 +71,7 @@ BrushSceneVoxel
 - 自动放置的岩石、树干等刚性部分写入 `AutoSceneVoxel.collision_voxels`。
 - 画笔、擦除、手动 blocker 等写入 `BrushSceneVoxel.collision_voxels`。
 - 当前 collision 逻辑以浮点 voxel 样本为主：每个 `CollisionVoxel` 记录局部 voxel 坐标和 `0.0-1.0` collision 强度；旧 `shape` / `radius` 字段只作为兼容输入。
-- `collision_voxels` 在 source record、source voxel 和 committed `SceneVoxel` 中都应按同级字段理解；不要把它画成 `SceneVoxel` 的子层级。
+- `collision_voxels` 在 source record、source voxel 和 committed `SceneVoxel` 中都应按 SV collision layer/field 理解；它是 SV 的同级语义层，不是提交后缓存。
 - commit 后可以生成 `_collision_occupancy`、`_volume["collision_occupancy"]` 或 `GlobalVoxelField.collision_occupancy`，但这些是由 committed `SceneVoxel.collision_voxels` 派生的查询缓存，不是新的 source layer，也不是新的语义归属。
 
 ## 数据流
@@ -77,11 +83,11 @@ AutoVoxelDescriptor / brush edit / target guidance
       SceneVoxel base fields
       AutoSceneVoxel / BrushSceneVoxel / TargetSceneVoxel source fields
       visual layer fields
-      collision_voxels field
+      collision_voxels collision layer
   -> blend_scene_voxels(tick)
   -> SceneVoxel[tick]
       SceneVoxel base fields
-      collision_voxels field
+      collision_voxels collision layer
       commit fields
       scene_occupancy view
       collision_occupancy derived view

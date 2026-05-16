@@ -87,10 +87,17 @@ func get_scatter_profile() -> Array[Dictionary]:
 
 func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
 	var radius := default_radius if default_radius > 0.0 else _band_radius(vegetation_band)
+	var descriptor = _ensure_voxel_descriptor()
+	if descriptor != null and not descriptor.collision_voxels.is_empty():
+		return descriptor.get_collision_voxels(radius)
 	if not collision_voxels.is_empty():
-		return AutoVoxelProfile.normalize_collision_voxels(collision_voxels, radius)
+		descriptor.set_collision_voxels(collision_voxels)
+		return descriptor.get_collision_voxels(radius)
 	if voxel_profile != null:
-		return voxel_profile.get_collision_voxels(radius)
+		var profile_collisions := voxel_profile.get_collision_voxels(radius)
+		if not profile_collisions.is_empty():
+			descriptor.set_collision_voxels(profile_collisions)
+			return descriptor.get_collision_voxels(radius)
 	return []
 
 

@@ -167,7 +167,7 @@
   <rect class="node record" x="58" y="778" width="244" height="106" rx="16" ry="16"/>
   <text class="label" x="78" y="810">Record Builders</text>
   <text class="small" x="78" y="834">make_*_scene_voxel_record()</text>
-  <text class="small" x="78" y="856">voxel_record runtime data</text>
+  <text class="small" x="78" y="856">scene voxel record data</text>
   <text class="tiny" x="78" y="874">position, ids, bands, collision</text>
 
   <rect class="node state" x="338" y="766" width="244" height="140" rx="16" ry="16"/>
@@ -190,8 +190,8 @@
   <text class="tiny" x="918" y="838">color / complexity / band / channel</text>
   <text class="tiny" x="918" y="858">coords: slice_index / voxel_xz / base_pixel</text>
   <text class="tiny" x="918" y="878">ids: record_id / auto_id / instance_id</text>
-  <text class="tiny" x="918" y="898">commit: source_voxel_types / blend_mode</text>
-  <text class="tiny" x="918" y="918">collision_voxels + commit_tick</text>
+  <text class="tiny" x="918" y="898">collision layer: collision_voxels</text>
+  <text class="tiny" x="918" y="918">commit: source_voxel_types / blend_mode</text>
 
   <rect class="node cache" x="1248" y="778" width="292" height="106" rx="16" ry="16"/>
   <text class="label" x="1268" y="810">GlobalVoxelField</text>

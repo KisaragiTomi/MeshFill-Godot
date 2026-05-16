@@ -77,6 +77,8 @@
 
 `AutoVoxelDescriptor` 是资产侧体素描述资源，也是资产语义唯一权威来源。它保存会影响 routing、probe、footprint、source voxel 写入和 target fit 的默认语义。
 
+资产侧 collision 必须进入 `AutoVoxelDescriptor.collision_voxels`。`AutoObject.collision_voxels`、`AutoVegetationAsset.collision_voxels` 和 `AutoVoxelProfile.collision_voxels` 只作为 legacy / authoring fallback，并会同步回 descriptor。
+
 | 字段 | 含义 |
 | --- | --- |
 | `color` / `complexity` | 默认颜色与复杂度；`get_color()` 会把 alpha 设为 complexity。 |

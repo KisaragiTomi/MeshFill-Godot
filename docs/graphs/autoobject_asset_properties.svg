@@ -102,7 +102,7 @@
   <text class="node-title" x="438" y="222">AutoVoxelDescriptor</text>
   <text class="label" x="438" y="246">primary asset semantics struct</text>
   <text class="mono" x="438" y="268">color, complexity, bands</text>
-  <text class="mono" x="438" y="288">collision_voxels, pivots, probes</text>
+  <text class="mono" x="438" y="288">collision_voxels layer</text>
 
   <rect class="node resource" x="418" y="342" width="276" height="104" rx="14" ry="14"/>
   <text class="node-title" x="438" y="374">AutoVoxelProfile</text>
@@ -132,7 +132,7 @@
   <text class="node-title" x="798" y="350">Descriptor Access</text>
   <text class="mono" x="798" y="374">voxel_descriptor</text>
   <text class="mono" x="798" y="394">legacy color / complexity</text>
-  <text class="mono" x="798" y="414">legacy bands / collision mirrors</text>
+  <text class="mono" x="798" y="414">legacy mirrors, descriptor owns collision</text>
 
   <rect class="node field" x="778" y="472" width="276" height="124" rx="14" ry="14"/>
   <text class="node-title" x="798" y="504">Placement Anchors</text>
@@ -187,6 +187,6 @@
 
   <rect class="node warn" x="78" y="842" width="1344" height="90" rx="18" ry="18"/>
   <text class="rule" x="108" y="876">Ownership rule:</text>
-  <text class="label" x="228" y="876">AutoVoxelDescriptor owns asset defaults; AutoObject mirrors legacy export/config fields; voxel_record owns runtime placement and source voxel data.</text>
+  <text class="label" x="228" y="876">AutoVoxelDescriptor owns asset defaults; AutoObject mirrors legacy fields; voxel_record is scene voxel record data.</text>
   <text class="tiny" x="108" y="906">When adding a field, decide whether it belongs to defaults, runtime record, source voxel delta, TargetSV guidance, final SceneVoxel state, or cache/query metadata.</text>
 </svg>
