@@ -126,7 +126,7 @@ AutoVoxelDescriptor / brush edit / target guidance
 
 ## `voxel_record`
 
-`voxel_record` 是 scene voxel record 数据，由 `AutoAssetFactory.make_profile_scene_voxel_record()`、typed wrapper 或 placement builder 生成。它把一次实例落点、视觉 band、collision 声明和 source 上下文交给 `apply_mesh_voxel_record()`，后续再写入 source voxel delta 并由 `blend_scene_voxels()` 提交。
+`voxel_record` 是写入 `SV` / `SceneVoxel` 的 record payload，由 `AutoAssetFactory.make_profile_scene_voxel_record()`、typed wrapper 或 placement builder 生成。最终字段归属在 `SourceSceneVoxel` / committed `SceneVoxel`；`AutoObject` 只生成或保存 handle，不拥有最终 record schema。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -143,7 +143,7 @@ AutoVoxelDescriptor / brush edit / target guidance
 | `source_kind` | 来源种类，如 `rock_placement`、`scatter`、`brush`、`target`。 |
 | `producer_stage` | 生产阶段；默认等于 `source_kind`。 |
 
-`TargetSceneVoxel` record 只作为目标画布 / guidance 输入；普通 target source 不提交最终 `collision_voxels` 字段。`AutoObject` 和 metadata 可以保存 `voxel_record` handle 方便查询，但不能把它当作资产默认值来源。
+`TargetSceneVoxel` record 只作为目标画布 / guidance 输入；普通 target source 不提交最终 `collision_voxels` 字段。`AutoObject` 和 metadata 可以保存 `voxel_record` handle 方便查询，但 record 字段应按 `SV` / `SceneVoxel` schema 理解，不能把它当作资产默认值来源。
 
 ## 地形保底碰撞
 

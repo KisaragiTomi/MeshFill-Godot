@@ -65,7 +65,7 @@
   <text class="lane-title" x="58" y="164">CLASS AND ASSET TYPES</text>
   <text class="lane-title" x="418" y="164">DEFAULT DATA RESOURCES</text>
   <text class="lane-title" x="778" y="164">AUTOOBJECT ACCESS / MIRRORS</text>
-  <text class="lane-title" x="1138" y="164">RUNTIME OUTPUTS</text>
+  <text class="lane-title" x="1138" y="164">SV / RUNTIME OUTPUTS</text>
 
   <rect class="node type" x="58" y="190" width="276" height="94" rx="14" ry="14"/>
   <text class="node-title" x="78" y="222">AutoObject</text>
@@ -164,8 +164,8 @@
   <text class="mono" x="1158" y="274">configure_vegetation()</text>
 
   <rect class="node record" x="1138" y="324" width="304" height="132" rx="14" ry="14"/>
-  <text class="node-title" x="1158" y="356">voxel_record</text>
-  <text class="label" x="1158" y="380">scene voxel record</text>
+  <text class="node-title" x="1158" y="356">SV / SceneVoxel Record</text>
+  <text class="label" x="1158" y="380">record fields live in SV</text>
   <text class="mono" x="1158" y="402">position, rotation, scale</text>
   <text class="mono" x="1158" y="422">collision_voxels, source_voxel_type</text>
   <text class="mono" x="1158" y="442">DEPRECATED_SENCE_LAYER_VOXEL_KEY</text>
@@ -186,6 +186,6 @@
 
   <rect class="node warn" x="78" y="842" width="1344" height="90" rx="18" ry="18"/>
   <text class="rule" x="108" y="876">Ownership rule:</text>
-  <text class="label" x="228" y="876">AutoVoxelDescriptor owns asset defaults; AutoObject side owns builder helpers; voxel_record is scene voxel record data.</text>
+  <text class="label" x="228" y="876">AutoVoxelDescriptor owns asset defaults; AutoObject builds payloads; SV owns SceneVoxel record fields.</text>
   <text class="tiny" x="108" y="906">When adding a field, decide whether it belongs to defaults, runtime record, source voxel delta, TargetSV guidance, final SceneVoxel state, or cache/query metadata.</text>
 </svg>

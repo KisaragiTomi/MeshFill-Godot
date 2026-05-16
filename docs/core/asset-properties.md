@@ -120,9 +120,9 @@
 
 Collision 的最终归属见 `scene-voxel-field-system.md`：`collision_voxels` 与 `color` / `complexity` 同级，从资产默认值进入 record / source voxel，并可作为 committed `SceneVoxel` 的同级字段保留；提交后的 `collision_occupancy` 是由它重建的派生查询缓存视图。
 
-## 运行时 record 边界
+## SV record 边界
 
-`voxel_record` 属于 SceneVoxel record / source voxel delta 数据，不是资产默认值主结构。本文件只记录它在 `AutoObject` 和 metadata 上的查询入口；字段 schema、source 类型和提交规则见 `scene-voxel-field-system.md`。
+`voxel_record` 属于 `SV` / `SceneVoxel` record payload 和 source voxel delta 数据，不是资产默认值主结构，也不是 `AutoObject` 的最终 schema。本文件只记录它在 `AutoObject` 和 metadata 上的查询入口；字段 schema、source 类型和提交规则见 `scene-voxel-field-system.md`。
 
 ## Metadata 规则
 
