@@ -321,10 +321,6 @@ func _object_index_radius(auto_object: AutoObject, record: Dictionary = {}) -> f
 	var radius := _object_spacing(auto_object, record)
 	radius = maxf(radius, _mesh_xz_radius(auto_object))
 	radius = maxf(radius, _collision_xz_radius(record))
-	var stamp = auto_object.get("sdf_stamp")
-	if stamp is Resource and (stamp as Resource).has_method("get_world_size"):
-		var stamp_size: Vector2 = (stamp as Resource).call("get_world_size")
-		radius = maxf(radius, maxf(stamp_size.x, stamp_size.y) * 0.5)
 	return maxf(radius, spatial_cell_size * 0.05)
 
 

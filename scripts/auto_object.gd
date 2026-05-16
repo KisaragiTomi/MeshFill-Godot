@@ -31,8 +31,6 @@ const DEPRECATED_VOXEL_LAYERS_KEY := "voxel_layers"
 @export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0
 @export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0
 @export var allowed_anchor_kinds: PackedStringArray = PackedStringArray()
-@export var sdf_stamp: Resource
-@export_range(0.0, 1.0, 0.01) var sdf_opacity: float = 1.0
 var voxel_record: Dictionary = {}
 var min_spacing_auto: bool = true
 
@@ -206,10 +204,6 @@ func configure_auto_object(config: Dictionary) -> void:
 		set_semantic_probes(config.semantic_probes)
 	if config.has("allowed_anchor_kinds"):
 		set_allowed_anchor_kinds(config.allowed_anchor_kinds)
-	if config.has("sdf_stamp") and config.sdf_stamp is Resource:
-		set_sdf_stamp(config.sdf_stamp as Resource)
-	if config.has("sdf_opacity"):
-		sdf_opacity = clampf(float(config.sdf_opacity), 0.0, 1.0)
 	_sync_descriptor_from_legacy_fields()
 
 	var configured_group := str(config.get("group", ""))
@@ -298,19 +292,6 @@ func get_affected_bands(default_radius: float = 1.0) -> Array[Dictionary]:
 
 func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
 	return _ensure_voxel_descriptor().get_collision_voxels(default_radius)
-
-
-func set_sdf_stamp(stamp: Resource) -> void:
-	sdf_stamp = stamp
-	_sync_auto_metadata()
-
-
-func get_sdf_stamp() -> Resource:
-	return sdf_stamp
-
-
-func get_sdf_opacity() -> float:
-	return clampf(sdf_opacity, 0.0, 1.0)
 
 
 func set_affected_bands(bands: Array) -> void:
@@ -539,10 +520,6 @@ func set_voxel_record(record: Dictionary) -> void:
 		set_semantic_probes(voxel_record.semantic_probes)
 	if voxel_record.has("allowed_anchor_kinds"):
 		set_allowed_anchor_kinds(voxel_record.allowed_anchor_kinds)
-	if voxel_record.has("sdf_stamp") and voxel_record.sdf_stamp is Resource:
-		set_sdf_stamp(voxel_record.sdf_stamp as Resource)
-	if voxel_record.has("sdf_opacity"):
-		sdf_opacity = clampf(float(voxel_record.sdf_opacity), 0.0, 1.0)
 	_sync_descriptor_from_legacy_fields()
 	refresh_bound_spacing()
 	voxel_record["bound_min_length"] = bound_min_length
@@ -581,10 +558,6 @@ func _sync_auto_metadata() -> void:
 		set_meta("semantic_probe_density", semantic_probe_density)
 	set_meta("pivot_variant_count", get_pivot_variants().size())
 	set_meta("allowed_anchor_kinds", get_allowed_anchor_kinds())
-	if sdf_stamp != null:
-		set_meta("sdf_stamp", sdf_stamp)
-		set_meta("sdf_stamp_id", str(sdf_stamp.get("stamp_id")))
-	set_meta("sdf_opacity", get_sdf_opacity())
 
 
 func _clear_state_mirror_metadata() -> void:
@@ -601,9 +574,6 @@ func _clear_state_mirror_metadata() -> void:
 		"semantic_probe_profile",
 		"semantic_probe_count",
 		"semantic_probe_density",
-		"sdf_stamp",
-		"sdf_stamp_id",
-		"sdf_opacity",
 	]:
 		if has_meta(key):
 			remove_meta(key)

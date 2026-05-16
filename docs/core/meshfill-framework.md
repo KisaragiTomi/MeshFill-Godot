@@ -15,6 +15,7 @@
 - 语义向量匹配只在每个 anchor 的粗筛候选资产内做 rerank / validate / prune，不遍历全资产库。
 - 物理可放置性仍由 `score_voxel_tile.glsl` 的 footprint、support、collision、clearance、overlap 和 target fit 决定。
 - 同类型 `AutoObject` 的 `min_spacing` 互斥可在 physical placement 前通过 `AutoObjectManager` 做低成本候选 voxel 区域剪枝；最终 footprint / collision 仍由 GPU score 确认。
+- 当前 collision 只按简单碰撞体 primitive 烘焙 footprint 和 `collision_occupancy`；不要在主流程中重新引入复杂距离场、扩散场或软排斥缓存。
 
 ## Ownership
 

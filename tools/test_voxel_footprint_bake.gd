@@ -8,9 +8,15 @@ const FLAG_CLEARANCE := 2
 func _init() -> void:
 	var ok := true
 	ok = ok and _test_bake_cylinder()
+	ok = ok and _test_bake_box()
 	ok = ok and _test_bake_rotation()
 	ok = ok and _test_bake_rotated_set()
-	ok = ok and _test_full_pipeline()
+	var rendering_device := RenderingServer.create_local_rendering_device()
+	if rendering_device != null:
+		rendering_device.free()
+		ok = ok and _test_full_pipeline()
+	else:
+		print("[VoxelFootprintBake] SKIP: full pipeline requires RenderingDevice")
 	ok = ok and _test_results_to_world()
 
 	if ok:
@@ -65,6 +71,58 @@ func _test_bake_cylinder() -> bool:
 
 	print("  OK: %d voxels (support=%s clearance=%s solid=%s)" % [
 		footprint.size(), has_support, has_clearance, has_solid])
+	return true
+
+
+func _test_bake_box() -> bool:
+	print("[VoxelFootprintBake] test_bake_box...")
+	var collision_voxels: Array = [
+		{
+			"shape": "box",
+			"offset": Vector3(1.0, 0.0, 0.0),
+			"half_extents": Vector3(0.5, 0.5, 0.5),
+			"value": 1.0,
+		}
+	]
+	var voxel_size := Vector3(0.5, 0.5, 0.5)
+	var footprint := VPG.bake_footprint_from_collision_voxels(
+		collision_voxels, voxel_size, true, 1)
+
+	if footprint.is_empty():
+		push_error("  FAIL: box footprint is empty")
+		return false
+
+	var has_support := false
+	var has_clearance := false
+	var has_solid := false
+	var has_offset := false
+	for entry in footprint:
+		var flags := int(entry.flags)
+		var degree := int(entry.collision_degree)
+		var pos: Vector3i = entry.local_pos
+		if flags & FLAG_SUPPORT:
+			has_support = true
+		if flags & FLAG_CLEARANCE:
+			has_clearance = true
+		if degree >= 192:
+			has_solid = true
+		if pos.x >= 1:
+			has_offset = true
+
+	if not has_support:
+		push_error("  FAIL: box has no support voxels")
+		return false
+	if not has_clearance:
+		push_error("  FAIL: box has no clearance voxels")
+		return false
+	if not has_solid:
+		push_error("  FAIL: box has no solid collision voxels")
+		return false
+	if not has_offset:
+		push_error("  FAIL: box offset was not applied")
+		return false
+
+	print("  OK: %d box voxels" % footprint.size())
 	return true
 
 

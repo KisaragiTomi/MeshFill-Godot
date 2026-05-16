@@ -50,7 +50,7 @@
 | `voxel_color` | `Color` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.color`，`a` 与 complexity 同步。 |
 | `voxel_complexity` | `float` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.complexity`，范围 `0.0-1.0`。 |
 | `affected_bands` | `Array[Dictionary]` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.affected_bands`。 |
-| `collision_voxels` | `Array[Dictionary]` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.collision_voxels`。 |
+| `collision_voxels` | `Array[Dictionary]` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.collision_voxels`；当前只用于简单碰撞体 footprint。 |
 | `pivot_variants` | `Array[Dictionary]` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.pivot_variants`。 |
 | `semantic_probe_profile` | `Resource` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.semantic_probe_profile`。 |
 | `semantic_probe_density` | `float` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.semantic_probe_density`。 |
@@ -81,7 +81,7 @@
 | --- | --- |
 | `color` / `complexity` | 默认颜色与复杂度；`get_color()` 会把 alpha 设为 complexity。 |
 | `affected_bands` | 可视 / 生态 band 写入声明。 |
-| `collision_voxels` | collision voxel 声明；与 `color` / `complexity` 同级，归一化后供 footprint、source voxel 写入和 probe 使用。 |
+| `collision_voxels` | 简单 collision primitive 声明；与 `color` / `complexity` 同级，归一化后供 footprint、source voxel 写入和 probe 使用。 |
 | `pivot_variants` | 显式 pivot 列表；为空时可从 collision 高度自动生成。 |
 | `auto_generate_vertical_pivots` | 根据 collision 高度生成 bottom / middle / upper pivot。 |
 | `semantic_probe_profile` | 保存或生成 `semantic_probes`。 |
@@ -104,12 +104,14 @@
 
 ## Collision 记录
 
-`collision_voxels` 会通过 `AutoVoxelProfile.normalize_collision_voxels()` 归一化。
+`collision_voxels` 会通过 `AutoVoxelProfile.normalize_collision_voxels()` 归一化。当前只按简单碰撞体处理，不引入复杂距离场、扩散场或软排斥缓存。
 
 | 字段 | 类型 | 默认 / 说明 |
 | --- | --- | --- |
-| `shape` | `String` | 默认 `cylinder`。 |
-| `radius` | `float` | 缺失或 `<= 0` 时使用调用方默认半径。 |
+| `shape` | `String` | 默认 `cylinder`；placement footprint 当前支持 `cylinder`、`box` / `cube`。 |
+| `radius` | `float` | cylinder 半径；缺失或 `<= 0` 时使用调用方默认半径。 |
+| `offset` / `center` / `position` | `Vector3` / `Array` / `Dictionary` | 可选局部偏移；缺失时为 `Vector3.ZERO`。 |
+| `half_extents` / `size` | `Vector3` / `Array` / `Dictionary` | box / cube 尺寸；`size` 会转换为 `half_extents = size * 0.5`。 |
 | `y_min` / `y_max` | `float` | 默认 `0.0` / `2.0`。 |
 | `erosion_radius` | `float` | 默认 `0.0`。 |
 | `dilation_radius` | `float` | 默认 `0.0`。 |

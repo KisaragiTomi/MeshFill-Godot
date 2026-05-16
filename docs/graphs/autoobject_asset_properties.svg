@@ -141,11 +141,10 @@
   <text class="mono" x="798" y="568">allowed_anchor_kinds</text>
 
   <rect class="node field" x="778" y="628" width="276" height="128" rx="14" ry="14"/>
-  <text class="node-title" x="798" y="660">Probe / SDF Extension</text>
+  <text class="node-title" x="798" y="660">Probe Extension</text>
   <text class="mono" x="798" y="684">legacy probe mirrors</text>
   <text class="mono" x="798" y="704">semantic_probe_density</text>
   <text class="mono" x="798" y="724">context_sensing_radius</text>
-  <text class="mono" x="798" y="744">sdf_stamp / sdf_opacity</text>
 
   <path class="edge-blue" d="M334 237 C370 237 370 114 736 114 C764 114 764 232 778 232"/>
   <path class="edge-green" d="M694 249 C728 249 728 379 778 379"/>

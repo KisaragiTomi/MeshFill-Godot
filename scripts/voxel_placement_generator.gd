@@ -1496,10 +1496,13 @@ static func bake_footprint_from_collision_voxels(
 	for cv in collision_voxels:
 		if not cv is Dictionary:
 			continue
-		var shape := str((cv as Dictionary).get("shape", "cylinder"))
+		var shape := str((cv as Dictionary).get("shape", "cylinder")).to_lower()
 		if shape == "cylinder":
 			combined.append_array(
 				_bake_cylinder(cv as Dictionary, voxel_size, add_support, clearance_slices))
+		elif shape == "box" or shape == "cube":
+			combined.append_array(
+				_bake_box(cv as Dictionary, voxel_size, add_support, clearance_slices))
 	var result := _deduplicate_footprint(combined)
 	if result.size() > FOOTPRINT_CAPACITY:
 		push_warning("VoxelPlacementGenerator: footprint has %d voxels, truncating to %d" % [
@@ -1519,11 +1522,14 @@ static func _bake_cylinder(
 	var y_max := maxf(float(cv.get("y_max", 2.0)), y_min + 0.01)
 	var value := clampf(float(cv.get("value", 1.0)), 0.0, 1.0)
 	var collision_degree := clampi(int(value * 255.0), 0, 255)
+	var center := _vector3_from_value(cv.get("offset", cv.get("center", cv.get("position", Vector3.ZERO))), Vector3.ZERO)
 
 	var r_vx := ceili(radius / voxel_size.x)
 	var r_vz := ceili(radius / voxel_size.z)
-	var y_min_v := floori(y_min / voxel_size.y)
-	var y_max_v := ceili(y_max / voxel_size.y)
+	var center_x_v := roundi(center.x / voxel_size.x)
+	var center_z_v := roundi(center.z / voxel_size.z)
+	var y_min_v := floori((center.y + y_min) / voxel_size.y)
+	var y_max_v := ceili((center.y + y_max) / voxel_size.y)
 	var radius_sq := radius * radius
 
 	var result: Array[Dictionary] = []
@@ -1539,7 +1545,7 @@ static func _bake_cylinder(
 				if add_support and y == y_min_v:
 					flags |= FLAG_SUPPORT
 				result.append({
-					"local_pos": Vector3i(x, y, z),
+					"local_pos": Vector3i(center_x_v + x, y, center_z_v + z),
 					"collision_degree": collision_degree,
 					"flags": flags,
 					"weight": 1.0,
@@ -1554,12 +1560,72 @@ static func _bake_cylinder(
 					if wx * wx + wz * wz > radius_sq:
 						continue
 					result.append({
-						"local_pos": Vector3i(x, cy, z),
+						"local_pos": Vector3i(center_x_v + x, cy, center_z_v + z),
 						"collision_degree": 0,
 						"flags": FLAG_CLEARANCE,
 						"weight": 0.5,
 					})
 
+	return result
+
+
+static func _bake_box(
+	cv: Dictionary,
+	voxel_size: Vector3,
+	add_support: bool,
+	clearance_slices: int
+) -> Array[Dictionary]:
+	var center := _vector3_from_value(cv.get("offset", cv.get("center", cv.get("position", Vector3.ZERO))), Vector3.ZERO)
+	var half_extents := _vector3_from_value(cv.get("half_extents", Vector3.ZERO), Vector3.ZERO)
+	if half_extents.length_squared() <= 0.0001:
+		var size := _vector3_from_value(cv.get("size", Vector3.ZERO), Vector3.ZERO)
+		if size.length_squared() > 0.0001:
+			half_extents = size * 0.5
+	var min_world: Vector3
+	var max_world: Vector3
+	if half_extents.length_squared() > 0.0001:
+		min_world = center - half_extents
+		max_world = center + half_extents
+		if cv.has("y_min") or cv.has("y_max"):
+			min_world.y = center.y + float(cv.get("y_min", min_world.y - center.y))
+			max_world.y = center.y + float(cv.get("y_max", max_world.y - center.y))
+	else:
+		var radius := maxf(float(cv.get("radius", 1.0)), 0.01)
+		var y_min := float(cv.get("y_min", 0.0))
+		var y_max := maxf(float(cv.get("y_max", 2.0)), y_min + 0.01)
+		min_world = center + Vector3(-radius, y_min, -radius)
+		max_world = center + Vector3(radius, y_max, radius)
+	var value := clampf(float(cv.get("value", 1.0)), 0.0, 1.0)
+	var collision_degree := clampi(int(value * 255.0), 0, 255)
+	var x_min_v := floori(min_world.x / voxel_size.x)
+	var x_max_v := ceili(max_world.x / voxel_size.x)
+	var y_min_v := floori(min_world.y / voxel_size.y)
+	var y_max_v := ceili(max_world.y / voxel_size.y)
+	var z_min_v := floori(min_world.z / voxel_size.z)
+	var z_max_v := ceili(max_world.z / voxel_size.z)
+	var result: Array[Dictionary] = []
+	for y in range(y_min_v, y_max_v + 1):
+		for z in range(z_min_v, z_max_v + 1):
+			for x in range(x_min_v, x_max_v + 1):
+				var flags := 0
+				if add_support and y == y_min_v:
+					flags |= FLAG_SUPPORT
+				result.append({
+					"local_pos": Vector3i(x, y, z),
+					"collision_degree": collision_degree,
+					"flags": flags,
+					"weight": 1.0,
+				})
+	if clearance_slices > 0:
+		for cy in range(y_max_v + 1, y_max_v + 1 + clearance_slices):
+			for z in range(z_min_v, z_max_v + 1):
+				for x in range(x_min_v, x_max_v + 1):
+					result.append({
+						"local_pos": Vector3i(x, cy, z),
+						"collision_degree": 0,
+						"flags": FLAG_CLEARANCE,
+						"weight": 0.5,
+					})
 	return result
 
 

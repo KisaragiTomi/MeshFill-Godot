@@ -153,4 +153,3 @@ Candidate 的 owner tile 只表示“由哪个 tile 负责评分这个 origin”
 - **放置流程 / ownership**：更新 `docs/../core/meshfill-framework.md`
 - **SceneVoxel / CollisionVoxel 语义**：更新 `docs/../core/scene-voxel-field-system.md`
 - **TargetSceneVoxel 与语义候选路由**：更新 `docs/placement/voxel-semantic-routing.md`
-- **排斥场 / spacing**：更新 `docs/placement/collision-sdf-exclusion-field.md`

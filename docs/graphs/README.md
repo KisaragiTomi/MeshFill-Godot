@@ -8,7 +8,6 @@
 | --- | --- | --- |
 | `autoobject_asset_properties.svg` | `AutoObject`、`AutoVoxelDescriptor`、legacy 字段、`voxel_record` 和 metadata 的归属图 | `docs/core/asset-properties.md` |
 | `meshfill_current_framework.svg` | 当前 MeshFill 框架、运行时模块和数据流概览 | `docs/core/meshfill-framework.md` |
-| `collision-sdf-exclusion-field.svg` | `collision_voxels` 同级语义字段、派生 `collision_occupancy` 和 2D 排斥场流程 | `docs/placement/collision-sdf-exclusion-field.md` |
 | `meshfill_compute_shader_3d_placement.svg` | 3D voxel placement compute shader pipeline | `docs/history/voxel-3d-migration-plan.md` |
 | `autoobject_probe_scoring_logic.svg` | AutoObject semantic probe scoring 和 GPU prefilter 逻辑 | `docs/placement/autoobject-probe-prefilter.md` |
 | `target-scene-voxel-current.svg` | 当前 `TargetSceneVoxel` GPU 生成、持久化和调试显示流程 | `docs/placement/target-scene-voxel-projection.md` |
@@ -20,7 +19,7 @@
 | --- | --- |
 | `autoobject_asset_properties.qa.png` | `autoobject_asset_properties.svg` 的渲染检查图 |
 | `meshfill_current_framework.qa.png` | `meshfill_current_framework.svg` 的渲染检查图 |
-| `collision-sdf-exclusion-field.qa.png` | `collision-sdf-exclusion-field.svg` 的渲染检查图 |
+| `meshfill_compute_shader_3d_placement.qa.png` | `meshfill_compute_shader_3d_placement.svg` 的渲染检查图 |
 | `autoobject_probe_scoring_logic.qa.png` | `autoobject_probe_scoring_logic.svg` 的渲染检查图 |
 
 ## 维护规则

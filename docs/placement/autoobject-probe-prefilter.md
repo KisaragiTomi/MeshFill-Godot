@@ -15,7 +15,7 @@ SV / TargetSV → anchor 提取 → probe 采样 → top-K 选择 → voxel 区�
 ```
 
 - **目标** — 排除不可放置位置；按 probe 语义匹配排序 asset；输出 `autoobject_candidate_voxel_regions` 候选 voxel 区域以限定 dispatch。
-- **非目标** — 不替代 footprint 精筛；不做 mesh/SDF 精确检测；不使用 `AutoObject.scale`（强制 `Vector3.ONE`）。
+- **非目标** — 不替代 footprint 精筛；不做精确几何碰撞检测；不使用 `AutoObject.scale`（强制 `Vector3.ONE`）。
 
 ---
 

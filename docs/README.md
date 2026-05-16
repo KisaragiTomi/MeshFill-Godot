@@ -27,7 +27,6 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | --- | --- |
 | [`placement/meshfill-rock-placement-flow.md`](placement/meshfill-rock-placement-flow.md) | Rock placement compute pipeline walkthrough |
 | [`placement/target-scene-voxel-projection.md`](placement/target-scene-voxel-projection.md) | `TargetSceneVoxel` canvas, stamp model, planned VDB import, projection cache, and current GPU persistence |
-| [`placement/collision-sdf-exclusion-field.md`](placement/collision-sdf-exclusion-field.md) | Collision SDF / exclusion field design where `collision_voxels` seed spacing-aware 2D exclusion energy |
 | [`placement/autoobject-probe-prefilter.md`](placement/autoobject-probe-prefilter.md) | AutoObject semantic probe prefilter, CPU/GPU responsibilities, anchor collection, and candidate voxel-region output |
 | [`placement/voxel-semantic-routing.md`](placement/voxel-semantic-routing.md) | Candidate asset routing and voxel-region routing after upstream prefilter |
 | [`placement/voxel-semantic-routing-todo.md`](placement/voxel-semantic-routing-todo.md) | Current candidate-routing TODOs; excludes old full-asset semantic lookup tasks |
@@ -39,7 +38,6 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | [`graphs/README.md`](graphs/README.md) | Graph inventory and editing notes |
 | [`graphs/autoobject_asset_properties.svg`](graphs/autoobject_asset_properties.svg) | AutoObject class, resource, field, record, and metadata property map |
 | [`graphs/meshfill_current_framework.svg`](graphs/meshfill_current_framework.svg) | Current framework overview |
-| [`graphs/collision-sdf-exclusion-field.svg`](graphs/collision-sdf-exclusion-field.svg) | Collision SDF / exclusion field ownership and derived-cache flow |
 | [`graphs/meshfill_compute_shader_3d_placement.svg`](graphs/meshfill_compute_shader_3d_placement.svg) | Compute shader 3D placement flow |
 | [`graphs/autoobject_probe_scoring_logic.svg`](graphs/autoobject_probe_scoring_logic.svg) | AutoObject probe scoring logic |
 | [`graphs/target-scene-voxel-current.svg`](graphs/target-scene-voxel-current.svg) | Current TargetSV GPU generation, persistence, and debug display flow |
