@@ -47,11 +47,11 @@ committed SceneVoxel
 
 ```text
 AutoSceneVoxel
-  visual_layers / SenceLayerVoxel (legacy key)
+  visual layer fields (SenceLayerVoxel legacy/deprecated)
   collision_voxels: Array[CollisionVoxel]
 
 BrushSceneVoxel
-  visual_layers / SenceLayerVoxel (legacy key)
+  visual layer fields (SenceLayerVoxel legacy/deprecated)
   collision_voxels: Array[CollisionVoxel]
   modified_voxels
   auto_mix
@@ -98,7 +98,7 @@ AutoVoxelDescriptor / brush edit / target guidance
 | --- | --- | --- |
 | 基本状态 | `type`、`occupied`、`value`、`complexity`、`color` | `type` 在提交后为 `SceneVoxel`；`value` 是占用 / 强度标量；`complexity` 当前跟随 `value`；`color.a` 写入最终强度。 |
 | 体素坐标 | `slice_index`、`voxel_xz`、`base_pixel`、`volume_xz_resolution` | 描述该 scene voxel 所在的 `Y` slice、`XZ` 体素 / 像素坐标和体积分辨率。 |
-| visual layer | `band`、`channel` | 记录该 voxel 来自哪个视觉 band / channel；当前历史兼容 key 为 `SenceLayerVoxel`，读入时也兼容旧别名 `voxel_layers`。 |
+| visual layer | `band`、`channel` | 记录该 voxel 来自哪个视觉 band / channel；`SenceLayerVoxel` 已暂时废弃，不作为新 schema，只因运行时 legacy record 兼容而仍可能出现。 |
 | 对象标识 | `record_id`、`mesh_name`、`node_path`、`object_type`、`object_subtype`、`auto_source` | 用于 debug、查询和回查来源对象；不是资产默认值来源。 |
 | 实例标识 | `auto_id` / `auto_object_id`、`auto_instance_id` / `instance_id`、`instance_mesh_id` / `mesh_instance_id` | 连接 committed voxel、runtime object 和 metadata 索引的 id 组。 |
 | commit 归属 | `source_voxel_types`、`dominant_source_type`、`blend_mode`、`commit_tick` | 由 `_finalize_scene_voxel_from_source()` 或 `_merge_voxel_sources()` 在提交时写入，记录本 voxel 由哪些 source 合成、最终主导来源和提交 tick。 |
@@ -109,8 +109,8 @@ AutoVoxelDescriptor / brush edit / target guidance
 | 来源类型 | 追加字段 | 语义 |
 | --- | --- | --- |
 | `SourceSceneVoxel` shared | `source_voxel_type`、`source_kind`、`producer_stage`、`generation_tick`、`read_tick`、`write_tick`、可选 `priority` | 提交前的写入意图、来源分类和 tick 上下文；冲突处理时可用 `priority`。 |
-| `AutoSceneVoxel` | `collision_voxels`、`SenceLayerVoxel` | 自动放置系统写出的 visual / collision source 成员；`SenceLayerVoxel` 是历史拼写，语义上等同 visual layer list。 |
-| `BrushSceneVoxel` | `collision_voxels`、`SenceLayerVoxel`、`brush_stroke_id`、`modified_voxels`、`auto_mix` | 画笔或手动编辑写出的 source 成员；`SenceLayerVoxel` 是历史拼写，`modified_voxels` 限定本次编辑接管范围。 |
+| `AutoSceneVoxel` | `collision_voxels`、legacy `SenceLayerVoxel` | 自动放置系统写出的 visual / collision source 成员；`SenceLayerVoxel` 已暂时废弃，仅表示旧 record 中的 visual layer list。 |
+| `BrushSceneVoxel` | `collision_voxels`、legacy `SenceLayerVoxel`、`brush_stroke_id`、`modified_voxels`、`auto_mix` | 画笔或手动编辑写出的 source 成员；`SenceLayerVoxel` 已暂时废弃，`modified_voxels` 限定本次编辑接管范围。 |
 | `TargetSceneVoxel` | `target_mix`、`target_pipeline` | 目标引导 source；参与混合、routing 和 scoring，但普通 target source 不生成最终 source collision。 |
 
 ## `voxel_record`
@@ -127,7 +127,7 @@ AutoVoxelDescriptor / brush edit / target guidance
 | `color` / `complexity` | 本次 source visual 默认值。 |
 | `affected_bands` | 从资产 descriptor / profile 取出的 band 声明。 |
 | `collision_voxels` | source voxel 的 collision 成员。 |
-| `SenceLayerVoxel` | 由 `affected_bands` 派生的 visual layer 列表；历史兼容字段，后续可迁移到 `visual_layers` 或 `scene_layer_voxels`。 |
+| `SenceLayerVoxel` | 暂时废弃字段；旧 record 中可能保存由 `affected_bands` 派生的 visual layer 列表，新文档和新数据结构不应继续把它当作标准 schema。 |
 | `source_voxel_type` | `AutoSceneVoxel`、`BrushSceneVoxel` 或 `TargetSceneVoxel`。 |
 | `source_kind` | 来源种类，如 `rock_placement`、`scatter`、`brush`、`target`。 |
 | `producer_stage` | 生产阶段；默认等于 `source_kind`。 |
@@ -152,8 +152,8 @@ AutoVoxelDescriptor / brush edit / target guidance
 | --- | --- | --- |
 | `AutoVoxelDescriptor` / `AutoObject.voxel_descriptor` | `voxel_descriptor` 持有 `color`、`complexity`、`affected_bands`、`collision_voxels`、`pivot_variants`、`semantic_probe_profile`、`semantic_probe_density`、`context_sensing_radius`；`AutoObject` 保留同名旧入口和 `min_spacing`、`bound_min_length` | descriptor 是资产默认语义唯一权威来源；`AutoObject` 同名字段只作为 legacy / Inspector / 配置字典兼容入口，不能作为新的语义状态来源。 |
 | `SourceSceneVoxel` | `source_voxel_type`、`source_kind`、`producer_stage`、`generation_tick`、`read_tick`、`write_tick` | `AutoSceneVoxel` / `BrushSceneVoxel` 的共同上下文字段。 |
-| `AutoSceneVoxel` | `SenceLayerVoxel`、`collision_voxels`、`source_kind` | 自动系统输出的当前 tick source voxel delta；`SenceLayerVoxel` 是 visual layer list 的历史兼容 key。 |
-| `BrushSceneVoxel` | `SenceLayerVoxel`、`collision_voxels`、`modified_voxels`、`auto_mix` | 画笔或手动编辑输出的当前 tick source voxel delta；`SenceLayerVoxel` 是 visual layer list 的历史兼容 key。 |
+| `AutoSceneVoxel` | legacy `SenceLayerVoxel`、`collision_voxels`、`source_kind` | 自动系统输出的当前 tick source voxel delta；`SenceLayerVoxel` 已暂时废弃，仅保留运行时兼容说明。 |
+| `BrushSceneVoxel` | legacy `SenceLayerVoxel`、`collision_voxels`、`modified_voxels`、`auto_mix` | 画笔或手动编辑输出的当前 tick source voxel delta；`SenceLayerVoxel` 已暂时废弃，仅保留运行时兼容说明。 |
 | `SceneVoxel` | `source_voxel_types`、`dominant_source_type`、`blend_mode`、`priority`、`commit_tick`、collision occupancy cache/view | 描述最终混合结果；collision cache 是 `SceneVoxel` 提交后的内部 / 派生查询视图，不再作为并列顶层状态。 |
 | Terrain base collision | terrain height map、`XZ`、`Y` slice | `SceneVoxel` 构建时的不可覆盖基础碰撞；地形高度以下始终写入 `SceneVoxel` 的 collision cache/view。 |
 | `GlobalVoxelField` | `scene_occupancy`、`collision_occupancy`、`dirty_tiles`、`tile_id`、`bounds` | 当前为从 committed `SceneVoxel` 读取的 sparse occupancy tile cache，服务 placement、validation 和 debug query。 |
