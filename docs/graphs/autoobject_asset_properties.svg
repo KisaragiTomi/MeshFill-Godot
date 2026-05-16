@@ -102,7 +102,7 @@
   <text class="node-title" x="438" y="222">AutoVoxelDescriptor</text>
   <text class="label" x="438" y="246">primary asset semantics struct</text>
   <text class="mono" x="438" y="268">color, complexity, bands</text>
-  <text class="mono" x="438" y="288">collision, pivots, probes</text>
+  <text class="mono" x="438" y="288">collision_voxels, pivots, probes</text>
 
   <rect class="node resource" x="418" y="342" width="276" height="104" rx="14" ry="14"/>
   <text class="node-title" x="438" y="374">AutoVoxelProfile</text>
@@ -163,8 +163,8 @@
   <text class="node-title" x="1158" y="356">voxel_record</text>
   <text class="label" x="1158" y="380">runtime placement/source record</text>
   <text class="mono" x="1158" y="402">position, rotation, scale</text>
-  <text class="mono" x="1158" y="422">SenceLayerVoxel</text>
-  <text class="mono" x="1158" y="442">source_voxel_type, producer_stage</text>
+  <text class="mono" x="1158" y="422">collision_voxels, source_voxel_type</text>
+  <text class="mono" x="1158" y="442">DEPRECATED_SENCE_LAYER_VOXEL_KEY</text>
 
   <rect class="node meta" x="1138" y="488" width="304" height="112" rx="14" ry="14"/>
   <text class="node-title" x="1158" y="520">Metadata Projection</text>

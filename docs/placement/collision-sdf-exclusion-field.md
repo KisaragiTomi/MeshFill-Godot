@@ -2,7 +2,7 @@
 
 本文记录碰撞互斥排斥场的设计。目标是把碰撞从二值 `block` 升级为 2D (XZ) 可传播、可累积的软排斥场，并让传播范围与 `AutoObject.min_spacing` 挂钩。
 
-![MeshFill current framework](../graphs/meshfill_current_framework.svg)
+![Collision SDF exclusion field](../graphs/collision-sdf-exclusion-field.svg)
 
 互斥判断只需要在 **2D XZ 平面**上进行——这和现有 `AutoObject.get_required_axis_center_distance_to()` 的语义一致。
 

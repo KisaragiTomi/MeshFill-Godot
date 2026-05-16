@@ -1,0 +1,171 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
+  <title id="title">Collision SDF Exclusion Field</title>
+  <desc id="desc">Collision exclusion field design: collision_voxels is a same-level semantic field with color and complexity; collision_occupancy and 2D exclusion_energy are derived query views rebuilt from committed SceneVoxel.collision_voxels and terrain base collision.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="1" stop-color="#12213a"/>
+    </linearGradient>
+    <linearGradient id="semantic" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#dcfce7"/>
+      <stop offset="1" stop-color="#bbf7d0"/>
+    </linearGradient>
+    <linearGradient id="commit" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#dbeafe"/>
+      <stop offset="1" stop-color="#bfdbfe"/>
+    </linearGradient>
+    <linearGradient id="cache" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ccfbf1"/>
+      <stop offset="1" stop-color="#99f6e4"/>
+    </linearGradient>
+    <linearGradient id="diffuse" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fed7aa"/>
+      <stop offset="1" stop-color="#fdba74"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#93c5fd"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#86efac"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#fdba74"/>
+    </marker>
+    <style>
+      .title { fill: #f8fafc; font: 700 34px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
+      .subtitle { fill: #cbd5e1; font: 15px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
+      .lane-title { fill: #e2e8f0; font: 700 14px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; letter-spacing: .08em; }
+      .node-title { fill: #0f172a; font: 700 18px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
+      .label { fill: #1e293b; font: 14px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
+      .small { fill: #334155; font: 13px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
+      .tiny { fill: #475569; font: 12px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
+      .mono { fill: #1e3a8a; font: 700 12px Consolas, "Cascadia Mono", monospace; }
+      .white { fill: #f8fafc; font: 13px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
+      .lane { fill: rgba(15, 23, 42, 0.35); stroke: #334155; stroke-width: 1.2; }
+      .node { stroke-width: 1.5; filter: url(#shadow); }
+      .semantic { fill: url(#semantic); stroke: #22c55e; }
+      .commit { fill: url(#commit); stroke: #3b82f6; }
+      .cache { fill: url(#cache); stroke: #14b8a6; }
+      .diffuse { fill: url(#diffuse); stroke: #f97316; }
+      .guard { fill: #fee2e2; stroke: #ef4444; }
+      .support { fill: #f1f5f9; stroke: #64748b; }
+      .edge { stroke: #93c5fd; stroke-width: 2.6; fill: none; marker-end: url(#arrow); }
+      .edge-green { stroke: #86efac; stroke-width: 2.6; fill: none; marker-end: url(#arrowGreen); }
+      .edge-orange { stroke: #fdba74; stroke-width: 2.6; fill: none; marker-end: url(#arrowOrange); }
+      .edge-soft { stroke: #94a3b8; stroke-width: 2.1; fill: none; marker-end: url(#arrow); stroke-dasharray: 7 7; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="980" fill="url(#bg)"/>
+  <circle cx="150" cy="180" r="230" fill="#2563eb" opacity="0.08"/>
+  <circle cx="1360" cy="760" r="260" fill="#f97316" opacity="0.10"/>
+
+  <text class="title" x="56" y="62">Collision SDF / Exclusion Field</text>
+  <text class="subtitle" x="56" y="92">`collision_voxels` 是与 `color` / `complexity` 同级的语义字段；`collision_occupancy` 和 2D exclusion field 是提交后的派生查询视图。</text>
+
+  <rect class="lane" x="40" y="132" width="350" height="650" rx="22"/>
+  <rect class="lane" x="430" y="132" width="330" height="650" rx="22"/>
+  <rect class="lane" x="800" y="132" width="330" height="650" rx="22"/>
+  <rect class="lane" x="1170" y="132" width="390" height="650" rx="22"/>
+  <text class="lane-title" x="68" y="164">SEMANTIC INPUTS</text>
+  <text class="lane-title" x="458" y="164">COMMIT MODEL</text>
+  <text class="lane-title" x="828" y="164">DERIVED 3D CACHE</text>
+  <text class="lane-title" x="1198" y="164">2D EXCLUSION FIELD</text>
+
+  <rect class="node semantic" x="72" y="196" width="286" height="118" rx="16"/>
+  <text class="node-title" x="96" y="228">AutoVoxelDescriptor</text>
+  <text class="label" x="96" y="254">asset default voxel semantics</text>
+  <text class="mono" x="96" y="278">color / complexity</text>
+  <text class="mono" x="96" y="298">collision_voxels</text>
+
+  <rect class="node semantic" x="72" y="354" width="286" height="118" rx="16"/>
+  <text class="node-title" x="96" y="386">voxel_record</text>
+  <text class="label" x="96" y="412">runtime placement/source record</text>
+  <text class="mono" x="96" y="436">color / complexity</text>
+  <text class="mono" x="96" y="456">collision_voxels</text>
+
+  <rect class="node support" x="72" y="512" width="286" height="126" rx="16"/>
+  <text class="node-title" x="96" y="544">min_spacing</text>
+  <text class="label" x="96" y="570">propagation budget source</text>
+  <text class="mono" x="96" y="594">energy = collision.value</text>
+  <text class="mono" x="96" y="614">budget = object spacing</text>
+
+  <rect class="node commit" x="462" y="214" width="266" height="142" rx="16"/>
+  <text class="node-title" x="486" y="246">SourceSceneVoxelDelta</text>
+  <text class="label" x="486" y="272">current tick write intent</text>
+  <text class="mono" x="486" y="296">color / complexity</text>
+  <text class="mono" x="486" y="316">collision_voxels</text>
+  <text class="tiny" x="486" y="336">Auto / Brush write final collision</text>
+
+  <rect class="node commit" x="462" y="438" width="266" height="158" rx="16"/>
+  <text class="node-title" x="486" y="470">SceneVoxel</text>
+  <text class="label" x="486" y="496">committed read model</text>
+  <text class="mono" x="486" y="520">color / complexity</text>
+  <text class="mono" x="486" y="540">collision_voxels</text>
+  <text class="tiny" x="486" y="562">same-level committed field</text>
+  <text class="tiny" x="486" y="580">not a child collision layer</text>
+
+  <rect class="node guard" x="462" y="650" width="266" height="84" rx="16"/>
+  <text class="node-title" x="486" y="682">TargetSceneVoxel</text>
+  <text class="label" x="486" y="708">guidance only</text>
+  <text class="tiny" x="486" y="726">does not submit final collision_voxels</text>
+
+  <rect class="node cache" x="832" y="212" width="266" height="126" rx="16"/>
+  <text class="node-title" x="856" y="244">collision_occupancy</text>
+  <text class="label" x="856" y="270">3D query cache</text>
+  <text class="mono" x="856" y="294">from SceneVoxel.collision_voxels</text>
+  <text class="tiny" x="856" y="316">rebuilt after commit</text>
+
+  <rect class="node cache" x="832" y="390" width="266" height="126" rx="16"/>
+  <text class="node-title" x="856" y="422">terrain base collision</text>
+  <text class="label" x="856" y="448">height-map foundation</text>
+  <text class="mono" x="856" y="472">always preserved</text>
+  <text class="tiny" x="856" y="494">ordinary erase cannot lower it</text>
+
+  <rect class="node cache" x="832" y="570" width="266" height="112" rx="16"/>
+  <text class="node-title" x="856" y="602">GlobalVoxelField</text>
+  <text class="label" x="856" y="628">sparse occupancy tiles</text>
+  <text class="mono" x="856" y="652">scene + collision views</text>
+
+  <rect class="node diffuse" x="1204" y="194" width="320" height="112" rx="16"/>
+  <text class="node-title" x="1228" y="226">2D XZ source grid</text>
+  <text class="label" x="1228" y="252">project committed collision sources</text>
+  <text class="mono" x="1228" y="276">energy + budget seeds</text>
+
+  <rect class="node diffuse" x="1204" y="354" width="320" height="142" rx="16"/>
+  <text class="node-title" x="1228" y="386">Ping-pong diffusion</text>
+  <text class="label" x="1228" y="412">4/8-neighbor propagation</text>
+  <text class="mono" x="1228" y="436">energy *= decay</text>
+  <text class="mono" x="1228" y="456">budget -= step_cost</text>
+  <text class="tiny" x="1228" y="476">multi-source energy accumulates</text>
+
+  <rect class="node diffuse" x="1204" y="548" width="320" height="126" rx="16"/>
+  <text class="node-title" x="1228" y="580">exclusion_energy</text>
+  <text class="label" x="1228" y="606">soft penalty for scorer</text>
+  <text class="mono" x="1228" y="630">score -= energy * scale</text>
+  <text class="tiny" x="1228" y="652">optional mip / collision_distance</text>
+
+  <path class="edge-green" d="M358 256 H414 V285 H462"/>
+  <path class="edge-green" d="M358 414 H414 V285 H462"/>
+  <path class="edge" d="M595 356 V438"/>
+  <path class="edge-soft" d="M595 650 V596"/>
+  <path class="edge" d="M728 518 H832"/>
+  <path class="edge" d="M728 518 C776 518 776 454 832 454"/>
+  <path class="edge" d="M965 338 V390"/>
+  <path class="edge" d="M965 516 V570"/>
+  <path class="edge-orange" d="M1098 275 H1204"/>
+  <path class="edge-orange" d="M1098 454 C1146 454 1146 250 1204 250"/>
+  <path class="edge-orange" d="M1364 306 V354"/>
+  <path class="edge-orange" d="M1364 496 V548"/>
+  <path class="edge-soft" d="M1204 612 C1136 612 1136 626 1098 626"/>
+  <text class="white" x="1126" y="642">optional feedback to placement cache</text>
+
+  <rect x="88" y="824" width="1416" height="96" rx="22" fill="#0f172a" stroke="#475569" stroke-width="1.2"/>
+  <text class="white" x="120" y="858">Boundary rule:</text>
+  <text class="white" x="236" y="858">`collision_voxels` keeps semantic ownership with voxel data. `collision_occupancy`, 2D source grid, and `exclusion_energy` are derived read/query views.</text>
+  <text class="white" x="120" y="890">Scoring rule:</text>
+  <text class="white" x="236" y="890">Use 3D footprint for hard collision, and 2D `exclusion_energy` for soft spacing-aware penalty.</text>
+</svg>
