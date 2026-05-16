@@ -5,6 +5,8 @@ const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profil
 const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const ANCHOR_KIND_GROUND := "ground"
 const ANCHOR_KIND_TARGET_TOP := "target_top"
+const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
+const DEPRECATED_VOXEL_LAYERS_KEY := "voxel_layers"
 
 @export var auto_id: String = ""
 @export var instance_id: int = 0
@@ -482,9 +484,9 @@ func _get_default_semantic_probe_radius() -> float:
 func set_voxel_record(record: Dictionary) -> void:
 	refresh_instance_id()
 	voxel_record = record.duplicate(true)
-	if voxel_record.has("voxel_layers") and not voxel_record.has("SenceLayerVoxel"):
-		voxel_record["SenceLayerVoxel"] = voxel_record.voxel_layers
-	voxel_record.erase("voxel_layers")
+	if voxel_record.has(DEPRECATED_VOXEL_LAYERS_KEY) and not voxel_record.has(DEPRECATED_SENCE_LAYER_VOXEL_KEY):
+		voxel_record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = voxel_record[DEPRECATED_VOXEL_LAYERS_KEY]
+	voxel_record.erase(DEPRECATED_VOXEL_LAYERS_KEY)
 	if voxel_record.has("rotation_y") and not voxel_record.has("rotation_degrees"):
 		voxel_record["rotation_mode"] = str(voxel_record.get("rotation_mode", "Y")).to_upper()
 		voxel_record["rotation_degrees"] = Vector3(0.0, float(voxel_record.rotation_y), 0.0)

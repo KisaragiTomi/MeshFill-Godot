@@ -37,6 +37,8 @@ const TEST_ONLY_VEGETATION_GROUP := "test_only_vegetation"
 const TARGET_SV_SLICE_COUNT := 8
 const TARGET_SV_VERTICAL_SPAN := 16.0
 const TARGET_SV_DIR_NAME := "target_scene_voxel"
+const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
+const DEPRECATED_VOXEL_LAYERS_KEY := "voxel_layers"
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 
 var _raw_target_height_image: Image
@@ -779,9 +781,9 @@ func _mesh_bound_min_length(mi: MeshInstance3D) -> float:
 
 func _attach_mesh_voxel_record(mi: MeshInstance3D, record: Dictionary) -> Dictionary:
 	var rec: Dictionary = record.duplicate(true)
-	if rec.has("voxel_layers") and not rec.has("SenceLayerVoxel"):
-		rec["SenceLayerVoxel"] = rec.voxel_layers
-	rec.erase("voxel_layers")
+	if rec.has(DEPRECATED_VOXEL_LAYERS_KEY) and not rec.has(DEPRECATED_SENCE_LAYER_VOXEL_KEY):
+		rec[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = rec[DEPRECATED_VOXEL_LAYERS_KEY]
+	rec.erase(DEPRECATED_VOXEL_LAYERS_KEY)
 	var record_id := str(rec.get("id", mi.name))
 	var color: Color = rec.get("color", Color.WHITE)
 	var complexity := clampf(float(rec.get("complexity", color.a)), 0.0, 1.0)
@@ -950,7 +952,7 @@ func _make_cliff_voxel_record(
 	radius = maxf(radius, capture_size / float(TEX_RES))
 	var affected_bands := asset.get_affected_bands(radius) if asset != null else _make_rock_affected_bands(color, complexity, radius)
 	var collision_voxels := asset.get_collision_voxels(radius) if asset != null else []
-	var sence_layer_voxels: Array[Dictionary] = []
+	var deprecated_sence_layer_voxels: Array[Dictionary] = []
 	for band in affected_bands:
 		var layer := band.duplicate(true)
 		layer["base_pixel"] = base_px
@@ -958,9 +960,9 @@ func _make_cliff_voxel_record(
 		layer["y_min"] = y_min
 		layer["y_max"] = y_max
 		layer["slice_indices"] = []
-		sence_layer_voxels.append(layer)
+		deprecated_sence_layer_voxels.append(layer)
 
-	return {
+	var record := {
 		"id": record_id,
 		"type": "rock",
 		"source_voxel_type": "AutoSceneVoxel",
@@ -978,8 +980,9 @@ func _make_cliff_voxel_record(
 		"complexity": complexity,
 		"affected_bands": affected_bands,
 		"collision_voxels": collision_voxels,
-		"SenceLayerVoxel": sence_layer_voxels,
 	}
+	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = deprecated_sence_layer_voxels
+	return record
 
 
 func _make_terrain_voxel_record(mi: MeshInstance3D, resolution: int) -> Dictionary:
@@ -987,7 +990,7 @@ func _make_terrain_voxel_record(mi: MeshInstance3D, resolution: int) -> Dictiona
 	var height_stats := Vector2.ZERO
 	if mi.has_meta("terrain_height_stats"):
 		height_stats = mi.get_meta("terrain_height_stats")
-	return {
+	var record := {
 		"id": "Terrain",
 		"type": "terrain",
 		"position": mi.position,
@@ -1000,18 +1003,19 @@ func _make_terrain_voxel_record(mi: MeshInstance3D, resolution: int) -> Dictiona
 		"height_min": height_stats.x,
 		"height_max": height_stats.y,
 		"height_resolution": Vector2i(resolution, resolution),
-		"SenceLayerVoxel": [{
-			"band": "terrain_surface",
-			"channel": -1,
-			"base_pixel": Vector2i.ZERO,
-			"voxel_xz": Vector2i.ZERO,
-			"y_min": 0.0,
-			"y_max": 0.0,
-			"color": color,
-			"complexity": 1.0,
-			"slice_indices": [],
-		}],
 	}
+	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = [{
+		"band": "terrain_surface",
+		"channel": -1,
+		"base_pixel": Vector2i.ZERO,
+		"voxel_xz": Vector2i.ZERO,
+		"y_min": 0.0,
+		"y_max": 0.0,
+		"color": color,
+		"complexity": 1.0,
+		"slice_indices": [],
+	}]
+	return record
 
 
 func _attach_vegetation_voxel_record(mi: MeshInstance3D, r: Dictionary, apply_to_buffers: bool = true) -> void:
@@ -1042,8 +1046,8 @@ func _attach_vegetation_voxel_record(mi: MeshInstance3D, r: Dictionary, apply_to
 			"complexity": complexity,
 			"affected_bands": r.get("affected_bands", []),
 			"collision_voxels": r.get("collision_voxels", []),
-			"SenceLayerVoxel": [],
 		}
+		voxel_record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = []
 	var attached := _attach_mesh_voxel_record(mi, voxel_record)
 	if apply_to_buffers and _veg_exclusion != null:
 		attached = _veg_exclusion.apply_mesh_voxel_record(attached)
@@ -1303,7 +1307,7 @@ func _record_should_write_vegetation_buffers(record: Dictionary) -> bool:
 	var record_type := str(record.get("type", ""))
 	if record_type == "terrain":
 		return false
-	var layers: Array = record.get("SenceLayerVoxel", record.get("voxel_layers", []))
+	var layers: Array = record.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, record.get(DEPRECATED_VOXEL_LAYERS_KEY, []))
 	var affected: Array = record.get("affected_bands", [])
 	return not layers.is_empty() or not affected.is_empty()
 

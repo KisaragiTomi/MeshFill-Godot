@@ -1,5 +1,7 @@
 extends SceneTree
 
+const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
+
 
 func _init() -> void:
 	var veg := VegetationExclusion.new(32, 32.0, false)
@@ -87,7 +89,7 @@ func _init() -> void:
 		"color": erase_color,
 		"complexity": 0.0,
 	}]
-	erase_record.erase("SenceLayerVoxel")
+	erase_record.erase(DEPRECATED_SENCE_LAYER_VOXEL_KEY)
 	veg.apply_mesh_voxel_record(erase_record, true, erase_tick)
 	var erase_delta := veg.get_source_voxel_deltas(erase_tick)
 	if erase_delta.is_empty() or (erase_delta.get("brush", {}) as Dictionary).is_empty():

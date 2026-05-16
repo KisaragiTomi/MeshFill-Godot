@@ -8,6 +8,7 @@ const BAND_CHANNELS := {
 	"canopy": 3,
 }
 const DEFAULT_ROCK_BANDS := ["ground", "understory", "midstory", "canopy"]
+const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
 
 
 static func band_channel(band_name: String, fallback: int = 0) -> int:
@@ -411,7 +412,7 @@ static func make_profile_scene_voxel_record(
 	record["complexity"] = complexity
 	record["affected_bands"] = affected_bands
 	record["collision_voxels"] = collision_voxels
-	record["SenceLayerVoxel"] = scene_layers
+	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = scene_layers
 	record["source_voxel_type"] = source_type
 	record["source_kind"] = source_kind
 	record["producer_stage"] = str(extra_fields.get("producer_stage", source_kind))

@@ -2,6 +2,7 @@ extends SceneTree
 
 const VPG := preload("res://scripts/voxel_placement_generator.gd")
 const GVF := preload("res://scripts/global_voxel_field.gd")
+const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
 
 
 func _init() -> void:
@@ -230,8 +231,8 @@ func _test_voxel_record_creation() -> bool:
 		_free_nodes(nodes)
 		return false
 
-	if not r0.has("SenceLayerVoxel"):
-		push_error("  FAIL: missing SenceLayerVoxel key")
+	if not r0.has(DEPRECATED_SENCE_LAYER_VOXEL_KEY):
+		push_error("  FAIL: missing deprecated SenceLayerVoxel key")
 		_free_nodes(nodes)
 		return false
 

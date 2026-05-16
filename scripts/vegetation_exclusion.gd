@@ -27,6 +27,8 @@ extends "res://scripts/godot_compute_shader_base.gd"
 
 const VOXEL_OCCUPIED_EPSILON := 0.01
 const GLOBAL_VOXEL_TILE_SIZE := 16
+const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
+const DEPRECATED_VOXEL_LAYERS_KEY := "voxel_layers"
 
 ## ─── Height Band ───
 
@@ -1632,7 +1634,7 @@ func apply_mesh_voxel_record(record: Dictionary, defer_blend: bool = false, gene
 	var rec := _prepare_source_record(record, write_tick)
 	var record_id := str(rec.get("id", "mesh_%d" % _mesh_voxel_records.size()))
 	rec["id"] = record_id
-	var layers: Array = rec.get("SenceLayerVoxel", rec.get("voxel_layers", []))
+	var layers: Array = rec.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, rec.get(DEPRECATED_VOXEL_LAYERS_KEY, []))
 	if layers.is_empty():
 		layers = _fallback_layers_from_record(rec)
 
@@ -1695,8 +1697,8 @@ func apply_mesh_voxel_record(record: Dictionary, defer_blend: bool = false, gene
 	else:
 		rec["voxel_xz"] = _volume_px_from_base(rec_base_px, int(_volume.xz_res))
 		rec["volume_xz_resolution"] = int(_volume.xz_res)
-	rec["SenceLayerVoxel"] = updated_layers
-	rec.erase("voxel_layers")
+	rec[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = updated_layers
+	rec.erase(DEPRECATED_VOXEL_LAYERS_KEY)
 	rec["collision_voxels"] = updated_collision_layers
 	rec["height_buffer_applied"] = not applied_channels.is_empty()
 	rec["height_buffer_channels"] = applied_channels
@@ -1883,7 +1885,7 @@ func _make_mesh_voxel_record(
 			"slice_indices": [],
 		})
 
-	return {
+	var record := {
 		"id": mesh_id,
 		"type": mesh_type,
 		"source_voxel_type": "AutoSceneVoxel",
@@ -1898,8 +1900,9 @@ func _make_mesh_voxel_record(
 		"complexity": inst_complexity,
 		"affected_bands": inst_bands.duplicate(true),
 		"collision_voxels": collision_voxels.duplicate(true),
-		"SenceLayerVoxel": layers,
 	}
+	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = layers
+	return record
 
 
 func _register_mesh_voxel_record(record: Dictionary) -> Dictionary:
@@ -1923,7 +1926,7 @@ func _update_mesh_voxel_records_for_volume() -> void:
 		record["voxel_xz"] = Vector2i(vx, vz)
 		record["volume_xz_resolution"] = xz_res
 
-		var layers: Array = record.get("SenceLayerVoxel", record.get("voxel_layers", []))
+		var layers: Array = record.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, record.get(DEPRECATED_VOXEL_LAYERS_KEY, []))
 		for li in range(layers.size()):
 			var layer: Dictionary = layers[li]
 			var slice_indices: Array[int] = []
@@ -1934,8 +1937,8 @@ func _update_mesh_voxel_records_for_volume() -> void:
 			layer["voxel_xz"] = Vector2i(vx, vz)
 			layer["slice_indices"] = slice_indices
 			layers[li] = layer
-		record["SenceLayerVoxel"] = layers
-		record.erase("voxel_layers")
+		record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = layers
+		record.erase(DEPRECATED_VOXEL_LAYERS_KEY)
 		var collision_layers: Array = record.get("collision_voxels", [])
 		for ci in range(collision_layers.size()):
 			if not collision_layers[ci] is Dictionary:

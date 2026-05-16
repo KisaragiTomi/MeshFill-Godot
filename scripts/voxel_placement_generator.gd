@@ -23,6 +23,7 @@ const DEBUG_CHANNEL_NAMES: PackedStringArray = [
 	"solid_collision",
 	"clearance_overlap",
 ]
+const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
 const VOXEL_RECORD_CONFIG_KEYS := [
 	"asset",
 	"base_pixel",
@@ -1695,7 +1696,7 @@ static func make_voxel_record(
 	if collision_voxels.is_empty() and node != null and node.has_method("get_collision_voxels"):
 		collision_voxels = node.call("get_collision_voxels")
 
-	return {
+	var record := {
 		"id": record_id,
 		"type": config.get("type", node.object_subtype if node != null else "vegetation"),
 		"auto_source": "voxel_placement",
@@ -1711,13 +1712,14 @@ static func make_voxel_record(
 		"complexity": complexity,
 		"affected_bands": affected_bands,
 		"collision_voxels": collision_voxels,
-		"SenceLayerVoxel": [],
 		"score": float(world_result.get("score", 0.0)),
 		"voxel_origin": world_result.get("voxel_origin", Vector3i.ZERO),
 		"rotation_index": int(world_result.get("rotation_index", 0)),
 		"rotation_y": float(world_result.get("rotation_y", 0.0)),
 		"asset_index": int(world_result.get("asset_index", 0)),
 	}
+	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = []
+	return record
 
 
 static func make_voxel_records(
