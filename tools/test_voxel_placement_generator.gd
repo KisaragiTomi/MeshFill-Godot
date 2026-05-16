@@ -103,13 +103,13 @@ func _init() -> void:
 	var blocker_origin := Vector3i(7, 1, 0)
 	compact_collision[generator.voxel_index(blocker_origin + Vector3i(0, 1, 0), grid_size)] = 1.0
 	var compact_settings := settings.duplicate()
-	compact_settings["candidate_voxel_regions"] = [Vector3i(0, 0, 0)]
+	compact_settings["candidate_voxel_sparses"] = [Vector3i(0, 0, 0)]
 	compact_settings["search_radius"] = Vector3i(1, 0, 0)
 	compact_settings["sample_min"] = Vector3i(7, 0, 0)
 	compact_settings["result_capacity"] = 1
 	compact_settings["min_distance_voxels"] = 0.0
 	var compact := generator.run_minimal(compact_scene, compact_collision, footprint, grid_size, compact_settings)
-	if compact.is_empty() or int(compact.get("candidate_voxel_region_count", 0)) != 1:
+	if compact.is_empty() or int(compact.get("candidate_voxel_sparse_count", 0)) != 1:
 		push_error("[VoxelPlacementTest] Expected compact candidate voxel-region dispatch")
 		quit(1)
 		return
@@ -131,6 +131,6 @@ func _init() -> void:
 		(first.get("stamp_deltas", []) as Array).size(),
 		(second.get("stamp_deltas", []) as Array).size(),
 		int(first.get("tile_count", 0)),
-		int(compact.get("candidate_voxel_region_count", 0)),
+		int(compact.get("candidate_voxel_sparse_count", 0)),
 	])
 	quit(0)

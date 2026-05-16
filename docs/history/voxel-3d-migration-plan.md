@@ -34,7 +34,7 @@ AssetFootprint
 - **GPU stamp**：`stamp_voxel_field.glsl` 将结果写回 scene / collision occupancy，并输出 `VoxelStampDeltaBuffer`。
 - **多 asset 顺序放置**：`run_multi_asset()` 按优先级、权重和 quota 顺序处理，前一 asset 的 stamp 会影响后一 asset。
 - **Dirty tile 驱动**：`GlobalVoxelField.run_placement_dirty()` 用 dirty tile 作为 compact candidate 输入。
-- **CPU 角色**：CPU 只负责最终实例化、metadata / `voxel_record` 生成和提交，不做 mesh 级二次筛选。
+- **CPU 角色**：CPU 只负责最终实例化、metadata / `asset_voxel_record` 生成和提交，不做 mesh 级二次筛选。
 
 ## 数据分层
 

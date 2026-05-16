@@ -11,7 +11,6 @@ const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.
 @export var voxel_descriptor: Resource
 @export var voxel_color: Color = Color.WHITE
 @export_range(0.0, 1.0) var voxel_complexity: float = 1.0
-@export var affected_bands: Array[Dictionary] = []
 @export var collision_voxels: Array[Dictionary] = []
 @export var pivot_variants: Array[Dictionary] = []
 @export var semantic_probe_profile: Resource
@@ -34,8 +33,6 @@ func _ensure_voxel_descriptor():
 	if voxel_descriptor == null:
 		voxel_descriptor = load("res://scripts/auto_voxel_descriptor.gd").new()
 		voxel_descriptor.set_color_and_complexity(voxel_color, voxel_complexity)
-		if not affected_bands.is_empty():
-			voxel_descriptor.set_affected_bands(affected_bands)
 		if not collision_voxels.is_empty():
 			voxel_descriptor.set_collision_voxels(collision_voxels)
 		voxel_descriptor.semantic_probe_profile = semantic_probe_profile
@@ -74,15 +71,13 @@ func get_source_mesh() -> Mesh:
 
 func get_scatter_profile() -> Array[Dictionary]:
 	var radius := _band_radius(vegetation_band)
-	if not affected_bands.is_empty():
-		return AutoVoxelProfile.normalize_affected_bands(affected_bands, radius, get_voxel_color(), get_voxel_complexity())
-	if voxel_profile != null:
-		var bands := voxel_profile.get_affected_bands(radius)
-		if not bands.is_empty():
-			return bands
 	if vegetation_band.is_empty():
 		return []
-	return [_make_default_band_entry(vegetation_band, radius, get_voxel_color(), get_voxel_complexity())]
+	return [{
+		"band": vegetation_band,
+		"channel": AutoAssetFactory.band_channel(vegetation_band),
+		"radius": radius,
+	}]
 
 
 func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
@@ -110,7 +105,6 @@ func get_pivot_variants() -> Array[Dictionary]:
 func get_semantic_probes(density_override: float = -1.0) -> Array[Dictionary]:
 	var descriptor = _ensure_voxel_descriptor()
 	descriptor.set_color_and_complexity(get_voxel_color(), get_voxel_complexity())
-	descriptor.set_affected_bands(get_scatter_profile())
 	descriptor.set_collision_voxels(get_collision_voxels())
 	descriptor.semantic_probe_density = semantic_probe_density
 	descriptor.semantic_probe_profile = semantic_probe_profile
@@ -118,7 +112,6 @@ func get_semantic_probes(density_override: float = -1.0) -> Array[Dictionary]:
 		get_mesh(),
 		density_override,
 		Vector3.ONE * scatter_max_scale,
-		get_scatter_profile(),
 		get_collision_voxels()
 	)
 	semantic_probe_profile = descriptor.semantic_probe_profile
@@ -158,8 +151,6 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 		cfg["color"] = get_voxel_color()
 	if not cfg.has("complexity"):
 		cfg["complexity"] = get_voxel_complexity()
-	if not cfg.has("affected_bands"):
-		cfg["affected_bands"] = get_scatter_profile()
 	if not cfg.has("collision_voxels"):
 		cfg["collision_voxels"] = get_collision_voxels()
 	if not cfg.has("pivot_variants"):
@@ -210,30 +201,6 @@ func _should_read_profile_average() -> bool:
 		and voxel_color == Color.WHITE
 		and is_equal_approx(voxel_complexity, 1.0)
 	)
-
-
-func _make_default_band_entry(band_name: String, radius: float, color: Color, complexity: float) -> Dictionary:
-	var c := color
-	c.a = clampf(complexity, 0.0, 1.0)
-	return {
-		"band": band_name,
-		"channel": _band_channel(band_name),
-		"radius": radius,
-		"color": c,
-		"complexity": c.a,
-	}
-
-
-func _band_channel(band_name: String) -> int:
-	match band_name:
-		"understory":
-			return 1
-		"midstory":
-			return 2
-		"canopy":
-			return 3
-		_:
-			return 0
 
 
 func _band_radius(band_name: String) -> float:

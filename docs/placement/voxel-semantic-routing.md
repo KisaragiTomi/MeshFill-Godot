@@ -22,7 +22,7 @@ full rebuild / dirty update
   -> optional semantic rerank within each anchor candidate set
   -> normalize + deduplicate candidate voxel regions
   -> optional context validation / EMPTY pruning
-  -> asset_id -> candidate_voxel_regions
+  -> asset_id -> candidate_voxel_sparses
   -> optional same-type AutoObject exclusion gate
   -> score_voxel_tile.glsl 只处理路由命中的 asset / voxel 区域
 ```
@@ -64,11 +64,11 @@ Semantic routing 的输入不是全量 asset 表，而是上游筛选后的候�
 | 数据 | 形态 | 含义 |
 |------|------|------|
 | `anchor_asset_topK` / `anchor_autoobject_topk` | `anchor_id -> candidate assets` | 每个 anchor 已筛选成功的资产列表 |
-| `candidate_voxel_regions_by_asset` | `asset_index -> voxel_region_coords` | 每个资产需要进入 score 的候选 voxel 区域列表；当前实现用 `Vector3i` 表示离散 voxel 块坐标 |
+| `candidate_voxel_sparses_by_asset` | `asset_index -> voxel_sparse_coords` | 每个资产需要进入 score 的候选 voxel 区域列表；当前实现用 `Vector3i` 表示离散 voxel 块坐标 |
 | `candidate_score` | candidate record 字段 | 上游 prefilter 的置信度或匹配分 |
 | `anchor_kind` | candidate record 字段 | `ground`、`target_top` 等 anchor 层 |
 
-当前 placement 接入点优先使用 `candidate_voxel_regions_by_asset`。如果某个 asset 没有候选 voxel 区域，则该 asset 本轮 placement 可以直接跳过。
+当前 placement 接入点优先使用 `candidate_voxel_sparses_by_asset`。如果某个 asset 没有候选 voxel 区域，则该 asset 本轮 placement 可以直接跳过。
 
 ### 候选 voxel 区域扩张规则
 
@@ -109,7 +109,7 @@ candidate_region =
 互斥条件：
 
 ```text
-distance(candidate_voxel_region_xz_range, neighbor_center_xz)
+distance(candidate_voxel_sparse_xz_range, neighbor_center_xz)
   < candidate.min_spacing + neighbor.min_spacing
 ```
 
@@ -118,7 +118,7 @@ distance(candidate_voxel_region_xz_range, neighbor_center_xz)
 ```gdscript
 skipped_same_type_exclusion = true
 same_type_exclusion = {
-    "blocked_voxel_region_count": int,
+    "blocked_voxel_sparse_count": int,
     "candidate_min_spacing": float,
     "object_type": String,  # runtime grouping/debug metadata
     "object_subtype": String,  # runtime grouping/debug metadata
@@ -227,7 +227,7 @@ A   = average complexity/value
 
 ```text
 asset_index
-candidate_voxel_regions
+candidate_voxel_sparses
 candidate_score
 anchor_kind
 semantic_score                                # optional rerank score
@@ -313,7 +313,7 @@ Voxel 区域聚合时，`EMPTY` 不作为 asset 输出；但如果一个候选�
 
 ```text
 if empty_votes / valid_voxels > empty_region_threshold:
-    remove voxel region from candidate_voxel_regions_by_asset
+    remove voxel region from candidate_voxel_sparses_by_asset
 ```
 
 推荐默认：
@@ -342,15 +342,15 @@ candidate rerank / route validation
 full rebuild
   -> normalize surviving candidate routes
   -> optional context validation
-  -> build candidate_voxel_regions_by_asset
+  -> build candidate_voxel_sparses_by_asset
 
 dirty update
   -> rerun upstream prefilter for affected anchors / target bounds
   -> update affected asset routes
-  -> rebuild affected candidate_voxel_regions_by_asset
+  -> rebuild affected candidate_voxel_sparses_by_asset
 
 placement
-  -> run_multi_asset receives candidate_voxel_regions_by_asset
+  -> run_multi_asset receives candidate_voxel_sparses_by_asset
   -> each asset only dispatches its routed voxel regions
   -> same-type AutoObject exclusion gate prunes blocked voxel regions
   -> score_voxel_tile.glsl remains physical scoring
@@ -360,17 +360,17 @@ placement
 
 ## 路由数据布局
 
-### `candidate_voxel_regions_by_asset`
+### `candidate_voxel_sparses_by_asset`
 
 当前主路径使用 CPU / GDScript `Dictionary` 把上游候选资产映射到候选 voxel 区域列表：
 
 ```gdscript
 {
-    asset_index: Array[Vector3i]  # voxel_region_coords
+    asset_index: Array[Vector3i]  # voxel_sparse_coords
 }
 ```
 
-这个字典可以直接作为 `VoxelPlacementGenerator.run_multi_asset()` 的 `common_settings["candidate_voxel_regions_by_asset"]`。对外语义是“每个 asset 本轮要检查哪些 voxel 区域”；当前实现用 `Vector3i` 表示离散 voxel 块坐标，生成器内部会把它们转换成内部 id。生成器会为每个 asset 读取自己的 `candidate_voxel_regions`；候选区域应带有 probe 插值采样 guard，偏向召回而非精确裁剪。如果某个 asset 的候选 voxel 区域为空，则该 asset 本轮跳过。
+这个字典可以直接作为 `VoxelPlacementGenerator.run_multi_asset()` 的 `common_settings["candidate_voxel_sparses_by_asset"]`。对外语义是“每个 asset 本轮要检查哪些 voxel 区域”；当前实现用 `Vector3i` 表示离散 voxel 块坐标，生成器内部会把它们转换成内部 id。生成器会为每个 asset 读取自己的 `candidate_voxel_sparses`；候选区域应带有 probe 插值采样 guard，偏向召回而非精确裁剪。如果某个 asset 的候选 voxel 区域为空，则该 asset 本轮跳过。
 
 ### `anchor_autoobject_topk`
 
@@ -383,7 +383,7 @@ anchor_id -> [
 ]
 ```
 
-`anchor_autoobject_topk` 不是 score hot path 的输入；它用于生成或更新 `candidate_voxel_regions_by_asset`。
+`anchor_autoobject_topk` 不是 score hot path 的输入；它用于生成或更新 `candidate_voxel_sparses_by_asset`。
 
 ### 可选 `voxel_context_buffer`
 
@@ -430,7 +430,7 @@ layout(set = 0, binding = 11, std430) restrict readonly buffer AssetTargetPrefs 
 
 ## Shader 职责
 
-状态：混合。当前已实现的主线是上游 prefilter 输出进入 `candidate_voxel_regions_by_asset`；下方 context shader 和 route validation 测试名是计划占位，除非明确标为当前实现。
+状态：混合。当前已实现的主线是上游 prefilter 输出进入 `candidate_voxel_sparses_by_asset`；下方 context shader 和 route validation 测试名是计划占位，除非明确标为当前实现。
 
 ### 计划 `precompute_voxel_context.glsl`
 
@@ -460,7 +460,7 @@ layout(set = 0, binding = 11, std430) restrict readonly buffer AssetTargetPrefs 
 
 采样规则：每个 context sample 坐标先按 TargetSV 有效范围 clamp；越界采样读取最近的有效 TargetSV voxel，而不是写 0 或直接丢弃。
 
-### 计划 `route_candidate_voxel_regions`
+### 计划 `route_candidate_voxel_sparses`
 
 输入：
 
@@ -472,7 +472,7 @@ layout(set = 0, binding = 11, std430) restrict readonly buffer AssetTargetPrefs 
 
 输出：
 
-- `candidate_voxel_regions_by_asset`
+- `candidate_voxel_sparses_by_asset`
 
 职责：把上游候选 anchor 结果归一化、去重并聚合为每个 asset 的候选 voxel 区域列表。聚合时必须按 asset footprint、probe offset bounds、context 半径和插值 guard 扩张区域。若启用语义向量匹配，它只能在 `anchor_autoobject_topk` 的候选资产内做 rerank / validate / prune，不能回退到全资产库枚举。所有 TargetSV 采样都先 clamp 到最近的有效 TargetSV voxel。它可以先实现为 GDScript/CPU 逻辑；只有在候选量很大时才需要迁移到 compute shader。
 
@@ -485,7 +485,7 @@ layout(set = 0, binding = 11, std430) restrict readonly buffer AssetTargetPrefs 
 ```text
 dirty tile
   -> rerun upstream prefilter for affected anchors
-  -> update candidate_voxel_regions_by_asset entries touched by dirty voxel region
+  -> update candidate_voxel_sparses_by_asset entries touched by dirty voxel region
   -> skip assets whose routed voxel region list becomes empty
 ```
 
@@ -502,7 +502,7 @@ candidate_region_padding = footprint + probe_offset_bounds + context_radius + in
 
 当前内部块大小为 `8×8×8` voxel 时，wide context 通常意味着 target dirty voxel 区域至少影响相邻一圈区域。
 
-更新完成后只需要重建受影响 asset 的 `candidate_voxel_regions_by_asset`。不需要对所有 asset 重新生成 voxel 级 top-K。
+更新完成后只需要重建受影响 asset 的 `candidate_voxel_sparses_by_asset`。不需要对所有 asset 重新生成 voxel 级 top-K。
 
 ---
 
@@ -514,7 +514,7 @@ candidate_region_padding = footprint + probe_offset_bounds + context_radius + in
 
 ```gdscript
 var _anchor_autoobject_topk: Dictionary
-var _candidate_voxel_regions_by_asset: Dictionary
+var _candidate_voxel_sparses_by_asset: Dictionary
 var _voxel_context_buffer: PackedFloat32Array       # optional validation cache
 var _target_scene_context_rgba8: PackedInt32Array   # optional validation cache
 ```
@@ -523,9 +523,9 @@ var _target_scene_context_rgba8: PackedInt32Array   # optional validation cache
 
 ```gdscript
 func run_asset_prefilter(dirty_bounds: AABB = AABB()) -> Dictionary
-func build_candidate_voxel_regions_by_asset(anchor_topk: Dictionary) -> Dictionary
+func build_candidate_voxel_sparses_by_asset(anchor_topk: Dictionary) -> Dictionary
 func validate_candidate_routes(tile_ids: PackedInt32Array = PackedInt32Array()) -> void
-func get_candidate_voxel_regions_by_asset() -> Dictionary
+func get_candidate_voxel_sparses_by_asset() -> Dictionary
 ```
 
 ### `VoxelPlacementGenerator.run_multi_asset()`
@@ -533,20 +533,20 @@ func get_candidate_voxel_regions_by_asset() -> Dictionary
 当前可选输入：
 
 ```gdscript
-"candidate_voxel_regions_by_asset": Dictionary {
-    asset_index: PackedInt32Array(voxel_region_ids)
+"candidate_voxel_sparses_by_asset": Dictionary {
+    asset_index: PackedInt32Array(voxel_sparse_ids)
 }
 ```
 
 行为：
 
-- 如果传入 `candidate_voxel_regions_by_asset`，每个 asset 只使用自己的候选 voxel 区域。
-- 如果 asset 定义中直接带有 `candidate_voxel_regions`，优先使用 asset 自己的候选区域列表。
+- 如果传入 `candidate_voxel_sparses_by_asset`，每个 asset 只使用自己的候选 voxel 区域。
+- 如果 asset 定义中直接带有 `candidate_voxel_sparses`，优先使用 asset 自己的候选区域列表。
 - 如果传入路由字典但某个 asset 没有候选 voxel 区域，则该 asset 跳过并标记为 prefilter skip。
 - 如果传入 `auto_object_manager`，会在 GPU scoring 前执行同类型 AutoObject 互斥预检。
 - 如果同类型互斥预检移除了某个 asset 的所有候选区域，则该 asset 跳过并标记为 `skipped_same_type_exclusion`。
 - 如果未传入，则回退到当前行为。
-- `run_minimal()` 不需要知道路由来源，只继续读取 `settings["candidate_voxel_regions"]`。
+- `run_minimal()` 不需要知道路由来源，只继续读取 `settings["candidate_voxel_sparses"]`。
 
 ---
 
@@ -556,10 +556,10 @@ func get_candidate_voxel_regions_by_asset() -> Dictionary
 |---|------|------|
 | 1 | 复用上游 prefilter 输出 `anchor_autoobject_topk` | `scripts/autoobject_probe_prefilter_gpu.gd` |
 | 2 | 可选在 anchor 候选集内做 semantic rerank / route validation | `scripts/global_voxel_field.gd` |
-| 3 | 将存活 anchor routes 聚合为 `candidate_voxel_regions_by_asset` | `scripts/global_voxel_field.gd` |
+| 3 | 将存活 anchor routes 聚合为 `candidate_voxel_sparses_by_asset` | `scripts/global_voxel_field.gd` |
 | 4 | 在 dirty update 中只重算受影响 anchors / voxel 区域 | `scripts/global_voxel_field.gd` |
 | 5 | 可选实现 route validation context | 计划 `shaders/precompute_voxel_context.glsl` / 计划 `shaders/precompute_target_scene_context.glsl` |
-| 6 | 确认 `run_multi_asset()` 消费 `candidate_voxel_regions_by_asset` | `scripts/voxel_placement_generator.gd` |
+| 6 | 确认 `run_multi_asset()` 消费 `candidate_voxel_sparses_by_asset` | `scripts/voxel_placement_generator.gd` |
 | 7 | 在 physical placement 前接入同类型 AutoObject 互斥预检 | `scripts/auto_object_manager.gd`、`scripts/voxel_placement_generator.gd`、`tools/test_voxel_same_type_exclusion_gate.gd` |
 | 8 | 添加集成测试：prefilter route、semantic rerank、empty asset skip、dirty route 更新 | 计划 `tools/test_voxel_semantic_routing.gd` |
 
@@ -570,12 +570,12 @@ func get_candidate_voxel_regions_by_asset() -> Dictionary
 - `score_voxel_tile.glsl` 不新增 semantic dot / MLP / target neighborhood pooling。
 - 语义向量匹配只在每个 anchor 的候选资产内执行，不遍历全资产库。
 - TargetSV 越界采样会投射到最近的有效 TargetSV voxel，不把边界外直接当作空白。
-- full rebuild 能从上游候选集生成 `candidate_voxel_regions_by_asset`。
-- `candidate_voxel_regions_by_asset` 对 probe 插值采样保守扩张，至少包含 1 voxel interpolation guard。
+- full rebuild 能从上游候选集生成 `candidate_voxel_sparses_by_asset`。
+- `candidate_voxel_sparses_by_asset` 对 probe 插值采样保守扩张，至少包含 1 voxel interpolation guard。
 - dirty update 只更新 dirty / affected voxel 区域。
 - 空候选或低置信度候选不会进入 score。
 - 同类型 `AutoObject` 在 `min_spacing` 互斥范围内时，对应候选 voxel 区域不进入 score。
-- `candidate_voxel_regions_by_asset` 能减少 asset / voxel 区域 score dispatch 数量。
+- `candidate_voxel_sparses_by_asset` 能减少 asset / voxel 区域 score dispatch 数量。
 - 未启用候选路由时，现有 placement pipeline 行为不变。
 
 ---

@@ -61,7 +61,7 @@ func _test_dual_anchor_layers() -> bool:
 	prefilter.min_prefilter_score = 0.9
 	var result: Dictionary = prefilter.run_probe_prefilter(field, target, target_color, [ground_asset, upper_asset], field.get_dirty_tile_ids())
 	var anchors: Array = result.get("anchors", [])
-	var candidate_voxel_regions: Dictionary = result.get("autoobject_candidate_voxel_regions", {})
+	var candidate_voxel_sparses: Dictionary = result.get("autoobject_candidate_voxel_sparses", {})
 	if int(result.get("ground_anchor_count", 0)) <= 0:
 		push_error("  FAIL: expected ground anchors")
 		return false
@@ -72,15 +72,15 @@ func _test_dual_anchor_layers() -> bool:
 	# GPU-only prefilter does not read back per-anchor topK. The supported
 	# GDScript contract is per-asset routed voxel-region output.
 	for obj_idx in [0, 1]:
-		if not candidate_voxel_regions.has(obj_idx):
+		if not candidate_voxel_sparses.has(obj_idx):
 			push_error("  FAIL: expected routed candidate voxel regions for asset %d" % obj_idx)
 			return false
-		var routed_regions: Array = candidate_voxel_regions.get(obj_idx, [])
+		var routed_regions: Array = candidate_voxel_sparses.get(obj_idx, [])
 		if routed_regions.is_empty():
 			push_error("  FAIL: empty routed candidate voxel regions for asset %d" % obj_idx)
 			return false
-		for voxel_region_pos in routed_regions:
-			if not voxel_region_pos is Vector3i:
+		for voxel_sparse_pos in routed_regions:
+			if not voxel_sparse_pos is Vector3i:
 				push_error("  FAIL: routed candidate voxel regions must be Vector3i region positions")
 				return false
 

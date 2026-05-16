@@ -3,10 +3,19 @@ extends MeshInstance3D
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AutoVoxelSharedFieldsScript := preload("res://scripts/auto_voxel_shared_fields.gd")
+const BAND_CHANNELS := {
+	"ground": 0,
+	"understory": 1,
+	"midstory": 2,
+	"canopy": 3,
+}
+const DEFAULT_ROCK_LAYER_NAMES := ["ground", "understory", "midstory", "canopy"]
 const ANCHOR_KIND_GROUND := "ground"
 const ANCHOR_KIND_TARGET_TOP := "target_top"
 const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
 const DEPRECATED_VOXEL_LAYERS_KEY := "voxel_layers"
+const ASSET_VOXEL_RECORD_META_KEY := "asset_voxel_record"
 
 @export var auto_id: String = ""
 @export var instance_id: int = 0
@@ -21,7 +30,6 @@ const DEPRECATED_VOXEL_LAYERS_KEY := "voxel_layers"
 @export var bound_min_length: float = 0.0
 @export var source_mesh: Mesh
 @export var source_mesh_path: String = ""
-@export var affected_bands: Array[Dictionary] = []
 @export var collision_voxels: Array[Dictionary] = []
 @export var pivot_variants: Array[Dictionary] = []
 @export var auto_generate_vertical_pivots: bool = false
@@ -31,8 +39,157 @@ const DEPRECATED_VOXEL_LAYERS_KEY := "voxel_layers"
 @export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0
 @export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0
 @export var allowed_anchor_kinds: PackedStringArray = PackedStringArray()
-var voxel_record: Dictionary = {}
+var asset_voxel_record: Dictionary = {}
 var min_spacing_auto: bool = true
+
+
+static func legacy_asset_voxel_record_key() -> String:
+	return "voxel" + "_record"
+
+
+static func deprecated_asset_voxel_record_key() -> String:
+	return "cur" + "_voxel_record"
+
+
+static func asset_voxel_record_meta_keys() -> Array:
+	return [
+		ASSET_VOXEL_RECORD_META_KEY,
+		deprecated_asset_voxel_record_key(),
+		legacy_asset_voxel_record_key(),
+	]
+
+
+static func band_channel(band_name: String, fallback: int = 0) -> int:
+	return int(BAND_CHANNELS.get(band_name, fallback))
+
+
+static func create_voxel_profile(
+	entry_color: Color,
+	entry_complexity: float,
+	default_radius: float = 0.0,
+	collision_voxels: Array = []
+) -> AutoVoxelProfile:
+	var profile := AutoVoxelProfile.new()
+	profile.color = entry_color
+	profile.complexity = clampf(entry_complexity, 0.0, 1.0)
+	profile.collision_voxels = AutoVoxelSharedFieldsScript.duplicate_dictionary_array(collision_voxels)
+	return profile
+
+
+static func make_scene_layer_entries(
+	layer_specs: Array,
+	entry_color: Color,
+	entry_complexity: float,
+	default_radius: float = 0.0,
+	base_pixel: Vector2i = Vector2i.ZERO,
+	volume_xz_resolution: int = 0,
+	y_min: float = 0.0,
+	y_max: float = 0.0
+) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var complexity := clampf(entry_complexity, 0.0, 1.0)
+	for raw_spec in layer_specs:
+		var band_name := ""
+		var channel := result.size()
+		var radius := default_radius
+		var color := entry_color
+		var band_complexity := complexity
+
+		if raw_spec is Dictionary:
+			var dict := raw_spec as Dictionary
+			band_name = str(dict.get("band", dict.get("name", "")))
+			channel = int(dict.get("channel", band_channel(band_name, channel)))
+			radius = float(dict.get("radius", default_radius))
+			color = AutoVoxelSharedFieldsScript.color_from_value(dict.get("color", entry_color), entry_color)
+			band_complexity = clampf(float(dict.get("complexity", complexity)), 0.0, 1.0)
+		else:
+			band_name = str(raw_spec)
+			channel = band_channel(band_name, channel)
+
+		if band_name.is_empty():
+			continue
+		color.a = band_complexity
+		result.append({
+			"band": band_name,
+			"channel": channel,
+			"base_pixel": base_pixel,
+			"voxel_xz": base_pixel,
+			"volume_xz_resolution": volume_xz_resolution,
+			"radius": radius,
+			"y_min": y_min,
+			"y_max": y_max,
+			"color": color,
+			"complexity": band_complexity,
+			"slice_indices": [],
+		})
+	return result
+
+
+static func make_profile_asset_voxel_record(
+	record_id: String,
+	object_type: String,
+	position: Vector3,
+	rotation_degrees: Vector3,
+	scale: Vector3,
+	base_pixel: Vector2i,
+	volume_xz_resolution: int,
+	profile: AutoVoxelProfile,
+	default_radius: float,
+	y_min: float = 0.0,
+	y_max: float = 0.0,
+	collision_voxels_override: Array = [],
+	extra_fields: Dictionary = {}
+) -> Dictionary:
+	var shared_fields := AutoVoxelSharedFieldsScript.from_profile(profile, default_radius, collision_voxels_override)
+	var color: Color = shared_fields.color
+	var complexity := float(shared_fields.complexity)
+
+	var scene_layers: Array[Dictionary] = []
+	var raw_layers: Array = extra_fields.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, extra_fields.get("scene_layers", []))
+	if raw_layers.is_empty():
+		if object_type == "rock":
+			raw_layers = DEFAULT_ROCK_LAYER_NAMES
+		elif extra_fields.has("band"):
+			raw_layers = [{
+				"band": str(extra_fields.get("band", "")),
+				"channel": band_channel(str(extra_fields.get("band", ""))),
+				"radius": default_radius,
+			}]
+	scene_layers = make_scene_layer_entries(raw_layers, color, complexity, default_radius, base_pixel, volume_xz_resolution, y_min, y_max)
+
+	var source_kind := str(extra_fields.get("source_kind", "")).to_lower()
+	if source_kind.is_empty():
+		match object_type:
+			"rock":
+				source_kind = "rock_placement"
+			"vegetation":
+				source_kind = "scatter"
+			_:
+				source_kind = "auto"
+	var source_type := str(extra_fields.get("source_voxel_type", ""))
+	if source_type != "AutoSceneVoxel" and source_type != "BrushSceneVoxel" and source_type != "TargetSceneVoxel":
+		if ["brush", "manual_edit", "erase", "lock"].has(source_kind):
+			source_type = "BrushSceneVoxel"
+		elif ["target", "heightfield_target", "flood_target", "guidance"].has(source_kind):
+			source_type = "TargetSceneVoxel"
+		else:
+			source_type = "AutoSceneVoxel"
+
+	var record := AutoVoxelSharedFieldsScript.apply_to_record(extra_fields, shared_fields)
+	record["id"] = record_id
+	record["type"] = object_type
+	record["position"] = position
+	record["rotation_mode"] = "XYZ"
+	record["rotation_degrees"] = rotation_degrees
+	record["scale"] = scale
+	record["base_pixel"] = base_pixel
+	record["voxel_xz"] = base_pixel
+	record["volume_xz_resolution"] = volume_xz_resolution
+	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = scene_layers
+	record["source_voxel_type"] = source_type
+	record["source_kind"] = source_kind
+	record["producer_stage"] = str(extra_fields.get("producer_stage", source_kind))
+	return record
 
 
 func _ensure_voxel_descriptor():
@@ -46,8 +203,6 @@ func _sync_descriptor_from_legacy_fields() -> void:
 	if voxel_descriptor == null:
 		return
 	voxel_descriptor.set_color_and_complexity(voxel_color, voxel_complexity)
-	if not affected_bands.is_empty():
-		voxel_descriptor.set_affected_bands(affected_bands)
 	if not collision_voxels.is_empty():
 		voxel_descriptor.set_collision_voxels(collision_voxels)
 	if not pivot_variants.is_empty():
@@ -64,10 +219,10 @@ func _sync_descriptor_from_legacy_fields() -> void:
 func _sync_legacy_fields_from_descriptor() -> void:
 	if voxel_descriptor == null:
 		return
-	voxel_color = voxel_descriptor.get_color()
-	voxel_complexity = voxel_descriptor.get_complexity()
-	affected_bands = voxel_descriptor.affected_bands.duplicate(true)
-	collision_voxels = voxel_descriptor.collision_voxels.duplicate(true)
+	var shared_fields := AutoVoxelSharedFieldsScript.from_descriptor(voxel_descriptor, bound_min_length)
+	voxel_color = shared_fields.color
+	voxel_complexity = float(shared_fields.complexity)
+	collision_voxels = shared_fields.collision_voxels.duplicate(true)
 	pivot_variants = voxel_descriptor.pivot_variants.duplicate(true)
 	auto_generate_vertical_pivots = voxel_descriptor.auto_generate_vertical_pivots
 	vertical_pivot_middle_min_height = voxel_descriptor.vertical_pivot_middle_min_height
@@ -184,13 +339,17 @@ func configure_auto_object(config: Dictionary) -> void:
 		voxel_color = config.color
 	if config.has("complexity"):
 		voxel_complexity = clampf(float(config.complexity), 0.0, 1.0)
-	voxel_color.a = voxel_complexity
+	var config_shared_fields := AutoVoxelSharedFieldsScript.normalize_shared_fields(config, {
+		"color": voxel_color,
+		"complexity": voxel_complexity,
+		"collision_voxels": collision_voxels,
+	})
+	voxel_color = config_shared_fields.color
+	voxel_complexity = float(config_shared_fields.complexity)
 	_ensure_voxel_descriptor().set_color_and_complexity(voxel_color, voxel_complexity)
 
-	if config.has("affected_bands"):
-		set_affected_bands(config.affected_bands)
 	if config.has("collision_voxels"):
-		set_collision_voxels(config.collision_voxels)
+		set_collision_voxels(config_shared_fields.collision_voxels)
 	if config.has("pivot_variants"):
 		set_pivot_variants(config.pivot_variants)
 	if config.has("auto_generate_vertical_pivots"):
@@ -289,22 +448,77 @@ func get_voxel_complexity() -> float:
 	return _ensure_voxel_descriptor().get_complexity()
 
 
-func get_affected_bands(default_radius: float = 1.0) -> Array[Dictionary]:
-	return _ensure_voxel_descriptor().get_affected_bands(default_radius)
-
-
 func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
 	return _ensure_voxel_descriptor().get_collision_voxels(default_radius)
 
 
-func set_affected_bands(bands: Array) -> void:
-	affected_bands.clear()
-	for band in bands:
-		if band is Dictionary:
-			affected_bands.append((band as Dictionary).duplicate(true))
-	var descriptor = _ensure_voxel_descriptor()
-	descriptor.set_affected_bands(affected_bands)
-	_sync_auto_metadata()
+func get_record_object_type() -> String:
+	return object_type if not object_type.is_empty() else "object"
+
+
+func get_record_radius() -> float:
+	var mesh_radius := get_xz_radius()
+	if min_spacing > 0.0:
+		return maxf(min_spacing, mesh_radius)
+	return mesh_radius
+
+
+func get_xz_radius() -> float:
+	if mesh == null:
+		return 0.0
+	var aabb := mesh.get_aabb()
+	return maxf(absf(aabb.size.x * scale.x), absf(aabb.size.z * scale.z)) * 0.5
+
+
+func get_record_y_bounds() -> Vector2:
+	if mesh == null:
+		return Vector2(position.y, position.y)
+	var aabb := mesh.get_aabb()
+	var y0 := position.y + aabb.position.y * scale.y
+	var y1 := position.y + (aabb.position.y + aabb.size.y) * scale.y
+	return Vector2(minf(y0, y1), maxf(y0, y1))
+
+
+func make_voxel_profile(default_radius: float = -1.0) -> AutoVoxelProfile:
+	var radius := get_record_radius() if default_radius < 0.0 else default_radius
+	var color := get_voxel_color()
+	var complexity := get_voxel_complexity()
+	color.a = complexity
+	return AutoObject.create_voxel_profile(
+		color,
+		complexity,
+		radius,
+		get_collision_voxels(radius)
+	)
+
+
+func get_asset_voxel_record_extra_fields(extra_fields: Dictionary = {}) -> Dictionary:
+	return extra_fields.duplicate(true)
+
+
+func make_asset_voxel_record(
+	record_id: String,
+	base_pixel: Vector2i,
+	volume_xz_resolution: int,
+	extra_fields: Dictionary = {}
+) -> Dictionary:
+	var radius := get_record_radius()
+	var bounds_y := get_record_y_bounds()
+	return AutoObject.make_profile_asset_voxel_record(
+		record_id,
+		get_record_object_type(),
+		position,
+		rotation_degrees,
+		scale,
+		base_pixel,
+		volume_xz_resolution,
+		make_voxel_profile(radius),
+		radius,
+		bounds_y.x,
+		bounds_y.y,
+		[],
+		get_asset_voxel_record_extra_fields(extra_fields)
+	)
 
 
 func set_pivot_variants(variants: Array) -> void:
@@ -419,7 +633,6 @@ func rebuild_semantic_probes(density_override: float = -1.0) -> Array[Dictionary
 	var profile = descriptor.ensure_semantic_probe_profile()
 	var probes: Array[Dictionary] = profile.rebuild_from_mesh(
 		mesh,
-		descriptor.affected_bands,
 		descriptor.collision_voxels,
 		descriptor.get_color(),
 		descriptor.get_complexity(),
@@ -437,7 +650,6 @@ func get_semantic_probes(density_override: float = -1.0, anchor_kind: String = A
 		mesh,
 		density_override,
 		Vector3.ONE,
-		affected_bands,
 		collision_voxels
 	)
 	var pivot_offset := get_anchor_pivot_offset(anchor_kind)
@@ -465,78 +677,95 @@ func _get_default_semantic_probe_radius() -> float:
 	return maxf(radius, 0.5)
 
 
-func set_voxel_record(record: Dictionary) -> void:
+func set_asset_voxel_record(record: Dictionary) -> void:
 	refresh_instance_id()
-	voxel_record = record.duplicate(true)
-	if voxel_record.has(DEPRECATED_VOXEL_LAYERS_KEY) and not voxel_record.has(DEPRECATED_SENCE_LAYER_VOXEL_KEY):
-		voxel_record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = voxel_record[DEPRECATED_VOXEL_LAYERS_KEY]
-	voxel_record.erase(DEPRECATED_VOXEL_LAYERS_KEY)
-	if voxel_record.has("rotation_y") and not voxel_record.has("rotation_degrees"):
-		voxel_record["rotation_mode"] = str(voxel_record.get("rotation_mode", "Y")).to_upper()
-		voxel_record["rotation_degrees"] = Vector3(0.0, float(voxel_record.rotation_y), 0.0)
-	voxel_record.erase("rotation_y")
-	voxel_record.erase("rotation_xyz")
-	voxel_record["instance_id"] = instance_id
+	asset_voxel_record = record.duplicate(true)
+	if asset_voxel_record.has(DEPRECATED_VOXEL_LAYERS_KEY) and not asset_voxel_record.has(DEPRECATED_SENCE_LAYER_VOXEL_KEY):
+		asset_voxel_record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = asset_voxel_record[DEPRECATED_VOXEL_LAYERS_KEY]
+	asset_voxel_record.erase(DEPRECATED_VOXEL_LAYERS_KEY)
+	if asset_voxel_record.has("rotation_y") and not asset_voxel_record.has("rotation_degrees"):
+		asset_voxel_record["rotation_mode"] = str(asset_voxel_record.get("rotation_mode", "Y")).to_upper()
+		asset_voxel_record["rotation_degrees"] = Vector3(0.0, float(asset_voxel_record.rotation_y), 0.0)
+	asset_voxel_record.erase("rotation_y")
+	asset_voxel_record.erase("rotation_xyz")
+	asset_voxel_record["instance_id"] = instance_id
 	if auto_id.is_empty():
-		auto_id = str(voxel_record.get("id", name))
+		auto_id = str(asset_voxel_record.get("id", name))
 	if name.is_empty():
 		name = auto_id
-	voxel_record["auto_id"] = auto_id
-	voxel_record["auto_object_id"] = auto_id
-	voxel_record["auto_instance_id"] = instance_id
-	var mesh_instance_id := int(voxel_record.get("instance_mesh_id", voxel_record.get("mesh_instance_id", instance_id)))
-	voxel_record["instance_mesh_id"] = mesh_instance_id
-	voxel_record["mesh_instance_id"] = mesh_instance_id
-	if voxel_record.has("type"):
-		object_type = str(voxel_record.type)
-	if voxel_record.has("auto_source"):
-		auto_source = str(voxel_record.auto_source)
-	elif voxel_record.has("placement_source"):
-		auto_source = str(voxel_record.placement_source)
-	if voxel_record.has("color"):
-		voxel_color = voxel_record.color
-	if voxel_record.has("complexity"):
-		voxel_complexity = clampf(float(voxel_record.complexity), 0.0, 1.0)
-	voxel_color.a = voxel_complexity
+	asset_voxel_record["auto_id"] = auto_id
+	asset_voxel_record["auto_object_id"] = auto_id
+	asset_voxel_record["auto_instance_id"] = instance_id
+	var mesh_instance_id := int(asset_voxel_record.get("instance_mesh_id", asset_voxel_record.get("mesh_instance_id", instance_id)))
+	asset_voxel_record["instance_mesh_id"] = mesh_instance_id
+	asset_voxel_record["mesh_instance_id"] = mesh_instance_id
+	if asset_voxel_record.has("type"):
+		object_type = str(asset_voxel_record.type)
+	if asset_voxel_record.has("auto_source"):
+		auto_source = str(asset_voxel_record.auto_source)
+	elif asset_voxel_record.has("placement_source"):
+		auto_source = str(asset_voxel_record.placement_source)
+	var record_shared_fields := AutoVoxelSharedFieldsScript.normalize_shared_fields(asset_voxel_record, {
+		"color": voxel_color,
+		"complexity": voxel_complexity,
+		"collision_voxels": collision_voxels,
+	})
+	voxel_color = record_shared_fields.color
+	voxel_complexity = float(record_shared_fields.complexity)
 	_ensure_voxel_descriptor().set_color_and_complexity(voxel_color, voxel_complexity)
-	if voxel_record.has("min_spacing_auto"):
-		min_spacing_auto = bool(voxel_record.min_spacing_auto)
-	if voxel_record.has("min_spacing"):
-		min_spacing = maxf(float(voxel_record.min_spacing), 0.0)
-		if not voxel_record.has("min_spacing_auto"):
+	if asset_voxel_record.has("min_spacing_auto"):
+		min_spacing_auto = bool(asset_voxel_record.min_spacing_auto)
+	if asset_voxel_record.has("min_spacing"):
+		min_spacing = maxf(float(asset_voxel_record.min_spacing), 0.0)
+		if not asset_voxel_record.has("min_spacing_auto"):
 			min_spacing_auto = false
-	if voxel_record.has("bound_min_length"):
-		bound_min_length = maxf(float(voxel_record.bound_min_length), 0.0)
-	if voxel_record.has("affected_bands"):
-		set_affected_bands(voxel_record.affected_bands)
-	if voxel_record.has("collision_voxels"):
-		set_collision_voxels(voxel_record.collision_voxels)
-	if voxel_record.has("pivot_variants"):
-		set_pivot_variants(voxel_record.pivot_variants)
-	if voxel_record.has("auto_generate_vertical_pivots"):
-		auto_generate_vertical_pivots = bool(voxel_record.auto_generate_vertical_pivots)
+	if asset_voxel_record.has("bound_min_length"):
+		bound_min_length = maxf(float(asset_voxel_record.bound_min_length), 0.0)
+	if asset_voxel_record.has("collision_voxels"):
+		set_collision_voxels(record_shared_fields.collision_voxels)
+	if asset_voxel_record.has("pivot_variants"):
+		set_pivot_variants(asset_voxel_record.pivot_variants)
+	if asset_voxel_record.has("auto_generate_vertical_pivots"):
+		auto_generate_vertical_pivots = bool(asset_voxel_record.auto_generate_vertical_pivots)
 		_ensure_voxel_descriptor().auto_generate_vertical_pivots = auto_generate_vertical_pivots
-	if voxel_record.has("semantic_probe_density"):
-		semantic_probe_density = clampf(float(voxel_record.semantic_probe_density), 0.1, 8.0)
+	if asset_voxel_record.has("semantic_probe_density"):
+		semantic_probe_density = clampf(float(asset_voxel_record.semantic_probe_density), 0.1, 8.0)
 		_ensure_voxel_descriptor().semantic_probe_density = semantic_probe_density
-	if voxel_record.has("semantic_probes"):
-		set_semantic_probes(voxel_record.semantic_probes)
-	if voxel_record.has("allowed_anchor_kinds"):
-		set_allowed_anchor_kinds(voxel_record.allowed_anchor_kinds)
+	if asset_voxel_record.has("semantic_probes"):
+		set_semantic_probes(asset_voxel_record.semantic_probes)
+	if asset_voxel_record.has("allowed_anchor_kinds"):
+		set_allowed_anchor_kinds(asset_voxel_record.allowed_anchor_kinds)
 	_sync_descriptor_from_legacy_fields()
 	refresh_bound_spacing()
-	voxel_record["bound_min_length"] = bound_min_length
-	voxel_record["min_spacing"] = min_spacing
-	voxel_record["min_spacing_auto"] = min_spacing_auto
+	asset_voxel_record["bound_min_length"] = bound_min_length
+	asset_voxel_record["min_spacing"] = min_spacing
+	asset_voxel_record["min_spacing_auto"] = min_spacing_auto
 	var descriptor_fields = _ensure_voxel_descriptor().to_record_fields(bound_min_length)
 	for key in descriptor_fields:
-		voxel_record[key] = descriptor_fields[key]
+		asset_voxel_record[key] = descriptor_fields[key]
 	_sync_auto_metadata()
-	set_meta("voxel_record", voxel_record)
+	set_meta(ASSET_VOXEL_RECORD_META_KEY, asset_voxel_record)
+	for key in [deprecated_asset_voxel_record_key(), legacy_asset_voxel_record_key()]:
+		if has_meta(key):
+			remove_meta(key)
 
 
-func get_voxel_record() -> Dictionary:
-	return voxel_record.duplicate(true)
+func get_asset_voxel_record() -> Dictionary:
+	if asset_voxel_record.is_empty():
+		var meta_record := _get_asset_voxel_record_metadata()
+		if not meta_record.is_empty():
+			return meta_record
+	return asset_voxel_record.duplicate(true)
+
+
+func _get_asset_voxel_record_metadata() -> Dictionary:
+	for key in asset_voxel_record_meta_keys():
+		if not has_meta(key):
+			continue
+		var raw_record = get_meta(key)
+		if raw_record is Dictionary:
+			return (raw_record as Dictionary).duplicate(true)
+	return {}
 
 
 func refresh_instance_id() -> int:
@@ -551,7 +780,7 @@ func _sync_auto_metadata() -> void:
 	_clear_state_mirror_metadata()
 	set_meta("auto_id", auto_id)
 	set_meta("auto_instance_id", instance_id)
-	set_meta("instance_mesh_id", int(voxel_record.get("instance_mesh_id", instance_id)))
+	set_meta("instance_mesh_id", int(asset_voxel_record.get("instance_mesh_id", instance_id)))
 	set_meta("auto_source", auto_source)
 	set_meta("auto_object_type", object_type)
 	set_meta("auto_object_subtype", object_subtype)
@@ -570,7 +799,6 @@ func _clear_state_mirror_metadata() -> void:
 		"min_spacing_auto",
 		"voxel_color",
 		"voxel_complexity",
-		"auto_affected_bands",
 		"auto_collision_voxels",
 		"pivot_variant_count",
 		"allowed_anchor_kinds",

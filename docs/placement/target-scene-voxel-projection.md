@@ -83,19 +83,19 @@
 | --- | --- |
 | `shaders/collect_sv_anchors.glsl` | 从 dirty tiles 收集 `ground` / `target_top` anchors |
 | `shaders/score_anchor_asset_probes.glsl` | 按 asset probe 和 `allowed_anchor_kinds` 评分 |
-| `scripts/autoobject_probe_prefilter_gpu.gd` | 输出 `autoobject_candidate_voxel_regions` |
+| `scripts/autoobject_probe_prefilter_gpu.gd` | 输出 `autoobject_candidate_voxel_sparses` |
 
 `target_top` 不是资产类型，也不是最终 placement 点。它只是候选 anchor 层，表示目标场顶部或上层强信号附近存在可被 probe 匹配的候选位置。
 
 ## Candidate voxel region 边界
 
-高层路由输出使用 `voxel_region` 术语：
+高层路由输出使用 `voxel_sparse` 术语：
 
 ```text
 upstream prefilter
   -> anchor_autoobject_topk
-  -> autoobject_candidate_voxel_regions
-  -> candidate_voxel_regions_by_asset
+  -> autoobject_candidate_voxel_sparses
+  -> candidate_voxel_sparses_by_asset
   -> score_voxel_tile.glsl
 ```
 
@@ -103,7 +103,7 @@ upstream prefilter
 
 | 术语 | 使用层级 | 说明 |
 | --- | --- | --- |
-| `voxel_region` | public routing / placement API | 8×8×8 candidate block 的高层语义 |
+| `voxel_sparse` | public routing / placement API | 8×8×8 candidate block 的高层语义 |
 | `tile_id` | shader / buffer / storage key | 同一个 block 的物理索引和 workgroup key |
 | `dirty_tile_ids` | 底层兼容 API | 表示 dirty voxel regions 的 tile id 列表 |
 
@@ -140,7 +140,7 @@ Stamp 名称只属于生成器或编辑器内部，不应写入 `TargetSV` buffe
 | `origin_voxel` | stamp 锚点，通常来自 landscape surface 或支撑点 |
 | `basis` | stamp 局部坐标，可由 world-up、坡面法线或 cliff tangent 生成 |
 | `bounds` | stamp 影响的 voxel AABB |
-| `source_voxels` | 可选的 AutoObject 烘焙局部 voxel records |
+| `source_voxels` | 可选的 AutoObject 烘焙局部 `asset_voxel_record` samples |
 | `opacity` | visual 混合权重 |
 | `collision_opacity` | collision intent 混合权重 |
 | `scale` | stamp 缩放 |
@@ -240,8 +240,8 @@ Projection cache 只能用于候选 route 的验证、rerank 或 pruning，不�
 dirty / active voxel regions
   -> collect anchors
   -> AutoObject probe prefilter
-  -> autoobject_candidate_voxel_regions
-  -> candidate_voxel_regions_by_asset
+  -> autoobject_candidate_voxel_sparses
+  -> candidate_voxel_sparses_by_asset
   -> score_voxel_tile.glsl physical scoring
 ```
 
@@ -273,7 +273,7 @@ dirty landscape / mask / brush
 
 - TargetSV dirty bounds 应包含 stamp bounds 和最大 stamp radius。
 - Projection dirty bounds 可能大于 TargetSV dirty bounds，因为高处目标会投影到下方 anchor。
-- Public API 使用 `dirty_voxel_region_*` 术语；底层 shader buffer 可以继续使用 `dirty_tile_ids`。
+- Public API 使用 `dirty_voxel_sparse_*` 术语；底层 shader buffer 可以继续使用 `dirty_tile_ids`。
 
 ## 推荐阶段
 
@@ -292,7 +292,7 @@ dirty landscape / mask / brush
 - `TargetSceneVoxel` 不包含 asset 类型标签。
 - `TargetSceneVoxel` 表达目标颜色、复杂度、占用 / 碰撞意图。
 - `target_top` anchor 定义与 `collect_sv_anchors.glsl` 一致。
-- 高层候选区域使用 `voxel_region` 术语。
+- 高层候选区域使用 `voxel_sparse` 术语。
 - 底层 shader 的 `tile_id` 只作为物理 storage / workgroup key。
 - `score_voxel_tile.glsl` 不读取 projection cache。
 - 未启用 projection 时，routing 回退到当前 `target_occupancy` / `target_color` 路径。

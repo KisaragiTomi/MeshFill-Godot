@@ -70,24 +70,21 @@
 
   <!-- Input column -->
   <rect class="node entry" x="82" y="242" width="182" height="72" rx="14" ry="14"/>
-  <text class="label" x="100" y="270">SceneOccupancy</text>
-  <text class="small" x="100" y="290">float storage buffer</text>
+  <text class="label" x="100" y="270">PreSceneVoxel</text>
+  <text class="small" x="100" y="290">sample previous SV</text>
+  <text class="tiny" x="100" y="306">previous committed SV</text>
 
-  <rect class="node entry" x="82" y="332" width="182" height="72" rx="14" ry="14"/>
-  <text class="label" x="100" y="360">CollisionOccupancy</text>
-  <text class="small" x="100" y="380">float storage buffer</text>
+  <rect class="node entry" x="82" y="342" width="182" height="100" rx="14" ry="14"/>
+  <text class="label" x="100" y="372">AssetFootprint</text>
+  <text class="small" x="100" y="396">ivec4 local + degree</text>
+  <text class="small" x="100" y="416">vec4 weight + flags</text>
+  <text class="tiny" x="100" y="434">auto-baked from collision_voxels</text>
 
-  <rect class="node entry" x="82" y="422" width="182" height="100" rx="14" ry="14"/>
-  <text class="label" x="100" y="452">AssetFootprint</text>
-  <text class="small" x="100" y="476">ivec4 local + degree</text>
-  <text class="small" x="100" y="496">vec4 weight + flags</text>
-  <text class="tiny" x="100" y="514">auto-baked from collision_voxels</text>
-
-  <rect class="node entry" x="82" y="542" width="182" height="94" rx="14" ry="14"/>
-  <text class="label" x="100" y="572">Footprint Baking</text>
-  <text class="small" x="100" y="596">float voxels → footprint</text>
-  <text class="small" x="100" y="616">24 yaw pre-bake</text>
-  <text class="tiny" x="100" y="630">support / clearance auto-tag</text>
+  <rect class="node entry" x="82" y="462" width="182" height="94" rx="14" ry="14"/>
+  <text class="label" x="100" y="492">Footprint Baking</text>
+  <text class="small" x="100" y="516">float voxels → footprint</text>
+  <text class="small" x="100" y="536">24 yaw pre-bake</text>
+  <text class="tiny" x="100" y="550">support / clearance auto-tag</text>
 
   <!-- Orchestration column -->
   <rect class="node driver" x="350" y="238" width="202" height="132" rx="14" ry="14"/>
@@ -130,8 +127,8 @@
 
   <rect class="node gpu" x="890" y="412" width="184" height="110" rx="14" ry="14"/>
   <text class="label" x="910" y="444">stamp_voxel_field</text>
-  <text class="small" x="910" y="468">write scene out</text>
-  <text class="small" x="910" y="488">write collision out</text>
+  <text class="small" x="910" y="468">write SceneVoxel out</text>
+  <text class="small" x="910" y="488">scene + collision layers</text>
   <text class="tiny" x="910" y="506">max-style idempotent stamp</text>
 
   <!-- Output column -->
@@ -142,14 +139,14 @@
   <text class="tiny" x="1198" y="336">result_count buffer</text>
 
   <rect class="node buffer" x="1178" y="368" width="212" height="102" rx="14" ry="14"/>
-  <text class="label" x="1198" y="400">OccupancyOut</text>
-  <text class="small" x="1198" y="424">SceneOccupancyOut</text>
-  <text class="small" x="1198" y="444">CollisionOccupancyOut</text>
+  <text class="label" x="1198" y="400">SceneVoxelOut</text>
+  <text class="small" x="1198" y="424">scene + collision layers</text>
+  <text class="small" x="1198" y="444">next PreSceneVoxel</text>
   <text class="tiny" x="1198" y="462">next score pass reads this</text>
 
   <rect class="node buffer" x="1178" y="494" width="212" height="102" rx="14" ry="14"/>
   <text class="label" x="1198" y="526">VoxelStampDelta</text>
-  <text class="small" x="1198" y="550">per-voxel scene/collision</text>
+  <text class="small" x="1198" y="550">per-voxel SV delta</text>
   <text class="small" x="1198" y="570">result_index + footprint_index</text>
   <text class="tiny" x="1198" y="590">drives apply_stamp_deltas()</text>
 
@@ -177,8 +174,7 @@
 
   <!-- GPU band edges -->
   <path class="edge" d="M264 278 C302 278 312 290 350 290"/>
-  <path class="edge" d="M264 368 C304 368 312 316 350 316"/>
-  <path class="edge" d="M264 472 C304 472 312 572 350 572"/>
+  <path class="edge" d="M264 392 C304 392 312 572 350 572"/>
   <path class="edge" d="M451 370 V394"/>
   <path class="edge" d="M552 445 C590 445 600 302 638 302"/>
   <path class="edge-soft" d="M552 480 C594 480 602 330 638 330"/>
@@ -193,7 +189,7 @@
   <path class="edge-soft" d="M1390 430 C1430 430 1438 430 1476 430"/>
   <path class="edge-soft" d="M1390 548 C1430 548 1438 558 1476 558"/>
   <path class="edge-loop" d="M1210 368 C1124 656 720 674 708 522"/>
-  <text class="tiny" x="824" y="694">stamped occupancy feeds the next asset round</text>
+  <text class="tiny" x="824" y="694">stamped SceneVoxel feeds the next asset round</text>
 
   <!-- ===== BAND 2: CPU INSTANTIATION ===== -->
   <rect class="band-post" x="32" y="760" width="1736" height="200" rx="20" ry="20"/>
@@ -213,8 +209,8 @@
   <text class="tiny" x="418" y="914">world_results in asset_results[]</text>
 
   <rect class="node record" x="710" y="820" width="260" height="108" rx="14" ry="14"/>
-  <text class="label" x="730" y="850">voxel_record</text>
-  <text class="small" x="730" y="874">make_placement_voxel_record()</text>
+  <text class="label" x="730" y="850">asset_voxel_record</text>
+  <text class="small" x="730" y="874">make_placement_asset_voxel_record()</text>
   <text class="small" x="730" y="894">attach to AutoObject node</text>
   <text class="tiny" x="730" y="914">optional VegetationExclusion commit</text>
 
@@ -247,14 +243,14 @@
 
   <rect class="node field" x="398" y="1076" width="260" height="132" rx="14" ry="14"/>
   <text class="label" x="418" y="1106">run_placement_dirty()</text>
-  <text class="small" x="418" y="1130">dirty regions → candidate_voxel_regions</text>
+  <text class="small" x="418" y="1130">dirty regions → candidate_voxel_sparses</text>
   <text class="small" x="418" y="1150">calls run_multi_asset()</text>
   <text class="small" x="418" y="1170">optional apply_stamp_deltas</text>
   <text class="tiny" x="418" y="1190">optional clear processed regions</text>
 
   <rect class="node field" x="714" y="1076" width="256" height="132" rx="14" ry="14"/>
   <text class="label" x="734" y="1106">apply_stamp_deltas()</text>
-  <text class="small" x="734" y="1130">per-voxel scene/collision write</text>
+  <text class="small" x="734" y="1130">per-voxel SceneVoxel write</text>
   <text class="small" x="734" y="1150">max-merge semantics</text>
   <text class="small" x="734" y="1170">auto-marks affected regions dirty</text>
   <text class="tiny" x="734" y="1190">skips out-of-bounds deltas</text>
@@ -281,7 +277,7 @@
 
   <!-- Field ↔ GPU loop -->
   <path class="edge-green" d="M528 1076 C528 1010 451 1010 451 738"/>
-  <text class="tiny" x="470" y="1004">dirty voxel regions feed GPU pipeline as candidate_voxel_regions</text>
+  <text class="tiny" x="470" y="1004">dirty voxel regions feed GPU pipeline as candidate_voxel_sparses</text>
   <path class="edge-green" d="M842 1076 C842 1006 1284 1006 1284 596"/>
   <text class="tiny" x="912" y="1000">stamp deltas flow back to voxel field</text>
 
@@ -318,7 +314,7 @@
   <text class="label" x="1222" y="1368">Consumer handoff</text>
   <text class="small" x="1222" y="1392">current: AutoRock</text>
   <text class="small" x="1222" y="1412">future: AutoObject types</text>
-  <text class="tiny" x="1222" y="1430">builds voxel_record later</text>
+  <text class="tiny" x="1222" y="1430">builds asset_voxel_record later</text>
 
   <rect class="node support" x="1484" y="1338" width="200" height="104" rx="14" ry="14"/>
   <text class="label" x="1504" y="1368">Compatibility</text>
@@ -335,11 +331,11 @@
   <!-- ===== BAND 5: CONTRACT ===== -->
   <rect class="band-field" x="32" y="1558" width="1736" height="210" rx="20" ry="20"/>
   <text class="section-title" x="56" y="1590">PLACEMENT CONTRACT — ALL INTEGRATION COMPLETE</text>
-  <text class="tiny" x="500" y="1590">GlobalVoxelField upload, dirty voxel-region pipeline, instantiation, and voxel_record commit are all implemented and tested</text>
+  <text class="tiny" x="500" y="1590">GlobalVoxelField upload, dirty voxel-region pipeline, instantiation, and asset_voxel_record commit are all implemented and tested</text>
 
   <rect class="node contract" x="78" y="1626" width="258" height="94" rx="14" ry="14"/>
-  <text class="label" x="98" y="1658">Separated occupancy</text>
-  <text class="small" x="98" y="1682">scene soft / collision rigid</text>
+  <text class="label" x="98" y="1658">SceneVoxel layers</text>
+  <text class="small" x="98" y="1682">scene + collision in SV</text>
   <text class="small" x="98" y="1702">stamp delta writeback</text>
 
   <rect class="node contract" x="388" y="1626" width="258" height="94" rx="14" ry="14"/>
@@ -355,7 +351,7 @@
   <rect class="node contract" x="1008" y="1626" width="258" height="94" rx="14" ry="14"/>
   <text class="label" x="1028" y="1658">Instantiation only</text>
   <text class="small" x="1028" y="1682">CPU creates nodes, no filter</text>
-  <text class="small" x="1028" y="1702">voxel_record + SceneVoxel</text>
+  <text class="small" x="1028" y="1702">asset_voxel_record + SceneVoxel</text>
 
   <path class="edge-soft" d="M336 1673 H388"/>
   <path class="edge-soft" d="M646 1673 H698"/>

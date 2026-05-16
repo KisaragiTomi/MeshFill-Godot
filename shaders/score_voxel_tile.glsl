@@ -43,7 +43,7 @@ layout(set = 0, binding = 4, std430) restrict buffer TileTopK {
 };
 
 layout(set = 0, binding = 5, std430) restrict readonly buffer CandidateVoxelRegions {
-    uint candidate_voxel_region_ids[];
+    uint candidate_voxel_sparse_ids[];
 };
 
 layout(set = 0, binding = 6, std430) restrict readonly buffer TargetOccupancy {
@@ -66,7 +66,7 @@ layout(push_constant, std430) uniform Params {
     ivec4 ids_counts;              // footprint_count, asset_index, rotation_index, scale_index
     vec4 thresholds;               // solid_threshold, collision_limit, min_support_ratio, clearance_limit
     vec4 score_weights;            // support_weight, collision_penalty, overlap_penalty, clearance_penalty
-    ivec4 dispatch_search;         // candidate_voxel_region_count, search radius xyz
+    ivec4 dispatch_search;         // candidate_voxel_sparse_count, search radius xyz
 };
 
 const uint FLAG_SUPPORT = 1u;
@@ -332,14 +332,14 @@ void main() {
     uint local_index = gl_LocalInvocationIndex;
     uint group_index = gl_WorkGroupID.x;
     uint tile_count = uint(grid_size_tile_count.w);
-    uint candidate_voxel_region_count = uint(max(dispatch_search.x, 0));
+    uint candidate_voxel_sparse_count = uint(max(dispatch_search.x, 0));
     uint top_k = uint(tile_counts_topk.w);
 
-    if (group_index >= candidate_voxel_region_count) {
+    if (group_index >= candidate_voxel_sparse_count) {
         return;
     }
 
-    uint tile_id = candidate_voxel_region_ids[group_index];
+    uint tile_id = candidate_voxel_sparse_ids[group_index];
     if (tile_id >= tile_count) {
         return;
     }

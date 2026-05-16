@@ -16,7 +16,6 @@ const PROBE_WORLD_MIN_DISTANCE := 0.35
 
 func rebuild_from_mesh(
 	mesh: Mesh,
-	affected_bands: Array = [],
 	collision_voxels: Array = [],
 	fallback_color: Color = Color.WHITE,
 	fallback_complexity: float = 1.0,
@@ -26,7 +25,7 @@ func rebuild_from_mesh(
 ) -> Array[Dictionary]:
 	var d := density if density_override <= 0.0 else density_override
 	density = clampf(d, 0.1, 8.0)
-	probes = generate_from_mesh(mesh, affected_bands, collision_voxels, fallback_color, fallback_complexity, density, max_probe_count, world_scale, context_sensing_radius)
+	probes = generate_from_mesh(mesh, collision_voxels, fallback_color, fallback_complexity, density, max_probe_count, world_scale, context_sensing_radius)
 	return duplicate_probe_array(probes)
 
 
@@ -44,7 +43,6 @@ static func duplicate_probe_array(source: Array) -> Array[Dictionary]:
 
 static func generate_from_mesh(
 	mesh: Mesh,
-	affected_bands: Array = [],
 	collision_voxels: Array = [],
 	fallback_color: Color = Color.WHITE,
 	fallback_complexity: float = 1.0,
@@ -68,23 +66,20 @@ static func generate_from_mesh(
 		target_count = clampi(target_count + context_extra, target_count, max_count)
 	var triangles := collect_mesh_triangles(mesh)
 	var convex_points := collect_mesh_convex_points(mesh)
-	var band_ref := collect_mesh_vertices(mesh)
-	if band_ref.is_empty():
-		band_ref = convex_points
 
 	var candidates: Array[Dictionary] = []
 
 	# Priority 1 (highest): Convex hull surface points
 	if not convex_points.is_empty():
-		candidates.append_array(_make_convex_candidates(convex_points, band_ref, affected_bands, fallback, fallback.a))
+		candidates.append_array(_make_convex_candidates(convex_points, fallback, fallback.a))
 
 	# Priority 2: AutoObject collision voxel interior
 	if not collision_voxels.is_empty():
-		candidates.append_array(_make_voxel_interior_candidates(collision_voxels, band_ref, affected_bands, fallback, fallback.a, density_value, world_scale))
+		candidates.append_array(_make_voxel_interior_candidates(collision_voxels, fallback, fallback.a, density_value, world_scale))
 
 	# Priority 3: Poisson disk surface sampling
 	if not triangles.is_empty():
-		candidates.append_array(_make_poisson_surface_candidates(triangles, band_ref, affected_bands, fallback, fallback.a, density_value))
+		candidates.append_array(_make_poisson_surface_candidates(triangles, fallback, fallback.a, density_value))
 
 	# Priority 4 (lowest): Context sensing probes beyond mesh AABB
 	if context_sensing_radius > 0.0:
@@ -166,8 +161,6 @@ static func collect_mesh_triangles(mesh: Mesh) -> Array[PackedVector3Array]:
 
 static func _make_convex_candidates(
 	convex_points: PackedVector3Array,
-	band_ref: PackedVector3Array,
-	affected_bands: Array,
 	fallback_color: Color,
 	fallback_complexity: float
 ) -> Array[Dictionary]:
@@ -177,14 +170,13 @@ static func _make_convex_candidates(
 	var hull_stride := maxi(1, int(convex_points.size() / 384))
 	for point_index in range(0, convex_points.size(), hull_stride):
 		var pos := convex_points[point_index]
-		var band := band_for_mesh_y(pos.y, band_ref, affected_bands)
-		var color := color_from_value(band.get("color", fallback_color), fallback_color)
-		var complexity := clampf(float(band.get("complexity", color.a if color.a > 0.0 else fallback_complexity)), 0.0, 1.0)
+		var color := fallback_color
+		var complexity := clampf(fallback_complexity, 0.0, 1.0)
 		color.a = complexity
 		var weight := maxf(0.05, complexity)
 		result.append(make_probe_candidate(
 			pos, color, 0.0, weight, FLAG_COLOR | FLAG_COMPLEXITY,
-			"positive", str(band.get("band", "mesh")), weight * 1.6, "convex"
+			"positive", "mesh", weight * 1.6, "convex"
 		))
 	return result
 
@@ -193,8 +185,6 @@ static func _make_convex_candidates(
 
 static func _make_voxel_interior_candidates(
 	collision_voxels: Array,
-	band_ref: PackedVector3Array,
-	affected_bands: Array,
 	fallback_color: Color,
 	fallback_complexity: float,
 	density_value: float,
@@ -217,15 +207,14 @@ static func _make_voxel_interior_candidates(
 			continue
 		var collision_value := clampf(float(collision.get("value", 1.0)), 0.0, 1.0)
 		for point in positions:
-			var band := band_for_mesh_y(point.y, band_ref, affected_bands)
-			var color := color_from_value(band.get("color", fallback_color), fallback_color)
-			var complexity := clampf(float(band.get("complexity", color.a if color.a > 0.0 else fallback_complexity)), 0.0, 1.0)
+			var color := fallback_color
+			var complexity := clampf(fallback_complexity, 0.0, 1.0)
 			color.a = complexity
 			var weight := maxf(0.05, complexity)
 			var importance := weight * lerpf(1.1, 1.4, collision_value)
 			result.append(make_probe_candidate(
 				point, color, collision_value, weight, FLAG_COLOR | FLAG_COMPLEXITY | FLAG_COLLISION,
-				"positive", str(band.get("band", "mesh")), importance, "voxel_interior"
+				"positive", "mesh", importance, "voxel_interior"
 			))
 	return result
 
@@ -380,8 +369,6 @@ static func _make_context_sensing_candidates(
 
 static func _make_poisson_surface_candidates(
 	triangles: Array[PackedVector3Array],
-	band_ref: PackedVector3Array,
-	affected_bands: Array,
 	fallback_color: Color,
 	fallback_complexity: float,
 	density_value: float
@@ -434,34 +421,15 @@ static func _make_poisson_surface_candidates(
 		samples.append(pos)
 
 	for pos in samples:
-		var band := band_for_mesh_y(pos.y, band_ref, affected_bands)
-		var color := color_from_value(band.get("color", fallback_color), fallback_color)
-		var complexity := clampf(float(band.get("complexity", color.a if color.a > 0.0 else fallback_complexity)), 0.0, 1.0)
+		var color := fallback_color
+		var complexity := clampf(fallback_complexity, 0.0, 1.0)
 		color.a = complexity
 		var weight := maxf(0.05, complexity)
 		result.append(make_probe_candidate(
 			pos, color, 0.0, weight, FLAG_COLOR | FLAG_COMPLEXITY,
-			"positive", str(band.get("band", "mesh")), weight * 0.8, "surface"
+			"positive", "mesh", weight * 0.95, "surface"
 		))
 	return result
-
-
-static func band_for_mesh_y(y: float, vertices: PackedVector3Array, affected_bands: Array) -> Dictionary:
-	if affected_bands.is_empty():
-		return {"band": "mesh"}
-	var min_y := INF
-	var max_y := -INF
-	for pos in vertices:
-		min_y = minf(min_y, pos.y)
-		max_y = maxf(max_y, pos.y)
-	var t := 0.5
-	if max_y > min_y + 0.0001:
-		t = clampf((y - min_y) / (max_y - min_y), 0.0, 0.9999)
-	var index := clampi(floori(t * float(affected_bands.size())), 0, affected_bands.size() - 1)
-	var raw_band = affected_bands[index]
-	if raw_band is Dictionary:
-		return raw_band as Dictionary
-	return {"band": str(raw_band)}
 
 
 static func select_layered_topk(

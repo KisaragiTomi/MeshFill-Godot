@@ -36,7 +36,7 @@ func _init() -> void:
 		asset.scatter_max_scale,
 		asset.group,
 	])
-	print("affected_bands=%d collision_voxels=%d semantic_probes=%d" % [
+	print("scatter_profile=%d collision_voxels=%d semantic_probes=%d" % [
 		asset.get_scatter_profile().size(),
 		asset.get_collision_voxels().size(),
 		probes.size(),

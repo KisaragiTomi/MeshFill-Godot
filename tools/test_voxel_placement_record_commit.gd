@@ -22,7 +22,7 @@ func _init() -> void:
 	var node := VPG.instantiate_placement(world_result, "bush", mesh, {
 		"name": "VoxelBushRecord_0",
 		"record_id": "voxel_bush_record_0",
-		"create_voxel_record": true,
+		"create_asset_voxel_record": true,
 		"vegetation_exclusion": veg,
 		"capture_size": 32.0,
 		"volume_xz_resolution": 32,
@@ -32,13 +32,13 @@ func _init() -> void:
 		push_error("Expected instantiated node")
 		quit(1)
 		return
-	if not node.has_meta("voxel_record"):
-		push_error("Expected node voxel_record metadata")
+	if not node.has_meta("asset_voxel_record"):
+		push_error("Expected node asset_voxel_record metadata")
 		node.free()
 		quit(1)
 		return
 
-	var record: Dictionary = node.get_meta("voxel_record")
+	var record: Dictionary = node.get_meta("asset_voxel_record")
 	if str(record.get("id", "")) != "voxel_bush_record_0":
 		push_error("Expected voxel_bush_record_0 record id, got %s" % str(record.get("id", "")))
 		node.free()
@@ -55,6 +55,30 @@ func _init() -> void:
 		quit(1)
 		return
 
+	var legacy_config := {
+		"name": "LegacyVoxelBushRecord_0",
+	}
+	legacy_config[AutoObject.legacy_asset_voxel_record_key()] = {
+		"id": "legacy_bush_record_0",
+		"type": "bush",
+		"color": Color(0.8, 0.6, 0.2, 0.8),
+		"complexity": 0.8,
+	}
+	var legacy_node := VPG.instantiate_placement(world_result, "bush", mesh, legacy_config)
+	if legacy_node == null or not legacy_node.has_meta(AutoObject.ASSET_VOXEL_RECORD_META_KEY):
+		push_error("Expected legacy record config to migrate to asset_voxel_record metadata")
+		node.free()
+		if legacy_node != null:
+			legacy_node.free()
+		quit(1)
+		return
+	if legacy_node.has_meta(AutoObject.legacy_asset_voxel_record_key()):
+		push_error("Expected legacy record metadata to be removed after migration")
+		node.free()
+		legacy_node.free()
+		quit(1)
+		return
+
 	veg.build_voxel_volume(16, 1)
 	var scene_voxels := veg.get_scene_voxels()
 	var source_deltas := veg.get_source_voxel_deltas(veg.get_committed_tick())
@@ -63,16 +87,19 @@ func _init() -> void:
 	if scene_voxels.is_empty():
 		push_error("Expected committed SceneVoxel entries")
 		node.free()
+		legacy_node.free()
 		quit(1)
 		return
 	if source_deltas.is_empty() or (source_deltas.get("auto", {}) as Dictionary).is_empty():
 		push_error("Expected AutoSceneVoxel source delta entries")
 		node.free()
+		legacy_node.free()
 		quit(1)
 		return
 	if int(global_field.get("tile_count", 0)) <= 0:
 		push_error("Expected GlobalVoxelField tiles")
 		node.free()
+		legacy_node.free()
 		quit(1)
 		return
 
@@ -83,4 +110,5 @@ func _init() -> void:
 		veg.get_committed_tick(),
 	])
 	node.free()
+	legacy_node.free()
 	quit(0)

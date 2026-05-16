@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="980" viewBox="0 0 1500 980" role="img" aria-labelledby="title desc">
   <title id="title">AutoObject Asset Properties Map</title>
-  <desc id="desc">Class hierarchy, descriptor-owned asset defaults, AutoObject compatibility mirrors, AutoObject builder helpers, SV write payload output, and metadata projection for docs/core/asset-properties.md.</desc>
+  <desc id="desc">Class hierarchy, descriptor-owned asset defaults, AutoObject compatibility mirrors, shared voxel field contract, SV write payload output, SceneVoxel commit state, and metadata projection for docs/core/asset-properties.md.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
       <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
@@ -13,6 +13,9 @@
     </marker>
     <marker id="arrow-orange" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
       <path d="M1,1 L11,6 L1,11 Z" fill="#ea580c"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#7c3aed"/>
     </marker>
     <filter id="shadow" x="-7%" y="-7%" width="114%" height="114%">
       <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.11"/>
@@ -41,11 +44,13 @@
       .record { fill: #fef3c7; stroke: #d97706; }
       .meta { fill: #ccfbf1; stroke: #0f766e; }
       .support { fill: #f1f5f9; stroke: #64748b; }
+      .contract { fill: #ede9fe; stroke: #7c3aed; }
       .warn { fill: #fee2e2; stroke: #dc2626; }
       .edge { stroke: #334155; stroke-width: 2.1; fill: none; marker-end: url(#arrow); }
       .edge-blue { stroke: #2563eb; stroke-width: 2.3; fill: none; marker-end: url(#arrow-blue); }
       .edge-green { stroke: #059669; stroke-width: 2.3; fill: none; marker-end: url(#arrow-green); }
       .edge-orange { stroke: #ea580c; stroke-width: 2.3; fill: none; marker-end: url(#arrow-orange); }
+      .edge-purple { stroke: #7c3aed; stroke-width: 2.3; fill: none; marker-end: url(#arrow-purple); }
       .edge-soft { stroke: #64748b; stroke-width: 2; fill: none; marker-end: url(#arrow); stroke-dasharray: 7 7; }
     </style>
   </defs>
@@ -55,7 +60,7 @@
   <path class="grid" d="M380 120V930M745 120V930M1110 120V930"/>
 
   <text class="title" x="48" y="58">AutoObject Asset Properties Map</text>
-  <text class="subtitle" x="48" y="88">Descriptor ownership, compatibility mirrors, and SV write payloads behind docs/core/asset-properties.md.</text>
+  <text class="subtitle" x="48" y="88">Descriptor ownership, shared field contract, compatibility mirrors, explicit visual layers, and SV write payloads behind docs/core/asset-properties.md.</text>
 
   <rect class="lane lane-type" x="32" y="132" width="328" height="688" rx="20" ry="20"/>
   <rect class="lane lane-resource" x="392" y="132" width="328" height="688" rx="20" ry="20"/>
@@ -91,13 +96,14 @@
   <rect class="node support" x="58" y="512" width="276" height="78" rx="14" ry="14"/>
   <text class="node-title" x="78" y="544">AutoAssetFactory</text>
   <text class="label" x="78" y="566">AutoObject helper / builder</text>
-  <text class="mono" x="78" y="586">SV write payload builders</text>
+  <text class="mono" x="78" y="586">record + layer builders</text>
 
   <rect class="node support" x="58" y="614" width="276" height="126" rx="14" ry="14"/>
   <text class="node-title" x="78" y="646">AutoVegetationAsset</text>
   <text class="label" x="78" y="670">Resource definition</text>
   <text class="label" x="78" y="692">can instantiate vegetation node</text>
   <text class="mono" x="78" y="714">instantiate_vegetation()</text>
+  <text class="mono" x="78" y="734">vegetation_band scatter</text>
 
   <path class="edge" d="M196 284 V302 H120 V318"/>
   <path class="edge" d="M196 284 V302 H272 V318"/>
@@ -106,38 +112,44 @@
   <rect class="node resource" x="418" y="190" width="276" height="118" rx="14" ry="14"/>
   <text class="node-title" x="438" y="222">AutoVoxelDescriptor</text>
   <text class="label" x="438" y="246">primary asset semantics struct</text>
-  <text class="mono" x="438" y="268">color, complexity, bands</text>
-  <text class="mono" x="438" y="288">collision_voxels layer</text>
+  <text class="mono" x="438" y="268">color, complexity, pivots</text>
+  <text class="mono" x="438" y="288">collision + probes source</text>
 
-  <rect class="node resource" x="418" y="342" width="276" height="104" rx="14" ry="14"/>
-  <text class="node-title" x="438" y="374">AutoVoxelProfile</text>
-  <text class="label" x="438" y="398">shared lightweight profile</text>
-  <text class="mono" x="438" y="420">normalize_* helpers</text>
+  <rect class="node contract" x="418" y="332" width="276" height="108" rx="14" ry="14"/>
+  <text class="node-title" x="438" y="364">AutoVoxelSharedFields</text>
+  <text class="label" x="438" y="388">shared semantic contract</text>
+  <text class="mono" x="438" y="410">color, complexity</text>
+  <text class="mono" x="438" y="430">collision_voxels</text>
 
-  <rect class="node resource" x="418" y="480" width="276" height="104" rx="14" ry="14"/>
-  <text class="node-title" x="438" y="512">SemanticProbeProfile</text>
-  <text class="label" x="438" y="536">stored or generated probes</text>
-  <text class="mono" x="438" y="558">density + context radius</text>
+  <rect class="node resource" x="418" y="474" width="276" height="92" rx="14" ry="14"/>
+  <text class="node-title" x="438" y="506">AutoVoxelProfile</text>
+  <text class="label" x="438" y="530">lightweight profile input</text>
+  <text class="mono" x="438" y="552">color / complexity / collision</text>
 
-  <rect class="node support" x="418" y="618" width="276" height="106" rx="14" ry="14"/>
-  <text class="node-title" x="438" y="650">Source Mesh Inputs</text>
-  <text class="label" x="438" y="674">mesh / source_mesh</text>
-  <text class="label" x="438" y="696">source_mesh_path</text>
+  <rect class="node resource" x="418" y="600" width="276" height="92" rx="14" ry="14"/>
+  <text class="node-title" x="438" y="632">SemanticProbeProfile</text>
+  <text class="label" x="438" y="656">stored or generated probes</text>
+  <text class="mono" x="438" y="678">density + context radius</text>
 
-  <path class="edge-green" d="M556 308 V342"/>
-  <path class="edge-green" d="M556 446 V480"/>
+  <rect class="node support" x="418" y="724" width="276" height="72" rx="14" ry="14"/>
+  <text class="node-title" x="438" y="752">Source Mesh Inputs</text>
+  <text class="label" x="438" y="774">mesh / source_mesh_path</text>
+
+  <path class="edge-green" d="M556 308 V332"/>
+  <path class="edge-purple" d="M556 440 V474"/>
+  <path class="edge-green" d="M556 566 V600"/>
 
   <rect class="node field" x="778" y="178" width="276" height="108" rx="14" ry="14"/>
   <text class="node-title" x="798" y="210">Identity And Type</text>
   <text class="mono" x="798" y="234">auto_id, instance_id</text>
   <text class="mono" x="798" y="254">auto_source, visual_layer</text>
-  <text class="mono" x="798" y="274">object_type disabled</text>
+  <text class="mono" x="798" y="274">object_type metadata</text>
 
   <rect class="node field" x="778" y="318" width="276" height="122" rx="14" ry="14"/>
   <text class="node-title" x="798" y="350">Descriptor Access</text>
   <text class="mono" x="798" y="374">voxel_descriptor</text>
   <text class="mono" x="798" y="394">legacy color / complexity</text>
-  <text class="mono" x="798" y="414">legacy mirrors, descriptor owns collision</text>
+  <text class="mono" x="798" y="414">legacy collision mirror</text>
 
   <rect class="node field" x="778" y="472" width="276" height="124" rx="14" ry="14"/>
   <text class="node-title" x="798" y="504">Placement Anchors</text>
@@ -154,8 +166,9 @@
   <path class="edge-blue" d="M334 237 C370 237 370 114 736 114 C764 114 764 232 778 232"/>
   <path class="edge-green" d="M694 249 C728 249 728 379 778 379"/>
   <path class="edge-green" d="M694 394 H736 V379 H778"/>
-  <path class="edge-green" d="M694 532 H736 V687 H778"/>
-  <path class="edge" d="M694 671 H736 V534 H778"/>
+  <path class="edge-purple" d="M694 386 H736 V432 H778"/>
+  <path class="edge-green" d="M694 646 H736 V687 H778"/>
+  <path class="edge" d="M694 760 H736 V534 H778"/>
 
   <rect class="node runtime" x="1138" y="178" width="304" height="114" rx="14" ry="14"/>
   <text class="node-title" x="1158" y="210">Configure Methods</text>
@@ -163,29 +176,38 @@
   <text class="mono" x="1158" y="254">configure_rock()</text>
   <text class="mono" x="1158" y="274">configure_vegetation()</text>
 
-  <rect class="node record" x="1138" y="324" width="304" height="132" rx="14" ry="14"/>
+  <rect class="node record" x="1138" y="324" width="304" height="148" rx="14" ry="14"/>
   <text class="node-title" x="1158" y="356">SV Write Payload</text>
-  <text class="label" x="1158" y="380">writes SourceSceneVoxel delta</text>
+  <text class="label" x="1158" y="380">asset_voxel_record → source delta</text>
   <text class="mono" x="1158" y="402">position, rotation, scale</text>
-  <text class="mono" x="1158" y="422">collision_voxels, source_voxel_type</text>
-  <text class="mono" x="1158" y="442">DEPRECATED_SENCE_LAYER_VOXEL_KEY</text>
+  <text class="mono" x="1158" y="422">shared color / complexity</text>
+  <text class="mono" x="1158" y="442">shared collision_voxels</text>
+  <text class="mono" x="1158" y="462">explicit visual layers</text>
 
   <rect class="node meta" x="1138" y="488" width="304" height="112" rx="14" ry="14"/>
   <text class="node-title" x="1158" y="520">Metadata Projection</text>
   <text class="label" x="1158" y="544">id, type, probe count, handles</text>
   <text class="tiny" x="1158" y="564">debug and lookup index only</text>
-  <text class="mono" x="1158" y="584">set_meta("voxel_record", record)</text>
+  <text class="mono" x="1158" y="584">meta key: asset_voxel_record</text>
+
+  <rect class="node record" x="1138" y="634" width="304" height="112" rx="14" ry="14"/>
+  <text class="node-title" x="1158" y="666">SceneVoxel Commit</text>
+  <text class="label" x="1158" y="690">final committed read model</text>
+  <text class="mono" x="1158" y="712">color, complexity</text>
+  <text class="mono" x="1158" y="732">band/channel + collision</text>
 
   <path class="edge-orange" d="M1054 232 H1138"/>
   <path class="edge-orange" d="M1054 379 H1090 V390 H1138"/>
   <path class="edge-orange" d="M1054 534 H1090 V390 H1138"/>
   <path class="edge-orange" d="M1054 687 H1090 V390 H1138"/>
+  <path class="edge-purple" d="M694 386 H720 V458 H1100 V424 H1138"/>
   <path class="edge-orange" d="M334 551 H360 V800 H1100 V390 H1138"/>
   <path class="edge" d="M1290 292 V324"/>
-  <path class="edge" d="M1290 456 V488"/>
+  <path class="edge" d="M1230 472 V488"/>
+  <path class="edge-purple" d="M1360 472 V634"/>
 
   <rect class="node warn" x="78" y="842" width="1344" height="90" rx="18" ry="18"/>
   <text class="rule" x="108" y="876">Ownership rule:</text>
-  <text class="label" x="228" y="876">AutoObject builds SV write payloads; SceneVoxel[t - 1] is the previous committed read model.</text>
-  <text class="tiny" x="108" y="906">When adding a field, decide whether it belongs to defaults, runtime record, source voxel delta, TargetSV guidance, final SceneVoxel state, or cache/query metadata.</text>
+  <text class="label" x="228" y="876">AutoVoxelDescriptor owns defaults; AutoVoxelSharedFields carries shared fields into asset_voxel_record and SceneVoxel.</text>
+  <text class="tiny" x="108" y="906">Visual layers are explicit runtime payload entries; do not add them to descriptor/profile defaults or SHARED_FIELD_KEYS.</text>
 </svg>

@@ -24,11 +24,11 @@ const DEBUG_CHANNEL_NAMES: PackedStringArray = [
 	"clearance_overlap",
 ]
 const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
-const VOXEL_RECORD_CONFIG_KEYS := [
+const ASSET_VOXEL_RECORD_CONFIG_KEYS := [
 	"asset",
 	"base_pixel",
 	"capture_size",
-	"create_voxel_record",
+	"create_asset_voxel_record",
 	"defer_blend",
 	"generation_tick",
 	"group",
@@ -41,7 +41,7 @@ const VOXEL_RECORD_CONFIG_KEYS := [
 	"texture_resolution",
 	"vegetation_exclusion",
 	"volume_xz_resolution",
-	"voxel_record",
+	"asset_voxel_record",
 	"world_capture_size",
 ]
 
@@ -69,6 +69,31 @@ var _shader_stamp: RID
 var _pipeline_score: RID
 var _pipeline_reduce: RID
 var _pipeline_stamp: RID
+
+
+static func _legacy_create_asset_voxel_record_key() -> String:
+	return "create_" + AutoObject.legacy_asset_voxel_record_key()
+
+
+static func _deprecated_create_asset_voxel_record_key() -> String:
+	return "create_" + AutoObject.deprecated_asset_voxel_record_key()
+
+
+static func _get_config_asset_voxel_record(config: Dictionary) -> Dictionary:
+	for key in AutoObject.asset_voxel_record_meta_keys():
+		var raw_record = config.get(key, {})
+		if raw_record is Dictionary:
+			var record := raw_record as Dictionary
+			if not record.is_empty():
+				return record.duplicate(true)
+	return {}
+
+
+static func _should_create_asset_voxel_record(config: Dictionary) -> bool:
+	return bool(config.get(
+		"create_asset_voxel_record",
+		config.get(_deprecated_create_asset_voxel_record_key(), config.get(_legacy_create_asset_voxel_record_key(), false))
+	))
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +160,10 @@ func run_multi_asset(
 		var overrides: Dictionary = asset_def.get("settings", {})
 		for key in overrides:
 			per_asset_settings[key] = overrides[key]
-		var routed_regions_by_asset: Dictionary = common_settings.get("candidate_voxel_regions_by_asset", {})
-		if asset_def.has("candidate_voxel_regions"):
-			per_asset_settings["candidate_voxel_regions"] = asset_def.candidate_voxel_regions
-		elif common_settings.has("candidate_voxel_regions_by_asset"):
+		var routed_regions_by_asset: Dictionary = common_settings.get("candidate_voxel_sparses_by_asset", {})
+		if asset_def.has("candidate_voxel_sparses"):
+			per_asset_settings["candidate_voxel_sparses"] = asset_def.candidate_voxel_sparses
+		elif common_settings.has("candidate_voxel_sparses_by_asset"):
 			var route_key = orig_idx if routed_regions_by_asset.has(orig_idx) else str(orig_idx)
 			var routed_regions = routed_regions_by_asset.get(route_key, [])
 			if routed_regions.is_empty():
@@ -148,13 +173,13 @@ func run_multi_asset(
 					"skipped_prefilter": true,
 				}
 				continue
-			per_asset_settings["candidate_voxel_regions"] = routed_regions
+			per_asset_settings["candidate_voxel_sparses"] = routed_regions
 		if asset_def.has("result_capacity"):
 			per_asset_settings["result_capacity"] = int(asset_def.result_capacity)
 		if asset_def.has("min_distance_voxels"):
 			per_asset_settings["min_distance_voxels"] = float(asset_def.min_distance_voxels)
 		per_asset_settings["asset_index"] = orig_idx
-		var same_type_filter := _filter_candidate_voxel_regions_by_same_type_exclusion(
+		var same_type_filter := _filter_candidate_voxel_sparses_by_same_type_exclusion(
 			per_asset_settings,
 			asset_def,
 			grid_size,
@@ -162,7 +187,7 @@ func run_multi_asset(
 			grid_origin
 		)
 		if not same_type_filter.is_empty():
-			var kept_regions: Array = same_type_filter.get("candidate_voxel_regions", [])
+			var kept_regions: Array = same_type_filter.get("candidate_voxel_sparses", [])
 			if kept_regions.is_empty():
 				result_by_index[orig_idx] = {
 					"asset_index": orig_idx,
@@ -171,7 +196,7 @@ func run_multi_asset(
 					"same_type_exclusion": same_type_filter,
 				}
 				continue
-			per_asset_settings["candidate_voxel_regions"] = kept_regions
+			per_asset_settings["candidate_voxel_sparses"] = kept_regions
 			per_asset_settings["same_type_exclusion"] = same_type_filter
 
 		if global_quota >= 0:
@@ -281,7 +306,7 @@ static func _sort_asset_defs_by_priority_weight(
 	return result
 
 
-static func _filter_candidate_voxel_regions_by_same_type_exclusion(
+static func _filter_candidate_voxel_sparses_by_same_type_exclusion(
 	per_asset_settings: Dictionary,
 	asset_def: Dictionary,
 	grid_size: Vector3i,
@@ -310,10 +335,10 @@ static func _filter_candidate_voxel_regions_by_same_type_exclusion(
 		ceili(float(grid_size.z) / float(TILE_SIZE))
 	)
 	var tile_count := tile_counts.x * tile_counts.y * tile_counts.z
-	var raw_regions: Array = per_asset_settings.get("candidate_voxel_regions", [])
+	var raw_regions: Array = per_asset_settings.get("candidate_voxel_sparses", [])
 	if raw_regions.is_empty():
 		for tile_id in range(tile_count):
-			raw_regions.append(_voxel_region_to_tile_pos(tile_id, tile_counts))
+			raw_regions.append(_voxel_sparse_to_tile_pos(tile_id, tile_counts))
 	var filtered_regions: Array = []
 	var blocked_count := 0
 	var first_block: Dictionary = {}
@@ -323,12 +348,12 @@ static func _filter_candidate_voxel_regions_by_same_type_exclusion(
 	var placement_search_radius := _normalize_search_radius(per_asset_settings.get("search_radius", Vector3i.ZERO))
 
 	for raw_region in raw_regions:
-		var tile_pos := _voxel_region_to_tile_pos(raw_region, tile_counts)
-		var tile_id := _voxel_region_to_tile_id(tile_pos, tile_counts)
+		var tile_pos := _voxel_sparse_to_tile_pos(raw_region, tile_counts)
+		var tile_id := _voxel_sparse_to_tile_id(tile_pos, tile_counts)
 		if tile_id < 0 or tile_id >= tile_count or seen.has(tile_id):
 			continue
 		seen[tile_id] = true
-		var conflict := _find_same_type_voxel_region_exclusion(
+		var conflict := _find_same_type_voxel_sparse_exclusion(
 			manager,
 			tile_pos,
 			grid_size,
@@ -345,7 +370,7 @@ static func _filter_candidate_voxel_regions_by_same_type_exclusion(
 			blocked_count += 1
 			if first_block.is_empty():
 				first_block = conflict.duplicate(true)
-				first_block["voxel_region"] = tile_pos
+				first_block["voxel_sparse"] = tile_pos
 				first_block.erase("neighbor")
 			continue
 		filtered_regions.append(tile_pos)
@@ -353,10 +378,10 @@ static func _filter_candidate_voxel_regions_by_same_type_exclusion(
 	if blocked_count <= 0:
 		return {}
 	return {
-		"candidate_voxel_regions": filtered_regions,
-		"input_voxel_region_count": seen.size(),
-		"kept_voxel_region_count": filtered_regions.size(),
-		"blocked_voxel_region_count": blocked_count,
+		"candidate_voxel_sparses": filtered_regions,
+		"input_voxel_sparse_count": seen.size(),
+		"kept_voxel_sparse_count": filtered_regions.size(),
+		"blocked_voxel_sparse_count": blocked_count,
 		"object_type": object_type,
 		"object_subtype": object_subtype,
 		"candidate_min_spacing": candidate_spacing,
@@ -365,7 +390,7 @@ static func _filter_candidate_voxel_regions_by_same_type_exclusion(
 	}
 
 
-static func _find_same_type_voxel_region_exclusion(
+static func _find_same_type_voxel_sparse_exclusion(
 	manager: Object,
 	tile_pos: Vector3i,
 	grid_size: Vector3i,
@@ -381,7 +406,7 @@ static func _find_same_type_voxel_region_exclusion(
 	if not manager.has_method("query_same_type_objects"):
 		return {}
 
-	var bounds := _voxel_region_world_xz_bounds(tile_pos, grid_size, voxel_size, grid_origin, placement_search_radius)
+	var bounds := _voxel_sparse_world_xz_bounds(tile_pos, grid_size, voxel_size, grid_origin, placement_search_radius)
 	var center: Vector3 = bounds.center
 	var half_diag := Vector2(float(bounds.max_x) - center.x, float(bounds.max_z) - center.z).length()
 	var query_radius := search_radius
@@ -482,7 +507,7 @@ static func _collision_xz_radius_from_voxels(collision_voxels: Array, voxel_size
 	return result
 
 
-static func _voxel_region_to_tile_pos(tile: Variant, tile_counts: Vector3i) -> Vector3i:
+static func _voxel_sparse_to_tile_pos(tile: Variant, tile_counts: Vector3i) -> Vector3i:
 	if tile is Vector3i:
 		return tile as Vector3i
 	if tile is Vector3:
@@ -495,7 +520,7 @@ static func _voxel_region_to_tile_pos(tile: Variant, tile_counts: Vector3i) -> V
 	return Vector3i(tx, ty, tz)
 
 
-static func _voxel_region_tile_world_center(
+static func _voxel_sparse_tile_world_center(
 	tile_pos: Vector3i,
 	grid_size: Vector3i,
 	voxel_size: Vector3,
@@ -523,7 +548,7 @@ static func _voxel_region_tile_world_center(
 	)
 
 
-static func _voxel_region_world_xz_bounds(
+static func _voxel_sparse_world_xz_bounds(
 	tile_pos: Vector3i,
 	grid_size: Vector3i,
 	voxel_size: Vector3,
@@ -686,23 +711,23 @@ static func instantiate_placement(
 	else:
 		_configure_node(node, node_class, cfg)
 
-	var record: Dictionary = cfg.get("voxel_record", {})
+	var record := _get_config_asset_voxel_record(cfg)
 	if not record.is_empty():
-		record = attach_placement_voxel_record(node, record)
-	elif bool(cfg.get("create_voxel_record", false)):
-		record = make_placement_voxel_record(node, world_result, node_class, cfg)
+		record = attach_placement_asset_voxel_record(node, record)
+	elif _should_create_asset_voxel_record(cfg):
+		record = make_placement_asset_voxel_record(node, world_result, node_class, cfg)
 		if not record.is_empty():
-			record = attach_placement_voxel_record(node, record)
+			record = attach_placement_asset_voxel_record(node, record)
 
 	var target = cfg.get("vegetation_exclusion", null)
 	if not record.is_empty() and target is VegetationExclusion:
-		var applied := (target as VegetationExclusion).apply_mesh_voxel_record(
+		var applied := (target as VegetationExclusion).apply_mesh_asset_voxel_record(
 			record,
 			bool(cfg.get("defer_blend", false)),
 			int(cfg.get("generation_tick", -1))
 		)
 		if not applied.is_empty():
-			attach_placement_voxel_record(node, applied)
+			attach_placement_asset_voxel_record(node, applied)
 	return node
 
 
@@ -721,7 +746,7 @@ static func instantiate_placements(
 	return nodes
 
 
-static func make_placement_voxel_record(
+static func make_placement_asset_voxel_record(
 	node: AutoObject,
 	world_result: Dictionary,
 	node_class: String,
@@ -739,25 +764,11 @@ static func make_placement_voxel_record(
 	if record_id.is_empty():
 		record_id = "%s_%d" % [node_class, int(world_result.get("asset_index", 0))]
 
-	var radius := _node_record_radius(node)
-	var bounds_y := _node_record_y_bounds(node)
-	var profile := _node_voxel_profile(node, radius)
 	var fields := _placement_record_extra_fields(node, world_result, node_class, record_config)
-	var object_type := "rock" if node is AutoRock or ["rock", "cliff"].has(node_class) else "vegetation"
-
-	var record := AutoAssetFactory.make_profile_scene_voxel_record(
+	var record := node.make_asset_voxel_record(
 		record_id,
-		object_type,
-		node.position,
-		node.rotation_degrees,
-		node.scale,
 		base_px,
 		resolution,
-		profile,
-		radius,
-		bounds_y.x,
-		bounds_y.y,
-		[],
 		fields
 	)
 	record["rotation_mode"] = str(world_result.get("rotation_mode", record_config.get("rotation_mode", "Y"))).to_upper()
@@ -766,7 +777,7 @@ static func make_placement_voxel_record(
 	return record
 
 
-static func attach_placement_voxel_record(node: AutoObject, record: Dictionary) -> Dictionary:
+static func attach_placement_asset_voxel_record(node: AutoObject, record: Dictionary) -> Dictionary:
 	if node == null or record.is_empty():
 		return {}
 	var rec := record.duplicate(true)
@@ -793,8 +804,8 @@ static func attach_placement_voxel_record(node: AutoObject, record: Dictionary) 
 	rec["object_subtype"] = node.object_subtype
 	if node.is_inside_tree():
 		rec["node_path"] = str(node.get_path())
-	node.set_voxel_record(rec)
-	return node.get_voxel_record()
+	node.set_asset_voxel_record(rec)
+	return node.get_asset_voxel_record()
 
 
 static func world_to_texture_pixel(
@@ -838,7 +849,7 @@ static func _placement_record_extra_fields(
 ) -> Dictionary:
 	var fields := {}
 	for key in record_config.keys():
-		if VOXEL_RECORD_CONFIG_KEYS.has(key):
+		if ASSET_VOXEL_RECORD_CONFIG_KEYS.has(key) or AutoObject.asset_voxel_record_meta_keys().has(key) or key == _deprecated_create_asset_voxel_record_key() or key == _legacy_create_asset_voxel_record_key():
 			continue
 		fields[key] = record_config[key]
 
@@ -868,63 +879,6 @@ static func _placement_record_extra_fields(
 	if node is AutoRock:
 		fields["mesh_index"] = int((node as AutoRock).mesh_index)
 	return fields
-
-
-static func _node_record_radius(node: AutoObject) -> float:
-	if node == null:
-		return 0.0
-	var mesh_radius := _node_xz_radius(node)
-	if node is AutoRock:
-		return maxf(mesh_radius, (node as AutoRock).mesh_size * 0.5)
-	if node is AutoVegetation and node.min_spacing > 0.0:
-		return maxf(node.min_spacing, mesh_radius)
-	if node.min_spacing > 0.0:
-		return maxf(node.min_spacing, mesh_radius)
-	return mesh_radius
-
-
-static func _node_xz_radius(node: AutoObject) -> float:
-	if node == null or node.mesh == null:
-		return 0.0
-	var aabb := node.mesh.get_aabb()
-	return maxf(absf(aabb.size.x * node.scale.x), absf(aabb.size.z * node.scale.z)) * 0.5
-
-
-static func _node_record_y_bounds(node: AutoObject) -> Vector2:
-	if node == null or node.mesh == null:
-		var y := node.position.y if node != null else 0.0
-		return Vector2(y, y)
-	var aabb := node.mesh.get_aabb()
-	var y0 := node.position.y + aabb.position.y * node.scale.y
-	var y1 := node.position.y + (aabb.position.y + aabb.size.y) * node.scale.y
-	return Vector2(minf(y0, y1), maxf(y0, y1))
-
-
-static func _node_voxel_profile(node: AutoObject, default_radius: float) -> AutoVoxelProfile:
-	var color := node.voxel_color
-	var complexity := clampf(node.voxel_complexity, 0.0, 1.0)
-	var affected_bands: Array = node.affected_bands
-	var collision_voxels: Array = node.collision_voxels
-	if node is AutoRock:
-		var rock := node as AutoRock
-		color = rock.get_voxel_color()
-		complexity = rock.get_voxel_complexity()
-		affected_bands = rock.get_affected_bands(default_radius)
-		collision_voxels = rock.get_collision_voxels(default_radius)
-	elif node is AutoVegetation:
-		var vegetation := node as AutoVegetation
-		color = vegetation.get_voxel_color()
-		complexity = vegetation.get_voxel_complexity()
-		affected_bands = vegetation.get_affected_bands(default_radius)
-		collision_voxels = vegetation.get_collision_voxels(default_radius)
-	color.a = complexity
-	return AutoAssetFactory.create_voxel_profile(
-		color,
-		complexity,
-		affected_bands,
-		default_radius,
-		collision_voxels
-	)
 
 
 static func _create_node_for_class(node_class: String) -> AutoObject:
@@ -998,16 +952,16 @@ func run_minimal(
 		ceili(float(grid_size.z) / float(TILE_SIZE))
 	)
 	var tile_count := tile_counts.x * tile_counts.y * tile_counts.z
-	var candidate_voxel_region_ids := _build_candidate_voxel_region_ids(settings, tile_counts, tile_count)
-	var candidate_voxel_region_count := candidate_voxel_region_ids.size()
-	var candidate_count := candidate_voxel_region_count * top_k
+	var candidate_voxel_sparse_ids := _build_candidate_voxel_sparse_ids(settings, tile_counts, tile_count)
+	var candidate_voxel_sparse_count := candidate_voxel_sparse_ids.size()
+	var candidate_count := candidate_voxel_sparse_count * top_k
 	var stamp_capacity := result_capacity * footprint.size()
 
 	var scene_buffer := storage_buffer_from_floats(scene_data)
 	var collision_buffer := storage_buffer_from_floats(collision_data)
 	var footprint_pos_buffer := storage_buffer_from_bytes(footprint_buffers.pos_bytes)
 	var footprint_weight_buffer := storage_buffer_from_bytes(footprint_buffers.weight_bytes)
-	var candidate_voxel_region_buffer := storage_buffer_from_bytes(_pack_u32_array(candidate_voxel_region_ids))
+	var candidate_voxel_sparse_buffer := storage_buffer_from_bytes(_pack_u32_array(candidate_voxel_sparse_ids))
 	var tile_topk_buffer := storage_buffer_zero(candidate_count * RECORD_STRIDE * 16)
 	var result_buffer := storage_buffer_zero(result_capacity * RECORD_STRIDE * 16)
 	var result_count_buffer := storage_buffer_zero(4)
@@ -1030,7 +984,7 @@ func run_minimal(
 		collision_buffer,
 		footprint_pos_buffer,
 		footprint_weight_buffer,
-		candidate_voxel_region_buffer,
+		candidate_voxel_sparse_buffer,
 		tile_topk_buffer,
 		target_buffer,
 		target_color_buffer,
@@ -1038,7 +992,7 @@ func run_minimal(
 		grid_size,
 		tile_counts,
 		tile_count,
-		candidate_voxel_region_count,
+		candidate_voxel_sparse_count,
 		footprint.size(),
 		has_target,
 		settings
@@ -1081,8 +1035,8 @@ func run_minimal(
 		"debug_channel_count": NUM_DEBUG_CHANNELS,
 		"tile_count": tile_count,
 		"tile_counts": tile_counts,
-		"candidate_voxel_region_count": candidate_voxel_region_count,
-		"candidate_voxel_region_ids": candidate_voxel_region_ids,
+		"candidate_voxel_sparse_count": candidate_voxel_sparse_count,
+		"candidate_voxel_sparse_ids": candidate_voxel_sparse_ids,
 		"candidate_count": candidate_count,
 	}
 
@@ -1132,9 +1086,9 @@ func _pack_u32_array(values: PackedInt32Array) -> PackedByteArray:
 	return bytes
 
 
-func _build_candidate_voxel_region_ids(settings: Dictionary, tile_counts: Vector3i, tile_count: int) -> PackedInt32Array:
+func _build_candidate_voxel_sparse_ids(settings: Dictionary, tile_counts: Vector3i, tile_count: int) -> PackedInt32Array:
 	var ids := PackedInt32Array()
-	var raw_regions: Variant = settings.get("candidate_voxel_regions", null)
+	var raw_regions: Variant = settings.get("candidate_voxel_sparses", null)
 	if raw_regions == null:
 		ids.resize(tile_count)
 		for i in range(tile_count):
@@ -1143,21 +1097,21 @@ func _build_candidate_voxel_region_ids(settings: Dictionary, tile_counts: Vector
 
 	var seen := {}
 	for region in raw_regions:
-		var tile_id := _voxel_region_to_tile_id(region, tile_counts)
+		var tile_id := _voxel_sparse_to_tile_id(region, tile_counts)
 		if tile_id < 0 or tile_id >= tile_count or seen.has(tile_id):
 			continue
 		seen[tile_id] = true
 		ids.append(tile_id)
 
 	if ids.is_empty():
-		push_warning("VoxelPlacementGenerator: candidate_voxel_regions produced no valid regions; using full grid")
+		push_warning("VoxelPlacementGenerator: candidate_voxel_sparses produced no valid regions; using full grid")
 		ids.resize(tile_count)
 		for i in range(tile_count):
 			ids[i] = i
 	return ids
 
 
-static func _voxel_region_to_tile_id(region: Variant, tile_counts: Vector3i) -> int:
+static func _voxel_sparse_to_tile_id(region: Variant, tile_counts: Vector3i) -> int:
 	if region is Vector3i:
 		return region.x + tile_counts.x * (region.y + tile_counts.y * region.z)
 	if region is Vector3:
@@ -1188,7 +1142,7 @@ func _dispatch_score(
 	collision_buffer: RID,
 	footprint_pos_buffer: RID,
 	footprint_weight_buffer: RID,
-	candidate_voxel_region_buffer: RID,
+	candidate_voxel_sparse_buffer: RID,
 	tile_topk_buffer: RID,
 	target_buffer: RID,
 	target_color_buffer: RID,
@@ -1196,7 +1150,7 @@ func _dispatch_score(
 	grid_size: Vector3i,
 	tile_counts: Vector3i,
 	tile_count: int,
-	candidate_voxel_region_count: int,
+	candidate_voxel_sparse_count: int,
 	footprint_count: int,
 	has_target: int,
 	settings: Dictionary
@@ -1207,7 +1161,7 @@ func _dispatch_score(
 		make_storage_uniform(2, footprint_pos_buffer),
 		make_storage_uniform(3, footprint_weight_buffer),
 		make_storage_uniform(4, tile_topk_buffer),
-		make_storage_uniform(5, candidate_voxel_region_buffer),
+		make_storage_uniform(5, candidate_voxel_sparse_buffer),
 		make_storage_uniform(6, target_buffer),
 		make_storage_uniform(7, target_color_buffer),
 		make_storage_uniform(8, debug_voxel_buffer),
@@ -1247,7 +1201,7 @@ func _dispatch_score(
 	push.encode_float(100, collision_penalty)
 	push.encode_float(104, overlap_penalty)
 	push.encode_float(108, clearance_penalty)
-	push.encode_s32(112, candidate_voxel_region_count)
+	push.encode_s32(112, candidate_voxel_sparse_count)
 	push.encode_s32(116, search_radius.x)
 	push.encode_s32(120, search_radius.y)
 	push.encode_s32(124, search_radius.z)
@@ -1256,7 +1210,7 @@ func _dispatch_score(
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_score)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, candidate_voxel_region_count, 1, 1)
+	_rd.compute_list_dispatch(cl, candidate_voxel_sparse_count, 1, 1)
 	end_compute_list()
 
 
@@ -1807,23 +1761,50 @@ static func results_to_world(
 
 
 # ---------------------------------------------------------------------------
-# Voxel record creation — compatible with _attach_vegetation_voxel_record
+# asset_voxel_record creation — compatible with _attach_vegetation_asset_voxel_record
 # ---------------------------------------------------------------------------
 
-static func make_voxel_record(
+static func make_asset_voxel_record(
 	world_result: Dictionary,
 	node: AutoObject,
 	config: Dictionary = {}
 ) -> Dictionary:
+	if node != null:
+		var node_record_id := str(config.get("id", node.name if not node.name.is_empty() else "voxel_placement_%d" % int(world_result.get("asset_index", 0))))
+		var fields := config.duplicate(true)
+		fields.erase("id")
+		fields.erase("id_prefix")
+		if not fields.has("auto_source"):
+			fields["auto_source"] = "voxel_placement"
+		if not fields.has("source_voxel_type"):
+			fields["source_voxel_type"] = "AutoSceneVoxel"
+		if not fields.has("source_kind"):
+			fields["source_kind"] = "voxel_placement"
+		if not fields.has("producer_stage"):
+			fields["producer_stage"] = "voxel_placement"
+		if config.has("type") and not fields.has("object_subtype"):
+			fields["object_subtype"] = str(config.type)
+		fields["score"] = float(world_result.get("score", 0.0))
+		fields["voxel_origin"] = world_result.get("voxel_origin", Vector3i.ZERO)
+		fields["rotation_index"] = int(world_result.get("rotation_index", 0))
+		fields["rotation_y"] = float(world_result.get("rotation_y", 0.0))
+		fields["asset_index"] = int(world_result.get("asset_index", 0))
+		var node_record := node.make_asset_voxel_record(node_record_id, Vector2i.ZERO, 0, fields)
+		node_record["position"] = world_result.get("position", node.position)
+		node_record["scale"] = world_result.get("scale", node.scale)
+		if world_result.has("rotation_degrees"):
+			node_record["rotation_degrees"] = world_result.rotation_degrees
+		elif world_result.has("rotation_y"):
+			node_record["rotation_mode"] = "Y"
+			node_record["rotation_degrees"] = Vector3(0.0, float(world_result.rotation_y), 0.0)
+		return node_record
+
 	var color: Color = config.get("color", node.voxel_color if node != null else Color.WHITE)
 	var complexity := clampf(float(config.get("complexity", color.a)), 0.0, 1.0)
 	color.a = complexity
 	var position: Vector3 = world_result.get("position", node.position if node != null else Vector3.ZERO)
 	var scale_val: Vector3 = world_result.get("scale", node.scale if node != null else Vector3.ONE)
 	var record_id := str(config.get("id", node.name if node != null else "voxel_placement_%d" % int(world_result.get("asset_index", 0))))
-	var affected_bands: Array = config.get("affected_bands", [])
-	if affected_bands.is_empty() and node != null and node.has_method("get_affected_bands"):
-		affected_bands = node.call("get_affected_bands")
 	var collision_voxels: Array = config.get("collision_voxels", [])
 	if collision_voxels.is_empty() and node != null and node.has_method("get_collision_voxels"):
 		collision_voxels = node.call("get_collision_voxels")
@@ -1842,7 +1823,6 @@ static func make_voxel_record(
 		"volume_xz_resolution": 0,
 		"color": color,
 		"complexity": complexity,
-		"affected_bands": affected_bands,
 		"collision_voxels": collision_voxels,
 		"score": float(world_result.get("score", 0.0)),
 		"voxel_origin": world_result.get("voxel_origin", Vector3i.ZERO),
@@ -1854,7 +1834,7 @@ static func make_voxel_record(
 	return record
 
 
-static func make_voxel_records(
+static func make_asset_voxel_records(
 	world_results: Array,
 	nodes: Array,
 	config: Dictionary = {}
@@ -1864,7 +1844,7 @@ static func make_voxel_records(
 		var node: AutoObject = nodes[i] if i < nodes.size() else null
 		var cfg := config.duplicate(true)
 		cfg["id"] = "%s_%d" % [str(config.get("id_prefix", "voxel_placement")), i]
-		records.append(make_voxel_record(world_results[i], node, cfg))
+		records.append(make_asset_voxel_record(world_results[i], node, cfg))
 	return records
 
 

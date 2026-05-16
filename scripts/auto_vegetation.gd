@@ -23,8 +23,6 @@ func configure_vegetation(config: Dictionary) -> void:
 	if cfg.has("complexity"):
 		voxel_complexity = clampf(float(cfg.complexity), 0.0, 1.0)
 	voxel_color.a = voxel_complexity
-	if cfg.has("affected_bands"):
-		set_affected_bands(cfg.affected_bands)
 	if cfg.has("collision_voxels"):
 		set_collision_voxels(cfg.collision_voxels)
 	if cfg.has("semantic_probe_density"):
@@ -39,8 +37,6 @@ func configure_vegetation(config: Dictionary) -> void:
 		cfg["color"] = get_voxel_color()
 	if not cfg.has("complexity"):
 		cfg["complexity"] = get_voxel_complexity()
-	if not cfg.has("affected_bands"):
-		cfg["affected_bands"] = get_affected_bands()
 	if not cfg.has("collision_voxels"):
 		cfg["collision_voxels"] = get_collision_voxels()
 	if not cfg.has("pivot_variants"):
@@ -55,20 +51,6 @@ func configure_vegetation(config: Dictionary) -> void:
 	_clear_vegetation_state_mirror_metadata()
 
 
-func get_affected_bands(default_radius: float = 0.0) -> Array[Dictionary]:
-	var radius := default_radius if default_radius > 0.0 else _band_radius(vegetation_band)
-	var descriptor_bands := super.get_affected_bands(radius)
-	if not descriptor_bands.is_empty():
-		return descriptor_bands
-	if voxel_profile != null:
-		var bands := voxel_profile.get_affected_bands(radius)
-		if not bands.is_empty():
-			return bands
-	if vegetation_band.is_empty():
-		return []
-	return [_make_default_band_entry(vegetation_band, radius, get_voxel_color(), get_voxel_complexity())]
-
-
 func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
 	var radius := default_radius if default_radius > 0.0 else _band_radius(vegetation_band)
 	var descriptor_collisions := super.get_collision_voxels(radius)
@@ -79,28 +61,24 @@ func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
 	return []
 
 
-func _make_default_band_entry(band_name: String, radius: float, color: Color, complexity: float) -> Dictionary:
-	var c := color
-	c.a = clampf(complexity, 0.0, 1.0)
-	return {
-		"band": band_name,
-		"channel": _band_channel(band_name),
-		"radius": radius,
-		"color": c,
-		"complexity": c.a,
-	}
+func get_record_object_type() -> String:
+	return "vegetation"
 
 
-func _band_channel(band_name: String) -> int:
-	match band_name:
-		"understory":
-			return 1
-		"midstory":
-			return 2
-		"canopy":
-			return 3
-		_:
-			return 0
+func get_record_radius() -> float:
+	var mesh_radius := get_xz_radius()
+	if min_spacing > 0.0:
+		return maxf(min_spacing, mesh_radius)
+	return mesh_radius
+
+
+func get_asset_voxel_record_extra_fields(extra_fields: Dictionary = {}) -> Dictionary:
+	var fields := super.get_asset_voxel_record_extra_fields(extra_fields)
+	if not fields.has("object_subtype"):
+		fields["object_subtype"] = object_subtype
+	if not fields.has("band"):
+		fields["band"] = vegetation_band
+	return fields
 
 
 func _band_radius(band_name: String) -> float:
@@ -119,7 +97,6 @@ func _clear_vegetation_state_mirror_metadata() -> void:
 	for key in [
 		"veg_color",
 		"veg_complexity",
-		"veg_affected_bands",
 		"veg_collision_voxels",
 		"veg_band",
 	]:

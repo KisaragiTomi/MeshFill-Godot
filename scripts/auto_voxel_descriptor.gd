@@ -2,10 +2,10 @@ class_name AutoVoxelDescriptor
 extends Resource
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const AutoVoxelSharedFieldsScript := preload("res://scripts/auto_voxel_shared_fields.gd")
 
 @export var color: Color = Color.WHITE
 @export_range(0.0, 1.0) var complexity: float = 1.0
-@export var affected_bands: Array[Dictionary] = []
 @export var collision_voxels: Array[Dictionary] = []
 @export var pivot_variants: Array[Dictionary] = []
 @export var auto_generate_vertical_pivots: bool = false
@@ -32,19 +32,8 @@ func set_color_and_complexity(next_color: Color, next_complexity: float) -> void
 	color.a = complexity
 
 
-func get_affected_bands(default_radius: float = 1.0) -> Array[Dictionary]:
-	return AutoVoxelProfile.normalize_affected_bands(affected_bands, default_radius, get_color(), get_complexity())
-
-
 func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
 	return AutoVoxelProfile.normalize_collision_voxels(collision_voxels, default_radius)
-
-
-func set_affected_bands(source: Array) -> void:
-	affected_bands.clear()
-	for raw in source:
-		if raw is Dictionary:
-			affected_bands.append((raw as Dictionary).duplicate(true))
 
 
 func set_collision_voxels(source: Array) -> void:
@@ -82,18 +71,15 @@ func get_semantic_probes(
 	mesh: Mesh,
 	density_override: float = -1.0,
 	world_scale: Vector3 = Vector3.ONE,
-	fallback_bands: Array = [],
 	fallback_collision_voxels: Array = []
 ) -> Array[Dictionary]:
 	var profile := ensure_semantic_probe_profile()
 	var d := semantic_probe_density if density_override <= 0.0 else density_override
 	if not profile.probes.is_empty() and absf(float(profile.get("density")) - d) <= 0.001:
 		return profile.get_probes()
-	var bands := affected_bands if not affected_bands.is_empty() else fallback_bands
 	var collisions := collision_voxels if not collision_voxels.is_empty() else fallback_collision_voxels
 	return profile.rebuild_from_mesh(
 		mesh,
-		bands,
 		collisions,
 		get_color(),
 		get_complexity(),
@@ -105,15 +91,12 @@ func get_semantic_probes(
 
 func to_record_fields(default_radius: float = 0.0) -> Dictionary:
 	var profile := ensure_semantic_probe_profile() if semantic_probe_profile != null else null
-	var result := {
-		"color": get_color(),
-		"complexity": get_complexity(),
-		"affected_bands": get_affected_bands(default_radius),
-		"collision_voxels": get_collision_voxels(default_radius),
+	var result := AutoVoxelSharedFieldsScript.from_descriptor(self, default_radius)
+	result.merge({
 		"pivot_variants": get_pivot_variants(),
 		"auto_generate_vertical_pivots": auto_generate_vertical_pivots,
 		"semantic_probe_density": semantic_probe_density,
-	}
+	}, true)
 	if profile != null:
 		result["semantic_probes"] = profile.probes.duplicate(true)
 	return result
@@ -125,7 +108,6 @@ static func from_profile(profile: AutoVoxelProfile, default_radius: float = 0.0)
 		return descriptor
 	descriptor.color = profile.get_color()
 	descriptor.complexity = profile.get_complexity()
-	descriptor.affected_bands = profile.get_affected_bands(default_radius)
 	descriptor.collision_voxels = profile.get_collision_voxels(default_radius)
 	return descriptor
 
