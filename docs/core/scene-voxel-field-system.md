@@ -126,7 +126,7 @@ AutoVoxelDescriptor / brush edit / target guidance
 
 ## `voxel_record`
 
-`voxel_record` 是写入 `SV` / `SceneVoxel` 的 record payload，由 `AutoAssetFactory.make_profile_scene_voxel_record()`、typed wrapper 或 placement builder 生成。最终字段归属在 `SourceSceneVoxel` / committed `SceneVoxel`；`AutoObject` 只生成或保存 handle，不拥有最终 record schema。
+`voxel_record` 是本轮写入 `SV` / `SceneVoxel` 的 write payload，由 `AutoAssetFactory.make_profile_scene_voxel_record()`、typed wrapper 或 placement builder 生成。它不是上一轮 `SceneVoxel`；上一轮 committed read model 明确写作 `SceneVoxel[t - 1]`。最终字段归属在 `SourceSceneVoxel` / committed `SceneVoxel`；`AutoObject` 只生成或保存 handle，不拥有最终 record schema。
 
 | 字段 | 含义 |
 | --- | --- |

@@ -6,7 +6,7 @@
 
 | 文件 | 说明 | 关联文档 |
 | --- | --- | --- |
-| `autoobject_asset_properties.svg` | `AutoObject`、`AutoVoxelDescriptor`、legacy 字段、`voxel_record` 和 metadata 的归属图 | `docs/core/asset-properties.md` |
+| `autoobject_asset_properties.svg` | `AutoObject`、`AutoVoxelDescriptor`、legacy 字段、SV write payload 和 metadata 的归属图 | `docs/core/asset-properties.md` |
 | `meshfill_current_framework.svg` | 当前 MeshFill 框架、运行时模块和数据流概览 | `docs/core/meshfill-framework.md` |
 | `meshfill_compute_shader_3d_placement.svg` | 3D voxel placement compute shader pipeline | `docs/history/voxel-3d-migration-plan.md` |
 | `autoobject_probe_scoring_logic.svg` | AutoObject semantic probe scoring 和 GPU prefilter 逻辑 | `docs/placement/autoobject-probe-prefilter.md` |

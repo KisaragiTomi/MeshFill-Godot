@@ -165,9 +165,9 @@
   <path class="edge" d="M1363 448 V476"/>
 
   <rect class="node record" x="58" y="778" width="244" height="106" rx="16" ry="16"/>
-  <text class="label" x="78" y="810">Record Builders</text>
+  <text class="label" x="78" y="810">Write Payload Builders</text>
   <text class="small" x="78" y="834">make_*_scene_voxel_record()</text>
-  <text class="small" x="78" y="856">build SV record payload</text>
+  <text class="small" x="78" y="856">build SV write payload</text>
   <text class="tiny" x="78" y="874">position, ids, bands, collision</text>
 
   <rect class="node state" x="338" y="766" width="244" height="140" rx="16" ry="16"/>
@@ -185,7 +185,7 @@
 
   <rect class="node state" x="898" y="738" width="320" height="206" rx="16" ry="16"/>
   <text class="label" x="918" y="770">SceneVoxel</text>
-  <text class="small" x="918" y="794">committed read model owns record fields</text>
+  <text class="small" x="918" y="794">committed read model</text>
   <text class="small" x="918" y="816">base: type / occupied / value</text>
   <text class="tiny" x="918" y="838">color / complexity / band / channel</text>
   <text class="tiny" x="918" y="858">coords: slice_index / voxel_xz / base_pixel</text>

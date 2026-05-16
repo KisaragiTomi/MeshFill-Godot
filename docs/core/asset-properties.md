@@ -56,7 +56,7 @@
 | `semantic_probe_density` | `float` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.semantic_probe_density`。 |
 | `context_sensing_radius` | `float` | legacy descriptor 兼容入口；同步到 `voxel_descriptor.context_sensing_radius`。 |
 | `allowed_anchor_kinds` | `PackedStringArray` | 限制资产可参与的 anchor 类型，如 `ground`、`target_top`。 |
-| `voxel_record` | `Dictionary` | SceneVoxel record handle；字段结构见 `scene-voxel-field-system.md`。 |
+| `voxel_record` | `Dictionary` | SV write payload / query handle；字段结构见 `scene-voxel-field-system.md`。 |
 
 读取资产语义时必须走 `voxel_descriptor` 或 `get_voxel_color()`、`get_affected_bands()`、`get_collision_voxels()`、`get_pivot_variants()` 等 getter；这些 getter 会通过 `_ensure_voxel_descriptor()` 使用 descriptor，并返回归一化后的结果。不要在新逻辑中直接读取 `voxel_color`、`voxel_complexity`、`affected_bands`、`collision_voxels`、`pivot_variants`、`semantic_probe_profile`、`semantic_probe_density` 或 `context_sensing_radius` 作为权威语义。
 
@@ -120,9 +120,9 @@
 
 Collision 的最终归属见 `scene-voxel-field-system.md`：`collision_voxels` 与 `color` / `complexity` 同级，从资产默认值进入 record / source voxel，并可作为 committed `SceneVoxel` 的同级字段保留；提交后的 `collision_occupancy` 是由它重建的派生查询缓存视图。
 
-## SV record 边界
+## SV write payload 边界
 
-`voxel_record` 属于 `SV` / `SceneVoxel` record payload 和 source voxel delta 数据，不是资产默认值主结构，也不是 `AutoObject` 的最终 schema。本文件只记录它在 `AutoObject` 和 metadata 上的查询入口；字段 schema、source 类型和提交规则见 `scene-voxel-field-system.md`。
+`voxel_record` 属于 `SV` / `SceneVoxel` write payload 和 source voxel delta 数据，不是资产默认值主结构，也不是 `AutoObject` 的最终 schema。本文件只记录它在 `AutoObject` 和 metadata 上的查询入口；字段 schema、source 类型和提交规则见 `scene-voxel-field-system.md`。
 
 ## Metadata 规则
 

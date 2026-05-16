@@ -17,7 +17,7 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | --- | --- |
 | [`core/meshfill-framework.md`](core/meshfill-framework.md) | MeshFill ownership model, runtime flow, current modules, and framework rules |
 | [`core/asset-properties.md`](core/asset-properties.md) | Current `AutoObject`, descriptor, profile, and metadata field reference |
-| [`core/scene-voxel-field-system.md`](core/scene-voxel-field-system.md) | Runtime `voxel_record`, source voxel deltas, final `SceneVoxel`, and `GlobalVoxelField` cache design |
+| [`core/scene-voxel-field-system.md`](core/scene-voxel-field-system.md) | SV write payloads, source voxel deltas, final `SceneVoxel`, and `GlobalVoxelField` cache design |
 | [`core/auto-asset-scripting.md`](core/auto-asset-scripting.md) | Scripted rock and vegetation asset creation through Godot headless tools |
 | [`core/asset-semantic-probes.md`](core/asset-semantic-probes.md) | Asset-side semantic probes used by prefilter and candidate-only route validation |
 
