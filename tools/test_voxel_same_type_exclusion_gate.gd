@@ -1,14 +1,14 @@
 extends SceneTree
 
 const VPG := preload("res://scripts/voxel_placement_generator.gd")
-const GVF := preload("res://scripts/global_voxel_field.gd")
+const SVR := preload("res://scripts/scene_voxel_runtime.gd")
 
 
 func _init() -> void:
 	var ok := true
 	ok = ok and _test_same_type_neighbor_skips_candidate_voxel_sparse()
 	ok = ok and _test_different_subtype_keeps_candidate_voxel_sparse()
-	ok = ok and _test_global_field_autoobject_metadata_gate()
+	ok = ok and _test_scene_voxel_runtime_autoobject_metadata_gate()
 	if ok:
 		print("[VoxelSameTypeExclusion] ALL TESTS PASSED")
 		quit(0)
@@ -75,8 +75,8 @@ func _test_different_subtype_keeps_candidate_voxel_sparse() -> bool:
 	return true
 
 
-func _test_global_field_autoobject_metadata_gate() -> bool:
-	print("[VoxelSameTypeExclusion] test_global_field_autoobject_metadata_gate...")
+func _test_scene_voxel_runtime_autoobject_metadata_gate() -> bool:
+	print("[VoxelSameTypeExclusion] test_scene_voxel_runtime_autoobject_metadata_gate...")
 	var manager := AutoObjectManager.new()
 	manager.configure_spatial_index(4.0)
 	var existing := _make_object("existing_bush", "vegetation", "bush", Vector3(2.0, 0.0, 2.0), 3.0)
@@ -87,7 +87,7 @@ func _test_global_field_autoobject_metadata_gate() -> bool:
 		"min_spacing": 3.0,
 	})
 
-	var field := GVF.new(Vector3i(16, 8, 16), Vector3(0.5, 0.5, 0.5), Vector3.ZERO)
+	var field := SVR.new(Vector3i(16, 8, 16), Vector3(0.5, 0.5, 0.5), Vector3.ZERO)
 	field.set_auto_object_manager(manager)
 
 	var candidate_asset := _make_object("candidate_bush_asset", "vegetation", "bush", Vector3.ZERO, 2.0)
@@ -114,13 +114,13 @@ func _test_global_field_autoobject_metadata_gate() -> bool:
 	var asset_results: Array = result.get("asset_results", [])
 	var a0: Dictionary = asset_results[0]
 	if not bool(a0.get("skipped_same_type_exclusion", false)):
-		push_error("  FAIL: GlobalVoxelField should forward manager and AutoObject metadata")
+		push_error("  FAIL: SceneVoxelLocal should forward manager and AutoObject metadata")
 		existing.free()
 		candidate_asset.free()
 		manager.free()
 		return false
 
-	print("  OK: GlobalVoxelField metadata path skipped same-type candidate")
+	print("  OK: SceneVoxelLocal metadata path skipped same-type candidate")
 	existing.free()
 	candidate_asset.free()
 	manager.free()

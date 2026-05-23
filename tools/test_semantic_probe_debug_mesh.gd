@@ -19,14 +19,14 @@ func _init() -> void:
 
 func _test_debug_anchor_includes_source_mesh() -> bool:
 	print("[SemanticProbeDebugMesh] test_debug_anchor_includes_source_mesh...")
-	var asset := load(TEST_LEAF_ASSET_PATH) as AutoVegetationAsset
+	var asset := load(TEST_LEAF_ASSET_PATH) as AutoVoxelDescriptor
 	if asset == null:
 		push_error("  FAIL: could not load test leaf asset")
 		return false
 
 	var main := MainScript.new()
 	main.semantic_probe_density = 1.0
-	var vegetation_assets: Array[AutoVegetationAsset] = []
+	var vegetation_assets: Array[AutoVoxelDescriptor] = []
 	vegetation_assets.append(asset)
 	main.set("_vegetation_assets", vegetation_assets)
 

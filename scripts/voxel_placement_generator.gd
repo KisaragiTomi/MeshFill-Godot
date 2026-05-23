@@ -3,7 +3,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 ## Minimal GPU prototype for 3D voxel-space object placement.
 ##
 ## This is intentionally independent from the current 2.5D CliffGenerator path:
-## callers provide compact scene/collision occupancy buffers and a simplified
+## callers provide compact scene/collision field buffers and a simplified
 ## asset footprint, then receive compact placement records and stamped occupancy.
 
 const TILE_SIZE := 8
@@ -23,7 +23,7 @@ const DEBUG_CHANNEL_NAMES: PackedStringArray = [
 	"solid_collision",
 	"clearance_overlap",
 ]
-const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
+const CHANNEL_ENTRIES_KEY := "channel_entries"
 const ASSET_VOXEL_RECORD_CONFIG_KEYS := [
 	"asset",
 	"base_pixel",
@@ -41,7 +41,7 @@ const ASSET_VOXEL_RECORD_CONFIG_KEYS := [
 	"texture_resolution",
 	"vegetation_exclusion",
 	"volume_xz_resolution",
-	"asset_voxel_record",
+	"voxel_write_spec",
 	"world_capture_size",
 ]
 
@@ -108,20 +108,20 @@ static func _should_create_asset_voxel_record(config: Dictionary) -> bool:
 #   seed (int, default -1 = nondeterministic): RNG seed for weight shuffle
 #   auto_object_manager (AutoObjectManager): optional same-type exclusion gate
 # Returns: {asset_results: [{asset_index, results, world_results, result_count}],
-#           scene_occupancy_out, collision_occupancy_out, total_placed,
+#           scene_field_out, collision_field_out, total_placed,
 #           processing_order: [original indices in execution order]}
 
 func run_multi_asset(
-	scene_occupancy: PackedFloat32Array,
-	collision_occupancy: PackedFloat32Array,
+	scene_field: PackedFloat32Array,
+	collision_field: PackedFloat32Array,
 	asset_defs: Array,
 	grid_size: Vector3i,
 	voxel_size: Vector3,
 	grid_origin: Vector3 = Vector3.ZERO,
 	common_settings: Dictionary = {}
 ) -> Dictionary:
-	var current_scene := scene_occupancy.duplicate()
-	var current_collision := collision_occupancy.duplicate()
+	var current_scene := scene_field.duplicate()
+	var current_collision := collision_field.duplicate()
 	var total_placed := 0
 	var global_quota := int(common_settings.get("global_quota", -1))
 
@@ -229,8 +229,8 @@ func run_multi_asset(
 		var raw_results: Array = best_gpu_out.get("results", [])
 		var world := results_to_world(raw_results, voxel_size, grid_origin, 24, best_pivot)
 
-		current_scene = best_gpu_out.get("scene_occupancy_out", current_scene)
-		current_collision = best_gpu_out.get("collision_occupancy_out", current_collision)
+		current_scene = best_gpu_out.get("scene_field_out", current_scene)
+		current_collision = best_gpu_out.get("collision_field_out", current_collision)
 		total_placed += count
 
 		result_by_index[orig_idx] = {
@@ -252,8 +252,8 @@ func run_multi_asset(
 
 	return {
 		"asset_results": asset_results,
-		"scene_occupancy_out": current_scene,
-		"collision_occupancy_out": current_collision,
+		"scene_field_out": current_scene,
+		"collision_field_out": current_collision,
 		"total_placed": total_placed,
 		"processing_order": order,
 	}
@@ -459,7 +459,7 @@ static func _asset_type_info(asset_def: Dictionary) -> Dictionary:
 			object_subtype = str(asset.get("object_subtype")) if _object_has_property(asset, "object_subtype") else ""
 		if object_type.is_empty() and asset is AutoRock:
 			object_type = "rock"
-		elif object_type.is_empty() and asset is AutoVegetationAsset:
+		elif object_type.is_empty() and asset is AutoVoxelDescriptor:
 			object_type = "vegetation"
 		elif object_type.is_empty() and asset is AutoVegetation:
 			object_type = "vegetation"
@@ -479,8 +479,8 @@ static func _asset_min_spacing(asset_def: Dictionary, voxel_size: Vector3) -> fl
 	var asset = asset_def.get("asset", null)
 	if asset != null and _object_has_property(asset, "min_spacing"):
 		return maxf(float(asset.get("min_spacing")), 0.0)
-	if asset is AutoVegetationAsset:
-		return maxf(float((asset as AutoVegetationAsset).scatter_min_distance) * 0.5, 0.0)
+	if asset is AutoVoxelDescriptor:
+		return maxf(float((asset as AutoVoxelDescriptor).scatter_min_distance) * 0.5, 0.0)
 	return _collision_xz_radius_from_voxels(asset_def.get("collision_voxels", []), voxel_size)
 
 
@@ -707,7 +707,7 @@ static func instantiate_placement(
 
 	var asset = cfg.get("asset", null)
 	if node is AutoRock and asset is AutoRock:
-		AutoAssetFactory.configure_rock_instance(node as AutoRock, asset as AutoRock, cfg)
+		(node as AutoRock).configure_from_rock_asset(asset as AutoRock, cfg)
 	else:
 		_configure_node(node, node_class, cfg)
 
@@ -720,8 +720,8 @@ static func instantiate_placement(
 			record = attach_placement_asset_voxel_record(node, record)
 
 	var target = cfg.get("vegetation_exclusion", null)
-	if not record.is_empty() and target is VegetationExclusion:
-		var applied := (target as VegetationExclusion).apply_mesh_asset_voxel_record(
+	if not record.is_empty() and target is SceneVoxelCommitter:
+		var applied := (target as SceneVoxelCommitter).apply_mesh_asset_voxel_record(
 			record,
 			bool(cfg.get("defer_blend", false)),
 			int(cfg.get("generation_tick", -1))
@@ -914,8 +914,8 @@ static func _configure_node(node: AutoObject, node_class: String, cfg: Dictionar
 
 
 func run_minimal(
-	scene_occupancy: PackedFloat32Array,
-	collision_occupancy: PackedFloat32Array,
+	scene_field: PackedFloat32Array,
+	collision_field: PackedFloat32Array,
 	footprint: Array,
 	grid_size: Vector3i,
 	settings: Dictionary = {}
@@ -932,8 +932,8 @@ func run_minimal(
 		push_error("VoxelPlacementGenerator: footprint is limited to %d voxels" % FOOTPRINT_CAPACITY)
 		return {}
 
-	var scene_data := _normalize_float_array(scene_occupancy, voxel_count)
-	var collision_data := _normalize_float_array(collision_occupancy, voxel_count)
+	var scene_data := _normalize_float_array(scene_field, voxel_count)
+	var collision_data := _normalize_float_array(collision_field, voxel_count)
 	var footprint_buffers := _pack_footprint(footprint)
 
 	log_name = "VoxelPlacementGenerator"
@@ -1027,8 +1027,8 @@ func run_minimal(
 		"result_count": result_count,
 		"results": _decode_records(result_data, result_count),
 		"tile_topk": _decode_records(tile_topk_data, candidate_count),
-		"scene_occupancy_out": _decode_float_array(scene_out_data, voxel_count),
-		"collision_occupancy_out": _decode_float_array(collision_out_data, voxel_count),
+		"scene_field_out": _decode_float_array(scene_out_data, voxel_count),
+		"collision_field_out": _decode_float_array(collision_out_data, voxel_count),
 		"stamp_deltas": _decode_stamp_deltas(stamp_delta_data, stamp_capacity),
 		"debug_voxel": _decode_float_array(debug_voxel_data, voxel_count * NUM_DEBUG_CHANNELS),
 		"debug_channel_names": DEBUG_CHANNEL_NAMES,
@@ -1761,7 +1761,7 @@ static func results_to_world(
 
 
 # ---------------------------------------------------------------------------
-# asset_voxel_record creation — compatible with _attach_vegetation_asset_voxel_record
+# voxel_write_spec creation — compatible with _attach_vegetation_asset_voxel_record
 # ---------------------------------------------------------------------------
 
 static func make_asset_voxel_record(
@@ -1830,7 +1830,7 @@ static func make_asset_voxel_record(
 		"rotation_y": float(world_result.get("rotation_y", 0.0)),
 		"asset_index": int(world_result.get("asset_index", 0)),
 	}
-	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = []
+	record[CHANNEL_ENTRIES_KEY] = []
 	return record
 
 

@@ -1,4 +1,4 @@
-# Project TODO
+﻿# Project TODO
 
 本文只保留当前候选路由方案的后续事项。旧版“全资产语义查找”任务已移除；语义匹配只能在 `anchor_autoobject_topk` 的候选集内部 rerank、validate 或 prune。
 
@@ -8,18 +8,18 @@
 
 ### P0：候选路由主线
 
-- [ ] 将 `anchor_autoobject_topk` 的候选记录统一为 `{asset_index, score, anchor_kind, tile_id}`。
+- [ ] 将 `anchor_autoobject_topk` 的候选记录统一为 `{asset_index, score, tile_id}`，anchor 本体保持 position-only。
 - [ ] 实现候选 route 归一化、去重和低置信度剔除。
-- [ ] 聚合 surviving routes 为 `candidate_voxel_sparses_by_asset`。
-- [ ] 聚合候选 voxel 区域时按 footprint、probe offset bounds、context 半径和 interpolation guard 保守扩张。
-- [ ] 确认 `VoxelPlacementGenerator.run_multi_asset()` 对空候选 voxel 区域的 asset 直接 skip。
-- [ ] 增加集成测试：prefilter route、empty route skip、dirty voxel 区域 route rebuild。
+- [ ] 聚合 surviving routes 为 candidate voxel regions；目标命名为 `candidate_voxel_regions_by_asset`，当前兼容视图仍可读写 `candidate_voxel_sparses_by_asset`。
+- [ ] 聚合 candidate voxel regions 时按 footprint、probe offset bounds、context 半径和 interpolation guard 保守扩张。
+- [ ] 确认 `VoxelPlacementGenerator.run_multi_asset()` 对空 candidate voxel region 的 asset 直接 skip。
+- [ ] 增加集成测试：prefilter route、empty route skip、dirty voxel-region route rebuild。
 
 ### P1：候选集内部验证
 
 - [ ] 可选生成 `voxel_context_buffer`，只用于候选 route 验证和 EMPTY 判断。
 - [ ] 可选生成 `target_scene_context_rgba8_buffer`，用于局部 / wide TargetSV 颜色与复杂度验证。
-- [ ] 为所有 TargetSV probe / context 采样应用 clamp 边界规则。
+- [ ] 为所有 TargetSV_B probe / context 采样应用 clamp 边界规则。
 - [ ] 在 debug 输出中记录 `clamped_sample_count`。
 - [ ] 评估 `route_score` 默认阈值和 `empty_region_threshold`。
 
@@ -48,8 +48,8 @@ docs/core/asset-semantic-probes.md
 
 - [ ] 明确 `SemanticProbe` flags 的稳定 bit layout。
 - [ ] 为 `context` probe 增加可视化 / inspect 输出。
-- [ ] 为 `ground`、`target_top` 等 anchor kind 分别验证 probe offset。
-- [ ] 添加测试：probe 生成确定性、context probe 数量、TargetSV clamp 采样。
+- [ ] 验证支撑面 / target-top 两类 position-only anchor 对 probe offset 的覆盖。
+- [ ] 添加测试：probe 生成确定性、context probe 数量、TargetSV_B clamp 采样。
 
 ### P4：MLP / learned matcher
 

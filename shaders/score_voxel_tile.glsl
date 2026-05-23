@@ -22,12 +22,12 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 
-layout(set = 0, binding = 0, std430) restrict readonly buffer SceneOccupancy {
-    float scene_occupancy[];
+layout(set = 0, binding = 0, std430) restrict readonly buffer SceneField {
+    float scene_field[];
 };
 
-layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionOccupancy {
-    float collision_occupancy[];
+layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
+    float collision_field[];
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer FootprintPos {
@@ -154,8 +154,8 @@ VoxelSample sample_voxel(ivec3 p) {
     }
 
     int i = voxel_index(p);
-    s.scene = scene_occupancy[i];
-    s.collision = collision_occupancy[i];
+    s.scene = scene_field[i];
+    s.collision = collision_field[i];
     return s;
 }
 

@@ -3,19 +3,12 @@ extends MeshInstance3D
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
-const AutoVoxelSharedFieldsScript := preload("res://scripts/auto_voxel_shared_fields.gd")
-const BAND_CHANNELS := {
-	"ground": 0,
-	"understory": 1,
-	"midstory": 2,
-	"canopy": 3,
-}
-const DEFAULT_ROCK_LAYER_NAMES := ["ground", "understory", "midstory", "canopy"]
+const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
+const DEFAULT_ROCK_CHANNELS := [0, 1, 2, 3]
 const ANCHOR_KIND_GROUND := "ground"
 const ANCHOR_KIND_TARGET_TOP := "target_top"
-const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
-const DEPRECATED_VOXEL_LAYERS_KEY := "voxel_layers"
-const ASSET_VOXEL_RECORD_META_KEY := "asset_voxel_record"
+const CHANNEL_ENTRIES_KEY := "channel_entries"
+const ASSET_VOXEL_RECORD_META_KEY := "voxel_write_spec"
 
 @export var auto_id: String = ""
 @export var instance_id: int = 0
@@ -39,7 +32,7 @@ const ASSET_VOXEL_RECORD_META_KEY := "asset_voxel_record"
 @export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0
 @export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0
 @export var allowed_anchor_kinds: PackedStringArray = PackedStringArray()
-var asset_voxel_record: Dictionary = {}
+var voxel_write_spec: Dictionary = {}
 var min_spacing_auto: bool = true
 
 
@@ -59,8 +52,43 @@ static func asset_voxel_record_meta_keys() -> Array:
 	]
 
 
-static func band_channel(band_name: String, fallback: int = 0) -> int:
-	return int(BAND_CHANNELS.get(band_name, fallback))
+static func vector2_from_value(value, fallback: Vector2) -> Vector2:
+	if value is Vector2:
+		return value as Vector2
+	if value is Vector2i:
+		var vi := value as Vector2i
+		return Vector2(float(vi.x), float(vi.y))
+	if value is Array:
+		var arr := value as Array
+		if arr.size() >= 2:
+			return Vector2(float(arr[0]), float(arr[1]))
+	if value is Dictionary:
+		var dict := value as Dictionary
+		return Vector2(
+			float(dict.get("x", fallback.x)),
+			float(dict.get("y", fallback.y))
+		)
+	return fallback
+
+
+static func vector3_from_value(value, fallback: Vector3) -> Vector3:
+	if value is Vector3:
+		return value as Vector3
+	if value is Vector3i:
+		var vi := value as Vector3i
+		return Vector3(float(vi.x), float(vi.y), float(vi.z))
+	if value is Array:
+		var arr := value as Array
+		if arr.size() >= 3:
+			return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
+	if value is Dictionary:
+		var dict := value as Dictionary
+		return Vector3(
+			float(dict.get("x", fallback.x)),
+			float(dict.get("y", fallback.y)),
+			float(dict.get("z", fallback.z))
+		)
+	return fallback
 
 
 static func create_voxel_profile(
@@ -72,12 +100,32 @@ static func create_voxel_profile(
 	var profile := AutoVoxelProfile.new()
 	profile.color = entry_color
 	profile.complexity = clampf(entry_complexity, 0.0, 1.0)
-	profile.collision_voxels = AutoVoxelSharedFieldsScript.duplicate_dictionary_array(collision_voxels)
+	profile.collision_voxels = SharedPropertyTypeScript.duplicate_dictionary_array(collision_voxels)
 	return profile
 
 
-static func make_scene_layer_entries(
-	layer_specs: Array,
+static func create_voxel_descriptor(
+	entry_color: Color,
+	entry_complexity: float,
+	default_radius: float = 0.0,
+	collision_voxels: Array = [],
+	pivot_variants: Array = [],
+	semantic_probe_profile: Resource = null,
+	semantic_probe_density: float = 1.0,
+	context_sensing_radius: float = 0.0
+) -> Resource:
+	var profile := create_voxel_profile(entry_color, entry_complexity, default_radius, collision_voxels)
+	var descriptor = AutoVoxelDescriptorScript.from_profile(profile, default_radius)
+	if not pivot_variants.is_empty():
+		descriptor.set_pivot_variants(pivot_variants)
+	descriptor.semantic_probe_profile = semantic_probe_profile
+	descriptor.semantic_probe_density = clampf(semantic_probe_density, 0.1, 8.0)
+	descriptor.context_sensing_radius = maxf(context_sensing_radius, 0.0)
+	return descriptor
+
+
+static func make_channel_entries(
+	channel_specs: Array,
 	entry_color: Color,
 	entry_complexity: float,
 	default_radius: float = 0.0,
@@ -88,29 +136,25 @@ static func make_scene_layer_entries(
 ) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	var complexity := clampf(entry_complexity, 0.0, 1.0)
-	for raw_spec in layer_specs:
-		var band_name := ""
+	for raw_spec in channel_specs:
 		var channel := result.size()
 		var radius := default_radius
 		var color := entry_color
-		var band_complexity := complexity
+		var entry_complexity_value := complexity
 
 		if raw_spec is Dictionary:
 			var dict := raw_spec as Dictionary
-			band_name = str(dict.get("band", dict.get("name", "")))
-			channel = int(dict.get("channel", band_channel(band_name, channel)))
+			channel = int(dict.get("channel", channel))
 			radius = float(dict.get("radius", default_radius))
-			color = AutoVoxelSharedFieldsScript.color_from_value(dict.get("color", entry_color), entry_color)
-			band_complexity = clampf(float(dict.get("complexity", complexity)), 0.0, 1.0)
-		else:
-			band_name = str(raw_spec)
-			channel = band_channel(band_name, channel)
+			color = SharedPropertyTypeScript.color_from_value(dict.get("color", entry_color), entry_color)
+			entry_complexity_value = clampf(float(dict.get("complexity", complexity)), 0.0, 1.0)
+		elif raw_spec is int or raw_spec is float:
+			channel = int(raw_spec)
 
-		if band_name.is_empty():
+		if channel < 0:
 			continue
-		color.a = band_complexity
+		color.a = entry_complexity_value
 		result.append({
-			"band": band_name,
 			"channel": channel,
 			"base_pixel": base_pixel,
 			"voxel_xz": base_pixel,
@@ -119,7 +163,7 @@ static func make_scene_layer_entries(
 			"y_min": y_min,
 			"y_max": y_max,
 			"color": color,
-			"complexity": band_complexity,
+			"complexity": entry_complexity_value,
 			"slice_indices": [],
 		})
 	return result
@@ -140,22 +184,21 @@ static func make_profile_asset_voxel_record(
 	collision_voxels_override: Array = [],
 	extra_fields: Dictionary = {}
 ) -> Dictionary:
-	var shared_fields := AutoVoxelSharedFieldsScript.from_profile(profile, default_radius, collision_voxels_override)
+	var shared_fields := SharedPropertyTypeScript.from_profile(profile, default_radius, collision_voxels_override)
 	var color: Color = shared_fields.color
 	var complexity := float(shared_fields.complexity)
 
-	var scene_layers: Array[Dictionary] = []
-	var raw_layers: Array = extra_fields.get(DEPRECATED_SENCE_LAYER_VOXEL_KEY, extra_fields.get("scene_layers", []))
-	if raw_layers.is_empty():
+	var channel_entries: Array[Dictionary] = []
+	var raw_entries: Array = extra_fields.get(CHANNEL_ENTRIES_KEY, [])
+	if raw_entries.is_empty():
 		if object_type == "rock":
-			raw_layers = DEFAULT_ROCK_LAYER_NAMES
-		elif extra_fields.has("band"):
-			raw_layers = [{
-				"band": str(extra_fields.get("band", "")),
-				"channel": band_channel(str(extra_fields.get("band", ""))),
+			raw_entries = DEFAULT_ROCK_CHANNELS
+		elif extra_fields.has("channel"):
+			raw_entries = [{
+				"channel": int(extra_fields.get("channel", 0)),
 				"radius": default_radius,
 			}]
-	scene_layers = make_scene_layer_entries(raw_layers, color, complexity, default_radius, base_pixel, volume_xz_resolution, y_min, y_max)
+	channel_entries = make_channel_entries(raw_entries, color, complexity, default_radius, base_pixel, volume_xz_resolution, y_min, y_max)
 
 	var source_kind := str(extra_fields.get("source_kind", "")).to_lower()
 	if source_kind.is_empty():
@@ -175,7 +218,7 @@ static func make_profile_asset_voxel_record(
 		else:
 			source_type = "AutoSceneVoxel"
 
-	var record := AutoVoxelSharedFieldsScript.apply_to_record(extra_fields, shared_fields)
+	var record := SharedPropertyTypeScript.apply_to_record(extra_fields, shared_fields)
 	record["id"] = record_id
 	record["type"] = object_type
 	record["position"] = position
@@ -185,7 +228,7 @@ static func make_profile_asset_voxel_record(
 	record["base_pixel"] = base_pixel
 	record["voxel_xz"] = base_pixel
 	record["volume_xz_resolution"] = volume_xz_resolution
-	record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = scene_layers
+	record[CHANNEL_ENTRIES_KEY] = channel_entries
 	record["source_voxel_type"] = source_type
 	record["source_kind"] = source_kind
 	record["producer_stage"] = str(extra_fields.get("producer_stage", source_kind))
@@ -219,7 +262,7 @@ func _sync_descriptor_from_legacy_fields() -> void:
 func _sync_legacy_fields_from_descriptor() -> void:
 	if voxel_descriptor == null:
 		return
-	var shared_fields := AutoVoxelSharedFieldsScript.from_descriptor(voxel_descriptor, bound_min_length)
+	var shared_fields := SharedPropertyTypeScript.from_descriptor(voxel_descriptor, bound_min_length)
 	voxel_color = shared_fields.color
 	voxel_complexity = float(shared_fields.complexity)
 	collision_voxels = shared_fields.collision_voxels.duplicate(true)
@@ -233,23 +276,7 @@ func _sync_legacy_fields_from_descriptor() -> void:
 
 
 func _vector3_from_config_value(value, fallback: Vector3) -> Vector3:
-	if value is Vector3:
-		return value as Vector3
-	if value is Vector3i:
-		var vi := value as Vector3i
-		return Vector3(float(vi.x), float(vi.y), float(vi.z))
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Vector3(
-			float(dict.get("x", fallback.x)),
-			float(dict.get("y", fallback.y)),
-			float(dict.get("z", fallback.z))
-		)
-	return fallback
+	return AutoObject.vector3_from_value(value, fallback)
 
 
 func _rotation_mode_from_config(config: Dictionary) -> String:
@@ -339,7 +366,7 @@ func configure_auto_object(config: Dictionary) -> void:
 		voxel_color = config.color
 	if config.has("complexity"):
 		voxel_complexity = clampf(float(config.complexity), 0.0, 1.0)
-	var config_shared_fields := AutoVoxelSharedFieldsScript.normalize_shared_fields(config, {
+	var config_shared_fields := SharedPropertyTypeScript.normalize_shared_fields(config, {
 		"color": voxel_color,
 		"complexity": voxel_complexity,
 		"collision_voxels": collision_voxels,
@@ -679,33 +706,30 @@ func _get_default_semantic_probe_radius() -> float:
 
 func set_asset_voxel_record(record: Dictionary) -> void:
 	refresh_instance_id()
-	asset_voxel_record = record.duplicate(true)
-	if asset_voxel_record.has(DEPRECATED_VOXEL_LAYERS_KEY) and not asset_voxel_record.has(DEPRECATED_SENCE_LAYER_VOXEL_KEY):
-		asset_voxel_record[DEPRECATED_SENCE_LAYER_VOXEL_KEY] = asset_voxel_record[DEPRECATED_VOXEL_LAYERS_KEY]
-	asset_voxel_record.erase(DEPRECATED_VOXEL_LAYERS_KEY)
-	if asset_voxel_record.has("rotation_y") and not asset_voxel_record.has("rotation_degrees"):
-		asset_voxel_record["rotation_mode"] = str(asset_voxel_record.get("rotation_mode", "Y")).to_upper()
-		asset_voxel_record["rotation_degrees"] = Vector3(0.0, float(asset_voxel_record.rotation_y), 0.0)
-	asset_voxel_record.erase("rotation_y")
-	asset_voxel_record.erase("rotation_xyz")
-	asset_voxel_record["instance_id"] = instance_id
+	voxel_write_spec = record.duplicate(true)
+	if voxel_write_spec.has("rotation_y") and not voxel_write_spec.has("rotation_degrees"):
+		voxel_write_spec["rotation_mode"] = str(voxel_write_spec.get("rotation_mode", "Y")).to_upper()
+		voxel_write_spec["rotation_degrees"] = Vector3(0.0, float(voxel_write_spec.rotation_y), 0.0)
+	voxel_write_spec.erase("rotation_y")
+	voxel_write_spec.erase("rotation_xyz")
+	voxel_write_spec["instance_id"] = instance_id
 	if auto_id.is_empty():
-		auto_id = str(asset_voxel_record.get("id", name))
+		auto_id = str(voxel_write_spec.get("id", name))
 	if name.is_empty():
 		name = auto_id
-	asset_voxel_record["auto_id"] = auto_id
-	asset_voxel_record["auto_object_id"] = auto_id
-	asset_voxel_record["auto_instance_id"] = instance_id
-	var mesh_instance_id := int(asset_voxel_record.get("instance_mesh_id", asset_voxel_record.get("mesh_instance_id", instance_id)))
-	asset_voxel_record["instance_mesh_id"] = mesh_instance_id
-	asset_voxel_record["mesh_instance_id"] = mesh_instance_id
-	if asset_voxel_record.has("type"):
-		object_type = str(asset_voxel_record.type)
-	if asset_voxel_record.has("auto_source"):
-		auto_source = str(asset_voxel_record.auto_source)
-	elif asset_voxel_record.has("placement_source"):
-		auto_source = str(asset_voxel_record.placement_source)
-	var record_shared_fields := AutoVoxelSharedFieldsScript.normalize_shared_fields(asset_voxel_record, {
+	voxel_write_spec["auto_id"] = auto_id
+	voxel_write_spec["auto_object_id"] = auto_id
+	voxel_write_spec["auto_instance_id"] = instance_id
+	var mesh_instance_id := int(voxel_write_spec.get("instance_mesh_id", voxel_write_spec.get("mesh_instance_id", instance_id)))
+	voxel_write_spec["instance_mesh_id"] = mesh_instance_id
+	voxel_write_spec["mesh_instance_id"] = mesh_instance_id
+	if voxel_write_spec.has("type"):
+		object_type = str(voxel_write_spec.type)
+	if voxel_write_spec.has("auto_source"):
+		auto_source = str(voxel_write_spec.auto_source)
+	elif voxel_write_spec.has("placement_source"):
+		auto_source = str(voxel_write_spec.placement_source)
+	var record_shared_fields := SharedPropertyTypeScript.normalize_shared_fields(voxel_write_spec, {
 		"color": voxel_color,
 		"complexity": voxel_complexity,
 		"collision_voxels": collision_voxels,
@@ -713,49 +737,49 @@ func set_asset_voxel_record(record: Dictionary) -> void:
 	voxel_color = record_shared_fields.color
 	voxel_complexity = float(record_shared_fields.complexity)
 	_ensure_voxel_descriptor().set_color_and_complexity(voxel_color, voxel_complexity)
-	if asset_voxel_record.has("min_spacing_auto"):
-		min_spacing_auto = bool(asset_voxel_record.min_spacing_auto)
-	if asset_voxel_record.has("min_spacing"):
-		min_spacing = maxf(float(asset_voxel_record.min_spacing), 0.0)
-		if not asset_voxel_record.has("min_spacing_auto"):
+	if voxel_write_spec.has("min_spacing_auto"):
+		min_spacing_auto = bool(voxel_write_spec.min_spacing_auto)
+	if voxel_write_spec.has("min_spacing"):
+		min_spacing = maxf(float(voxel_write_spec.min_spacing), 0.0)
+		if not voxel_write_spec.has("min_spacing_auto"):
 			min_spacing_auto = false
-	if asset_voxel_record.has("bound_min_length"):
-		bound_min_length = maxf(float(asset_voxel_record.bound_min_length), 0.0)
-	if asset_voxel_record.has("collision_voxels"):
+	if voxel_write_spec.has("bound_min_length"):
+		bound_min_length = maxf(float(voxel_write_spec.bound_min_length), 0.0)
+	if voxel_write_spec.has("collision_voxels"):
 		set_collision_voxels(record_shared_fields.collision_voxels)
-	if asset_voxel_record.has("pivot_variants"):
-		set_pivot_variants(asset_voxel_record.pivot_variants)
-	if asset_voxel_record.has("auto_generate_vertical_pivots"):
-		auto_generate_vertical_pivots = bool(asset_voxel_record.auto_generate_vertical_pivots)
+	if voxel_write_spec.has("pivot_variants"):
+		set_pivot_variants(voxel_write_spec.pivot_variants)
+	if voxel_write_spec.has("auto_generate_vertical_pivots"):
+		auto_generate_vertical_pivots = bool(voxel_write_spec.auto_generate_vertical_pivots)
 		_ensure_voxel_descriptor().auto_generate_vertical_pivots = auto_generate_vertical_pivots
-	if asset_voxel_record.has("semantic_probe_density"):
-		semantic_probe_density = clampf(float(asset_voxel_record.semantic_probe_density), 0.1, 8.0)
+	if voxel_write_spec.has("semantic_probe_density"):
+		semantic_probe_density = clampf(float(voxel_write_spec.semantic_probe_density), 0.1, 8.0)
 		_ensure_voxel_descriptor().semantic_probe_density = semantic_probe_density
-	if asset_voxel_record.has("semantic_probes"):
-		set_semantic_probes(asset_voxel_record.semantic_probes)
-	if asset_voxel_record.has("allowed_anchor_kinds"):
-		set_allowed_anchor_kinds(asset_voxel_record.allowed_anchor_kinds)
+	if voxel_write_spec.has("semantic_probes"):
+		set_semantic_probes(voxel_write_spec.semantic_probes)
+	if voxel_write_spec.has("allowed_anchor_kinds"):
+		set_allowed_anchor_kinds(voxel_write_spec.allowed_anchor_kinds)
 	_sync_descriptor_from_legacy_fields()
 	refresh_bound_spacing()
-	asset_voxel_record["bound_min_length"] = bound_min_length
-	asset_voxel_record["min_spacing"] = min_spacing
-	asset_voxel_record["min_spacing_auto"] = min_spacing_auto
+	voxel_write_spec["bound_min_length"] = bound_min_length
+	voxel_write_spec["min_spacing"] = min_spacing
+	voxel_write_spec["min_spacing_auto"] = min_spacing_auto
 	var descriptor_fields = _ensure_voxel_descriptor().to_record_fields(bound_min_length)
 	for key in descriptor_fields:
-		asset_voxel_record[key] = descriptor_fields[key]
+		voxel_write_spec[key] = descriptor_fields[key]
 	_sync_auto_metadata()
-	set_meta(ASSET_VOXEL_RECORD_META_KEY, asset_voxel_record)
+	set_meta(ASSET_VOXEL_RECORD_META_KEY, voxel_write_spec)
 	for key in [deprecated_asset_voxel_record_key(), legacy_asset_voxel_record_key()]:
 		if has_meta(key):
 			remove_meta(key)
 
 
 func get_asset_voxel_record() -> Dictionary:
-	if asset_voxel_record.is_empty():
+	if voxel_write_spec.is_empty():
 		var meta_record := _get_asset_voxel_record_metadata()
 		if not meta_record.is_empty():
 			return meta_record
-	return asset_voxel_record.duplicate(true)
+	return voxel_write_spec.duplicate(true)
 
 
 func _get_asset_voxel_record_metadata() -> Dictionary:
@@ -780,7 +804,7 @@ func _sync_auto_metadata() -> void:
 	_clear_state_mirror_metadata()
 	set_meta("auto_id", auto_id)
 	set_meta("auto_instance_id", instance_id)
-	set_meta("instance_mesh_id", int(asset_voxel_record.get("instance_mesh_id", instance_id)))
+	set_meta("instance_mesh_id", int(voxel_write_spec.get("instance_mesh_id", instance_id)))
 	set_meta("auto_source", auto_source)
 	set_meta("auto_object_type", object_type)
 	set_meta("auto_object_subtype", object_subtype)

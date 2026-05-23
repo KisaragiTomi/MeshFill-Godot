@@ -5,7 +5,8 @@ extends AutoVegetation
 func configure_bush(config: Dictionary) -> void:
 	var cfg := config.duplicate(true)
 	cfg["object_subtype"] = "bush"
-	cfg["band"] = "understory"
+	cfg["channel"] = 1
+	cfg["radius"] = 1.0
 	if not cfg.has("group"):
 		cfg["group"] = "placed_bushes"
 	configure_vegetation(cfg)

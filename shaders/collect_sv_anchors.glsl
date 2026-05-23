@@ -1,9 +1,10 @@
 #[compute]
 #version 450
 
-// Collect placeable anchors (ground + target_top) from dirty tiles.
+// Collect placeable anchor positions from dirty tiles.
 // One workgroup = one dirty tile (8×8×8 = 512 threads).
-// Atomic-appends valid anchors into AnchorOut buffer.
+// Atomic-appends valid positions into AnchorOut buffer.  The anchor position
+// itself carries the placement meaning; no separate anchor_kind is stored.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 
@@ -23,7 +24,7 @@ layout(set = 0, binding = 3, std430) restrict readonly buffer DirtyTiles {
     uint dirty_tile_ids[];
 };
 
-// Output: packed anchors (x, y, z, anchor_kind) as uvec4
+// Output: packed anchors (x, y, z, reserved) as uvec4
 layout(set = 0, binding = 4, std430) restrict buffer AnchorOut {
     uvec4 anchors[];
 };
@@ -41,8 +42,6 @@ layout(push_constant, std430) uniform Params {
 };
 
 const uint TILE_SIZE = 8u;
-const uint ANCHOR_KIND_GROUND     = 0u;
-const uint ANCHOR_KIND_TARGET_TOP = 1u;
 
 int voxel_index(ivec3 p) {
     return p.x + grid_size_pad.x * (p.z + grid_size_pad.z * p.y);
@@ -66,11 +65,11 @@ float get_support(ivec3 p) {
     return max(scene_occ[bi], collision_occ[bi]);
 }
 
-void try_emit_anchor(ivec3 p, uint kind) {
+void try_emit_anchor(ivec3 p) {
     uint cap = uint(tile_grid_size_pad.w);
     uint idx = atomicAdd(anchor_count, 1u);
     if (idx < cap) {
-        anchors[idx] = uvec4(uint(p.x), uint(p.y), uint(p.z), kind);
+        anchors[idx] = uvec4(uint(p.x), uint(p.y), uint(p.z), 0u);
     }
 }
 
@@ -113,7 +112,7 @@ void main() {
         if (sv <= max_scene && cv <= max_coll && tv >= min_target) {
             float support = get_support(p);
             if (support >= min_support) {
-                try_emit_anchor(p, ANCHOR_KIND_GROUND);
+                try_emit_anchor(p);
             }
         }
 
@@ -124,7 +123,7 @@ void main() {
     }
     barrier();
 
-    // --- Target top anchor emit (one thread per column) ---
+    // --- Target-top position emit (one thread per column) ---
     if (ly == 0u && lz == 0u) {
         // Not needed — we emit per-column below
     }
@@ -135,8 +134,11 @@ void main() {
             ivec3 top_p = tile_origin + ivec3(int(lx), best_local_y, int(lz));
             if (in_bounds(top_p)) {
                 float support = get_support(top_p);
-                if (support >= min_support) {
-                    try_emit_anchor(top_p, ANCHOR_KIND_TARGET_TOP);
+                // If support is enough, the ground-position check already emitted
+                // this same voxel.  Otherwise add the top position as its own
+                // untyped anchor; downstream uses the position directly.
+                if (support < min_support) {
+                    try_emit_anchor(top_p);
                 }
             }
         }

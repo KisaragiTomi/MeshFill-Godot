@@ -192,9 +192,7 @@ func _test_instantiate_placements() -> bool:
 func _test_instantiate_placement_asset_voxel_record_commit() -> bool:
 	print("[VoxelMultiAsset] test_instantiate_placement_asset_voxel_record_commit...")
 	var mesh := VegetationScatter.create_bush_mesh()
-	var veg := VegetationExclusion.new(32, 32.0, false)
-	veg.add_band("ground", 0.0, 0.3, 32, Color(0.2, 0.8, 0.2, 1.0))
-	veg.add_band("understory", 0.3, 2.0, 32, Color(0.8, 0.6, 0.2, 0.8))
+	var veg := SceneVoxelCommitter.new(32, 32.0, false)
 
 	var world_result := {
 		"position": Vector3(0.0, 0.5, 0.0),
@@ -218,12 +216,12 @@ func _test_instantiate_placement_asset_voxel_record_commit() -> bool:
 	if node == null:
 		push_error("  FAIL: node was not created")
 		return false
-	if not node.has_meta("asset_voxel_record"):
-		push_error("  FAIL: node has no asset_voxel_record metadata")
+	if not node.has_meta("voxel_write_spec"):
+		push_error("  FAIL: node has no voxel_write_spec metadata")
 		node.free()
 		return false
 
-	var record: Dictionary = node.get_meta("asset_voxel_record")
+	var record: Dictionary = node.get_meta("voxel_write_spec")
 	if str(record.get("id", "")) != "voxel_bush_record_0":
 		push_error("  FAIL: wrong record id: %s" % str(record.get("id", "")))
 		node.free()
@@ -237,15 +235,22 @@ func _test_instantiate_placement_asset_voxel_record_commit() -> bool:
 		node.free()
 		return false
 
-	veg.build_voxel_volume(16, 1)
+	veg.build_voxel_volume(16, [
+		{"channel": 0, "color": Color(0.2, 0.8, 0.2, 1.0), "complexity": 1.0, "y_min": 0.0, "y_max": 0.3, "subdivisions": 1},
+		{"channel": 1, "color": Color(0.8, 0.6, 0.2, 0.8), "complexity": 0.8, "y_min": 0.3, "y_max": 2.0, "subdivisions": 1},
+	])
 	var scene_voxels := veg.get_scene_voxels()
-	var source_deltas := veg.get_source_voxel_deltas(veg.get_committed_tick())
 	if scene_voxels.is_empty():
 		push_error("  FAIL: expected committed SceneVoxel entries")
 		node.free()
 		return false
-	if source_deltas.is_empty() or (source_deltas.get("auto", {}) as Dictionary).is_empty():
-		push_error("  FAIL: expected AutoSceneVoxel source delta entries")
+	var has_auto_scene_voxel := false
+	for scene_voxel in scene_voxels.values():
+		if scene_voxel is Dictionary and str((scene_voxel as Dictionary).get("source_type", "")) == "AutoSceneVoxel":
+			has_auto_scene_voxel = true
+			break
+	if not has_auto_scene_voxel:
+		push_error("  FAIL: expected AutoSceneVoxel committed SceneVoxel entries")
 		node.free()
 		return false
 

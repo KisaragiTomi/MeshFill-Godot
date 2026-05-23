@@ -1,8 +1,8 @@
-class_name GlobalVoxelField
+class_name SceneVoxelLocal
 extends RefCounted
-## Standalone 3D voxel field for GPU-based object placement.
+## SceneVoxel runtime field and dirty-region cache for GPU-based object placement.
 ##
-## Manages scene_occupancy and collision_occupancy as flat PackedFloat32Array
+## Manages scene_field and collision_field as flat PackedFloat32Array
 ## with 8×8×8 tile-based dirty tracking. Bridges between world-space data
 ## (heightmap, existing objects) and VoxelPlacementGenerator's GPU pipeline.
 
@@ -16,8 +16,8 @@ var grid_size: Vector3i
 var voxel_size: Vector3
 var grid_origin: Vector3
 
-var scene_occupancy: PackedFloat32Array
-var collision_occupancy: PackedFloat32Array
+var scene_field: PackedFloat32Array
+var collision_field: PackedFloat32Array
 var auto_object_manager: AutoObjectManager
 
 var _tile_grid_size: Vector3i
@@ -33,10 +33,10 @@ func _init(
 	voxel_size = p_voxel_size
 	grid_origin = p_grid_origin
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
-	scene_occupancy = PackedFloat32Array()
-	scene_occupancy.resize(voxel_count)
-	collision_occupancy = PackedFloat32Array()
-	collision_occupancy.resize(voxel_count)
+	scene_field = PackedFloat32Array()
+	scene_field.resize(voxel_count)
+	collision_field = PackedFloat32Array()
+	collision_field.resize(voxel_count)
 	_tile_grid_size = Vector3i(
 		ceili(float(grid_size.x) / float(TILE_SIZE)),
 		ceili(float(grid_size.y) / float(TILE_SIZE)),
@@ -81,25 +81,25 @@ func voxel_to_world(voxel_pos: Vector3i) -> Vector3:
 
 func set_scene(p: Vector3i, value: float) -> void:
 	if is_in_bounds(p):
-		scene_occupancy[voxel_index(p)] = value
+		scene_field[voxel_index(p)] = value
 		_mark_dirty(p)
 
 
 func set_collision(p: Vector3i, value: float) -> void:
 	if is_in_bounds(p):
-		collision_occupancy[voxel_index(p)] = value
+		collision_field[voxel_index(p)] = value
 		_mark_dirty(p)
 
 
 func get_scene(p: Vector3i) -> float:
 	if is_in_bounds(p):
-		return scene_occupancy[voxel_index(p)]
+		return scene_field[voxel_index(p)]
 	return 0.0
 
 
 func get_collision(p: Vector3i) -> float:
 	if is_in_bounds(p):
-		return collision_occupancy[voxel_index(p)]
+		return collision_field[voxel_index(p)]
 	return 0.0
 
 
@@ -172,7 +172,7 @@ func import_collision_from_objects(objects: Array) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Import VegetationExclusion volume slices into this 3D field
+# Import SceneVoxelCommitter volume slices into this 3D field
 # ---------------------------------------------------------------------------
 
 func import_from_vegetation_volume(volume: Dictionary, capture_size: float) -> void:
@@ -201,7 +201,7 @@ func import_from_vegetation_volume(volume: Dictionary, capture_size: float) -> v
 				var p := Vector3i(vx, voxel_y, vz)
 				set_scene(p, maxf(get_scene(p), val))
 
-	var collision_img: Image = volume.get("collision_occupancy", null)
+	var collision_img: Image = volume.get("collision_field", null)
 	if collision_img != null:
 		for pz in range(xz_res):
 			for px_coord in range(xz_res):
@@ -222,22 +222,22 @@ func import_from_vegetation_volume(volume: Dictionary, capture_size: float) -> v
 # ---------------------------------------------------------------------------
 
 func apply_gpu_output(gpu_output: Dictionary) -> void:
-	var scene_out: PackedFloat32Array = gpu_output.get("scene_occupancy_out", PackedFloat32Array())
-	var collision_out: PackedFloat32Array = gpu_output.get("collision_occupancy_out", PackedFloat32Array())
-	if scene_out.size() == scene_occupancy.size():
-		scene_occupancy = scene_out
-	if collision_out.size() == collision_occupancy.size():
-		collision_occupancy = collision_out
+	var scene_out: PackedFloat32Array = gpu_output.get("scene_field_out", PackedFloat32Array())
+	var collision_out: PackedFloat32Array = gpu_output.get("collision_field_out", PackedFloat32Array())
+	if scene_out.size() == scene_field.size():
+		scene_field = scene_out
+	if collision_out.size() == collision_field.size():
+		collision_field = collision_out
 	_mark_all_dirty()
 
 
 func apply_multi_asset_output(multi_output: Dictionary) -> void:
-	var scene_out: PackedFloat32Array = multi_output.get("scene_occupancy_out", PackedFloat32Array())
-	var collision_out: PackedFloat32Array = multi_output.get("collision_occupancy_out", PackedFloat32Array())
-	if scene_out.size() == scene_occupancy.size():
-		scene_occupancy = scene_out
-	if collision_out.size() == collision_occupancy.size():
-		collision_occupancy = collision_out
+	var scene_out: PackedFloat32Array = multi_output.get("scene_field_out", PackedFloat32Array())
+	var collision_out: PackedFloat32Array = multi_output.get("collision_field_out", PackedFloat32Array())
+	if scene_out.size() == scene_field.size():
+		scene_field = scene_out
+	if collision_out.size() == collision_field.size():
+		collision_field = collision_out
 	_mark_all_dirty()
 
 
@@ -278,7 +278,7 @@ func run_placement(
 	var settings := _settings_with_auto_object_manager(common_settings)
 	var routed_asset_defs := _asset_defs_with_autoobject_metadata(asset_defs, settings.get("autoobjects", []))
 	return generator.run_multi_asset(
-		scene_occupancy, collision_occupancy,
+		scene_field, collision_field,
 		routed_asset_defs, grid_size, voxel_size, grid_origin,
 		settings)
 
@@ -300,7 +300,7 @@ func run_placement_dirty(
 
 	var routed_asset_defs := _asset_defs_with_autoobject_metadata(asset_defs, settings.get("autoobjects", []))
 	var result: Dictionary = generator.run_multi_asset(
-		scene_occupancy, collision_occupancy,
+		scene_field, collision_field,
 		routed_asset_defs, grid_size, voxel_size, grid_origin,
 		settings)
 
@@ -355,7 +355,7 @@ func run_prefiltered_placement_dirty(
 
 	var routed_asset_defs := _asset_defs_with_autoobject_metadata(asset_defs, autoobjects)
 	var result: Dictionary = generator.run_multi_asset(
-		scene_occupancy, collision_occupancy,
+		scene_field, collision_field,
 		routed_asset_defs, grid_size, voxel_size, grid_origin,
 		settings)
 
@@ -482,9 +482,9 @@ func apply_stamp_deltas(deltas: Array) -> int:
 		var scene_val := float(delta.get("scene_value", 0.0))
 		var collision_val := float(delta.get("collision_value", 0.0))
 		if scene_val > 0.0:
-			scene_occupancy[idx] = maxf(scene_occupancy[idx], scene_val)
+			scene_field[idx] = maxf(scene_field[idx], scene_val)
 		if collision_val > 0.0:
-			collision_occupancy[idx] = maxf(collision_occupancy[idx], collision_val)
+			collision_field[idx] = maxf(collision_field[idx], collision_val)
 		_mark_dirty(voxel)
 		count += 1
 	return count
@@ -499,9 +499,9 @@ func get_stats() -> Dictionary:
 	var scene_occupied := 0
 	var collision_occupied := 0
 	for i in range(voxel_count):
-		if scene_occupancy[i] > 0.01:
+		if scene_field[i] > 0.01:
 			scene_occupied += 1
-		if collision_occupancy[i] > 0.01:
+		if collision_field[i] > 0.01:
 			collision_occupied += 1
 	var total_tiles := _tile_grid_size.x * _tile_grid_size.y * _tile_grid_size.z
 	return {

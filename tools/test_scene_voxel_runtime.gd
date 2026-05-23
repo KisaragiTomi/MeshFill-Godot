@@ -1,8 +1,8 @@
 extends SceneTree
 
 const VPG := preload("res://scripts/voxel_placement_generator.gd")
-const GVF := preload("res://scripts/global_voxel_field.gd")
-const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
+const SVR := preload("res://scripts/scene_voxel_runtime.gd")
+const CHANNEL_ENTRIES_KEY := "channel_entries"
 
 
 func _init() -> void:
@@ -14,16 +14,16 @@ func _init() -> void:
 	ok = ok and _test_full_end_to_end()
 
 	if ok:
-		print("[GlobalVoxelField] ALL TESTS PASSED")
+		print("[SceneVoxelLocal] ALL TESTS PASSED")
 		quit(0)
 	else:
-		push_error("[GlobalVoxelField] SOME TESTS FAILED")
+		push_error("[SceneVoxelLocal] SOME TESTS FAILED")
 		quit(1)
 
 
 func _test_basic_field() -> bool:
-	print("[GlobalVoxelField] test_basic_field...")
-	var field := GVF.new(
+	print("[SceneVoxelLocal] test_basic_field...")
+	var field := SVR.new(
 		Vector3i(32, 8, 32),
 		Vector3(0.5, 0.5, 0.5),
 		Vector3(-8.0, 0.0, -8.0)
@@ -71,8 +71,8 @@ func _test_basic_field() -> bool:
 
 
 func _test_collision_import() -> bool:
-	print("[GlobalVoxelField] test_collision_import...")
-	var field := GVF.new(
+	print("[SceneVoxelLocal] test_collision_import...")
+	var field := SVR.new(
 		Vector3i(16, 8, 16),
 		Vector3(0.5, 0.5, 0.5),
 		Vector3(0.0, 0.0, 0.0)
@@ -101,8 +101,8 @@ func _test_collision_import() -> bool:
 
 
 func _test_gpu_pipeline_integration() -> bool:
-	print("[GlobalVoxelField] test_gpu_pipeline_integration...")
-	var field := GVF.new(
+	print("[SceneVoxelLocal] test_gpu_pipeline_integration...")
+	var field := SVR.new(
 		Vector3i(16, 8, 16),
 		Vector3(0.5, 0.5, 0.5),
 		Vector3(-4.0, 0.0, -4.0)
@@ -160,7 +160,7 @@ func _test_gpu_pipeline_integration() -> bool:
 
 
 func _test_asset_voxel_record_creation() -> bool:
-	print("[GlobalVoxelField] test_asset_voxel_record_creation...")
+	print("[SceneVoxelLocal] test_asset_voxel_record_creation...")
 	var tree_mesh := VegetationScatter.create_tree_mesh()
 
 	var world_results: Array = [
@@ -231,8 +231,8 @@ func _test_asset_voxel_record_creation() -> bool:
 		_free_nodes(nodes)
 		return false
 
-	if not r0.has(DEPRECATED_SENCE_LAYER_VOXEL_KEY):
-		push_error("  FAIL: missing deprecated SenceLayerVoxel key")
+	if not r0.has(CHANNEL_ENTRIES_KEY):
+		push_error("  FAIL: missing channel_entries key")
 		_free_nodes(nodes)
 		return false
 
@@ -243,12 +243,12 @@ func _test_asset_voxel_record_creation() -> bool:
 
 
 func _test_full_end_to_end() -> bool:
-	print("[GlobalVoxelField] test_full_end_to_end...")
+	print("[SceneVoxelLocal] test_full_end_to_end...")
 	var grid_size := Vector3i(24, 8, 24)
 	var voxel_size := Vector3(0.5, 0.5, 0.5)
 	var grid_origin := Vector3(-6.0, 0.0, -6.0)
 
-	var field := GVF.new(grid_size, voxel_size, grid_origin)
+	var field := SVR.new(grid_size, voxel_size, grid_origin)
 	field.fill_ground_plane(0, 1.0)
 
 	var generator := VPG.new()

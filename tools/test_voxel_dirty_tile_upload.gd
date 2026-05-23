@@ -1,7 +1,7 @@
 extends SceneTree
 
 const VPG := preload("res://scripts/voxel_placement_generator.gd")
-const GVF := preload("res://scripts/global_voxel_field.gd")
+const SVR := preload("res://scripts/scene_voxel_runtime.gd")
 
 
 func _init() -> void:
@@ -23,7 +23,7 @@ func _init() -> void:
 
 func _test_tile_id_roundtrip() -> bool:
 	print("[VoxelDirtyTile] test_tile_id_roundtrip...")
-	var field := GVF.new(Vector3i(32, 16, 32), Vector3(0.5, 0.5, 0.5))
+	var field := SVR.new(Vector3i(32, 16, 32), Vector3(0.5, 0.5, 0.5))
 	var tile_grid := Vector3i(
 		ceili(32.0 / 8.0),
 		ceili(16.0 / 8.0),
@@ -42,7 +42,7 @@ func _test_tile_id_roundtrip() -> bool:
 
 func _test_dirty_tile_tracking() -> bool:
 	print("[VoxelDirtyTile] test_dirty_tile_tracking...")
-	var field := GVF.new(Vector3i(16, 8, 16), Vector3(0.5, 0.5, 0.5))
+	var field := SVR.new(Vector3i(16, 8, 16), Vector3(0.5, 0.5, 0.5))
 
 	if field.get_dirty_tile_count() != 0:
 		push_error("  FAIL: expected 0 dirty tiles initially")
@@ -75,7 +75,7 @@ func _test_dirty_tile_tracking() -> bool:
 
 func _test_apply_stamp_deltas() -> bool:
 	print("[VoxelDirtyTile] test_apply_stamp_deltas...")
-	var field := GVF.new(Vector3i(16, 8, 16), Vector3(0.5, 0.5, 0.5))
+	var field := SVR.new(Vector3i(16, 8, 16), Vector3(0.5, 0.5, 0.5))
 
 	var deltas: Array = [
 		{"voxel": Vector3i(2, 1, 3), "scene_value": 0.5, "collision_value": 0.8},
@@ -116,7 +116,7 @@ func _test_run_placement_dirty() -> bool:
 	print("[VoxelDirtyTile] test_run_placement_dirty...")
 	var grid_size := Vector3i(16, 8, 16)
 	var voxel_size := Vector3(0.5, 0.5, 0.5)
-	var field := GVF.new(grid_size, voxel_size)
+	var field := SVR.new(grid_size, voxel_size)
 
 	for z in range(grid_size.z):
 		for x in range(grid_size.x):
@@ -182,7 +182,7 @@ func _test_dirty_cleared_after_placement() -> bool:
 	print("[VoxelDirtyTile] test_dirty_cleared_after_placement...")
 	var grid_size := Vector3i(16, 8, 16)
 	var voxel_size := Vector3(0.5, 0.5, 0.5)
-	var field := GVF.new(grid_size, voxel_size)
+	var field := SVR.new(grid_size, voxel_size)
 
 	field.set_scene(Vector3i(0, 0, 0), 1.0)
 	field.set_scene(Vector3i(1, 0, 1), 1.0)
@@ -219,7 +219,7 @@ func _test_dirty_cleared_after_placement() -> bool:
 
 func _test_no_dirty_returns_empty() -> bool:
 	print("[VoxelDirtyTile] test_no_dirty_returns_empty...")
-	var field := GVF.new(Vector3i(16, 8, 16), Vector3(0.5, 0.5, 0.5))
+	var field := SVR.new(Vector3i(16, 8, 16), Vector3(0.5, 0.5, 0.5))
 
 	var generator := VPG.new()
 	var result := field.run_placement_dirty(generator, [], {})

@@ -1,19 +1,19 @@
 #[compute]
 #version 450
 
-// Stamps accepted placement results into scene/collision occupancy buffers.
+// Stamps accepted placement results into scene/collision field buffers.
 // Output VoxelStampDeltaBuffer uses 2 vec4 records per footprint sample:
 //   0: vec4(voxel.xyz, scene_value)
 //   1: vec4(collision_value, result_index, footprint_index, wrote)
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, std430) restrict buffer SceneOccupancy {
-    float scene_occupancy[];
+layout(set = 0, binding = 0, std430) restrict buffer SceneField {
+    float scene_field[];
 };
 
-layout(set = 0, binding = 1, std430) restrict buffer CollisionOccupancy {
-    float collision_occupancy[];
+layout(set = 0, binding = 1, std430) restrict buffer CollisionField {
+    float collision_field[];
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer PlacementResults {
@@ -100,9 +100,9 @@ void main() {
     float collision_value = degree >= params.x ? clamp(degree * params.z, 0.0, 1.0) : 0.0;
 
     int index = voxel_index(p);
-    scene_occupancy[index] = max(scene_occupancy[index], scene_value);
+    scene_field[index] = max(scene_field[index], scene_value);
     if (collision_value > 0.0) {
-        collision_occupancy[index] = max(collision_occupancy[index], collision_value);
+        collision_field[index] = max(collision_field[index], collision_value);
     }
 
     stamp_delta[delta_base + 0u] = vec4(vec3(p), scene_value);

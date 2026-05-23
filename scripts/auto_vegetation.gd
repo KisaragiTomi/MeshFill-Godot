@@ -1,7 +1,8 @@
 class_name AutoVegetation
 extends AutoObject
 
-@export var vegetation_band: String = ""
+@export_range(0, 3, 1) var vegetation_channel: int = 0
+@export var vegetation_radius: float = 0.2
 @export var voxel_profile: AutoVoxelProfile
 
 
@@ -10,8 +11,14 @@ func configure_vegetation(config: Dictionary) -> void:
 	cfg["object_type"] = "vegetation"
 	if not cfg.has("object_subtype"):
 		cfg["object_subtype"] = str(cfg.get("type", "vegetation"))
-	if cfg.has("band"):
-		vegetation_band = str(cfg.band)
+	if cfg.has("channel"):
+		vegetation_channel = clampi(int(cfg.channel), 0, 3)
+	if cfg.has("vegetation_channel"):
+		vegetation_channel = clampi(int(cfg.vegetation_channel), 0, 3)
+	if cfg.has("radius"):
+		vegetation_radius = maxf(float(cfg.radius), 0.0)
+	if cfg.has("vegetation_radius"):
+		vegetation_radius = maxf(float(cfg.vegetation_radius), 0.0)
 	if cfg.has("voxel_profile"):
 		var configured_profile = cfg.get("voxel_profile", null)
 		if configured_profile is AutoVoxelProfile:
@@ -52,7 +59,7 @@ func configure_vegetation(config: Dictionary) -> void:
 
 
 func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
-	var radius := default_radius if default_radius > 0.0 else _band_radius(vegetation_band)
+	var radius := default_radius if default_radius > 0.0 else vegetation_radius
 	var descriptor_collisions := super.get_collision_voxels(radius)
 	if not descriptor_collisions.is_empty():
 		return descriptor_collisions
@@ -76,21 +83,20 @@ func get_asset_voxel_record_extra_fields(extra_fields: Dictionary = {}) -> Dicti
 	var fields := super.get_asset_voxel_record_extra_fields(extra_fields)
 	if not fields.has("object_subtype"):
 		fields["object_subtype"] = object_subtype
-	if not fields.has("band"):
-		fields["band"] = vegetation_band
+	if not fields.has("channel"):
+		fields["channel"] = vegetation_channel
+	if not fields.has("radius"):
+		fields["radius"] = vegetation_radius
 	return fields
 
 
-func _band_radius(band_name: String) -> float:
-	match band_name:
-		"understory":
-			return 1.0
-		"midstory":
-			return 2.0
-		"canopy":
-			return 3.0
-		_:
-			return 0.2
+func make_asset_voxel_record(
+	record_id: String,
+	base_pixel: Vector2i,
+	volume_xz_resolution: int,
+	extra_fields: Dictionary = {}
+) -> Dictionary:
+	return super.make_asset_voxel_record(record_id, base_pixel, volume_xz_resolution, extra_fields)
 
 
 func _clear_vegetation_state_mirror_metadata() -> void:
@@ -98,7 +104,8 @@ func _clear_vegetation_state_mirror_metadata() -> void:
 		"veg_color",
 		"veg_complexity",
 		"veg_collision_voxels",
-		"veg_band",
+		"veg_channel",
+		"veg_radius",
 	]:
 		if has_meta(key):
 			remove_meta(key)

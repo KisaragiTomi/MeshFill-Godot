@@ -11,7 +11,7 @@
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
-// Input: anchors buffer (x, y, z, kind) — needed for tile_id computation
+// Input: anchors buffer (x, y, z, reserved) — needed for tile_id computation
 layout(set = 0, binding = 0, std430) restrict readonly buffer AnchorBuf {
     uvec4 anchors[];
 };

@@ -7,8 +7,8 @@ The project is an engineering prototype rather than a finished game. Its main go
 ## Current Focus
 
 - `AutoObject`, `AutoRock`, and `AutoVegetation` hold asset defaults such as voxel color, complexity, collision voxels, pivots, and semantic probes.
-- `asset_voxel_record` stores per-instance runtime placement data, source voxel intent, and lookup fields.
-- `SceneVoxel` and `GlobalVoxelField` represent committed scene state and sparse occupancy cache for later placement, validation, and debug queries.
+- `voxel_write_spec` stores per-instance runtime placement data, source voxel intent, and lookup fields.
+- `SceneVoxel` and `SceneVoxelLocal` represent committed scene state and sparse occupancy cache for later placement, validation, and debug queries.
 - `TargetSceneVoxel` is a neutral target canvas for color, complexity, and collision intent. It does not store labels such as `tree`, `rock`, or `grass`.
 - `AutoObjectProbePrefilterGPU` collects anchors from `SV` / `TargetSV`, scores asset probes, and outputs candidate `AutoObject` top-K plus candidate voxel regions.
 - `VoxelPlacementGenerator` remains responsible for physical scoring: footprint, support, collision, clearance, and final stamping.
@@ -74,7 +74,7 @@ If your Godot executable is not named `godot`, replace it with the local Godot 4
 ```bash
 godot --headless --path . --script tools/test_autoobject_probe_prefilter.gd
 godot --headless --path . --script tools/test_voxel_placement_generator.gd
-godot --headless --path . --script tools/test_global_voxel_field.gd
+godot --headless --path . --script tools/test_scene_voxel_runtime.gd
 godot --headless --path . --script tools/scaffold_auto_asset.gd -- --config res://tools/my_asset.json
 ```
 
@@ -87,8 +87,8 @@ These scripts are useful for local checks and resource generation. They are not 
 | --- | --- |
 | [`docs/README.md`](docs/README.md) | Full documentation index |
 | [`docs/core/meshfill-framework.md`](docs/core/meshfill-framework.md) | Current framework ownership model and runtime flow |
-| [`docs/core/asset-properties.md`](docs/core/asset-properties.md) | Current AutoObject, descriptor, profile, `asset_voxel_record`, and metadata field reference |
-| [`docs/core/scene-voxel-field-system.md`](docs/core/scene-voxel-field-system.md) | Source voxel deltas, final `SceneVoxel`, and `GlobalVoxelField` cache |
+| [`docs/core/asset-properties.md`](docs/core/asset-properties.md) | Current AutoObject, descriptor, profile, `voxel_write_spec`, and metadata field reference |
+| [`docs/core/scene-voxel-field-system.md`](docs/core/scene-voxel-field-system.md) | Source voxel writes, final `SceneVoxel`, and `SceneVoxelLocal` cache in `scripts/scene_voxel_runtime.gd` |
 | [`docs/placement/target-scene-voxel-projection.md`](docs/placement/target-scene-voxel-projection.md) | TargetSV canvas, stamp model, VDB import plan, projection cache, and persistence |
 | [`docs/placement/autoobject-probe-prefilter.md`](docs/placement/autoobject-probe-prefilter.md) | AutoObject probe prefilter and GPU candidate voxel-region output |
 | [`docs/placement/voxel-semantic-routing.md`](docs/placement/voxel-semantic-routing.md) | Candidate asset routing and voxel-region routing |

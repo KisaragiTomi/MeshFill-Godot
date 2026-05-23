@@ -1,64 +1,28 @@
 class_name AutoAssetFactory
 extends RefCounted
 
-const BAND_CHANNELS := {
-	"ground": 0,
-	"understory": 1,
-	"midstory": 2,
-	"canopy": 3,
-}
-const DEFAULT_ROCK_LAYER_NAMES := ["ground", "understory", "midstory", "canopy"]
-const DEPRECATED_SENCE_LAYER_VOXEL_KEY := "SenceLayerVoxel"
-const AutoVoxelSharedFieldsScript := preload("res://scripts/auto_voxel_shared_fields.gd")
-
-
-static func band_channel(band_name: String, fallback: int = 0) -> int:
-	return int(BAND_CHANNELS.get(band_name, fallback))
+const CHANNEL_ENTRIES_KEY := "channel_entries"
+const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 
 
 static func color_from_value(value, fallback: Color = Color.WHITE) -> Color:
-	return AutoVoxelSharedFieldsScript.color_from_value(value, fallback)
+	return SharedPropertyTypeScript.color_from_value(value, fallback)
 
 
 static func vector2_from_value(value, fallback: Vector2) -> Vector2:
-	if value is Vector2:
-		return value as Vector2
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 2:
-			return Vector2(float(arr[0]), float(arr[1]))
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Vector2(
-			float(dict.get("x", fallback.x)),
-			float(dict.get("y", fallback.y))
-		)
-	return fallback
+	return AutoObject.vector2_from_value(value, fallback)
 
 
 static func vector3_from_value(value, fallback: Vector3) -> Vector3:
-	if value is Vector3:
-		return value as Vector3
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Vector3(
-			float(dict.get("x", fallback.x)),
-			float(dict.get("y", fallback.y)),
-			float(dict.get("z", fallback.z))
-		)
-	return fallback
+	return AutoObject.vector3_from_value(value, fallback)
 
 
 static func duplicate_dictionary_array(source: Array) -> Array[Dictionary]:
-	return AutoVoxelSharedFieldsScript.duplicate_dictionary_array(source)
+	return SharedPropertyTypeScript.duplicate_dictionary_array(source)
 
 
-static func make_scene_layer_entries(
-	layer_specs: Array,
+static func make_channel_entries(
+	channel_specs: Array,
 	entry_color: Color,
 	entry_complexity: float,
 	default_radius: float = 0.0,
@@ -67,7 +31,7 @@ static func make_scene_layer_entries(
 	y_min: float = 0.0,
 	y_max: float = 0.0
 ) -> Array[Dictionary]:
-	return AutoObject.make_scene_layer_entries(layer_specs, entry_color, entry_complexity, default_radius, base_pixel, volume_xz_resolution, y_min, y_max)
+	return AutoObject.make_channel_entries(channel_specs, entry_color, entry_complexity, default_radius, base_pixel, volume_xz_resolution, y_min, y_max)
 
 
 static func create_voxel_profile(
@@ -89,14 +53,16 @@ static func create_voxel_descriptor(
 	semantic_probe_density: float = 1.0,
 	context_sensing_radius: float = 0.0
 ) -> Resource:
-	var profile := create_voxel_profile(entry_color, entry_complexity, default_radius, collision_voxels)
-	var descriptor = load("res://scripts/auto_voxel_descriptor.gd").from_profile(profile, default_radius)
-	if not pivot_variants.is_empty():
-		descriptor.set_pivot_variants(pivot_variants)
-	descriptor.semantic_probe_profile = semantic_probe_profile
-	descriptor.semantic_probe_density = clampf(semantic_probe_density, 0.1, 8.0)
-	descriptor.context_sensing_radius = maxf(context_sensing_radius, 0.0)
-	return descriptor
+	return AutoObject.create_voxel_descriptor(
+		entry_color,
+		entry_complexity,
+		default_radius,
+		collision_voxels,
+		pivot_variants,
+		semantic_probe_profile,
+		semantic_probe_density,
+		context_sensing_radius
+	)
 
 
 static func load_or_new_mesh_data_asset(asset_path: String) -> MeshDataAsset:
@@ -201,20 +167,7 @@ static func create_or_update_rock_asset(
 static func configure_rock_instance(rock: AutoRock, asset: AutoRock, config: Dictionary = {}) -> void:
 	if rock == null or asset == null:
 		return
-	var cfg := asset.make_instance_config(config)
-	var radius := float(cfg.get("profile_radius", asset.mesh_size * 0.5))
-	if not cfg.has("color"):
-		cfg["color"] = asset.get_voxel_color()
-	if not cfg.has("complexity"):
-		cfg["complexity"] = asset.get_voxel_complexity()
-	if not cfg.has("collision_voxels"):
-		cfg["collision_voxels"] = asset.get_collision_voxels(radius)
-	if rock.has_method("configure_asset"):
-		rock.call("configure_asset", cfg)
-	elif rock.has_method("configure_cliff"):
-		rock.call("configure_cliff", cfg)
-	else:
-		rock.configure_rock(cfg)
+	rock.configure_from_rock_asset(asset, config)
 
 
 static func save_rock_asset(rock: AutoRock, resource_path: String) -> int:
@@ -289,38 +242,29 @@ static func make_rock_asset_voxel_record(
 ) -> Dictionary:
 	if rock == null or asset == null:
 		return {}
-	var aabb := rock.mesh.get_aabb() if rock.mesh != null else AABB()
-	var y_min := rock.position.y + aabb.position.y * rock.scale.y
-	var y_max := rock.position.y + (aabb.position.y + aabb.size.y) * rock.scale.y
-	if y_max < y_min:
-		var tmp := y_min
-		y_min = y_max
-		y_max = tmp
-	var radius := maxf(aabb.size.x * absf(rock.scale.x), aabb.size.z * absf(rock.scale.z)) * 0.5
-	radius = maxf(radius, asset.mesh_size * 0.5)
 	var fields := extra_fields.duplicate(true)
 	fields["mesh_index"] = mesh_index
-	var profile := create_voxel_profile(
-		asset.get_voxel_color(),
-		asset.get_voxel_complexity(),
-		radius,
-		asset.get_collision_voxels(radius)
-	)
-	return make_profile_asset_voxel_record(
-		record_id,
-		"rock",
-		rock.position,
-		rock.rotation_degrees,
-		rock.scale,
-		base_pixel,
-		volume_xz_resolution,
-		profile,
-		radius,
-		y_min,
-		y_max,
-		[],
-		fields
-	)
+	if rock is AutoRock:
+		return (rock as AutoRock).make_asset_voxel_record(record_id, base_pixel, volume_xz_resolution, fields)
+	var record_rock: AutoRock = null
+	var duplicate_node = asset.duplicate()
+	if duplicate_node is AutoRock:
+		record_rock = duplicate_node as AutoRock
+	elif duplicate_node != null:
+		duplicate_node.free()
+	if record_rock == null:
+		record_rock = AutoCliffRock.new()
+	record_rock.configure_from_rock_asset(asset, {
+		"mesh": rock.mesh,
+		"position": rock.position,
+		"rotation_mode": "XYZ",
+		"rotation_degrees": rock.rotation_degrees,
+		"mesh_index": mesh_index,
+	})
+	record_rock.scale = rock.scale
+	var record := record_rock.make_asset_voxel_record(record_id, base_pixel, volume_xz_resolution, fields)
+	record_rock.free()
+	return record
 
 
 static func make_vegetation_asset_voxel_record(
@@ -512,7 +456,8 @@ static func save_resource(resource: Resource, resource_path: String) -> int:
 static func write_vegetation_subclass(
 	class_name_value: String,
 	object_subtype: String,
-	band_name: String,
+	channel: int,
+	radius: float,
 	group_name: String,
 	script_path: String
 ) -> int:
@@ -521,18 +466,20 @@ static func write_vegetation_subclass(
 		"class_name %s\n"
 		+ "extends AutoVegetation\n\n"
 		+ "const DEFAULT_SUBTYPE := \"%s\"\n"
-		+ "const DEFAULT_BAND := \"%s\"\n"
+		+ "const DEFAULT_CHANNEL := %d\n"
+		+ "const DEFAULT_RADIUS := %.6f\n"
 		+ "const DEFAULT_GROUP := \"%s\"\n\n\n"
 		+ "func %s(config: Dictionary) -> void:\n"
 		+ "\tconfigure_asset(config)\n\n\n"
 		+ "func configure_asset(config: Dictionary) -> void:\n"
 		+ "\tvar cfg := config.duplicate(true)\n"
 		+ "\tcfg[\"object_subtype\"] = DEFAULT_SUBTYPE\n"
-		+ "\tcfg[\"band\"] = DEFAULT_BAND\n"
+		+ "\tcfg[\"channel\"] = DEFAULT_CHANNEL\n"
+		+ "\tcfg[\"radius\"] = DEFAULT_RADIUS\n"
 		+ "\tif not cfg.has(\"group\") and not DEFAULT_GROUP.is_empty():\n"
 		+ "\t\tcfg[\"group\"] = DEFAULT_GROUP\n"
 		+ "\tconfigure_vegetation(cfg)\n"
-	) % [class_name_value, object_subtype, band_name, group_name, method_name]
+	) % [class_name_value, object_subtype, channel, radius, group_name, method_name]
 	return write_text_file(script_path, content)
 
 

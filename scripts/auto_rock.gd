@@ -154,20 +154,36 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 	return cfg
 
 
+func configure_from_rock_asset(asset: AutoRock, config: Dictionary = {}) -> void:
+	if asset == null:
+		return
+	var cfg := asset.make_instance_config(config)
+	var radius := float(cfg.get("profile_radius", asset.mesh_size * 0.5))
+	if not cfg.has("color"):
+		cfg["color"] = asset.get_voxel_color()
+	if not cfg.has("complexity"):
+		cfg["complexity"] = asset.get_voxel_complexity()
+	if not cfg.has("collision_voxels"):
+		cfg["collision_voxels"] = asset.get_collision_voxels(radius)
+	if has_method("configure_asset"):
+		call("configure_asset", cfg)
+	elif has_method("configure_cliff"):
+		call("configure_cliff", cfg)
+	else:
+		configure_rock(cfg)
+
+
+func make_asset_voxel_record(
+	record_id: String,
+	base_pixel: Vector2i,
+	volume_xz_resolution: int,
+	extra_fields: Dictionary = {}
+) -> Dictionary:
+	return super.make_asset_voxel_record(record_id, base_pixel, volume_xz_resolution, extra_fields)
+
+
 func _vector2_from_config_value(value, fallback: Vector2) -> Vector2:
-	if value is Vector2:
-		return value as Vector2
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 2:
-			return Vector2(float(arr[0]), float(arr[1]))
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Vector2(
-			float(dict.get("x", fallback.x)),
-			float(dict.get("y", fallback.y))
-		)
-	return fallback
+	return AutoObject.vector2_from_value(value, fallback)
 
 
 func _clear_rock_state_mirror_metadata() -> void:

@@ -279,7 +279,7 @@ func _test_full_pipeline() -> bool:
 		push_error("  FAIL: first placement not valid")
 		return false
 
-	var stamped_collision: PackedFloat32Array = result.get("collision_occupancy_out", PackedFloat32Array())
+	var stamped_collision: PackedFloat32Array = result.get("collision_field_out", PackedFloat32Array())
 	var first_origin: Vector3i = first.voxel_origin
 	var any_collision_written := false
 	for entry in footprint:
@@ -304,8 +304,8 @@ func _test_full_pipeline() -> bool:
 		return false
 
 	var second := generator.run_minimal(
-		result.get("scene_occupancy_out", PackedFloat32Array()),
-		result.get("collision_occupancy_out", PackedFloat32Array()),
+		result.get("scene_field_out", PackedFloat32Array()),
+		result.get("collision_field_out", PackedFloat32Array()),
 		footprint, grid_size, settings)
 	var second_count := int(second.get("result_count", 0))
 	if second_count <= 0:
