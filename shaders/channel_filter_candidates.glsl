@@ -2,16 +2,16 @@
 #version 450
 
 // Per-pixel candidate filtering for vegetation scatter.
-// Reads packed RGBA band occupancy → outputs candidate mask.
+// Reads packed RGBA channel occupancy → outputs candidate mask.
 //
 // A pixel is a valid candidate if:
-//   For each band in the profile mask, occupancy[channel] <= block_threshold
+//   For each channel in the profile mask, occupancy[channel] <= block_threshold
 //
 // Output: R = 1.0 if candidate, 0.0 if blocked.
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
-layout(set = 0, binding = 0) uniform sampler2D t_occupancy;  // packed RGBA band occupancy
+layout(set = 0, binding = 0) uniform sampler2D t_occupancy;  // packed RGBA channel occupancy
 
 layout(rgba16f, set = 1, binding = 0) uniform image2D rw_candidates;
 
@@ -29,7 +29,7 @@ void main() {
 
     vec2 uv = (vec2(pos) + 0.5) / float(base_res);
 
-    // Check occupancy: any profiled band occupied → blocked
+    // Check occupancy: any profiled channel occupied → blocked
     vec4 occ = texture(t_occupancy, uv);
     // Dot product: if any channel where profile_mask=1 has occ > threshold → blocked
     vec4 blocked = step(vec4(block_threshold), occ) * profile_mask;

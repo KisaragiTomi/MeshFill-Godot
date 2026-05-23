@@ -184,8 +184,8 @@ func _test_asset_instance_probe_transfer() -> bool:
 		push_error("  FAIL: instance subtype should be test_leaf, got %s" % instance.object_subtype)
 		instance.free()
 		return false
-	if instance.vegetation_band != "understory":
-		push_error("  FAIL: instance band should be understory, got %s" % instance.vegetation_band)
+	if instance.vegetation_channel != 1:
+		push_error("  FAIL: instance channel should be 1, got %d" % instance.vegetation_channel)
 		instance.free()
 		return false
 
@@ -204,20 +204,20 @@ func _test_asset_instance_probe_transfer() -> bool:
 	return true
 
 
-func _load_test_leaf_asset() -> AutoVegetationAsset:
+func _load_test_leaf_asset() -> AutoVoxelDescriptor:
 	var resource := load(TEST_LEAF_ASSET_PATH)
-	if not resource is AutoVegetationAsset:
-		push_error("  FAIL: could not load AutoVegetationAsset at %s" % TEST_LEAF_ASSET_PATH)
+	if not resource is AutoVoxelDescriptor:
+		push_error("  FAIL: could not load AutoVoxelDescriptor at %s" % TEST_LEAF_ASSET_PATH)
 		return null
-	var asset := resource as AutoVegetationAsset
+	var asset := resource as AutoVoxelDescriptor
 	if asset.asset_id != "sm_test_leaf_test2":
 		push_error("  FAIL: unexpected asset_id %s" % asset.asset_id)
 		return null
 	if asset.object_subtype != "test_leaf":
 		push_error("  FAIL: unexpected subtype %s" % asset.object_subtype)
 		return null
-	if asset.vegetation_band != "understory":
-		push_error("  FAIL: unexpected band %s" % asset.vegetation_band)
+	if asset.vegetation_channel != 1:
+		push_error("  FAIL: unexpected channel %d" % asset.vegetation_channel)
 		return null
 	if asset.get_mesh() == null:
 		push_error("  FAIL: asset has no mesh")
@@ -228,7 +228,7 @@ func _load_test_leaf_asset() -> AutoVegetationAsset:
 	return asset
 
 
-func _validate_leaf_probe(asset: AutoVegetationAsset, probe: Dictionary, index: int) -> bool:
+func _validate_leaf_probe(asset: AutoVoxelDescriptor, probe: Dictionary, index: int) -> bool:
 	for key in ["offset", "expected_color", "expected_complexity", "expected_rgba8", "expected_collision", "weight", "flags", "kind", "source"]:
 		if not probe.has(key):
 			push_error("  FAIL: probe %d missing key %s" % [index, key])
@@ -271,8 +271,8 @@ func _validate_leaf_probe(asset: AutoVegetationAsset, probe: Dictionary, index: 
 	if str(probe.kind) != "positive":
 		push_error("  FAIL: probe %d kind should be positive, got %s" % [index, str(probe.kind)])
 		return false
-	if str(probe.source) != "understory":
-		push_error("  FAIL: probe %d source should be understory, got %s" % [index, str(probe.source)])
+	if str(probe.source) != "mesh":
+		push_error("  FAIL: probe %d source should be mesh, got %s" % [index, str(probe.source)])
 		return false
 
 	return true

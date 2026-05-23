@@ -1,6 +1,6 @@
 ﻿# TargetSceneVoxel Projection — Stamp 画布与 Anchor 投影
 
-本文定义 `TargetSceneVoxel`（简称 `TargetSV`）的语义边界、当前 GPU 生成/持久化路径，以及后续 stamp、VDB 导入和 anchor projection cache 的计划。本文只描述目标场和候选路由输入，不把目标场当作最终 `SceneVoxel` 或资产选择结果。
+本文定义 `TargetSceneVoxel`（简称 `TargetSV`）的语义边界、当前 GPU 生成/持久化路径，以及后续 stamp、VDB 导入和 anchor projection cache 的计划。本文只描述目标场和候选路由输入，不把目标场当作最终 `SceneVoxel` 或资产选择结果。当前命名约定中，`TargetSV` 保留源目标画布，`BrushSV` 保留目标画布的笔刷 delta / override，`TargetSV_B` 表示 `TargetSV + BrushSV` 的 brush-composited 目标画布，并作为 prefilter / routing / scoring 的实际读取输入。
 
 ## 目标边界
 
@@ -37,6 +37,8 @@
 | collision buffer | `target_scene_voxel_collision.r32f`，每 voxel 为 `collision_peak` |
 | preview | `target_scene_voxel_preview.png`，用于 Godot 调试显示 |
 | metadata | `target_scene_voxel.json` |
+| brush source layer | `BrushSV` delta / override；需要独立保存，不能只烘进 `TargetSV_B` |
+| brush-composited variant | `target_scene_voxel_b_visual.rgba32f`、`target_scene_voxel_b_collision.r32f`、`target_scene_voxel_b_preview.png`、`target_scene_voxel_b.json` |
 | 保存目录 | `user://target_scene_voxel/` |
 
 当前 `TargetSceneVoxelGenerator.generate()` 输入：
@@ -44,7 +46,7 @@
 | 输入 | 来源 | 用途 |
 | --- | --- | --- |
 | `scene_depth_img` | runtime terrain texture `scene_depth` | 推导地形高度和支撑上下文 |
-| `target_height_img` | composited target height | 推导目标高度差和体积意图 |
+| `target_height_img` | 源 target height 或 brush-composited target height | 推导目标高度差和体积意图；源输入写 `TargetSV`，笔刷合成输入写 `TargetSV_B` |
 | `rock_mask_img` | 当前 rock mask，可为空 | 增强 cliff / rock 目标信号 |
 | `dirty_rect` | 默认为整张图 | 限定 GPU dispatch 范围 |
 
@@ -52,50 +54,54 @@
 
 | 输入 | 行为 |
 | --- | --- |
-| `Ctrl+J` | 全量重新计算并保存 `TargetSV` |
-| `J` | 显示 / 隐藏已持久化的 TargetSV preview overlay |
+| `Ctrl+J` | 全量重新计算并保存源 `TargetSV`，再与已保存 / 当前 `BrushSV` 合成并保存 `TargetSV_B` |
+| `J` | 显示 / 隐藏已持久化的 `TargetSV_B` preview overlay |
 
 ## 数据契约
 
-`TargetSV` 是 placement / prefilter 的目标查询输入，不是 committed scene state。
+`TargetSV` 是源目标画布，不是 committed scene state。`BrushSV` 是目标画布的笔刷 delta / override，同样需要持久化。真正传给 placement / prefilter 的目标查询输入是 `TargetSV_B`；当没有笔刷覆盖时，`TargetSV_B` 可以与源 `TargetSV` 内容相同或回退到源 `TargetSV`。
 
 | 数据 | 归属 | 消费者 |
 | --- | --- | --- |
-| `target_occupancy` | 目标复杂度 / 占用强度 | `score_voxel_tile.glsl`、`score_anchor_asset_probes.glsl` |
-| `target_color` | packed RGBA8 目标颜色和复杂度 | `score_voxel_tile.glsl`、`score_anchor_asset_probes.glsl` |
-| `target_scene_voxel_visual.rgba32f` | 持久化 TargetSV visual buffer | 后续 projection / debug / import 流程 |
-| `target_scene_voxel_collision.r32f` | 持久化 TargetSV collision intent | 后续 projection / debug / import 流程 |
+| `target_occupancy` | 从 `TargetSV_B` 读取的目标复杂度 / 占用强度 | `score_voxel_tile.glsl`、`score_anchor_asset_probes.glsl` |
+| `target_color` | 从 `TargetSV_B` 读取的 packed RGBA8 目标颜色和复杂度 | `score_voxel_tile.glsl`、`score_anchor_asset_probes.glsl` |
+| `target_scene_voxel_visual.rgba32f` | 持久化源 `TargetSV` visual buffer | source target / debug / import 回查 |
+| `target_scene_voxel_collision.r32f` | 持久化源 `TargetSV` collision intent | source target / debug / import 回查 |
+| `BrushSV` delta / override | 持久化目标画布笔刷层 | 与源 `TargetSV` 重新合成 `TargetSV_B`；undo / redo / debug 回查 |
+| `target_scene_voxel_b_visual.rgba32f` | 持久化 `TargetSV_B` visual buffer | prefilter / routing / scoring / debug 默认输入 |
+| `target_scene_voxel_b_collision.r32f` | 持久化 `TargetSV_B` collision intent | prefilter / routing / scoring / debug 默认输入 |
 
-`TargetSV` 可以参与 `TargetSceneVoxel` source delta，但普通 `TargetSceneVoxel` source 不提交最终 `collision_voxels` 字段。最终 `collision_occupancy` 仍由 committed `SceneVoxel.collision_voxels` 重建为派生查询视图。
+`TargetSV` / `BrushSV` / `TargetSV_B` 都不参与 committed SceneVoxel source write 或 `blend_scene_voxels()` 合成；`TargetSV_B` 只作为 routing、target fit 和 scoring 的输入。最终 `collision_field` 仍由 committed `SceneVoxel.collision_voxels` 重建为派生查询视图。
 
 ## Anchor 语义
 
-当前 GPU prefilter 支持两类 anchor：
+当前 GPU prefilter 从两个位置来源提取 anchor，但写入同一个 position-only `anchor_buffer`。`anchor_kind` 不再作为字段存储；anchor 的 voxel 位置本身表达它来自支撑面还是目标顶部 / 上层目标信号。
 
-| Anchor kind | 编码 | 当前 shader 定义 |
-| --- | --- | --- |
-| `ground` | `0` | 当前 voxel 满足 target 阈值、scene/collision 阈值，并且下方 support 足够 |
-| `target_top` | `1` | 每个 dirty tile 的局部 XZ column 中最高的 target-occupied voxel，且下方 support 足够 |
+| 位置来源 | 当前 shader 定义 |
+| --- | --- |
+| 支撑面 position | 当前 voxel 满足 target 阈值、scene/collision 阈值，并且下方 support 足够 |
+| target-top position | 每个底层 dirty tile 的局部 XZ column 中最高的 target-occupied voxel；不强制 support，因为它是语义对齐点 |
 
 实现位置：
 
 | 文件 | 职责 |
 | --- | --- |
-| `shaders/collect_sv_anchors.glsl` | 从 dirty tiles 收集 `ground` / `target_top` anchors |
-| `shaders/score_anchor_asset_probes.glsl` | 按 asset probe 和 `allowed_anchor_kinds` 评分 |
-| `scripts/autoobject_probe_prefilter_gpu.gd` | 输出 `autoobject_candidate_voxel_sparses` |
+| `shaders/collect_sv_anchors.glsl` | 从底层 dirty tiles 收集 position-only anchors |
+| `shaders/score_anchor_asset_probes.glsl` | 按 asset probe 对 position-only anchors 评分 |
+| `scripts/autoobject_probe_prefilter_gpu.gd` | 生成 GPU `AnchorState` / candidate route buffer；`autoobject_candidate_voxel_sparses` 只作为兼容 / debug readback 视图 |
 
-`target_top` 不是资产类型，也不是最终 placement 点。它只是候选 anchor 层，表示目标场顶部或上层强信号附近存在可被 probe 匹配的候选位置。
+target-top position 不是资产类型，也不是最终 placement 点。它只是候选位置来源，表示目标场顶部或上层强信号附近存在可被 probe 匹配的候选位置。
 
 ## Candidate voxel region 边界
 
-高层路由输出使用 `voxel_sparse` 术语：
+高层路由输出使用 `voxel region` 术语；当前实现中的 `voxel_sparse` / `candidate_voxel_sparses*` 只作为兼容 API 名称保留：
 
 ```text
 upstream prefilter
-  -> anchor_autoobject_topk
-  -> autoobject_candidate_voxel_sparses
-  -> candidate_voxel_sparses_by_asset
+  -> GPU AnchorState(score/topK)
+  -> candidate route buffer
+  -> candidate voxel regions
+  -> candidate_voxel_sparses_by_asset compat/debug view
   -> score_voxel_tile.glsl
 ```
 
@@ -103,11 +109,12 @@ upstream prefilter
 
 | 术语 | 使用层级 | 说明 |
 | --- | --- | --- |
-| `voxel_sparse` | public routing / placement API | 8×8×8 candidate block 的高层语义 |
-| `tile_id` | shader / buffer / storage key | 同一个 block 的物理索引和 workgroup key |
-| `dirty_tile_ids` | 底层兼容 API | 表示 dirty voxel regions 的 tile id 列表 |
+| `voxel region` | public routing / placement prose | 候选或 dirty 的高层区域；当前通常映射到 `8×8×8` block。 |
+| `candidate_voxel_sparses*` / `voxel_sparse` | 当前兼容 API | 历史命名，语义上表示 candidate voxel regions。 |
+| `tile_id` | shader / buffer / storage key | 同一个 block 的物理索引和 workgroup key。 |
+| `dirty_tile_ids` | 底层兼容 API | 表示 dirty voxel regions 的 tile id 列表。 |
 
-候选 voxel regions 必须偏向召回。Routing 阶段不要过早剔除；footprint、support、collision、clearance 和 target fit 由 `score_voxel_tile.glsl` 精筛。
+Candidate voxel regions 必须偏向召回。Routing 阶段不要过早剔除；footprint、support、collision、clearance 和 target fit 由 `score_voxel_tile.glsl` 精筛。
 
 ## Stamp 系统计划
 
@@ -140,7 +147,7 @@ Stamp 名称只属于生成器或编辑器内部，不应写入 `TargetSV` buffe
 | `origin_voxel` | stamp 锚点，通常来自 landscape surface 或支撑点 |
 | `basis` | stamp 局部坐标，可由 world-up、坡面法线或 cliff tangent 生成 |
 | `bounds` | stamp 影响的 voxel AABB |
-| `source_voxels` | 可选的 AutoObject 烘焙局部 `asset_voxel_record` samples |
+| `source_voxels` | 可选的 AutoObject 烘焙局部 `voxel_write_spec` samples |
 | `opacity` | visual 混合权重 |
 | `collision_opacity` | collision intent 混合权重 |
 | `scale` | stamp 缩放 |
@@ -211,7 +218,7 @@ target_anchor_projection_rgba8[anchor]
 ```text
 for each (x, z) column:
   read TargetSV color / complexity / collision over y
-  pool into lower / middle / upper bands
+  pool into configured vertical channels
   write summary to nearest supported anchor or ground anchor
 ```
 
@@ -221,7 +228,7 @@ for each (x, z) column:
 | --- | --- |
 | `complexity ^ gamma` 加权颜色 | 高复杂度目标主导颜色 |
 | `peak complexity` | 保留强目标信号 |
-| `mass` | 表示该 band 目标总量 |
+| `mass` | 表示该 channel 目标总量 |
 | `occupancy_ratio` | 区分真实结构和单点噪声 |
 
 推荐默认：
@@ -240,8 +247,8 @@ Projection cache 只能用于候选 route 的验证、rerank 或 pruning，不�
 dirty / active voxel regions
   -> collect anchors
   -> AutoObject probe prefilter
-  -> autoobject_candidate_voxel_sparses
-  -> candidate_voxel_sparses_by_asset
+  -> autoobject candidate voxel regions
+  -> candidate_voxel_sparses_by_asset compat view
   -> score_voxel_tile.glsl physical scoring
 ```
 
@@ -273,7 +280,7 @@ dirty landscape / mask / brush
 
 - TargetSV dirty bounds 应包含 stamp bounds 和最大 stamp radius。
 - Projection dirty bounds 可能大于 TargetSV dirty bounds，因为高处目标会投影到下方 anchor。
-- Public API 使用 `dirty_voxel_sparse_*` 术语；底层 shader buffer 可以继续使用 `dirty_tile_ids`。
+- Public prose 使用 `dirty_voxel_region_*` / dirty voxel region 术语；当前兼容 API 仍可能保留 `dirty_voxel_sparse_*` 或底层 `dirty_tile_ids`。
 
 ## 推荐阶段
 
@@ -291,8 +298,8 @@ dirty landscape / mask / brush
 
 - `TargetSceneVoxel` 不包含 asset 类型标签。
 - `TargetSceneVoxel` 表达目标颜色、复杂度、占用 / 碰撞意图。
-- `target_top` anchor 定义与 `collect_sv_anchors.glsl` 一致。
-- 高层候选区域使用 `voxel_sparse` 术语。
+- target-top position 定义与 `collect_sv_anchors.glsl` 一致；不再存 `anchor_kind` 字段。
+- 高层候选区域使用 `voxel region` 术语；`voxel_sparse` 只作为兼容 API 名称。
 - 底层 shader 的 `tile_id` 只作为物理 storage / workgroup key。
 - `score_voxel_tile.glsl` 不读取 projection cache。
 - 未启用 projection 时，routing 回退到当前 `target_occupancy` / `target_color` 路径。

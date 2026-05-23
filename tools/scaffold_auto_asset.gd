@@ -1,7 +1,6 @@
 extends SceneTree
 
 const AutoAssetFactoryScript := preload("res://scripts/auto_asset_factory.gd")
-const AutoVegetationAssetScript := preload("res://scripts/auto_vegetation_asset.gd")
 
 
 func _init() -> void:
@@ -143,11 +142,10 @@ func _scaffold_vegetation(args: Array, config: Dictionary) -> int:
 	var subtype := str(_get_value(args, config, "subtype", "flower"))
 	var subtype_snake := _to_snake_case(subtype)
 	var class_name_value := str(_get_value(args, config, "class_name", "Auto" + _to_pascal_case(subtype)))
-	var band_name := str(_get_value(args, config, "band", "ground"))
+	var channel := clampi(int(_get_value(args, config, "channel", 0)), 0, 3)
 	var group_name := str(_get_value(args, config, "group", "placed_%ss" % subtype))
 	var script_path := str(_get_value(args, config, "script_path", "res://scripts/auto_%s.gd" % subtype_snake))
-	var profile_path := str(_get_value(args, config, "profile_path", "res://assets/vegetation/%s_profile.tres" % subtype_snake))
-	var asset_path := str(_get_value(args, config, "asset_path", "res://assets/vegetation/%s_asset.tres" % subtype_snake))
+	var asset_path := str(_get_value(args, config, "asset_path", _get_value(args, config, "descriptor_path", "res://assets/vegetation/%s_descriptor.tres" % subtype_snake)))
 
 	var color := AutoAssetFactoryScript.color_from_value(
 		_get_value(args, config, "color", Color(0.9, 0.35, 0.5, 0.7)),
@@ -156,17 +154,13 @@ func _scaffold_vegetation(args: Array, config: Dictionary) -> int:
 	var complexity := clampf(float(_get_value(args, config, "complexity", color.a)), 0.0, 1.0)
 	var radius := float(_get_value(args, config, "radius", 0.25))
 	var collision_voxels := _array_value(args, config, "collision_voxels", [])
-	var profile := AutoAssetFactoryScript.create_voxel_profile(color, complexity, radius, collision_voxels)
+	var descriptor := AutoAssetFactoryScript.create_voxel_descriptor(color, complexity, radius, collision_voxels)
 
-	var err := AutoAssetFactoryScript.save_resource(profile, profile_path)
-	if err != OK:
-		push_error("Failed to save vegetation profile: %s" % profile_path)
-		return err
-
-	err = AutoAssetFactoryScript.write_vegetation_subclass(
+	var err := AutoAssetFactoryScript.write_vegetation_subclass(
 		class_name_value,
 		subtype,
-		band_name,
+		channel,
+		radius,
 		group_name,
 		script_path
 	)
@@ -174,25 +168,22 @@ func _scaffold_vegetation(args: Array, config: Dictionary) -> int:
 		push_error("Failed to write vegetation subclass: %s" % script_path)
 		return err
 
-	var asset: Resource = AutoVegetationAssetScript.new()
-	asset.set("asset_id", str(_get_value(args, config, "asset_id", subtype)))
-	asset.set("object_subtype", subtype)
-	asset.set("vegetation_band", band_name)
-	asset.set("voxel_profile", profile)
-	asset.set("voxel_color", profile.get_color())
-	asset.set("voxel_complexity", profile.get_complexity())
-	asset.set("collision_voxels", profile.get_collision_voxels(radius))
+	descriptor.set("asset_id", str(_get_value(args, config, "asset_id", subtype)))
+	descriptor.set("object_type", "vegetation")
+	descriptor.set("object_subtype", subtype)
+	descriptor.set("vegetation_channel", channel)
+	descriptor.set("vegetation_radius", radius)
 	var vegetation_script := load(script_path)
 	if vegetation_script == null:
 		push_error("Generated vegetation script could not be loaded: %s" % script_path)
 		return ERR_FILE_CANT_OPEN
-	asset.set("vegetation_script", vegetation_script)
-	asset.set("scatter_min_distance", float(_get_value(args, config, "scatter_min_distance", 0.5)))
-	asset.set("scatter_max_count", int(_get_value(args, config, "scatter_max_count", 500)))
-	asset.set("scatter_max_scale", float(_get_value(args, config, "scatter_max_scale", 1.0)))
-	asset.set("visual_layer", int(_get_value(args, config, "visual_layer", 14)))
-	asset.set("group", group_name)
-	asset.set("mesh_create_method", str(_get_value(args, config, "mesh_create_method", "")))
+	descriptor.set("vegetation_script", vegetation_script)
+	descriptor.set("scatter_min_distance", float(_get_value(args, config, "scatter_min_distance", 0.5)))
+	descriptor.set("scatter_max_count", int(_get_value(args, config, "scatter_max_count", 500)))
+	descriptor.set("scatter_max_scale", float(_get_value(args, config, "scatter_max_scale", 1.0)))
+	descriptor.set("visual_layer", int(_get_value(args, config, "visual_layer", 14)))
+	descriptor.set("group", group_name)
+	descriptor.set("mesh_create_method", str(_get_value(args, config, "mesh_create_method", "")))
 
 	var mesh_path := str(_get_value(args, config, "mesh", ""))
 	if not mesh_path.is_empty():
@@ -200,20 +191,20 @@ func _scaffold_vegetation(args: Array, config: Dictionary) -> int:
 		if mesh == null:
 			push_error("Vegetation mesh could not be loaded: %s" % mesh_path)
 			return ERR_FILE_NOT_FOUND
-		asset.set("mesh", mesh)
+		descriptor.set("mesh", mesh)
 		var source_mesh := AutoAssetFactoryScript.load_mesh(mesh_path)
 		if source_mesh != null:
-			asset.set("source_mesh", source_mesh)
-		asset.set("source_mesh_path", mesh_path)
+			descriptor.set("source_mesh", source_mesh)
+		descriptor.set("source_mesh_path", mesh_path)
 
-	err = AutoAssetFactoryScript.save_resource(asset, asset_path)
+	descriptor.take_over_path(asset_path)
+	err = AutoAssetFactoryScript.save_resource(descriptor, asset_path)
 	if err != OK:
-		push_error("Failed to save AutoVegetationAsset: %s" % asset_path)
+		push_error("Failed to save vegetation AutoVoxelDescriptor: %s" % asset_path)
 		return err
 
 	print("Vegetation asset scaffolded:")
-	print("  asset:   %s" % asset_path)
-	print("  profile: %s" % profile_path)
+	print("  descriptor asset: %s" % asset_path)
 	print("  script:  %s" % script_path)
 	return OK
 
@@ -321,7 +312,8 @@ Vegetation JSON:
     "type": "vegetation",
     "subtype": "flower",
     "class_name": "AutoFlower",
-    "band": "ground",
+    "asset_path": "res://assets/vegetation/flower_descriptor.tres",
+    "channel": 0,
     "radius": 0.25,
     "color": [0.9, 0.35, 0.5, 0.7],
     "complexity": 0.7,

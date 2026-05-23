@@ -1,6 +1,6 @@
 # MeshFill Placement Fitting：石头 Consumer 流程
 
-![MeshFill compute shader 3D placement flow](../graphs/meshfill_compute_shader_3d_placement.svg)
+![MeshFill 3D placement overview and 2.5D heightfield fitting path](../graphs/meshfill_compute_shader_3d_placement.svg)
 
 ## 核心思路
 
@@ -8,7 +8,7 @@
 
 系统通过 Compute Shader 管线迭代地在场景中放置岩石 Mesh，每次放置后将该石头的高度"印"到场景高度图上，使场景实际高度逐步逼近目标高度（target_height）。
 
-`CliffGenerator.generate_placement()` / `generate_surface_placement()` 是通用同类资产 GPU fitting producer，当前类名仍沿用历史命名。石头路径只是它的一个 consumer：输入一组 `AutoRock` / `AutoCliffRock` 资产、目标高度和遮罩，输出满足候选评分、去重和重叠控制的 placement result。后续 `main.gd` 才把这些结果实例化成 `AutoRock` 子类，并派生 `asset_voxel_record` 写入场景体素系统。
+`CliffGenerator.generate_placement()` / `generate_surface_placement()` 是通用同类资产 GPU fitting producer，当前类名仍沿用历史命名。石头路径只是它的一个 consumer：输入一组 `AutoRock` / `AutoCliffRock` 资产、目标高度和遮罩，输出满足候选评分、去重和重叠控制的 placement result。后续 `main.gd` 才把这些结果实例化成 `AutoRock` 子类，并派生 `voxel_write_spec` 写入场景体素系统。
 
 ---
 
@@ -50,7 +50,7 @@
 
 ## 管线流程
 
-```
+```text
 输入纹理
   │
   ▼
@@ -128,7 +128,7 @@ Shared Memory 泛洪：如果邻居有 `generate_mask > 0` 且高度较低，就
 3. 对候选位置，旋转 UV（基于目标高度纹理中存储的法线方向 + 随机旋转）
 4. 遍历石头高度图的每个像素（16×16），检查对应场景位置：
 
-```
+```text
 放置高度 = 石头高度图值 + 目标高度 + 高度偏移
 ```
 
@@ -165,13 +165,13 @@ Shared Memory 泛洪：如果邻居有 `generate_mask > 0` 且高度较低，就
    - 如果在石头范围内，采样石头高度图得到 `mesh_h`
    - 计算实际绘制高度：
 
-```
+```text
 draw_h = mesh_h + scene_h   （石头局部高度 + 放置基准高度）
 ```
 
 3. 更新场景高度：
 
-```
+```text
 new_height = clamp(max(current_height, draw_h), 0, max_height)
 ```
 
@@ -194,7 +194,7 @@ effective_draw_h = mix(draw_h, current_height, rock_overlap)
 
 ## 高度变化原理图
 
-```
+```text
 目标高度  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  target_height
               ┌───┐
           ┌───┤   ├───┐         ┌─────┐
@@ -220,7 +220,7 @@ effective_draw_h = mix(draw_h, current_height, rock_overlap)
 
 CPU 将其转换为世界坐标并实例化：
 
-```
+```text
 world_pos.x = uv_x × capture_size - capture_size/2
 world_pos.z = uv_y × capture_size - capture_size/2
 world_pos.y = result_height  （从 GPU 结果直接读取）

@@ -4,7 +4,7 @@
   "class_name": "AutoTestLeaf",
   "script_path": "res://scripts/auto_test_leaf.gd",
   "asset_path": "res://assets/vegetation/sm_test_leaf_test2_asset.tres",
-  "profile_path": "res://assets/vegetation/sm_test_leaf_test2_profile.tres",
+  "descriptor_path": "res://assets/vegetation/sm_test_leaf_test2_descriptor.tres",
   "asset_id": "sm_test_leaf_test2",
   "mesh": "res://geo/SM_TestLeaf_Test2.FBX",
   "band": "understory",

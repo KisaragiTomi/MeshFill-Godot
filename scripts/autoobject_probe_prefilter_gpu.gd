@@ -7,23 +7,21 @@ extends "res://scripts/godot_compute_shader_base.gd"
 ## GDScript and can stall large scenes.
 ##
 ## Uses 4 compute-shader dispatches:
-##   1. collect_sv_anchors        — find ground + target_top anchor voxels
+##   1. collect_sv_anchors        — find position-only anchor voxels
 ##   2. score_anchor_asset_probes — score each anchor×asset probe set (Pass A)
 ##   3. select_anchor_topk        — per-anchor top-K asset selection   (Pass B)
-##   4. reduce_anchor_topk_to_voxel_sparses — aggregate to per-asset voxel-region votes
+##   4. reduce_anchor_topk_to_voxel_regions — aggregate to per-asset voxel-region votes
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 
 const TILE_SIZE := 8
 const MAX_ASSETS := 256
 const TOPK := 4
-const ANCHOR_KIND_GROUND := 0
-const ANCHOR_KIND_TARGET_TOP := 1
 const ANCHOR_CAPACITY := 65536
 
 var anchor_topk: int = 4
-var max_scene_occupancy: float = 0.15
-var max_collision_occupancy: float = 0.05
+var max_scene_field: float = 0.15
+var max_collision_field: float = 0.05
 var min_support: float = 0.25
 var min_target_interest: float = 0.01
 var min_prefilter_score: float = 0.35
@@ -44,19 +42,19 @@ var _pipeline_reduce: RID
 # ---------------------------------------------------------------------------
 
 func run_probe_prefilter(
-	gvf: GlobalVoxelField,
+	scene_voxel_runtime: SceneVoxelLocal,
 	target_occupancy: PackedFloat32Array,
 	target_color: PackedColorArray,
 	autoobjects: Array,
 	dirty_tile_ids: Array[int] = []
 ) -> Dictionary:
-	if gvf == null:
+	if scene_voxel_runtime == null:
 		return _empty_result()
 	var voxel_sparse_ids := dirty_tile_ids.duplicate()
 	if voxel_sparse_ids.is_empty():
-		voxel_sparse_ids = gvf.get_dirty_voxel_sparse_ids() if gvf.has_method("get_dirty_voxel_sparse_ids") else gvf.get_dirty_tile_ids()
+		voxel_sparse_ids = scene_voxel_runtime.get_dirty_voxel_sparse_ids() if scene_voxel_runtime.has_method("get_dirty_voxel_sparse_ids") else scene_voxel_runtime.get_dirty_tile_ids()
 	if voxel_sparse_ids.is_empty():
-		voxel_sparse_ids = _all_tile_ids(gvf)
+		voxel_sparse_ids = _all_tile_ids(scene_voxel_runtime)
 	if voxel_sparse_ids.is_empty():
 		return _empty_result()
 
@@ -71,7 +69,7 @@ func run_probe_prefilter(
 		_free_gpu()
 		return _empty_result()
 
-	var result := _run_gpu_pipeline(gvf, target_occupancy, target_color, autoobjects, voxel_sparse_ids)
+	var result := _run_gpu_pipeline(scene_voxel_runtime, target_occupancy, target_color, autoobjects, voxel_sparse_ids)
 	_free_gpu()
 	return result
 
@@ -81,14 +79,14 @@ func run_probe_prefilter(
 # ---------------------------------------------------------------------------
 
 func _run_gpu_pipeline(
-	gvf: GlobalVoxelField,
+	scene_voxel_runtime: SceneVoxelLocal,
 	target_occupancy: PackedFloat32Array,
 	target_color: PackedColorArray,
 	autoobjects: Array,
 	tile_ids: Array[int]
 ) -> Dictionary:
-	var grid_size := gvf.grid_size
-	var voxel_size := gvf.voxel_size
+	var grid_size := scene_voxel_runtime.grid_size
+	var voxel_size := scene_voxel_runtime.voxel_size
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
 	var tile_grid := Vector3i(
 		ceili(float(grid_size.x) / float(TILE_SIZE)),
@@ -99,8 +97,8 @@ func _run_gpu_pipeline(
 
 	# ---- Pack CPU data into byte arrays ----
 
-	var scene_data := _ensure_float_array(gvf.scene_occupancy, voxel_count)
-	var collision_data := _ensure_float_array(gvf.collision_occupancy, voxel_count)
+	var scene_data := _ensure_float_array(scene_voxel_runtime.scene_field, voxel_count)
+	var collision_data := _ensure_float_array(scene_voxel_runtime.collision_field, voxel_count)
 	var target_occ_data := _ensure_float_array(target_occupancy, voxel_count)
 	var target_color_data := _pack_color_array_rgba8(target_color, voxel_count)
 
@@ -114,12 +112,11 @@ func _run_gpu_pipeline(
 	var target_occ_buf := storage_buffer_from_floats(target_occ_data)
 	var target_color_buf := storage_buffer_from_bytes(target_color_data)
 	var dirty_tile_buf := storage_buffer_from_bytes(_pack_u32_array_from_int(tile_ids))
-	var anchor_buf := storage_buffer_zero(ANCHOR_CAPACITY * 16)  # uvec4 per anchor
+	var anchor_buf := storage_buffer_zero(ANCHOR_CAPACITY * 16)  # uvec4(x, y, z, reserved) per anchor
 	var anchor_count_buf := storage_buffer_zero(4)
 
 	var probe_data_buf := storage_buffer_from_bytes(probe_pack.probe_bytes)
 	var probe_range_buf := storage_buffer_from_bytes(probe_pack.range_bytes)
-	var anchor_mask_buf := storage_buffer_from_bytes(probe_pack.mask_bytes)
 
 	var score_buf_size := ANCHOR_CAPACITY * MAX_ASSETS * 4
 	var asset_scores_buf := storage_buffer_zero(score_buf_size)
@@ -149,7 +146,7 @@ func _run_gpu_pipeline(
 	var asset_blocks := ceili(float(asset_count) / 16.0)
 
 	_dispatch_score(
-		anchor_buf, probe_range_buf, anchor_mask_buf, probe_data_buf,
+		anchor_buf, probe_range_buf, probe_data_buf,
 		scene_buf, collision_buf, target_occ_buf, target_color_buf,
 		asset_scores_buf,
 		grid_size, voxel_size, asset_count, actual_anchor_count,
@@ -180,7 +177,7 @@ func _run_gpu_pipeline(
 
 	_free_gpu()
 
-	return _decode_results(anchors_bytes, votes_bytes, actual_anchor_count, asset_count, tile_count, gvf)
+	return _decode_results(anchors_bytes, votes_bytes, actual_anchor_count, asset_count, tile_count, scene_voxel_runtime)
 
 
 # ---------------------------------------------------------------------------
@@ -211,8 +208,8 @@ func _dispatch_collect(
 	push.encode_s32(20, tile_grid.y)
 	push.encode_s32(24, tile_grid.z)
 	push.encode_s32(28, ANCHOR_CAPACITY)
-	push.encode_float(32, max_scene_occupancy)
-	push.encode_float(36, max_collision_occupancy)
+	push.encode_float(32, max_scene_field)
+	push.encode_float(36, max_collision_field)
 	push.encode_float(40, min_support)
 	push.encode_float(44, min_target_interest)
 
@@ -225,7 +222,7 @@ func _dispatch_collect(
 
 
 func _dispatch_score(
-	anchor_buf: RID, probe_range_buf: RID, anchor_mask_buf: RID,
+	anchor_buf: RID, probe_range_buf: RID,
 	probe_data_buf: RID, scene_buf: RID, collision_buf: RID,
 	target_occ_buf: RID, target_color_buf: RID, asset_scores_buf: RID,
 	grid_size: Vector3i, voxel_size: Vector3, asset_count: int,
@@ -235,13 +232,12 @@ func _dispatch_score(
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, anchor_buf),
 		make_storage_uniform(1, probe_range_buf),
-		make_storage_uniform(2, anchor_mask_buf),
-		make_storage_uniform(3, probe_data_buf),
-		make_storage_uniform(4, scene_buf),
-		make_storage_uniform(5, collision_buf),
-		make_storage_uniform(6, target_occ_buf),
-		make_storage_uniform(7, target_color_buf),
-		make_storage_uniform(8, asset_scores_buf),
+		make_storage_uniform(2, probe_data_buf),
+		make_storage_uniform(3, scene_buf),
+		make_storage_uniform(4, collision_buf),
+		make_storage_uniform(5, target_occ_buf),
+		make_storage_uniform(6, target_color_buf),
+		make_storage_uniform(7, asset_scores_buf),
 	], _shader_score, 0)
 
 	var push := PackedByteArray()
@@ -330,17 +326,15 @@ func _dispatch_reduce(
 
 func _pack_all_probes(autoobjects: Array, asset_count: int, voxel_size: Vector3) -> Dictionary:
 	# Build flat probe buffer and per-asset probe ranges.
-	# probe_range[asset_id * 2 + anchor_kind] = (start_index, probe_count)
-	# anchor_kind: 0 = ground, 1 = target_top
-	# mask[asset_id] = bitmask of accepted anchor kinds
+	# probe_range[asset_id] = (start_index, probe_count).
+	# Anchor meaning is represented by the anchor voxel position, not by an
+	# explicit anchor_kind in the GPU record.
 
 	var all_probes: Array[Dictionary] = []
 	var range_entries: Array = []  # array of uvec2 as [start, count]
-	var masks := PackedInt32Array()
-	masks.resize(asset_count)
 
-	# Pre-allocate range_entries: asset_count * 2 slots
-	range_entries.resize(asset_count * 2)
+	# Pre-allocate range_entries: one slot per asset.
+	range_entries.resize(asset_count)
 	for i in range(range_entries.size()):
 		range_entries[i] = Vector2i(0, 0)
 
@@ -349,26 +343,12 @@ func _pack_all_probes(autoobjects: Array, asset_count: int, voxel_size: Vector3)
 		if autoobject == null:
 			continue
 
-		var mask := 0
-		var allowed := autoobject.get_allowed_anchor_kinds()
-		for kind_str in allowed:
-			if kind_str == AutoObject.ANCHOR_KIND_GROUND:
-				mask |= (1 << ANCHOR_KIND_GROUND)
-			elif kind_str == AutoObject.ANCHOR_KIND_TARGET_TOP:
-				mask |= (1 << ANCHOR_KIND_TARGET_TOP)
-		masks[obj_idx] = mask
-
-		for anchor_kind in [ANCHOR_KIND_GROUND, ANCHOR_KIND_TARGET_TOP]:
-			var kind_str := AutoObject.ANCHOR_KIND_GROUND if anchor_kind == ANCHOR_KIND_GROUND else AutoObject.ANCHOR_KIND_TARGET_TOP
-			if not autoobject.accepts_anchor_kind(kind_str):
-				range_entries[obj_idx * 2 + anchor_kind] = Vector2i(all_probes.size(), 0)
-				continue
-			var probes: Array = autoobject.get_semantic_probes(autoobject.semantic_probe_density, kind_str)
-			var start := all_probes.size()
-			for probe in probes:
-				if probe is Dictionary:
-					all_probes.append(probe)
-			range_entries[obj_idx * 2 + anchor_kind] = Vector2i(start, all_probes.size() - start)
+		var probes: Array = autoobject.get_semantic_probes(autoobject.semantic_probe_density)
+		var start := all_probes.size()
+		for probe in probes:
+			if probe is Dictionary:
+				all_probes.append(probe)
+		range_entries[obj_idx] = Vector2i(start, all_probes.size() - start)
 
 	# Pack probe data: 2 vec4 per probe = 32 bytes
 	var probe_bytes := PackedByteArray()
@@ -401,16 +381,9 @@ func _pack_all_probes(autoobjects: Array, asset_count: int, voxel_size: Vector3)
 		range_bytes.encode_u32(i * 8 + 0, entry.x)
 		range_bytes.encode_u32(i * 8 + 4, entry.y)
 
-	# Pack masks: uint per asset = 4 bytes
-	var mask_bytes := PackedByteArray()
-	mask_bytes.resize(maxi(asset_count, 1) * 4)
-	for i in range(asset_count):
-		mask_bytes.encode_u32(i * 4, masks[i])
-
 	return {
 		"probe_bytes": probe_bytes,
 		"range_bytes": range_bytes,
-		"mask_bytes": mask_bytes,
 		"total_probes": all_probes.size(),
 	}
 
@@ -425,27 +398,18 @@ func _decode_results(
 	anchor_count: int,
 	asset_count: int,
 	tile_count: int,
-	gvf: GlobalVoxelField
+	scene_voxel_runtime: SceneVoxelLocal
 ) -> Dictionary:
 	# Decode anchors
 	var anchors: Array[Dictionary] = []
-	var ground_count := 0
-	var target_top_count := 0
 	for i in range(anchor_count):
 		var base := i * 16
 		var x := int(anchors_bytes.decode_u32(base + 0))
 		var y := int(anchors_bytes.decode_u32(base + 4))
 		var z := int(anchors_bytes.decode_u32(base + 8))
-		var kind := int(anchors_bytes.decode_u32(base + 12))
-		var kind_str := AutoObject.ANCHOR_KIND_TARGET_TOP if kind == ANCHOR_KIND_TARGET_TOP else AutoObject.ANCHOR_KIND_GROUND
-		if kind == ANCHOR_KIND_GROUND:
-			ground_count += 1
-		else:
-			target_top_count += 1
 		anchors.append({
 			"id": i,
 			"voxel_pos": Vector3i(x, y, z),
-			"anchor_kind": kind_str,
 		})
 
 	# Decode voxel-region votes → per-asset sorted voxel-region lists
@@ -463,16 +427,14 @@ func _decode_results(
 			return float(a.get("score", 0.0)) > float(b.get("score", 0.0)))
 		var voxel_sparses: Array[Vector3i] = []
 		for entry in entries:
-			voxel_sparses.append(gvf.tile_id_to_pos(int(entry.get("tile_id", 0))))
+			voxel_sparses.append(scene_voxel_runtime.tile_id_to_pos(int(entry.get("tile_id", 0))))
 		autoobject_candidate_voxel_sparses[asset_id] = voxel_sparses
 
 	return {
 		"anchors": anchors,
 		"anchor_autoobject_topk": {},  # Not read back (GPU internal)
 		"autoobject_candidate_voxel_sparses": autoobject_candidate_voxel_sparses,
-
-		"ground_anchor_count": ground_count,
-		"target_top_anchor_count": target_top_count,
+		"anchor_count": anchors.size(),
 	}
 
 
@@ -480,7 +442,7 @@ func _load_shaders() -> void:
 	_shader_collect = load_compute_shader("res://shaders/collect_sv_anchors.glsl")
 	_shader_score = load_compute_shader("res://shaders/score_anchor_asset_probes.glsl")
 	_shader_topk = load_compute_shader("res://shaders/select_anchor_topk.glsl")
-	_shader_reduce = load_compute_shader("res://shaders/reduce_anchor_topk_to_voxel_sparses.glsl")
+	_shader_reduce = load_compute_shader("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl")
 	if _shader_collect.is_valid():
 		_pipeline_collect = create_compute_pipeline(_shader_collect)
 	if _shader_score.is_valid():
@@ -512,14 +474,12 @@ func _empty_result() -> Dictionary:
 		"anchors": [],
 		"anchor_autoobject_topk": {},
 		"autoobject_candidate_voxel_sparses": {},
-
-		"ground_anchor_count": 0,
-		"target_top_anchor_count": 0,
+		"anchor_count": 0,
 	}
 
 
-func _all_tile_ids(gvf: GlobalVoxelField) -> Array[int]:
-	var total := int(gvf.get_stats().get("total_tiles", 0))
+func _all_tile_ids(scene_voxel_runtime: SceneVoxelLocal) -> Array[int]:
+	var total := int(scene_voxel_runtime.get_stats().get("total_tiles", 0))
 	var result: Array[int] = []
 	for i in range(total):
 		result.append(i)
@@ -574,9 +534,3 @@ func _kind_to_uint(kind: String) -> int:
 		"negative": return 1
 		"support":  return 2
 		_:          return 0  # positive
-
-
-func _kind_str_to_int(kind: String) -> int:
-	if kind == AutoObject.ANCHOR_KIND_TARGET_TOP:
-		return ANCHOR_KIND_TARGET_TOP
-	return ANCHOR_KIND_GROUND

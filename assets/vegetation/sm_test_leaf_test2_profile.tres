@@ -1,8 +1,0 @@
-[gd_resource type="Resource" script_class="AutoVoxelProfile" format=3]
-
-[ext_resource type="Script" path="res://scripts/auto_voxel_profile.gd" id="1_6fsp3"]
-
-[resource]
-script = ExtResource("1_6fsp3")
-color = Color(0.35, 0.58, 0.24, 0.45)
-complexity = 0.45

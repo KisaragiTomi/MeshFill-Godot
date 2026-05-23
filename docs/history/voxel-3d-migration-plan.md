@@ -6,10 +6,10 @@ Status: historical record. The migration checklist in this document has been com
 
 本文只保留 3D voxel-space placement 的历史设计摘要。实现细节以当前代码和主文档为准：
 
-- **框架归属**：`docs/../core/meshfill-framework.md`
-- **SceneVoxel / collision 语义**：`docs/../core/scene-voxel-field-system.md`
+- **框架归属**：`../core/meshfill-framework.md`
+- **SceneVoxel / collision 语义**：`../core/scene-voxel-field-system.md`
 - **放置实现**：`scripts/voxel_placement_generator.gd`
-- **全局体素场**：`scripts/global_voxel_field.gd`
+- **SceneVoxelLocal**：`scripts/scene_voxel_runtime.gd`
 - **核心 shader**：`shaders/score_voxel_tile.glsl`、`shaders/reduce_voxel_tiles.glsl`、`shaders/stamp_voxel_field.glsl`
 
 ## 历史结论
@@ -29,25 +29,25 @@ AssetFootprint
 
 - **footprint 烘焙**：从 `collision_voxels` 生成局部 footprint，支持 support / clearance / solid 标记。
 - **离散旋转**：预烘焙绕 Godot `Y` 轴的 `24` 个 yaw 版本，每个 candidate 只测试一个 `rotation_index`。
-- **GPU 评分**：`score_voxel_tile.glsl` 使用 `8x8x8` workgroup，对候选 voxel 区域做 support / collision / overlap / clearance / ignored sample 累计。
+- **GPU 评分**：`score_voxel_tile.glsl` 使用 `8x8x8` workgroup，对 candidate voxel regions 做 support / collision / overlap / clearance / ignored sample 累计。
 - **Tile top K 与汇总**：tile 内输出 top K，`reduce_voxel_tiles.glsl` 做跨 tile 汇总、去重和 quota 处理。
-- **GPU stamp**：`stamp_voxel_field.glsl` 将结果写回 scene / collision occupancy，并输出 `VoxelStampDeltaBuffer`。
+- **GPU stamp**：`stamp_voxel_field.glsl` 将结果写回 scene / collision field，并输出 `VoxelStampDeltaBuffer`。
 - **多 asset 顺序放置**：`run_multi_asset()` 按优先级、权重和 quota 顺序处理，前一 asset 的 stamp 会影响后一 asset。
-- **Dirty tile 驱动**：`GlobalVoxelField.run_placement_dirty()` 用 dirty tile 作为 compact candidate 输入。
-- **CPU 角色**：CPU 只负责最终实例化、metadata / `asset_voxel_record` 生成和提交，不做 mesh 级二次筛选。
+- **Dirty tile 驱动**：`SceneVoxelLocal.run_placement_dirty()` 用底层 dirty tile 作为 compact candidate 输入；高层语义等价于 dirty voxel regions。
+- **CPU 角色**：CPU 只负责最终实例化、metadata / `voxel_write_spec` 生成和提交，不做 mesh 级二次筛选。
 
 ## 数据分层
 
 | 数据 | 用途 |
 | --- | --- |
-| `SceneOccupancy` | 生态或可视占用，例如树冠、草、岩石表面 |
-| `CollisionOccupancy` | 刚体互斥层，例如树干、岩体、不可穿透物 |
+| `SceneField` | 生态或可视占用，例如树冠、草、岩石表面 |
+| `CollisionField` | 刚体互斥层，例如树干、岩体、不可穿透物 |
 | `TargetOccupancy` | 可选目标 mask；`candidate_origin` 对应值为 `0` 时不生成 placement |
-| `CandidateTiles` | compact tile 输入，用于 dirty 或局部区域放置 |
+| `CandidateTiles` | 历史名称；底层 compact tile 输入，用于 dirty 或局部 voxel-region 放置 |
 | `AssetFootprint` | 物体局部简化体素 |
 | `PlacementResult` | compact pose / score / debug 输出 |
 
-`SceneOccupancy` 和 `CollisionOccupancy` 必须分离。草、叶、细枝可以写 scene occupancy，但不应默认阻挡刚体 collision placement。
+`SceneField` 和 `CollisionField` 必须分离。草、叶、细枝可以写 scene field，但不应默认阻挡刚体 collision placement。
 
 ## Footprint 规则
 
@@ -87,8 +87,8 @@ score =
 | 分量 | 说明 |
 | --- | --- |
 | `support_ratio` | 支撑点通过比例 |
-| `solid_collision` | solid footprint 与 collision occupancy 的重叠 |
-| `scene_overlap` | soft footprint 与 scene occupancy 的重叠 |
+| `solid_collision` | solid footprint 与 collision field 的重叠 |
+| `scene_overlap` | soft footprint 与 scene field 的重叠 |
 | `clearance_overlap` | clearance 区域被占用量 |
 | `ignored_sample` | 因越界或未上传而跳过的采样权重 |
 | `valid` | 阈值结算后的最终有效性 |
@@ -120,9 +120,9 @@ if target_occupancy[candidate_origin] <= 0.01:
 
 `support` 边界也要保守：如果下方采样点是 `SAMPLE_IGNORED`，它既不算支撑命中，也不算失败。需要地面支撑时应显式加入 terrain / base voxel，而不是靠 clamp 制造假支撑。
 
-## 长 footprint 与 dirty tile
+## 长 footprint 与 dirty voxel region
 
-Candidate 的 owner tile 只表示“由哪个 tile 负责评分这个 origin”，不限制 footprint 访问范围。长条 asset 可能读取或写入多个 tile。
+Candidate 的 owner tile 只表示“由哪个底层 tile 负责评分这个 origin”，不限制 footprint 访问范围。长条 asset 可能读取或写入多个 voxel regions / tiles。
 
 因此需要按 asset、`rotation_index` 和 `scale_index` 预计算：
 
@@ -150,6 +150,6 @@ Candidate 的 owner tile 只表示“由哪个 tile 负责评分这个 origin”
 
 这份文档只作为迁移历史保留。新增规则不要继续扩写到这里，应更新对应的当前文档：
 
-- **放置流程 / ownership**：更新 `docs/../core/meshfill-framework.md`
-- **SceneVoxel / CollisionVoxel 语义**：更新 `docs/../core/scene-voxel-field-system.md`
-- **TargetSceneVoxel 与语义候选路由**：更新 `docs/placement/voxel-semantic-routing.md`
+- **放置流程 / ownership**：更新 `../core/meshfill-framework.md`
+- **SceneVoxel / CollisionVoxel 语义**：更新 `../core/scene-voxel-field-system.md`
+- **TargetSceneVoxel 与语义候选路由**：更新 `../placement/voxel-semantic-routing.md`

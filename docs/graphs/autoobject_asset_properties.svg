@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="980" viewBox="0 0 1500 980" role="img" aria-labelledby="title desc">
   <title id="title">AutoObject Asset Properties Map</title>
-  <desc id="desc">Class hierarchy, descriptor-owned asset defaults, AutoObject compatibility mirrors, shared voxel field contract, SV write payload output, SceneVoxel commit state, and metadata projection for docs/core/asset-properties.md.</desc>
+  <desc id="desc">Class hierarchy, descriptor-owned asset defaults, compatibility mirrors, shared voxel field contract, voxel_write_spec output, SceneVoxel commit state, and metadata projection for docs/core/asset-properties.md.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
       <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
@@ -20,6 +20,15 @@
     <filter id="shadow" x="-7%" y="-7%" width="114%" height="114%">
       <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.11"/>
     </filter>
+    <pattern id="autoobject-dot-bg" patternUnits="userSpaceOnUse" width="12" height="12">
+      <rect width="12" height="12" fill="#cffafe"/>
+      <circle cx="3" cy="3" r="1.25" fill="#0891b2" opacity="0.256281"/>
+      <circle cx="9" cy="9" r="1.25" fill="#0891b2" opacity="0.256281"/>
+    </pattern>
+    <pattern id="sv-stripe-bg" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#fef3c7"/>
+      <rect y="1" width="10" height="2" fill="#d97706" opacity="0.264249"/>
+    </pattern>
     <style>
       .bg { fill: #f8fafc; }
       .grid { stroke: #e2e8f0; stroke-width: 1; }
@@ -38,10 +47,12 @@
       .lane-runtime { fill: #fff7ed; stroke: #f97316; }
       .node { stroke-width: 1.6; filter: url(#shadow); }
       .type { fill: #cffafe; stroke: #0891b2; }
+      .autoobject-dot { fill: url(#autoobject-dot-bg); }
       .resource { fill: #dcfce7; stroke: #16a34a; }
       .field { fill: #dbeafe; stroke: #2563eb; }
       .runtime { fill: #ffedd5; stroke: #f97316; }
       .record { fill: #fef3c7; stroke: #d97706; }
+      .sv-stripe { fill: url(#sv-stripe-bg); }
       .meta { fill: #ccfbf1; stroke: #0f766e; }
       .support { fill: #f1f5f9; stroke: #64748b; }
       .contract { fill: #ede9fe; stroke: #7c3aed; }
@@ -52,6 +63,47 @@
       .edge-orange { stroke: #ea580c; stroke-width: 2.3; fill: none; marker-end: url(#arrow-orange); }
       .edge-purple { stroke: #7c3aed; stroke-width: 2.3; fill: none; marker-end: url(#arrow-purple); }
       .edge-soft { stroke: #64748b; stroke-width: 2; fill: none; marker-end: url(#arrow); stroke-dasharray: 7 7; }
+
+      /* meshfill-graph-style: shared light engineering diagram theme */
+      :root { color-scheme: light; }
+      .bg, rect[fill="url(#bg)"] { fill: #f8fafc; }
+      svg > circle[opacity] { opacity: 0; }
+      .grid { stroke: #e2e8f0; stroke-width: 1; }
+      .title { font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #0f172a; letter-spacing: 0; }
+      .subtitle { font: 500 16px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #475569; letter-spacing: 0; }
+      .section, .section-title { font: 700 18px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #1e293b; letter-spacing: 0; }
+      .band-title, .lane-title { font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #334155; letter-spacing: 0; }
+      .label, .node-title, .pill-text { font: 700 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #0f172a; letter-spacing: 0; }
+      .text { font: 500 16px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #1f2937; letter-spacing: 0; }
+      .small { font: 500 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #475569; letter-spacing: 0; }
+      .tiny { font: 500 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #64748b; letter-spacing: 0; }
+      .mono, .mono-strong, .formula { font: 600 12px Consolas, "Cascadia Mono", monospace; fill: #334155; letter-spacing: 0; }
+      .lane, .band, .band2d, .band3d, .band-field, .band-post, .lane-type, .lane-resource, .lane-field, .lane-runtime, .lane-factory, .lane-owner, .lane-tool, .state-band, .target-band, .asset-band, .route-band, .place-band { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; }
+      .node, .card, .soft, .tick, .legend { stroke-width: 1.4; filter: url(#shadow); }
+      .box, .box-gray, .card, .soft, .support, .tool, .owner, .factory, .downstream, .legacy, .getter, .runtime, .tick, .legend { fill: #ffffff; stroke: #cbd5e1; }
+      .box-blue, .input, .entry, .field, .state, .sv, .target, .target-card, .gpu-card, .gpu { fill: #dbeafe; stroke: #2563eb; }
+      .box-green, .asset, .resource, .autoobject, .input-card, .source-card, .contract, .sv-card, .ok, .prefilter-card { fill: #dcfce7; stroke: #16a34a; }
+      .box-purple, .route, .route-card, .rerank-card, .gate-card, .descriptor, .record-card, .vdb-card, .debug-card { fill: #ede9fe; stroke: #7c3aed; }
+      .box-yellow, .placement, .placement-card, .commit-card, .persist-card, .aggregate-card { fill: #fef3c7; stroke: #d97706; }
+      .box-red, .hardgate, .prune-card { fill: #fee2e2; stroke: #ef4444; }
+      .record, .record-card { fill: #fef3c7; stroke: #d97706; }
+      .cache, .cache-card, .scene_voxel_runtime { fill: #ccfbf1; stroke: #0f766e; }
+      .note, .warn { fill: #e6edf5; stroke: #b6c4d4; }
+      .pill, .pill-blue, .pill-pink, .pill-amber { fill: #f8fafc; stroke: #cbd5e1; }
+      rect[fill="#0f172a"], rect[fill="#111827"], rect[fill="#172033"], rect[fill="#16213a"], rect[fill="#101827"], rect[fill="#111c31"], rect[fill="#082f49"], rect[fill="#052e2b"], rect[fill="#052e16"], rect[fill="#064e3b"], rect[fill="#062f26"], rect[fill="#2e1065"], rect[fill="#2b2038"], rect[fill="#2b1d35"], rect[fill="#0f1f2f"], rect[fill="#182135"], rect[fill="#1e2030"], rect[fill="#1b2330"], rect[fill="#3a2510"], rect[fill="#0e2a1d"], rect[fill="#10251e"] { fill: #ffffff; stroke: #cbd5e1; }
+      .edge, .arrow, .dash { fill: none; stroke: #334155; stroke-width: 2.2; }
+      .edge-soft, .arrow-soft { fill: none; stroke: #64748b; stroke-width: 2; }
+      .edge-blue, .arrow-blue { fill: none; stroke: #2563eb; stroke-width: 2.3; }
+      .edge-green, .arrow-green, .dash-green { fill: none; stroke: #059669; stroke-width: 2.3; }
+      .edge-orange, .edge-amber, .arrow-purple, .dash-purple { fill: none; stroke: #d97706; stroke-width: 2.3; }
+      .edge-purple { fill: none; stroke: #7c3aed; stroke-width: 2.3; }
+      .arrow-red, .dash-red, .dash-pink { fill: none; stroke: #dc2626; stroke-width: 2.2; }
+      .dash, .dash-green, .dash-red, .dash-pink, .dash-purple, .edge-soft, .arrow-soft { stroke-dasharray: 7 7; }
+      #arrow path { fill: #334155; }
+      #arrowGreen path, #arrow-green path { fill: #059669; }
+      #arrowBlue path, #arrow-blue path { fill: #2563eb; }
+      #arrowRed path, #arrow-red path { fill: #dc2626; }
+      #arrowPurple path, #arrow-purple path, #arrow-orange path, #arrow-amber path { fill: #d97706; }
     </style>
   </defs>
 
@@ -60,7 +112,7 @@
   <path class="grid" d="M380 120V930M745 120V930M1110 120V930"/>
 
   <text class="title" x="48" y="58">AutoObject Asset Properties Map</text>
-  <text class="subtitle" x="48" y="88">Descriptor ownership, shared field contract, compatibility mirrors, explicit visual layers, and SV write payloads behind docs/core/asset-properties.md.</text>
+  <text class="subtitle" x="48" y="88">Descriptor ownership, AutoObject-built voxel_write_spec records, shared field contract, explicit channel payloads, and SV commit outputs behind docs/core/asset-properties.md.</text>
 
   <rect class="lane lane-type" x="32" y="132" width="328" height="688" rx="20" ry="20"/>
   <rect class="lane lane-resource" x="392" y="132" width="328" height="688" rx="20" ry="20"/>
@@ -72,9 +124,9 @@
   <text class="lane-title" x="778" y="164">AUTOOBJECT ACCESS / MIRRORS</text>
   <text class="lane-title" x="1138" y="164">SV / RUNTIME OUTPUTS</text>
 
-  <rect class="node type" x="58" y="190" width="276" height="94" rx="14" ry="14"/>
+  <rect class="node type autoobject-dot" x="58" y="190" width="276" height="94" rx="14" ry="14"/>
   <text class="node-title" x="78" y="222">AutoObject</text>
-  <text class="label" x="78" y="246">runtime base node</text>
+  <text class="label" x="78" y="246">runtime base + record builder</text>
   <text class="mono" x="78" y="266">scripts/auto_object.gd</text>
 
   <rect class="node type" x="50" y="318" width="140" height="132" rx="14" ry="14"/>
@@ -82,7 +134,7 @@
   <text class="label" x="66" y="374">typed class</text>
   <text class="label" x="66" y="394">rock asset</text>
   <text class="mono" x="66" y="420">AutoCliffRock</text>
-  <text class="mono" x="66" y="438">no subtype</text>
+  <text class="mono" x="66" y="438">object_subtype = cliff</text>
 
   <rect class="node type" x="202" y="318" width="140" height="172" rx="14" ry="14"/>
   <text class="node-title" x="218" y="350">AutoVegetation</text>
@@ -95,19 +147,19 @@
 
   <rect class="node support" x="58" y="512" width="276" height="78" rx="14" ry="14"/>
   <text class="node-title" x="78" y="544">AutoAssetFactory</text>
-  <text class="label" x="78" y="566">AutoObject helper / builder</text>
-  <text class="mono" x="78" y="586">record + layer builders</text>
+  <text class="label" x="78" y="566">tooling / import helper</text>
+  <text class="mono" x="78" y="586">compat wrapper calls</text>
 
   <rect class="node support" x="58" y="614" width="276" height="126" rx="14" ry="14"/>
   <text class="node-title" x="78" y="646">AutoVegetationAsset</text>
   <text class="label" x="78" y="670">Resource definition</text>
-  <text class="label" x="78" y="692">can instantiate vegetation node</text>
-  <text class="mono" x="78" y="714">instantiate_vegetation()</text>
-  <text class="mono" x="78" y="734">vegetation_band scatter</text>
+  <text class="label" x="78" y="692">references external descriptor</text>
+  <text class="mono" x="78" y="714">voxel_descriptor ExtResource</text>
+  <text class="mono" x="78" y="734">instantiate_vegetation()</text>
 
   <path class="edge" d="M196 284 V302 H120 V318"/>
   <path class="edge" d="M196 284 V302 H272 V318"/>
-  <path class="edge-soft" d="M334 677 C370 677 370 530 392 530"/>
+  <path class="edge-green" d="M334 677 C370 677 370 249 418 249"/>
 
   <rect class="node resource" x="418" y="190" width="276" height="118" rx="14" ry="14"/>
   <text class="node-title" x="438" y="222">AutoVoxelDescriptor</text>
@@ -116,15 +168,15 @@
   <text class="mono" x="438" y="288">collision + probes source</text>
 
   <rect class="node contract" x="418" y="332" width="276" height="108" rx="14" ry="14"/>
-  <text class="node-title" x="438" y="364">AutoVoxelSharedFields</text>
+  <text class="node-title" x="438" y="364">SharedPropertyType</text>
   <text class="label" x="438" y="388">shared semantic contract</text>
   <text class="mono" x="438" y="410">color, complexity</text>
   <text class="mono" x="438" y="430">collision_voxels</text>
 
   <rect class="node resource" x="418" y="474" width="276" height="92" rx="14" ry="14"/>
   <text class="node-title" x="438" y="506">AutoVoxelProfile</text>
-  <text class="label" x="438" y="530">lightweight profile input</text>
-  <text class="mono" x="438" y="552">color / complexity / collision</text>
+  <text class="label" x="438" y="530">legacy preset / import fallback</text>
+  <text class="mono" x="438" y="552">migrate defaults to descriptor</text>
 
   <rect class="node resource" x="418" y="600" width="276" height="92" rx="14" ry="14"/>
   <text class="node-title" x="438" y="632">SemanticProbeProfile</text>
@@ -148,18 +200,18 @@
   <rect class="node field" x="778" y="318" width="276" height="122" rx="14" ry="14"/>
   <text class="node-title" x="798" y="350">Descriptor Access</text>
   <text class="mono" x="798" y="374">voxel_descriptor</text>
-  <text class="mono" x="798" y="394">legacy color / complexity</text>
-  <text class="mono" x="798" y="414">legacy collision mirror</text>
+  <text class="mono" x="798" y="394">descriptor-backed getters</text>
+  <text class="mono" x="798" y="414">legacy mirrors fallback</text>
 
   <rect class="node field" x="778" y="472" width="276" height="124" rx="14" ry="14"/>
   <text class="node-title" x="798" y="504">Placement Anchors</text>
   <text class="mono" x="798" y="528">min_spacing, bound_min_length</text>
-  <text class="mono" x="798" y="548">legacy pivot mirrors</text>
+  <text class="mono" x="798" y="548">descriptor pivot variants</text>
   <text class="mono" x="798" y="568">allowed_anchor_kinds</text>
 
   <rect class="node field" x="778" y="628" width="276" height="128" rx="14" ry="14"/>
   <text class="node-title" x="798" y="660">Probe Extension</text>
-  <text class="mono" x="798" y="684">legacy probe mirrors</text>
+  <text class="mono" x="798" y="684">descriptor probe profile</text>
   <text class="mono" x="798" y="704">semantic_probe_density</text>
   <text class="mono" x="798" y="724">context_sensing_radius</text>
 
@@ -176,25 +228,25 @@
   <text class="mono" x="1158" y="254">configure_rock()</text>
   <text class="mono" x="1158" y="274">configure_vegetation()</text>
 
-  <rect class="node record" x="1138" y="324" width="304" height="148" rx="14" ry="14"/>
+  <rect class="node record sv-stripe" x="1138" y="324" width="304" height="148" rx="14" ry="14"/>
   <text class="node-title" x="1158" y="356">SV Write Payload</text>
-  <text class="label" x="1158" y="380">asset_voxel_record → source delta</text>
+  <text class="label" x="1158" y="380">AutoObject-built voxel_write_spec</text>
   <text class="mono" x="1158" y="402">position, rotation, scale</text>
   <text class="mono" x="1158" y="422">shared color / complexity</text>
   <text class="mono" x="1158" y="442">shared collision_voxels</text>
-  <text class="mono" x="1158" y="462">explicit visual layers</text>
+  <text class="mono" x="1158" y="462">channel_entries → channel</text>
 
   <rect class="node meta" x="1138" y="488" width="304" height="112" rx="14" ry="14"/>
   <text class="node-title" x="1158" y="520">Metadata Projection</text>
   <text class="label" x="1158" y="544">id, type, probe count, handles</text>
   <text class="tiny" x="1158" y="564">debug and lookup index only</text>
-  <text class="mono" x="1158" y="584">meta key: asset_voxel_record</text>
+  <text class="mono" x="1158" y="584">meta key: voxel_write_spec</text>
 
-  <rect class="node record" x="1138" y="634" width="304" height="112" rx="14" ry="14"/>
+  <rect class="node record sv-stripe" x="1138" y="634" width="304" height="112" rx="14" ry="14"/>
   <text class="node-title" x="1158" y="666">SceneVoxel Commit</text>
   <text class="label" x="1158" y="690">final committed read model</text>
-  <text class="mono" x="1158" y="712">color, complexity</text>
-  <text class="mono" x="1158" y="732">band/channel + collision</text>
+  <text class="mono" x="1158" y="712">value / complexity</text>
+  <text class="mono" x="1158" y="732">channel + collision_voxels</text>
 
   <path class="edge-orange" d="M1054 232 H1138"/>
   <path class="edge-orange" d="M1054 379 H1090 V390 H1138"/>
@@ -208,6 +260,6 @@
 
   <rect class="node warn" x="78" y="842" width="1344" height="90" rx="18" ry="18"/>
   <text class="rule" x="108" y="876">Ownership rule:</text>
-  <text class="label" x="228" y="876">AutoVoxelDescriptor owns defaults; AutoVoxelSharedFields carries shared fields into asset_voxel_record and SceneVoxel.</text>
-  <text class="tiny" x="108" y="906">Visual layers are explicit runtime payload entries; do not add them to descriptor/profile defaults or SHARED_FIELD_KEYS.</text>
+  <text class="label" x="228" y="876">AutoVoxelDescriptor owns defaults; AutoVegetationAsset references it externally; AutoObject builds voxel_write_spec.</text>
+  <text class="tiny" x="108" y="906">Legacy mirror fields and AutoVoxelProfile are compatibility fallbacks; channel_entries remain explicit runtime payload entries.</text>
 </svg>

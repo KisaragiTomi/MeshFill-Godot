@@ -1,13 +1,13 @@
 extends SceneTree
 
-const GVF := preload("res://scripts/global_voxel_field.gd")
+const SVR := preload("res://scripts/scene_voxel_runtime.gd")
 const Prefilter := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
 const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
 
 
 func _init() -> void:
 	var ok := true
-	ok = ok and _test_dual_anchor_layers()
+	ok = ok and _test_position_only_anchor_layers()
 	if ok:
 		print("[AutoObjectProbePrefilter] ALL TESTS PASSED")
 		quit(0)
@@ -16,11 +16,11 @@ func _init() -> void:
 		quit(1)
 
 
-func _test_dual_anchor_layers() -> bool:
-	print("[AutoObjectProbePrefilter] test_dual_anchor_layers...")
+func _test_position_only_anchor_layers() -> bool:
+	print("[AutoObjectProbePrefilter] test_position_only_anchor_layers...")
 	var grid_size := Vector3i(16, 8, 16)
 	var voxel_size := Vector3.ONE
-	var field := GVF.new(grid_size, voxel_size, Vector3.ZERO)
+	var field := SVR.new(grid_size, voxel_size, Vector3.ZERO)
 	field.fill_ground_plane(0, 1.0)
 
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
@@ -38,7 +38,6 @@ func _test_dual_anchor_layers() -> bool:
 
 	var ground_asset := AutoObject.new()
 	ground_asset.name = "ground_asset"
-	ground_asset.set_allowed_anchor_kinds([AutoObject.ANCHOR_KIND_GROUND])
 	ground_asset.set_semantic_probes([
 		ProbeProfile.make_probe(Vector3.ZERO, Color.WHITE, 1.0, 1.0, ProbeProfile.FLAG_COLLISION, "positive", "test")
 	])
@@ -50,23 +49,33 @@ func _test_dual_anchor_layers() -> bool:
 		ProbeProfile.make_probe(Vector3(0.0, 3.0, 0.0), Color.WHITE, 1.0, 1.0, ProbeProfile.FLAG_COLLISION, "positive", "test")
 	])
 
-	if not upper_asset.accepts_anchor_kind(AutoObject.ANCHOR_KIND_TARGET_TOP):
-		push_error("  FAIL: middle pivot asset should accept target_top anchors")
-		return false
-	if upper_asset.accepts_anchor_kind(AutoObject.ANCHOR_KIND_GROUND):
-		push_error("  FAIL: middle pivot asset should not accept ground anchors by default")
-		return false
-
 	var prefilter := Prefilter.new()
 	prefilter.min_prefilter_score = 0.9
 	var result: Dictionary = prefilter.run_probe_prefilter(field, target, target_color, [ground_asset, upper_asset], field.get_dirty_tile_ids())
 	var anchors: Array = result.get("anchors", [])
 	var candidate_voxel_sparses: Dictionary = result.get("autoobject_candidate_voxel_sparses", {})
-	if int(result.get("ground_anchor_count", 0)) <= 0:
-		push_error("  FAIL: expected ground anchors")
+	if anchors.is_empty():
+		push_error("  FAIL: expected position-only anchors")
 		return false
-	if int(result.get("target_top_anchor_count", 0)) <= 0:
-		push_error("  FAIL: expected target_top anchors")
+
+	var has_ground_position := false
+	var has_target_top_position := false
+	for anchor in anchors:
+		if not anchor is Dictionary:
+			continue
+		if (anchor as Dictionary).has("anchor_kind"):
+			push_error("  FAIL: position-only anchor should not carry anchor_kind")
+			return false
+		var voxel_pos := (anchor as Dictionary).get("voxel_pos", Vector3i(-1, -1, -1)) as Vector3i
+		if voxel_pos.y == 1:
+			has_ground_position = true
+		if voxel_pos.y == 4:
+			has_target_top_position = true
+	if not has_ground_position:
+		push_error("  FAIL: expected supported ground-like anchor positions")
+		return false
+	if not has_target_top_position:
+		push_error("  FAIL: expected target-top-like anchor positions")
 		return false
 
 	# GPU-only prefilter does not read back per-anchor topK. The supported
@@ -86,9 +95,7 @@ func _test_dual_anchor_layers() -> bool:
 
 	ground_asset.free()
 	upper_asset.free()
-	print("  OK: anchors=%d ground=%d target_top=%d" % [
+	print("  OK: anchors=%d position-only ground_y=true target_top_y=true" % [
 		anchors.size(),
-		int(result.get("ground_anchor_count", 0)),
-		int(result.get("target_top_anchor_count", 0)),
 	])
 	return true

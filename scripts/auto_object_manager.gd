@@ -100,14 +100,15 @@ func _get_asset_voxel_record_meta(auto_object: AutoObject) -> Dictionary:
 	return {}
 
 
-func world_to_cell(world_pos: Vector3) -> Vector2i:
+func world_to_cell(world_pos: Vector3) -> Vector3i:
 	var size := maxf(spatial_cell_size, 0.001)
-	return Vector2i(floori(world_pos.x / size), floori(world_pos.z / size))
+	return Vector3i(floori(world_pos.x / size), _spatial_y_layer(world_pos.y), floori(world_pos.z / size))
 
 
-func get_objects_in_cell(cell: Vector2i) -> Array[AutoObject]:
+func get_objects_in_cell(cell) -> Array[AutoObject]:
 	var result: Array[AutoObject] = []
-	var ids: Array = spatial_cells.get(cell, [])
+	var cell_key := _normalize_spatial_cell(cell)
+	var ids: Array = spatial_cells.get(cell_key, [])
 	for raw_id in ids:
 		var instance_id := int(raw_id)
 		var raw_object = objects_by_instance_id.get(instance_id, null)
@@ -128,24 +129,25 @@ func query_objects_in_radius(center: Vector3, radius: float, include_overlap: bo
 	var result: Array[AutoObject] = []
 	var center_xz := Vector2(center.x, center.z)
 
-	for z in range(min_cell.y, max_cell.y + 1):
-		for x in range(min_cell.x, max_cell.x + 1):
-			var cell := Vector2i(x, z)
-			var ids: Array = spatial_cells.get(cell, [])
-			for raw_id in ids:
-				var instance_id := int(raw_id)
-				if seen.has(instance_id):
-					continue
-				seen[instance_id] = true
-				var raw_object = objects_by_instance_id.get(instance_id, null)
-				if not is_instance_valid(raw_object) or not raw_object is AutoObject:
-					continue
-				var auto_object := raw_object as AutoObject
-				var object_radius := float(spatial_radius_by_instance_id.get(instance_id, 0.0)) if include_overlap else 0.0
-				var object_pos := _object_index_position(auto_object)
-				var object_xz := Vector2(object_pos.x, object_pos.z)
-				if object_xz.distance_to(center_xz) <= query_radius + object_radius:
-					result.append(auto_object)
+	for y in range(min_cell.y, max_cell.y + 1):
+		for z in range(min_cell.z, max_cell.z + 1):
+			for x in range(min_cell.x, max_cell.x + 1):
+				var cell := Vector3i(x, y, z)
+				var ids: Array = spatial_cells.get(cell, [])
+				for raw_id in ids:
+					var instance_id := int(raw_id)
+					if seen.has(instance_id):
+						continue
+					seen[instance_id] = true
+					var raw_object = objects_by_instance_id.get(instance_id, null)
+					if not is_instance_valid(raw_object) or not raw_object is AutoObject:
+						continue
+					var auto_object := raw_object as AutoObject
+					var object_radius := float(spatial_radius_by_instance_id.get(instance_id, 0.0)) if include_overlap else 0.0
+					var object_pos := _object_index_position(auto_object)
+					var object_xz := Vector2(object_pos.x, object_pos.z)
+					if object_xz.distance_to(center_xz) <= query_radius + object_radius:
+						result.append(auto_object)
 	return result
 
 
@@ -230,8 +232,10 @@ func can_place_same_type(
 func get_spatial_stats() -> Dictionary:
 	return {
 		"cell_size": spatial_cell_size,
+		"cell_key_type": "Vector3i",
 		"cell_count": spatial_cells.size(),
 		"object_count": objects_by_instance_id.size(),
+		"y_layer_count": 1,
 	}
 
 
@@ -267,16 +271,17 @@ func _index_object(auto_object: AutoObject, record: Dictionary = {}) -> void:
 	var center := _object_index_position(auto_object)
 	var min_cell := world_to_cell(center - Vector3(radius, 0.0, radius))
 	var max_cell := world_to_cell(center + Vector3(radius, 0.0, radius))
-	var occupied_cells: Array[Vector2i] = []
-	for z in range(min_cell.y, max_cell.y + 1):
-		for x in range(min_cell.x, max_cell.x + 1):
-			var cell := Vector2i(x, z)
-			if not spatial_cells.has(cell):
-				spatial_cells[cell] = []
-			var ids: Array = spatial_cells[cell]
-			if ids.find(instance_id) < 0:
-				ids.append(instance_id)
-			occupied_cells.append(cell)
+	var occupied_cells: Array[Vector3i] = []
+	for y in range(min_cell.y, max_cell.y + 1):
+		for z in range(min_cell.z, max_cell.z + 1):
+			for x in range(min_cell.x, max_cell.x + 1):
+				var cell := Vector3i(x, y, z)
+				if not spatial_cells.has(cell):
+					spatial_cells[cell] = []
+				var ids: Array = spatial_cells[cell]
+				if ids.find(instance_id) < 0:
+					ids.append(instance_id)
+				occupied_cells.append(cell)
 	spatial_cells_by_instance_id[instance_id] = occupied_cells
 	spatial_radius_by_instance_id[instance_id] = radius
 
@@ -284,7 +289,7 @@ func _index_object(auto_object: AutoObject, record: Dictionary = {}) -> void:
 func _unindex_instance(instance_id: int) -> void:
 	var cells: Array = spatial_cells_by_instance_id.get(instance_id, [])
 	for raw_cell in cells:
-		var cell := raw_cell as Vector2i
+		var cell := _normalize_spatial_cell(raw_cell)
 		if not spatial_cells.has(cell):
 			continue
 		var ids: Array = spatial_cells[cell]
@@ -293,6 +298,19 @@ func _unindex_instance(instance_id: int) -> void:
 			spatial_cells.erase(cell)
 	spatial_cells_by_instance_id.erase(instance_id)
 	spatial_radius_by_instance_id.erase(instance_id)
+
+
+func _spatial_y_layer(_world_y: float) -> int:
+	return 0
+
+
+func _normalize_spatial_cell(cell) -> Vector3i:
+	if cell is Vector3i:
+		return cell as Vector3i
+	if cell is Vector2i:
+		var cell_xz := cell as Vector2i
+		return Vector3i(cell_xz.x, 0, cell_xz.y)
+	return Vector3i.ZERO
 
 
 func _object_index_position(auto_object: AutoObject) -> Vector3:

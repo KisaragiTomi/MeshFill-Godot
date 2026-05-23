@@ -66,16 +66,16 @@ func _init() -> void:
 		return
 
 	var first_origin: Vector3i = first_result.voxel_origin
-	var stamped_collision: PackedFloat32Array = first.get("collision_occupancy_out", PackedFloat32Array())
+	var stamped_collision: PackedFloat32Array = first.get("collision_field_out", PackedFloat32Array())
 	var collision_idx := generator.voxel_index(first_origin + Vector3i(0, 1, 0), grid_size)
 	if stamped_collision[collision_idx] <= 0.01:
-		push_error("[VoxelPlacementTest] Stamp pass did not write collision occupancy")
+		push_error("[VoxelPlacementTest] Stamp pass did not write collision field")
 		quit(1)
 		return
 
 	var second := generator.run_minimal(
-		first.get("scene_occupancy_out", PackedFloat32Array()),
-		first.get("collision_occupancy_out", PackedFloat32Array()),
+		first.get("scene_field_out", PackedFloat32Array()),
+		first.get("collision_field_out", PackedFloat32Array()),
 		footprint,
 		grid_size,
 		settings

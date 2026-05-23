@@ -5,7 +5,8 @@ extends AutoVegetation
 func configure_canopy_tree(config: Dictionary) -> void:
 	var cfg := config.duplicate(true)
 	cfg["object_subtype"] = "canopy_tree"
-	cfg["band"] = "canopy"
+	cfg["channel"] = 3
+	cfg["radius"] = 3.0
 	if not cfg.has("group"):
 		cfg["group"] = "placed_canopy_trees"
 	configure_vegetation(cfg)

@@ -12,11 +12,11 @@
 | Probe 职责 | 在已允许的候选资产内计算匹配分、重排、降权或剔除。 |
 | 禁止事项 | 不遍历全资产库，不输出全局 `voxel_asset_topK`，不替代 `score_voxel_tile.glsl`。 |
 | 物理判断 | footprint、support、collision、clearance 仍由 placement score 阶段负责。 |
-| TargetSV 采样 | 越界 sample 先 clamp 到最近的有效 TargetSV voxel。 |
+| TargetSV_B 采样 | 越界 sample 先 clamp 到最近的有效 TargetSV_B voxel。 |
 
 旧版“每个 ground anchor 遍历所有 asset 并输出 voxel 级 top-K”的方案已废弃；当前 hard gate 是每个 anchor 的粗筛候选集。
 
-`AutoObject.semantic_probe_profile`、`semantic_probe_density` 和 `context_sensing_radius` 只作为 legacy / Inspector / 配置字典兼容入口；新逻辑应通过 descriptor-backed getter 读取 probes。
+`AutoObject.semantic_probe_profile`、`semantic_probe_density` 和 `context_sensing_radius` 只作为 Inspector / 配置字典兼容入口；新逻辑应通过 descriptor-backed getter 读取 probes。
 
 ## Probe 数据结构
 
@@ -50,7 +50,7 @@ asset_probe_range_buffer  # asset_id -> start/count
 | 1 | `convex` | `Mesh.create_convex_shape()` 凸包点 | 覆盖资产简化轮廓。 |
 | 2 | `voxel_interior` | `collision_voxels` 内部采样 | 表达 trunk、rock 等实体体积。 |
 | 3 | `surface` | mesh 三角面 Poisson 采样 | 在 convex / collision 不足时补齐表面。 |
-| 4 | `context` | mesh AABB 外围环形采样 | 小型草、灌木用于感知周围残余 TargetSV。 |
+| 4 | `context` | mesh AABB 外围环形采样 | 小型草、灌木用于感知周围残余 TargetSV_B。 |
 
 `context_sensing_radius = 0.0` 时禁用 context probe；`> 0.0` 时会在 mesh AABB 外围增加低权重感知 probes。
 
@@ -75,7 +75,7 @@ convex
 | Anchor | 用途 |
 | --- | --- |
 | `ground` | 地面 / 支撑点资产，例如草、灌木、树、普通石头。 |
-| `target_top` | 与 TargetSV 顶部或高处目标对齐的资产，例如部分岩体或冠层对齐测试。 |
+| `target_top` | 与 TargetSV_B 顶部或高处目标对齐的资产，例如部分岩体或冠层对齐测试。 |
 
 同一个 asset 若支持多种 anchor，需要按对应 anchor 原点解释 `probe.offset`。
 
@@ -86,7 +86,7 @@ convex
 ```text
 sample_pos = anchor_pos + probe.offset
 sample_pos = clamp(sample_pos, target_sv_min, target_sv_max)
-sample     = TargetSV[sample_pos]
+sample     = TargetSV_B[sample_pos]
 ```
 
 推荐基础分量：
@@ -110,14 +110,14 @@ route_score = combine(candidate_score, probe_score, support_hint)
 
 ## 与其他文档的关系
 
-- `../placement/autoobject-probe-prefilter.md`：说明 GPU prefilter 如何生成 `anchor_autoobject_topk` 和候选 voxel 区域。
-- `../placement/voxel-semantic-routing.md`：说明候选路由、TargetSV clamp 采样和 `candidate_voxel_sparses_by_asset` 的候选 voxel 区域合约。
-- `../placement/target-scene-voxel-projection.md`：说明 TargetSV 作为中性目标画布，以及 projection cache 的后续方向。
+- `../placement/autoobject-probe-prefilter.md`：说明 GPU prefilter 如何生成 `anchor_autoobject_topk` 和 candidate voxel regions。
+- `../placement/voxel-semantic-routing.md`：说明候选路由、TargetSV_B clamp 采样和 `candidate_voxel_sparses_by_asset` 的 candidate voxel-region 合约。
+- `../placement/target-scene-voxel-projection.md`：说明源 TargetSV 与 brush-composited TargetSV_B 的边界，以及 projection cache 的后续方向。
 
 ## 验收标准
 
 - 每个 asset 能导出稳定且数量可控的 `semantic_probes`。
 - Probe scoring 只处理已通过上游筛选的候选资产。
-- TargetSV 不包含 asset 类型标签。
-- TargetSV 越界采样使用 clamp，不把边界外直接当作空白。
+- TargetSV / TargetSV_B 不包含 asset 类型标签。
+- TargetSV_B 越界采样使用 clamp，不把边界外直接当作空白。
 - 最终物理可行性仍由 `score_voxel_tile.glsl` 和 placement pipeline 判定。

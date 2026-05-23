@@ -24,9 +24,18 @@ func _test_cell_registration_and_radius_query() -> bool:
 	manager.register_object(bush, {"id": "bush_a", "min_spacing": 0.6})
 
 	var origin_cell := manager.world_to_cell(Vector3(1.0, 0.0, 1.0))
+	if origin_cell != Vector3i(0, 0, 0):
+		push_error("  FAIL: origin cell should be Vector3i(0, 0, 0)")
+		_free_objects([tree, bush, manager])
+		return false
 	var cell_objects := manager.get_objects_in_cell(origin_cell)
 	if cell_objects.find(tree) < 0:
 		push_error("  FAIL: tree not indexed in origin cell")
+		_free_objects([tree, bush, manager])
+		return false
+	var xz_cell_objects := manager.get_objects_in_cell(Vector2i(origin_cell.x, origin_cell.z))
+	if xz_cell_objects.find(tree) < 0:
+		push_error("  FAIL: Vector2i XZ cell compatibility should still find tree")
 		_free_objects([tree, bush, manager])
 		return false
 
@@ -49,6 +58,14 @@ func _test_cell_registration_and_radius_query() -> bool:
 	var stats := manager.get_spatial_stats()
 	if int(stats.get("object_count", 0)) != 2:
 		push_error("  FAIL: expected 2 indexed objects")
+		_free_objects([tree, bush, manager])
+		return false
+	if str(stats.get("cell_key_type", "")) != "Vector3i":
+		push_error("  FAIL: spatial index should report Vector3i cell keys")
+		_free_objects([tree, bush, manager])
+		return false
+	if int(stats.get("y_layer_count", 0)) != 1:
+		push_error("  FAIL: spatial index should currently report one Y layer")
 		_free_objects([tree, bush, manager])
 		return false
 

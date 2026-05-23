@@ -1,7 +1,8 @@
-class_name AutoVoxelSharedFields
+class_name SharedPropertyType
 extends RefCounted
 
 const COLOR_KEY := "color"
+const VALUE_KEY := "value"
 const COMPLEXITY_KEY := "complexity"
 const COLLISION_VOXELS_KEY := "collision_voxels"
 const SHARED_FIELD_KEYS := [
@@ -42,7 +43,7 @@ static func duplicate_dictionary_array(source: Array) -> Array[Dictionary]:
 
 static func normalize_shared_fields(source: Dictionary, fallback: Dictionary = {}, value_override: float = -1.0) -> Dictionary:
 	var source_color := color_from_value(source.get(COLOR_KEY, fallback.get(COLOR_KEY, Color.WHITE)), Color.WHITE)
-	var source_complexity = source.get(COMPLEXITY_KEY, fallback.get(COMPLEXITY_KEY, source_color.a))
+	var source_complexity = source.get(VALUE_KEY, source.get(COMPLEXITY_KEY, fallback.get(VALUE_KEY, fallback.get(COMPLEXITY_KEY, source_color.a))))
 	var complexity := clampf(value_override if value_override >= 0.0 else float(source_complexity), 0.0, 1.0)
 	var color := source_color
 	color.a = complexity
@@ -121,7 +122,8 @@ static func apply_to_scene_voxel(scene_voxel: Dictionary, source_fields: Diction
 	var result := scene_voxel.duplicate(true)
 	var normalized := normalize_shared_fields(source_fields, result, value_override)
 	result[COLOR_KEY] = normalized[COLOR_KEY]
-	result[COMPLEXITY_KEY] = normalized[COMPLEXITY_KEY]
+	result[VALUE_KEY] = float(normalized[COMPLEXITY_KEY])
+	result.erase(COMPLEXITY_KEY)
 	if include_collision and normalized.has(COLLISION_VOXELS_KEY):
 		result[COLLISION_VOXELS_KEY] = normalized[COLLISION_VOXELS_KEY]
 	return result
