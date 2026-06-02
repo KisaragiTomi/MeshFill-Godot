@@ -2,7 +2,7 @@ extends Node3D
 
 @export var num_iterations: int = 10
 @export var capture_size: float = 120.0
-@export var max_height: float = 50.0
+@export var max_height: float = 120.0
 @export var generate_threshold: float = 0.5
 @export var un_generate_threshold: float = 0.3
 @export var fbx_unit_scale: float = 1.0
@@ -33,12 +33,17 @@ const ROCK_VOXEL_COLOR := Color(0.55, 0.50, 0.45, 1.0)
 const TERRAIN_VOXEL_COLOR := Color(0.45, 0.42, 0.35, 1.0)
 const TEST_ONLY_GROUP := "test_only_generated"
 const TEST_ONLY_ROCK_GROUP := "test_only_rocks"
+const PlacementFittingGeneratorScript := preload("res://scripts/placement_fitting_generator.gd")
+const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
+const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
 const TEST_ONLY_VEGETATION_GROUP := "test_only_vegetation"
 const TARGET_SV_SLICE_COUNT := 8
 const TARGET_SV_VERTICAL_SPAN := 16.0
 const TARGET_SV_DIR_NAME := "target_scene_voxel"
-const CHANNEL_ENTRIES_KEY := "channel_entries"
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
+const SceneVoxelBrushScript := preload("res://scripts/scene_voxel_brush.gd")
+const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
 
 var _raw_target_height_image: Image
 var _raw_current_height_image: Image
@@ -73,6 +78,9 @@ const BRUSH_TARGET_ROCK := 1
 var _brush_target: int = BRUSH_TARGET_HEIGHT
 var _brush_active: bool = false
 var _brush_radius: int = 10
+var _brush_width: int = 21
+var _brush_length: int = 21
+var _brush_height: int = 1
 var _brush_strength: float = 3.0
 var _painting: bool = false
 var _paint_positive: bool = true
@@ -84,6 +92,9 @@ var _debug_delta_showing: bool = false
 var _delta_panel: PanelContainer
 var _delta_overlay: TextureRect
 var _brush_label: Label
+var _brush_width_spin: SpinBox
+var _brush_length_spin: SpinBox
+var _brush_height_spin: SpinBox
 
 var _tree_mesh: Mesh
 var _midstory_mesh: Mesh
@@ -97,16 +108,19 @@ var _grass_mask_image: Image
 var _vegetation_generated: bool = false
 var _debug_mask_terrain: MeshInstance3D
 var _debug_probe_root: Node3D
-var _veg_exclusion: SceneVoxelCommitter
-var _mesh_asset_voxel_records: Dictionary = {}
-var _auto_object_manager: AutoObjectManager
+var _scene_voxel_committer
+var _voxel_write_specs: Dictionary = {}
 var _target_sv_preview_image: Image
 var _target_sv_visual_bytes: PackedByteArray
 var _target_sv_collision_bytes: PackedByteArray
+var _target_sv_target_occupancy_bytes: PackedByteArray
+var _target_sv_target_color_rgba8_bytes: PackedByteArray
 var _target_sv_metadata: Dictionary = {}
 var _target_sv_b_preview_image: Image
 var _target_sv_b_visual_bytes: PackedByteArray
 var _target_sv_b_collision_bytes: PackedByteArray
+var _target_sv_b_target_occupancy_bytes: PackedByteArray
+var _target_sv_b_target_color_rgba8_bytes: PackedByteArray
 var _target_sv_b_metadata: Dictionary = {}
 var _target_sv_debug_terrain: MeshInstance3D
 var _target_sv_debug_showing: bool = false
@@ -163,7 +177,7 @@ func _initialize_scene() -> void:
 	_setup_slider_ui()
 	_tree_mesh = VegetationScatter.create_tree_mesh()
 	_bush_mesh = VegetationScatter.create_bush_mesh()
-	print("[MeshFill] Ready. Test tools: C=rock step P=vegetation. G/H=debug J=TargetSV_B Ctrl+J=recompute TargetSV/TargetSV_B V=delta B=brush N=target T=tile M=mask Ctrl+Z=undo")
+	print("[MeshFill] Ready. Test tools: C=rock step P=vegetation GPU status. G/H=debug J=TargetSV_B Ctrl+J=recompute TargetSV/TargetSV_B V=delta B=brush N=target T=tile M=mask Ctrl+Z=undo")
 	if run_startup_generation_tests:
 		call_deferred("_test_target_height_logic")
 
@@ -182,7 +196,7 @@ func _test_target_height_logic() -> void:
 		_debug_terrain = null
 		_debug_diff_terrain = null
 
-		var generator := CliffGenerator.new()
+		var generator := PlacementFittingGeneratorScript.new()
 		generator.texture_size = TEX_RES
 		generator.capture_size = capture_size
 		generator.max_height = max_height
@@ -194,10 +208,10 @@ func _test_target_height_logic() -> void:
 		generator.object_normal_texture = _cached_textures["object_normal"]
 		generator.height_normal_texture = _cached_textures["height_normal"]
 		generator.target_height_texture = _cached_textures["target_height"]
-		generator.rock_mask_texture = null
+		generator.placed_mask_texture = null
 		generator.target_height_extension = ext_val
-		generator.rock_overlap = rock_overlap
-		generator.rock_assets = _cached_assets
+		generator.stamp_overlap = rock_overlap
+		generator.fitting_assets = _cached_assets
 		add_child(generator)
 
 		var _results := _generate_cliff_placements(generator, 0)
@@ -208,18 +222,17 @@ func _test_target_height_logic() -> void:
 		var gen_count := 0
 		var h_min := 9999.0
 		var h_max := -9999.0
-		if _raw_current_height_image != null and _raw_target_height_image != null:
-			var res := _raw_current_height_image.get_width()
-			for y in range(res):
-				for x in range(res):
-					var px_mask := _raw_current_height_image.get_pixelv(Vector2i(x, y)).b
-					if px_mask > 0.5:
-						gen_count += 1
-					var th := _raw_target_height_image.get_pixelv(Vector2i(x, y)).r
-					h_min = minf(h_min, th)
-					h_max = maxf(h_max, th)
+		if _raw_current_height_image != null and _raw_target_height_image != null and _cached_textures.has("scene_depth"):
+			var scene_depth_img: Image = (_cached_textures["scene_depth"] as ImageTexture).get_image()
+			var stats := _compute_height_difference_stats_gpu(_raw_target_height_image, _raw_current_height_image, scene_depth_img)
+			if bool(stats.get("valid", false)):
+				gen_count = int(stats.get("total_gen", 0))
+				h_min = float(stats.get("target_h_min", h_min))
+				h_max = float(stats.get("target_h_max", h_max))
+			else:
+				push_error("[TargetH] GPU analysis stats failed")
 
-		print("[TargetH] ext=%.1fm 鈫?mask=%d/%d (%.1f%%) target_h=[%.1f, %.1f]" % [
+		print("[TargetH] ext=%.1fm ->mask=%d/%d (%.1f%%) target_h=[%.1f, %.1f]" % [
 			ext_val, gen_count, TEX_RES * TEX_RES,
 			float(gen_count) / float(TEX_RES * TEX_RES) * 100.0, h_min, h_max])
 
@@ -227,18 +240,9 @@ func _test_target_height_logic() -> void:
 			var vis := _height_to_grayscale(_raw_target_height_image, 0)
 			vis.save_png("%s/target_h_ext%.1f.png" % [out_dir, ext_val])
 		if _raw_current_height_image != null:
-			var mask_vis := Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RGBA8)
-			for y in range(TEX_RES):
-				for x in range(TEX_RES):
-					var gen := _raw_current_height_image.get_pixelv(Vector2i(x, y)).b
-					var un_gen := _raw_current_height_image.get_pixelv(Vector2i(x, y)).g
-					if gen > 0.5 and un_gen < 0.5:
-						mask_vis.set_pixelv(Vector2i(x, y), Color(0.2, 0.6, 1.0, 1.0))
-					elif gen > 0.5 and un_gen > 0.5:
-						mask_vis.set_pixelv(Vector2i(x, y), Color(1.0, 0.3, 0.0, 1.0))
-					else:
-						mask_vis.set_pixelv(Vector2i(x, y), Color(0.15, 0.15, 0.15, 1.0))
-			mask_vis.save_png("%s/mask_ext%.1f.png" % [out_dir, ext_val])
+			var mask_vis := _current_height_mask_to_color(_raw_current_height_image)
+			if mask_vis != null and not mask_vis.is_empty():
+				mask_vis.save_png("%s/mask_ext%.1f.png" % [out_dir, ext_val])
 
 		await get_tree().process_frame
 		_setup_debug_terrain()
@@ -253,7 +257,7 @@ func _test_target_height_logic() -> void:
 
 	print("[TargetH] Analysis complete. Files at: %s" % out_dir)
 
-	print("[MeshFill] Auto-testing vegetation generation...")
+	print("[MeshFill] Checking vegetation GPU generation status...")
 	_step_generate()
 	await get_tree().process_frame
 	_generate_vegetation()
@@ -279,49 +283,44 @@ func _save_viewport_screenshot() -> void:
 	print("[MeshFill] Screenshot saved: %s" % path)
 
 
-
-
 func _test_brush_override() -> void:
 	if _override_delta == null or _override_mask == null:
 		print("[MeshFill] No override images initialized, skip brush test")
 		return
 
-	var pre_mask_count := 0
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			if _override_mask.get_pixelv(Vector2i(x, y)).r > 0.01:
-				pre_mask_count += 1
+	var pre_mask_count := _has_mask_pixels_gpu(_override_mask, 0.01)
+	if pre_mask_count < 0:
+		push_error("[MeshFill] Brush override pre-mask GPU count failed")
+		return
 	print("[MeshFill]   Before: %d override pixels" % pre_mask_count)
 
 	_brush_target = BRUSH_TARGET_HEIGHT
+	_set_brush_dimensions(31, 31, _brush_height)
 	var centers := [Vector2i(128, 128), Vector2i(64, 64), Vector2i(192, 192)]
 	for center in centers:
 		for stroke in range(5):
-			_paint_brush_circle(center, 15, 5.0)
+			_paint_brush_footprint(center, 5.0)
 
-	var post_mask_count := 0
-	var d_min := 0.0
-	var d_max := 0.0
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			var px := Vector2i(x, y)
-			if _override_mask.get_pixelv(px).r > 0.01:
-				post_mask_count += 1
-			var dv := _override_delta.get_pixelv(px).r
-			d_min = minf(d_min, dv)
-			d_max = maxf(d_max, dv)
+	var post_mask_count := _has_mask_pixels_gpu(_override_mask, 0.01)
+	if post_mask_count < 0:
+		push_error("[MeshFill] Brush override post-mask GPU count failed")
+		return
+	var delta_stats := _get_delta_stats_gpu(_override_delta)
+	if not bool(delta_stats.get("valid", false)):
+		push_error("[MeshFill] Brush override delta GPU stats failed")
+		return
+	var d_min := float(delta_stats.get("min", 0.0))
+	var d_max := float(delta_stats.get("max", 0.0))
 	print("[MeshFill]   After: %d override pixels, delta=[%.2f, %.2f]" % [post_mask_count, d_min, d_max])
 
 	var composited_th := _composite_target_height()
-	var base_th: Image = (_cached_textures["target_height"] as ImageTexture).get_image()
-	var comp_img: Image = composited_th.get_image()
-	var modified := 0
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			var base_v := base_th.get_pixelv(Vector2i(x, y)).r
-			var comp_v := comp_img.get_pixelv(Vector2i(x, y)).r
-			if absf(base_v - comp_v) > 0.001:
-				modified += 1
+	if composited_th == null:
+		push_error("[MeshFill] Brush override target-height composite failed")
+		return
+	var modified := _has_mask_pixels_gpu(_override_mask, 0.01)
+	if modified < 0:
+		push_error("[MeshFill] Brush override modified-pixel GPU count failed")
+		return
 	print("[MeshFill]   Composited target_height: %d pixels modified" % modified)
 
 	_regenerate()
@@ -355,11 +354,11 @@ func _run_batch_test() -> void:
 	_batch_results.clear()
 
 	for ext_val in batch_test_values:
-		print("[MeshFill] 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€")
+		print("[MeshFill] -------------------------------------------")
 		print("[MeshFill] Testing extension = %.1fm" % ext_val)
-		print("[MeshFill] 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€")
+		print("[MeshFill] -------------------------------------------")
 
-		var generator := CliffGenerator.new()
+		var generator := PlacementFittingGeneratorScript.new()
 		generator.texture_size = TEX_RES
 		generator.capture_size = capture_size
 		generator.max_height = max_height
@@ -371,10 +370,10 @@ func _run_batch_test() -> void:
 		generator.object_normal_texture = textures["object_normal"]
 		generator.height_normal_texture = textures["height_normal"]
 		generator.target_height_texture = textures["target_height"]
-		generator.rock_mask_texture = null
+		generator.placed_mask_texture = null
 		generator.target_height_extension = ext_val
-		generator.rock_overlap = rock_overlap
-		generator.rock_assets = assets
+		generator.stamp_overlap = rock_overlap
+		generator.fitting_assets = assets
 		add_child(generator)
 
 		var t0 := Time.get_ticks_msec()
@@ -438,81 +437,18 @@ func _collect_batch_stats(scene_depth_tex: ImageTexture, ext_val: float, placeme
 		return stats
 
 	var scene_depth_img := scene_depth_tex.get_image()
-	var res := _raw_target_height_image.get_width()
-	var h_min := 9999.0
-	var h_max := -9999.0
+	var gpu_stats := _compute_height_difference_stats_gpu(_raw_target_height_image, _raw_current_height_image, scene_depth_img)
+	if not bool(gpu_stats.get("valid", false)):
+		push_error("[MeshFill] Batch height stats GPU compute failed")
+		return stats
 
-	for y in range(res):
-		for x in range(res):
-			var v := _raw_target_height_image.get_pixelv(Vector2i(x, y)).r
-			h_min = minf(h_min, v)
-			h_max = maxf(h_max, v)
-	stats.target_h_min = h_min
-	stats.target_h_max = h_max
-
-	var total_gen := 0
-	var filled_ok := 0
-	var still_under := 0
-	var rock_overshoot := 0
-	var sum_sq_err := 0.0
-	var sum_abs_err := 0.0
-	var max_err := 0.0
-	var sum_sq_fillable := 0.0
-	var sum_abs_fillable := 0.0
-	var fillable_count := 0
-	var sum_rock_added := 0.0
-	var rock_added_count := 0
-
-	for y in range(res):
-		for x in range(res):
-			var gen_mask := _raw_current_height_image.get_pixelv(Vector2i(x, y)).b
-			if gen_mask < 0.5:
-				continue
-			total_gen += 1
-
-			var target_h := _raw_target_height_image.get_pixelv(Vector2i(x, y)).r
-			var current_h := _raw_current_height_image.get_pixelv(Vector2i(x, y)).r
-			var initial_h := max_height - scene_depth_img.get_pixelv(Vector2i(x, y)).r
-			var diff := current_h - target_h
-
-			sum_sq_err += diff * diff
-			sum_abs_err += absf(diff)
-			max_err = maxf(max_err, absf(diff))
-
-			if initial_h <= target_h + 0.5:
-				fillable_count += 1
-				var fillable_diff := current_h - target_h
-				sum_sq_fillable += fillable_diff * fillable_diff
-				sum_abs_fillable += absf(fillable_diff)
-				if absf(fillable_diff) < 0.5:
-					filled_ok += 1
-				elif fillable_diff < -0.5:
-					still_under += 1
-				else:
-					rock_overshoot += 1
-
-			var rock_h := current_h - initial_h
-			if rock_h > 0.1:
-				sum_rock_added += rock_h
-				rock_added_count += 1
-
-	stats.total_gen = total_gen
-	stats.max_err = max_err
-	if total_gen > 0:
-		stats.rmse = sqrt(sum_sq_err / float(total_gen))
-		stats.mae = sum_abs_err / float(total_gen)
-	if fillable_count > 0:
-		stats.fillable_rmse = sqrt(sum_sq_fillable / float(fillable_count))
-		stats.fillable_mae = sum_abs_fillable / float(fillable_count)
-		stats.filled_ok_pct = float(filled_ok) / float(fillable_count) * 100.0
-		stats.under_filled_pct = float(still_under) / float(fillable_count) * 100.0
-		stats.overshoot_pct = float(rock_overshoot) / float(fillable_count) * 100.0
-	if rock_added_count > 0:
-		stats.avg_rock_height = sum_rock_added / float(rock_added_count)
+	for key in stats.keys():
+		if gpu_stats.has(key):
+			stats[key] = gpu_stats[key]
 
 	print("[MeshFill]   Placements: %d | Time: %dms | Flood iters: %d" % [placement_count, elapsed_ms, flood_iters])
-	print("[MeshFill]   Target H range: %.1f - %.1f" % [h_min, h_max])
-	print("[MeshFill]   RMSE: %.3f | MAE: %.3f | MaxErr: %.3f" % [stats.rmse, stats.mae, max_err])
+	print("[MeshFill]   Target H range: %.1f - %.1f" % [stats.target_h_min, stats.target_h_max])
+	print("[MeshFill]   RMSE: %.3f | MAE: %.3f | MaxErr: %.3f" % [stats.rmse, stats.mae, stats.max_err])
 	print("[MeshFill]   Filled OK: %.1f%% | Under: %.1f%% | Over: %.1f%%" % [stats.filled_ok_pct, stats.under_filled_pct, stats.overshoot_pct])
 	return stats
 
@@ -594,14 +530,14 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_UP and mb.pressed:
 			if mb.shift_pressed:
-				_brush_radius = mini(_brush_radius + 2, 50)
+				_nudge_brush_footprint(4)
 			else:
 				_brush_strength = minf(_brush_strength + 0.5, 20.0)
 			_update_brush_label()
 			get_viewport().set_input_as_handled()
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN and mb.pressed:
 			if mb.shift_pressed:
-				_brush_radius = maxi(_brush_radius - 2, 2)
+				_nudge_brush_footprint(-4)
 			else:
 				_brush_strength = maxf(0.5, _brush_strength - 0.5)
 			_update_brush_label()
@@ -673,7 +609,7 @@ func _vector3_from_record_value(value, fallback: Vector3) -> Vector3:
 func _normalize_rotation_record(mi: MeshInstance3D, rec: Dictionary) -> void:
 	var mode := str(rec.get("rotation_mode", ""))
 	if mode.is_empty():
-		mode = "XYZ" if (rec.has("rotation_degrees") or rec.has("rotation_xyz")) and not rec.has("rotation_y") else "Y"
+		mode = "XYZ" if rec.has("rotation_degrees") else "Y"
 	mode = mode.to_upper()
 	if mode != "XYZ":
 		mode = "Y"
@@ -681,45 +617,12 @@ func _normalize_rotation_record(mi: MeshInstance3D, rec: Dictionary) -> void:
 	var rotation_value := mi.rotation_degrees
 	if rec.has("rotation_degrees"):
 		rotation_value = _vector3_from_record_value(rec.rotation_degrees, rotation_value)
-	elif rec.has("rotation_xyz"):
-		rotation_value = _vector3_from_record_value(rec.rotation_xyz, rotation_value)
 
 	if mode == "Y":
-		var y_rotation := rotation_value.y
-		if rec.has("rotation_y"):
-			y_rotation = float(rec.rotation_y)
-		rotation_value = Vector3(0.0, y_rotation, 0.0)
+		rotation_value = Vector3(0.0, rotation_value.y, 0.0)
 
 	rec["rotation_mode"] = mode
 	rec["rotation_degrees"] = rotation_value
-	rec.erase("rotation_y")
-	rec.erase("rotation_xyz")
-
-
-func _ensure_auto_object_manager() -> AutoObjectManager:
-	if _auto_object_manager != null and is_instance_valid(_auto_object_manager):
-		return _auto_object_manager
-
-	var existing := get_node_or_null("AutoObjectManager")
-	if existing is AutoObjectManager:
-		_auto_object_manager = existing as AutoObjectManager
-		return _auto_object_manager
-
-	_auto_object_manager = AutoObjectManager.new()
-	_auto_object_manager.name = "AutoObjectManager"
-	add_child(_auto_object_manager)
-	return _auto_object_manager
-
-
-func get_auto_object_manager() -> AutoObjectManager:
-	return _ensure_auto_object_manager()
-
-
-func _register_auto_object(mi: MeshInstance3D, record: Dictionary) -> void:
-	if not mi is AutoObject:
-		return
-	var manager := _ensure_auto_object_manager()
-	manager.register_object(mi as AutoObject, record)
 
 
 func _mark_test_only_record(record: Dictionary, kind: String) -> Dictionary:
@@ -745,7 +648,7 @@ func _mark_test_only_generated(node: Node, kind: String) -> void:
 
 func _instantiate_rock_asset(asset: AutoRock) -> AutoRock:
 	if asset == null:
-		return AutoCliffRock.new()
+		return AutoRock.new()
 	var duplicate_node := asset.duplicate()
 	if duplicate_node is AutoRock:
 		var duplicated_rock := duplicate_node as AutoRock
@@ -762,7 +665,7 @@ func _instantiate_rock_asset(asset: AutoRock) -> AutoRock:
 		var scripted = script.new()
 		if scripted is AutoRock:
 			return scripted as AutoRock
-	return AutoCliffRock.new()
+	return AutoRock.new()
 
 
 func _mesh_bound_min_length(mi: MeshInstance3D) -> float:
@@ -782,8 +685,8 @@ func _mesh_bound_min_length(mi: MeshInstance3D) -> float:
 	return 0.0 if result == INF else result
 
 
-func _get_asset_voxel_record_from_meta(node: Node) -> Dictionary:
-	for key in AutoObject.asset_voxel_record_meta_keys():
+func _get_voxel_write_spec_from_meta(node: Node) -> Dictionary:
+	for key in AutoObject.voxel_write_spec_meta_keys():
 		if not node.has_meta(key):
 			continue
 		var raw_record = node.get_meta(key)
@@ -792,8 +695,8 @@ func _get_asset_voxel_record_from_meta(node: Node) -> Dictionary:
 	return {}
 
 
-func _get_asset_voxel_record_from_config(config: Dictionary) -> Dictionary:
-	for key in AutoObject.asset_voxel_record_meta_keys():
+func _get_voxel_write_spec_from_config(config: Dictionary) -> Dictionary:
+	for key in AutoObject.voxel_write_spec_meta_keys():
 		var raw_record = config.get(key, {})
 		if raw_record is Dictionary:
 			var record := raw_record as Dictionary
@@ -802,7 +705,7 @@ func _get_asset_voxel_record_from_config(config: Dictionary) -> Dictionary:
 	return {}
 
 
-func _attach_mesh_asset_voxel_record(mi: MeshInstance3D, record: Dictionary) -> Dictionary:
+func _attach_voxel_write_spec(mi: MeshInstance3D, record: Dictionary) -> Dictionary:
 	var rec: Dictionary = record.duplicate(true)
 	var record_id := str(rec.get("id", mi.name))
 	var color: Color = rec.get("color", Color.WHITE)
@@ -812,24 +715,7 @@ func _attach_mesh_asset_voxel_record(mi: MeshInstance3D, record: Dictionary) -> 
 	var bound_min_length := _mesh_bound_min_length(mi)
 	var min_spacing_auto := bool(rec.get("min_spacing_auto", true))
 	var min_spacing := maxf(float(rec.get("min_spacing", 0.0)), 0.0)
-	var source_kind := str(rec.get("source_kind", rec.get("auto_source", rec.get("placement_source", "")))).to_lower()
-	if source_kind.is_empty():
-		var record_type_hint := str(rec.get("type", ""))
-		match record_type_hint:
-			"rock":
-				source_kind = "rock_placement"
-			"vegetation", "grass", "bush", "tree", "midstory_tree", "canopy_tree":
-				source_kind = "scatter"
-			_:
-				source_kind = "auto"
-	var source_voxel_type := str(rec.get("source_voxel_type", ""))
-	if source_voxel_type != "AutoSceneVoxel" and source_voxel_type != "BrushSceneVoxel" and source_voxel_type != "TargetSceneVoxel":
-		if ["brush", "manual_edit", "erase", "lock"].has(source_kind):
-			source_voxel_type = "BrushSceneVoxel"
-		elif ["target", "heightfield_target", "flood_target", "guidance"].has(source_kind):
-			source_voxel_type = "TargetSceneVoxel"
-		else:
-			source_voxel_type = "AutoSceneVoxel"
+	var source_voxel_type := str(rec.get("source_voxel_type", "AutoSceneVoxel"))
 
 	rec["id"] = record_id
 	rec["mesh_name"] = mi.name
@@ -839,21 +725,16 @@ func _attach_mesh_asset_voxel_record(mi: MeshInstance3D, record: Dictionary) -> 
 	rec["color"] = color
 	rec["complexity"] = complexity
 	rec["source_voxel_type"] = source_voxel_type
-	rec["source_kind"] = source_kind
-	if not rec.has("producer_stage"):
-		if source_voxel_type == "BrushSceneVoxel":
-			rec["producer_stage"] = "brush_edit"
-		elif source_voxel_type == "TargetSceneVoxel":
-			rec["producer_stage"] = "target_pipeline"
-		else:
-			rec["producer_stage"] = source_kind
-	if source_voxel_type == "BrushSceneVoxel" and not rec.has("auto_mix"):
+	if SceneVoxelBrushScript.is_brush_type(source_voxel_type) and not rec.has("auto_mix"):
 		rec["auto_mix"] = 0.0
-	if source_voxel_type == "TargetSceneVoxel":
+	if SceneVoxelTargetScript.is_target_type(source_voxel_type):
 		if not rec.has("target_mix"):
 			rec["target_mix"] = 1.0
 		if not rec.has("target_pipeline"):
-			rec["target_pipeline"] = source_kind
+			rec["target_pipeline"] = "guidance"
+		rec["target_guidance_only"] = true
+		rec["height_buffer_applied"] = false
+		rec["collision_buffer_applied"] = false
 	if mi is AutoObject:
 		var auto_object := mi as AutoObject
 		auto_object.refresh_bound_spacing()
@@ -867,9 +748,11 @@ func _attach_mesh_asset_voxel_record(mi: MeshInstance3D, record: Dictionary) -> 
 		rec["auto_instance_id"] = auto_instance_id
 		rec["auto_id"] = auto_id
 		rec["auto_object_id"] = auto_id
-		rec["auto_source"] = auto_object.auto_source
-		if not rec.has("collision_voxels") and not auto_object.collision_voxels.is_empty():
-			rec["collision_voxels"] = auto_object.collision_voxels.duplicate(true)
+		if not rec.has("auto_source"):
+			rec["auto_source"] = auto_object.get_record_auto_source("generated")
+		var auto_collision := auto_object.get_collision(bound_min_length)
+		if not rec.has("collision") and not auto_collision.is_empty():
+			rec["collision"] = auto_collision.duplicate(true)
 		if not rec.has("semantic_probe_density"):
 			rec["semantic_probe_density"] = auto_object.semantic_probe_density
 		var semantic_probes := auto_object.get_semantic_probes(auto_object.semantic_probe_density)
@@ -897,58 +780,42 @@ func _attach_mesh_asset_voxel_record(mi: MeshInstance3D, record: Dictionary) -> 
 		rec["node_path"] = str(mi.get_path())
 
 	if mi is AutoObject:
-		(mi as AutoObject).set_asset_voxel_record(rec)
+		(mi as AutoObject).set_voxel_write_spec(rec)
 	else:
-		mi.set_meta(AutoObject.ASSET_VOXEL_RECORD_META_KEY, rec)
-		for key in [AutoObject.deprecated_asset_voxel_record_key(), AutoObject.legacy_asset_voxel_record_key()]:
-			if mi.has_meta(key):
-				mi.remove_meta(key)
+		mi.set_meta(AutoObject.VOXEL_WRITE_SPEC_META_KEY, rec)
 		mi.set_meta("instance_id", rec.instance_id)
 		mi.set_meta("instance_mesh_id", rec.instance_mesh_id)
-	_mesh_asset_voxel_records[record_id] = rec
-	_register_auto_object(mi, rec)
+	_voxel_write_specs[record_id] = rec
 	return rec
 
 
-func get_mesh_asset_voxel_records() -> Dictionary:
-	return _mesh_asset_voxel_records.duplicate(true)
+func get_voxel_write_specs() -> Dictionary:
+	return _voxel_write_specs.duplicate(true)
 
 
-func get_mesh_asset_voxel_record(record_id: String) -> Dictionary:
-	var record = _mesh_asset_voxel_records.get(record_id, {})
+func get_voxel_write_spec(record_id: String) -> Dictionary:
+	var record = _voxel_write_specs.get(record_id, {})
 	if record is Dictionary:
 		var typed_record := record as Dictionary
 		return typed_record.duplicate(true)
 	return {}
 
 
-func _remove_mesh_asset_voxel_record(node: Node) -> void:
-	if node is AutoObject:
-		var manager := _ensure_auto_object_manager()
-		manager.unregister_object(node as AutoObject)
-	var record := _get_asset_voxel_record_from_meta(node)
+func _remove_voxel_write_spec(node: Node) -> void:
+	var record := _get_voxel_write_spec_from_meta(node)
 	if record.has("id"):
-		_mesh_asset_voxel_records.erase(str(record.id))
+		_voxel_write_specs.erase(str(record.id))
 
 
-func _generate_cliff_placements(generator: CliffGenerator, num_iters: int) -> Array[Dictionary]:
+func _generate_cliff_placements(generator: Node, num_iters: int) -> Array[Dictionary]:
 	if generator == null:
 		return []
 	if use_surface_3d_cliff_placement:
 		return generator.generate_surface_placement(num_iters)
-	return generator.generate_cliff_vertical(num_iters)
+	return generator.generate_heightfield_fit(num_iters)
 
 
-func _make_rock_channel_entries(color: Color, complexity: float, radius: float) -> Array[Dictionary]:
-	return [
-		{"channel": 0, "radius": radius, "color": color, "complexity": complexity},
-		{"channel": 1, "radius": radius, "color": color, "complexity": complexity},
-		{"channel": 2, "radius": radius, "color": color, "complexity": complexity},
-		{"channel": 3, "radius": radius, "color": color, "complexity": complexity},
-	]
-
-
-func _make_cliff_asset_voxel_record(
+func _make_cliff_voxel_write_spec(
 	record_id: String,
 	r: Dictionary,
 	mi: MeshInstance3D,
@@ -967,41 +834,33 @@ func _make_cliff_asset_voxel_record(
 		y_max = tmp
 	var radius := maxf(mesh_aabb.size.x * absf(mi.scale.x), mesh_aabb.size.z * absf(mi.scale.z)) * 0.5
 	radius = maxf(radius, capture_size / float(TEX_RES))
-	var collision_voxels := asset.get_collision_voxels(radius) if asset != null else []
-	var channel_entries: Array[Dictionary] = []
-	for entry_spec in _make_rock_channel_entries(color, complexity, radius):
-		var entry := entry_spec.duplicate(true)
-		entry["base_pixel"] = base_px
-		entry["voxel_xz"] = base_px
-		entry["volume_xz_resolution"] = TEX_RES
-		entry["y_min"] = y_min
-		entry["y_max"] = y_max
-		entry["slice_indices"] = []
-		channel_entries.append(entry)
+	var collision := asset.get_collision(radius) if asset != null else []
+	var channel := int(r.get("channel", 0))
 
 	var record := {
 		"id": record_id,
 		"type": "rock",
 		"source_voxel_type": "AutoSceneVoxel",
-		"source_kind": "rock_placement",
-		"producer_stage": "rock_placement",
 		"mesh_index": int(r.mesh_index),
 		"position": mi.position,
 		"rotation_mode": str(r.get("rotation_mode", "Y")),
-		"rotation_degrees": r.get("rotation_degrees", Vector3(0.0, float(r.get("rotation_y", 0.0)), 0.0)),
+		"rotation_degrees": r.get("rotation_degrees", Vector3.ZERO),
 		"scale": mi.scale,
 		"base_pixel": base_px,
 		"voxel_xz": base_px,
 		"volume_xz_resolution": TEX_RES,
 		"color": color,
 		"complexity": complexity,
-		"collision_voxels": collision_voxels,
+		"collision": collision,
+		"channel": channel,
+		"radius": radius,
+		"y_min": y_min,
+		"y_max": y_max,
 	}
-	record[CHANNEL_ENTRIES_KEY] = channel_entries
 	return record
 
 
-func _make_terrain_asset_voxel_record(mi: MeshInstance3D, resolution: int) -> Dictionary:
+func _make_terrain_voxel_write_spec(mi: MeshInstance3D, resolution: int) -> Dictionary:
 	var color := TERRAIN_VOXEL_COLOR
 	var height_stats := Vector2.ZERO
 	if mi.has_meta("terrain_height_stats"):
@@ -1020,38 +879,27 @@ func _make_terrain_asset_voxel_record(mi: MeshInstance3D, resolution: int) -> Di
 		"height_max": height_stats.y,
 		"height_resolution": Vector2i(resolution, resolution),
 	}
-	record[CHANNEL_ENTRIES_KEY] = [{
-		"channel": -1,
-		"base_pixel": Vector2i.ZERO,
-		"voxel_xz": Vector2i.ZERO,
-		"y_min": 0.0,
-		"y_max": 0.0,
-		"color": color,
-		"complexity": 1.0,
-		"slice_indices": [],
-	}]
 	return record
 
 
-func _attach_vegetation_asset_voxel_record(mi: MeshInstance3D, r: Dictionary, apply_to_buffers: bool = true) -> void:
+func _attach_vegetation_voxel_write_spec(mi: MeshInstance3D, r: Dictionary, apply_to_buffers: bool = true) -> void:
 	var record_id := str(r.get("id", mi.name))
 	var voxel_write_spec: Dictionary = {}
-	if _veg_exclusion != null:
-		voxel_write_spec = _veg_exclusion.get_mesh_asset_voxel_record(record_id)
+	if _scene_voxel_committer != null:
+		voxel_write_spec = _scene_voxel_committer.get_voxel_write_spec(record_id)
 	if voxel_write_spec.is_empty():
-		voxel_write_spec = _get_asset_voxel_record_from_config(r)
+		voxel_write_spec = _get_voxel_write_spec_from_config(r)
 	if voxel_write_spec.is_empty():
 		var color: Color = r.get("color", Color.WHITE)
 		var complexity := clampf(float(r.get("complexity", color.a)), 0.0, 1.0)
 		color.a = complexity
 		var base_px := _world_to_texture_pixel(mi.position)
+		var auto_source := str(r.get("auto_source", r.get("placement_source", "scatter"))).to_lower()
 		voxel_write_spec = {
 			"id": record_id,
 			"type": r.get("type", "vegetation"),
-			"auto_source": r.get("auto_source", r.get("placement_source", "scatter")),
-			"source_voxel_type": "BrushSceneVoxel" if str(r.get("auto_source", r.get("placement_source", "scatter"))).to_lower() == "brush" else "AutoSceneVoxel",
-			"source_kind": str(r.get("source_kind", r.get("auto_source", r.get("placement_source", "scatter")))).to_lower(),
-			"producer_stage": "brush_edit" if str(r.get("auto_source", r.get("placement_source", "scatter"))).to_lower() == "brush" else "vegetation_scatter",
+			"auto_source": auto_source,
+			"source_voxel_type": "BrushSceneVoxel" if auto_source == "brush" else "AutoSceneVoxel",
 			"position": mi.position,
 			"scale": mi.scale,
 			"base_pixel": base_px,
@@ -1059,32 +907,35 @@ func _attach_vegetation_asset_voxel_record(mi: MeshInstance3D, r: Dictionary, ap
 			"volume_xz_resolution": TEX_RES,
 			"color": color,
 			"complexity": complexity,
-			"collision_voxels": r.get("collision_voxels", []),
+			"collision": r.get("collision", []),
 		}
-		var channel_entries: Array = r.get(CHANNEL_ENTRIES_KEY, [])
-		voxel_write_spec[CHANNEL_ENTRIES_KEY] = channel_entries.duplicate(true)
-	var attached := _attach_mesh_asset_voxel_record(mi, voxel_write_spec)
-	if apply_to_buffers and _veg_exclusion != null:
-		attached = _veg_exclusion.apply_mesh_asset_voxel_record(attached)
-		attached = _attach_mesh_asset_voxel_record(mi, attached)
+		if r.has("channel"):
+			voxel_write_spec["channel"] = int(r.channel)
+			voxel_write_spec["radius"] = float(r.get("radius", 0.0))
+			if r.has("y_min"):
+				voxel_write_spec["y_min"] = float(r.y_min)
+			if r.has("y_max"):
+				voxel_write_spec["y_max"] = float(r.y_max)
+	var attached := _attach_voxel_write_spec(mi, voxel_write_spec)
+	if apply_to_buffers and _scene_voxel_committer != null and _record_should_write_scene_voxel_buffers(attached):
+		attached = _scene_voxel_committer.apply_voxel_write_spec(attached)
+		attached = _attach_voxel_write_spec(mi, attached)
 
 
-func register_brush_vegetation(mi: AutoVegetation, placement_data: Dictionary = {}) -> void:
+func register_brush_vegetation(mi: AutoObject, placement_data: Dictionary = {}) -> void:
 	if mi == null:
 		return
-	_ensure_auto_object_manager()
 	var data := placement_data.duplicate(true)
 	var raw_profile = data.get("voxel_profile", null)
-	if raw_profile is AutoVoxelProfile:
-		mi.voxel_profile = raw_profile as AutoVoxelProfile
+	if raw_profile is AutoVoxelProfile and mi.voxel_descriptor is AutoVoxelDescriptor:
+		(mi.voxel_descriptor as AutoVoxelDescriptor).voxel_profile = raw_profile as AutoVoxelProfile
 	if not data.has("id"):
 		data["id"] = mi.name
 	if not data.has("type"):
-		data["type"] = mi.object_subtype if not mi.object_subtype.is_empty() else "vegetation"
+		var object_subtype := mi.get_record_object_subtype()
+		data["type"] = object_subtype if not object_subtype.is_empty() else "vegetation"
 	data["auto_source"] = "brush"
 	data["source_voxel_type"] = "BrushSceneVoxel"
-	data["source_kind"] = "brush"
-	data["producer_stage"] = "brush_edit"
 	if not data.has("auto_mix"):
 		data["auto_mix"] = 0.0
 	data["position"] = mi.position
@@ -1093,32 +944,30 @@ func register_brush_vegetation(mi: AutoVegetation, placement_data: Dictionary = 
 		data["color"] = mi.get_voxel_color()
 	if not data.has("complexity"):
 		data["complexity"] = mi.get_voxel_complexity()
-	if not data.has("collision_voxels") or not data["collision_voxels"] is Array:
-		data["collision_voxels"] = mi.get_collision_voxels()
-	var data_channel_entries: Array = data.get(CHANNEL_ENTRIES_KEY, [])
-	if data_channel_entries.is_empty():
-		var color: Color = data.get("color", Color.WHITE)
-		var complexity := clampf(float(data.get("complexity", color.a)), 0.0, 1.0)
-		color.a = complexity
-		data_channel_entries = [_make_vegetation_channel_entry(mi.vegetation_channel, mi.vegetation_radius, color, complexity)]
-	data[CHANNEL_ENTRIES_KEY] = data_channel_entries
+	if not data.has("collision") or not data["collision"] is Array:
+		data["collision"] = mi.get_collision()
+	if not data.has("channel"):
+		data["channel"] = 0
+	if not data.has("radius"):
+		data["radius"] = 0.2
+	if not data.has("brush_size_voxels"):
+		data["brush_size_voxels"] = Vector3i(_brush_width, _brush_height, _brush_length)
+	if not data.has("slice_indices"):
+		data["slice_indices"] = _brush_slice_indices()
 
-	mi.auto_source = "brush"
 	mi.add_to_group("placed_brush_vegetation")
 	if mi.get_parent() == null:
 		_add_level_child(mi)
 	var defer_buffer_update := bool(data.get("defer_voxel_update", _painting))
-	_attach_vegetation_asset_voxel_record(mi, data, not defer_buffer_update)
+	_attach_vegetation_voxel_write_spec(mi, data, not defer_buffer_update)
 	if defer_buffer_update:
 		_brush_voxel_commit_pending = true
 		var brush_px := _world_to_texture_pixel(mi.position)
 		var brush_radius_px := 1
 		var pixel_size := capture_size / float(TEX_RES)
-		for entry_raw in data_channel_entries:
-			if entry_raw is Dictionary:
-				var entry := entry_raw as Dictionary
-				brush_radius_px = maxi(brush_radius_px, ceili(float(entry.get("radius", pixel_size)) / pixel_size))
-		for collision_raw in data["collision_voxels"]:
+		brush_radius_px = maxi(brush_radius_px, ceili(float(maxi(_brush_width, _brush_length)) * 0.5))
+		brush_radius_px = maxi(brush_radius_px, ceili(float(data.get("radius", pixel_size)) / pixel_size))
+		for collision_raw in data["collision"]:
 			if collision_raw is Dictionary:
 				var collision := collision_raw as Dictionary
 				var radius := maxf(float(collision.get("radius", pixel_size)), 0.0)
@@ -1139,37 +988,9 @@ func commit_brush_vegetation_edits(dirty_rect: Rect2i = Rect2i()) -> void:
 	_finish_brush_stroke()
 
 
-func _make_vegetation_channel_entry(channel: int, radius: float, color: Color, complexity: float) -> Dictionary:
-	return {
-		"channel": clampi(channel, 0, 3),
-		"radius": maxf(radius, 0.0),
-		"color": color,
-		"complexity": complexity,
-	}
-
-
 func _meters_to_pixels(radius_m: float, resolution: int = TEX_RES) -> int:
 	var pixel_size := capture_size / float(maxi(resolution, 1))
 	return maxi(1, ceili(maxf(radius_m, 0.0) / pixel_size))
-
-
-func _stamp_mask_disc(mask: Image, center: Vector2i, outer_radius_px: int, value: float = 1.0, inner_radius_px: int = 0) -> void:
-	if mask == null:
-		return
-	var w := mask.get_width()
-	var h := mask.get_height()
-	var outer_sq := outer_radius_px * outer_radius_px
-	var inner_sq := inner_radius_px * inner_radius_px
-	for dy in range(-outer_radius_px, outer_radius_px + 1):
-		for dx in range(-outer_radius_px, outer_radius_px + 1):
-			var dist_sq := dx * dx + dy * dy
-			if dist_sq > outer_sq or (inner_radius_px > 0 and dist_sq <= inner_sq):
-				continue
-			var px := Vector2i(center.x + dx, center.y + dy)
-			if px.x < 0 or px.x >= w or px.y < 0 or px.y >= h:
-				continue
-			var cur := mask.get_pixelv(px).r
-			mask.set_pixelv(px, Color(maxf(cur, value), 0.0, 0.0, 0.0))
 
 
 func _make_landscape_cliff_mask(height_img: Image) -> Image:
@@ -1177,109 +998,309 @@ func _make_landscape_cliff_mask(height_img: Image) -> Image:
 	mask.fill(Color(0.0, 0.0, 0.0, 0.0))
 	if height_img == null:
 		return mask
-	var w := height_img.get_width()
-	var h := height_img.get_height()
-	var pixel_size := capture_size / float(maxi(w, 1))
-	var slope_start := maxf(landscape_cliff_slope_start, 0.0001)
-	var slope_range := maxf(landscape_cliff_slope_full - slope_start, 0.0001)
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			var sx := clampi(floori(float(x) / float(TEX_RES) * float(w)), 0, w - 1)
-			var sy := clampi(floori(float(y) / float(TEX_RES) * float(h)), 0, h - 1)
-			var sx0 := maxi(sx - 1, 0)
-			var sx1 := mini(sx + 1, w - 1)
-			var sy0 := maxi(sy - 1, 0)
-			var sy1 := mini(sy + 1, h - 1)
-			var dhdx := (height_img.get_pixelv(Vector2i(sx1, sy)).r - height_img.get_pixelv(Vector2i(sx0, sy)).r) / maxf(float(sx1 - sx0) * pixel_size, 0.0001)
-			var dhdz := (height_img.get_pixelv(Vector2i(sx, sy1)).r - height_img.get_pixelv(Vector2i(sx, sy0)).r) / maxf(float(sy1 - sy0) * pixel_size, 0.0001)
-			var slope := sqrt(dhdx * dhdx + dhdz * dhdz)
-			var value := clampf((slope - slope_start) / slope_range, 0.0, 1.0)
-			if value > 0.0:
-				mask.set_pixelv(Vector2i(x, y), Color(value, 0.0, 0.0, 0.0))
+	var gpu_mask := _make_landscape_cliff_mask_gpu(height_img)
+	if gpu_mask != null and not gpu_mask.is_empty():
+		return gpu_mask
+	push_error("[MeshFill] Landscape cliff mask GPU compute failed")
 	return mask
+
+
+func _make_landscape_cliff_mask_gpu(height_img: Image) -> Image:
+	if height_img == null or height_img.is_empty():
+		return null
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "LandscapeCliffMask"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/landscape_cliff_mask.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var sampler := compute.create_linear_sampler()
+	var height_tex := compute.upload_texture_2d(
+		height_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"landscape_height_r32f"
+	)
+	var out_tex := compute.create_rw_texture_2d(
+		TEX_RES,
+		TEX_RES,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"landscape_cliff_mask_r32f"
+	)
+	if not sampler.is_valid() or not height_tex.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, height_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], shader, 1)
+
+	var push := PackedByteArray()
+	push.resize(32)
+	push.encode_s32(0, TEX_RES)
+	push.encode_s32(4, TEX_RES)
+	push.encode_s32(8, height_img.get_width())
+	push.encode_s32(12, height_img.get_height())
+	push.encode_float(16, capture_size)
+	push.encode_float(20, maxf(landscape_cliff_slope_start, 0.0001))
+	push.encode_float(24, maxf(landscape_cliff_slope_full - maxf(landscape_cliff_slope_start, 0.0001), 0.0001))
+	push.encode_float(28, 0.0)
+
+	var groups := ceili(float(TEX_RES) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups, groups, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, data)
+	compute.dispose()
+	return result
 
 
 func _make_cliff_tree_mask(rock_mask_img: Image, height_img: Image) -> Image:
-	var mask := Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
-	mask.fill(Color(0.0, 0.0, 0.0, 0.0))
 	var cliff_mask := _make_landscape_cliff_mask(height_img)
 	var outer_radius_px := _meters_to_pixels(cliff_tree_stamp_radius)
 	var inner_radius_px := _meters_to_pixels(cliff_tree_stamp_inner_radius)
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			var px := Vector2i(x, y)
-			var cliff_value := cliff_mask.get_pixelv(px).r
-			if rock_mask_img != null:
-				cliff_value = maxf(cliff_value, rock_mask_img.get_pixelv(px).r)
-			if cliff_value <= 0.01:
-				continue
-			_stamp_mask_disc(mask, px, outer_radius_px, cliff_value, inner_radius_px)
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			var px := Vector2i(x, y)
-			var block_value := cliff_mask.get_pixelv(px).r
-			if rock_mask_img != null:
-				block_value = maxf(block_value, rock_mask_img.get_pixelv(px).r)
-			if block_value > 0.01:
-				mask.set_pixelv(px, Color(0.0, 0.0, 0.0, 0.0))
+	var gpu_mask := _make_cliff_tree_mask_gpu(cliff_mask, rock_mask_img, outer_radius_px, inner_radius_px)
+	if gpu_mask != null and not gpu_mask.is_empty():
+		return gpu_mask
+	var mask := Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
+	mask.fill(Color(0.0, 0.0, 0.0, 0.0))
+	push_error("[MeshFill] Cliff tree mask GPU compute failed")
 	return mask
+
+
+func _make_cliff_tree_mask_gpu(cliff_mask: Image, rock_mask_img: Image, outer_radius_px: int, inner_radius_px: int) -> Image:
+	if cliff_mask == null or cliff_mask.is_empty():
+		return null
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var rock_img := rock_mask_img
+	if rock_img == null or rock_img.is_empty():
+		rock_img = Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
+		rock_img.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "CliffTreeMask"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/cliff_tree_mask.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var sampler := compute.create_linear_sampler()
+	var cliff_tex := compute.upload_texture_2d(
+		cliff_mask,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"cliff_mask_r32f"
+	)
+	var rock_tex := compute.upload_texture_2d(
+		rock_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"rock_mask_r32f"
+	)
+	var out_tex := compute.create_rw_texture_2d(
+		TEX_RES,
+		TEX_RES,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"cliff_tree_mask_r32f"
+	)
+	if not sampler.is_valid() or not cliff_tex.is_valid() or not rock_tex.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, cliff_tex),
+		compute.make_sampler_uniform(1, sampler, rock_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], shader, 1)
+
+	var push := PackedByteArray()
+	push.resize(32)
+	push.encode_s32(0, TEX_RES)
+	push.encode_s32(4, TEX_RES)
+	push.encode_s32(8, rock_img.get_width())
+	push.encode_s32(12, rock_img.get_height())
+	push.encode_s32(16, maxi(outer_radius_px, 0))
+	push.encode_s32(20, maxi(inner_radius_px, 0))
+	push.encode_float(24, 0.01)
+	push.encode_float(28, 0.0)
+
+	var groups := ceili(float(TEX_RES) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups, groups, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, data)
+	compute.dispose()
+	return result
 
 
 func _make_tree_grass_mask(tree_results: Array[Dictionary]) -> Image:
+	var radius_px := _meters_to_pixels(tree_grass_stamp_radius)
+	var gpu_mask := _make_tree_grass_mask_gpu(tree_results, radius_px)
+	if gpu_mask != null and not gpu_mask.is_empty():
+		return gpu_mask
 	var mask := Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
 	mask.fill(Color(0.0, 0.0, 0.0, 0.0))
-	var radius_px := _meters_to_pixels(tree_grass_stamp_radius)
-	for result in tree_results:
-		var pos: Vector3 = result.get("position", Vector3.ZERO)
-		_stamp_mask_disc(mask, _world_to_texture_pixel(pos), radius_px, 1.0)
+	if not tree_results.is_empty():
+		push_error("[MeshFill] Tree grass mask GPU compute failed")
 	return mask
 
 
-func _apply_scene_mesh_voxels_to_vegetation_buffers() -> int:
-	if _veg_exclusion == null:
-		return 0
-	var applied := 0
-	for record_id in _mesh_asset_voxel_records.keys():
-		var raw_record = _mesh_asset_voxel_records[record_id]
-		if not raw_record is Dictionary:
-			continue
-		var record := raw_record as Dictionary
-		var record_type := str(record.get("type", ""))
-		var record_source := str(record.get("auto_source", record.get("placement_source", "")))
-		var should_apply := record_type == "rock" or record_source == "brush"
-		if not should_apply:
-			continue
-		var updated := _veg_exclusion.apply_mesh_asset_voxel_record(record)
-		if bool(updated.get("height_buffer_applied", false)):
-			applied += 1
-			var node_path := str(updated.get("node_path", ""))
-			var node := get_node_or_null(NodePath(node_path)) if not node_path.is_empty() else null
-			if node is MeshInstance3D:
-				var mesh_node := node as MeshInstance3D
-				_attach_mesh_asset_voxel_record(mesh_node, updated)
-			else:
-				_mesh_asset_voxel_records[record_id] = updated
-	return applied
+func _make_tree_grass_mask_gpu(tree_results: Array[Dictionary], radius_px: int) -> Image:
+	if tree_results.is_empty():
+		return null
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var stamp_count := tree_results.size()
+	var stamp_bytes := PackedByteArray()
+	stamp_bytes.resize(stamp_count * 16)
+	for i in range(stamp_count):
+		var result := tree_results[i]
+		var pos: Vector3 = result.get("position", Vector3.ZERO)
+		var px := _world_to_texture_pixel(pos)
+		var offset := i * 16
+		stamp_bytes.encode_float(offset, float(px.x))
+		stamp_bytes.encode_float(offset + 4, float(px.y))
+		stamp_bytes.encode_float(offset + 8, 1.0)
+		stamp_bytes.encode_float(offset + 12, 0.0)
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "TreeGrassMask"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/tree_grass_mask.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var stamp_buffer := compute.storage_buffer_from_bytes(
+		stamp_bytes,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"tree_grass_stamps_vec4"
+	)
+	var out_tex := compute.create_rw_texture_2d(
+		TEX_RES,
+		TEX_RES,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"tree_grass_mask_r32f"
+	)
+	if not stamp_buffer.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var set0 := compute.create_uniform_set([
+		compute.make_storage_uniform(0, stamp_buffer),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], shader, 1)
+
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, TEX_RES)
+	push.encode_s32(4, TEX_RES)
+	push.encode_s32(8, stamp_count)
+	push.encode_s32(12, maxi(radius_px, 0))
+
+	var groups := ceili(float(TEX_RES) / 16.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups, groups, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, data)
+	compute.dispose()
+	return result
 
 
-func _sync_scene_mesh_asset_voxel_records_from_exclusion() -> void:
-	if _veg_exclusion == null:
+func _sync_scene_voxel_write_specs_from_committer() -> void:
+	if _scene_voxel_committer == null:
 		return
-	for record in _veg_exclusion.get_mesh_asset_voxel_records():
+	for record in _scene_voxel_committer.get_voxel_write_specs():
 		var record_id := str(record.get("id", ""))
-		if record_id.is_empty() or not _mesh_asset_voxel_records.has(record_id):
+		if record_id.is_empty() or not _voxel_write_specs.has(record_id):
 			continue
 		var node_path := str(record.get("node_path", ""))
 		var node := get_node_or_null(NodePath(node_path)) if not node_path.is_empty() else null
 		if node is MeshInstance3D:
 			var mesh_node := node as MeshInstance3D
-			_attach_mesh_asset_voxel_record(mesh_node, record)
+			_attach_voxel_write_spec(mesh_node, record)
 		else:
-			_mesh_asset_voxel_records[record_id] = record
+			_voxel_write_specs[record_id] = record
 
 
-func _sync_vegetation_masks_from_exclusion() -> void:
-	if _veg_exclusion == null:
+func _sync_vegetation_masks_from_committer() -> void:
+	if _scene_voxel_committer == null:
 		return
 	_tree_mask_image = _make_vegetation_channel_mask(3)
 	_midstory_mask_image = _make_vegetation_channel_mask(2)
@@ -1290,23 +1311,103 @@ func _sync_vegetation_masks_from_exclusion() -> void:
 func _make_vegetation_channel_mask(channel: int) -> Image:
 	var mask := Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
 	mask.fill(Color(0.0, 0.0, 0.0, 0.0))
-	if _veg_exclusion == null or channel < 0 or channel >= 4:
+	if _scene_voxel_committer == null or channel < 0 or channel >= 4:
 		return mask
-	var occupancy := _veg_exclusion.get_occupancy()
-	if occupancy == null or occupancy.is_empty():
-		return mask
-	var w := mini(TEX_RES, occupancy.get_width())
-	var h := mini(TEX_RES, occupancy.get_height())
-	for y in range(h):
-		for x in range(w):
-			var v: float = occupancy.get_pixelv(Vector2i(x, y))[channel]
-			if v > 0.01:
-				mask.set_pixelv(Vector2i(x, y), Color(v, 0.0, 0.0, 0.0))
+	var occupancy: Image = _scene_voxel_committer.get_occupancy()
+	return _make_vegetation_channel_mask_from_occupancy(occupancy, channel)
+
+
+func _make_vegetation_channel_mask_from_occupancy(occupancy: Image, channel: int) -> Image:
+	var gpu_mask := _make_vegetation_channel_mask_gpu(occupancy, channel)
+	if gpu_mask != null and not gpu_mask.is_empty():
+		return gpu_mask
+	var mask := Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
+	mask.fill(Color(0.0, 0.0, 0.0, 0.0))
+	if occupancy != null and not occupancy.is_empty() and channel >= 0 and channel < 4:
+		push_error("[MeshFill] Vegetation channel mask GPU compute failed")
 	return mask
 
 
-func _import_rock_mask_to_vegetation_buffers() -> void:
-	if _veg_exclusion == null:
+func _make_vegetation_channel_mask_gpu(occupancy: Image, channel: int) -> Image:
+	if occupancy == null or occupancy.is_empty() or channel < 0 or channel >= 4:
+		return null
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "VegetationChannelMask"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/vegetation_channel_mask.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var sampler := compute.create_linear_sampler()
+	var occupancy_tex := compute.upload_texture_2d(
+		occupancy,
+		RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT,
+		Image.FORMAT_RGBAH,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"vegetation_occupancy_rgba16f"
+	)
+	var out_tex := compute.create_rw_texture_2d(
+		TEX_RES,
+		TEX_RES,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"vegetation_channel_mask_r32f"
+	)
+	if not sampler.is_valid() or not occupancy_tex.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, occupancy_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], shader, 1)
+
+	var push := PackedByteArray()
+	push.resize(32)
+	push.encode_s32(0, TEX_RES)
+	push.encode_s32(4, TEX_RES)
+	push.encode_s32(8, occupancy.get_width())
+	push.encode_s32(12, occupancy.get_height())
+	push.encode_s32(16, channel)
+	push.encode_float(20, 0.01)
+	push.encode_float(24, 0.0)
+	push.encode_float(28, 0.0)
+
+	var groups := ceili(float(TEX_RES) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups, groups, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, data)
+	compute.dispose()
+	return result
+
+
+func _import_rock_mask_to_scene_voxel_committer() -> void:
+	if _scene_voxel_committer == null:
 		return
 	var rock_mask_img: Image = null
 	if _current_rock_mask_img != null:
@@ -1316,49 +1417,52 @@ func _import_rock_mask_to_vegetation_buffers() -> void:
 		rock_mask_img.fill(Color(0.0, 0.0, 0.0, 0.0))
 
 	for channel in range(4):
-		_veg_exclusion.import_mask_channel(channel, rock_mask_img)
+		_scene_voxel_committer.import_mask_channel(channel, rock_mask_img)
 
 
-func _record_should_write_vegetation_buffers(record: Dictionary) -> bool:
+func _record_should_write_scene_voxel_buffers(record: Dictionary) -> bool:
 	var record_type := str(record.get("type", ""))
 	if record_type == "terrain":
 		return false
-	var channel_entries: Array = record.get(CHANNEL_ENTRIES_KEY, [])
-	return not channel_entries.is_empty()
+	var source_type := str(record.get("source_voxel_type", ""))
+	if SceneVoxelTargetScript.is_target_type(source_type):
+		return false
+	var ch := int(record.get("channel", -1))
+	return ch >= 0 and ch < 4
 
 
-func _rebuild_vegetation_buffers_from_scene_records(_dirty_rect: Rect2i = Rect2i()) -> int:
-	if _veg_exclusion == null:
-		_ensure_vegetation_exclusion()
-	if _veg_exclusion == null:
+func _rebuild_scene_voxel_committer_from_scene_records(_dirty_rect: Rect2i = Rect2i()) -> int:
+	if _scene_voxel_committer == null:
+		_ensure_scene_voxel_committer()
+	if _scene_voxel_committer == null:
 		return 0
 
-	_veg_exclusion.reset_occupancy()
-	_import_rock_mask_to_vegetation_buffers()
+	_scene_voxel_committer.reset_occupancy()
+	_import_rock_mask_to_scene_voxel_committer()
 
 	var applied := 0
-	for record_id in _mesh_asset_voxel_records.keys():
-		var raw_record = _mesh_asset_voxel_records[record_id]
+	for record_id in _voxel_write_specs.keys():
+		var raw_record = _voxel_write_specs[record_id]
 		if not raw_record is Dictionary:
 			continue
 		var record := raw_record as Dictionary
-		if not _record_should_write_vegetation_buffers(record):
+		if not _record_should_write_scene_voxel_buffers(record):
 			continue
 
-		var updated := _veg_exclusion.apply_mesh_asset_voxel_record(record)
+		var updated: Dictionary = _scene_voxel_committer.apply_voxel_write_spec(record)
 		if updated.is_empty():
 			continue
 		applied += 1
 		var node_path := str(updated.get("node_path", ""))
 		var node := get_node_or_null(NodePath(node_path)) if not node_path.is_empty() else null
 		if node is MeshInstance3D:
-			_attach_mesh_asset_voxel_record(node as MeshInstance3D, updated)
+			_attach_voxel_write_spec(node as MeshInstance3D, updated)
 		else:
-			_mesh_asset_voxel_records[record_id] = updated
+			_voxel_write_specs[record_id] = updated
 
-	_veg_exclusion.build_voxel_volume(TEX_RES / 2, _vegetation_channel_profiles())
-	_sync_scene_mesh_asset_voxel_records_from_exclusion()
-	_sync_vegetation_masks_from_exclusion()
+	_scene_voxel_committer.build_voxel_volume(TEX_RES / 2, _vegetation_channel_profiles())
+	_sync_scene_voxel_write_specs_from_committer()
+	_sync_vegetation_masks_from_committer()
 
 	if _debug_mask_terrain != null:
 		var was_visible := _debug_mask_terrain.visible
@@ -1383,7 +1487,7 @@ func _step_generate() -> void:
 
 	var prev_rock_mask := _load_previous_rock_mask()
 
-	var generator := CliffGenerator.new()
+	var generator := PlacementFittingGeneratorScript.new()
 	generator.texture_size = TEX_RES
 	generator.capture_size = capture_size
 	generator.max_height = max_height
@@ -1395,14 +1499,14 @@ func _step_generate() -> void:
 	generator.object_normal_texture = _cached_textures["object_normal"]
 	generator.height_normal_texture = _cached_textures["height_normal"]
 	generator.target_height_texture = composited_th
-	generator.rock_mask_texture = prev_rock_mask
+	generator.placed_mask_texture = prev_rock_mask
 	if _rock_override_mask != null:
-		generator.rock_override_mask_texture = ImageTexture.create_from_image(_rock_override_mask)
+		generator.placement_override_mask_texture = ImageTexture.create_from_image(_rock_override_mask)
 	if _rock_override_delta != null:
-		generator.rock_override_delta_texture = ImageTexture.create_from_image(_rock_override_delta)
+		generator.placement_override_delta_texture = ImageTexture.create_from_image(_rock_override_delta)
 	generator.target_height_extension = target_height_extension
-	generator.rock_overlap = rock_overlap
-	generator.rock_assets = _cached_assets
+	generator.stamp_overlap = rock_overlap
+	generator.fitting_assets = _cached_assets
 	add_child(generator)
 
 	var t0 := Time.get_ticks_msec()
@@ -1427,7 +1531,7 @@ func _step_generate() -> void:
 			"name": "Cliff_s%d_%d_m%d" % [_step_count, i, mesh_index],
 			"position": rock_position,
 			"rotation_mode": str(r.get("rotation_mode", "Y")),
-			"rotation_degrees": r.get("rotation_degrees", Vector3(0.0, float(r.get("rotation_y", 0.0)), 0.0)),
+			"rotation_degrees": r.get("rotation_degrees", Vector3.ZERO),
 			"scale": visual_scale,
 			"visual_layer": ROCK_VISUAL_LAYER,
 			"mesh_index": mesh_index,
@@ -1436,8 +1540,8 @@ func _step_generate() -> void:
 		})
 		_add_level_child(mi)
 		_mark_test_only_generated(mi, "rock")
-		var rock_record := _mark_test_only_record(_make_cliff_asset_voxel_record(mi.name, r, mi, mesh_aabb, asset), "rock")
-		_attach_mesh_asset_voxel_record(mi, rock_record)
+		var rock_record := _mark_test_only_record(_make_cliff_voxel_write_spec(mi.name, r, mi, mesh_aabb, asset), "rock")
+		_attach_voxel_write_spec(mi, rock_record)
 		if i < 3:
 			print("  [%d] pos=%s aabb_top=%.2f offset_y=%.2f" % [i, r.position, mesh_aabb.position.y + mesh_aabb.size.y, mesh_top_y])
 
@@ -1474,14 +1578,17 @@ func _setup_debug_terrain() -> void:
 	var res := img.get_width()
 	var cell_size := capture_size / float(res)
 	var half := capture_size / 2.0
+	var height_values := _image_rgba32f_values(img)
+	var mask_values := _image_rgba32f_values(mask_img)
 
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 
 	for y in range(res):
 		for x in range(res):
-			var h := img.get_pixelv(Vector2i(x, y)).r + 0.15
-			var gen_mask := mask_img.get_pixelv(Vector2i(x, y)).b
+			var value_index := (y * res + x) * 4
+			var h := (height_values[value_index] if value_index < height_values.size() else 0.0) + 0.15
+			var gen_mask := mask_values[value_index + 2] if value_index + 2 < mask_values.size() else 0.0
 			var alpha := 0.4 if gen_mask > 0.5 else 0.02
 			var px := float(x) * cell_size - half
 			var pz := float(y) * cell_size - half
@@ -1588,7 +1695,7 @@ func _setup_slider_ui() -> void:
 	vbox.add_child(test_label)
 
 	var shortcut_label := Label.new()
-	shortcut_label.text = "C: rock step    P: vegetation"
+	shortcut_label.text = "C: rock step    P: vegetation GPU status"
 	vbox.add_child(shortcut_label)
 
 	var rock_button := Button.new()
@@ -1597,7 +1704,7 @@ func _setup_slider_ui() -> void:
 	vbox.add_child(rock_button)
 
 	var vegetation_button := Button.new()
-	vegetation_button.text = "P  Generate Vegetation"
+	vegetation_button.text = "P  Vegetation GPU Status"
 	vegetation_button.pressed.connect(_run_test_vegetation_generation)
 	vbox.add_child(vegetation_button)
 
@@ -1738,7 +1845,7 @@ func _collect_semantic_probe_debug_assets(max_assets: int) -> Array[Dictionary]:
 			"source_mesh": source_mesh,
 			"mesh_scale": mesh_scale,
 			"source_mesh_scale": source_mesh_scale,
-			"color": asset.get_voxel_color(),
+			"color": asset.get_color(),
 			"probes": probes,
 		})
 	return result
@@ -1968,7 +2075,7 @@ func _start_debounce_regen() -> void:
 func _regenerate() -> void:
 	for child in _get_level_children():
 		if child.name.begins_with("Cliff_") or child.name == "DebugTargetHeight" or child.name == "DebugDiffHeight" or child.name == "DebugCombinedMask" or child.name == "DebugSemanticProbes" or child.name == "DebugTargetSceneVoxel" or child.name == "Terrain":
-			_remove_mesh_asset_voxel_record(child)
+			_remove_voxel_write_spec(child)
 			child.queue_free()
 	_debug_terrain = null
 	_debug_diff_terrain = null
@@ -2048,7 +2155,7 @@ func _generate() -> void:
 
 	print("[MeshFill] Creating generator (iter=%d, capture=%.0fm)..." % [
 		num_iterations, capture_size])
-	var generator := CliffGenerator.new()
+	var generator := PlacementFittingGeneratorScript.new()
 	generator.texture_size = TEX_RES
 	generator.capture_size = capture_size
 	generator.max_height = max_height
@@ -2060,10 +2167,10 @@ func _generate() -> void:
 	generator.object_normal_texture = textures["object_normal"]
 	generator.height_normal_texture = textures["height_normal"]
 	generator.target_height_texture = textures["target_height"]
-	generator.rock_mask_texture = prev_rock_mask
+	generator.placed_mask_texture = prev_rock_mask
 	generator.target_height_extension = target_height_extension
-	generator.rock_overlap = rock_overlap
-	generator.rock_assets = assets
+	generator.stamp_overlap = rock_overlap
+	generator.fitting_assets = assets
 	add_child(generator)
 
 	print("[MeshFill] Running compute shaders...")
@@ -2089,7 +2196,7 @@ func _generate() -> void:
 			"name": "Cliff_%d_m%d" % [i, mesh_index],
 			"position": rock_position,
 			"rotation_mode": str(r.get("rotation_mode", "Y")),
-			"rotation_degrees": r.get("rotation_degrees", Vector3(0.0, float(r.get("rotation_y", 0.0)), 0.0)),
+			"rotation_degrees": r.get("rotation_degrees", Vector3.ZERO),
 			"scale": visual_scale,
 			"visual_layer": ROCK_VISUAL_LAYER,
 			"mesh_index": mesh_index,
@@ -2098,20 +2205,16 @@ func _generate() -> void:
 		})
 		_add_level_child(mi)
 		_mark_test_only_generated(mi, "rock")
-		var rock_record := _mark_test_only_record(_make_cliff_asset_voxel_record(mi.name, r, mi, mesh_aabb, asset), "rock")
-		_attach_mesh_asset_voxel_record(mi, rock_record)
+		var rock_record := _mark_test_only_record(_make_cliff_voxel_write_spec(mi.name, r, mi, mesh_aabb, asset), "rock")
+		_attach_voxel_write_spec(mi, rock_record)
 		if i < 5:
 			print("  [%d] pos=%s rot=%.1f掳 scale=%.3f mesh=%d top_offset=%.2f" % [
-				i, r.position, r.rotation_y, mi.scale.x, r.mesh_index, mesh_top_y])
+				i, r.position, Vector3(r.get("rotation_degrees", Vector3.ZERO)).y, mi.scale.x, r.mesh_index, mesh_top_y])
 
 	if _raw_target_height_image != null:
-		var h_min := 9999.0
-		var h_max := -9999.0
-		for y in range(_raw_target_height_image.get_height()):
-			for x in range(_raw_target_height_image.get_width()):
-				var v := _raw_target_height_image.get_pixelv(Vector2i(x, y)).r
-				h_min = minf(h_min, v)
-				h_max = maxf(h_max, v)
+		var height_stats := _get_height_stats(_raw_target_height_image)
+		var h_min := height_stats.x
+		var h_max := height_stats.y
 		print("[MeshFill] Target height range: %.1f - %.1f" % [h_min, h_max])
 
 	_analyze_height_difference(textures["scene_depth"])
@@ -2124,30 +2227,7 @@ func _generate() -> void:
 	_create_terrain_mesh(textures["target_height"])
 
 
-func _clamp_rock_visual_height(mi: MeshInstance3D) -> void:
-	if _raw_target_height_image == null:
-		return
-	var aabb := mi.mesh.get_aabb()
-	# After -90掳 X rotation + Y rotation, local Z maps to world Y
-	# mi.scale.z controls the vertical extent in world space
-	var mesh_top_z := aabb.position.z + aabb.size.z
-	if mesh_top_z < 0.001:
-		return
-	var peak_world_y := mi.position.y + mesh_top_z * mi.scale.z
-
-	var uv_x := clampf((mi.position.x + capture_size * 0.5) / capture_size, 0.0, 1.0)
-	var uv_z := clampf((mi.position.z + capture_size * 0.5) / capture_size, 0.0, 1.0)
-	var px := Vector2i(
-		clampi(int(uv_x * float(TEX_RES)), 0, TEX_RES - 1),
-		clampi(int(uv_z * float(TEX_RES)), 0, TEX_RES - 1))
-	var target_h := _raw_target_height_image.get_pixelv(px).r
-
-	if target_h > 0.01 and peak_world_y > target_h:
-		var allowed := maxf(target_h - mi.position.y, 0.01)
-		mi.scale.z = allowed / mesh_top_z
-
-
-# 鈹€鈹€鈹€ Height analysis & export 鈹€鈹€鈹€
+# --- Height analysis & export ---
 
 func _analyze_height_difference(scene_depth_tex: ImageTexture) -> void:
 	if _raw_target_height_image == null or _raw_current_height_image == null:
@@ -2156,80 +2236,218 @@ func _analyze_height_difference(scene_depth_tex: ImageTexture) -> void:
 
 	var scene_depth_img := scene_depth_tex.get_image()
 	var res := _raw_target_height_image.get_width()
+	var stats := _compute_height_difference_stats_gpu(_raw_target_height_image, _raw_current_height_image, scene_depth_img)
+	if not bool(stats.get("valid", false)):
+		push_error("[MeshFill] Height difference stats GPU compute failed")
+		return
+
+	var total_gen := int(stats.get("total_gen", 0))
+	if total_gen == 0:
+		print("[MeshFill] No generate-mask pixels to analyze")
+		return
+
+	var already_above := int(stats.get("already_above", 0))
+	var fillable_count := int(stats.get("fillable_count", 0))
+	var filled_ok := int(stats.get("filled_ok", 0))
+	var still_under := int(stats.get("still_under", 0))
+	var rock_overshoot := int(stats.get("rock_overshoot", 0))
+	var rock_added_count := int(stats.get("rock_added_count", 0))
+
+	print("[MeshFill] Height Difference Analysis")
+	print("[MeshFill]   Generate-mask pixels: %d / %d" % [total_gen, res * res])
+	print("[MeshFill]   Overall RMSE: %.3f m | MAE: %.3f m | Max: %.3f m" % [
+		float(stats.get("rmse", 0.0)),
+		float(stats.get("mae", 0.0)),
+		float(stats.get("max_err", 0.0)),
+	])
+	print("[MeshFill] --- Breakdown ---")
+	print("[MeshFill]   Terrain already above target: %d (%.1f%%)" % [already_above, float(already_above) / float(total_gen) * 100.0])
+
+	if fillable_count > 0:
+		print("[MeshFill]   Fillable pixels: %d (%.1f%%)" % [fillable_count, float(fillable_count) / float(total_gen) * 100.0])
+		print("[MeshFill]     Fillable RMSE: %.3f m | MAE: %.3f m" % [
+			float(stats.get("fillable_rmse", 0.0)),
+			float(stats.get("fillable_mae", 0.0)),
+		])
+		print("[MeshFill]     Filled OK (|diff| < 0.5m): %d (%.1f%%)" % [filled_ok, float(filled_ok) / float(fillable_count) * 100.0])
+		print("[MeshFill]     Still under-filled:        %d (%.1f%%)" % [still_under, float(still_under) / float(fillable_count) * 100.0])
+		print("[MeshFill]     Rock overshoot:            %d (%.1f%%)" % [rock_overshoot, float(rock_overshoot) / float(fillable_count) * 100.0])
+
+	if rock_added_count > 0:
+		print("[MeshFill]   Avg rock height added: %.3f m (%d pixels with rocks)" % [
+			float(stats.get("avg_rock_height", 0.0)),
+			rock_added_count,
+		])
+
+
+func _compute_height_difference_stats_gpu(target_img: Image, current_img: Image, scene_depth_img: Image) -> Dictionary:
+	if target_img == null or current_img == null or scene_depth_img == null:
+		return {}
+	if target_img.is_empty() or current_img.is_empty() or scene_depth_img.is_empty():
+		return {}
+	var width := target_img.get_width()
+	var height := target_img.get_height()
+	if width <= 0 or height <= 0:
+		return {}
+	if current_img.get_width() != width or scene_depth_img.get_width() != width:
+		return {}
+	if current_img.get_height() != height or scene_depth_img.get_height() != height:
+		return {}
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return {}
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "HeightDifferenceStats"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return {}
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/height_difference_stats.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return {}
+
+	var target_tex := compute.upload_texture_2d(
+		target_img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"height_diff_stats_target_rgba32f"
+	)
+	var current_tex := compute.upload_texture_2d(
+		current_img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"height_diff_stats_current_rgba32f"
+	)
+	var depth_tex := compute.upload_texture_2d(
+		scene_depth_img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"height_diff_stats_depth_rgba32f"
+	)
+	var groups_x := ceili(float(width) / 16.0)
+	var groups_y := ceili(float(height) / 16.0)
+	var group_count := groups_x * groups_y
+	var stats_buf := compute.storage_buffer_zero(group_count * 64, ComputeShaderBaseScript.SCOPE_FRAME, "height_diff_stats_groups")
+	if not target_tex.is_valid() or not current_tex.is_valid() or not depth_tex.is_valid() or not stats_buf.is_valid():
+		compute.dispose()
+		return {}
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return {}
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, target_tex),
+		compute.make_sampler_uniform(1, sampler, current_tex),
+		compute.make_sampler_uniform(2, sampler, depth_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_storage_uniform(0, stats_buf),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return {}
+
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, width)
+	push.encode_s32(4, height)
+	push.encode_float(8, max_height)
+	push.encode_float(12, 0.0)
+
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return {}
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.buffer_get_data(stats_buf, 0, group_count * 64)
+	compute.dispose()
+	if data.size() < group_count * 64:
+		return {}
 
 	var total_gen := 0
 	var already_above := 0
 	var filled_ok := 0
 	var still_under := 0
 	var rock_overshoot := 0
+	var fillable_count := 0
+	var rock_added_count := 0
 	var sum_sq_err := 0.0
 	var sum_abs_err := 0.0
 	var max_err := 0.0
 	var sum_sq_fillable := 0.0
 	var sum_abs_fillable := 0.0
-	var fillable_count := 0
 	var sum_rock_added := 0.0
-	var rock_added_count := 0
+	var target_h_min := INF
+	var target_h_max := -INF
+	for group_index in range(group_count):
+		var off := group_index * 64
+		total_gen += roundi(data.decode_float(off + 0))
+		already_above += roundi(data.decode_float(off + 4))
+		filled_ok += roundi(data.decode_float(off + 8))
+		still_under += roundi(data.decode_float(off + 12))
+		rock_overshoot += roundi(data.decode_float(off + 16))
+		fillable_count += roundi(data.decode_float(off + 20))
+		rock_added_count += roundi(data.decode_float(off + 24))
+		sum_sq_err += data.decode_float(off + 32)
+		sum_abs_err += data.decode_float(off + 36)
+		max_err = maxf(max_err, data.decode_float(off + 40))
+		sum_sq_fillable += data.decode_float(off + 44)
+		sum_abs_fillable += data.decode_float(off + 48)
+		sum_rock_added += data.decode_float(off + 52)
+		target_h_min = minf(target_h_min, data.decode_float(off + 56))
+		target_h_max = maxf(target_h_max, data.decode_float(off + 60))
 
-	for y in range(res):
-		for x in range(res):
-			var gen_mask := _raw_current_height_image.get_pixelv(Vector2i(x, y)).b
-			if gen_mask < 0.5:
-				continue
-			total_gen += 1
-
-			var target_h := _raw_target_height_image.get_pixelv(Vector2i(x, y)).r
-			var current_h := _raw_current_height_image.get_pixelv(Vector2i(x, y)).r
-			var initial_h := max_height - scene_depth_img.get_pixelv(Vector2i(x, y)).r
-			var diff := current_h - target_h
-
-			sum_sq_err += diff * diff
-			sum_abs_err += absf(diff)
-			max_err = maxf(max_err, absf(diff))
-
-			if initial_h > target_h + 0.5:
-				already_above += 1
-			else:
-				fillable_count += 1
-				var fillable_diff := current_h - target_h
-				sum_sq_fillable += fillable_diff * fillable_diff
-				sum_abs_fillable += absf(fillable_diff)
-				if absf(fillable_diff) < 0.5:
-					filled_ok += 1
-				elif fillable_diff < -0.5:
-					still_under += 1
-				else:
-					rock_overshoot += 1
-
-			var rock_h := current_h - initial_h
-			if rock_h > 0.1:
-				sum_rock_added += rock_h
-				rock_added_count += 1
-
-	if total_gen == 0:
-		print("[MeshFill] No generate-mask pixels to analyze")
-		return
-
-	var rmse := sqrt(sum_sq_err / float(total_gen))
-	var mae := sum_abs_err / float(total_gen)
-
-	print("[MeshFill] Height Difference Analysis")
-	print("[MeshFill]   Generate-mask pixels: %d / %d" % [total_gen, res * res])
-	print("[MeshFill]   Overall RMSE: %.3f m | MAE: %.3f m | Max: %.3f m" % [rmse, mae, max_err])
-	print("[MeshFill] 鈹€鈹€鈹€ Breakdown 鈹€鈹€鈹€")
-	print("[MeshFill]   Terrain already above target: %d (%.1f%%)" % [already_above, float(already_above) / float(total_gen) * 100.0])
-
+	var result := {
+		"valid": true,
+		"total_gen": total_gen,
+		"already_above": already_above,
+		"filled_ok": filled_ok,
+		"still_under": still_under,
+		"rock_overshoot": rock_overshoot,
+		"fillable_count": fillable_count,
+		"rock_added_count": rock_added_count,
+		"target_h_min": 0.0 if target_h_min == INF else target_h_min,
+		"target_h_max": 0.0 if target_h_max == -INF else target_h_max,
+		"rmse": 0.0,
+		"mae": 0.0,
+		"max_err": max_err,
+		"fillable_rmse": 0.0,
+		"fillable_mae": 0.0,
+		"filled_ok_pct": 0.0,
+		"under_filled_pct": 0.0,
+		"overshoot_pct": 0.0,
+		"avg_rock_height": 0.0,
+	}
+	if total_gen > 0:
+		result["rmse"] = sqrt(sum_sq_err / float(total_gen))
+		result["mae"] = sum_abs_err / float(total_gen)
 	if fillable_count > 0:
-		var fill_rmse := sqrt(sum_sq_fillable / float(fillable_count))
-		var fill_mae := sum_abs_fillable / float(fillable_count)
-		print("[MeshFill]   Fillable pixels: %d (%.1f%%)" % [fillable_count, float(fillable_count) / float(total_gen) * 100.0])
-		print("[MeshFill]     Fillable RMSE: %.3f m | MAE: %.3f m" % [fill_rmse, fill_mae])
-		print("[MeshFill]     Filled OK (|diff| < 0.5m): %d (%.1f%%)" % [filled_ok, float(filled_ok) / float(fillable_count) * 100.0])
-		print("[MeshFill]     Still under-filled:        %d (%.1f%%)" % [still_under, float(still_under) / float(fillable_count) * 100.0])
-		print("[MeshFill]     Rock overshoot:            %d (%.1f%%)" % [rock_overshoot, float(rock_overshoot) / float(fillable_count) * 100.0])
-
+		result["fillable_rmse"] = sqrt(sum_sq_fillable / float(fillable_count))
+		result["fillable_mae"] = sum_abs_fillable / float(fillable_count)
+		result["filled_ok_pct"] = float(filled_ok) / float(fillable_count) * 100.0
+		result["under_filled_pct"] = float(still_under) / float(fillable_count) * 100.0
+		result["overshoot_pct"] = float(rock_overshoot) / float(fillable_count) * 100.0
 	if rock_added_count > 0:
-		print("[MeshFill]   Avg rock height added: %.3f m (%d pixels with rocks)" % [sum_rock_added / float(rock_added_count), rock_added_count])
+		result["avg_rock_height"] = sum_rock_added / float(rock_added_count)
+	return result
 
 
 func _save_height_maps() -> void:
@@ -2288,6 +2506,22 @@ func _target_sv_b_collision_path() -> String:
 	return _target_sv_dir_absolute() + "/target_scene_voxel_b_collision.r32f"
 
 
+func _target_sv_occupancy_path() -> String:
+	return _target_sv_dir_absolute() + "/target_scene_voxel_occupancy.r32f"
+
+
+func _target_sv_b_occupancy_path() -> String:
+	return _target_sv_dir_absolute() + "/target_scene_voxel_b_occupancy.r32f"
+
+
+func _target_sv_color_rgba8_path() -> String:
+	return _target_sv_dir_absolute() + "/target_scene_voxel_color_rgba8.u32"
+
+
+func _target_sv_b_color_rgba8_path() -> String:
+	return _target_sv_dir_absolute() + "/target_scene_voxel_b_color_rgba8.u32"
+
+
 func _write_target_sv_buffer(path: String, bytes: PackedByteArray) -> bool:
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
@@ -2315,10 +2549,14 @@ func _save_target_scene_voxel(result: Dictionary, target_role: String = "TargetS
 	var is_target_b := target_role == "TargetSV_B"
 	var visual_path := _target_sv_b_visual_path() if is_target_b else _target_sv_visual_path()
 	var collision_path := _target_sv_b_collision_path() if is_target_b else _target_sv_collision_path()
+	var occupancy_path := _target_sv_b_occupancy_path() if is_target_b else _target_sv_occupancy_path()
+	var color_rgba8_path := _target_sv_b_color_rgba8_path() if is_target_b else _target_sv_color_rgba8_path()
 	var preview_path := _target_sv_b_preview_path() if is_target_b else _target_sv_preview_path()
 	var meta_path := _target_sv_b_meta_path() if is_target_b else _target_sv_meta_path()
 	var visual_bytes: PackedByteArray = result.get("visual_bytes", PackedByteArray())
 	var collision_bytes: PackedByteArray = result.get("collision_bytes", PackedByteArray())
+	var occupancy_bytes: PackedByteArray = result.get("target_occupancy_bytes", PackedByteArray())
+	var color_rgba8_bytes: PackedByteArray = result.get("target_color_rgba8_bytes", PackedByteArray())
 	var preview_img: Image = result.get("preview_image", null)
 	if preview_img == null or visual_bytes.is_empty() or collision_bytes.is_empty():
 		push_error("[%s] Save failed: incomplete target result" % target_role)
@@ -2327,12 +2565,20 @@ func _save_target_scene_voxel(result: Dictionary, target_role: String = "TargetS
 		return false
 	if not _write_target_sv_buffer(collision_path, collision_bytes):
 		return false
+	if not occupancy_bytes.is_empty() and not _write_target_sv_buffer(occupancy_path, occupancy_bytes):
+		return false
+	if not color_rgba8_bytes.is_empty() and not _write_target_sv_buffer(color_rgba8_path, color_rgba8_bytes):
+		return false
 	if is_target_b:
 		_target_sv_b_visual_bytes = visual_bytes
 		_target_sv_b_collision_bytes = collision_bytes
+		_target_sv_b_target_occupancy_bytes = occupancy_bytes
+		_target_sv_b_target_color_rgba8_bytes = color_rgba8_bytes
 	else:
 		_target_sv_visual_bytes = visual_bytes
 		_target_sv_collision_bytes = collision_bytes
+		_target_sv_target_occupancy_bytes = occupancy_bytes
+		_target_sv_target_color_rgba8_bytes = color_rgba8_bytes
 	var preview_png := preview_img.duplicate()
 	if preview_png.get_format() != Image.FORMAT_RGBA8:
 		preview_png.convert(Image.FORMAT_RGBA8)
@@ -2350,8 +2596,12 @@ func _save_target_scene_voxel(result: Dictionary, target_role: String = "TargetS
 		"vertical_span": float(result.get("vertical_span", TARGET_SV_VERTICAL_SPAN)),
 		"visual_format": str(result.get("visual_format", "rgba32f")),
 		"collision_format": str(result.get("collision_format", "r32f")),
+		"occupancy_format": str(result.get("occupancy_format", "r32f")),
+		"target_color_format": str(result.get("target_color_format", "rgba8_u32")),
 		"visual_path": visual_path,
 		"collision_path": collision_path,
+		"target_occupancy_path": occupancy_path,
+		"target_color_rgba8_path": color_rgba8_path,
 		"preview_path": preview_path,
 		"generator": "TargetSceneVoxelGenerator",
 		"gpu_only_generation": true,
@@ -2390,8 +2640,22 @@ func _load_persisted_target_scene_voxel_variant(target_role: String) -> bool:
 			metadata = parsed as Dictionary
 	var visual_path := _target_sv_b_visual_path() if is_target_b else _target_sv_visual_path()
 	var collision_path := _target_sv_b_collision_path() if is_target_b else _target_sv_collision_path()
+	var occupancy_path := str(metadata.get(
+		"target_occupancy_path",
+		_target_sv_b_occupancy_path() if is_target_b else _target_sv_occupancy_path()
+	))
+	var color_rgba8_path := str(metadata.get(
+		"target_color_rgba8_path",
+		_target_sv_b_color_rgba8_path() if is_target_b else _target_sv_color_rgba8_path()
+	))
 	var visual_bytes := _read_target_sv_buffer(visual_path)
 	var collision_bytes := _read_target_sv_buffer(collision_path)
+	var occupancy_bytes := PackedByteArray()
+	if FileAccess.file_exists(occupancy_path):
+		occupancy_bytes = _read_target_sv_buffer(occupancy_path)
+	var color_rgba8_bytes := PackedByteArray()
+	if FileAccess.file_exists(color_rgba8_path):
+		color_rgba8_bytes = _read_target_sv_buffer(color_rgba8_path)
 	var tex_size := int(metadata.get("texture_size", preview_img.get_width()))
 	var slice_count := int(metadata.get("slice_count", TARGET_SV_SLICE_COUNT))
 	var voxel_count := tex_size * tex_size * slice_count
@@ -2399,18 +2663,108 @@ func _load_persisted_target_scene_voxel_variant(target_role: String) -> bool:
 		push_warning("[%s] Persistent visual buffer size mismatch: got %d expected %d" % [target_role, visual_bytes.size(), voxel_count * 16])
 	if collision_bytes.size() != voxel_count * 4:
 		push_warning("[%s] Persistent collision buffer size mismatch: got %d expected %d" % [target_role, collision_bytes.size(), voxel_count * 4])
+	if not occupancy_bytes.is_empty() and occupancy_bytes.size() != voxel_count * 4:
+		push_warning("[%s] Persistent occupancy buffer size mismatch: got %d expected %d" % [target_role, occupancy_bytes.size(), voxel_count * 4])
+		occupancy_bytes = PackedByteArray()
+	if not color_rgba8_bytes.is_empty() and color_rgba8_bytes.size() != voxel_count * 4:
+		push_warning("[%s] Persistent target color RGBA8 buffer size mismatch: got %d expected %d" % [target_role, color_rgba8_bytes.size(), voxel_count * 4])
+		color_rgba8_bytes = PackedByteArray()
+	var packed_buffers := _derive_target_sv_packed_buffers_if_needed(
+		target_role,
+		visual_bytes,
+		collision_bytes,
+		tex_size,
+		slice_count,
+		occupancy_bytes,
+		color_rgba8_bytes,
+		occupancy_path,
+		color_rgba8_path
+	)
+	occupancy_bytes = packed_buffers.get("target_occupancy_bytes", occupancy_bytes)
+	color_rgba8_bytes = packed_buffers.get("target_color_rgba8_bytes", color_rgba8_bytes)
 	if is_target_b:
 		_target_sv_b_preview_image = preview_img
 		_target_sv_b_metadata = metadata
 		_target_sv_b_visual_bytes = visual_bytes
 		_target_sv_b_collision_bytes = collision_bytes
+		_target_sv_b_target_color_rgba8_bytes = color_rgba8_bytes
+		_target_sv_b_target_occupancy_bytes = occupancy_bytes
 	else:
 		_target_sv_preview_image = preview_img
 		_target_sv_metadata = metadata
 		_target_sv_visual_bytes = visual_bytes
 		_target_sv_collision_bytes = collision_bytes
+		_target_sv_target_occupancy_bytes = occupancy_bytes
+		_target_sv_target_color_rgba8_bytes = color_rgba8_bytes
 	print("[%s] Loaded persistent target: %s" % [target_role, preview_path])
 	return true
+
+
+func _derive_target_sv_packed_buffers_if_needed(
+	target_role: String,
+	visual_bytes: PackedByteArray,
+	collision_bytes: PackedByteArray,
+	tex_size: int,
+	slice_count: int,
+	occupancy_bytes: PackedByteArray,
+	color_rgba8_bytes: PackedByteArray,
+	occupancy_path: String,
+	color_rgba8_path: String
+) -> Dictionary:
+	var voxel_count := maxi(tex_size, 1) * maxi(slice_count, 1) * maxi(tex_size, 1)
+	var expected_visual_bytes := voxel_count * 16
+	var expected_scalar_bytes := voxel_count * 4
+	var needs_occupancy := occupancy_bytes.size() != expected_scalar_bytes
+	var needs_color := color_rgba8_bytes.size() != expected_scalar_bytes
+	if not needs_occupancy and not needs_color:
+		return {
+			"target_occupancy_bytes": occupancy_bytes,
+			"target_color_rgba8_bytes": color_rgba8_bytes,
+		}
+	if visual_bytes.size() < expected_visual_bytes or collision_bytes.size() < expected_scalar_bytes:
+		return {
+			"target_occupancy_bytes": occupancy_bytes,
+			"target_color_rgba8_bytes": color_rgba8_bytes,
+		}
+
+	var generator := TargetSceneVoxelGenerator.new()
+	var derived := generator.derive_target_packed_buffers(
+		visual_bytes,
+		collision_bytes,
+		tex_size,
+		slice_count,
+		true,
+		occupancy_bytes
+	)
+	if not bool(derived.get("ok", false)):
+		var reason := str(derived.get("reason", "unknown"))
+		if reason != "missing_rendering_device":
+			push_warning("[%s] GPU derivation of missing TargetSV packed buffers failed: %s" % [target_role, reason])
+		return {
+			"target_occupancy_bytes": occupancy_bytes,
+			"target_color_rgba8_bytes": color_rgba8_bytes,
+		}
+
+	if needs_occupancy:
+		var derived_occupancy: PackedByteArray = derived.get("target_occupancy_bytes", PackedByteArray())
+		if derived_occupancy.size() == expected_scalar_bytes:
+			occupancy_bytes = derived_occupancy
+			_write_target_sv_buffer(occupancy_path, occupancy_bytes)
+	if needs_color:
+		var derived_color: PackedByteArray = derived.get("target_color_rgba8_bytes", PackedByteArray())
+		if derived_color.size() == expected_scalar_bytes:
+			color_rgba8_bytes = derived_color
+			_write_target_sv_buffer(color_rgba8_path, color_rgba8_bytes)
+	if needs_occupancy or needs_color:
+		print("[%s] Derived missing TargetSV packed buffers on GPU: occupancy=%s color_rgba8=%s" % [
+			target_role,
+			str(occupancy_bytes.size() == expected_scalar_bytes),
+			str(color_rgba8_bytes.size() == expected_scalar_bytes),
+		])
+	return {
+		"target_occupancy_bytes": occupancy_bytes,
+		"target_color_rgba8_bytes": color_rgba8_bytes,
+	}
 
 
 func _load_persisted_target_scene_voxel() -> bool:
@@ -2421,6 +2775,8 @@ func _load_persisted_target_scene_voxel() -> bool:
 		_target_sv_b_metadata = _target_sv_metadata.duplicate(true)
 		_target_sv_b_visual_bytes = _target_sv_visual_bytes
 		_target_sv_b_collision_bytes = _target_sv_collision_bytes
+		_target_sv_b_target_occupancy_bytes = _target_sv_target_occupancy_bytes
+		_target_sv_b_target_color_rgba8_bytes = _target_sv_target_color_rgba8_bytes
 		_target_sv_b_metadata["target_role"] = "TargetSV_B"
 		_target_sv_b_metadata["fallback_from_source_target"] = true
 	return loaded_source or loaded_b
@@ -2497,6 +2853,10 @@ func _build_target_scene_voxel_overlay() -> void:
 	var depth_img: Image = (_cached_textures["scene_depth"] as ImageTexture).get_image()
 	var img := _target_sv_b_preview_image
 	var res := img.get_width()
+	var depth_width := depth_img.get_width()
+	var depth_height := depth_img.get_height()
+	var depth_values := _image_rgba32f_values(depth_img)
+	var preview_values := _image_rgba32f_values(img)
 	var cell_size := capture_size / float(res)
 	var half := capture_size / 2.0
 	var st := SurfaceTool.new()
@@ -2505,11 +2865,19 @@ func _build_target_scene_voxel_overlay() -> void:
 		for x in range(res):
 			var px := Vector2i(x, y)
 			var depth_px := Vector2i(
-				clampi(int(float(x) / float(maxi(res - 1, 1)) * float(depth_img.get_width() - 1)), 0, depth_img.get_width() - 1),
-				clampi(int(float(y) / float(maxi(res - 1, 1)) * float(depth_img.get_height() - 1)), 0, depth_img.get_height() - 1)
+				clampi(int(float(x) / float(maxi(res - 1, 1)) * float(depth_width - 1)), 0, depth_width - 1),
+				clampi(int(float(y) / float(maxi(res - 1, 1)) * float(depth_height - 1)), 0, depth_height - 1)
 			)
-			var h := max_height - depth_img.get_pixelv(depth_px).r + 0.45
-			var c := img.get_pixelv(px)
+			var depth_index := (depth_px.y * depth_width + depth_px.x) * 4
+			var preview_index := (px.y * res + px.x) * 4
+			var depth_value := depth_values[depth_index] if depth_index < depth_values.size() else max_height
+			var c := Color(
+				preview_values[preview_index] if preview_index < preview_values.size() else 0.0,
+				preview_values[preview_index + 1] if preview_index + 1 < preview_values.size() else 0.0,
+				preview_values[preview_index + 2] if preview_index + 2 < preview_values.size() else 0.0,
+				preview_values[preview_index + 3] if preview_index + 3 < preview_values.size() else 0.0
+			)
+			var h := max_height - depth_value + 0.45
 			var voxel_signal := clampf(maxf(c.a, maxf(c.r, maxf(c.g, c.b))), 0.0, 1.0)
 			var alpha := 0.7 * voxel_signal if voxel_signal > 0.01 else 0.0
 			st.set_color(Color(c.r, c.g, c.b, alpha))
@@ -2560,62 +2928,337 @@ func _toggle_target_scene_voxel_overlay() -> void:
 
 
 func _height_to_grayscale(img: Image, channel: int) -> Image:
-	var res := img.get_width()
-	var h_min := 9999.0
-	var h_max := -9999.0
-	for y in range(res):
-		for x in range(res):
-			var px := img.get_pixelv(Vector2i(x, y))
-			var v: float = px[channel]
-			h_min = minf(h_min, v)
-			h_max = maxf(h_max, v)
-
-	var out := Image.create(res, res, false, Image.FORMAT_RGBA8)
-	var range_val := maxf(h_max - h_min, 0.001)
-	for y in range(res):
-		for x in range(res):
-			var px := img.get_pixelv(Vector2i(x, y))
-			var v: float = px[channel]
-			var t := clampf((v - h_min) / range_val, 0.0, 1.0)
-			out.set_pixelv(Vector2i(x, y), Color(t, t, t, 1.0))
+	var out := _height_to_grayscale_gpu(img, channel)
+	if out == null or out.is_empty():
+		push_error("[MeshFill] Height grayscale GPU compute failed")
+		return Image.create(1, 1, false, Image.FORMAT_RGBA8)
 	return out
+
+
+func _height_to_grayscale_gpu(img: Image, channel: int) -> Image:
+	if img == null or img.is_empty():
+		return null
+	var width := img.get_width()
+	var height := img.get_height()
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "HeightToGrayscale"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var minmax_shader := compute.load_compute_shader("res://shaders/height_channel_minmax.glsl")
+	var minmax_pipeline := compute.create_compute_pipeline(minmax_shader)
+	var gray_shader := compute.load_compute_shader("res://shaders/height_to_grayscale.glsl")
+	var gray_pipeline := compute.create_compute_pipeline(gray_shader)
+	if not minmax_shader.is_valid() or not minmax_pipeline.is_valid() or not gray_shader.is_valid() or not gray_pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var height_tex := compute.upload_texture_2d(
+		img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"height_grayscale_src_rgba32f"
+	)
+	var minmax_bytes := PackedByteArray()
+	minmax_bytes.resize(8)
+	minmax_bytes.encode_s32(0, -1)
+	var minmax_buf := compute.storage_buffer_from_bytes(minmax_bytes, ComputeShaderBaseScript.SCOPE_FRAME, "height_grayscale_minmax_u32")
+	var out_tex := compute.create_rw_texture_2d(
+		width,
+		height,
+		RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"height_grayscale_out_rgba8"
+	)
+	if not height_tex.is_valid() or not minmax_buf.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return null
+	var minmax_set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, height_tex),
+	], minmax_shader, 0)
+	var minmax_set1 := compute.create_uniform_set([
+		compute.make_storage_uniform(0, minmax_buf),
+	], minmax_shader, 1)
+	var gray_set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, height_tex),
+		compute.make_storage_uniform(1, minmax_buf),
+	], gray_shader, 0)
+	var gray_set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], gray_shader, 1)
+	if not minmax_set0.is_valid() or not minmax_set1.is_valid() or not gray_set0.is_valid() or not gray_set1.is_valid():
+		compute.dispose()
+		return null
+
+	var reduce_push := PackedByteArray()
+	reduce_push.resize(16)
+	reduce_push.encode_s32(0, width)
+	reduce_push.encode_s32(4, height)
+	reduce_push.encode_s32(8, clampi(channel, 0, 3))
+	reduce_push.encode_s32(12, 0)
+
+	var groups_x := ceili(float(width) / 32.0)
+	var groups_y := ceili(float(height) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, minmax_pipeline)
+	rd.compute_list_bind_uniform_set(cl, minmax_set0, 0)
+	rd.compute_list_bind_uniform_set(cl, minmax_set1, 1)
+	rd.compute_list_set_push_constant(cl, reduce_push, reduce_push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var gray_push := PackedByteArray()
+	gray_push.resize(16)
+	gray_push.encode_s32(0, width)
+	gray_push.encode_s32(4, height)
+	gray_push.encode_s32(8, clampi(channel, 0, 3))
+	gray_push.encode_float(12, 0.001)
+
+	cl = compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, gray_pipeline)
+	rd.compute_list_bind_uniform_set(cl, gray_set0, 0)
+	rd.compute_list_bind_uniform_set(cl, gray_set1, 1)
+	rd.compute_list_set_push_constant(cl, gray_push, gray_push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(width, height, false, Image.FORMAT_RGBA8, data)
+	compute.dispose()
+	return result
 
 
 func _height_diff_to_color(target_img: Image, current_img: Image) -> Image:
-	var res := target_img.get_width()
-	var out := Image.create(res, res, false, Image.FORMAT_RGBA8)
-	for y in range(res):
-		for x in range(res):
-			var target_h := target_img.get_pixelv(Vector2i(x, y)).r
-			var current_h := current_img.get_pixelv(Vector2i(x, y)).r
-			var gen_mask := current_img.get_pixelv(Vector2i(x, y)).b
-			if gen_mask < 0.5:
-				out.set_pixelv(Vector2i(x, y), Color(0.2, 0.2, 0.2, 1.0))
-				continue
-			var diff := current_h - target_h
-			var t := clampf(absf(diff) / 5.0, 0.0, 1.0)
-			var c: Color
-			if diff < 0.0:
-				c = Color(0.0, 0.0, t, 1.0)
-			else:
-				c = Color(t, 0.0, 0.0, 1.0)
-			out.set_pixelv(Vector2i(x, y), c)
+	var out := _height_diff_to_color_gpu(target_img, current_img)
+	if out == null or out.is_empty():
+		push_error("[MeshFill] Height diff color GPU compute failed")
+		return Image.create(1, 1, false, Image.FORMAT_RGBA8)
 	return out
+
+
+func _current_height_mask_to_color(current_img: Image) -> Image:
+	var out := _current_height_mask_to_color_gpu(current_img)
+	if out == null or out.is_empty():
+		push_error("[MeshFill] Current height mask color GPU compute failed")
+		return Image.create(1, 1, false, Image.FORMAT_RGBA8)
+	return out
+
+
+func _current_height_mask_to_color_gpu(current_img: Image) -> Image:
+	if current_img == null or current_img.is_empty():
+		return null
+	var width := current_img.get_width()
+	var height := current_img.get_height()
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "CurrentHeightMaskToColor"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/current_height_mask_vis.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var current_tex := compute.upload_texture_2d(
+		current_img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"current_height_mask_src_rgba32f"
+	)
+	var out_tex := compute.create_rw_texture_2d(
+		width,
+		height,
+		RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"current_height_mask_color_rgba8"
+	)
+	if not current_tex.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return null
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, current_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return null
+
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, width)
+	push.encode_s32(4, height)
+	push.encode_float(8, 0.5)
+	push.encode_float(12, 0.5)
+
+	var groups_x := ceili(float(width) / 32.0)
+	var groups_y := ceili(float(height) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(width, height, false, Image.FORMAT_RGBA8, data)
+	compute.dispose()
+	return result
+
+
+func _height_diff_to_color_gpu(target_img: Image, current_img: Image) -> Image:
+	if target_img == null or target_img.is_empty() or current_img == null or current_img.is_empty():
+		return null
+	var width := target_img.get_width()
+	var height := target_img.get_height()
+	if current_img.get_width() != width or current_img.get_height() != height:
+		return null
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "HeightDiffToColor"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/height_diff_to_color.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var target_tex := compute.upload_texture_2d(
+		target_img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"height_diff_target_rgba32f"
+	)
+	var current_tex := compute.upload_texture_2d(
+		current_img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"height_diff_current_rgba32f"
+	)
+	var out_tex := compute.create_rw_texture_2d(
+		width,
+		height,
+		RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"height_diff_color_rgba8"
+	)
+	if not target_tex.is_valid() or not current_tex.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return null
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, target_tex),
+		compute.make_sampler_uniform(1, sampler, current_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return null
+
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, width)
+	push.encode_s32(4, height)
+	push.encode_float(8, 5.0)
+	push.encode_float(12, 0.5)
+
+	var groups_x := ceili(float(width) / 32.0)
+	var groups_y := ceili(float(height) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(width, height, false, Image.FORMAT_RGBA8, data)
+	compute.dispose()
+	return result
 
 
 func _setup_diff_terrain(target_img: Image, current_img: Image) -> void:
 	var res := target_img.get_width()
 	var cell_size := capture_size / float(res)
 	var half := capture_size / 2.0
+	var target_values := _image_rgba32f_values(target_img)
+	var current_values := _image_rgba32f_values(current_img)
 
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 
 	for y in range(res):
 		for x in range(res):
-			var target_h := target_img.get_pixelv(Vector2i(x, y)).r
-			var current_h := current_img.get_pixelv(Vector2i(x, y)).r
-			var gen_mask := current_img.get_pixelv(Vector2i(x, y)).b
+			var value_index := (y * res + x) * 4
+			var target_h := target_values[value_index] if value_index < target_values.size() else 0.0
+			var current_h := current_values[value_index] if value_index < current_values.size() else 0.0
+			var gen_mask := current_values[value_index + 2] if value_index + 2 < current_values.size() else 0.0
 			var display_h := maxf(target_h, current_h) + 0.3
 			var diff := current_h - target_h
 			var t := clampf(absf(diff) / 5.0, 0.0, 1.0)
@@ -2662,7 +3305,17 @@ func _setup_diff_terrain(target_img: Image, current_img: Image) -> void:
 	print("[MeshFill] Height diff overlay ready [H to toggle]")
 
 
-# 鈹€鈹€鈹€ Override Delta / Brush / Visualization 鈹€鈹€鈹€
+func _image_rgba32f_values(img: Image) -> PackedFloat32Array:
+	if img == null or img.is_empty():
+		return PackedFloat32Array()
+	var src := img
+	if src.get_format() != Image.FORMAT_RGBAF:
+		src = img.duplicate()
+		src.convert(Image.FORMAT_RGBAF)
+	return src.get_data().to_float32_array()
+
+
+# --- Override Delta / Brush / Visualization ---
 
 func _init_override_images() -> void:
 	_override_delta = Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
@@ -2683,13 +3336,98 @@ func _init_override_images() -> void:
 
 func _compute_terrain_avg_height(height_tex: ImageTexture) -> float:
 	var img := height_tex.get_image()
-	var total := 0.0
-	var res := img.get_width()
-	for y in range(0, res, 4):
-		for x in range(0, res, 4):
-			total += img.get_pixelv(Vector2i(x, y)).r
-	var sample_count := ceili(float(res) / 4.0)
-	return total / float(sample_count * sample_count)
+	var result := _compute_terrain_avg_height_gpu(img)
+	if result == null or not bool(result.get("valid", false)):
+		push_error("[MeshFill] Terrain average height GPU compute failed")
+		return 0.0
+	return float(result.get("average", 0.0))
+
+
+func _compute_terrain_avg_height_gpu(img: Image) -> Dictionary:
+	if img == null or img.is_empty():
+		return {}
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return {}
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "TerrainAvgHeight"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return {}
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/terrain_avg_height.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return {}
+
+	var height_tex := compute.upload_texture_2d(
+		img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"terrain_avg_height_rgba32f"
+	)
+	var avg_buffer := compute.storage_buffer_zero(8, ComputeShaderBaseScript.SCOPE_FRAME, "terrain_avg_height_sum_count")
+	if not height_tex.is_valid() or not avg_buffer.is_valid():
+		compute.dispose()
+		return {}
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return {}
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, height_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_storage_uniform(0, avg_buffer),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return {}
+
+	var sample_step := 4
+	var scale := 1000.0
+	var sample_count_x := ceili(float(img.get_width()) / float(sample_step))
+	var sample_count_y := ceili(float(img.get_height()) / float(sample_step))
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, img.get_width())
+	push.encode_s32(4, img.get_height())
+	push.encode_s32(8, sample_step)
+	push.encode_float(12, scale)
+
+	var groups_x := ceili(float(sample_count_x) / 16.0)
+	var groups_y := ceili(float(sample_count_y) / 16.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return {}
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.buffer_get_data(avg_buffer, 0, 8)
+	compute.dispose()
+	if data.size() < 8:
+		return {}
+	var sum_scaled := data.decode_s32(0)
+	var count := data.decode_s32(4)
+	if count <= 0:
+		return {}
+	return {
+		"valid": true,
+		"average": float(sum_scaled) / scale / float(count),
+		"count": count,
+	}
 
 
 func _setup_delta_overlay_ui() -> void:
@@ -2715,15 +3453,105 @@ func _setup_delta_overlay_ui() -> void:
 
 	_brush_label = Label.new()
 	_brush_label.text = "[B] Toggle Brush"
+	_brush_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_brush_label.custom_minimum_size = Vector2(220, 0)
 	vbox.add_child(_brush_label)
 
+	_add_brush_dimension_controls(vbox)
 	call_deferred("_position_delta_panel")
 
 
 func _position_delta_panel() -> void:
 	if _delta_panel != null:
-		var vp_size := get_viewport().get_visible_rect().size
-		_delta_panel.position = Vector2(vp_size.x - 230, 10)
+		var viewport := get_viewport()
+		if viewport == null:
+			return
+		var vp_size := viewport.get_visible_rect().size
+		_delta_panel.position = Vector2(maxf(vp_size.x - 280.0, 10.0), 10)
+
+
+func _add_brush_dimension_controls(parent: VBoxContainer) -> void:
+	var separator := HSeparator.new()
+	parent.add_child(separator)
+
+	var title := Label.new()
+	title.text = "Brush Size"
+	parent.add_child(title)
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.custom_minimum_size = Vector2(220, 0)
+	parent.add_child(grid)
+
+	_brush_width_spin = _make_brush_size_spin(_brush_width, TEX_RES)
+	_add_brush_size_row(grid, "Width X", _brush_width_spin)
+	_brush_width_spin.value_changed.connect(_on_brush_width_changed)
+
+	_brush_length_spin = _make_brush_size_spin(_brush_length, TEX_RES)
+	_add_brush_size_row(grid, "Length Z", _brush_length_spin)
+	_brush_length_spin.value_changed.connect(_on_brush_length_changed)
+
+	_brush_height_spin = _make_brush_size_spin(_brush_height, TARGET_SV_SLICE_COUNT)
+	_add_brush_size_row(grid, "Height Y", _brush_height_spin)
+	_brush_height_spin.value_changed.connect(_on_brush_height_changed)
+
+
+func _make_brush_size_spin(value: int, max_value: int) -> SpinBox:
+	var spin := SpinBox.new()
+	spin.min_value = 1
+	spin.max_value = maxi(max_value, 1)
+	spin.step = 1
+	spin.value = value
+	spin.allow_greater = true
+	spin.allow_lesser = false
+	spin.custom_minimum_size = Vector2(104, 28)
+	return spin
+
+
+func _add_brush_size_row(grid: GridContainer, label_text: String, spin: SpinBox) -> void:
+	var label := Label.new()
+	label.text = label_text
+	label.custom_minimum_size = Vector2(88, 24)
+	grid.add_child(label)
+	grid.add_child(spin)
+
+
+func _on_brush_width_changed(new_value: float) -> void:
+	_set_brush_dimensions(roundi(new_value), _brush_length, _brush_height)
+
+
+func _on_brush_length_changed(new_value: float) -> void:
+	_set_brush_dimensions(_brush_width, roundi(new_value), _brush_height)
+
+
+func _on_brush_height_changed(new_value: float) -> void:
+	_set_brush_dimensions(_brush_width, _brush_length, roundi(new_value))
+
+
+func _nudge_brush_footprint(delta: int) -> void:
+	_set_brush_dimensions(_brush_width + delta, _brush_length + delta, _brush_height)
+
+
+func _set_brush_dimensions(width: int, length: int, height: int) -> void:
+	_brush_width = clampi(width, 1, TEX_RES)
+	_brush_length = clampi(length, 1, TEX_RES)
+	_brush_height = maxi(height, 1)
+	_sync_brush_radius_from_dimensions()
+	_refresh_brush_dimension_controls()
+	_update_brush_label()
+
+
+func _sync_brush_radius_from_dimensions() -> void:
+	_brush_radius = maxi(ceili(float(maxi(_brush_width, _brush_length)) * 0.5), 1)
+
+
+func _refresh_brush_dimension_controls() -> void:
+	if _brush_width_spin != null:
+		_brush_width_spin.value = _brush_width
+	if _brush_length_spin != null:
+		_brush_length_spin.value = _brush_length
+	if _brush_height_spin != null:
+		_brush_height_spin.value = _brush_height
 
 
 func _toggle_brush_mode() -> void:
@@ -2738,7 +3566,7 @@ func _toggle_brush_mode() -> void:
 		if not _debug_delta_showing:
 			_toggle_delta_overlay()
 		var target_name := "Height" if _brush_target == BRUSH_TARGET_HEIGHT else "Rock"
-		print("[MeshFill] Brush: ON [%s]  LMB=+  RMB=-  N=switch target  Wheel=str  Shift+Wheel=rad" % target_name)
+		print("[MeshFill] Brush: ON [%s]  LMB=+  RMB=-  N=switch target  Wheel=str  Shift+Wheel=size" % target_name)
 	else:
 		print("[MeshFill] Brush: OFF")
 
@@ -2760,13 +3588,19 @@ func _update_brush_label() -> void:
 		return
 	var target_name := "Height" if _brush_target == BRUSH_TARGET_HEIGHT else "Rock"
 	if _brush_active:
-		_brush_label.text = "Brush ON [%s] | Str: %.1f | Rad: %d\nLMB: + | RMB: - | N: switch" % [target_name, _brush_strength, _brush_radius]
+		_brush_label.text = "Brush ON [%s]\nStr %.1f | W %d L %d H %d\nLMB + / RMB - / N target" % [
+			target_name,
+			_brush_strength,
+			_brush_width,
+			_brush_length,
+			_brush_height
+		]
 	elif _probe_inspect_mode:
 		_brush_label.text = "Probe Inspect ON | Click terrain to sample TargetSV_B"
 	elif _tile_refresh_mode:
 		_brush_label.text = "Tile Refresh ON | Click to clear"
 	else:
-		_brush_label.text = "[B] Brush  [T] Tile  [I] Inspect  [J] TargetSV_B  [Ctrl+J] Recompute  [N] Target: %s" % target_name
+		_brush_label.text = "[B] Brush  [T] Tile  [I] Inspect\n[J] TargetSV_B  [Ctrl+J] Recompute\n[N] Target: %s" % target_name
 
 
 func _toggle_delta_overlay() -> void:
@@ -2798,37 +3632,240 @@ func _update_delta_overlay() -> void:
 
 func _get_delta_stats() -> Vector2:
 	var active_delta: Image = _override_delta if _brush_target == BRUSH_TARGET_HEIGHT else _rock_override_delta
-	var d_min := 0.0
-	var d_max := 0.0
-	if active_delta != null:
-		for y in range(TEX_RES):
-			for x in range(TEX_RES):
-				var v := active_delta.get_pixelv(Vector2i(x, y)).r
-				d_min = minf(d_min, v)
-				d_max = maxf(d_max, v)
-	return Vector2(d_min, d_max)
+	if active_delta == null or active_delta.is_empty():
+		return Vector2.ZERO
+	var stats := _get_delta_stats_gpu(active_delta)
+	if not bool(stats.get("valid", false)):
+		push_error("[MeshFill] Delta stats GPU compute failed")
+		return Vector2.ZERO
+	return Vector2(float(stats.get("min", 0.0)), float(stats.get("max", 0.0)))
+
+
+func _get_delta_stats_gpu(delta_img: Image) -> Dictionary:
+	if delta_img == null or delta_img.is_empty():
+		return {}
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return {}
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "DeltaStats"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return {}
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/height_channel_minmax.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return {}
+
+	var delta_tex := compute.upload_texture_2d(
+		delta_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"delta_stats_src_r32f"
+	)
+	var minmax_bytes := PackedByteArray()
+	minmax_bytes.resize(8)
+	minmax_bytes.encode_s32(0, -1)
+	var minmax_buf := compute.storage_buffer_from_bytes(minmax_bytes, ComputeShaderBaseScript.SCOPE_FRAME, "delta_stats_minmax_u32")
+	if not delta_tex.is_valid() or not minmax_buf.is_valid():
+		compute.dispose()
+		return {}
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return {}
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, delta_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_storage_uniform(0, minmax_buf),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return {}
+
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, delta_img.get_width())
+	push.encode_s32(4, delta_img.get_height())
+	push.encode_s32(8, 0)
+	push.encode_s32(12, 0)
+
+	var groups_x := ceili(float(delta_img.get_width()) / 32.0)
+	var groups_y := ceili(float(delta_img.get_height()) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return {}
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.buffer_get_data(minmax_buf, 0, 8)
+	compute.dispose()
+	if data.size() < 8:
+		return {}
+	return {
+		"valid": true,
+		"min": _ordered_uint_to_float(int(data.decode_u32(0))),
+		"max": _ordered_uint_to_float(int(data.decode_u32(4))),
+	}
+
+
+func _u32_word(value: int) -> int:
+	return value if value >= 0 else value + 4294967296
+
+
+func _u32_from_bytes(bytes: PackedByteArray, fallback: int = 0) -> int:
+	if bytes.size() < 4:
+		return fallback
+	return int(bytes.decode_u32(0))
+
+
+func _ordered_uint_to_float(key: int) -> float:
+	var bits := 0
+	if (key & 0x80000000) != 0:
+		bits = key ^ 0x80000000
+	else:
+		bits = (~key) & 0xFFFFFFFF
+	var bytes := PackedByteArray()
+	bytes.resize(4)
+	bytes.encode_u32(0, bits)
+	return bytes.decode_float(0)
 
 
 func _delta_to_heatmap(delta_img: Image) -> Image:
-	var res := delta_img.get_width()
-	var vis := Image.create(res, res, false, Image.FORMAT_RGBA8)
-	var max_abs := 0.001
-	for y in range(res):
-		for x in range(res):
-			max_abs = maxf(max_abs, absf(delta_img.get_pixelv(Vector2i(x, y)).r))
-	for y in range(res):
-		for x in range(res):
-			var v := delta_img.get_pixelv(Vector2i(x, y)).r
-			var t := clampf(absf(v) / max_abs, 0.0, 1.0)
-			var c: Color
-			if v > 0.001:
-				c = Color(1.0, 0.15, 0.0, 0.3 + 0.7 * t)
-			elif v < -0.001:
-				c = Color(0.0, 0.3, 1.0, 0.3 + 0.7 * t)
-			else:
-				c = Color(0.15, 0.15, 0.15, 0.2)
-			vis.set_pixelv(Vector2i(x, y), c)
+	var vis := _delta_to_heatmap_gpu(delta_img)
+	if vis == null or vis.is_empty():
+		push_error("[MeshFill] Delta heatmap GPU compute failed")
+		return Image.create(1, 1, false, Image.FORMAT_RGBA8)
 	return vis
+
+
+func _delta_to_heatmap_gpu(delta_img: Image) -> Image:
+	if delta_img == null or delta_img.is_empty():
+		return null
+	var width := delta_img.get_width()
+	var height := delta_img.get_height()
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "DeltaToHeatmap"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var absmax_shader := compute.load_compute_shader("res://shaders/delta_absmax.glsl")
+	var absmax_pipeline := compute.create_compute_pipeline(absmax_shader)
+	var heatmap_shader := compute.load_compute_shader("res://shaders/delta_to_heatmap.glsl")
+	var heatmap_pipeline := compute.create_compute_pipeline(heatmap_shader)
+	if not absmax_shader.is_valid() or not absmax_pipeline.is_valid() or not heatmap_shader.is_valid() or not heatmap_pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var delta_tex := compute.upload_texture_2d(
+		delta_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"delta_heatmap_src_r32f"
+	)
+	var absmax_bytes := PackedByteArray()
+	absmax_bytes.resize(4)
+	absmax_bytes.encode_float(0, 0.001)
+	var absmax_buf := compute.storage_buffer_from_bytes(absmax_bytes, ComputeShaderBaseScript.SCOPE_FRAME, "delta_heatmap_absmax_bits")
+	var out_tex := compute.create_rw_texture_2d(
+		width,
+		height,
+		RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"delta_heatmap_out_rgba8"
+	)
+	if not delta_tex.is_valid() or not absmax_buf.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return null
+	var absmax_set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, delta_tex),
+	], absmax_shader, 0)
+	var absmax_set1 := compute.create_uniform_set([
+		compute.make_storage_uniform(0, absmax_buf),
+	], absmax_shader, 1)
+	var heatmap_set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, delta_tex),
+		compute.make_storage_uniform(1, absmax_buf),
+	], heatmap_shader, 0)
+	var heatmap_set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], heatmap_shader, 1)
+	if not absmax_set0.is_valid() or not absmax_set1.is_valid() or not heatmap_set0.is_valid() or not heatmap_set1.is_valid():
+		compute.dispose()
+		return null
+
+	var reduce_push := PackedByteArray()
+	reduce_push.resize(16)
+	reduce_push.encode_s32(0, width)
+	reduce_push.encode_s32(4, height)
+	reduce_push.encode_float(8, 0.0)
+	reduce_push.encode_float(12, 0.0)
+
+	var groups_x := ceili(float(width) / 32.0)
+	var groups_y := ceili(float(height) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, absmax_pipeline)
+	rd.compute_list_bind_uniform_set(cl, absmax_set0, 0)
+	rd.compute_list_bind_uniform_set(cl, absmax_set1, 1)
+	rd.compute_list_set_push_constant(cl, reduce_push, reduce_push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var heatmap_push := PackedByteArray()
+	heatmap_push.resize(16)
+	heatmap_push.encode_s32(0, width)
+	heatmap_push.encode_s32(4, height)
+	heatmap_push.encode_float(8, 0.001)
+	heatmap_push.encode_float(12, 0.0)
+
+	cl = compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, heatmap_pipeline)
+	rd.compute_list_bind_uniform_set(cl, heatmap_set0, 0)
+	rd.compute_list_bind_uniform_set(cl, heatmap_set1, 1)
+	rd.compute_list_set_push_constant(cl, heatmap_push, heatmap_push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(width, height, false, Image.FORMAT_RGBA8, data)
+	compute.dispose()
+	return result
 
 
 func _begin_brush_stroke() -> void:
@@ -2867,12 +3904,19 @@ func _merge_dirty_rect(rect: Rect2i) -> void:
 	_brush_dirty_rect = Rect2i(min_x, min_y, max_x - min_x, max_y - min_y)
 
 
-func _mark_brush_dirty_circle(center: Vector2i, radius: int) -> void:
-	var diameter := radius * 2 + 1
-	_merge_dirty_rect(Rect2i(
-		Vector2i(center.x - radius, center.y - radius),
-		Vector2i(diameter, diameter)
-	))
+func _brush_footprint_rect(center: Vector2i, width: int = 0, length: int = 0) -> Rect2i:
+	var safe_width := clampi(_brush_width if width <= 0 else width, 1, TEX_RES)
+	var safe_length := clampi(_brush_length if length <= 0 else length, 1, TEX_RES)
+	var left := int((safe_width - 1) / 2)
+	var top := int((safe_length - 1) / 2)
+	return Rect2i(
+		Vector2i(center.x - left, center.y - top),
+		Vector2i(safe_width, safe_length)
+	)
+
+
+func _mark_brush_dirty_footprint(center: Vector2i) -> void:
+	_merge_dirty_rect(_brush_footprint_rect(center))
 	_brush_stroke_changed = true
 
 
@@ -2880,25 +3924,100 @@ func _dirty_rect_with_margin(dirty_rect: Rect2i) -> Rect2i:
 	if dirty_rect.size.x <= 0 or dirty_rect.size.y <= 0:
 		return Rect2i(0, 0, TEX_RES, TEX_RES)
 	var pixel_size := capture_size / float(TEX_RES)
-	var margin := ceili(target_height_extension / pixel_size) + _brush_radius + 2
+	var footprint_margin := ceili(float(maxi(_brush_width, _brush_length)) * 0.5)
+	var margin := ceili(target_height_extension / pixel_size) + footprint_margin + 2
 	return dirty_rect.grow(margin).intersection(Rect2i(0, 0, TEX_RES, TEX_RES))
+
+
+func _get_scene_voxel_slice_count() -> int:
+	if _scene_voxel_committer != null and _scene_voxel_committer.has_method("get_voxel_slice_count"):
+		var count := int(_scene_voxel_committer.call("get_voxel_slice_count"))
+		if count > 0:
+			return count
+	return TARGET_SV_SLICE_COUNT
+
+
+func _brush_slice_indices() -> Array[int]:
+	var total_slices := _get_scene_voxel_slice_count()
+	var count := clampi(_brush_height, 1, total_slices)
+	var indices: Array[int] = []
+	for slice_index in range(count):
+		indices.append(slice_index)
+	return indices
+
+
+func _base_rect_to_scene_voxel_bounds(base_rect: Rect2i, slice_indices: Array[int]) -> Dictionary:
+	var grid := Vector3i(TEX_RES, maxi(slice_indices.size(), 1), TEX_RES)
+	if _scene_voxel_committer != null:
+		grid = _scene_voxel_committer.grid_size
+	var clipped := base_rect.intersection(Rect2i(0, 0, TEX_RES, TEX_RES))
+	if clipped.size.x <= 0 or clipped.size.y <= 0:
+		return {}
+	var min_x := clampi(floori(float(clipped.position.x) / float(TEX_RES) * float(grid.x)), 0, maxi(grid.x - 1, 0))
+	var min_z := clampi(floori(float(clipped.position.y) / float(TEX_RES) * float(grid.z)), 0, maxi(grid.z - 1, 0))
+	var max_x := clampi(ceili(float(clipped.position.x + clipped.size.x) / float(TEX_RES) * float(grid.x)), min_x + 1, maxi(grid.x, 1))
+	var max_z := clampi(ceili(float(clipped.position.y + clipped.size.y) / float(TEX_RES) * float(grid.z)), min_z + 1, maxi(grid.z, 1))
+	var min_y := 0
+	var max_y := 1
+	if not slice_indices.is_empty():
+		min_y = grid.y
+		max_y = 0
+		for raw_slice in slice_indices:
+			var slice_index := clampi(int(raw_slice), 0, maxi(grid.y - 1, 0))
+			min_y = mini(min_y, slice_index)
+			max_y = maxi(max_y, slice_index + 1)
+		if max_y <= min_y:
+			min_y = 0
+			max_y = 1
+	return {
+		"voxel_min": Vector3i(min_x, min_y, min_z),
+		"voxel_max": Vector3i(max_x, max_y, max_z),
+	}
+
+
+func _mark_brush_scene_voxel_bounds_dirty(base_rect: Rect2i) -> void:
+	if _scene_voxel_committer == null:
+		return
+	var slice_indices := _brush_slice_indices()
+	var source_record := {
+		"id": "brush_ui_bounds",
+		"source_voxel_type": "BrushSceneVoxel",
+		"brush_size_voxels": Vector3i(_brush_width, _brush_height, _brush_length),
+		"slice_indices": slice_indices.duplicate(),
+	}
+	if _scene_voxel_committer.has_method("mark_scene_voxel_tile_bounds_dirty"):
+		var bounds := _base_rect_to_scene_voxel_bounds(base_rect, slice_indices)
+		if not bounds.is_empty():
+			_scene_voxel_committer.mark_scene_voxel_tile_bounds_dirty(
+				bounds.voxel_min,
+				bounds.voxel_max,
+				{"brush": true, "scene": true, "collision": true},
+				source_record
+			)
+	elif _scene_voxel_committer.has_method("invalidate_sv_rect"):
+		_scene_voxel_committer.invalidate_sv_rect(base_rect, slice_indices, true)
 
 
 func _commit_brush_edit(dirty_rect: Rect2i, update_generated_layers: bool = true, update_voxels: bool = true) -> void:
 	var commit_rect := _dirty_rect_with_margin(dirty_rect)
 	var had_vegetation := _vegetation_generated
-	print("[MeshFill] Brush commit: dirty=%s target=%s" % [
+	print("[MeshFill] Brush commit: dirty=%s target=%s size=%dx%dx%d" % [
 		str(commit_rect),
-		"Height" if _brush_target == BRUSH_TARGET_HEIGHT else "Rock"
+		"Height" if _brush_target == BRUSH_TARGET_HEIGHT else "Rock",
+		_brush_width,
+		_brush_length,
+		_brush_height
 	])
 
 	if update_generated_layers:
 		_regenerate()
 
+	_mark_brush_scene_voxel_bounds_dirty(commit_rect)
+
 	if update_generated_layers and had_vegetation:
 		_generate_vegetation()
 	elif update_voxels:
-		var applied := _rebuild_vegetation_buffers_from_scene_records(commit_rect)
+		var applied := _rebuild_scene_voxel_committer_from_scene_records(commit_rect)
 		if applied > 0:
 			print("[MeshFill] Brush commit: refreshed %d scene voxel_write_spec entries" % applied)
 
@@ -2908,8 +4027,8 @@ func _paint_at_screen(screen_pos: Vector2) -> void:
 	if pixel.x < 0:
 		return
 	var sign_val := 1.0 if _paint_positive else -1.0
-	_paint_brush_circle(pixel, _brush_radius, _brush_strength * sign_val)
-	_mark_brush_dirty_circle(pixel, _brush_radius)
+	_paint_brush_footprint(pixel, _brush_strength * sign_val)
+	_mark_brush_dirty_footprint(pixel)
 	if _debug_delta_showing:
 		_update_delta_overlay()
 
@@ -2934,33 +4053,172 @@ func _screen_to_terrain_pixel(screen_pos: Vector2) -> Vector2i:
 	return Vector2i(px_x, px_y)
 
 
-func _paint_brush_circle(center: Vector2i, radius: int, strength: float) -> void:
+func _paint_brush_footprint(center: Vector2i, strength: float) -> void:
 	var terrain_img: Image = null
 	if not _cached_textures.is_empty() and _cached_textures.has("scene_depth"):
 		terrain_img = _cached_textures["scene_depth"].get_image()
 	var delta_img: Image = _override_delta if _brush_target == BRUSH_TARGET_HEIGHT else _rock_override_delta
 	var mask_img: Image = _override_mask if _brush_target == BRUSH_TARGET_HEIGHT else _rock_override_mask
-	var r_sq := radius * radius
-	for dy in range(-radius, radius + 1):
-		for dx in range(-radius, radius + 1):
-			var dist_sq := dx * dx + dy * dy
-			if dist_sq > r_sq:
-				continue
-			var px := Vector2i(center.x + dx, center.y + dy)
-			if px.x < 0 or px.x >= TEX_RES or px.y < 0 or px.y >= TEX_RES:
-				continue
-			var falloff := 1.0 - sqrt(float(dist_sq)) / float(radius)
-			var current_val := delta_img.get_pixelv(px).r
-			delta_img.set_pixelv(px, Color(current_val + strength * falloff * 0.02, 0.0, 0.0, 0.0))
-			mask_img.set_pixelv(px, Color(1.0, 0.0, 0.0, 0.0))
-			if _brush_target == BRUSH_TARGET_HEIGHT:
-				if terrain_img != null and _dep_terrain != null:
-					_dep_terrain.set_pixelv(px, Color(max_height - terrain_img.get_pixelv(px).r, 0.0, 0.0, 0.0))
-				if _current_rock_mask_img != null and _dep_rock != null:
-					_dep_rock.set_pixelv(px, Color(_current_rock_mask_img.get_pixelv(px).r, 0.0, 0.0, 0.0))
+	var footprint := _brush_footprint_rect(center).intersection(Rect2i(0, 0, TEX_RES, TEX_RES))
+	if footprint.size.x <= 0 or footprint.size.y <= 0:
+		return
+	var half_x := maxf(float(_brush_width - 1) * 0.5, 1.0)
+	var half_z := maxf(float(_brush_length - 1) * 0.5, 1.0)
+	var paint_result := _paint_brush_footprint_gpu(center, footprint, strength, terrain_img, delta_img, mask_img, _brush_target)
+	if paint_result.is_empty():
+		push_error("[MeshFill] Brush footprint GPU compute failed")
+		return
+	if _brush_target == BRUSH_TARGET_HEIGHT:
+		_override_delta = paint_result.get("delta", _override_delta)
+		_override_mask = paint_result.get("mask", _override_mask)
+	else:
+		_rock_override_delta = paint_result.get("delta", _rock_override_delta)
+		_rock_override_mask = paint_result.get("mask", _rock_override_mask)
+	_dep_terrain = paint_result.get("dep_terrain", _dep_terrain)
+	_dep_rock = paint_result.get("dep_rock", _dep_rock)
 
 
-# 鈹€鈹€鈹€ Tile Refresh Tool 鈹€鈹€鈹€
+func _paint_brush_footprint_gpu(
+	center: Vector2i,
+	footprint: Rect2i,
+	strength: float,
+	terrain_img: Image,
+	delta_img: Image,
+	mask_img: Image,
+	target_mode: int
+) -> Dictionary:
+	if delta_img == null or delta_img.is_empty() or mask_img == null or mask_img.is_empty() \
+			or _dep_terrain == null or _dep_terrain.is_empty() or _dep_rock == null or _dep_rock.is_empty():
+		return {}
+	var scene_depth_img := terrain_img
+	var has_scene_depth := scene_depth_img != null and not scene_depth_img.is_empty()
+	if not has_scene_depth:
+		scene_depth_img = Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RGBAF)
+		scene_depth_img.fill(Color(max_height, 0.0, 0.0, 1.0))
+	var current_rock_img := _current_rock_mask_img
+	var has_current_rock := current_rock_img != null and not current_rock_img.is_empty()
+	if not has_current_rock:
+		current_rock_img = Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
+		current_rock_img.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return {}
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "PaintBrushFootprint"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return {}
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/paint_brush_footprint.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return {}
+
+	var input_specs := [
+		{"image": delta_img, "format": RenderingDevice.DATA_FORMAT_R32_SFLOAT, "image_format": Image.FORMAT_RF, "label": "delta"},
+		{"image": mask_img, "format": RenderingDevice.DATA_FORMAT_R32_SFLOAT, "image_format": Image.FORMAT_RF, "label": "mask"},
+		{"image": _dep_terrain, "format": RenderingDevice.DATA_FORMAT_R32_SFLOAT, "image_format": Image.FORMAT_RF, "label": "dep_terrain"},
+		{"image": _dep_rock, "format": RenderingDevice.DATA_FORMAT_R32_SFLOAT, "image_format": Image.FORMAT_RF, "label": "dep_rock"},
+		{"image": scene_depth_img, "format": RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT, "image_format": Image.FORMAT_RGBAF, "label": "scene_depth"},
+		{"image": current_rock_img, "format": RenderingDevice.DATA_FORMAT_R32_SFLOAT, "image_format": Image.FORMAT_RF, "label": "current_rock"},
+	]
+	var input_textures: Array[RID] = []
+	for i in range(input_specs.size()):
+		var spec: Dictionary = input_specs[i]
+		var tex := compute.upload_texture_2d(
+			spec.image,
+			int(spec.format),
+			int(spec.image_format),
+			RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+			ComputeShaderBaseScript.SCOPE_FRAME,
+			"paint_brush_%s" % str(spec.label)
+		)
+		if not tex.is_valid():
+			compute.dispose()
+			return {}
+		input_textures.append(tex)
+
+	var out_textures: Array[RID] = []
+	for i in range(4):
+		var tex := compute.create_rw_texture_2d(
+			TEX_RES,
+			TEX_RES,
+			RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+			RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+			ComputeShaderBaseScript.SCOPE_FRAME,
+			"paint_brush_out_%d_r32f" % i
+		)
+		if not tex.is_valid():
+			compute.dispose()
+			return {}
+		out_textures.append(tex)
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return {}
+	var set0_uniforms: Array = []
+	for i in range(input_textures.size()):
+		set0_uniforms.append(compute.make_sampler_uniform(i, sampler, input_textures[i]))
+	var set1_uniforms: Array = []
+	for i in range(out_textures.size()):
+		set1_uniforms.append(compute.make_image_uniform(i, out_textures[i]))
+	var set0 := compute.create_uniform_set(set0_uniforms, shader, 0)
+	var set1 := compute.create_uniform_set(set1_uniforms, shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return {}
+
+	var push := PackedByteArray()
+	push.resize(64)
+	push.encode_s32(0, TEX_RES)
+	push.encode_s32(4, TEX_RES)
+	push.encode_s32(8, center.x)
+	push.encode_s32(12, center.y)
+	push.encode_s32(16, footprint.position.x)
+	push.encode_s32(20, footprint.position.y)
+	push.encode_s32(24, footprint.size.x)
+	push.encode_s32(28, footprint.size.y)
+	push.encode_s32(32, _brush_width)
+	push.encode_s32(36, _brush_length)
+	push.encode_s32(40, target_mode)
+	push.encode_s32(44, 1 if has_scene_depth else 0)
+	push.encode_s32(48, 1 if has_current_rock else 0)
+	push.encode_float(52, strength)
+	push.encode_float(56, max_height)
+	push.encode_float(60, 0.0)
+
+	var groups := ceili(float(TEX_RES) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return {}
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups, groups, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var out_images: Array[Image] = []
+	for tex in out_textures:
+		var data := rd.texture_get_data(tex, 0)
+		out_images.append(Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, data))
+	compute.dispose()
+	return {
+		"delta": out_images[0],
+		"mask": out_images[1],
+		"dep_terrain": out_images[2],
+		"dep_rock": out_images[3],
+	}
+
+
+# --- Tile Refresh Tool ---
 
 func _toggle_tile_refresh_mode() -> void:
 	if _painting:
@@ -2990,19 +4248,17 @@ func _tile_refresh_at_screen(screen_pos: Vector2) -> void:
 
 	_push_undo_snapshot()
 
-	var cleared := 0
-	for y in range(tile_rect.position.y, tile_rect.position.y + tile_rect.size.y):
-		for x in range(tile_rect.position.x, tile_rect.position.x + tile_rect.size.x):
-			var px := Vector2i(x, y)
-			var any := _override_mask.get_pixelv(px).r > 0.01 or _rock_override_mask.get_pixelv(px).r > 0.01
-			if any:
-				_override_mask.set_pixelv(px, Color(0.0, 0.0, 0.0, 0.0))
-				_override_delta.set_pixelv(px, Color(0.0, 0.0, 0.0, 0.0))
-				_dep_terrain.set_pixelv(px, Color(0.0, 0.0, 0.0, 0.0))
-				_dep_rock.set_pixelv(px, Color(0.0, 0.0, 0.0, 0.0))
-				_rock_override_mask.set_pixelv(px, Color(0.0, 0.0, 0.0, 0.0))
-				_rock_override_delta.set_pixelv(px, Color(0.0, 0.0, 0.0, 0.0))
-				cleared += 1
+	var clear_result := _clear_override_tile_gpu(tile_rect)
+	if clear_result.is_empty():
+		push_error("[MeshFill] Tile override clear GPU compute failed")
+		return
+	_override_mask = clear_result.get("override_mask", _override_mask)
+	_override_delta = clear_result.get("override_delta", _override_delta)
+	_dep_terrain = clear_result.get("dep_terrain", _dep_terrain)
+	_dep_rock = clear_result.get("dep_rock", _dep_rock)
+	_rock_override_mask = clear_result.get("rock_override_mask", _rock_override_mask)
+	_rock_override_delta = clear_result.get("rock_override_delta", _rock_override_delta)
+	var cleared := int(clear_result.get("cleared", 0))
 
 	print("[MeshFill] Tile [%d,%d]: cleared %d override pixels" % [
 		tile_origin.x / TILE_SIZE, tile_origin.y / TILE_SIZE, cleared])
@@ -3011,7 +4267,128 @@ func _tile_refresh_at_screen(screen_pos: Vector2) -> void:
 		_update_delta_overlay()
 
 
-# 鈹€鈹€鈹€ Undo System (3 steps) 鈹€鈹€鈹€
+func _clear_override_tile_gpu(tile_rect: Rect2i) -> Dictionary:
+	if tile_rect.size.x <= 0 or tile_rect.size.y <= 0:
+		return {}
+	if _override_mask == null or _override_delta == null or _dep_terrain == null or _dep_rock == null \
+			or _rock_override_mask == null or _rock_override_delta == null:
+		return {}
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return {}
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "ClearOverrideTile"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return {}
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/clear_override_tile.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return {}
+
+	var src_images := [_override_mask, _override_delta, _dep_terrain, _dep_rock, _rock_override_mask, _rock_override_delta]
+	var src_textures: Array[RID] = []
+	for i in range(src_images.size()):
+		var img: Image = src_images[i]
+		if img == null or img.is_empty():
+			compute.dispose()
+			return {}
+		var tex := compute.upload_texture_2d(
+			img,
+			RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+			Image.FORMAT_RF,
+			RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+			ComputeShaderBaseScript.SCOPE_FRAME,
+			"clear_override_tile_src_%d_r32f" % i
+		)
+		if not tex.is_valid():
+			compute.dispose()
+			return {}
+		src_textures.append(tex)
+
+	var out_textures: Array[RID] = []
+	for i in range(6):
+		var tex := compute.create_rw_texture_2d(
+			TEX_RES,
+			TEX_RES,
+			RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+			RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+			ComputeShaderBaseScript.SCOPE_FRAME,
+			"clear_override_tile_out_%d_r32f" % i
+		)
+		if not tex.is_valid():
+			compute.dispose()
+			return {}
+		out_textures.append(tex)
+	var counter_buf := compute.storage_buffer_zero(4, ComputeShaderBaseScript.SCOPE_FRAME, "clear_override_tile_counter_u32")
+	if not counter_buf.is_valid():
+		compute.dispose()
+		return {}
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return {}
+	var set0_uniforms: Array = []
+	for i in range(src_textures.size()):
+		set0_uniforms.append(compute.make_sampler_uniform(i, sampler, src_textures[i]))
+	var set1_uniforms: Array = []
+	for i in range(out_textures.size()):
+		set1_uniforms.append(compute.make_image_uniform(i, out_textures[i]))
+	set1_uniforms.append(compute.make_storage_uniform(6, counter_buf))
+	var set0 := compute.create_uniform_set(set0_uniforms, shader, 0)
+	var set1 := compute.create_uniform_set(set1_uniforms, shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return {}
+
+	var push := PackedByteArray()
+	push.resize(32)
+	push.encode_s32(0, TEX_RES)
+	push.encode_s32(4, TEX_RES)
+	push.encode_s32(8, tile_rect.position.x)
+	push.encode_s32(12, tile_rect.position.y)
+	push.encode_s32(16, tile_rect.size.x)
+	push.encode_s32(20, tile_rect.size.y)
+	push.encode_float(24, 0.01)
+	push.encode_float(28, 0.0)
+
+	var groups := ceili(float(TEX_RES) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return {}
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups, groups, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var out_images: Array[Image] = []
+	for tex in out_textures:
+		var data := rd.texture_get_data(tex, 0)
+		out_images.append(Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, data))
+	var counter_data := rd.buffer_get_data(counter_buf, 0, 4)
+	compute.dispose()
+	var cleared := _u32_from_bytes(counter_data, 0)
+	return {
+		"override_mask": out_images[0],
+		"override_delta": out_images[1],
+		"dep_terrain": out_images[2],
+		"dep_rock": out_images[3],
+		"rock_override_mask": out_images[4],
+		"rock_override_delta": out_images[5],
+		"cleared": cleared,
+	}
+
+
+# --- Undo System (3 steps) ---
 
 func _push_undo_snapshot() -> void:
 	if _override_delta == null or _override_mask == null:
@@ -3046,47 +4423,258 @@ func _undo_override() -> void:
 	_commit_brush_edit(Rect2i(0, 0, TEX_RES, TEX_RES), true, true)
 
 
-# 鈹€鈹€鈹€ Override Invalidation & Composition 鈹€鈹€鈹€
+# --- Override Invalidation & Composition ---
 
 func _invalidate_overrides() -> void:
 	if _cached_textures.is_empty() or _override_mask == null:
 		return
 	var terrain_tex: ImageTexture = _cached_textures["scene_depth"]
 	var terrain_img: Image = terrain_tex.get_image()
-	var invalidated := 0
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			var px := Vector2i(x, y)
-			if _override_mask.get_pixelv(px).r < 0.5:
-				continue
-			var cur_h: float = max_height - terrain_img.get_pixelv(px).r
-			var saved_h := _dep_terrain.get_pixelv(px).r
-			var cur_rock := _current_rock_mask_img.get_pixelv(px).r
-			var saved_rock := _dep_rock.get_pixelv(px).r
-
-			var terrain_changed := absf(cur_h - saved_h) > 0.1
-			var rock_overlap := cur_rock > 0.5 and saved_rock < 0.5
-
-			if terrain_changed or rock_overlap:
-				_override_mask.set_pixelv(px, Color(0.0, 0.0, 0.0, 0.0))
-				_override_delta.set_pixelv(px, Color(0.0, 0.0, 0.0, 0.0))
-				_dep_terrain.set_pixelv(px, Color(0.0, 0.0, 0.0, 0.0))
-				_dep_rock.set_pixelv(px, Color(0.0, 0.0, 0.0, 0.0))
-				invalidated += 1
+	var result := _invalidate_overrides_gpu(terrain_img)
+	if result.is_empty():
+		push_error("[MeshFill] Override invalidation GPU compute failed")
+		return
+	_override_mask = result.get("override_mask", _override_mask)
+	_override_delta = result.get("override_delta", _override_delta)
+	_dep_terrain = result.get("dep_terrain", _dep_terrain)
+	_dep_rock = result.get("dep_rock", _dep_rock)
+	var invalidated := int(result.get("invalidated", 0))
 	if invalidated > 0:
 		print("[MeshFill] Override: invalidated %d pixels (terrain/rock change)" % invalidated)
 		if _debug_delta_showing:
 			_update_delta_overlay()
 
 
+func _invalidate_overrides_gpu(terrain_img: Image) -> Dictionary:
+	if terrain_img == null or terrain_img.is_empty() \
+			or _override_mask == null or _override_mask.is_empty() \
+			or _override_delta == null or _override_delta.is_empty() \
+			or _dep_terrain == null or _dep_terrain.is_empty() \
+			or _dep_rock == null or _dep_rock.is_empty() \
+			or _current_rock_mask_img == null or _current_rock_mask_img.is_empty():
+		return {}
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return {}
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "OverrideInvalidation"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return {}
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/override_invalidation.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return {}
+
+	var terrain_tex := compute.upload_texture_2d(
+		terrain_img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"override_invalidation_scene_depth_rgba32f"
+	)
+	var override_mask_tex := compute.upload_texture_2d(
+		_override_mask,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"override_invalidation_mask_r32f"
+	)
+	var override_delta_tex := compute.upload_texture_2d(
+		_override_delta,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"override_invalidation_delta_r32f"
+	)
+	var dep_terrain_tex := compute.upload_texture_2d(
+		_dep_terrain,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"override_invalidation_dep_terrain_r32f"
+	)
+	var dep_rock_tex := compute.upload_texture_2d(
+		_dep_rock,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"override_invalidation_dep_rock_r32f"
+	)
+	var current_rock_tex := compute.upload_texture_2d(
+		_current_rock_mask_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"override_invalidation_current_rock_r32f"
+	)
+	var out_mask_tex := compute.create_rw_texture_2d(TEX_RES, TEX_RES, RenderingDevice.DATA_FORMAT_R32_SFLOAT, RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT, ComputeShaderBaseScript.SCOPE_FRAME, "override_invalidation_out_mask_r32f")
+	var out_delta_tex := compute.create_rw_texture_2d(TEX_RES, TEX_RES, RenderingDevice.DATA_FORMAT_R32_SFLOAT, RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT, ComputeShaderBaseScript.SCOPE_FRAME, "override_invalidation_out_delta_r32f")
+	var out_dep_terrain_tex := compute.create_rw_texture_2d(TEX_RES, TEX_RES, RenderingDevice.DATA_FORMAT_R32_SFLOAT, RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT, ComputeShaderBaseScript.SCOPE_FRAME, "override_invalidation_out_dep_terrain_r32f")
+	var out_dep_rock_tex := compute.create_rw_texture_2d(TEX_RES, TEX_RES, RenderingDevice.DATA_FORMAT_R32_SFLOAT, RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT, ComputeShaderBaseScript.SCOPE_FRAME, "override_invalidation_out_dep_rock_r32f")
+	var counter_buf := compute.storage_buffer_zero(4, ComputeShaderBaseScript.SCOPE_FRAME, "override_invalidation_counter_u32")
+	if not terrain_tex.is_valid() or not override_mask_tex.is_valid() or not override_delta_tex.is_valid() \
+			or not dep_terrain_tex.is_valid() or not dep_rock_tex.is_valid() or not current_rock_tex.is_valid() \
+			or not out_mask_tex.is_valid() or not out_delta_tex.is_valid() or not out_dep_terrain_tex.is_valid() \
+			or not out_dep_rock_tex.is_valid() or not counter_buf.is_valid():
+		compute.dispose()
+		return {}
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return {}
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, terrain_tex),
+		compute.make_sampler_uniform(1, sampler, override_mask_tex),
+		compute.make_sampler_uniform(2, sampler, override_delta_tex),
+		compute.make_sampler_uniform(3, sampler, dep_terrain_tex),
+		compute.make_sampler_uniform(4, sampler, dep_rock_tex),
+		compute.make_sampler_uniform(5, sampler, current_rock_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_mask_tex),
+		compute.make_image_uniform(1, out_delta_tex),
+		compute.make_image_uniform(2, out_dep_terrain_tex),
+		compute.make_image_uniform(3, out_dep_rock_tex),
+		compute.make_storage_uniform(4, counter_buf),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return {}
+
+	var push := PackedByteArray()
+	push.resize(32)
+	push.encode_s32(0, TEX_RES)
+	push.encode_s32(4, TEX_RES)
+	push.encode_float(8, max_height)
+	push.encode_float(12, 0.5)
+	push.encode_float(16, 0.1)
+	push.encode_float(20, 0.5)
+	push.encode_float(24, 0.0)
+	push.encode_float(28, 0.0)
+
+	var groups := ceili(float(TEX_RES) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return {}
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups, groups, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var mask_data := rd.texture_get_data(out_mask_tex, 0)
+	var delta_data := rd.texture_get_data(out_delta_tex, 0)
+	var dep_terrain_data := rd.texture_get_data(out_dep_terrain_tex, 0)
+	var dep_rock_data := rd.texture_get_data(out_dep_rock_tex, 0)
+	var counter_data := rd.buffer_get_data(counter_buf, 0, 4)
+	var invalidated := _u32_from_bytes(counter_data, 0)
+	compute.dispose()
+	return {
+		"override_mask": Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, mask_data),
+		"override_delta": Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, delta_data),
+		"dep_terrain": Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, dep_terrain_data),
+		"dep_rock": Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, dep_rock_data),
+		"invalidated": invalidated,
+	}
+
+
 func _has_mask_pixels(mask_img: Image, threshold: float = 0.01) -> bool:
-	if mask_img == null:
+	if mask_img == null or mask_img.is_empty():
 		return false
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			if mask_img.get_pixelv(Vector2i(x, y)).r > threshold:
-				return true
-	return false
+	var result := _has_mask_pixels_gpu(mask_img, threshold)
+	if result < 0:
+		push_error("[MeshFill] Mask occupancy GPU compute failed")
+		return false
+	return result > 0
+
+
+func _has_mask_pixels_gpu(mask_img: Image, threshold: float = 0.01) -> int:
+	if mask_img == null or mask_img.is_empty():
+		return 0
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return -1
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "MaskHasPixels"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return -1
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/mask_has_pixels.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return -1
+
+	var mask_tex := compute.upload_texture_2d(
+		mask_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"mask_has_pixels_src_r32f"
+	)
+	var counter_buf := compute.storage_buffer_zero(4, ComputeShaderBaseScript.SCOPE_FRAME, "mask_has_pixels_counter_u32")
+	if not mask_tex.is_valid() or not counter_buf.is_valid():
+		compute.dispose()
+		return -1
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return -1
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, mask_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_storage_uniform(0, counter_buf),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return -1
+
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, mask_img.get_width())
+	push.encode_s32(4, mask_img.get_height())
+	push.encode_float(8, threshold)
+	push.encode_float(12, 0.0)
+
+	var groups_x := ceili(float(mask_img.get_width()) / 32.0)
+	var groups_y := ceili(float(mask_img.get_height()) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return -1
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var counter_data := rd.buffer_get_data(counter_buf, 0, 4)
+	var hit_count := _u32_from_bytes(counter_data, -1)
+	compute.dispose()
+	return hit_count
 
 
 func _composite_target_height() -> ImageTexture:
@@ -3094,20 +4682,116 @@ func _composite_target_height() -> ImageTexture:
 		return _cached_textures["target_height"] as ImageTexture
 
 	var src_tex: ImageTexture = _cached_textures["target_height"]
-	var base_img: Image = src_tex.get_image().duplicate()
-	var modified := 0
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			var px := Vector2i(x, y)
-			var mask_val := _override_mask.get_pixelv(px).r
-			if mask_val < 0.01:
-				continue
-			var base_px: Color = base_img.get_pixelv(px)
-			base_px.r += _override_delta.get_pixelv(px).r * mask_val
-			base_img.set_pixelv(px, base_px)
-			modified += 1
-	print("[MeshFill] Override: composited %d pixels onto target_height" % modified)
-	return ImageTexture.create_from_image(base_img)
+	var base_img: Image = src_tex.get_image()
+	var composited_img := _composite_target_height_gpu(base_img, _override_mask, _override_delta)
+	if composited_img == null or composited_img.is_empty():
+		push_error("[MeshFill] Target height override GPU compute failed")
+		return src_tex
+	print("[MeshFill] Override: composited target_height on GPU")
+	return ImageTexture.create_from_image(composited_img)
+
+
+func _composite_target_height_gpu(base_img: Image, mask_img: Image, delta_img: Image) -> Image:
+	if base_img == null or base_img.is_empty() or mask_img == null or mask_img.is_empty() or delta_img == null or delta_img.is_empty():
+		return null
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "TargetHeightOverrideComposite"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/target_height_override_composite.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var base_tex := compute.upload_texture_2d(
+		base_img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"target_height_base_rgba32f"
+	)
+	var mask_tex := compute.upload_texture_2d(
+		mask_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"target_height_override_mask_r32f"
+	)
+	var delta_tex := compute.upload_texture_2d(
+		delta_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"target_height_override_delta_r32f"
+	)
+	var out_tex := compute.create_rw_texture_2d(
+		base_img.get_width(),
+		base_img.get_height(),
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"target_height_override_out_rgba32f"
+	)
+	if not base_tex.is_valid() or not mask_tex.is_valid() or not delta_tex.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return null
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, base_tex),
+		compute.make_sampler_uniform(1, sampler, mask_tex),
+		compute.make_sampler_uniform(2, sampler, delta_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return null
+
+	var push := PackedByteArray()
+	push.resize(32)
+	push.encode_s32(0, base_img.get_width())
+	push.encode_s32(4, base_img.get_height())
+	push.encode_s32(8, mask_img.get_width())
+	push.encode_s32(12, mask_img.get_height())
+	push.encode_float(16, 0.01)
+	push.encode_float(20, 0.0)
+	push.encode_float(24, 0.0)
+	push.encode_float(28, 0.0)
+
+	var groups_x := ceili(float(base_img.get_width()) / 32.0)
+	var groups_y := ceili(float(base_img.get_height()) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(base_img.get_width(), base_img.get_height(), false, Image.FORMAT_RGBAF, data)
+	compute.dispose()
+	return result
 
 
 func _composite_rock_mask() -> Image:
@@ -3119,117 +4803,124 @@ func _composite_rock_mask() -> Image:
 		base_img.fill(Color(0.0, 0.0, 0.0, 0.0))
 	if not _has_mask_pixels(_rock_override_mask):
 		return base_img
-	var modified := 0
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			var px := Vector2i(x, y)
-			var mask_val := _rock_override_mask.get_pixelv(px).r
-			if mask_val < 0.01:
-				continue
-			var base_px: Color = base_img.get_pixelv(px)
-			base_px.r = clampf(base_px.r + _rock_override_delta.get_pixelv(px).r * mask_val, 0.0, 1.0)
-			base_img.set_pixelv(px, base_px)
-			modified += 1
-	print("[MeshFill] Override: composited %d pixels onto rock_mask" % modified)
-	return base_img
+	var composited_img := _composite_rock_mask_gpu(base_img, _rock_override_mask, _rock_override_delta)
+	if composited_img == null or composited_img.is_empty():
+		push_error("[MeshFill] Rock mask override GPU compute failed")
+		return base_img
+	print("[MeshFill] Override: composited rock_mask on GPU")
+	return composited_img
 
 
-# 鈹€鈹€鈹€ Texture loading with procedural fallback 鈹€鈹€鈹€
+func _composite_rock_mask_gpu(base_img: Image, mask_img: Image, delta_img: Image) -> Image:
+	if base_img == null or base_img.is_empty() or mask_img == null or mask_img.is_empty() or delta_img == null or delta_img.is_empty():
+		return null
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "RockMaskOverrideComposite"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/rock_mask_override_composite.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var base_tex := compute.upload_texture_2d(
+		base_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"rock_mask_base_r32f"
+	)
+	var mask_tex := compute.upload_texture_2d(
+		mask_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"rock_mask_override_mask_r32f"
+	)
+	var delta_tex := compute.upload_texture_2d(
+		delta_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"rock_mask_override_delta_r32f"
+	)
+	var out_tex := compute.create_rw_texture_2d(
+		base_img.get_width(),
+		base_img.get_height(),
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"rock_mask_override_out_r32f"
+	)
+	if not base_tex.is_valid() or not mask_tex.is_valid() or not delta_tex.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return null
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, base_tex),
+		compute.make_sampler_uniform(1, sampler, mask_tex),
+		compute.make_sampler_uniform(2, sampler, delta_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return null
+
+	var push := PackedByteArray()
+	push.resize(32)
+	push.encode_s32(0, base_img.get_width())
+	push.encode_s32(4, base_img.get_height())
+	push.encode_s32(8, mask_img.get_width())
+	push.encode_s32(12, mask_img.get_height())
+	push.encode_float(16, 0.01)
+	push.encode_float(20, 0.0)
+	push.encode_float(24, 0.0)
+	push.encode_float(28, 0.0)
+
+	var groups_x := ceili(float(base_img.get_width()) / 32.0)
+	var groups_y := ceili(float(base_img.get_height()) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(base_img.get_width(), base_img.get_height(), false, Image.FORMAT_RF, data)
+	compute.dispose()
+	return result
+
+
+# --- Texture loading with procedural fallback ---
 
 func _load_terrain_textures() -> Dictionary:
-	var tex_names := [
-		"scene_depth", "scene_normal", "object_depth",
-		"object_normal", "height_normal", "target_height"
-	]
-	var textures: Dictionary = {}
-
-	print("[MeshFill] Loading terrain textures...")
-	var all_loaded := true
-	for tname in tex_names:
-		var tex := _load_raw_texture("res://textures/%s.raw" % tname, TEX_RES, TEX_RES)
-		if tex == null:
-			all_loaded = false
-			break
-		textures[tname] = tex
-		print("  Loaded: %s (%dx%d)" % [tname, tex.get_width(), tex.get_height()])
-
-	if all_loaded:
-		return textures
-
-	print("[MeshFill] .raw textures not found, generating procedural terrain data...")
-	return _generate_procedural_textures()
+	return TerrainInitializerScript.load_terrain_textures(TEX_RES, max_height)
 
 
-func _load_raw_texture(path: String, width: int, height: int) -> ImageTexture:
-	var f := FileAccess.open(path, FileAccess.READ)
-	if f == null:
-		return null
-	var expected_size := width * height * 4 * 4  # RGBAF = 4 channels 脳 4 bytes
-	var data := f.get_buffer(expected_size)
-	f.close()
-	if data.size() != expected_size:
-		push_error("Size mismatch for %s: got %d, expected %d" % [path, data.size(), expected_size])
-		return null
-	var img := Image.create_from_data(width, height, false, Image.FORMAT_RGBAF, data)
-	return ImageTexture.create_from_image(img)
-
-
-func _generate_procedural_textures() -> Dictionary:
-	var res := TEX_RES
-
-	var height_data: PackedFloat32Array = []
-	height_data.resize(res * res)
-
-	for y in range(res):
-		for x in range(res):
-			var u := float(x) / float(res - 1)
-			var v := float(y) / float(res - 1)
-			var h := 10.0
-			h += sin(u * PI * 2.5 + 0.3) * cos(v * PI * 1.8) * 5.0
-			h += cos(u * PI * 5.2 + 1.1) * sin(v * PI * 4.3 + 0.7) * 2.5
-			h += sin(u * PI * 11.0 + 2.5) * cos(v * PI * 8.7 + 1.3) * 1.0
-			h += sin((u + v) * PI * 3.0) * 3.0
-			h = clampf(h, 1.0, max_height * 0.6)
-			height_data[y * res + x] = h
-
-	var target_height_img := Image.create(res, res, false, Image.FORMAT_RGBAF)
-	for y in range(res):
-		for x in range(res):
-			var h := height_data[y * res + x]
-			target_height_img.set_pixelv(Vector2i(x, y), Color(h, 0.0, 0.0, 1.0))
-
-	var scene_depth_img := Image.create(res, res, false, Image.FORMAT_RGBAF)
-	for y in range(res):
-		for x in range(res):
-			var h := height_data[y * res + x]
-			scene_depth_img.set_pixelv(Vector2i(x, y), Color(max_height - h, 0.0, 0.0, 1.0))
-
-	var scene_normal_img := Image.create(res, res, false, Image.FORMAT_RGBAF)
-	scene_normal_img.fill(Color(0.0, 0.0, 1.0, 1.0))
-
-	var object_depth_img := Image.create(res, res, false, Image.FORMAT_RGBAF)
-	object_depth_img.fill(Color(max_height, 0.0, 0.0, 1.0))
-
-	var object_normal_img := Image.create(res, res, false, Image.FORMAT_RGBAF)
-	object_normal_img.fill(Color(0.0, 0.0, 0.0, 1.0))
-
-	var height_normal_img := Image.create(res, res, false, Image.FORMAT_RGBAF)
-	height_normal_img.fill(Color(0.0, 1.0, 0.0, 1.0))
-
-	print("  Generated: procedural terrain (%dx%d, height ~1-%.0fm)" % [
-		res, res, max_height * 0.6])
-
-	return {
-		"scene_depth": ImageTexture.create_from_image(scene_depth_img),
-		"scene_normal": ImageTexture.create_from_image(scene_normal_img),
-		"object_depth": ImageTexture.create_from_image(object_depth_img),
-		"object_normal": ImageTexture.create_from_image(object_normal_img),
-		"height_normal": ImageTexture.create_from_image(height_normal_img),
-		"target_height": ImageTexture.create_from_image(target_height_img),
-	}
-
-
-# 鈹€鈹€鈹€ Rock mask capture (tag mechanism) 鈹€鈹€鈹€
+# --- Rock mask capture (tag mechanism) ---
 
 func _load_previous_rock_mask() -> Texture2D:
 	var path := rock_mask_path
@@ -3253,22 +4944,16 @@ func _capture_and_save_rock_mask() -> void:
 		print("[MeshFill] No current height data for mask")
 		return
 
-	var mask := Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RGBA8)
-	var nonzero := 0
-
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			var px := _raw_current_height_image.get_pixelv(Vector2i(x, y))
-			var rock_placed := px.g
-			if rock_placed > 0.5:
-				mask.set_pixelv(Vector2i(x, y), Color(1.0, 1.0, 1.0, 1.0))
-				nonzero += 1
-				if _current_rock_mask_img != null:
-					_current_rock_mask_img.set_pixelv(Vector2i(x, y), Color(1.0, 0.0, 0.0, 0.0))
-			else:
-				mask.set_pixelv(Vector2i(x, y), Color(0.0, 0.0, 0.0, 0.0))
-				if _current_rock_mask_img != null:
-					_current_rock_mask_img.set_pixelv(Vector2i(x, y), Color(0.0, 0.0, 0.0, 0.0))
+	var result := _capture_rock_mask_gpu(_raw_current_height_image)
+	if result.is_empty():
+		push_error("[MeshFill] Rock mask capture GPU compute failed")
+		return
+	var mask: Image = result.get("png_mask", null)
+	if mask == null or mask.is_empty():
+		push_error("[MeshFill] Rock mask capture returned no PNG mask")
+		return
+	_current_rock_mask_img = result.get("rock_mask", _current_rock_mask_img)
+	var nonzero := int(result.get("nonzero", 0))
 
 	var out_path := OS.get_user_data_dir() + "/rock_placement_mask.png"
 	mask.save_png(out_path)
@@ -3276,7 +4961,104 @@ func _capture_and_save_rock_mask() -> void:
 		out_path, nonzero, TEX_RES * TEX_RES])
 
 
-# 鈹€鈹€鈹€ Cliff data loading with procedural fallback 鈹€鈹€鈹€
+func _capture_rock_mask_gpu(current_height_img: Image) -> Dictionary:
+	if current_height_img == null or current_height_img.is_empty():
+		return {}
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return {}
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "CaptureRockMask"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return {}
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/capture_rock_mask.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return {}
+
+	var current_tex := compute.upload_texture_2d(
+		current_height_img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"capture_rock_mask_current_rgba32f"
+	)
+	var png_mask_tex := compute.create_rw_texture_2d(
+		TEX_RES,
+		TEX_RES,
+		RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"capture_rock_mask_png_rgba8"
+	)
+	var rock_mask_tex := compute.create_rw_texture_2d(
+		TEX_RES,
+		TEX_RES,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"capture_rock_mask_r32f"
+	)
+	var counter_buf := compute.storage_buffer_zero(4, ComputeShaderBaseScript.SCOPE_FRAME, "capture_rock_mask_counter_u32")
+	if not current_tex.is_valid() or not png_mask_tex.is_valid() or not rock_mask_tex.is_valid() or not counter_buf.is_valid():
+		compute.dispose()
+		return {}
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return {}
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, current_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, png_mask_tex),
+		compute.make_image_uniform(1, rock_mask_tex),
+		compute.make_storage_uniform(2, counter_buf),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return {}
+
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, TEX_RES)
+	push.encode_s32(4, TEX_RES)
+	push.encode_float(8, 0.5)
+	push.encode_float(12, 0.0)
+
+	var groups := ceili(float(TEX_RES) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return {}
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups, groups, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var png_data := rd.texture_get_data(png_mask_tex, 0)
+	var rock_data := rd.texture_get_data(rock_mask_tex, 0)
+	var counter_data := rd.buffer_get_data(counter_buf, 0, 4)
+	compute.dispose()
+	var nonzero := _u32_from_bytes(counter_data, 0)
+	return {
+		"png_mask": Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RGBA8, png_data),
+		"rock_mask": Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, rock_data),
+		"nonzero": nonzero,
+	}
+
+
+# --- Cliff data loading with procedural fallback ---
 
 func _join_asset_path(dir_path: String, file_name: String) -> String:
 	return dir_path + file_name if dir_path.ends_with("/") else dir_path + "/" + file_name
@@ -3322,8 +5104,6 @@ func _load_scripted_rock_assets(out_meshes: Array[Mesh], out_assets: Array[AutoR
 				asset = instance as AutoRock
 			elif instance != null:
 				instance.free()
-		elif resource is MeshDataAsset:
-			asset = AutoAssetFactory.rock_from_mesh_data_asset(resource as MeshDataAsset)
 		if asset == null:
 			continue
 		if asset.asset_id.is_empty():
@@ -3335,7 +5115,7 @@ func _load_scripted_rock_assets(out_meshes: Array[Mesh], out_assets: Array[AutoR
 		out_assets.append(asset)
 		loaded += 1
 		print("  Scripted rock asset: %s (%s, size=%.2fm)" % [
-			path, asset.object_subtype, asset.mesh_size])
+			path, asset.get_record_object_subtype(), asset.mesh_size])
 	return loaded
 
 
@@ -3361,8 +5141,8 @@ func _load_vegetation_assets() -> Array[AutoVoxelDescriptor]:
 		if asset.scatter_max_count <= 0:
 			continue
 		assets.append(asset)
-		print("  Scripted vegetation asset: %s (%s/%s)" % [
-			path, asset.object_subtype, asset.vegetation_channel])
+		print("  Scripted vegetation asset: %s (%s)" % [
+			path, asset.object_subtype])
 	if not assets.is_empty():
 		print("[MeshFill] Loaded %d scripted vegetation assets" % assets.size())
 	return assets
@@ -3386,7 +5166,7 @@ func _load_cliff_data(out_meshes: Array[Mesh], out_assets: Array[AutoRock]) -> v
 		if mesh == null:
 			loaded_all = false
 			break
-		var htex := _load_raw_texture(cfg.height, TEX_RES, TEX_RES)
+		var htex := TerrainInitializerScript.load_raw_texture(cfg.height, TEX_RES, TEX_RES)
 		if htex == null:
 			loaded_all = false
 			break
@@ -3398,13 +5178,14 @@ func _load_cliff_data(out_meshes: Array[Mesh], out_assets: Array[AutoRock]) -> v
 
 		var h_stats := _get_height_stats(htex.get_image())
 		fbx_meshes.append(mesh)
-		var asset := AutoCliffRock.new()
-		asset.configure_cliff({
+		var asset := AutoRock.new()
+		asset.configure_rock({
 			"asset_id": str(cfg.fbx).get_file().get_basename(),
 			"name": str(cfg.fbx).get_file().get_basename(),
 			"mesh": mesh,
 			"source_mesh": source_mesh if source_mesh != null else mesh,
 			"source_mesh_path": cfg.fbx,
+			"object_subtype": "cliff",
 			"mesh_height_texture": htex,
 			"mesh_size": cfg.size,
 			"color": ROCK_VOXEL_COLOR,
@@ -3445,10 +5226,11 @@ func _generate_procedural_cliffs(out_meshes: Array[Mesh], out_assets: Array[Auto
 		out_meshes.append(box)
 
 		var htex_img := _create_cliff_height_image(cfg.box_size)
-		var asset := AutoCliffRock.new()
-		asset.configure_cliff({
+		var asset := AutoRock.new()
+		asset.configure_rock({
 			"asset_id": cfg.name,
 			"name": cfg.name,
+			"object_subtype": "cliff",
 			"mesh": box,
 			"mesh_height_texture": ImageTexture.create_from_image(htex_img),
 			"mesh_size": cfg.size,
@@ -3463,104 +5245,297 @@ func _generate_procedural_cliffs(out_meshes: Array[Mesh], out_assets: Array[Auto
 
 
 func _create_cliff_height_image(box_size: Vector3) -> Image:
-	var img := Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RGBAF)
-	var margin := 0.15
-	var peak := box_size.y
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			var u := float(x) / float(TEX_RES - 1)
-			var v := float(y) / float(TEX_RES - 1)
-			var inside := u > margin and u < 1.0 - margin and v > margin and v < 1.0 - margin
-			if inside:
-				var h := minf(box_size.y * (1.0 - absf(u - 0.5) * 2.0) - peak, -0.01)
-				img.set_pixelv(Vector2i(x, y), Color(h, 0.0, 0.0, 1.0))
-			else:
-				img.set_pixelv(Vector2i(x, y), Color(-20000.0, 0.0, 0.0, 1.0))
+	var img := _create_cliff_height_image_gpu(box_size)
+	if img == null or img.is_empty():
+		push_error("[MeshFill] Cliff height image GPU compute failed")
+		return Image.create(1, 1, false, Image.FORMAT_RGBAF)
 	return img
 
 
-# 鈹€鈹€鈹€ Terrain mesh creation 鈹€鈹€鈹€
+func _create_cliff_height_image_gpu(box_size: Vector3) -> Image:
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "CreateCliffHeightImage"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/create_cliff_height_image.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var out_tex := compute.create_rw_texture_2d(
+		TEX_RES,
+		TEX_RES,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"create_cliff_height_out_rgba32f"
+	)
+	if not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var set0 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], shader, 0)
+	if not set0.is_valid():
+		compute.dispose()
+		return null
+
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, TEX_RES)
+	push.encode_s32(4, TEX_RES)
+	push.encode_float(8, box_size.y)
+	push.encode_float(12, 0.15)
+
+	var groups := ceili(float(TEX_RES) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups, groups, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RGBAF, data)
+	compute.dispose()
+	return result
+
+
+# --- Terrain mesh creation ---
 
 func _create_terrain_mesh(height_tex: ImageTexture) -> void:
 	var existing := _get_level_child("Terrain")
 	if existing != null:
-		_remove_mesh_asset_voxel_record(existing)
-		existing.queue_free()
+		_remove_voxel_write_spec(existing)
 
-	var img := height_tex.get_image()
-	var res := img.get_width()
-	var cell_size := capture_size / float(res)
-	var half := capture_size / 2.0
-	var height_stats := _get_height_stats(img)
+	var result := TerrainInitializerScript.ensure_terrain_initialized(_get_level_root(), {
+		"terrain_name": "Terrain",
+		"target_height": height_tex,
+		"capture_size": capture_size,
+		"replace_existing": true,
+		"visible": true,
+	})
+	if not bool(result.get("ok", false)):
+		push_error("[MeshFill] Terrain initialization failed: %s" % str(result.get("reason", "unknown")))
+		return
 
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var mi := result.get("terrain") as MeshInstance3D
+	if mi == null:
+		push_error("[MeshFill] Terrain initialization returned no MeshInstance3D")
+		return
 
-	for y in range(res):
-		for x in range(res):
-			var h := img.get_pixelv(Vector2i(x, y)).r
-			var px := float(x) * cell_size - half
-			var pz := float(y) * cell_size - half
-			st.set_uv(Vector2(float(x) / float(res - 1), float(y) / float(res - 1)))
-			st.add_vertex(Vector3(px, h, pz))
-
-	for y in range(res - 1):
-		for x in range(res - 1):
-			var i := y * res + x
-			st.add_index(i)
-			st.add_index(i + res)
-			st.add_index(i + 1)
-			st.add_index(i + 1)
-			st.add_index(i + res)
-			st.add_index(i + res + 1)
-
-	st.generate_normals()
-	var terrain_mesh := st.commit()
-
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.45, 0.42, 0.35)
-	mat.roughness = 0.9
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-
-	var mi := MeshInstance3D.new()
-	mi.mesh = terrain_mesh
-	mi.material_override = mat
-	mi.name = "Terrain"
-	mi.set_meta("terrain_height_stats", height_stats)
-	_add_level_child(mi)
-	_attach_mesh_asset_voxel_record(mi, _make_terrain_asset_voxel_record(mi, res))
+	var res := int(result.get("resolution", height_tex.get_width()))
+	var height_stats: Vector2 = result.get("height_stats", Vector2.ZERO)
+	_attach_voxel_write_spec(mi, _make_terrain_voxel_write_spec(mi, res))
 
 	print("[MeshFill] Terrain mesh created (%dx%d, %.0fm x %.0fm, h=%.2f..%.2f)" % [
 		res, res, capture_size, capture_size, height_stats.x, height_stats.y])
 
 
 func _scale_height_image(img: Image, scale: float) -> void:
-	var w := img.get_width()
-	var h := img.get_height()
-	for y in range(h):
-		for x in range(w):
-			var px := img.get_pixelv(Vector2i(x, y))
-			if px.r > -10000.0:
-				px.r = minf(px.r * scale, -0.01)
-			img.set_pixelv(Vector2i(x, y), px)
+	var scaled := _scale_height_image_gpu(img, scale)
+	if scaled == null or scaled.is_empty():
+		push_error("[MeshFill] Height image scale GPU compute failed")
+		return
+	img.copy_from(scaled)
 
+
+func _scale_height_image_gpu(img: Image, scale: float) -> Image:
+	if img == null or img.is_empty():
+		return null
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "ScaleHeightImage"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/scale_height_image.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var src_tex := compute.upload_texture_2d(
+		img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"scale_height_src_rgba32f"
+	)
+	var out_tex := compute.create_rw_texture_2d(
+		img.get_width(),
+		img.get_height(),
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"scale_height_out_rgba32f"
+	)
+	if not src_tex.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return null
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, src_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return null
+
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, img.get_width())
+	push.encode_s32(4, img.get_height())
+	push.encode_float(8, scale)
+	push.encode_float(12, -10000.0)
+
+	var groups_x := ceili(float(img.get_width()) / 32.0)
+	var groups_y := ceili(float(img.get_height()) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(img.get_width(), img.get_height(), false, Image.FORMAT_RGBAF, data)
+	compute.dispose()
+	return result
 
 
 func _get_height_stats(img: Image) -> Vector2:
-	var h_min := 99999.0
-	var h_max := -99999.0
-	var w := img.get_width()
-	var h := img.get_height()
-	for y in range(h):
-		for x in range(w):
-			var v := img.get_pixelv(Vector2i(x, y)).r
-			if v > -10000.0:
-				h_min = minf(h_min, v)
-				h_max = maxf(h_max, v)
-	return Vector2(h_min, h_max)
+	var stats := _get_height_stats_gpu(img)
+	if not bool(stats.get("valid", false)):
+		push_error("[MeshFill] Height stats GPU compute failed")
+		return Vector2.ZERO
+	return Vector2(float(stats.get("min", 0.0)), float(stats.get("max", 0.0)))
 
 
-# 鈹€鈹€鈹€ FBX mesh loading 鈹€鈹€鈹€
+func _get_height_stats_gpu(img: Image) -> Dictionary:
+	if img == null or img.is_empty():
+		return {}
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return {}
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "HeightStats"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return {}
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/height_stats_minmax.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return {}
+
+	var height_tex := compute.upload_texture_2d(
+		img,
+		RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT,
+		Image.FORMAT_RGBAF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"height_stats_src_rgba32f"
+	)
+	var stats_bytes := PackedByteArray()
+	stats_bytes.resize(12)
+	stats_bytes.encode_s32(0, -1)
+	var stats_buf := compute.storage_buffer_from_bytes(stats_bytes, ComputeShaderBaseScript.SCOPE_FRAME, "height_stats_minmax_count_u32")
+	if not height_tex.is_valid() or not stats_buf.is_valid():
+		compute.dispose()
+		return {}
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return {}
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, height_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_storage_uniform(0, stats_buf),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return {}
+
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, img.get_width())
+	push.encode_s32(4, img.get_height())
+	push.encode_float(8, -10000.0)
+	push.encode_float(12, 0.0)
+
+	var groups_x := ceili(float(img.get_width()) / 32.0)
+	var groups_y := ceili(float(img.get_height()) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return {}
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.buffer_get_data(stats_buf, 0, 12)
+	compute.dispose()
+	if data.size() < 12:
+		return {}
+	var min_key := int(data.decode_u32(0))
+	var max_key := int(data.decode_u32(4))
+	var count := int(data.decode_u32(8))
+	if count <= 0:
+		return {
+			"valid": true,
+			"min": 99999.0,
+			"max": -99999.0,
+			"count": 0,
+	}
+	return {
+		"valid": true,
+		"min": _ordered_uint_to_float(min_key),
+		"max": _ordered_uint_to_float(max_key),
+		"count": count,
+	}
+
+
+# --- FBX mesh loading ---
 
 func _load_mesh_from_fbx(path: String) -> Mesh:
 	var r := load(path)
@@ -3624,10 +5599,7 @@ func _find_mesh_in_tree(node: Node) -> Mesh:
 	return null
 
 
-# 鈹€鈹€鈹€ Vegetation Generation (P1/P2) 鈹€鈹€鈹€
-
-## Maximum self-loop iterations before forcing placement.
-const VEG_MAX_ITERATIONS := 4
+# --- Vegetation Generation (GPU-only runtime boundary) ---
 
 
 func _vegetation_channel_profiles() -> Array[Dictionary]:
@@ -3639,30 +5611,10 @@ func _vegetation_channel_profiles() -> Array[Dictionary]:
 	]
 
 
-func _merge_vegetation_channel_profile_defaults(profile: Array[Dictionary]) -> Array[Dictionary]:
-	var defaults_by_channel: Dictionary = {}
-	for entry in _vegetation_channel_profiles():
-		defaults_by_channel[int(entry.channel)] = entry
-	var merged_profile: Array[Dictionary] = []
-	for entry in profile:
-		var ch := clampi(int(entry.get("channel", 0)), 0, 3)
-		var merged := (defaults_by_channel.get(ch, {"channel": ch}) as Dictionary).duplicate(true)
-		for key in entry.keys():
-			merged[key] = entry[key]
-		var color: Color = merged.get("color", Color.WHITE)
-		var complexity := clampf(float(merged.get("complexity", color.a)), 0.0, 1.0)
-		color.a = complexity
-		merged["channel"] = ch
-		merged["color"] = color
-		merged["complexity"] = complexity
-		merged_profile.append(merged)
-	return merged_profile
-
-
-func _ensure_vegetation_exclusion() -> void:
-	if _veg_exclusion != null:
+func _ensure_scene_voxel_committer() -> void:
+	if _scene_voxel_committer != null:
 		return
-	_veg_exclusion = SceneVoxelCommitter.new(TEX_RES, capture_size)
+	_scene_voxel_committer = SceneVoxelCommitterScript.new(TEX_RES, capture_size)
 
 
 func _generate_vegetation() -> void:
@@ -3671,352 +5623,156 @@ func _generate_vegetation() -> void:
 		return
 
 	_clear_vegetation()
-
-	var t0 := Time.get_ticks_msec()
-	print("[MeshFill] Generating vegetation (self-loop)")
-
-	var rock_mask_img: Image = null
-	if _current_rock_mask_img != null:
-		rock_mask_img = _current_rock_mask_img
-	else:
-		rock_mask_img = Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
-		rock_mask_img.fill(Color(0.0, 0.0, 0.0, 0.0))
-
-	var scene_depth_img: Image = (_cached_textures["scene_depth"] as ImageTexture).get_image()
-	var target_height_img: Image = (_cached_textures["target_height"] as ImageTexture).get_image()
-	var cliff_tree_mask_img := _make_cliff_tree_mask(rock_mask_img, target_height_img)
-
-	# --- Init exclusion system (once) ---
-	_ensure_vegetation_exclusion()
-
-	var grass_results: Array[Dictionary] = []
-	var bush_results: Array[Dictionary] = []
-	var midstory_results: Array[Dictionary] = []
-	var canopy_results: Array[Dictionary] = []
-	var scripted_vegetation_results: Array[Dictionary] = []
-	var validation: Dictionary = {}
-	var iteration := 0
-	var density_scale := 1.0
-	if _vegetation_assets.is_empty():
-		_vegetation_assets = _load_vegetation_assets()
-
-	while iteration < VEG_MAX_ITERATIONS:
-		iteration += 1
-		print("[MeshFill]   鈹€鈹€ Iteration %d (density_scale=%.2f) 鈹€鈹€" % [iteration, density_scale])
-
-		_veg_exclusion.reset_occupancy()
-
-		for channel in range(4):
-			_veg_exclusion.import_mask_channel(channel, rock_mask_img)
-		var applied_scene_meshes := _apply_scene_mesh_voxels_to_vegetation_buffers()
-		if applied_scene_meshes > 0:
-			print("[MeshFill]     Scene mesh voxel writes: %d" % applied_scene_meshes)
-
-
-		var canopy_count := int(300 * density_scale)
-		var canopy_profile := SceneVoxelCommitter.profile_channel(3, 3.0, Color(0.8, 0.2, 0.2, 0.2), 0.2, 6.0, 99.0, 1)
-		var canopy_collision := SceneVoxelCommitter.collision_trunk(0.45, 0.0, 2.2, 0.04, 0.08)
-		canopy_results = _veg_exclusion.scatter_from_mask(
-			canopy_profile, cliff_tree_mask_img, scene_depth_img, max_height, 3.0, 4.0, canopy_count, "canopy_tree", canopy_collision
-		)
-		print("[MeshFill]     Canopy trees near cliffs: %d" % canopy_results.size())
-
-
-		var midstory_count := int(400 * density_scale)
-		var midstory_profile := SceneVoxelCommitter.profile_channel(2, 2.0, Color(0.2, 0.5, 0.8, 0.4), 0.4, 2.0, 6.0, 2)
-		var midstory_collision := SceneVoxelCommitter.collision_trunk(0.30, 0.0, 1.6, 0.03, 0.06)
-		midstory_results = _veg_exclusion.scatter_from_mask(
-			midstory_profile, cliff_tree_mask_img, scene_depth_img, max_height, 2.0, 2.5, midstory_count, "midstory_tree", midstory_collision
-		)
-		print("[MeshFill]     Midstory trees near cliffs: %d" % midstory_results.size())
-
-
-		bush_results = []
-		print("[MeshFill]     Bushes: 0")
-
-		var tree_results_for_grass: Array[Dictionary] = []
-		tree_results_for_grass.append_array(canopy_results)
-		tree_results_for_grass.append_array(midstory_results)
-		var tree_grass_mask_img := _make_tree_grass_mask(tree_results_for_grass)
-
-		scripted_vegetation_results.clear()
-		for asset in _vegetation_assets:
-			var scripted_profile := _merge_vegetation_channel_profile_defaults(asset.get_scatter_profile())
-			if scripted_profile.is_empty():
-				continue
-			var scripted_mask := cliff_tree_mask_img
-			if asset.vegetation_channel == 0 or asset.object_subtype.find("grass") >= 0:
-				scripted_mask = tree_grass_mask_img
-			elif asset.vegetation_channel == 1 or asset.object_subtype.find("bush") >= 0:
-				continue
-			var scripted_count := int(asset.scatter_max_count * density_scale)
-			var scripted_results := _veg_exclusion.scatter_from_mask(
-				scripted_profile,
-				scripted_mask,
-				scene_depth_img,
-				max_height,
-				asset.scatter_min_distance,
-				asset.scatter_max_scale,
-				scripted_count,
-				asset.object_subtype,
-				asset.get_collision_voxels()
-			)
-			scripted_vegetation_results.append({
-				"asset": asset,
-				"results": scripted_results,
-			})
-			print("[MeshFill]     %s: %d" % [asset.object_subtype, scripted_results.size()])
-
-
-		var grass_count := int(2000 * density_scale)
-		var grass_profile := SceneVoxelCommitter.profile_channel(0, 0.2, Color(0.2, 0.8, 0.2, 1.0), 1.0, 0.0, 0.3, 1)
-		grass_results = _veg_exclusion.scatter_from_mask(
-			grass_profile, tree_grass_mask_img, scene_depth_img, max_height, 0.5, 0.8, grass_count, "grass"
-		)
-		print("[MeshFill]     Grass around trees: %d" % grass_results.size())
-
-		# Build voxel volume
-		_veg_exclusion.build_voxel_volume(TEX_RES / 2, _vegetation_channel_profiles())
-		_sync_scene_mesh_asset_voxel_records_from_exclusion()
-
-		# Validate
-		validation = _veg_exclusion.validate_voxel({
-			"min_channel_occupancy": {0: 5.0},
-			"max_channel_occupancy": {0: 85.0, 3: 60.0},
-			"min_diversity_score": 2,
-		})
-
-		var metrics: Dictionary = validation.metrics
-		print("[MeshFill]     Validation: %s 鈥?%s" % [
-			"PASS" if validation.passed else "FAIL", validation.reason])
-		if metrics.has("channel_occupancy_pct"):
-			var channels: Array = metrics.channels
-			var pcts: Array = metrics.channel_occupancy_pct
-			for bi in range(channels.size()):
-				print("[MeshFill]       channel %d: %.1f%%" % [channels[bi], pcts[bi]])
-
-		if validation.passed:
-			break
-
-		if "too high" in validation.reason:
-			density_scale *= 0.7
-		elif "too low" in validation.reason:
-			density_scale *= 1.4
-		else:
-			density_scale *= 0.85
-		print("[MeshFill]     鈫?Retrying with density_scale=%.2f" % density_scale)
-
-	# --- Phase 2: Place meshes ---
-	print("[MeshFill]   鈹€鈹€ Phase 2: Placing meshes 鈹€鈹€")
-
-	_sync_vegetation_masks_from_exclusion()
-
-	# Canopy trees
-	if _tree_mesh == null:
-		_tree_mesh = VegetationScatter.create_tree_mesh()
-	for i in range(canopy_results.size()):
-		var r: Dictionary = canopy_results[i]
-		var mi := AutoCanopyTree.new()
-		mi.configure_canopy_tree({
-			"name": "CanopyTree_%d" % i,
-			"mesh": _tree_mesh,
-			"position": r.position,
-			"rotation_mode": str(r.get("rotation_mode", "Y")),
-			"rotation_degrees": r.get("rotation_degrees", Vector3(0.0, float(r.get("rotation_y", 0.0)), 0.0)),
-			"scale": r.scale,
-			"visual_layer": VegetationScatter.TREE_VISUAL_LAYER,
-			"color": r.color,
-			"complexity": r.complexity,
-			"collision_voxels": r.get("collision_voxels", []),
-			"channel_entries": r.get(CHANNEL_ENTRIES_KEY, []),
-			"material": _make_veg_material(r.color, r.complexity),
-			"auto_source": "scatter",
-			"groups": [TEST_ONLY_GROUP, TEST_ONLY_VEGETATION_GROUP],
-		})
-		_add_level_child(mi)
-		_mark_test_only_generated(mi, "vegetation")
-		_attach_vegetation_asset_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
-
-	# Midstory trees
-	if _midstory_mesh == null:
-		_midstory_mesh = VegetationScatter.create_midstory_mesh()
-	for i in range(midstory_results.size()):
-		var r: Dictionary = midstory_results[i]
-		var mi := AutoMidstoryTree.new()
-		mi.configure_midstory_tree({
-			"name": "MidstoryTree_%d" % i,
-			"mesh": _midstory_mesh,
-			"position": r.position,
-			"rotation_mode": str(r.get("rotation_mode", "Y")),
-			"rotation_degrees": r.get("rotation_degrees", Vector3(0.0, float(r.get("rotation_y", 0.0)), 0.0)),
-			"scale": r.scale,
-			"visual_layer": VegetationScatter.MIDSTORY_VISUAL_LAYER,
-			"color": r.color,
-			"complexity": r.complexity,
-			"collision_voxels": r.get("collision_voxels", []),
-			"channel_entries": r.get(CHANNEL_ENTRIES_KEY, []),
-			"material": _make_veg_material(r.color, r.complexity),
-			"auto_source": "scatter",
-			"groups": [TEST_ONLY_GROUP, TEST_ONLY_VEGETATION_GROUP],
-		})
-		_add_level_child(mi)
-		_mark_test_only_generated(mi, "vegetation")
-		_attach_vegetation_asset_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
-
-	# Bushes
-	if _bush_mesh == null:
-		_bush_mesh = VegetationScatter.create_bush_mesh()
-	for i in range(bush_results.size()):
-		var r: Dictionary = bush_results[i]
-		var mi := AutoBush.new()
-		mi.configure_bush({
-			"name": "Bush_%d" % i,
-			"mesh": _bush_mesh,
-			"position": r.position,
-			"rotation_mode": str(r.get("rotation_mode", "Y")),
-			"rotation_degrees": r.get("rotation_degrees", Vector3(0.0, float(r.get("rotation_y", 0.0)), 0.0)),
-			"scale": r.scale,
-			"visual_layer": VegetationScatter.BUSH_VISUAL_LAYER,
-			"color": r.color,
-			"complexity": r.complexity,
-			"collision_voxels": r.get("collision_voxels", []),
-			"channel_entries": r.get(CHANNEL_ENTRIES_KEY, []),
-			"material": _make_veg_material(r.color, r.complexity),
-			"auto_source": "scatter",
-			"groups": [TEST_ONLY_GROUP, TEST_ONLY_VEGETATION_GROUP],
-		})
-		_add_level_child(mi)
-		_mark_test_only_generated(mi, "vegetation")
-		_attach_vegetation_asset_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
-
-	# Scripted vegetation assets
-	for entry in scripted_vegetation_results:
-		var asset: AutoVoxelDescriptor = entry.asset
-		var results: Array = entry.results
-		for i in range(results.size()):
-			var r: Dictionary = results[i]
-			var placement_config := {
-				"name": "%s_%d" % [asset.object_subtype, i],
-				"position": r.position,
-				"rotation_mode": str(r.get("rotation_mode", "Y")),
-				"rotation_degrees": r.get("rotation_degrees", Vector3(0.0, float(r.get("rotation_y", 0.0)), 0.0)),
-				"scale": r.scale,
-				"color": r.color,
-				"complexity": r.complexity,
-				"collision_voxels": r.get("collision_voxels", []),
-				"channel_entries": r.get(CHANNEL_ENTRIES_KEY, []),
-				"auto_source": "scatter",
-				"groups": [TEST_ONLY_GROUP, TEST_ONLY_VEGETATION_GROUP],
-			}
-			if asset.material == null:
-				placement_config["material"] = _make_veg_material(r.color, r.complexity)
-			var mi := asset.instantiate_vegetation(placement_config)
-			_add_level_child(mi)
-			_mark_test_only_generated(mi, "vegetation")
-			_attach_vegetation_asset_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
-
-	# Grass
-	if _grass_mesh == null:
-		_grass_mesh = VegetationScatter.create_bush_mesh()
-	for i in range(grass_results.size()):
-		var r: Dictionary = grass_results[i]
-		var mi := AutoGrass.new()
-		mi.configure_grass({
-			"name": "Grass_%d" % i,
-			"mesh": _grass_mesh,
-			"position": r.position,
-			"rotation_mode": str(r.get("rotation_mode", "Y")),
-			"rotation_degrees": r.get("rotation_degrees", Vector3(0.0, float(r.get("rotation_y", 0.0)), 0.0)),
-			"scale": r.scale * 0.3,
-			"visual_layer": VegetationScatter.GRASS_VISUAL_LAYER,
-			"color": r.color,
-			"complexity": r.complexity,
-			"collision_voxels": r.get("collision_voxels", []),
-			"channel_entries": r.get(CHANNEL_ENTRIES_KEY, []),
-			"material": _make_veg_material(r.color, r.complexity),
-			"auto_source": "scatter",
-			"groups": [TEST_ONLY_GROUP, TEST_ONLY_VEGETATION_GROUP],
-		})
-		_add_level_child(mi)
-		_mark_test_only_generated(mi, "vegetation")
-		_attach_vegetation_asset_voxel_record(mi, _mark_test_only_record(r, "vegetation"))
-
-	# Refresh debug masks after scene instances have written their voxel_write_spec entries
-	# back into the channel occupancy buffers.
-	_sync_vegetation_masks_from_exclusion()
-
-	var vol_stats := _veg_exclusion.get_voxel_stats()
-	print("[MeshFill]   Voxel volume: %dx%dx%d (xz=%.2fm), %s occupied" % [
-		vol_stats.xz_resolution, vol_stats.xz_resolution, vol_stats.total_slices,
-		_veg_exclusion._capture_size / float(vol_stats.xz_resolution),
-		vol_stats.occupancy_pct])
-	if vol_stats.has("collision_field_pct"):
-		print("[MeshFill]   Collision voxels: %s occupied" % [vol_stats.collision_field_pct])
-	print("[MeshFill]   Mesh voxel_write_spec entries: %d exclusion-buffer, %d runtime total" % [
-		_veg_exclusion.get_mesh_asset_voxel_record_count(), _mesh_asset_voxel_records.size()])
-
-	var elapsed := Time.get_ticks_msec() - t0
-	_vegetation_generated = true
-	var scripted_total := 0
-	for entry in scripted_vegetation_results:
-		var results: Array = entry.results
-		scripted_total += results.size()
-	print("[MeshFill] Vegetation complete: %d canopy + %d midstory + %d bush + %d scripted + %d grass in %dms (%d iter)" % [
-		canopy_results.size(), midstory_results.size(), bush_results.size(),
-		scripted_total, grass_results.size(), elapsed, iteration])
-
-	_save_combined_mask_debug()
-
-
-## Create a per-instance material tinted by layer color + complexity.
-## Color RGB 鈫?albedo tint, complexity 鈫?metallic/roughness hint.
-func _make_veg_material(color: Color, complexity: float) -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(color.r, color.g, color.b, 1.0)
-	mat.roughness = lerpf(0.9, 0.4, complexity)
-	mat.metallic = complexity * 0.1
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return mat
+	push_warning("[MeshFill] Vegetation generation skipped: legacy CPU scatter was removed.")
+	print("[MeshFill] Vegetation is GPU-only now; route placement through AutoObjectProbePrefilterGPU + VoxelPlacementGenerator.")
+	print("[MeshFill] No CPU placements, voxel_write_spec entries, or per-object scatter nodes were created.")
 
 
 func _clear_vegetation() -> void:
 	for group in ["placed_canopy_trees", "placed_midstory_trees", "placed_bushes", "placed_grass"]:
 		for node in get_tree().get_nodes_in_group(group):
-			_remove_mesh_asset_voxel_record(node)
+			_remove_voxel_write_spec(node)
 			node.queue_free()
 	for node in _get_level_children():
-		if node is AutoVegetation and not node.is_queued_for_deletion():
-			var vegetation := node as AutoVegetation
-			if vegetation.auto_source == "scatter":
-				_remove_mesh_asset_voxel_record(vegetation)
-				vegetation.queue_free()
-	if _veg_exclusion != null:
-		_veg_exclusion._free_gpu()
-		_veg_exclusion = null
+		if node is AutoObject and not node.is_queued_for_deletion():
+			if node.get_record_auto_source("") == "scatter":
+				_remove_voxel_write_spec(node)
+				node.queue_free()
+	if _scene_voxel_committer != null:
+		_scene_voxel_committer._free_gpu()
+		_scene_voxel_committer = null
 	if _debug_mask_terrain != null:
 		_debug_mask_terrain.queue_free()
 		_debug_mask_terrain = null
+	_tree_mask_image = null
+	_midstory_mask_image = null
+	_bush_mask_image = null
+	_grass_mask_image = null
 	_vegetation_generated = false
 
 
 func _save_combined_mask_debug() -> void:
 	var out_dir := OS.get_user_data_dir()
-	var vis := Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RGBA8)
-	for y in range(TEX_RES):
-		for x in range(TEX_RES):
-			var px := Vector2i(x, y)
-			var rock_v := 0.0
-			var tree_v := 0.0
-			var bush_v := 0.0
-			if _current_rock_mask_img != null:
-				rock_v = _current_rock_mask_img.get_pixelv(px).r
-			if _tree_mask_image != null:
-				tree_v = _tree_mask_image.get_pixelv(px).r
-			if _bush_mask_image != null:
-				bush_v = _bush_mask_image.get_pixelv(px).r
-			vis.set_pixelv(px, Color(rock_v, tree_v, bush_v, 1.0))
+	var vis := _make_combined_mask_debug_image()
+	if vis == null or vis.is_empty():
+		push_error("[MeshFill] Combined mask debug GPU compute failed")
+		return
 	vis.save_png(out_dir + "/combined_mask.png")
 	print("[MeshFill] Combined mask saved: %s/combined_mask.png" % out_dir)
+
+
+func _make_combined_mask_debug_image() -> Image:
+	var rock_img := _current_rock_mask_img
+	if rock_img == null or rock_img.is_empty():
+		rock_img = Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
+		rock_img.fill(Color(0.0, 0.0, 0.0, 0.0))
+	var tree_img := _tree_mask_image
+	if tree_img == null or tree_img.is_empty():
+		tree_img = Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
+		tree_img.fill(Color(0.0, 0.0, 0.0, 0.0))
+	var bush_img := _bush_mask_image
+	if bush_img == null or bush_img.is_empty():
+		bush_img = Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
+		bush_img.fill(Color(0.0, 0.0, 0.0, 0.0))
+	return _make_combined_mask_debug_image_gpu(rock_img, tree_img, bush_img)
+
+
+func _make_combined_mask_debug_image_gpu(rock_img: Image, tree_img: Image, bush_img: Image) -> Image:
+	if rock_img == null or rock_img.is_empty() or tree_img == null or tree_img.is_empty() or bush_img == null or bush_img.is_empty():
+		return null
+	var probe_rd := RenderingServer.create_local_rendering_device()
+	if probe_rd == null:
+		return null
+	probe_rd.free()
+
+	var compute = ComputeShaderBaseScript.new()
+	compute.log_name = "CombinedMaskDebug"
+	if not compute.ensure_device(true, false):
+		compute.dispose()
+		return null
+	var rd: RenderingDevice = compute.get_rendering_device()
+	var shader := compute.load_compute_shader("res://shaders/combined_mask_debug.glsl")
+	var pipeline := compute.create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		compute.dispose()
+		return null
+
+	var rock_tex := compute.upload_texture_2d(
+		rock_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"combined_mask_debug_rock_r32f"
+	)
+	var tree_tex := compute.upload_texture_2d(
+		tree_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"combined_mask_debug_tree_r32f"
+	)
+	var bush_tex := compute.upload_texture_2d(
+		bush_img,
+		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
+		Image.FORMAT_RF,
+		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"combined_mask_debug_bush_r32f"
+	)
+	var out_tex := compute.create_rw_texture_2d(
+		TEX_RES,
+		TEX_RES,
+		RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM,
+		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"combined_mask_debug_out_rgba8"
+	)
+	if not rock_tex.is_valid() or not tree_tex.is_valid() or not bush_tex.is_valid() or not out_tex.is_valid():
+		compute.dispose()
+		return null
+
+	var sampler := compute.create_linear_sampler()
+	if not sampler.is_valid():
+		compute.dispose()
+		return null
+	var set0 := compute.create_uniform_set([
+		compute.make_sampler_uniform(0, sampler, rock_tex),
+		compute.make_sampler_uniform(1, sampler, tree_tex),
+		compute.make_sampler_uniform(2, sampler, bush_tex),
+	], shader, 0)
+	var set1 := compute.create_uniform_set([
+		compute.make_image_uniform(0, out_tex),
+	], shader, 1)
+	if not set0.is_valid() or not set1.is_valid():
+		compute.dispose()
+		return null
+
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, TEX_RES)
+	push.encode_s32(4, TEX_RES)
+	push.encode_float(8, 0.0)
+	push.encode_float(12, 0.0)
+
+	var groups := ceili(float(TEX_RES) / 32.0)
+	var cl := compute.begin_compute_list()
+	if cl < 0:
+		compute.dispose()
+		return null
+	rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	rd.compute_list_bind_uniform_set(cl, set0, 0)
+	rd.compute_list_bind_uniform_set(cl, set1, 1)
+	rd.compute_list_set_push_constant(cl, push, push.size())
+	rd.compute_list_dispatch(cl, groups, groups, 1)
+	compute.end_compute_list()
+	compute.submit_and_sync()
+
+	var data := rd.texture_get_data(out_tex, 0)
+	var result := Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RGBA8, data)
+	compute.dispose()
+	return result
 
 
 func _build_debug_mask_terrain() -> void:
@@ -4027,6 +5783,12 @@ func _build_debug_mask_terrain() -> void:
 	if _cached_textures.is_empty():
 		return
 	var depth_img: Image = (_cached_textures["scene_depth"] as ImageTexture).get_image()
+	var mask_debug_img := _make_combined_mask_debug_image()
+	if mask_debug_img == null or mask_debug_img.is_empty():
+		push_error("[MeshFill] Combined mask debug terrain GPU mask pack failed")
+		return
+	var depth_values := depth_img.get_data().to_float32_array()
+	var mask_bytes := mask_debug_img.get_data()
 	var res := TEX_RES
 	var cell_size := capture_size / float(res)
 	var half := capture_size / 2.0
@@ -4036,17 +5798,13 @@ func _build_debug_mask_terrain() -> void:
 
 	for y in range(res):
 		for x in range(res):
-			var px := Vector2i(x, y)
-			var h := max_height - depth_img.get_pixelv(px).r + 0.2
-			var rock_v := 0.0
-			var tree_v := 0.0
-			var bush_v := 0.0
-			if _current_rock_mask_img != null:
-				rock_v = clampf(_current_rock_mask_img.get_pixelv(px).r, 0.0, 1.0)
-			if _tree_mask_image != null:
-				tree_v = clampf(_tree_mask_image.get_pixelv(px).r, 0.0, 1.0)
-			if _bush_mask_image != null:
-				bush_v = clampf(_bush_mask_image.get_pixelv(px).r, 0.0, 1.0)
+			var value_index := (y * res + x) * 4
+			var depth_v := depth_values[value_index] if value_index < depth_values.size() else max_height
+			var h := max_height - depth_v + 0.2
+			var byte_index := value_index
+			var rock_v := float(mask_bytes[byte_index + 0]) / 255.0 if byte_index + 2 < mask_bytes.size() else 0.0
+			var tree_v := float(mask_bytes[byte_index + 1]) / 255.0 if byte_index + 2 < mask_bytes.size() else 0.0
+			var bush_v := float(mask_bytes[byte_index + 2]) / 255.0 if byte_index + 2 < mask_bytes.size() else 0.0
 			var intensity := maxf(rock_v, maxf(tree_v, bush_v))
 			var alpha := 0.6 * intensity if intensity > 0.01 else 0.02
 			st.set_color(Color(rock_v, tree_v, bush_v, alpha))
@@ -4093,7 +5851,7 @@ func _toggle_mask_overlay() -> void:
 			_debug_mask_terrain.visible = true
 			print("[MeshFill] Combined mask overlay: ON (R=rock G=tree B=bush)")
 	else:
-		print("[MeshFill] No vegetation data. Use TEST ONLY P or the UI vegetation button first.")
+		print("[MeshFill] No main.gd vegetation data: legacy CPU scatter is removed and runtime vegetation must use the GPU path.")
 
 
 # ---------------------------------------------------------------------------
@@ -4131,8 +5889,11 @@ func _probe_inspect_at_screen(screen_pos: Vector2) -> void:
 		return
 
 	var voxel_count := tex_size * tex_size * slice_count
-	if _target_sv_b_visual_bytes.size() != voxel_count * 16:
+	if _target_sv_b_visual_bytes.size() < voxel_count * 16 or _target_sv_b_collision_bytes.size() < voxel_count * 4:
 		_show_probe_inspect("TargetSV_B buffer size mismatch")
+		return
+	if not _target_sv_b_packed_target_buffers_valid(voxel_count):
+		_show_probe_inspect("TargetSV_B packed target buffers missing. Press Ctrl+J to regenerate.")
 		return
 
 	var lines: PackedStringArray = PackedStringArray()
@@ -4144,19 +5905,21 @@ func _probe_inspect_at_screen(screen_pos: Vector2) -> void:
 	var peak_collision := 0.0
 	var color_sum := Vector3.ZERO
 	var weight_sum := 0.0
+	var collision_values := _target_sv_b_float_values(_target_sv_b_collision_bytes, voxel_count)
+	var target_occupancy_values := _target_sv_b_float_values(_target_sv_b_target_occupancy_bytes, voxel_count)
+	var target_color_words := _target_sv_b_int_words(_target_sv_b_target_color_rgba8_bytes, voxel_count)
 
 	for s in range(slice_count):
 		var idx := pixel.x + tex_size * (pixel.y + tex_size * s)
-		var vis_offset := idx * 16
-		var col_offset := idx * 4
-		var r := _target_sv_b_visual_bytes.decode_float(vis_offset)
-		var g := _target_sv_b_visual_bytes.decode_float(vis_offset + 4)
-		var b := _target_sv_b_visual_bytes.decode_float(vis_offset + 8)
-		var value := _target_sv_b_visual_bytes.decode_float(vis_offset + 12)
-		var collision := _target_sv_b_collision_bytes.decode_float(col_offset)
+		var collision := clampf(collision_values[idx], 0.0, 1.0)
+		var target := _target_sv_b_color_rgba8_from_word(target_color_words[idx])
+		var r := target.r
+		var g := target.g
+		var b := target.b
+		var value := target.a
 		var y_mid := (float(s) + 0.5) / float(slice_count) * vertical_span
 		lines.append("  %d   | %5.1f | %.2f %.2f %.2f | %.3f | %.3f" % [s, y_mid, r, g, b, value, collision])
-		peak_value = maxf(peak_value, value)
+		peak_value = maxf(peak_value, clampf(target_occupancy_values[idx], 0.0, 1.0))
 		peak_collision = maxf(peak_collision, collision)
 		var w := value * value
 		color_sum += Vector3(r, g, b) * w
@@ -4167,7 +5930,14 @@ func _probe_inspect_at_screen(screen_pos: Vector2) -> void:
 	lines.append("Peak: value=%.3f collision=%.3f  Weighted color=(%.2f,%.2f,%.2f)" % [
 		peak_value, peak_collision, avg_color.x, avg_color.y, avg_color.z])
 
-	var candidate_lines := _score_candidates_at_pixel(pixel, tex_size, slice_count, vertical_span)
+	var candidate_lines := _score_candidates_at_pixel(
+		pixel,
+		tex_size,
+		slice_count,
+		vertical_span,
+		target_occupancy_values,
+		target_color_words
+	)
 	if not candidate_lines.is_empty():
 		lines.append("")
 		lines.append("--- Candidate Assets (top 5) ---")
@@ -4177,10 +5947,66 @@ func _probe_inspect_at_screen(screen_pos: Vector2) -> void:
 	print("[ProbeInspect] %s" % lines[0])
 
 
-func _score_candidates_at_pixel(pixel: Vector2i, tex_size: int, slice_count: int, vertical_span: float) -> PackedStringArray:
+func _target_sv_b_packed_target_buffers_valid(voxel_count: int) -> bool:
+	var expected_bytes := maxi(voxel_count, 1) * 4
+	return _target_sv_b_target_occupancy_bytes.size() >= expected_bytes \
+		and _target_sv_b_target_color_rgba8_bytes.size() >= expected_bytes
+
+
+func _target_sv_b_float_values(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
+	var value_count := maxi(voxel_count, 0)
+	var expected_bytes := maxi(voxel_count, 1) * 4
+	var available_bytes := mini(bytes.size(), expected_bytes)
+	available_bytes -= available_bytes % 4
+	var available_count := mini(value_count, int(available_bytes / 4))
+	var values := PackedFloat32Array()
+	values.resize(value_count)
+	for i in range(available_count):
+		values[i] = bytes.decode_float(i * 4)
+	return values
+
+
+func _target_sv_b_int_words(bytes: PackedByteArray, voxel_count: int) -> PackedInt32Array:
+	var value_count := maxi(voxel_count, 0)
+	var expected_bytes := maxi(voxel_count, 1) * 4
+	var available_bytes := mini(bytes.size(), expected_bytes)
+	available_bytes -= available_bytes % 4
+	var available_count := mini(value_count, int(available_bytes / 4))
+	var words := PackedInt32Array()
+	words.resize(value_count)
+	for i in range(available_count):
+		words[i] = bytes.decode_s32(i * 4)
+	return words
+
+
+func _target_sv_b_color_rgba8_from_word(word: int) -> Color:
+	var rgba8 := _u32_word(word)
+	return Color(
+		float((rgba8 >> 24) & 0xFF) / 255.0,
+		float((rgba8 >> 16) & 0xFF) / 255.0,
+		float((rgba8 >> 8) & 0xFF) / 255.0,
+		float(rgba8 & 0xFF) / 255.0
+	)
+
+
+func _score_candidates_at_pixel(
+	pixel: Vector2i,
+	tex_size: int,
+	slice_count: int,
+	vertical_span: float,
+	target_occupancy_values: PackedFloat32Array = PackedFloat32Array(),
+	target_color_words: PackedInt32Array = PackedInt32Array()
+) -> PackedStringArray:
 	var result: PackedStringArray = PackedStringArray()
+	var voxel_count := tex_size * tex_size * slice_count
+	var has_decoded_buffers := target_occupancy_values.size() >= voxel_count and target_color_words.size() >= voxel_count
+	if not has_decoded_buffers and not _target_sv_b_packed_target_buffers_valid(voxel_count):
+		return result
 	var pixel_size := capture_size / float(tex_size)
 	var slice_height := vertical_span / float(slice_count)
+	if not has_decoded_buffers:
+		target_occupancy_values = _target_sv_b_float_values(_target_sv_b_target_occupancy_bytes, voxel_count)
+		target_color_words = _target_sv_b_int_words(_target_sv_b_target_color_rgba8_bytes, voxel_count)
 	var asset_entries: Array[Dictionary] = []
 	for asset in _cached_assets:
 		if asset != null:
@@ -4204,15 +6030,14 @@ func _score_candidates_at_pixel(pixel: Vector2i, tex_size: int, slice_count: int
 			var probe_py := clampi(pixel.y + roundi(offset.z / pixel_size), 0, tex_size - 1)
 			var probe_slice := clampi(floori(offset.y / slice_height), 0, slice_count - 1)
 			var idx := probe_px + tex_size * (probe_py + tex_size * probe_slice)
-			var vis_off := idx * 16
-			var col_off := idx * 4
-			if vis_off + 16 > _target_sv_b_visual_bytes.size() or col_off + 4 > _target_sv_b_collision_bytes.size():
+			if idx < 0 or idx >= voxel_count:
 				continue
-			var sv_r := _target_sv_b_visual_bytes.decode_float(vis_off)
-			var sv_g := _target_sv_b_visual_bytes.decode_float(vis_off + 4)
-			var sv_b := _target_sv_b_visual_bytes.decode_float(vis_off + 8)
-			var sv_value := _target_sv_b_visual_bytes.decode_float(vis_off + 12)
-			var sv_collision := _target_sv_b_collision_bytes.decode_float(col_off)
+			var sv_color := _target_sv_b_color_rgba8_from_word(target_color_words[idx])
+			var sv_r := sv_color.r
+			var sv_g := sv_color.g
+			var sv_b := sv_color.b
+			var sv_value := sv_color.a
+			var sv_collision := clampf(target_occupancy_values[idx], 0.0, 1.0)
 			var weight := maxf(float(probe.get("weight", 1.0)), 0.000001)
 			var flags := int(probe.get("flags", SemanticProbeProfileScript.FLAG_COLOR | SemanticProbeProfileScript.FLAG_COMPLEXITY))
 			var kind := str(probe.get("kind", "positive"))

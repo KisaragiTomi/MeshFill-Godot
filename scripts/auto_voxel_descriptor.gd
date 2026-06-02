@@ -4,33 +4,30 @@ extends Resource
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 
-@export var color: Color = Color.WHITE
-@export_range(0.0, 1.0) var complexity: float = 1.0
-@export var collision_voxels: Array[Dictionary] = []
-@export var pivot_variants: Array[Dictionary] = []
-@export var auto_generate_vertical_pivots: bool = false
-@export_range(0.0, 16.0, 0.1) var vertical_pivot_middle_min_height: float = 1.5
-@export_range(0.0, 16.0, 0.1) var vertical_pivot_upper_min_height: float = 3.0
-@export var semantic_probe_profile: Resource
-@export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0
-@export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0
-@export var asset_id: String = ""
-@export var object_type: String = ""
-@export var object_subtype: String = ""
-@export_range(0, 3, 1) var vegetation_channel: int = 0
-@export var vegetation_radius: float = 0.2
-@export var voxel_profile: AutoVoxelProfile
-@export var mesh: Mesh
-@export var source_mesh: Mesh
-@export var source_mesh_path: String = ""
-@export var vegetation_script: Script
-@export var mesh_create_method: String = ""
-@export var scatter_min_distance: float = 1.0
-@export var scatter_max_count: int = 500
-@export var scatter_max_scale: float = 1.0
-@export var visual_layer: int = 0
-@export var group: String = ""
-@export var material: Material
+@export var color: Color = Color.WHITE                         # canonical 默认颜色；alpha 同步 complexity
+@export_range(0.0, 1.0) var complexity: float = 1.0             # canonical 默认强度
+@export var collision: Array[Dictionary] = []                   # canonical 局部 footprint sample 列表
+@export var pivot_variants: Array[Dictionary] = []              # 显式 anchor/pivot 列表
+@export var auto_generate_vertical_pivots: bool = false         # 从 collision 高度生成 vertical pivots
+@export_range(0.0, 16.0, 0.1) var vertical_pivot_middle_min_height: float = 1.5 # middle pivot 最小高度
+@export_range(0.0, 16.0, 0.1) var vertical_pivot_upper_min_height: float = 3.0 # upper pivot 最小高度
+@export var semantic_probe_profile: Resource                    # 保存或生成 semantic_probes 的 profile
+@export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0 # 自动 probe 生成密度
+@export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0 # 外围 context probes 半径；0 禁用
+@export var asset_id: String = ""                               # 植被资产 id / debug metadata
+@export var object_type: String = ""                            # runtime grouping，不替代 descriptor 语义
+@export var object_subtype: String = ""                         # subtype grouping / debug metadata
+@export var voxel_profile: AutoVoxelProfile                     # import-time profile source
+@export var mesh: Mesh                                          # 显示 mesh
+@export var source_mesh: Mesh                                   # source mesh，用于导入/重建
+@export var source_mesh_path: String = ""                       # source mesh 资源路径
+@export var mesh_create_method: String = ""                     # 程序化 mesh 创建方法名
+@export var scatter_min_distance: float = 1.0                   # 植被散布最小距离
+@export var scatter_max_count: int = 500                        # 植被散布最大数量
+@export var scatter_max_scale: float = 1.0                      # 植被散布最大缩放
+@export var visual_layer: int = 0                               # 实例化时启用的显示层
+@export var group: String = ""                                  # 实例化时加入的分组
+@export var material: Material                                  # 实例化时应用的材质
 
 
 func get_color() -> Color:
@@ -53,22 +50,19 @@ func set_color_and_complexity(next_color: Color, next_complexity: float) -> void
 	color.a = complexity
 
 
-func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
+func get_collision(default_radius: float = 0.0) -> Array[Dictionary]:
 	var radius := default_radius
-	if radius <= 0.0 and _is_vegetation_descriptor():
-		radius = vegetation_radius
-	if not collision_voxels.is_empty():
-		return AutoVoxelProfile.normalize_collision_voxels(collision_voxels, radius)
-	if voxel_profile != null:
-		return voxel_profile.get_collision_voxels(radius)
+	if not collision.is_empty():
+		return normalize_collision(collision, radius)
 	return []
 
 
-func set_collision_voxels(source: Array) -> void:
-	collision_voxels.clear()
+func set_collision(source: Array) -> void:
+	collision.clear()
 	for raw in source:
 		if raw is Dictionary:
-			collision_voxels.append((raw as Dictionary).duplicate(true))
+			var entry := (raw as Dictionary).duplicate(true)
+			collision.append(entry)
 
 
 func set_pivot_variants(variants: Array) -> void:
@@ -79,7 +73,7 @@ func get_pivot_variants() -> Array[Dictionary]:
 	if not pivot_variants.is_empty():
 		return normalize_pivot_variants(pivot_variants)
 	if auto_generate_vertical_pivots:
-		return make_vertical_pivot_variants_from_collision(collision_voxels, vertical_pivot_middle_min_height, vertical_pivot_upper_min_height)
+		return make_vertical_pivot_variants_from_collision(get_collision(), vertical_pivot_middle_min_height, vertical_pivot_upper_min_height)
 	return [{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}]
 
 
@@ -99,13 +93,13 @@ func get_semantic_probes(
 	mesh_or_density = null,
 	density_override: float = -1.0,
 	world_scale: Vector3 = Vector3.ONE,
-	fallback_collision_voxels: Array = []
+	fallback_collision: Array = []
 ) -> Array[Dictionary]:
 	var profile := ensure_semantic_probe_profile()
 	var resolved_mesh: Mesh = null
 	var resolved_density := density_override
 	var resolved_world_scale := world_scale
-	var resolved_fallback_collisions := fallback_collision_voxels
+	var resolved_fallback_collisions := fallback_collision
 	if mesh_or_density is Mesh:
 		resolved_mesh = mesh_or_density as Mesh
 	elif mesh_or_density is float or mesh_or_density is int:
@@ -116,11 +110,11 @@ func get_semantic_probes(
 		resolved_mesh = get_mesh()
 		resolved_world_scale = Vector3.ONE * scatter_max_scale
 	if resolved_fallback_collisions.is_empty():
-		resolved_fallback_collisions = get_collision_voxels()
+		resolved_fallback_collisions = get_collision()
 	var d := semantic_probe_density if resolved_density <= 0.0 else resolved_density
 	if not profile.probes.is_empty() and absf(float(profile.get("density")) - d) <= 0.001:
 		return profile.get_probes()
-	var collisions := get_collision_voxels()
+	var collisions := get_collision()
 	if collisions.is_empty():
 		collisions = resolved_fallback_collisions
 	return profile.rebuild_from_mesh(
@@ -138,12 +132,12 @@ func to_record_fields(default_radius: float = 0.0) -> Dictionary:
 	var profile := ensure_semantic_probe_profile() if semantic_probe_profile != null else null
 	var result := SharedPropertyTypeScript.from_descriptor(self, default_radius)
 	result.merge({
-		"pivot_variants": get_pivot_variants(),
-		"auto_generate_vertical_pivots": auto_generate_vertical_pivots,
-		"semantic_probe_density": semantic_probe_density,
+		"pivot_variants": get_pivot_variants(),                           # runtime anchor/pivot variants
+		"auto_generate_vertical_pivots": auto_generate_vertical_pivots,   # vertical pivot generation flag
+		"semantic_probe_density": semantic_probe_density,                 # probe generation density
 	}, true)
 	if profile != null:
-		result["semantic_probes"] = profile.probes.duplicate(true)
+		result["semantic_probes"] = profile.probes.duplicate(true)        # descriptor-backed semantic probes
 	return result
 
 
@@ -165,7 +159,7 @@ func get_mesh() -> Mesh:
 
 func get_source_mesh() -> Mesh:
 	if not source_mesh_path.is_empty() and (source_mesh == null or source_mesh == mesh):
-		var loaded_source_mesh := AutoAssetFactory.load_mesh(source_mesh_path)
+		var loaded_source_mesh := AutoAssetFactory.load_source_mesh(source_mesh_path)
 		if loaded_source_mesh != null:
 			source_mesh = loaded_source_mesh
 			return source_mesh
@@ -179,8 +173,6 @@ func get_scatter_profile() -> Array[Dictionary]:
 	var result_complexity := get_complexity()
 	result_color.a = result_complexity
 	return [{
-		"channel": vegetation_channel,
-		"radius": vegetation_radius,
 		"color": result_color,
 		"complexity": result_complexity,
 	}]
@@ -207,8 +199,8 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 		cfg["color"] = get_color()
 	if not cfg.has("complexity"):
 		cfg["complexity"] = get_complexity()
-	if not cfg.has("collision_voxels"):
-		cfg["collision_voxels"] = get_collision_voxels()
+	if not cfg.has("collision"):
+		cfg["collision"] = get_collision()
 	if not cfg.has("pivot_variants"):
 		cfg["pivot_variants"] = get_pivot_variants()
 	if not cfg.has("semantic_probe_density"):
@@ -224,14 +216,6 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 		cfg["object_type"] = "vegetation" if object_type.is_empty() else object_type
 	if not cfg.has("object_subtype"):
 		cfg["object_subtype"] = object_subtype
-	if not cfg.has("channel"):
-		cfg["channel"] = vegetation_channel
-	if not cfg.has("vegetation_channel"):
-		cfg["vegetation_channel"] = vegetation_channel
-	if not cfg.has("radius"):
-		cfg["radius"] = vegetation_radius
-	if not cfg.has("vegetation_radius"):
-		cfg["vegetation_radius"] = vegetation_radius
 	if not cfg.has("visual_layer") and visual_layer > 0:
 		cfg["visual_layer"] = visual_layer
 	if not cfg.has("group") and not group.is_empty():
@@ -241,21 +225,10 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 	return cfg
 
 
-func instantiate_vegetation(config: Dictionary = {}) -> AutoVegetation:
-	var node: AutoVegetation = null
-	if vegetation_script != null:
-		var instance = vegetation_script.new()
-		if instance is AutoVegetation:
-			node = instance as AutoVegetation
-		else:
-			push_error("AutoVoxelDescriptor: vegetation_script must create an AutoVegetation")
-	if node == null:
-		node = AutoVegetation.new()
+func instantiate_vegetation(config: Dictionary = {}) -> AutoObject:
+	var node := AutoObject.new()
 	var cfg := make_instance_config(config)
-	if node.has_method("configure_asset"):
-		node.call("configure_asset", cfg)
-	else:
-		node.configure_vegetation(cfg)
+	node.configure_auto_object(cfg)
 	return node
 
 
@@ -267,15 +240,6 @@ func _should_read_profile_average() -> bool:
 	)
 
 
-func _is_vegetation_descriptor() -> bool:
-	return (
-		object_type.strip_edges().to_lower() == "vegetation"
-		or vegetation_script != null
-		or mesh != null
-		or not mesh_create_method.strip_edges().is_empty()
-		or not asset_id.strip_edges().is_empty()
-	)
-
 
 static func from_profile(profile: AutoVoxelProfile, default_radius: float = 0.0) -> Resource:
 	var descriptor = load("res://scripts/auto_voxel_descriptor.gd").new()
@@ -283,8 +247,65 @@ static func from_profile(profile: AutoVoxelProfile, default_radius: float = 0.0)
 		return descriptor
 	descriptor.color = profile.get_color()
 	descriptor.complexity = profile.get_complexity()
-	descriptor.collision_voxels = profile.get_collision_voxels(default_radius)
+	descriptor.set_collision(profile.get_collision(default_radius))
 	return descriptor
+
+
+static func normalize_collision(source: Array, default_radius: float = 0.0) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for raw_collision in source:
+		if not raw_collision is Dictionary:
+			continue
+		var collision := (raw_collision as Dictionary).duplicate(true)
+		if _is_point_collision_sample(collision):
+			var voxel := _vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
+			collision["voxel"] = voxel              # local voxel coordinate
+			collision["collision_strength"] = clampf(float(collision.get("collision_strength", 1.0)), 0.0, 1.0)
+			if not collision.has("weight"):
+				collision["weight"] = 1.0           # placement footprint weight
+			result.append(collision)
+			continue
+		if not collision.has("shape"):
+			collision["shape"] = "cylinder"        # authoring helper shape
+		if not collision.has("radius") or float(collision.radius) <= 0.0:
+			collision["radius"] = default_radius   # authoring helper radius
+		if not collision.has("y_min"):
+			collision["y_min"] = 0.0               # local minimum height
+		if not collision.has("y_max"):
+			collision["y_max"] = 2.0               # local maximum height
+		if not collision.has("erosion_radius"):
+			collision["erosion_radius"] = 0.0
+		if not collision.has("dilation_radius"):
+			collision["dilation_radius"] = 0.0
+		if not collision.has("collision_strength"):
+			collision["collision_strength"] = 1.0
+		collision["collision_strength"] = clampf(float(collision.get("collision_strength", 1.0)), 0.0, 1.0)
+		result.append(collision)
+	return result
+
+
+static func _is_point_collision_sample(collision: Dictionary) -> bool:
+	return collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset")
+
+
+static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
+	if value is Vector3i:
+		return value as Vector3i
+	if value is Vector3:
+		var v := value as Vector3
+		return Vector3i(roundi(v.x), roundi(v.y), roundi(v.z))
+	if value is Array:
+		var arr := value as Array
+		if arr.size() >= 3:
+			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
+	if value is Dictionary:
+		var dict := value as Dictionary
+		return Vector3i(
+			int(dict.get("x", fallback.x)),
+			int(dict.get("y", fallback.y)),
+			int(dict.get("z", fallback.z))
+		)
+	return fallback
 
 
 static func normalize_pivot_variants(raw_variants: Array) -> Array[Dictionary]:
@@ -304,10 +325,10 @@ static func normalize_pivot_variants(raw_variants: Array) -> Array[Dictionary]:
 	return result
 
 
-static func make_vertical_pivot_variants_from_collision(collision_voxels: Array, middle_min_height: float = 1.5, upper_min_height: float = 3.0) -> Array[Dictionary]:
+static func make_vertical_pivot_variants_from_collision(collision: Array, middle_min_height: float = 1.5, upper_min_height: float = 3.0) -> Array[Dictionary]:
 	var y_min := INF
 	var y_max := -INF
-	for raw_cv in collision_voxels:
+	for raw_cv in collision:
 		if not raw_cv is Dictionary:
 			continue
 		var cv := raw_cv as Dictionary

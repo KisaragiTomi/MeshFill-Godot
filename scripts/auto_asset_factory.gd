@@ -1,8 +1,13 @@
 class_name AutoAssetFactory
 extends RefCounted
 
-const CHANNEL_ENTRIES_KEY := "channel_entries"
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
+const SUPPORTED_VEGETATION_MESH_CREATE_METHODS := [
+	"create_tree_mesh",
+	"create_midstory_mesh",
+	"create_bush_mesh",
+	"create_flower_mesh",
+]
 
 
 static func color_from_value(value, fallback: Color = Color.WHITE) -> Color:
@@ -21,33 +26,24 @@ static func duplicate_dictionary_array(source: Array) -> Array[Dictionary]:
 	return SharedPropertyTypeScript.duplicate_dictionary_array(source)
 
 
-static func make_channel_entries(
-	channel_specs: Array,
-	entry_color: Color,
-	entry_complexity: float,
-	default_radius: float = 0.0,
-	base_pixel: Vector2i = Vector2i.ZERO,
-	volume_xz_resolution: int = 0,
-	y_min: float = 0.0,
-	y_max: float = 0.0
-) -> Array[Dictionary]:
-	return AutoObject.make_channel_entries(channel_specs, entry_color, entry_complexity, default_radius, base_pixel, volume_xz_resolution, y_min, y_max)
+static func is_supported_vegetation_mesh_create_method(method_name: String) -> bool:
+	return SUPPORTED_VEGETATION_MESH_CREATE_METHODS.has(method_name.strip_edges())
 
 
 static func create_voxel_profile(
 	entry_color: Color,
 	entry_complexity: float,
 	default_radius: float = 0.0,
-	collision_voxels: Array = []
+	collision: Array = []
 ) -> AutoVoxelProfile:
-	return AutoObject.create_voxel_profile(entry_color, entry_complexity, default_radius, collision_voxels)
+	return AutoObject.create_voxel_profile(entry_color, entry_complexity, default_radius, collision)
 
 
 static func create_voxel_descriptor(
 	entry_color: Color,
 	entry_complexity: float,
 	default_radius: float = 0.0,
-	collision_voxels: Array = [],
+	collision: Array = [],
 	pivot_variants: Array = [],
 	semantic_probe_profile: Resource = null,
 	semantic_probe_density: float = 1.0,
@@ -57,19 +53,12 @@ static func create_voxel_descriptor(
 		entry_color,
 		entry_complexity,
 		default_radius,
-		collision_voxels,
+		collision,
 		pivot_variants,
 		semantic_probe_profile,
 		semantic_probe_density,
 		context_sensing_radius
 	)
-
-
-static func load_or_new_mesh_data_asset(asset_path: String) -> MeshDataAsset:
-	var existing = load(asset_path) if not asset_path.is_empty() else null
-	if existing is MeshDataAsset:
-		return existing as MeshDataAsset
-	return MeshDataAsset.new()
 
 
 static func load_or_new_rock_asset(asset_path: String) -> AutoRock:
@@ -80,32 +69,7 @@ static func load_or_new_rock_asset(asset_path: String) -> AutoRock:
 			return instance as AutoRock
 		if instance != null:
 			instance.free()
-	if existing is MeshDataAsset:
-		return rock_from_mesh_data_asset(existing as MeshDataAsset)
-	return AutoCliffRock.new()
-
-
-static func rock_from_mesh_data_asset(asset: MeshDataAsset, subtype: String = "cliff") -> AutoRock:
-	var rock := AutoCliffRock.new()
-	if asset == null:
-		return rock
-	rock.configure_rock({
-		"asset_id": asset.resource_path.get_file().get_basename() if not asset.resource_path.is_empty() else "",
-		"object_subtype": subtype,
-		"mesh": asset.mesh,
-		"source_mesh": asset.get_source_mesh(),
-		"source_mesh_path": asset.source_mesh_path,
-		"mesh_height_texture": asset.mesh_height_texture,
-		"mesh_size": asset.mesh_size,
-		"voxel_profile": asset.voxel_profile,
-		"color": asset.get_voxel_color(),
-		"complexity": asset.get_voxel_complexity(),
-		"collision_voxels": asset.get_collision_voxels(asset.mesh_size * 0.5),
-		"random_rotate": asset.random_rotate,
-		"random_scale": asset.random_scale,
-		"random_height_offset": asset.random_height_offset,
-	})
-	return rock
+	return AutoRock.new()
 
 
 static func create_or_update_rock_asset(
@@ -116,27 +80,33 @@ static func create_or_update_rock_asset(
 	profile: AutoVoxelProfile = null,
 	entry_color: Color = Color(0.55, 0.50, 0.45, 1.0),
 	entry_complexity: float = 1.0,
-	collision_voxels: Array = [],
+	collision: Array = [],
 	random_rotate: Vector2 = Vector2(0.0, 1.0),
 	random_scale: Vector2 = Vector2(0.8, 1.2),
 	random_height_offset: Vector2 = Vector2(-0.5, 0.5),
-	sync_legacy_fields: bool = true,
+	sync_exported_fields: bool = true,
 	source_mesh: Mesh = null,
-	source_mesh_path: String = ""
+	source_mesh_path: String = "",
+	preserve_descriptor_shared_fields: bool = true
 ) -> AutoRock:
-	var result := asset if asset != null else AutoCliffRock.new()
+	var result := asset if asset != null else AutoRock.new()
 	var direct_color := entry_color
 	var direct_complexity := clampf(entry_complexity, 0.0, 1.0)
-	var direct_collision_voxels: Array[Dictionary] = []
+	var direct_collision: Array[Dictionary] = []
 	if profile != null:
 		direct_color = profile.get_color()
 		direct_complexity = profile.get_complexity()
-		direct_collision_voxels = profile.get_collision_voxels(0.0)
-	if not collision_voxels.is_empty():
-		direct_collision_voxels = duplicate_dictionary_array(collision_voxels)
+		direct_collision = profile.get_collision(0.0)
+	if preserve_descriptor_shared_fields and result.voxel_descriptor != null:
+		var descriptor_fields := SharedPropertyTypeScript.from_descriptor(result.voxel_descriptor, mesh_size * 0.5)
+		direct_color = descriptor_fields.color
+		direct_complexity = float(descriptor_fields.complexity)
+		direct_collision = duplicate_dictionary_array(descriptor_fields.get("collision", []))
+	if not collision.is_empty():
+		direct_collision = duplicate_dictionary_array(collision)
 	direct_color.a = direct_complexity
-	if not direct_collision_voxels.is_empty():
-		direct_collision_voxels = AutoVoxelProfile.normalize_collision_voxels(direct_collision_voxels, 0.0)
+	if not direct_collision.is_empty():
+		direct_collision = AutoVoxelDescriptor.normalize_collision(direct_collision, 0.0)
 	var cfg := {
 		"mesh": mesh,
 		"source_mesh": source_mesh if source_mesh != null else mesh,
@@ -146,21 +116,19 @@ static func create_or_update_rock_asset(
 		"voxel_profile": profile,
 		"color": direct_color,
 		"complexity": direct_complexity,
-		"collision_voxels": direct_collision_voxels,
+		"collision": direct_collision,
 		"random_rotate": random_rotate,
 		"random_scale": random_scale,
 		"random_height_offset": random_height_offset,
 	}
-	if result.has_method("configure_cliff"):
-		result.call("configure_cliff", cfg)
-	elif result.has_method("configure_asset"):
+	if result.has_method("configure_asset"):
 		result.call("configure_asset", cfg)
 	else:
 		result.configure_rock(cfg)
-	if sync_legacy_fields:
+	if sync_exported_fields:
 		result.voxel_color = direct_color
 		result.voxel_complexity = direct_complexity
-		result.set_collision_voxels(direct_collision_voxels)
+		result.set_collision(direct_collision)
 	return result
 
 
@@ -184,7 +152,7 @@ static func save_rock_asset(rock: AutoRock, resource_path: String) -> int:
 
 
 static func configure_vegetation_instance(
-	vegetation: AutoVegetation,
+	vegetation: AutoObject,
 	vegetation_asset: Resource,
 	config: Dictionary = {}
 ) -> void:
@@ -196,10 +164,10 @@ static func configure_vegetation_instance(
 	if vegetation.has_method("configure_asset"):
 		vegetation.call("configure_asset", cfg)
 	else:
-		vegetation.configure_vegetation(cfg)
+		vegetation.configure_auto_object(cfg)
 
 
-static func make_profile_asset_voxel_record(
+static func make_profile_voxel_write_spec(
 	record_id: String,
 	object_type: String,
 	position: Vector3,
@@ -211,10 +179,10 @@ static func make_profile_asset_voxel_record(
 	default_radius: float,
 	y_min: float = 0.0,
 	y_max: float = 0.0,
-	collision_voxels_override: Array = [],
+	collision_override: Array = [],
 	extra_fields: Dictionary = {}
 ) -> Dictionary:
-	return AutoObject.make_profile_asset_voxel_record(
+	return AutoObject.make_profile_voxel_write_spec(
 		record_id,
 		object_type,
 		position,
@@ -226,12 +194,44 @@ static func make_profile_asset_voxel_record(
 		default_radius,
 		y_min,
 		y_max,
-		collision_voxels_override,
+		collision_override,
 		extra_fields
 	)
 
 
-static func make_rock_asset_voxel_record(
+static func make_profile_instance_stamp_write_spec(
+	record_id: String,
+	object_type: String,
+	position: Vector3,
+	rotation_degrees: Vector3,
+	scale: Vector3,
+	base_pixel: Vector2i,
+	volume_xz_resolution: int,
+	profile: AutoVoxelProfile,
+	default_radius: float,
+	y_min: float = 0.0,
+	y_max: float = 0.0,
+	collision_override: Array = [],
+	extra_fields: Dictionary = {}
+) -> Dictionary:
+	return make_profile_voxel_write_spec(
+		record_id,
+		object_type,
+		position,
+		rotation_degrees,
+		scale,
+		base_pixel,
+		volume_xz_resolution,
+		profile,
+		default_radius,
+		y_min,
+		y_max,
+		collision_override,
+		extra_fields
+	)
+
+
+static func make_rock_voxel_write_spec(
 	record_id: String,
 	rock: MeshInstance3D,
 	mesh_index: int,
@@ -245,7 +245,7 @@ static func make_rock_asset_voxel_record(
 	var fields := extra_fields.duplicate(true)
 	fields["mesh_index"] = mesh_index
 	if rock is AutoRock:
-		return (rock as AutoRock).make_asset_voxel_record(record_id, base_pixel, volume_xz_resolution, fields)
+		return (rock as AutoRock).make_voxel_write_spec(record_id, base_pixel, volume_xz_resolution, fields)
 	var record_rock: AutoRock = null
 	var duplicate_node = asset.duplicate()
 	if duplicate_node is AutoRock:
@@ -253,7 +253,7 @@ static func make_rock_asset_voxel_record(
 	elif duplicate_node != null:
 		duplicate_node.free()
 	if record_rock == null:
-		record_rock = AutoCliffRock.new()
+		record_rock = AutoRock.new()
 	record_rock.configure_from_rock_asset(asset, {
 		"mesh": rock.mesh,
 		"position": rock.position,
@@ -262,21 +262,51 @@ static func make_rock_asset_voxel_record(
 		"mesh_index": mesh_index,
 	})
 	record_rock.scale = rock.scale
-	var record := record_rock.make_asset_voxel_record(record_id, base_pixel, volume_xz_resolution, fields)
+	var record := record_rock.make_voxel_write_spec(record_id, base_pixel, volume_xz_resolution, fields)
 	record_rock.free()
 	return record
 
 
-static func make_vegetation_asset_voxel_record(
+static func make_rock_instance_stamp_write_spec(
 	record_id: String,
-	vegetation: AutoVegetation,
+	rock: MeshInstance3D,
+	mesh_index: int,
+	asset: AutoRock,
+	base_pixel: Vector2i,
+	volume_xz_resolution: int,
+	extra_fields: Dictionary = {}
+) -> Dictionary:
+	return make_rock_voxel_write_spec(
+		record_id,
+		rock,
+		mesh_index,
+		asset,
+		base_pixel,
+		volume_xz_resolution,
+		extra_fields
+	)
+
+
+static func make_vegetation_voxel_write_spec(
+	record_id: String,
+	vegetation: AutoObject,
 	base_pixel: Vector2i,
 	volume_xz_resolution: int,
 	extra_fields: Dictionary = {}
 ) -> Dictionary:
 	if vegetation == null:
 		return {}
-	return vegetation.make_asset_voxel_record(record_id, base_pixel, volume_xz_resolution, extra_fields)
+	return vegetation.make_voxel_write_spec(record_id, base_pixel, volume_xz_resolution, extra_fields)
+
+
+static func make_vegetation_instance_stamp_write_spec(
+	record_id: String,
+	vegetation: AutoObject,
+	base_pixel: Vector2i,
+	volume_xz_resolution: int,
+	extra_fields: Dictionary = {}
+) -> Dictionary:
+	return make_vegetation_voxel_write_spec(record_id, vegetation, base_pixel, volume_xz_resolution, extra_fields)
 
 
 static func load_mesh(mesh_path: String) -> Mesh:
@@ -464,7 +494,7 @@ static func write_vegetation_subclass(
 	var method_name := "configure_%s" % _to_snake_case(object_subtype)
 	var content := (
 		"class_name %s\n"
-		+ "extends AutoVegetation\n\n"
+		+ "extends AutoObject\n\n"
 		+ "const DEFAULT_SUBTYPE := \"%s\"\n"
 		+ "const DEFAULT_CHANNEL := %d\n"
 		+ "const DEFAULT_RADIUS := %.6f\n"
@@ -474,11 +504,10 @@ static func write_vegetation_subclass(
 		+ "func configure_asset(config: Dictionary) -> void:\n"
 		+ "\tvar cfg := config.duplicate(true)\n"
 		+ "\tcfg[\"object_subtype\"] = DEFAULT_SUBTYPE\n"
-		+ "\tcfg[\"channel\"] = DEFAULT_CHANNEL\n"
-		+ "\tcfg[\"radius\"] = DEFAULT_RADIUS\n"
+		+ "\tcfg[\"object_type\"] = \"vegetation\"\n"
 		+ "\tif not cfg.has(\"group\") and not DEFAULT_GROUP.is_empty():\n"
 		+ "\t\tcfg[\"group\"] = DEFAULT_GROUP\n"
-		+ "\tconfigure_vegetation(cfg)\n"
+		+ "\tconfigure_auto_object(cfg)\n"
 	) % [class_name_value, object_subtype, channel, radius, group_name, method_name]
 	return write_text_file(script_path, content)
 
