@@ -21,3 +21,7 @@ config/features=PackedStringArray("4.6", "Forward Plus")
 [dotnet]
 
 project/assembly_name="MeshFill-Godot"
+
+[meshfill]
+
+scene_voxel_tile/size_voxels=Vector3i(4, 4, 4)

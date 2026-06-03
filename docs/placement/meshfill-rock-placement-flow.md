@@ -8,7 +8,20 @@
 
 系统通过 Compute Shader 管线迭代地在场景中放置岩石 Mesh，每次放置后将该石头的高度"印"到场景高度图上，使场景实际高度逐步逼近目标高度（target_height）。
 
-`CliffGenerator.generate_placement()` / `generate_surface_placement()` 是通用同类资产 GPU fitting producer，当前类名仍沿用历史命名。石头路径只是它的一个 consumer：输入一组 `AutoRock` / `AutoCliffRock` 资产、目标高度和遮罩，输出满足候选评分、去重和重叠控制的 placement result。后续 `main.gd` 才把这些结果实例化成 `AutoRock` 子类，并派生 `voxel_write_spec` 写入场景体素系统。
+`PlacementFittingGenerator.generate_placement()` / `generate_surface_placement()` 是通用 heightfield fitting producer。石头路径只是它的一个 consumer：输入一组带 `mesh_height_texture` / `mesh_size` 的资产、目标高度和遮罩，输出满足候选评分、去重和重叠控制的 placement result。后续 `main.gd` 才把这些结果实例化成 `AutoRock` 子类，并派生 `instance_stamp_write_spec`（`ISWS`）写入场景体素系统。
+
+---
+
+## 实现进度
+
+| 项 | 状态 | 代码 / 测试 |
+| --- | --- | --- |
+| Heightfield fitting GPU producer | 已实现 | `PlacementFittingGenerator.generate_placement()` / `generate_surface_placement()` |
+| 石头 consumer 实例化 | 已实现 | `main.gd` 将 fitting result 实例化为 `AutoRock` |
+| Runtime 写入 payload | 已实现 | 实例派生 `instance_stamp_write_spec`，由 `SceneVoxelCommitter.apply_instance_stamp_write_spec()` 提交 |
+| Descriptor-backed 语义 | 已实现 | `AutoRock` / `AutoObject` descriptor-backed getters；`tools/test_markdown_contracts.gd` 覆盖 shared fields |
+| TargetSV_B / semantic probe routing 接入 | 部分实现 | 已有 target read arrays、prefilter route 和 VPG 消费；石头 heightfield fitting 仍是独立 producer |
+| Stamp rasterizer 替代 heightfield fitting | 未实现 | 仍在 TargetSV / stamp 计划阶段 |
 
 ---
 
@@ -16,35 +29,15 @@
 
 ### 输入纹理（256×256，RGBAF）
 
-| 名称 | 含义 |
-|------|------|
-| `scene_depth` | 场景俯视深度，`height = max_height - depth` 得到地面高度 |
-| `scene_normal` | 场景法线 |
-| `object_depth` | 已有物体俯视深度（用于遮挡判断） |
-| `object_normal` | 已有物体法线（z>0 表示有物体） |
-| `height_normal` | 高度法线（用于 ExtentMask 扩展） |
-| `target_height` | **目标高度** — 每个像素期望达到的最终高度 |
+输入纹理字段含义维护在 `scripts/placement_fitting_generator.gd` 的 export 声明和 `_create_input_textures()` 返回字典旁。
 
-### 每个 fitted 石头资产（AutoRock / AutoCliffRock）
+### 每个 fitted 石头资产（AutoRock）
 
-| 字段 | 含义 |
-|------|------|
-| `mesh` | 石头的 3D Mesh |
-| `mesh_height_texture` | **石头高度图** — 从俯视视角，每像素记录石头在该位置的高度值。小于 -10000 表示该像素无有效几何 |
-| `mesh_size` | 石头在纹理空间中的尺寸 |
-| `random_rotate` | 随机旋转范围 |
-| `random_scale` | 随机缩放范围 |
-| `random_height_offset` | 随机高度偏移范围 |
+Fitted 资产字段含义维护在 `scripts/auto_rock.gd` 顶部声明和 `scripts/placement_fitting_generator.gd` 的 asset 读取 helper 旁；`mesh` 来自 `MeshInstance3D.mesh`。
 
 ### 工作纹理
 
-| 名称 | 像素通道含义 |
-|------|-------------|
-| `current_scene_depth` | R=当前高度, G=un_generate_mask, B=generate_mask |
-| `target_height` | R=目标高度, G=generate_mask, B=旋转角 |
-| `result_a/b` | 放置结果缓冲（Ping-Pong），row0=位置, row1=旋转/缩放/mesh索引 |
-| `filter_result` | 每个 16×16 group 的最优候选得分 |
-| `save_rotate_scale` | 候选放置的旋转、缩放、高度、mesh索引 |
+工作纹理字段含义维护在 `scripts/placement_fitting_generator.gd` 的 `_create_working_textures()` 返回字典旁。
 
 ---
 
@@ -67,7 +60,7 @@ Pass 2: Extent Generate Mask ────── 扩展生成遮罩边界
   │
   ▼
 ┌──────────────────────────────────── 迭代 N 次（默认 50 次）
-│  Pass 3: Fill Vertical Rock ────── 评估每个候选位置，利用石头高度图打分
+│  Pass 3: Fill Heightfield Asset ── 评估每个候选位置，利用资产高度图打分
 │  Pass 4: Find Best Pixel ───────── 选出最佳放置位置，去重
 │  Pass 5: Update Current Height ─── 将石头高度印到场景高度图上
 │  Ping-Pong 交换缓冲
@@ -81,7 +74,7 @@ Pass 2: Extent Generate Mask ────── 扩展生成遮罩边界
 
 ## 各 Pass 详解
 
-### Pass 1: Init（`init_vertical_rock.glsl`）
+### Pass 1: Init（`init_heightfield_fitting.glsl`）
 
 **目的：** 将输入纹理转换为工作格式，计算初始遮罩。
 
@@ -118,7 +111,7 @@ Shared Memory 泛洪：如果邻居有 `generate_mask > 0` 且高度较低，就
 
 ### 迭代阶段（每次迭代处理一个石头候选）
 
-#### Pass 3: Fill Vertical Rock（`fill_vertical_rock.glsl`）— 候选评估
+#### Pass 3: Fill Heightfield Asset（`fill_heightfield_asset.glsl`）— 候选评估
 
 **核心逻辑：利用石头高度图评估每个位置的放置质量。**
 
@@ -177,10 +170,10 @@ new_height = clamp(max(current_height, draw_h), 0, max_height)
 
 **石头只会抬高场景高度，不会降低。** 每次放置后，`current_height` 向上移动，更接近 `target_height`。
 
-`rock_overlap` 会作为 `overlap_ratio` 传入此 pass，用于控制新石头高度印章与当前高度之间的混合：
+`stamp_overlap` 会作为 `overlap_ratio` 传入此 pass，用于控制新资产高度印章与当前高度之间的混合：
 
 ```text
-effective_draw_h = mix(draw_h, current_height, rock_overlap)
+effective_draw_h = mix(draw_h, current_height, stamp_overlap)
 ```
 
 当前重叠控制分两层：
@@ -188,7 +181,7 @@ effective_draw_h = mix(draw_h, current_height, rock_overlap)
 | 层 | 位置 | 作用 |
 |---|---|---|
 | 候选去重 | `find_best_pixel.glsl` | 同一轮候选之间按 5×5 邻域和尺寸距离去重，避免同类岩石中心过近 |
-| 高度叠加控制 | `update_current_height.glsl` 的 `rock_overlap` | 控制新石头印章对 `current_height` 的贡献；值越接近 `1.0`，越保守，越少抬高/叠加 |
+| 高度叠加控制 | `PlacementFittingGenerator.stamp_overlap` / `update_current_height.glsl` 的 `overlap_ratio` | 控制新资产印章对 `current_height` 的贡献；值越接近 `1.0`，越保守，越少抬高/叠加 |
 
 ---
 
@@ -225,25 +218,16 @@ world_pos.x = uv_x × capture_size - capture_size/2
 world_pos.z = uv_y × capture_size - capture_size/2
 world_pos.y = result_height  （从 GPU 结果直接读取）
 world_scale = scale / mesh_size × capture_size
-rotation_y  = result_rotation
+rotation_degrees.y = result_rotation
 ```
 
-每个石头会复制对应的 `AutoRock` / `AutoCliffRock` 原型，作为 `AutoObject` 子类节点添加到场景树。
+每个石头会复制对应的 `AutoRock` 原型，作为 `AutoObject` 子类节点添加到场景树。
 
 ---
 
 ## 关键参数
 
-| 参数 | 默认值 | 作用 |
-|------|--------|------|
-| `num_iterations` | 50 | 迭代次数，每次尝试放置一批石头 |
-| `capture_size` | 30m | 俯视捕获的场景范围 |
-| `max_height` | 50m | 最大高度限制 |
-| `generate_threshold` | 0.5 | 石头覆盖区域中 generate_mask 的最低比例 |
-| `un_generate_threshold` | 0.3 | 石头覆盖区域中 un_generate_mask 的最高比例 |
-| `rock_overlap` | 0.0 | 新石头高度印章与当前高度混合的比例；越高越保守，越限制同类填充结果继续叠加 |
-| `mesh_height_scale` | 0.5 | 石头高度图的缩放系数 |
-| `fbx_unit_scale` | 1.0 | FBX 单位到场景单位的缩放 |
+参数字段含义维护在 `scripts/placement_fitting_generator.gd` 的 export 声明和调用处；当前默认值以代码为准。
 
 ---
 
@@ -255,3 +239,11 @@ MeshFill 的本质是一个 **基于高度图的贪心填充算法**：
 2. 每轮迭代，在 GPU 上并行评估每个候选位置的石头高度图与场景的匹配程度
 3. 选出最优位置放置，然后将石头的高度贡献**叠加到场景当前高度**
 4. 重复迭代，场景高度逐步上升，直到接近目标高度或迭代耗尽
+
+## 测试场景
+
+| 场景 | 说明 | Godot 场景 |
+| --- | --- | --- |
+| [Rock Placement 总览](../../demos/placement-meshfill-rock-placement-flow/placement-meshfill-rock-placement-flow.md) | 测试方法与验收标准 | [`../../demos/placement-meshfill-rock-placement-flow/placement-meshfill-rock-placement-flow.tscn`](../../demos/placement-meshfill-rock-placement-flow/placement-meshfill-rock-placement-flow.tscn) |
+| [Heightfield Rock Placement](../../demos/modules/heightfield-rock-placement/heightfield-rock-placement.md) | 测试方法与验收标准 | [`../../demos/modules/heightfield-rock-placement/heightfield-rock-placement.tscn`](../../demos/modules/heightfield-rock-placement/heightfield-rock-placement.tscn) |
+| [SceneVoxel Commit](../../demos/modules/scene-voxel-commit/scene-voxel-commit.md) | 测试方法与验收标准 | [`../../demos/modules/scene-voxel-commit/scene-voxel-commit.tscn`](../../demos/modules/scene-voxel-commit/scene-voxel-commit.tscn) |

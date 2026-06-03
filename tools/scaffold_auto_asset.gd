@@ -63,13 +63,18 @@ func _scaffold_rock(args: Array, config: Dictionary) -> int:
 		Color(0.55, 0.50, 0.45, 1.0)
 	)
 	var complexity := clampf(float(_get_value(args, config, "complexity", 1.0)), 0.0, 1.0)
-	var collision_voxels := _array_value(args, config, "collision_voxels", [])
+	var collision := _array_value(args, config, "collision", [])
+	var preserve_descriptor_shared_fields := not (
+		_has_arg_or_config(args, config, "color")
+		or _has_arg_or_config(args, config, "complexity")
+		or _has_arg_or_config(args, config, "collision")
+	)
 	var radius := float(_get_value(args, config, "radius", 0.0))
 	var profile := AutoAssetFactoryScript.create_voxel_profile(
 		color,
 		complexity,
 		radius,
-		collision_voxels
+		collision
 	)
 
 	var err := AutoAssetFactoryScript.save_resource(profile, profile_path)
@@ -114,13 +119,14 @@ func _scaffold_rock(args: Array, config: Dictionary) -> int:
 		profile,
 		color,
 		complexity,
-		collision_voxels,
+		collision,
 		random_rotate,
 		random_scale,
 		random_height_offset,
-		bool(_get_value(args, config, "sync_legacy_fields", true)),
+		bool(_get_value(args, config, "sync_exported_fields", true)),
 		source_mesh,
-		source_mesh_path
+		source_mesh_path,
+		preserve_descriptor_shared_fields
 	)
 	asset.asset_id = str(_get_value(args, config, "asset_id", asset_path.get_file().get_basename()))
 	if asset.name.is_empty():
@@ -153,8 +159,8 @@ func _scaffold_vegetation(args: Array, config: Dictionary) -> int:
 	)
 	var complexity := clampf(float(_get_value(args, config, "complexity", color.a)), 0.0, 1.0)
 	var radius := float(_get_value(args, config, "radius", 0.25))
-	var collision_voxels := _array_value(args, config, "collision_voxels", [])
-	var descriptor := AutoAssetFactoryScript.create_voxel_descriptor(color, complexity, radius, collision_voxels)
+	var collision := _array_value(args, config, "collision", [])
+	var descriptor := AutoAssetFactoryScript.create_voxel_descriptor(color, complexity, radius, collision)
 
 	var err := AutoAssetFactoryScript.write_vegetation_subclass(
 		class_name_value,
@@ -183,7 +189,12 @@ func _scaffold_vegetation(args: Array, config: Dictionary) -> int:
 	descriptor.set("scatter_max_scale", float(_get_value(args, config, "scatter_max_scale", 1.0)))
 	descriptor.set("visual_layer", int(_get_value(args, config, "visual_layer", 14)))
 	descriptor.set("group", group_name)
-	descriptor.set("mesh_create_method", str(_get_value(args, config, "mesh_create_method", "")))
+	var mesh_create_method := str(_get_value(args, config, "mesh_create_method", "")).strip_edges()
+	if not mesh_create_method.is_empty():
+		if not AutoAssetFactoryScript.is_supported_vegetation_mesh_create_method(mesh_create_method):
+			push_error("Unsupported vegetation mesh_create_method: %s" % mesh_create_method)
+			return ERR_INVALID_PARAMETER
+		descriptor.set("mesh_create_method", mesh_create_method)
 
 	var mesh_path := str(_get_value(args, config, "mesh", ""))
 	if not mesh_path.is_empty():
@@ -192,7 +203,7 @@ func _scaffold_vegetation(args: Array, config: Dictionary) -> int:
 			push_error("Vegetation mesh could not be loaded: %s" % mesh_path)
 			return ERR_FILE_NOT_FOUND
 		descriptor.set("mesh", mesh)
-		var source_mesh := AutoAssetFactoryScript.load_mesh(mesh_path)
+		var source_mesh := AutoAssetFactoryScript.load_source_mesh(mesh_path)
 		if source_mesh != null:
 			descriptor.set("source_mesh", source_mesh)
 		descriptor.set("source_mesh_path", mesh_path)
@@ -237,6 +248,10 @@ func _get_value(args: Array, config: Dictionary, key: String, fallback):
 	if config.has(key):
 		return config[key]
 	return fallback
+
+
+func _has_arg_or_config(args: Array, config: Dictionary, key: String) -> bool:
+	return _arg_value(args, "--" + key, null) != null or config.has(key)
 
 
 func _array_value(args: Array, config: Dictionary, key: String, fallback: Array) -> Array:
@@ -302,6 +317,9 @@ Rock JSON:
     "mesh_size": 4.2,
     "color": [0.55, 0.50, 0.45, 1.0],
     "complexity": 1.0,
+    "collision": [
+      {"shape": "cylinder", "radius": 1.2, "y_min": 0.0, "y_max": 2.0}
+    ],
     "random_rotate": [0.0, 1.0],
     "random_scale": [0.8, 1.2],
     "random_height_offset": [-0.5, 0.5]
@@ -317,6 +335,7 @@ Vegetation JSON:
     "radius": 0.25,
     "color": [0.9, 0.35, 0.5, 0.7],
     "complexity": 0.7,
+    "collision": [],
     "scatter_min_distance": 0.35,
     "scatter_max_count": 800,
     "scatter_max_scale": 0.7,

@@ -73,9 +73,9 @@ void try_emit_anchor(ivec3 p) {
     }
 }
 
-// Shared: column-max target_top detection.
-// For target_top we need the highest occupied target voxel per XZ column in
-// this tile.  We store the best Y per (local_x, local_z) = 8×8 = 64 slots.
+// Shared: highest target-occupied candidate per XZ column.
+// Anchors are position-only; this tracks one additional candidate position per
+// column without assigning any typed anchor kind.
 shared int s_top_y[8][8];
 
 void main() {
@@ -96,13 +96,13 @@ void main() {
     uint ly = gl_LocalInvocationID.y;
     uint lz = gl_LocalInvocationID.z;
 
-    // Init shared for target_top column tracking
+    // Init shared for column-top candidate tracking.
     if (ly == 0u) {
         s_top_y[lx][lz] = -1;
     }
     barrier();
 
-    // --- Ground anchor check ---
+    // --- Supported candidate position check ---
     if (in_bounds(p)) {
         int idx = voxel_index(p);
         float sv = scene_occ[idx];
@@ -116,14 +116,14 @@ void main() {
             }
         }
 
-        // Target top: track highest target-occupied voxel per column
+        // Track the highest target-occupied candidate voxel per column.
         if (tv >= min_target && sv <= max_scene && cv <= max_coll) {
             atomicMax(s_top_y[lx][lz], int(ly));
         }
     }
     barrier();
 
-    // --- Target-top position emit (one thread per column) ---
+    // --- Column-top candidate emit (one thread per column) ---
     if (ly == 0u && lz == 0u) {
         // Not needed — we emit per-column below
     }
@@ -134,9 +134,10 @@ void main() {
             ivec3 top_p = tile_origin + ivec3(int(lx), best_local_y, int(lz));
             if (in_bounds(top_p)) {
                 float support = get_support(top_p);
-                // If support is enough, the ground-position check already emitted
-                // this same voxel.  Otherwise add the top position as its own
-                // untyped anchor; downstream uses the position directly.
+                // If support is enough, the supported-position check already
+                // emitted this same voxel.  Otherwise add the column-top
+                // candidate as another untyped anchor; downstream uses the
+                // position directly.
                 if (support < min_support) {
                     try_emit_anchor(top_p);
                 }

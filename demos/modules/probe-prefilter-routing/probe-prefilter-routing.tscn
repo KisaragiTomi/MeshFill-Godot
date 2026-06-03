@@ -1,0 +1,40 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
+
+[node name="ModuleProbePrefilterRouting" type="Node3D"]
+script = ExtResource("1_contract")
+metadata/module_id = "probe-prefilter-routing"
+metadata/source_docs = "res://docs/placement/autoobject-probe-prefilter.md; res://docs/core/asset-semantic-probes.md; res://docs/placement/target-scene-voxel-projection.md"
+metadata/test_doc = "res://demos/modules/probe-prefilter-routing/probe-prefilter-routing.md"
+metadata/focus = "GPU anchor collection, descriptor probe scoring, route votes, and conservative expansion"
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 9)
+current = true
+fov = 45.0
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.707, -0.354, 0.612, 0, 0.866, 0.5, -0.707, -0.354, 0.612, 0, 4, 4)
+light_energy = 1.2
+
+[node name="Title" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.55, 0)
+text = "Module: Probe Prefilter Routing"
+font_size = 38
+pixel_size = 0.01
+outline_size = 6
+
+[node name="Method" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, 0)
+text = "Method\n- run GPU prefilter tests\n- inspect route profile schema\n- verify TargetSV_B clamp semantics"
+font_size = 27
+pixel_size = 0.01
+outline_size = 4
+
+[node name="Acceptance" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -1.15, 0)
+text = "Acceptance\n- prefilter only reduces candidates\n- route expansion is conservative\n- no final SceneVoxel write happens here"
+font_size = 27
+pixel_size = 0.01
+outline_size = 4

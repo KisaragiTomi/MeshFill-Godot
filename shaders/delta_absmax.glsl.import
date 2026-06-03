@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://5ru756tknjf2"
+path="res://.godot/imported/delta_absmax.glsl-fc6b36c5786de5d2de4e6d207a98afd8.res"
+
+[deps]
+
+source_file="res://shaders/delta_absmax.glsl"
+dest_files=["res://.godot/imported/delta_absmax.glsl-fc6b36c5786de5d2de4e6d207a98afd8.res"]
+
+[params]
+

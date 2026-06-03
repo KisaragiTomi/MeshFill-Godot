@@ -9,14 +9,14 @@ const FLAG_SUPPORT := 16
 const PROBE_LAYER_COUNT := 5
 const PROBE_WORLD_MIN_DISTANCE := 0.35
 
-@export var probes: Array[Dictionary] = []
-@export_range(0.1, 8.0, 0.1) var density: float = 1.0
-@export var max_probe_count: int = 128
+@export var probes: Array[Dictionary] = []                 # descriptor-backed semantic probe records
+@export_range(0.1, 8.0, 0.1) var density: float = 1.0       # automatic probe generation density
+@export var max_probe_count: int = 128                      # cap for generated probes
 
 
 func rebuild_from_mesh(
 	mesh: Mesh,
-	collision_voxels: Array = [],
+	collision: Array = [],
 	fallback_color: Color = Color.WHITE,
 	fallback_complexity: float = 1.0,
 	density_override: float = -1.0,
@@ -25,7 +25,7 @@ func rebuild_from_mesh(
 ) -> Array[Dictionary]:
 	var d := density if density_override <= 0.0 else density_override
 	density = clampf(d, 0.1, 8.0)
-	probes = generate_from_mesh(mesh, collision_voxels, fallback_color, fallback_complexity, density, max_probe_count, world_scale, context_sensing_radius)
+	probes = generate_from_mesh(mesh, collision, fallback_color, fallback_complexity, density, max_probe_count, world_scale, context_sensing_radius)
 	return duplicate_probe_array(probes)
 
 
@@ -43,7 +43,7 @@ static func duplicate_probe_array(source: Array) -> Array[Dictionary]:
 
 static func generate_from_mesh(
 	mesh: Mesh,
-	collision_voxels: Array = [],
+	collision: Array = [],
 	fallback_color: Color = Color.WHITE,
 	fallback_complexity: float = 1.0,
 	density_value: float = 1.0,
@@ -73,9 +73,9 @@ static func generate_from_mesh(
 	if not convex_points.is_empty():
 		candidates.append_array(_make_convex_candidates(convex_points, fallback, fallback.a))
 
-	# Priority 2: AutoObject collision voxel interior
-	if not collision_voxels.is_empty():
-		candidates.append_array(_make_voxel_interior_candidates(collision_voxels, fallback, fallback.a, density_value, world_scale))
+	# Priority 2: AutoObject collision sample interior
+	if not collision.is_empty():
+		candidates.append_array(_make_voxel_interior_candidates(collision, fallback, fallback.a, density_value, world_scale))
 
 	# Priority 3: Poisson disk surface sampling
 	if not triangles.is_empty():
@@ -181,45 +181,45 @@ static func _make_convex_candidates(
 	return result
 
 
-# --- Priority 2: AutoObject collision voxel interior ---
+# --- Priority 2: AutoObject collision interior ---
 
 static func _make_voxel_interior_candidates(
-	collision_voxels: Array,
+	collision: Array,
 	fallback_color: Color,
 	fallback_complexity: float,
 	density_value: float,
 	world_scale: Vector3
 ) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
-	if collision_voxels.is_empty():
+	if collision.is_empty():
 		return result
 
 	var world_spacing := maxf(PROBE_WORLD_MIN_DISTANCE / sqrt(maxf(density_value, 0.1)), 0.08)
 	var local_sample_spacing := maxf(world_spacing / _world_scale_max_axis(world_scale), 0.02)
-	for raw_collision in collision_voxels:
+	for raw_collision in collision:
 		if not raw_collision is Dictionary:
 			continue
-		var collision := raw_collision as Dictionary
-		if not bool(collision.get("enabled", true)):
+		var collision_entry := raw_collision as Dictionary
+		if not bool(collision_entry.get("enabled", true)):
 			continue
-		var positions := _sample_collision_voxel_points(collision, local_sample_spacing)
+		var positions := _sample_collision_points(collision_entry, local_sample_spacing)
 		if positions.is_empty():
 			continue
-		var collision_value := clampf(float(collision.get("value", 1.0)), 0.0, 1.0)
+		var collision_strength := clampf(float(collision_entry.get("collision_strength", 1.0)), 0.0, 1.0)
 		for point in positions:
 			var color := fallback_color
 			var complexity := clampf(fallback_complexity, 0.0, 1.0)
 			color.a = complexity
 			var weight := maxf(0.05, complexity)
-			var importance := weight * lerpf(1.1, 1.4, collision_value)
+			var importance := weight * lerpf(1.1, 1.4, collision_strength)
 			result.append(make_probe_candidate(
-				point, color, collision_value, weight, FLAG_COLOR | FLAG_COMPLEXITY | FLAG_COLLISION,
+				point, color, collision_strength, weight, FLAG_COLOR | FLAG_COMPLEXITY | FLAG_COLLISION,
 				"positive", "mesh", importance, "voxel_interior"
 			))
 	return result
 
 
-static func _sample_collision_voxel_points(collision: Dictionary, sample_spacing: float) -> PackedVector3Array:
+static func _sample_collision_points(collision: Dictionary, sample_spacing: float) -> PackedVector3Array:
 	if collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset"):
 		var point := vector3_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
 		return PackedVector3Array([point])
@@ -473,7 +473,7 @@ static func select_layered_topk(
 		selected = select_with_min_distance(buckets, limit, min_distance * 0.5, selected, "convex")
 	if selected.size() < limit:
 		selected = select_with_min_distance(buckets, limit, 0.0, selected, "convex")
-	# Phase 2: collision voxel interior
+	# Phase 2: collision sample interior
 	if selected.size() < limit:
 		selected = select_with_min_distance(buckets, limit, min_distance, selected, "voxel_interior")
 	if selected.size() < limit:
@@ -646,14 +646,14 @@ static func normalize_probe(raw_probe: Dictionary) -> Dictionary:
 	var complexity := clampf(float(probe.get("expected_complexity", probe.get("complexity", color.a))), 0.0, 1.0)
 	color.a = complexity
 	probe["offset"] = offset
-	probe["expected_color"] = color
-	probe["expected_complexity"] = complexity
-	probe["expected_rgba8"] = int(probe.get("expected_rgba8", pack_rgba8(color)))
-	probe["expected_collision"] = clampf(float(probe.get("expected_collision", probe.get("collision", 0.0))), 0.0, 1.0)
-	probe["weight"] = maxf(float(probe.get("weight", 1.0)), 0.0)
-	probe["flags"] = int(probe.get("flags", FLAG_COLOR | FLAG_COMPLEXITY))
-	probe["kind"] = str(probe.get("kind", "positive"))
-	probe["source"] = str(probe.get("source", "manual"))
+	probe["expected_color"] = color                         # expected visual color
+	probe["expected_complexity"] = complexity               # expected occupancy/complexity
+	probe["expected_rgba8"] = int(probe.get("expected_rgba8", pack_rgba8(color))) # packed expected RGBA
+	probe["expected_collision"] = clampf(float(probe.get("expected_collision", probe.get("collision", 0.0))), 0.0, 1.0) # expected solid strength
+	probe["weight"] = maxf(float(probe.get("weight", 1.0)), 0.0) # contribution weight
+	probe["flags"] = int(probe.get("flags", FLAG_COLOR | FLAG_COMPLEXITY)) # enabled score terms
+	probe["kind"] = str(probe.get("kind", "positive"))      # positive / negative / support
+	probe["source"] = str(probe.get("source", "manual"))    # convex / voxel_interior / surface / context
 	return probe
 
 
@@ -661,15 +661,15 @@ static func make_probe(offset: Vector3, color: Color, collision: float, weight: 
 	var c := color
 	c.a = clampf(c.a, 0.0, 1.0)
 	return {
-		"offset": offset,
-		"expected_color": c,
-		"expected_complexity": c.a,
-		"expected_rgba8": pack_rgba8(c),
-		"expected_collision": clampf(collision, 0.0, 1.0),
-		"weight": maxf(weight, 0.0),
-		"flags": flags,
-		"kind": kind,
-		"source": source,
+		"offset": offset,                              # relative sample position from asset anchor
+		"expected_color": c,                           # expected visual color
+		"expected_complexity": c.a,                    # expected complexity / alpha
+		"expected_rgba8": pack_rgba8(c),               # packed expected color + complexity
+		"expected_collision": clampf(collision, 0.0, 1.0), # expected collision / solid strength
+		"weight": maxf(weight, 0.0),                   # contribution weight
+		"flags": flags,                                # score-term bit flags
+		"kind": kind,                                  # positive / negative / support
+		"source": source,                              # generation source
 	}
 
 

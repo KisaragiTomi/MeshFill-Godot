@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://brnkwjo21k2oa"
+path="res://.godot/imported/max_collision_images.glsl-8b318c135974dd06e088850585ffaf47.res"
+
+[deps]
+
+source_file="res://shaders/max_collision_images.glsl"
+dest_files=["res://.godot/imported/max_collision_images.glsl-8b318c135974dd06e088850585ffaf47.res"]
+
+[params]
+

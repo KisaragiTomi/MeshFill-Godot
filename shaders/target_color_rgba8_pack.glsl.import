@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cjxr0jkfkhqeh"
+path="res://.godot/imported/target_color_rgba8_pack.glsl-013c1cf8d7f143e099a7afff3c0b76d0.res"
+
+[deps]
+
+source_file="res://shaders/target_color_rgba8_pack.glsl"
+dest_files=["res://.godot/imported/target_color_rgba8_pack.glsl-013c1cf8d7f143e099a7afff3c0b76d0.res"]
+
+[params]
+

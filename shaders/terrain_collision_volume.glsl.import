@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bvwcm8a4yimhv"
+path="res://.godot/imported/terrain_collision_volume.glsl-cfa20dc779b2737a4b6ae63410093dc7.res"
+
+[deps]
+
+source_file="res://shaders/terrain_collision_volume.glsl"
+dest_files=["res://.godot/imported/terrain_collision_volume.glsl-cfa20dc779b2737a4b6ae63410093dc7.res"]
+
+[params]
+

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://0vm7d5qoowqq"
+path="res://.godot/imported/update_scene_voxel_tile_summary_ranges.glsl-c259f0ef7320e791754693f090085f82.res"
+
+[deps]
+
+source_file="res://shaders/update_scene_voxel_tile_summary_ranges.glsl"
+dest_files=["res://.godot/imported/update_scene_voxel_tile_summary_ranges.glsl-c259f0ef7320e791754693f090085f82.res"]
+
+[params]
+

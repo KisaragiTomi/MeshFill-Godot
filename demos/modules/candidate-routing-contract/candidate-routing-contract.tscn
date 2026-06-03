@@ -1,0 +1,40 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
+
+[node name="ModuleCandidateRoutingContract" type="Node3D"]
+script = ExtResource("1_contract")
+metadata/module_id = "candidate-routing-contract"
+metadata/source_docs = "res://docs/placement/voxel-semantic-routing.md; res://docs/placement/voxel-semantic-routing-todo.md; res://docs/core/meshfill-framework.md"
+metadata/test_doc = "res://demos/modules/candidate-routing-contract/candidate-routing-contract.md"
+metadata/focus = "candidate_voxel_regions_by_asset, legacy candidate_voxel_sparses_by_asset alias, empty route skip, same-type gate boundary, and physical score separation"
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 9)
+current = true
+fov = 45.0
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.707, -0.354, 0.612, 0, 0.866, 0.5, -0.707, -0.354, 0.612, 0, 4, 4)
+light_energy = 1.2
+
+[node name="Title" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.55, 0)
+text = "Module: Candidate Routing Contract"
+font_size = 38
+pixel_size = 0.01
+outline_size = 6
+
+[node name="Method" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, 0)
+text = "Method\n- test candidate route schema\n- test empty route skip\n- scan score shader semantic boundary"
+font_size = 27
+pixel_size = 0.01
+outline_size = 4
+
+[node name="Acceptance" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -1.15, 0)
+text = "Acceptance\n- route keys are accepted\n- empty route does not full-grid fallback\n- rerank remains candidate-only TODO"
+font_size = 27
+pixel_size = 0.01
+outline_size = 4

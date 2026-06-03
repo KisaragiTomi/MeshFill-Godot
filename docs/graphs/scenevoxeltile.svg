@@ -1,0 +1,229 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
+  <title id="title">SceneVoxelTile Coarse SV Cell Index</title>
+  <desc id="desc">SceneVoxelTile is an SV-owned sidecar for dirty regions, voxel bounds, object id ranges, summaries, and partial rebuild consumers.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#ea580c"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <pattern id="tile-grid" patternUnits="userSpaceOnUse" width="24" height="24">
+      <rect width="24" height="24" fill="#ecfdf5"/>
+      <path d="M24 0H0V24" fill="none" stroke="#10b981" stroke-width="1" opacity="0.24"/>
+    </pattern>
+  </defs>
+
+  <style>
+    :root { color-scheme: light; }
+    .bg { fill: #f8fafc; }
+    .grid { stroke: #e2e8f0; stroke-width: 1; opacity: 0.65; }
+    .title { fill: #0f172a; font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .subtitle { fill: #475569; font: 500 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .lane-title { fill: #334155; font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .node-title { fill: #0f172a; font: 700 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .small { fill: #475569; font: 500 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .mono { fill: #334155; font: 600 11px Consolas, "Cascadia Mono", monospace; letter-spacing: 0; }
+    .note { fill: #0f172a; font: 600 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .lane { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; filter: url(#shadow); }
+    .node { stroke-width: 1.5; filter: url(#shadow); }
+    .edge { stroke: #334155; stroke-width: 2.05; fill: none; marker-end: url(#arrow); }
+    .edge-blue { stroke: #2563eb; stroke-width: 2.15; fill: none; marker-end: url(#arrow-blue); }
+    .edge-green { stroke: #059669; stroke-width: 2.15; fill: none; marker-end: url(#arrow-green); }
+    .edge-orange { stroke: #ea580c; stroke-width: 2.15; fill: none; marker-end: url(#arrow-orange); }
+    .edge-dash { stroke: #64748b; stroke-width: 1.9; fill: none; stroke-dasharray: 7 7; marker-end: url(#arrow); }
+    .boundary { fill: #fff7ed; stroke: #fed7aa; stroke-width: 1.3; filter: url(#shadow); }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="1600" height="980"/>
+  <g opacity="0.6">
+    <line class="grid" x1="40" y1="95" x2="40" y2="930"/>
+    <line class="grid" x1="120" y1="95" x2="120" y2="930"/>
+    <line class="grid" x1="200" y1="95" x2="200" y2="930"/>
+    <line class="grid" x1="280" y1="95" x2="280" y2="930"/>
+    <line class="grid" x1="360" y1="95" x2="360" y2="930"/>
+    <line class="grid" x1="440" y1="95" x2="440" y2="930"/>
+    <line class="grid" x1="520" y1="95" x2="520" y2="930"/>
+    <line class="grid" x1="600" y1="95" x2="600" y2="930"/>
+    <line class="grid" x1="680" y1="95" x2="680" y2="930"/>
+    <line class="grid" x1="760" y1="95" x2="760" y2="930"/>
+    <line class="grid" x1="840" y1="95" x2="840" y2="930"/>
+    <line class="grid" x1="920" y1="95" x2="920" y2="930"/>
+    <line class="grid" x1="1000" y1="95" x2="1000" y2="930"/>
+    <line class="grid" x1="1080" y1="95" x2="1080" y2="930"/>
+    <line class="grid" x1="1160" y1="95" x2="1160" y2="930"/>
+    <line class="grid" x1="1240" y1="95" x2="1240" y2="930"/>
+    <line class="grid" x1="1320" y1="95" x2="1320" y2="930"/>
+    <line class="grid" x1="1400" y1="95" x2="1400" y2="930"/>
+    <line class="grid" x1="1480" y1="95" x2="1480" y2="930"/>
+    <line class="grid" x1="1560" y1="95" x2="1560" y2="930"/>
+    <line class="grid" x1="30" y1="120" x2="1570" y2="120"/>
+    <line class="grid" x1="30" y1="200" x2="1570" y2="200"/>
+    <line class="grid" x1="30" y1="280" x2="1570" y2="280"/>
+    <line class="grid" x1="30" y1="360" x2="1570" y2="360"/>
+    <line class="grid" x1="30" y1="440" x2="1570" y2="440"/>
+    <line class="grid" x1="30" y1="520" x2="1570" y2="520"/>
+    <line class="grid" x1="30" y1="600" x2="1570" y2="600"/>
+    <line class="grid" x1="30" y1="680" x2="1570" y2="680"/>
+    <line class="grid" x1="30" y1="760" x2="1570" y2="760"/>
+    <line class="grid" x1="30" y1="840" x2="1570" y2="840"/>
+    <line class="grid" x1="30" y1="920" x2="1570" y2="920"/>
+  </g>
+
+  <text class="title" x="48" y="54">SceneVoxelTile Coarse SV Cell Index</text>
+  <text class="subtitle" x="48" y="82">SV-owned sidecar and the only normal update entry; AutoObject and brush become dirty producers.</text>
+
+  <g>
+    <rect class="lane" x="45" y="122" width="325" height="620" rx="8"/>
+    <text class="lane-title" x="63" y="149">DIRTY TRIGGERS</text>
+    <rect class="lane" x="410" y="122" width="380" height="620" rx="8"/>
+    <text class="lane-title" x="428" y="149">SCENEVOXELTILE SIDECAR</text>
+    <rect class="lane" x="830" y="122" width="345" height="620" rx="8"/>
+    <text class="lane-title" x="848" y="149">SV OWNER</text>
+    <rect class="lane" x="1215" y="122" width="340" height="620" rx="8"/>
+    <text class="lane-title" x="1233" y="149">CONSUMERS</text>
+  </g>
+
+  <g>
+    <rect class="node" x="75" y="180" width="255" height="90" rx="8" fill="#dbeafe" stroke="#93c5fd"/>
+    <text class="node-title" x="96" y="208">Brush / Target Edit</text>
+    <text class="small" x="96" y="232">dirty producer only</text>
+    <text class="small" x="96" y="252">target/routing flags</text>
+
+    <rect class="node" x="75" y="300" width="255" height="100" rx="8" fill="#ede9fe" stroke="#c4b5fd"/>
+    <text class="node-title" x="96" y="328">AutoObject Change</text>
+    <text class="small" x="96" y="352">spawn / move / delete</text>
+    <text class="small" x="96" y="372">old + new bounds only</text>
+
+    <rect class="node" x="75" y="430" width="255" height="100" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text class="node-title" x="96" y="458">Placement Stamp</text>
+    <text class="small" x="96" y="482">instance_stamp_write_spec</text>
+    <text class="small" x="96" y="502">footprint + guard expansion</text>
+
+    <rect class="node" x="75" y="560" width="255" height="95" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+    <text class="node-title" x="96" y="588">Profile Hot Update</text>
+    <text class="small" x="96" y="612">profile id references</text>
+    <text class="small" x="96" y="632">affected object bounds</text>
+  </g>
+
+  <g>
+    <rect class="node" x="455" y="178" width="290" height="126" rx="8" fill="url(#tile-grid)" stroke="#34d399"/>
+    <text class="node-title" x="480" y="206">SceneVoxelTile Record</text>
+    <text class="mono" x="480" y="231">scene_voxel_tile_id / coord</text>
+    <text class="mono" x="480" y="252">tile_size = ceil(SV / 4)</text>
+    <text class="mono" x="480" y="273">voxel_min / voxel_max</text>
+    <text class="mono" x="480" y="294">base_rect / epoch</text>
+
+    <rect class="node" x="455" y="334" width="290" height="122" rx="8" fill="#ccfbf1" stroke="#5eead4"/>
+    <text class="node-title" x="480" y="362">Single Dirty Entry</text>
+    <text class="mono" x="480" y="387">scene / collision</text>
+    <text class="mono" x="480" y="408">auto / brush / target</text>
+    <text class="mono" x="480" y="429">object_refs / routing</text>
+
+    <rect class="node" x="455" y="486" width="290" height="126" rx="8" fill="#dbeafe" stroke="#93c5fd"/>
+    <text class="node-title" x="480" y="514">Compacted Ranges</text>
+    <text class="mono" x="480" y="539">object_range_start/count</text>
+    <text class="mono" x="480" y="560">source_range_start/count</text>
+    <text class="small" x="480" y="584">debug ids are optional</text>
+
+    <rect class="node" x="455" y="638" width="290" height="78" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+    <text class="node-title" x="480" y="666">Tile Summary</text>
+    <text class="mono" x="480" y="691">non_empty + min/max fields</text>
+  </g>
+
+  <g>
+    <rect class="node" x="875" y="180" width="255" height="104" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+    <text class="node-title" x="896" y="208">SceneVoxelCommitter</text>
+    <text class="small" x="896" y="232">owns SV grid metadata</text>
+    <text class="small" x="896" y="252">owns SceneVoxelTile lifetime</text>
+
+    <rect class="node" x="875" y="318" width="255" height="112" rx="8" fill="#dcfce7" stroke="#86efac"/>
+    <text class="node-title" x="896" y="346">SV Resident Fields</text>
+    <text class="mono" x="896" y="371">scene_field</text>
+    <text class="mono" x="896" y="392">collision_field</text>
+    <text class="small" x="896" y="412">partial upload target</text>
+
+    <rect class="node" x="875" y="464" width="255" height="112" rx="8" fill="#ffedd5" stroke="#fdba74"/>
+    <text class="node-title" x="896" y="492">Source stamp / SVBrush</text>
+    <text class="small" x="896" y="516">rebuilt from dirty tiles</text>
+    <text class="small" x="896" y="536">write intent, not entry</text>
+    <text class="small" x="896" y="556">commit tick / epoch</text>
+
+    <rect class="node" x="875" y="610" width="255" height="90" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
+    <text class="node-title" x="896" y="638">Clear After Publish</text>
+    <text class="small" x="896" y="662">dirty flags reset</text>
+    <text class="small" x="896" y="682">epoch remains queryable</text>
+  </g>
+
+  <g>
+    <rect class="node" x="1255" y="178" width="255" height="92" rx="8" fill="#dbeafe" stroke="#93c5fd"/>
+    <text class="node-title" x="1276" y="206">Probe / Routing</text>
+    <text class="small" x="1276" y="230">collect anchors from dirty SceneVoxelTiles</text>
+    <text class="small" x="1276" y="250">candidate voxel regions</text>
+
+    <rect class="node" x="1255" y="300" width="255" height="100" rx="8" fill="#ede9fe" stroke="#c4b5fd"/>
+    <text class="node-title" x="1276" y="328">Placement / Exclusion</text>
+    <text class="small" x="1276" y="352">neighbor lookup by object ids</text>
+    <text class="small" x="1276" y="372">same-type filters</text>
+
+    <rect class="node" x="1255" y="430" width="255" height="100" rx="8" fill="#dcfce7" stroke="#86efac"/>
+    <text class="node-title" x="1276" y="458">Partial Rebuild</text>
+    <text class="small" x="1276" y="482">blend only if source changed</text>
+    <text class="small" x="1276" y="502">resident buffer upload</text>
+
+    <rect class="node" x="1255" y="560" width="255" height="95" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text class="node-title" x="1276" y="588">Debug / Feedback</text>
+    <text class="small" x="1276" y="612">query SceneVoxelTile by coord</text>
+    <text class="small" x="1276" y="632">score changed areas only</text>
+  </g>
+
+  <path class="edge-blue" d="M330 225 C382 225 392 225 445 225"/>
+  <path class="edge-blue" d="M330 350 C380 350 396 376 445 390"/>
+  <path class="edge-orange" d="M330 480 C382 480 394 512 445 540"/>
+  <path class="edge-orange" d="M330 608 C382 608 394 586 445 558"/>
+
+  <path class="edge-green" d="M745 242 C798 242 812 228 865 228"/>
+  <path class="edge-green" d="M745 394 C800 394 812 372 865 372"/>
+  <path class="edge-orange" d="M745 548 C800 548 812 522 865 520"/>
+  <path class="edge" d="M745 676 C800 676 812 656 865 656"/>
+
+  <path class="edge-blue" d="M1130 372 C1184 372 1198 230 1245 224"/>
+  <path class="edge-blue" d="M1130 372 C1184 372 1198 348 1245 350"/>
+  <path class="edge-green" d="M1130 374 C1184 374 1198 478 1245 480"/>
+  <path class="edge-orange" d="M1130 656 C1184 656 1198 608 1245 608"/>
+
+  <rect class="boundary" x="55" y="780" width="1500" height="130" rx="8"/>
+  <text class="lane-title" x="80" y="810">AUTHORITY BOUNDARIES</text>
+  <g>
+    <rect class="node" x="85" y="830" width="330" height="56" rx="8" fill="#ffffff" stroke="#fed7aa"/>
+    <text class="node-title" x="105" y="854">SceneVoxel payload</text>
+    <text class="small" x="105" y="874">keeps complexity / color / collision only</text>
+  </g>
+  <g>
+    <rect class="node" x="455" y="830" width="370" height="56" rx="8" fill="#ffffff" stroke="#fed7aa"/>
+    <text class="node-title" x="475" y="854">SceneVoxelTile</text>
+    <text class="small" x="475" y="874">normal update entry; full rebuild = dirty all tiles</text>
+  </g>
+  <g>
+    <rect class="node" x="865" y="830" width="330" height="56" rx="8" fill="#ffffff" stroke="#fed7aa"/>
+    <text class="node-title" x="885" y="854">GPUAutoObjectRuntime</text>
+    <text class="small" x="885" y="874">owns transform, profile, bounds and object state</text>
+  </g>
+  <g>
+    <rect class="node" x="1235" y="830" width="285" height="56" rx="8" fill="#ffffff" stroke="#fed7aa"/>
+    <text class="node-title" x="1255" y="854">TargetSV_B</text>
+    <text class="small" x="1255" y="874">guidance only, no committed source write</text>
+  </g>
+  <path class="edge-dash" d="M600 830 C612 792 660 752 920 704"/>
+  <path class="edge-dash" d="M1030 830 C1012 788 1008 748 1002 710"/>
+</svg>

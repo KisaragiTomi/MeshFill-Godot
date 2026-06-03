@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cmq6lty1mw7jm"
+path="res://.godot/imported/height_threshold_mask.glsl-0c55ad6585da4ba5b2193e81729c20e6.res"
+
+[deps]
+
+source_file="res://shaders/height_threshold_mask.glsl"
+dest_files=["res://.godot/imported/height_threshold_mask.glsl-0c55ad6585da4ba5b2193e81729c20e6.res"]
+
+[params]
+

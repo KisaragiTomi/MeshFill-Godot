@@ -1,38 +1,56 @@
-"""One-time tool: convert RGBAF .raw heightmaps so that peak = 0 (UE convention)."""
+"""One-time GPU tool: convert RGBAF .raw heightmaps so that peak = 0."""
+import shutil
+import subprocess
+import sys
 import os
-import struct
 from pathlib import Path
 
-def invert(filepath, w=256, h=256):
-    pix = w * h
-    fpp = 4  # R,G,B,A
-    total = pix * fpp
-    with open(filepath, "rb") as f:
-        raw = f.read()
-    if len(raw) != total * 4:
-        print(f"ERROR: size {len(raw)}, expected {total * 4}")
-        return
-    vals = list(struct.unpack(f"<{total}f", raw))
-    peak = max((vals[i] for i in range(0, total, fpp) if vals[i] > -10000), default=None)
-    if peak is None:
-        print("No valid pixels found"); return
-    print(f"  Before: peak = {peak:.4f}")
-    for i in range(0, total, fpp):
-        if vals[i] > -10000:
-            vals[i] -= peak
-    lo = min((vals[i] for i in range(0, total, fpp) if vals[i] > -10000), default=0)
-    hi = max((vals[i] for i in range(0, total, fpp) if vals[i] > -10000), default=0)
-    print(f"  After:  range [{lo:.4f}, {hi:.4f}]")
-    with open(filepath, "wb") as f:
-        f.write(struct.pack(f"<{total}f", *vals))
-    print(f"  Written: {filepath}")
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+GPU_SCRIPT = "tools/terrain/invert_height_raw_gpu.gd"
+
+
+def _godot_exe() -> str:
+    return (
+        os.environ.get("GODOT_EXE")
+        or os.environ.get("GODOT_BIN")
+        or shutil.which("godot")
+        or "godot"
+    )
+
+
+def invert(filepath: str | Path, w: int = 256, h: int = 256) -> int:
+    return _run_gpu([str(filepath), str(w), str(h)])
+
+
+def _run_gpu(user_args: list[str]) -> int:
+    # GPU path only: RGBA32F raw buffer, 4 floats/pixel, R height valid when > -10000.
+    # The Godot shader reduces peak, barriers, subtracts peak from valid R values, and readbacks.
+    cmd = [
+        _godot_exe(),
+        "--path",
+        str(PROJECT_ROOT),
+        "--rendering-driver",
+        "vulkan",
+        "--script",
+        GPU_SCRIPT,
+    ]
+    if user_args:
+        cmd.append("--")
+        cmd.extend(user_args)
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=PROJECT_ROOT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError:
+        print("ERROR: Godot executable not found; set GODOT_EXE or add godot to PATH")
+        return 1
+    return completed.returncode
+
 
 if __name__ == "__main__":
-    geo = Path(__file__).resolve().parents[2] / "geo"
-    for name in ["cliff_01_height.raw", "cliff_02_height.raw"]:
-        p = geo / name
-        if os.path.isfile(p):
-            print(f"Converting {name}...")
-            invert(p)
-        else:
-            print(f"SKIP (not found): {p}")
+    sys.exit(_run_gpu(sys.argv[1:]))

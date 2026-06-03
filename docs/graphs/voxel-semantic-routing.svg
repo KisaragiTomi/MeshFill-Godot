@@ -1,239 +1,175 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1060" viewBox="0 0 1600 1060" role="img" aria-labelledby="title desc">
-  <title id="title">Voxel Semantic Routing candidate-only pipeline</title>
-  <desc id="desc">Diagram of candidate-only semantic routing: upstream anchor prefilter, anchor_autoobject_topk hard gate, optional rerank and validation, EMPTY pruning, conservative candidate voxel-region aggregation, and physical placement.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1660" height="1040" viewBox="0 0 1660 1040" role="img" aria-labelledby="title desc">
+  <title id="title">Voxel Semantic Routing</title>
+  <desc id="desc">Candidate voxel-region routing diagram from voxel-semantic-routing.md and todo baseline.</desc>
 
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#06101f"/>
-      <stop offset="0.58" stop-color="#0b1728"/>
-      <stop offset="1" stop-color="#111827"/>
-    </linearGradient>
-    <linearGradient id="prefilter" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f766e"/>
-      <stop offset="1" stop-color="#1d4ed8"/>
-    </linearGradient>
-    <linearGradient id="gate" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1e3a8a"/>
-      <stop offset="1" stop-color="#312e81"/>
-    </linearGradient>
-    <linearGradient id="rerank" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7c3aed"/>
-      <stop offset="1" stop-color="#2563eb"/>
-    </linearGradient>
-    <linearGradient id="prune" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#be123c"/>
-      <stop offset="1" stop-color="#b45309"/>
-    </linearGradient>
-    <linearGradient id="aggregate" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#047857"/>
-      <stop offset="1" stop-color="#65a30d"/>
-    </linearGradient>
-    <linearGradient id="placement" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f172a"/>
-      <stop offset="1" stop-color="#164e63"/>
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.35"/>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#ea580c"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.12"/>
     </filter>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8dd3ff"/>
-    </marker>
-    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#86efac"/>
-    </marker>
-    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#fca5a5"/>
-    </marker>
-    <style>
-      .title { font: 700 34px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #f8fafc; }
-      .subtitle { font: 500 16px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #a5b4fc; }
-      .section { font: 700 18px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #f8fafc; }
-      .label { font: 600 15px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #e5e7eb; }
-      .small { font: 500 13px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #cbd5e1; }
-      .tiny { font: 500 12px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #94a3b8; }
-      .mono { font: 600 12px Consolas, "Cascadia Mono", monospace; fill: #dbeafe; }
-      .card { fill: #0f172a; stroke: #334155; stroke-width: 1.4; rx: 18; filter: url(#shadow); }
-      .prefilter-card { fill: url(#prefilter); stroke: #67e8f9; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .gate-card { fill: url(#gate); stroke: #818cf8; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .rerank-card { fill: url(#rerank); stroke: #c4b5fd; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .prune-card { fill: url(#prune); stroke: #fed7aa; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .aggregate-card { fill: url(#aggregate); stroke: #bbf7d0; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .placement-card { fill: url(#placement); stroke: #7dd3fc; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .soft { fill: rgba(15, 23, 42, 0.72); stroke: #64748b; stroke-width: 1.1; rx: 14; }
-      .note { fill: #16213a; stroke: #334155; stroke-width: 1; rx: 12; }
-      .warn { fill: #2b2038; stroke: #fca5a5; stroke-width: 1.2; rx: 12; }
-      .ok { fill: #062f26; stroke: #86efac; stroke-width: 1.2; rx: 12; }
-      .arrow { fill: none; stroke: #8dd3ff; stroke-width: 3; marker-end: url(#arrow); }
-      .arrow-green { fill: none; stroke: #86efac; stroke-width: 3; marker-end: url(#arrowGreen); }
-      .arrow-red { fill: none; stroke: #fca5a5; stroke-width: 2.6; marker-end: url(#arrowRed); }
-      .dash { fill: none; stroke: #64748b; stroke-width: 2; stroke-dasharray: 8 7; marker-end: url(#arrow); }
-      .dash-green { fill: none; stroke: #86efac; stroke-width: 2.2; stroke-dasharray: 8 7; marker-end: url(#arrowGreen); }
-      .dash-red { fill: none; stroke: #fca5a5; stroke-width: 2.2; stroke-dasharray: 8 7; marker-end: url(#arrowRed); }
-      /* meshfill-graph-style: shared light engineering diagram theme */
-      :root { color-scheme: light; }
-      .bg, rect[fill="url(#bg)"] { fill: #f8fafc; }
-      svg > circle[opacity] { opacity: 0; }
-      .grid { stroke: #e2e8f0; stroke-width: 1; }
-      .title { font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #0f172a; letter-spacing: 0; }
-      .subtitle { font: 500 16px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #475569; letter-spacing: 0; }
-      .section, .section-title { font: 700 18px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #1e293b; letter-spacing: 0; }
-      .band-title, .lane-title { font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #334155; letter-spacing: 0; }
-      .label, .node-title, .pill-text { font: 700 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #0f172a; letter-spacing: 0; }
-      .text { font: 500 16px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #1f2937; letter-spacing: 0; }
-      .small { font: 500 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #475569; letter-spacing: 0; }
-      .tiny { font: 500 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #64748b; letter-spacing: 0; }
-      .mono, .mono-strong, .formula { font: 600 12px Consolas, "Cascadia Mono", monospace; fill: #334155; letter-spacing: 0; }
-      .lane, .band, .band2d, .band3d, .band-field, .band-post, .lane-type, .lane-resource, .lane-field, .lane-runtime, .lane-factory, .lane-owner, .lane-tool, .state-band, .target-band, .asset-band, .route-band, .place-band { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; }
-      .node, .card, .soft, .tick, .legend { stroke-width: 1.4; filter: url(#shadow); }
-      .box, .box-gray, .card, .soft, .support, .tool, .owner, .factory, .downstream, .legacy, .getter, .runtime, .tick, .legend { fill: #ffffff; stroke: #cbd5e1; }
-      .box-blue, .input, .entry, .field, .state, .sv, .target, .target-card, .gpu-card, .gpu { fill: #dbeafe; stroke: #2563eb; }
-      .box-green, .asset, .resource, .autoobject, .input-card, .source-card, .contract, .sv-card, .ok, .prefilter-card { fill: #dcfce7; stroke: #16a34a; }
-      .box-purple, .route, .route-card, .rerank-card, .gate-card, .descriptor, .record-card, .vdb-card, .debug-card { fill: #ede9fe; stroke: #7c3aed; }
-      .box-yellow, .placement, .placement-card, .commit-card, .persist-card, .aggregate-card { fill: #fef3c7; stroke: #d97706; }
-      .box-red, .hardgate, .prune-card { fill: #fee2e2; stroke: #ef4444; }
-      .record, .record-card { fill: #fef3c7; stroke: #d97706; }
-      .cache, .cache-card, .scene_voxel_runtime { fill: #ccfbf1; stroke: #0f766e; }
-      .note, .warn { fill: #e6edf5; stroke: #b6c4d4; }
-      .pill, .pill-blue, .pill-pink, .pill-amber { fill: #f8fafc; stroke: #cbd5e1; }
-      rect[fill="#0f172a"], rect[fill="#111827"], rect[fill="#172033"], rect[fill="#16213a"], rect[fill="#101827"], rect[fill="#111c31"], rect[fill="#082f49"], rect[fill="#052e2b"], rect[fill="#052e16"], rect[fill="#064e3b"], rect[fill="#062f26"], rect[fill="#2e1065"], rect[fill="#2b2038"], rect[fill="#2b1d35"], rect[fill="#0f1f2f"], rect[fill="#182135"], rect[fill="#1e2030"], rect[fill="#1b2330"], rect[fill="#3a2510"], rect[fill="#0e2a1d"], rect[fill="#10251e"] { fill: #ffffff; stroke: #cbd5e1; }
-      .edge, .arrow, .dash { fill: none; stroke: #334155; stroke-width: 2.2; }
-      .edge-soft, .arrow-soft { fill: none; stroke: #64748b; stroke-width: 2; }
-      .edge-blue, .arrow-blue { fill: none; stroke: #2563eb; stroke-width: 2.3; }
-      .edge-green, .arrow-green, .dash-green { fill: none; stroke: #059669; stroke-width: 2.3; }
-      .edge-orange, .edge-amber, .arrow-purple, .dash-purple { fill: none; stroke: #d97706; stroke-width: 2.3; }
-      .edge-purple { fill: none; stroke: #7c3aed; stroke-width: 2.3; }
-      .arrow-red, .dash-red, .dash-pink { fill: none; stroke: #dc2626; stroke-width: 2.2; }
-      .dash, .dash-green, .dash-red, .dash-pink, .dash-purple, .edge-soft, .arrow-soft { stroke-dasharray: 7 7; }
-      #arrow path { fill: #334155; }
-      #arrowGreen path, #arrow-green path { fill: #059669; }
-      #arrowBlue path, #arrow-blue path { fill: #2563eb; }
-      #arrowRed path, #arrow-red path { fill: #dc2626; }
-      #arrowPurple path, #arrow-purple path, #arrow-orange path, #arrow-amber path { fill: #d97706; }
-    </style>
+    <pattern id="autoobject-dot-bg" patternUnits="userSpaceOnUse" width="12" height="12">
+      <rect width="12" height="12" fill="#cffafe"/>
+      <circle cx="3" cy="3" r="1.25" fill="#0891b2" opacity="0.256281"/>
+      <circle cx="9" cy="9" r="1.25" fill="#0891b2" opacity="0.256281"/>
+    </pattern>
+    <pattern id="descriptor-grid" patternUnits="userSpaceOnUse" width="9.3334" height="9.3334">
+      <rect width="9.3334" height="9.3334" fill="#dcfce7"/>
+      <path d="M4.6667 0H0V4.6667" stroke="#16a34a" stroke-width="0.3333" opacity="0.257576"/>
+      <path d="M0 4.6667L4.6667 0" stroke="#16a34a" stroke-width="0.3333" opacity="0.257576"/>
+    </pattern>
+    <pattern id="sv-stripe-blue" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#dbeafe"/>
+      <rect y="1" width="10" height="2" fill="#0284c7" opacity="0.235023"/>
+      <rect y="6" width="10" height="1.5" fill="#0284c7" opacity="0.235023"/>
+    </pattern>
+    <pattern id="sv-stripe-amber" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#fef3c7"/>
+      <rect y="1" width="10" height="2" fill="#d97706" opacity="0.264249"/>
+      <rect y="6" width="10" height="1.5" fill="#d97706" opacity="0.264249"/>
+    </pattern>
+    <pattern id="note-hatch" patternUnits="userSpaceOnUse" width="10" height="10" patternTransform="rotate(45)">
+      <rect width="10" height="10" fill="#f1f5f9"/>
+      <rect x="0" y="0" width="10" height="2" fill="#64748b" opacity="0.361702"/>
+    </pattern>
   </defs>
+  <style>
+    :root { color-scheme: light; }
+    .bg { fill: #f8fafc; }
+    .grid { stroke: #e2e8f0; stroke-width: 1; opacity: 0.7; }
+    .title { fill: #0f172a; font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .subtitle { fill: #475569; font: 500 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .lane-title { fill: #334155; font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .node-title { fill: #0f172a; font: 700 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .small { fill: #475569; font: 500 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .mono { fill: #334155; font: 600 11px Consolas, "Cascadia Mono", monospace; letter-spacing: 0; }
+    .note-text { fill: #0f172a; font: 600 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .lane { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; filter: url(#shadow); }
+    .node { stroke-width: 1.5; filter: url(#shadow); }
+    .edge { stroke: #334155; stroke-width: 2.1; fill: none; marker-end: url(#arrow); }
+    .edge-blue { stroke: #2563eb; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+    .edge-green { stroke: #059669; stroke-width: 2.2; fill: none; marker-end: url(#arrow-green); }
+    .edge-orange { stroke: #ea580c; stroke-width: 2.2; fill: none; marker-end: url(#arrow-orange); }
+    .edge-dash { stroke: #64748b; stroke-width: 1.9; fill: none; stroke-dasharray: 7 7; marker-end: url(#arrow); }
+    .edge-warn { stroke: #dc2626; stroke-width: 2; fill: none; stroke-dasharray: 8 6; marker-end: url(#arrow); }
+  </style>
 
-  <rect width="1600" height="1060" fill="url(#bg)"/>
-  <circle cx="1350" cy="94" r="220" fill="#1e40af" opacity="0.13"/>
-  <circle cx="235" cy="850" r="260" fill="#047857" opacity="0.11"/>
-  <circle cx="800" cy="170" r="170" fill="#7c3aed" opacity="0.09"/>
-
-  <text x="58" y="58" class="title">Voxel Semantic Routing — 候选资产路由</text>
-  <text x="58" y="88" class="subtitle">语义向量匹配只在每个 anchor 的粗筛候选资产内 rerank / validate / prune；不再从全资产库选择最优 asset。</text>
-
-  <rect x="50" y="132" width="300" height="278" class="prefilter-card"/>
-  <text x="82" y="174" class="section">1. 上游 AutoObject 粗筛</text>
-  <text x="82" y="204" class="small">收集 dirty anchors：</text>
-  <text x="102" y="228" class="mono">ground / target_top</text>
-  <rect x="82" y="252" width="236" height="86" class="soft"/>
-  <text x="104" y="281" class="label">probe prefilter</text>
-  <text x="104" y="306" class="small">descriptor-backed probes</text>
-  <text x="104" y="328" class="small">sample TargetSV_B / SceneVoxel</text>
-  <rect x="82" y="356" width="236" height="34" class="ok"/>
-  <text x="104" y="378" class="mono">anchor_autoobject_topk</text>
-
-  <rect x="400" y="132" width="300" height="278" class="gate-card"/>
-  <text x="432" y="174" class="section">2. Anchor 候选池</text>
-  <text x="432" y="204" class="small">每个 anchor 已筛选成功：</text>
-  <rect x="432" y="226" width="236" height="106" class="soft"/>
-  <text x="454" y="254" class="mono">anchor_id -> [</text>
-  <text x="474" y="278" class="mono">asset_index, score,</text>
-  <text x="474" y="302" class="mono">anchor_id, tile_id</text>
-  <text x="454" y="326" class="mono">]</text>
-  <rect x="432" y="354" width="236" height="36" class="warn"/>
-  <text x="454" y="377" class="label">Hard gate：不遍历全资产库</text>
-
-  <rect x="750" y="132" width="340" height="278" class="rerank-card"/>
-  <text x="782" y="174" class="section">3. 可选候选内验证</text>
-  <text x="782" y="204" class="small">只读取当前 anchor 的 candidates</text>
-  <rect x="782" y="226" width="276" height="116" class="soft"/>
-  <text x="804" y="254" class="mono">semantic_score = optional match</text>
-  <text x="804" y="278" class="mono">target_score   = optional validate</text>
-  <text x="804" y="302" class="mono">support_hint   = context.y</text>
-  <text x="804" y="326" class="mono">route_score    = optional sum</text>
-  <rect x="782" y="360" width="276" height="32" class="ok"/>
-  <text x="804" y="381" class="label">保留多个 route，不输出唯一 best_asset</text>
-
-  <rect x="1140" y="132" width="310" height="278" class="prune-card"/>
-  <text x="1172" y="174" class="section">4. 可选 prune / EMPTY</text>
-  <text x="1172" y="204" class="small">计划阈值：低置信度和空目标区域</text>
-  <rect x="1172" y="226" width="246" height="112" class="soft"/>
-  <text x="1194" y="255" class="mono">min_route_accept = 0.25 TBD</text>
-  <text x="1194" y="279" class="mono">EMPTY_ASSET_ID = 0xffffffff</text>
-  <text x="1194" y="303" class="mono">empty_region_threshold = 0.65</text>
-  <text x="1194" y="327" class="mono">EMPTY 不作为 asset 输出</text>
-  <rect x="1172" y="360" width="246" height="32" class="warn"/>
-  <text x="1194" y="381" class="label">空候选 / 低分 route 不进入 score</text>
-
-  <path d="M 350 271 C 372 271 378 271 400 271" class="arrow"/>
-  <path d="M 700 271 C 722 271 728 271 750 271" class="arrow"/>
-  <path d="M 1090 271 C 1112 271 1118 271 1140 271" class="arrow"/>
-
-  <rect x="50" y="470" width="300" height="214" class="card"/>
-  <text x="82" y="510" class="section">Dirty 更新边界</text>
-  <text x="82" y="540" class="small">普通 scene field 变化：</text>
-  <text x="102" y="565" class="mono">dirty voxel region -> affected anchors</text>
-  <text x="82" y="596" class="small">Target color / complexity：</text>
-  <text x="102" y="621" class="mono">local radius = 4 voxels</text>
-  <text x="102" y="645" class="mono">wide radius  = 8 voxels</text>
-  <text x="82" y="669" class="tiny">只重建受影响 asset 的候选 voxel 区域。</text>
-
-  <rect x="400" y="470" width="690" height="214" class="card"/>
-  <text x="432" y="510" class="section">可选 Context / Preference Buffers</text>
-  <text x="432" y="540" class="small">这些 buffer 只用于候选 route 验证和 EMPTY 判断，不用于全库查找。</text>
-  <rect x="432" y="566" width="200" height="82" class="soft"/>
-  <text x="454" y="594" class="label">voxel_context</text>
-  <text x="454" y="618" class="mono">4 vec4 = 16 floats</text>
-  <text x="454" y="640" class="small">density / support / y_free</text>
-  <rect x="656" y="566" width="200" height="82" class="soft"/>
-  <text x="678" y="594" class="label">target_scene_context?</text>
-  <text x="678" y="618" class="mono">packed RGBA8</text>
-  <text x="678" y="640" class="small">local 8³ + wide 16³</text>
-  <rect x="880" y="566" width="178" height="82" class="soft"/>
-  <text x="902" y="594" class="label">asset_target_pref</text>
-  <text x="902" y="618" class="mono">16 RGBA8 cells</text>
-  <text x="902" y="640" class="small">tie-break / confidence</text>
-
-  <rect x="1140" y="470" width="310" height="214" class="aggregate-card"/>
-  <text x="1172" y="510" class="section">5. Normalize / Aggregate</text>
-  <text x="1172" y="540" class="small">存活 routes 去重并按 asset 聚合</text>
-  <rect x="1160" y="566" width="278" height="82" class="soft"/>
-  <text x="1182" y="592" class="mono">candidate_voxel_regions</text>
-  <text x="1182" y="616" class="mono">_by_asset = { asset_index:</text>
-  <text x="1182" y="640" class="mono">voxel_region_coords }</text>
-  <text x="1172" y="669" class="tiny">compat: candidate_voxel_sparses_by_asset。</text>
-
-  <path d="M 920 410 C 920 438 920 438 920 470" class="dash-green"/>
-  <path d="M 1090 577 C 1114 577 1118 577 1140 577" class="dash-green"/>
-  <path d="M 1295 410 C 1295 436 1295 440 1295 470" class="arrow-green"/>
-  <path d="M 350 577 C 374 577 376 577 400 577" class="dash"/>
-
-  <rect x="50" y="736" width="990" height="214" class="card"/>
-  <text x="82" y="776" class="section">旧方案 / 禁止回退路径</text>
-  <text x="82" y="806" class="small">当前设计不再通过全资产语义查找生成 voxel 级或 voxel-region 级 asset top-K。</text>
-  <rect x="82" y="832" width="282" height="78" class="warn"/>
-  <text x="104" y="862" class="label">full asset library search</text>
-  <text x="104" y="887" class="mono">for asset in all_assets: match()</text>
-  <rect x="390" y="832" width="278" height="78" class="warn"/>
-  <text x="412" y="862" class="label">legacy buffers</text>
-  <text x="412" y="887" class="mono">asset_embedding_buffer</text>
-  <rect x="694" y="832" width="314" height="78" class="warn"/>
-  <text x="716" y="862" class="label">legacy top-K outputs</text>
-  <text x="716" y="887" class="mono">voxel_asset_topk / tile_asset_topk</text>
-  <path d="M 365 870 C 374 860 382 860 390 870" class="arrow-red"/>
-  <path d="M 668 870 C 678 860 686 860 694 870" class="arrow-red"/>
-  <text x="82" y="932" class="tiny">这些只属于旧的“全资产语义查找”方案；第一版不需要。</text>
-
-  <rect x="1140" y="736" width="310" height="214" class="placement-card"/>
-  <text x="1172" y="776" class="section">6. Physical Placement</text>
-  <text x="1172" y="806" class="small">只对 routed asset / voxel 区域 dispatch</text>
-  <rect x="1172" y="832" width="246" height="82" class="soft"/>
-  <text x="1194" y="860" class="label">VoxelPlacementGenerator</text>
-  <text x="1194" y="884" class="mono">run_multi_asset()</text>
-  <text x="1194" y="906" class="mono">score_voxel_tile.glsl</text>
-  <text x="1172" y="934" class="tiny">score 阶段只做 support / collision / clearance / overlap / target fit。</text>
-
-  <path d="M 1295 684 C 1295 710 1295 710 1295 736" class="arrow-green"/>
-
-  <rect x="50" y="984" width="1400" height="42" class="note"/>
-  <text x="82" y="1011" class="small">核心约束：粗筛后的 assets 是语义向量匹配候选池；semantic routing 只重排、验证、剔除候选，最终交给物理 placement 决定是否可放置。</text>
+  <rect class="bg" x="0" y="0" width="1660" height="1040"/>
+  <g opacity="0.65"><line class="grid" x1="40" y1="86" x2="40" y2="1004"/><line class="grid" x1="120" y1="86" x2="120" y2="1004"/><line class="grid" x1="200" y1="86" x2="200" y2="1004"/><line class="grid" x1="280" y1="86" x2="280" y2="1004"/><line class="grid" x1="360" y1="86" x2="360" y2="1004"/><line class="grid" x1="440" y1="86" x2="440" y2="1004"/><line class="grid" x1="520" y1="86" x2="520" y2="1004"/><line class="grid" x1="600" y1="86" x2="600" y2="1004"/><line class="grid" x1="680" y1="86" x2="680" y2="1004"/><line class="grid" x1="760" y1="86" x2="760" y2="1004"/><line class="grid" x1="840" y1="86" x2="840" y2="1004"/><line class="grid" x1="920" y1="86" x2="920" y2="1004"/><line class="grid" x1="1000" y1="86" x2="1000" y2="1004"/><line class="grid" x1="1080" y1="86" x2="1080" y2="1004"/><line class="grid" x1="1160" y1="86" x2="1160" y2="1004"/><line class="grid" x1="1240" y1="86" x2="1240" y2="1004"/><line class="grid" x1="1320" y1="86" x2="1320" y2="1004"/><line class="grid" x1="1400" y1="86" x2="1400" y2="1004"/><line class="grid" x1="1480" y1="86" x2="1480" y2="1004"/><line class="grid" x1="1560" y1="86" x2="1560" y2="1004"/><line class="grid" x1="1640" y1="86" x2="1640" y2="1004"/><line class="grid" x1="30" y1="120" x2="1630" y2="120"/><line class="grid" x1="30" y1="200" x2="1630" y2="200"/><line class="grid" x1="30" y1="280" x2="1630" y2="280"/><line class="grid" x1="30" y1="360" x2="1630" y2="360"/><line class="grid" x1="30" y1="440" x2="1630" y2="440"/><line class="grid" x1="30" y1="520" x2="1630" y2="520"/><line class="grid" x1="30" y1="600" x2="1630" y2="600"/><line class="grid" x1="30" y1="680" x2="1630" y2="680"/><line class="grid" x1="30" y1="760" x2="1630" y2="760"/><line class="grid" x1="30" y1="840" x2="1630" y2="840"/><line class="grid" x1="30" y1="920" x2="1630" y2="920"/><line class="grid" x1="30" y1="1000" x2="1630" y2="1000"/></g>
+  <text class="title" x="48" y="54">Voxel Semantic Routing</text>
+  <text class="subtitle" x="48" y="82">Current candidate voxel-region route: GPU prefilter, conservative expansion, empty-route skip, then physical scoring.</text>
+  <g>
+    <rect class="lane" x="45" y="115" width="355" height="770" rx="8"/>
+    <text class="lane-title" x="63" y="141">UPSTREAM INPUTS</text>
+    <rect class="lane" x="440" y="115" width="355" height="770" rx="8"/>
+    <text class="lane-title" x="458" y="141">PREFILTER ROUTE</text>
+    <rect class="lane" x="835" y="115" width="355" height="770" rx="8"/>
+    <text class="lane-title" x="853" y="141">CANDIDATE REGION CONTRACT</text>
+    <rect class="lane" x="1230" y="115" width="385" height="770" rx="8"/>
+    <text class="lane-title" x="1248" y="141">PLACEMENT + TODO BOUNDARY</text>
+  </g>
+  <g>
+    <path class="edge-blue" d="M 360 218 L 480 202"/>
+    <path class="edge-blue" d="M 360 388 L 480 368"/>
+    <path class="edge-green" d="M 360 558 L 480 368"/>
+    <path class="edge" d="M 618 255 L 618 310"/>
+    <path class="edge" d="M 618 425 L 618 480"/>
+    <path class="edge" d="M 618 590 L 618 650"/>
+    <path class="edge-orange" d="M 755 702 L 875 228"/>
+    <path class="edge" d="M 1012 300 L 1012 365"/>
+    <path class="edge" d="M 1012 490 L 1012 570"/>
+    <path class="edge-orange" d="M 1150 428 L 1270 228"/>
+    <path class="edge" d="M 1420 285 L 1420 350"/>
+    <path class="edge-orange" d="M 1420 465 L 1420 530"/>
+    <path class="edge-dash" d="M 1420 655 L 1420 730"/>
+  </g>
+  <g>
+    <g id="sv[t---1]-resident">
+    <rect class="node" x="85" y="160" width="275" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="103" y="188">SV[t - 1] resident</text>
+    <text class="small"><tspan x="103" y="210">scene_field</tspan><tspan x="103" y="227">collision_field</tspan><tspan x="103" y="244">stable placement input</tspan></text>
+    </g>
+    <g id="targetsv_b">
+    <rect class="node" x="85" y="330" width="275" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="103" y="358">TargetSV_B</text>
+    <text class="small"><tspan x="103" y="380">target_occupancy</tspan><tspan x="103" y="397">target_color</tspan><tspan x="103" y="414">guidance only</tspan></text>
+    </g>
+    <g id="autoobject-registry">
+    <rect class="node" x="85" y="500" width="275" height="115" rx="8" fill="url(#autoobject-dot-bg)" stroke="#0891b2"/>
+    <text class="node-title" x="103" y="528">AutoObject registry</text>
+    <text class="small"><tspan x="103" y="550">assets available this tick</tspan><tspan x="103" y="567">descriptor probes</tspan><tspan x="103" y="584">footprint + route profile data</tspan></text>
+    </g>
+    <g id="position-only-anchors">
+    <rect class="node" x="480" y="150" width="275" height="105" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="498" y="178">Position-only anchors</text>
+    <text class="small"><tspan x="498" y="200">supported candidates</tspan><tspan x="498" y="217">column-top candidates</tspan><tspan x="498" y="234">no anchor_kind field</tspan></text>
+    </g>
+    <g id="score-semantic-probes">
+    <rect class="node" x="480" y="310" width="275" height="115" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="498" y="338">Score semantic probes</text>
+    <text class="small"><tspan x="498" y="360">descriptor-backed probes</tspan><tspan x="498" y="377">clamp samples</tspan><tspan x="498" y="394">anchor x asset score</tspan></text>
+    </g>
+    <g id="anchor_autoobject_topk">
+    <rect class="node" x="480" y="480" width="275" height="110" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="498" y="508">anchor_autoobject_topk</text>
+    <text class="small"><tspan x="498" y="530">hard gate candidate assets</tspan><tspan x="498" y="547">does not read back currently</tspan><tspan x="498" y="564">used by reduce pass</tspan></text>
+    </g>
+    <g id="per-asset-votes">
+    <rect class="node" x="480" y="650" width="275" height="105" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="498" y="678">Per-asset votes</text>
+    <text class="small"><tspan x="498" y="700">voxel-region votes</tspan><tspan x="498" y="717">GPU reduce pass</tspan><tspan x="498" y="734">vote tile only</tspan></text>
+    </g>
+    <g id="readback-expansion">
+    <rect class="node" x="875" y="155" width="275" height="145" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
+    <text class="node-title" x="893" y="183">Readback expansion</text>
+    <text class="small"><tspan x="893" y="205">voted anchor tile</tspan><tspan x="893" y="222">+ footprint AABB</tspan><tspan x="893" y="239">+ probe offset bounds</tspan><tspan x="893" y="256">+ context radius</tspan><tspan x="893" y="273">+ interpolation guard &gt;= 1</tspan></text>
+    </g>
+    <g id="candidate_voxel_regions_by_asset">
+    <rect class="node" x="875" y="365" width="275" height="125" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="893" y="393">candidate_voxel_regions_by_asset</text>
+    <text class="small"><tspan x="893" y="415">debug route dictionary</tspan><tspan x="893" y="432">values are voxel regions</tspan><tspan x="893" y="449">prefer recall over exact clipping</tspan></text>
+    </g>
+    <g id="empty-route-behavior">
+    <rect class="node" x="875" y="570" width="275" height="115" rx="8" fill="url(#note-hatch)" stroke="#64748b"/>
+    <text class="node-title" x="893" y="598">Empty route behavior</text>
+    <text class="small"><tspan x="893" y="620">explicit empty list</tspan><tspan x="893" y="637">skipped_prefilter = true</tspan><tspan x="893" y="654">no full-grid fallback</tspan></text>
+    </g>
+    <g id="run_multi_asset()">
+    <rect class="node" x="1270" y="170" width="300" height="115" rx="8" fill="#ffedd5" stroke="#ea580c"/>
+    <text class="node-title" x="1288" y="198">run_multi_asset()</text>
+    <text class="small"><tspan x="1288" y="220">consume per-asset regions</tspan><tspan x="1288" y="237">asset local candidate override allowed</tspan><tspan x="1288" y="254">string/int key routing</tspan></text>
+    </g>
+    <g id="same-type-exclusion-gate">
+    <rect class="node" x="1270" y="350" width="300" height="115" rx="8" fill="#ffedd5" stroke="#ea580c"/>
+    <text class="node-title" x="1288" y="378">Same-type exclusion gate</text>
+    <text class="small"><tspan x="1288" y="400">optional pre-score prune</tspan><tspan x="1288" y="417">uses min_spacing</tspan><tspan x="1288" y="434">does not replace footprint score</tspan></text>
+    </g>
+    <g id="score_voxel_tile.glsl">
+    <rect class="node" x="1270" y="530" width="300" height="125" rx="8" fill="#ffedd5" stroke="#ea580c"/>
+    <text class="node-title" x="1288" y="558">score_voxel_tile.glsl</text>
+    <text class="small"><tspan x="1288" y="580">scene/collision fields</tspan><tspan x="1288" y="597">target fit</tspan><tspan x="1288" y="614">footprint/support/clearance</tspan><tspan x="1288" y="631">physical score only</tspan></text>
+    </g>
+    <g id="future-rerank-/-validation">
+    <rect class="node" x="1270" y="730" width="300" height="100" rx="8" fill="#f5f3ff" stroke="#8b5cf6"/>
+    <text class="node-title" x="1288" y="758">Future rerank / validation</text>
+    <text class="small"><tspan x="1288" y="780">candidate-set only</tspan><tspan x="1288" y="797">no full asset enumeration</tspan><tspan x="1288" y="814">no MLP in physical shader now</tspan></text>
+    </g>
+  </g>
+  <g>
+    <g>
+    <rect x="85" y="780" width="665" height="75" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.3"/>
+    <text class="note-text" x="99" y="804">Terminology</text>
+    <text class="small"><tspan x="99" y="825">Docs use voxel region for the high-level routing unit. candidate_voxel_regions* is preferred; sparse aliases are compatibility/storage names.</tspan></text>
+  </g>
+  </g>
 </svg>

@@ -385,7 +385,8 @@ func storage_buffer_from_bytes(bytes: PackedByteArray, scope: String = SCOPE_FRA
 		return RID()
 	var safe: PackedByteArray = bytes
 	if safe.size() <= 0:
-		safe = PackedByteArray([0, 0, 0, 0])
+		safe = PackedByteArray()
+		safe.resize(4)
 	return track_rid(_rd.storage_buffer_create(safe.size(), safe), KIND_BUFFER, scope, label)
 
 
@@ -397,6 +398,23 @@ func storage_buffer_zero(byte_count: int, scope: String = SCOPE_FRAME, label: St
 	var bytes: PackedByteArray = PackedByteArray()
 	bytes.resize(maxi(byte_count, 4))
 	return storage_buffer_from_bytes(bytes, scope, label)
+
+
+func dispatch_indirect_args_buffer_zero(scope: String = SCOPE_FRAME, label: String = "dispatch_indirect_args") -> RID:
+	if _rd == null:
+		return RID()
+	var bytes: PackedByteArray = PackedByteArray()
+	bytes.resize(12)
+	return track_rid(
+		_rd.storage_buffer_create(
+			bytes.size(),
+			bytes,
+			RenderingDevice.STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT
+		),
+		KIND_BUFFER,
+		scope,
+		label
+	)
 
 
 func create_linear_sampler(scope: String = SCOPE_PERSISTENT, label: String = "linear_sampler") -> RID:
@@ -518,19 +536,11 @@ func create_rw_texture_3d(
 
 
 func pack_float_array(values: PackedFloat32Array) -> PackedByteArray:
-	var bytes: PackedByteArray = PackedByteArray()
-	bytes.resize(maxi(values.size(), 1) * 4)
-	for i in range(values.size()):
-		bytes.encode_float(i * 4, values[i])
-	return bytes
+	return values.to_byte_array()
 
 
 func pack_u32_array(values: PackedInt32Array) -> PackedByteArray:
-	var bytes: PackedByteArray = PackedByteArray()
-	bytes.resize(maxi(values.size(), 1) * 4)
-	for i in range(values.size()):
-		bytes.encode_u32(i * 4, values[i])
-	return bytes
+	return values.to_byte_array()
 
 
 func ceil_div(value: int, divisor: int) -> int:

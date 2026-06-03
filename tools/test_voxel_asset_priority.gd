@@ -19,14 +19,14 @@ func _init() -> void:
 		quit(1)
 
 
-# ---- CPU-only tests for sorting logic ----
+# ---- Control-plane tests for sorting logic ----
 
 func _test_priority_order() -> bool:
 	print("[VoxelAssetPriority] test_priority_order...")
 	var asset_defs: Array = [
-		{"priority": 0, "collision_voxels": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "value": 1.0}]},
-		{"priority": 10, "collision_voxels": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "value": 1.0}]},
-		{"priority": 5, "collision_voxels": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "value": 1.0}]},
+		{"priority": 0, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
+		{"priority": 10, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
+		{"priority": 5, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
 	]
 	var order: Array[int] = VPG._sort_asset_defs_by_priority_weight(asset_defs, {})
 	if order.size() != 3:
@@ -48,9 +48,9 @@ func _test_priority_order() -> bool:
 func _test_weight_shuffle_seeded() -> bool:
 	print("[VoxelAssetPriority] test_weight_shuffle_seeded...")
 	var asset_defs: Array = [
-		{"priority": 0, "weight": 1.0, "collision_voxels": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "value": 1.0}]},
-		{"priority": 0, "weight": 100.0, "collision_voxels": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "value": 1.0}]},
-		{"priority": 0, "weight": 1.0, "collision_voxels": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "value": 1.0}]},
+		{"priority": 0, "weight": 1.0, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
+		{"priority": 0, "weight": 100.0, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
+		{"priority": 0, "weight": 1.0, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
 	]
 
 	var order_a: Array[int] = VPG._sort_asset_defs_by_priority_weight(asset_defs, {"seed": 42})
@@ -90,12 +90,12 @@ func _test_global_quota() -> bool:
 
 	var asset_defs: Array = [
 		{
-			"collision_voxels": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "value": 1.0}],
+			"collision": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}],
 			"result_capacity": 10,
 			"min_distance_voxels": 2.0,
 		},
 		{
-			"collision_voxels": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "value": 0.8}],
+			"collision": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 0.8}],
 			"result_capacity": 10,
 			"min_distance_voxels": 2.0,
 		},
@@ -109,6 +109,9 @@ func _test_global_quota() -> bool:
 	if result.is_empty():
 		push_error("  FAIL: run_multi_asset returned empty")
 		return false
+	if _is_missing_rendering_device_skip(result):
+		print("  SKIP: no RenderingDevice available for GPU-only quota placement")
+		return true
 
 	var total := int(result.get("total_placed", 0))
 	if total > 3:
@@ -140,13 +143,13 @@ func _test_global_quota_caps_per_asset() -> bool:
 	var asset_defs: Array = [
 		{
 			"priority": 10,
-			"collision_voxels": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "value": 1.0}],
+			"collision": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}],
 			"result_capacity": 10,
 			"min_distance_voxels": 2.0,
 		},
 		{
 			"priority": 0,
-			"collision_voxels": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "value": 0.8}],
+			"collision": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 0.8}],
 			"result_capacity": 10,
 			"min_distance_voxels": 2.0,
 		},
@@ -160,6 +163,9 @@ func _test_global_quota_caps_per_asset() -> bool:
 	if result.is_empty():
 		push_error("  FAIL: empty result")
 		return false
+	if _is_missing_rendering_device_skip(result):
+		print("  SKIP: no RenderingDevice available for GPU-only quota cap placement")
+		return true
 
 	var total := int(result.get("total_placed", 0))
 	var order: Array = result.get("processing_order", [])
@@ -200,13 +206,13 @@ func _test_priority_with_gpu_pipeline() -> bool:
 	var asset_defs: Array = [
 		{
 			"priority": 0,
-			"collision_voxels": [{"shape": "cylinder", "radius": 0.45, "y_min": 0.0, "y_max": 2.0, "value": 1.0}],
+			"collision": [{"shape": "cylinder", "radius": 0.45, "y_min": 0.0, "y_max": 2.0, "collision_strength": 1.0}],
 			"result_capacity": 3,
 			"min_distance_voxels": 3.0,
 		},
 		{
 			"priority": 5,
-			"collision_voxels": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "value": 0.8}],
+			"collision": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 0.8}],
 			"result_capacity": 4,
 			"min_distance_voxels": 2.0,
 		},
@@ -220,6 +226,9 @@ func _test_priority_with_gpu_pipeline() -> bool:
 	if result.is_empty():
 		push_error("  FAIL: empty result")
 		return false
+	if _is_missing_rendering_device_skip(result):
+		print("  SKIP: no RenderingDevice available for GPU-only priority placement")
+		return true
 
 	var order: Array = result.get("processing_order", [])
 	if order.is_empty() or order[0] != 1:
@@ -235,4 +244,19 @@ func _test_priority_with_gpu_pipeline() -> bool:
 	var a1_count := int(result.asset_results[1].get("result_count", 0))
 
 	print("  OK: order=%s total=%d a0=%d a1=%d" % [order, total, a0_count, a1_count])
+	return true
+
+
+func _is_missing_rendering_device_skip(result: Dictionary) -> bool:
+	if not bool(result.get("contract_blocked", false)):
+		return false
+	var contract: Dictionary = result.get("gpu_runtime_profile_contract", {})
+	if str(contract.get("reason", "")) != "missing_rendering_device":
+		return false
+	if bool(result.get("cpu_fallback", true)):
+		push_error("  FAIL: GPU blocked priority path must not enable CPU fallback")
+		return false
+	if str(result.get("readback_source", "none")) != "none":
+		push_error("  FAIL: GPU blocked priority path must not expose readback_source")
+		return false
 	return true

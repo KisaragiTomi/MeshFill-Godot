@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://e7jvjd6vbpqt"
+path="res://.godot/imported/cliff_tree_mask.glsl-5b49e14d2e5549ef1b354ef999b837dc.res"
+
+[deps]
+
+source_file="res://shaders/cliff_tree_mask.glsl"
+dest_files=["res://.godot/imported/cliff_tree_mask.glsl-5b49e14d2e5549ef1b354ef999b837dc.res"]
+
+[params]
+

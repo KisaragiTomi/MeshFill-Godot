@@ -21,11 +21,14 @@ func _init() -> void:
 	ok = ok and _test_multi_asset_pipeline()
 	ok = ok and _test_gpu_runtime_profile_contract_or_skip()
 	ok = ok and _test_score_dispatch_consumes_gpu_runtime_profile_buffers_or_skip()
+	ok = ok and _test_same_profile_min_spacing_excludes_runtime_neighbor_or_skip()
 	ok = ok and _test_vpg_pipeline_rids_ready_or_skip()
 	ok = ok and _test_post_dispatch_contract_failure_blocks_multi_asset_or_skip()
 	ok = ok and _test_accepted_placement_writeback_to_gpu_runtime_or_blocked()
+	ok = ok and _test_gpu_runtime_writeback_report_merges_resident_shader_contract()
 	ok = ok and _test_accepted_placement_writeback_failure_reason_or_skip()
 	ok = ok and _test_run_multi_asset_writes_instance_stamp_specs_to_committer_or_skip()
+	ok = ok and _test_run_multi_asset_stages_source_candidates_to_resident_buffers_or_skip()
 	ok = ok and _test_gpu_runtime_profile_contract_has_no_cpu_fallback()
 	ok = ok and _test_gpu_compute_blocked_has_no_empty_success()
 	ok = ok and _test_instantiate_placements()
@@ -391,6 +394,217 @@ func _test_score_dispatch_consumes_gpu_runtime_profile_buffers_or_skip() -> bool
 	return true
 
 
+func _test_same_profile_min_spacing_excludes_runtime_neighbor_or_skip() -> bool:
+	print("[VoxelMultiAsset] test_same_profile_min_spacing_excludes_runtime_neighbor_or_skip...")
+	var runtime := Runtime.new(4)
+	if not runtime.is_gpu_ready():
+		print("  SKIP: no RenderingDevice available for same-profile runtime spacing")
+		runtime.dispose()
+		return true
+
+	var same_profile := {
+		"color": Color(0.25, 0.65, 0.35, 0.8),
+		"complexity": 0.8,
+		"collision": [
+			{"voxel": Vector3i.ZERO, "collision_strength": 1.0, "weight": 1.0}
+		],
+		"pivot_variants": [
+			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
+		],
+	}
+	var other_profile := {
+		"color": Color(0.65, 0.25, 0.35, 0.6),
+		"complexity": 0.6,
+		"collision": [
+			{"voxel": Vector3i.ZERO, "collision_strength": 1.0, "weight": 1.0}
+		],
+		"pivot_variants": [
+			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
+		],
+	}
+	var grid_size := Vector3i(8, 2, 8)
+	var voxel_count := grid_size.x * grid_size.y * grid_size.z
+	var scene := PackedFloat32Array()
+	var collision := PackedFloat32Array()
+	scene.resize(voxel_count)
+	collision.resize(voxel_count)
+	var footprint := [
+		{
+			"local_pos": Vector3i.ZERO,
+			"collision_strength": 1.0,
+			"weight": 1.0,
+			"flags": 0,
+		}
+	]
+
+	var container = ProfileContainer.new()
+	if not container.attach_rendering_device(runtime.get_rendering_device(), false):
+		push_error("  FAIL: profile container should attach runtime RenderingDevice")
+		runtime.dispose()
+		return false
+	var same_profile_id: int = container.register_normalized_profile(same_profile.duplicate(true))
+	var other_profile_id: int = container.register_normalized_profile(other_profile.duplicate(true))
+	if same_profile_id <= 0 or other_profile_id <= 0 or not container.upload_profiles():
+		push_error("  FAIL: expected uploaded profiles for same-profile runtime spacing")
+		container.dispose()
+		runtime.dispose()
+		return false
+	var same_object_id := runtime.spawn(same_profile_id, 51, Vector3i(8, 0, 0), Vector3i(9, 1, 1))
+	if same_object_id < 0:
+		push_error("  FAIL: runtime should spawn same-profile neighbor")
+		container.dispose()
+		runtime.dispose()
+		return false
+
+	var generator := VPG.new()
+	var same_result := generator.run_minimal(scene, collision, footprint, grid_size, {
+		"require_gpu_runtime_profile_contract": true,
+		"gpu_autoobject_runtime": runtime,
+		"auto_voxel_runtime_profile_container": container,
+		"profile_id": same_profile_id,
+		"top_k": 1,
+		"result_capacity": 1,
+		"candidate_voxel_sparses": [Vector3i.ZERO],
+		"min_support_ratio": 0.0,
+		"collision_limit": 0.0,
+		"clearance_limit": 0.0,
+		"score_runtime_profile_avoidance": true,
+		"min_distance_voxels": 16.0,
+	})
+	var same_contract: Dictionary = same_result.get("gpu_runtime_profile_contract", {})
+	var same_debug: Dictionary = same_result.get("gpu_runtime_profile_binding_debug", {})
+	var same_results: Array = same_result.get("results", [])
+	if same_result.is_empty() or bool(same_result.get("contract_blocked", false)):
+		push_error("  FAIL: same-profile spacing run should complete on GPU: %s" % str(same_contract))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	if bool(same_result.get("cpu_fallback", false)):
+		push_error("  FAIL: same-profile spacing run must not CPU fallback")
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	if int(same_result.get("result_count", -1)) != 0 or not same_results.is_empty():
+		push_error("  FAIL: same-profile runtime spacing should reject all candidates")
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	if int(same_debug.get("runtime_overlap_hits", 0)) != 0:
+		push_error("  FAIL: runtime spacing test should not rely on bounds-origin overlap: %s" % str(same_debug))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	if int(same_debug.get("runtime_spacing_rejections", 0)) <= 0:
+		push_error("  FAIL: expected GPU same-profile spacing rejections: %s" % str(same_debug))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	if not bool(same_contract.get("score_shader_same_type_min_spacing_exclusion", false)) \
+			or int(same_contract.get("score_shader_same_type_min_spacing_rejections", 0)) <= 0 \
+			or str(same_contract.get("same_type_exclusion_read_source", "none")) != "score_shader_storage_buffer":
+		push_error("  FAIL: same-profile spacing contract did not annotate GPU exclusion: %s" % str(same_contract))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	if bool(same_contract.get("scene_voxel_tile_object_ref_exclusion", true)) \
+			or str(same_contract.get("same_type_exclusion_object_ref_read_source", "")) != "none":
+		push_error("  FAIL: same-profile spacing must not claim SceneVoxelTile object-ref exclusion: %s" % str(same_contract))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	generator.dispose()
+	container.dispose()
+	runtime.dispose()
+
+	var runtime_other := Runtime.new(4)
+	if not runtime_other.is_gpu_ready():
+		print("  SKIP: no RenderingDevice available for different-profile spacing follow-up")
+		runtime_other.dispose()
+		return true
+	var container_other = ProfileContainer.new()
+	if not container_other.attach_rendering_device(runtime_other.get_rendering_device(), false):
+		push_error("  FAIL: second profile container should attach runtime RenderingDevice")
+		runtime_other.dispose()
+		return false
+	var same_profile_id_other: int = container_other.register_normalized_profile(same_profile.duplicate(true))
+	var other_profile_id_other: int = container_other.register_normalized_profile(other_profile.duplicate(true))
+	if same_profile_id_other <= 0 or other_profile_id_other <= 0 or not container_other.upload_profiles():
+		push_error("  FAIL: expected uploaded profiles for different-profile runtime spacing")
+		container_other.dispose()
+		runtime_other.dispose()
+		return false
+	var other_object_id := runtime_other.spawn(other_profile_id_other, 52, Vector3i(8, 0, 0), Vector3i(9, 1, 1))
+	if other_object_id < 0:
+		push_error("  FAIL: runtime should spawn different-profile neighbor")
+		container_other.dispose()
+		runtime_other.dispose()
+		return false
+
+	var generator_other := VPG.new()
+	var other_result := generator_other.run_minimal(scene, collision, footprint, grid_size, {
+		"require_gpu_runtime_profile_contract": true,
+		"gpu_autoobject_runtime": runtime_other,
+		"auto_voxel_runtime_profile_container": container_other,
+		"profile_id": same_profile_id_other,
+		"top_k": 1,
+		"result_capacity": 1,
+		"candidate_voxel_sparses": [Vector3i.ZERO],
+		"min_support_ratio": 0.0,
+		"collision_limit": 0.0,
+		"clearance_limit": 0.0,
+		"score_runtime_profile_avoidance": true,
+		"min_distance_voxels": 16.0,
+	})
+	var other_contract: Dictionary = other_result.get("gpu_runtime_profile_contract", {})
+	var other_debug: Dictionary = other_result.get("gpu_runtime_profile_binding_debug", {})
+	if other_result.is_empty() or bool(other_result.get("contract_blocked", false)):
+		push_error("  FAIL: different-profile spacing run should complete on GPU: %s" % str(other_contract))
+		generator_other.dispose()
+		container_other.dispose()
+		runtime_other.dispose()
+		return false
+	if bool(other_result.get("cpu_fallback", false)):
+		push_error("  FAIL: different-profile spacing run must not CPU fallback")
+		generator_other.dispose()
+		container_other.dispose()
+		runtime_other.dispose()
+		return false
+	if int(other_result.get("result_count", 0)) <= 0:
+		push_error("  FAIL: different-profile neighbor should not block placement")
+		generator_other.dispose()
+		container_other.dispose()
+		runtime_other.dispose()
+		return false
+	if int(other_debug.get("runtime_spacing_rejections", 0)) != 0 \
+			or int(other_debug.get("runtime_spacing_profile_matches", 0)) != 0:
+		push_error("  FAIL: different-profile neighbor should not trigger same-profile spacing: %s" % str(other_debug))
+		generator_other.dispose()
+		container_other.dispose()
+		runtime_other.dispose()
+		return false
+	if bool(other_contract.get("score_shader_same_type_min_spacing_exclusion", false)) \
+			or str(other_contract.get("same_type_exclusion_read_source", "")) != "none" \
+			or bool(other_contract.get("scene_voxel_tile_object_ref_exclusion", true)):
+		push_error("  FAIL: different-profile spacing contract should keep exclusion fields default: %s" % str(other_contract))
+		generator_other.dispose()
+		container_other.dispose()
+		runtime_other.dispose()
+		return false
+
+	generator_other.dispose()
+	container_other.dispose()
+	runtime_other.dispose()
+	print("  OK: same-profile runtime spacing rejects; different profile does not")
+	return true
+
+
 func _test_vpg_pipeline_rids_ready_or_skip() -> bool:
 	print("[VoxelMultiAsset] test_vpg_pipeline_rids_ready_or_skip...")
 	var generator := VPG.new()
@@ -584,6 +798,7 @@ func _test_accepted_placement_writeback_to_gpu_runtime_or_blocked() -> bool:
 		for x in range(grid_size.x):
 			scene[generator.voxel_index(Vector3i(x, 0, z), grid_size)] = 1.0
 
+	runtime.set_use_resident_accepted_placement_writeback(true)
 	var writeback_object_type := 37
 	var result := generator.run_multi_asset(
 		scene,
@@ -706,8 +921,72 @@ func _test_accepted_placement_writeback_to_gpu_runtime_or_blocked() -> bool:
 		container.dispose()
 		runtime.dispose()
 		return false
+	if str(writeback.get("runtime_command_flush_mode", "")) != "resident_accepted_placement_record_shader_writeback":
+		push_error("  FAIL: VPG writeback should surface resident accepted-record shader flush mode: %s" % str(writeback))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	if not bool(writeback.get("accepted_placement_record_shader_consumed", false)):
+		push_error("  FAIL: VPG writeback should surface consumed accepted-record shader dispatch: %s" % str(writeback))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	var record_count := int(writeback.get("accepted_placement_record_count", 0))
+	if int(writeback.get("accepted_placement_record_schema_version", -1)) != Runtime.ACCEPTED_PLACEMENT_RECORD_SCHEMA_VERSION \
+			or int(writeback.get("accepted_placement_record_stride_bytes", -1)) != Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES \
+			or record_count < accepted_count:
+		push_error("  FAIL: VPG writeback should carry accepted-record schema/stride/count diagnostics: %s" % str(writeback))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	if int(writeback.get("accepted_placement_record_byte_count", -1)) != record_count * Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES \
+			or not bool(writeback.get("accepted_placement_record_debug_packed", false)):
+		push_error("  FAIL: VPG writeback should carry accepted-record packed byte diagnostics: %s" % str(writeback))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	if str(writeback.get("accepted_placement_record_shader_name", "")) != Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_NAME \
+			or str(writeback.get("accepted_placement_record_shader_path", "")) != Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_PATH:
+		push_error("  FAIL: VPG writeback should surface accepted-record shader identity: %s" % str(writeback))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	var expected_dispatch_count := int(ceil(float(record_count) / float(Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X)))
+	if int(writeback.get("accepted_placement_record_shader_dispatch_count", 0)) != expected_dispatch_count \
+			or int(writeback.get("accepted_placement_record_shader_local_size_x", 0)) != Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X:
+		push_error("  FAIL: VPG writeback should surface accepted-record shader dispatch/local size: %s" % str(writeback))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	var shader_stats: Dictionary = writeback.get("accepted_placement_record_shader_stats", {})
+	if int(shader_stats.get("applied", -1)) < accepted_count \
+			or int(shader_stats.get("record_count", -1)) != record_count \
+			or int(shader_stats.get("invalid_object_id", -1)) != 0 \
+			or int(shader_stats.get("dirty_overflow", -1)) != 0 \
+			or int(shader_stats.get("already_alive", -1)) != 0 \
+			or int(shader_stats.get("skipped", -1)) != 0:
+		push_error("  FAIL: VPG writeback should surface accepted-record shader stats: %s" % str(writeback))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
 	if bool(writeback.get("resident_gpu_allocator_writeback", true)):
-		push_error("  FAIL: accepted placement writeback must not claim resident GPU allocator writeback")
+		push_error("  FAIL: accepted-record shader path must not claim resident GPU allocator ownership")
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	if str(writeback.get("resident_gpu_allocator_writeback_mode", "")) != "resident_object_buffer_writeback" \
+			or int(writeback.get("resident_gpu_allocator_record_stride_bytes", -1)) != Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES \
+			or str(writeback.get("resident_gpu_allocator_owner", "")) != "GPUAutoObjectRuntime" \
+			or str(writeback.get("resident_gpu_allocator_writeback_blocked_reason", "")) != "none":
+		push_error("  FAIL: VPG writeback should surface resident object-buffer writeback diagnostics: %s" % str(writeback))
 		generator.dispose()
 		container.dispose()
 		runtime.dispose()
@@ -762,6 +1041,134 @@ func _test_accepted_placement_writeback_to_gpu_runtime_or_blocked() -> bool:
 	container.dispose()
 	runtime.dispose()
 	print("  OK: accepted placements wrote to GPUAutoObjectRuntime live buffers")
+	return true
+
+
+func _test_gpu_runtime_writeback_report_merges_resident_shader_contract() -> bool:
+	print("[VoxelMultiAsset] test_gpu_runtime_writeback_report_merges_resident_shader_contract...")
+	var generator := VPG.new()
+	var aggregate := generator._new_gpu_autoobject_runtime_writeback_report(
+		null,
+		null,
+		{"ok": true, "reason": "gpu_runtime_profile_buffers_ready"},
+		true
+	)
+	for source in [
+		{
+			"ok": true,
+			"reason": "gpu_runtime_writeback_ready",
+			"accepted_count": 1,
+			"spawned_count": 1,
+			"runtime_command_flush_mode": "resident_accepted_placement_record_shader_writeback",
+			"accepted_placement_record_schema_version": Runtime.ACCEPTED_PLACEMENT_RECORD_SCHEMA_VERSION,
+			"accepted_placement_record_stride_bytes": Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
+			"accepted_placement_record_count": 1,
+			"accepted_placement_record_byte_count": Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
+			"accepted_placement_record_debug_packed": true,
+			"accepted_placement_record_shader_consumed": true,
+			"accepted_placement_record_shader_name": Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_NAME,
+			"accepted_placement_record_shader_path": Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_PATH,
+			"accepted_placement_record_shader_dispatch_count": 1,
+			"accepted_placement_record_shader_local_size_x": Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X,
+			"accepted_placement_record_shader_stats": {"applied": 1, "record_count": 1, "dispatched": 1},
+			"resident_gpu_allocator_writeback": false,
+			"resident_gpu_allocator_writeback_mode": "resident_object_buffer_writeback",
+			"resident_gpu_allocator_record_stride_bytes": Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
+			"resident_gpu_allocator_owner": "GPUAutoObjectRuntime",
+			"resident_gpu_allocator_writeback_blocked_reason": "none",
+		},
+		{
+			"ok": true,
+			"reason": "gpu_runtime_writeback_ready",
+			"accepted_count": 2,
+			"spawned_count": 2,
+			"runtime_command_flush_mode": "resident_accepted_placement_record_shader_writeback",
+			"accepted_placement_record_schema_version": Runtime.ACCEPTED_PLACEMENT_RECORD_SCHEMA_VERSION,
+			"accepted_placement_record_stride_bytes": Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
+			"accepted_placement_record_count": 2,
+			"accepted_placement_record_byte_count": 2 * Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
+			"accepted_placement_record_debug_packed": true,
+			"accepted_placement_record_shader_consumed": true,
+			"accepted_placement_record_shader_name": Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_NAME,
+			"accepted_placement_record_shader_path": Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_PATH,
+			"accepted_placement_record_shader_dispatch_count": 1,
+			"accepted_placement_record_shader_local_size_x": Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X,
+			"accepted_placement_record_shader_stats": {"applied": 2, "record_count": 2, "dispatched": 1},
+			"resident_gpu_allocator_writeback": false,
+			"resident_gpu_allocator_writeback_mode": "resident_object_buffer_writeback",
+			"resident_gpu_allocator_record_stride_bytes": Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
+			"resident_gpu_allocator_owner": "GPUAutoObjectRuntime",
+			"resident_gpu_allocator_writeback_blocked_reason": "none",
+		},
+	]:
+		generator._merge_gpu_autoobject_runtime_writeback_report(aggregate, source)
+	if str(aggregate.get("runtime_command_flush_mode", "")) != "resident_accepted_placement_record_shader_writeback" \
+			or not bool(aggregate.get("accepted_placement_record_shader_consumed", false)):
+		push_error("  FAIL: aggregate should preserve consumed resident shader mode: %s" % str(aggregate))
+		generator.dispose()
+		return false
+	if int(aggregate.get("accepted_placement_record_count", 0)) != 3 \
+			or int(aggregate.get("accepted_placement_record_byte_count", 0)) != 3 * Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES \
+			or not bool(aggregate.get("accepted_placement_record_debug_packed", false)):
+		push_error("  FAIL: aggregate should sum accepted-record count/bytes/debug-packed contract: %s" % str(aggregate))
+		generator.dispose()
+		return false
+	if int(aggregate.get("accepted_placement_record_shader_dispatch_count", 0)) != 2 \
+			or int(aggregate.get("accepted_placement_record_shader_local_size_x", 0)) != Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X:
+		push_error("  FAIL: aggregate should preserve shader dispatch/local size diagnostics: %s" % str(aggregate))
+		generator.dispose()
+		return false
+	var stats: Dictionary = aggregate.get("accepted_placement_record_shader_stats", {})
+	if int(stats.get("applied", 0)) != 3 \
+			or int(stats.get("record_count", 0)) != 3 \
+			or int(stats.get("dispatched", 0)) != 2:
+		push_error("  FAIL: aggregate should merge shader stats: %s" % str(aggregate))
+		generator.dispose()
+		return false
+	if bool(aggregate.get("resident_gpu_allocator_writeback", true)) \
+			or str(aggregate.get("resident_gpu_allocator_writeback_mode", "")) != "resident_object_buffer_writeback" \
+			or int(aggregate.get("resident_gpu_allocator_record_stride_bytes", 0)) != Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES \
+			or str(aggregate.get("resident_gpu_allocator_owner", "")) != "GPUAutoObjectRuntime" \
+			or str(aggregate.get("resident_gpu_allocator_writeback_blocked_reason", "")) != "none":
+		push_error("  FAIL: aggregate should preserve resident object-buffer diagnostics without allocator ownership: %s" % str(aggregate))
+		generator.dispose()
+		return false
+	var blocked_aggregate := generator._new_gpu_autoobject_runtime_writeback_report(
+		null,
+		null,
+		{"ok": true, "reason": "gpu_runtime_profile_buffers_ready"},
+		true
+	)
+	generator._merge_gpu_autoobject_runtime_writeback_report(blocked_aggregate, {
+		"ok": true,
+		"reason": "gpu_runtime_writeback_ready",
+		"accepted_count": 1,
+		"spawned_count": 1,
+		"runtime_command_flush_mode": "cpu_bulk_spawn_buffer_update",
+		"accepted_placement_record_schema_version": Runtime.ACCEPTED_PLACEMENT_RECORD_SCHEMA_VERSION,
+		"accepted_placement_record_stride_bytes": Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
+		"accepted_placement_record_count": 1,
+		"accepted_placement_record_byte_count": Runtime.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
+		"accepted_placement_record_debug_packed": true,
+		"accepted_placement_record_shader_consumed": false,
+		"accepted_placement_record_shader_name": "none",
+		"accepted_placement_record_shader_path": "none",
+		"accepted_placement_record_shader_dispatch_count": 0,
+		"accepted_placement_record_shader_local_size_x": Runtime.ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X,
+		"accepted_placement_record_shader_stats": {},
+		"resident_gpu_allocator_writeback": false,
+		"resident_gpu_allocator_writeback_mode": "none",
+		"resident_gpu_allocator_record_stride_bytes": 0,
+		"resident_gpu_allocator_owner": "none",
+		"resident_gpu_allocator_writeback_blocked_reason": "no_resident_allocator_shader_dispatch",
+	})
+	if bool(blocked_aggregate.get("accepted_placement_record_shader_consumed", true)) \
+			or str(blocked_aggregate.get("resident_gpu_allocator_writeback_blocked_reason", "")) != "no_resident_allocator_shader_dispatch":
+		push_error("  FAIL: aggregate must not claim shader consumption for blocked CPU bulk flush: %s" % str(blocked_aggregate))
+		generator.dispose()
+		return false
+	generator.dispose()
+	print("  OK: runtime writeback aggregate preserves resident shader diagnostics")
 	return true
 
 
@@ -1155,6 +1562,151 @@ func _test_run_multi_asset_writes_instance_stamp_specs_to_committer_or_skip() ->
 	return true
 
 
+func _test_run_multi_asset_stages_source_candidates_to_resident_buffers_or_skip() -> bool:
+	print("[VoxelMultiAsset] test_run_multi_asset_stages_source_candidates_to_resident_buffers_or_skip...")
+	if not _has_rendering_device():
+		print("  SKIP: no RenderingDevice available for resident candidate staging")
+		return true
+
+	var committer := SVC.new(16, 16.0, false)
+	if not committer._gpu_ready:
+		push_error("  FAIL: SceneVoxelCommitter GPU resources are not ready")
+		committer.dispose(true)
+		return false
+	committer.build_voxel_volume(16, [
+		{"channel": 0, "color": Color(0.2, 0.7, 0.25, 1.0), "complexity": 0.8, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
+	])
+
+	var grid_size := Vector3i(16, 8, 16)
+	var voxel_count := grid_size.x * grid_size.y * grid_size.z
+	var scene := PackedFloat32Array()
+	var collision := PackedFloat32Array()
+	scene.resize(voxel_count)
+	collision.resize(voxel_count)
+
+	var generator := VPG.new()
+	for z in range(grid_size.z):
+		for x in range(grid_size.x):
+			scene[generator.voxel_index(Vector3i(x, 0, z), grid_size)] = 1.0
+
+	var settings := {
+		"top_k": 2,
+		"collision_limit": 0.0,
+		"min_support_ratio": 1.0,
+		"clearance_limit": 0.0,
+		"scene_voxel_committer": committer,
+		"create_voxel_write_spec": true,
+		"defer_blend": true,
+		"capture_size": 16.0,
+		"volume_xz_resolution": 16,
+	}
+	settings[VPG.STAGE_SCENE_VOXEL_SOURCE_CANDIDATES_CONFIG_KEY] = true
+
+	var result := generator.run_multi_asset(
+		scene,
+		collision,
+		[
+			{
+				"collision": [
+					{"shape": "cylinder", "radius": 0.3, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}
+				],
+				"result_capacity": 1,
+				"channel": 0,
+				"radius": 1.0,
+				"complexity": 0.8,
+				"color": Color(0.2, 0.7, 0.25, 0.8),
+			}
+		],
+		grid_size,
+		Vector3.ONE,
+		Vector3.ZERO,
+		settings
+	)
+
+	var accepted_count := int(result.get("total_placed", 0))
+	if accepted_count <= 0:
+		push_error("  FAIL: staged source-candidate handoff test needs accepted placements")
+		generator.dispose()
+		committer.dispose(true)
+		return false
+
+	var source_writeback: Dictionary = result.get("instance_stamp_writeback", {})
+	if not bool(source_writeback.get("ok", false)):
+		push_error("  FAIL: opt-in source writeback should succeed: %s" % str(source_writeback))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if int(source_writeback.get("applied_count", 0)) < accepted_count or committer.get_instance_stamp_write_specs().size() < accepted_count:
+		push_error("  FAIL: accepted placements should write ISWS records before staging: %s" % str(source_writeback))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if not bool(source_writeback.get("cpu_pending_source_candidate_bridge", false)):
+		push_error("  FAIL: staged handoff should keep the CPU pending-source bridge true: %s" % str(source_writeback))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if not bool(source_writeback.get("resident_source_write_buffer", false)):
+		push_error("  FAIL: opt-in handoff should stage resident source-candidate buffers: %s" % str(source_writeback))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if str(source_writeback.get("resident_source_write_buffer_owner", "")) != "SceneVoxelCommitter":
+		push_error("  FAIL: staged resident candidate buffer owner mismatch: %s" % str(source_writeback))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if int(source_writeback.get("resident_source_candidate_buffer_stride_bytes", -1)) != 16 \
+			or int(source_writeback.get("resident_source_range_buffer_stride_bytes", -1)) != 8:
+		push_error("  FAIL: staged resident candidate/range strides should be 16/8 bytes: %s" % str(source_writeback))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if int(source_writeback.get("resident_source_candidate_buffer_count", 0)) <= 0 \
+			or int(source_writeback.get("resident_source_range_buffer_count", 0)) <= 0:
+		push_error("  FAIL: staged resident candidate/range counts should be positive: %s" % str(source_writeback))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if str(source_writeback.get("runtime_read_source", "")) != "none" \
+			or bool(source_writeback.get("final_source_stream_resident", true)) \
+			or str(source_writeback.get("final_source_stream_resident_source", "")) != "none":
+		push_error("  FAIL: candidate staging must not claim resident final source streams: %s" % str(source_writeback))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if bool(source_writeback.get("resident_gpu_allocator_writeback", true)) \
+			or str(source_writeback.get("resident_gpu_allocator_writeback_mode", "")) != "none":
+		push_error("  FAIL: source-candidate staging must not claim resident GPU allocator writeback: %s" % str(source_writeback))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if not committer.get_scene_voxels().is_empty():
+		push_error("  FAIL: staged source candidates should not materialize public SceneVoxels before blend")
+		generator.dispose()
+		committer.dispose(true)
+		return false
+
+	committer.blend_scene_voxels()
+	if committer.get_scene_voxels().is_empty():
+		push_error("  FAIL: deferred staged source candidates should materialize after blend")
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	var blend_summary := committer.get_last_blend_scene_voxel_commit_summary()
+	if not bool(blend_summary.get("source_candidate_cpu_apply_bridge", false)) \
+			or bool(blend_summary.get("final_source_stream_resident", true)):
+		push_error("  FAIL: blend should resolve staged candidates through CPU apply bridge without resident final streams: %s" % str(blend_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+
+	generator.dispose()
+	committer.dispose(true)
+	print("  OK: opt-in VPG handoff stages resident source candidates before deferred blend")
+	return true
+
+
 func _test_gpu_runtime_profile_contract_has_no_cpu_fallback() -> bool:
 	print("[VoxelMultiAsset] test_gpu_runtime_profile_contract_has_no_cpu_fallback...")
 	var generator := VPG.new()
@@ -1397,6 +1949,8 @@ func _test_instantiate_placement_voxel_write_spec_commit() -> bool:
 		"scene_voxel_committer": committer,
 		"capture_size": 32.0,
 		"volume_xz_resolution": 32,
+		"channel": 0,
+		"radius": 1.0,
 	})
 
 	if node == null:

@@ -9,12 +9,12 @@ Status: historical record. The migration checklist in this document has been com
 - **框架归属**：`../core/meshfill-framework.md`
 - **SceneVoxel / collision 语义**：`../core/scene-voxel-field-system.md`
 - **放置实现**：`scripts/voxel_placement_generator.gd`
-- **SceneVoxelLocal**：`scripts/scene_voxel_runtime.gd`
+- **SV 常驻显存状态**：由 `SceneVoxelCommitter` 持有；`SceneVoxel` 是 committed read model
 - **核心 shader**：`shaders/score_voxel_tile.glsl`、`shaders/reduce_voxel_tiles.glsl`、`shaders/stamp_voxel_field.glsl`
 
 ## 历史结论
 
-3D 放置不直接沿用旧 2.5D heightfield fitting，而是把物体简化为局部体素 `AssetFootprint`，在候选落点上采样场景体素并给出物理评分。
+3D 放置不直接沿用previous 2.5D heightfield fitting，而是把物体简化为局部体素 `AssetFootprint`，在候选落点上采样场景体素并给出物理评分。
 
 ```text
 AssetFootprint
@@ -27,14 +27,14 @@ AssetFootprint
 
 已落地的核心链路：
 
-- **footprint 烘焙**：从 `collision_voxels` 生成局部 footprint，支持 support / clearance / solid 标记。
+- **footprint 烘焙**：从 `collision` 生成局部 footprint，支持 support / clearance / solid 标记。
 - **离散旋转**：预烘焙绕 Godot `Y` 轴的 `24` 个 yaw 版本，每个 candidate 只测试一个 `rotation_index`。
 - **GPU 评分**：`score_voxel_tile.glsl` 使用 `8x8x8` workgroup，对 candidate voxel regions 做 support / collision / overlap / clearance / ignored sample 累计。
 - **Tile top K 与汇总**：tile 内输出 top K，`reduce_voxel_tiles.glsl` 做跨 tile 汇总、去重和 quota 处理。
 - **GPU stamp**：`stamp_voxel_field.glsl` 将结果写回 scene / collision field，并输出 `VoxelStampDeltaBuffer`。
 - **多 asset 顺序放置**：`run_multi_asset()` 按优先级、权重和 quota 顺序处理，前一 asset 的 stamp 会影响后一 asset。
-- **Dirty tile 驱动**：`SceneVoxelLocal.run_placement_dirty()` 用底层 dirty tile 作为 compact candidate 输入；高层语义等价于 dirty voxel regions。
-- **CPU 角色**：CPU 只负责最终实例化、metadata / `voxel_write_spec` 生成和提交，不做 mesh 级二次筛选。
+- **Dirty tile 驱动**：SV 常驻显存状态使用底层 dirty tile metadata 作为 compact candidate 输入；高层语义等价于 dirty voxel regions。
+- **CPU 角色**：CPU 只负责最终实例化、metadata / `instance_stamp_write_spec`（`ISWS`）生成和提交，不做 mesh 级二次筛选。
 
 ## 数据分层
 
@@ -56,15 +56,15 @@ AssetFootprint
 | 字段 | 说明 |
 | --- | --- |
 | `local_pos` | 物体局部体素坐标 |
-| `collision_degree` | `0-255` 碰撞强度；超过阈值视为 solid |
+| `collision_strength` | `0-255` 碰撞强度；超过阈值视为 solid |
 | `flags` | `support`、`clearance` 等 bit flags |
 | `weight` | 对 score / debug 分量的权重 |
 
 推荐语义：
 
-- **`collision_degree = 0`**：不参与碰撞，只作为可视或复杂度信息。
-- **`collision_degree = 1-191`**：soft 区间，允许重叠但扣分。
-- **`collision_degree >= 192`**：solid 区间，累计到 hard collision 分量。
+- **`collision_strength = 0`**：不参与碰撞，只作为可视或复杂度信息。
+- **`collision_strength = 1-191`**：soft 区间，允许重叠但扣分。
+- **`collision_strength >= 192`**：solid 区间，累计到 hard collision 分量。
 - **`support`**：底部接触点需要下方有支撑。
 - **`clearance`**：预留空间，重叠会扣分或 reject。
 
@@ -113,7 +113,7 @@ if target_occupancy[candidate_origin] <= 0.01:
 读取规则：
 
 - **逻辑缺项**：在 `grid_bounds` 内但没有 committed `SceneVoxel` key，视为默认空体素。
-- **显式空体素**：`value = 0.0` 的 `SceneVoxel` 与默认空占用相同，但 CPU 侧保留编辑语义。
+- **显式空体素**：`complexity = 0.0` 的 `SceneVoxel` 与默认空占用相同，但 CPU 侧保留编辑语义。
 - **超出 `sample_bounds`**：标记 `SAMPLE_IGNORED`，不当成 empty，也不当成 occupied。
 - **超出 `grid_bounds`**：标记 `SAMPLE_IGNORED`，不要 clamp 到边界。
 - **超出 `write_bounds`**：不写入，只作为 debug / 异常路径处理。
@@ -151,5 +151,12 @@ Candidate 的 owner tile 只表示“由哪个底层 tile 负责评分这个 ori
 这份文档只作为迁移历史保留。新增规则不要继续扩写到这里，应更新对应的当前文档：
 
 - **放置流程 / ownership**：更新 `../core/meshfill-framework.md`
-- **SceneVoxel / CollisionVoxel 语义**：更新 `../core/scene-voxel-field-system.md`
+- **SceneVoxel / collision_strength 语义**：更新 `../core/scene-voxel-field-system.md`
 - **TargetSceneVoxel 与语义候选路由**：更新 `../placement/voxel-semantic-routing.md`
+
+## 测试场景
+
+| 场景 | 说明 | Godot 场景 |
+| --- | --- | --- |
+| [历史迁移总览](../../demos/history-voxel-3d-migration-plan/history-voxel-3d-migration-plan.md) | 测试方法与验收标准 | [`../../demos/history-voxel-3d-migration-plan/history-voxel-3d-migration-plan.tscn`](../../demos/history-voxel-3d-migration-plan/history-voxel-3d-migration-plan.tscn) |
+| [Historical Voxel Migration](../../demos/modules/historical-voxel-migration/historical-voxel-migration.md) | 测试方法与验收标准 | [`../../demos/modules/historical-voxel-migration/historical-voxel-migration.tscn`](../../demos/modules/historical-voxel-migration/historical-voxel-migration.tscn) |

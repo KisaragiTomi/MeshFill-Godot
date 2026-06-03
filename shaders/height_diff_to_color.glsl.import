@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bs5pimd4jj2pg"
+path="res://.godot/imported/height_diff_to_color.glsl-6949858f039c0c82e89aa83e705c048a.res"
+
+[deps]
+
+source_file="res://shaders/height_diff_to_color.glsl"
+dest_files=["res://.godot/imported/height_diff_to_color.glsl-6949858f039c0c82e89aa83e705c048a.res"]
+
+[params]
+

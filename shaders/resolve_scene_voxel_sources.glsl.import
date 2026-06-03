@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cyc1kn3n7atvd"
+path="res://.godot/imported/resolve_scene_voxel_sources.glsl-45219406c9ba3d0676c5e07279e27b99.res"
+
+[deps]
+
+source_file="res://shaders/resolve_scene_voxel_sources.glsl"
+dest_files=["res://.godot/imported/resolve_scene_voxel_sources.glsl-45219406c9ba3d0676c5e07279e27b99.res"]
+
+[params]
+

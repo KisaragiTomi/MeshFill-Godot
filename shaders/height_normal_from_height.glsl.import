@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://d058elcot30s3"
+path="res://.godot/imported/height_normal_from_height.glsl-bfb3014dcaa2a03b1d01443760c76d45.res"
+
+[deps]
+
+source_file="res://shaders/height_normal_from_height.glsl"
+dest_files=["res://.godot/imported/height_normal_from_height.glsl-bfb3014dcaa2a03b1d01443760c76d45.res"]
+
+[params]
+

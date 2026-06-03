@@ -1,0 +1,40 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
+
+[node name="ModuleDocsIndexAndGraphs" type="Node3D"]
+script = ExtResource("1_contract")
+metadata/module_id = "docs-index-and-graphs"
+metadata/source_docs = "res://docs/README.md; res://docs/graphs/README.md"
+metadata/test_doc = "res://demos/modules/docs-index-and-graphs/docs-index-and-graphs.md"
+metadata/focus = "Documentation index, graph inventory, graph ownership links, and SVG render QA"
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 9)
+current = true
+fov = 45.0
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.707, -0.354, 0.612, 0, 0.866, 0.5, -0.707, -0.354, 0.612, 0, 4, 4)
+light_energy = 1.2
+
+[node name="Title" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.55, 0)
+text = "Module: Docs Index + Graphs"
+font_size = 38
+pixel_size = 0.01
+outline_size = 6
+
+[node name="Method" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, 0)
+text = "Method\n- compare docs/*.md against docs/README.md\n- render graph SVGs\n- verify each graph has an owning doc"
+font_size = 27
+pixel_size = 0.01
+outline_size = 4
+
+[node name="Acceptance" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -1.15, 0)
+text = "Acceptance\n- indexes have no stale paths\n- SVG render output is non-empty\n- terminology stays consistent"
+font_size = 27
+pixel_size = 0.01
+outline_size = 4

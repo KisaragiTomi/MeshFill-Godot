@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://h31fik4wguce"
+path="res://.godot/imported/rotate_footprint_y.glsl-8a036a5bd8ed0b4ee0d8729bddef910d.res"
+
+[deps]
+
+source_file="res://shaders/rotate_footprint_y.glsl"
+dest_files=["res://.godot/imported/rotate_footprint_y.glsl-8a036a5bd8ed0b4ee0d8729bddef910d.res"]
+
+[params]
+

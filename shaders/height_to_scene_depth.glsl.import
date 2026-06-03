@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bc4rtf0nax7cb"
+path="res://.godot/imported/height_to_scene_depth.glsl-fa9e277251ee3414be8720ca09f6a331.res"
+
+[deps]
+
+source_file="res://shaders/height_to_scene_depth.glsl"
+dest_files=["res://.godot/imported/height_to_scene_depth.glsl-fa9e277251ee3414be8720ca09f6a331.res"]
+
+[params]
+

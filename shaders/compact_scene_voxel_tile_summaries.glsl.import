@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://ckwpyu551w2sq"
+path="res://.godot/imported/compact_scene_voxel_tile_summaries.glsl-5a0e193c9a63f6168f3b7420df3453f5.res"
+
+[deps]
+
+source_file="res://shaders/compact_scene_voxel_tile_summaries.glsl"
+dest_files=["res://.godot/imported/compact_scene_voxel_tile_summaries.glsl-5a0e193c9a63f6168f3b7420df3453f5.res"]
+
+[params]
+

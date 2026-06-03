@@ -1,0 +1,46 @@
+[gd_scene load_steps=4 format=3 uid="uid://cs8djwmxqb3vk"]
+
+[ext_resource type="Script" path="res://scripts/fly_camera.gd" id="1_flycam"]
+[ext_resource type="Script" path="res://demos/core-scenevoxeltile/scene_voxel_tile_debug.gd" id="2_viz"]
+
+[sub_resource type="Environment" id="env"]
+background_mode = 1
+background_color = Color(0.08, 0.1, 0.16, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.35, 0.4, 0.5, 1)
+ambient_light_energy = 0.5
+tonemap_mode = 2
+ssao_enabled = true
+ssil_enabled = false
+fog_enabled = true
+fog_light_color = Color(0.35, 0.4, 0.5, 1)
+fog_density = 0.003
+
+[node name="SceneVoxelTile3DDemo" type="Node3D"]
+script = ExtResource("2_viz")
+metadata/source_doc = "res://docs/core/scenevoxeltile.md"
+metadata/test_doc = "res://demos/core-scenevoxeltile/core-scenevoxeltile.md"
+metadata/focus = "SceneVoxelTile dirty sidecar visualization: 3D tile grid, color-coded dirty flags, committed payload boundary check, GPU readback status"
+
+[node name="FlyCamera" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.766044, -0.642788, 0, 0.642788, 0.766044, 8, 18, 24)
+script = ExtResource("1_flycam")
+current = true
+fov = 55.0
+
+[node name="SunLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866025, -0.25, 0.433013, 0, 0.866025, 0.5, -0.5, -0.433013, 0.75, 0, 50, 0)
+light_color = Color(1, 0.95, 0.85, 1)
+light_energy = 1.4
+shadow_enabled = true
+shadow_bias = 0.03
+directional_shadow_max_distance = 200.0
+
+[node name="FillLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866025, 0.25, -0.433013, 0, 0.866025, 0.5, 0.5, -0.433013, 0.75, 0, 50, 0)
+light_color = Color(0.6, 0.7, 0.9, 1)
+light_energy = 0.4
+shadow_enabled = false
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("env")

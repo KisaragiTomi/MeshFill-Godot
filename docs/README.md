@@ -16,11 +16,15 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | File | Purpose |
 | --- | --- |
 | [`core/meshfill-framework.md`](core/meshfill-framework.md) | MeshFill ownership model, runtime flow, current modules, and framework rules |
+| [`core/scene-placement-actor.md`](core/scene-placement-actor.md) | SPA ownership, asset registry, profile GPU buffer lifecycle, and prefilter -> placement -> commit orchestration |
+| [`core/autoobject-gpu-runtime-architecture.md`](core/autoobject-gpu-runtime-architecture.md) | GPU-first runtime architecture for million-scale `AutoObject`, including GPU object buffers, profile container, command queues, per-voxel object refs, and SV commit boundaries |
 | [`core/asset-properties.md`](core/asset-properties.md) | Current `AutoObject`, descriptor, profile, and metadata field reference |
 | [`core/scene-voxel-committer.md`](core/scene-voxel-committer.md) | `scripts/scene_voxel_committer.gd` 源码地图、状态域、GPU 计算阶段、对外 API 和验证入口 |
-| [`core/scene-voxel-field-system.md`](core/scene-voxel-field-system.md) | SV write payloads, source voxel writes, final `SceneVoxel`, and `SceneVoxelLocal` runtime sampling/query view in `scripts/scene_voxel_runtime.gd` |
+| [`core/scene-voxel-field-system.md`](core/scene-voxel-field-system.md) | SV write payloads, source voxel writes, final `SceneVoxel`, and GPU-resident SV query channels |
+| [`core/scenevoxeltile.md`](core/scenevoxeltile.md) | `SceneVoxelTile` coarse SV cell index for dirty tracking, voxel bounds, AutoObject references, summaries, and partial rebuilds |
 | [`core/auto-asset-scripting.md`](core/auto-asset-scripting.md) | Scripted rock and vegetation asset creation through Godot headless tools |
-| [`core/asset-semantic-probes.md`](core/asset-semantic-probes.md) | Asset-side semantic probes used by prefilter and candidate-only route validation |
+| [`core/vegetation-scatter.md`](core/vegetation-scatter.md) | `scripts/vegetation_scatter.gd` source map, procedural vegetation mesh factory, and GPU occupancy mask/count helper contracts |
+| [`core/asset-semantic-probes.md`](core/asset-semantic-probes.md) | Asset-side semantic probes used by current prefilter and planned candidate-only route validation |
 
 ## Placement And Target Fields
 
@@ -37,17 +41,19 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | Path | Purpose |
 | --- | --- |
 | [`graphs/README.md`](graphs/README.md) | Graph inventory and editing notes |
-| [`graphs/autoobject_asset_properties.svg`](graphs/autoobject_asset_properties.svg) | AutoObject class, descriptor/resource fields, `voxel_write_spec`, and metadata property map |
-| [`graphs/autoobject_descriptor_relationship.svg`](graphs/autoobject_descriptor_relationship.svg) | Focused AutoObject and AutoVoxelDescriptor ownership relationship |
-| [`graphs/autoassetfactory_relationships.svg`](graphs/autoassetfactory_relationships.svg) | AutoAssetFactory, typed asset classes, AutoObject helpers, and SV runtime path boundaries |
-| [`graphs/meshfill_current_framework.svg`](graphs/meshfill_current_framework.svg) | Current framework overview |
-| [`graphs/meshfill_compute_shader_3d_placement.svg`](graphs/meshfill_compute_shader_3d_placement.svg) | Complete 3D voxel placement flow: GPU score/reduce/stamp, multi-asset priority/quota, CPU instantiation, SceneVoxelLocal dirty voxel-region integration, and 2.5D compatibility |
-| [`graphs/autoobject_probe_prefilter_pipeline.svg`](graphs/autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter pipeline, SceneVoxelActor lifetime inputs, GPU AnchorState, and candidate route buffer |
-| [`graphs/autoobject_probe_scoring_logic.svg`](graphs/autoobject_probe_scoring_logic.svg) | AutoObject probe GPU scoring: TargetSV_B sampling, SceneVoxel occupancy, underground collision-only handling, weighted color/complexity, and anchor top-K filtering |
-| [`graphs/scene-voxel-flow.svg`](graphs/scene-voxel-flow.svg) | SceneVoxel source write, commit, and derived SceneVoxelLocal cache flow |
-| [`graphs/scene-voxel-runtime-interactions.svg`](graphs/scene-voxel-runtime-interactions.svg) | SceneVoxelLocal runtime interactions with committed SceneVoxel, TargetSV_B guidance, prefilter, placement, validation, and writeback |
-| [`graphs/target-scene-voxel-current.svg`](graphs/target-scene-voxel-current.svg) | Current TargetSV/TargetSV_B GPU generation, persistence, debug display, and routing-input flow |
-| [`graphs/voxel-semantic-routing.svg`](graphs/voxel-semantic-routing.svg) | Candidate-only semantic routing: anchor prefilter hard gate, optional rerank/validation, EMPTY pruning, candidate voxel-region aggregation, and physical placement |
+| [`graphs/autoobject_asset_properties.svg`](graphs/autoobject_asset_properties.svg) | Descriptor-owned semantics, descriptor-owned fields, shared fields, `instance_stamp_write_spec` / `ISWS`, and public `SceneVoxel` payload boundaries |
+| [`graphs/autoobject_descriptor_relationship.svg`](graphs/autoobject_descriptor_relationship.svg) | Focused `AutoObject` runtime and `AutoVoxelDescriptor` authority relationship |
+| [`graphs/autoobject_gpu_runtime_architecture.svg`](graphs/autoobject_gpu_runtime_architecture.svg) | GPU-owned million-scale `AutoObject` runtime, CPU command/debug control plane, profile container, per-voxel object refs, and SV commit boundary |
+| [`graphs/autoassetfactory_relationships.svg`](graphs/autoassetfactory_relationships.svg) | Scaffold JSON, `AutoAssetFactory` normalization, saved rock/vegetation assets, and runtime write path |
+| [`graphs/meshfill_current_framework.svg`](graphs/meshfill_current_framework.svg) | Current tick-level framework flow from target guidance and previous SV through routing, placement, commit, feedback, and next SV |
+| [`graphs/scene-placement-actor.svg`](graphs/scene-placement-actor.svg) | SPA-owned asset registry and runtime profile container with borrowed SV/runtime owners and the placement pipeline |
+| [`graphs/meshfill_compute_shader_3d_placement.svg`](graphs/meshfill_compute_shader_3d_placement.svg) | Heightfield fitting compute pipeline, iterative fill/update passes, CPU `AutoRock` instancing, and `SceneVoxel` integration |
+| [`graphs/autoobject_probe_prefilter_pipeline.svg`](graphs/autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter, dirty-region anchor collection, voxel-region votes, and readback route expansion |
+| [`graphs/autoobject_probe_scoring_logic.svg`](graphs/autoobject_probe_scoring_logic.svg) | Descriptor probe generation, GPU SoA packing, clamped SV/TargetSV_B sampling, weighted fit, and candidate-only top-K boundary |
+| [`graphs/scene-voxel-flow.svg`](graphs/scene-voxel-flow.svg) | `instance_stamp_write_spec` / `ISWS`, auto/brush source streams, `blend_scene_voxels()`, public payload, feedback, and SV resident fields |
+| [`graphs/scenevoxeltile.svg`](graphs/scenevoxeltile.svg) | `SceneVoxelTile` coarse SV cell index, dirty triggers, SV owner boundary, object id ranges, summaries, and consumers |
+| [`graphs/target-scene-voxel-current.svg`](graphs/target-scene-voxel-current.svg) | `TargetSV`, `BrushSV`, `TargetSV_B`, target read buffers, consumer boundaries, and planned guidance sources |
+| [`graphs/voxel-semantic-routing.svg`](graphs/voxel-semantic-routing.svg) | Candidate voxel-region routing, conservative readback expansion, empty-route skip, same-type exclusion, and physical scoring boundary |
 
 ## History
 
@@ -72,5 +78,13 @@ Use these terms consistently in voxel, placement, and compute-shader docs:
 | --- | --- |
 | `volume` | The whole voxel data domain and its storage, such as a flat storage buffer or 3D texture. It is not a single element. |
 | `voxel` | One element/cell inside a `volume`, addressed by `(x, y, z)` or a flattened index. |
-| `tile` | A fixed-size 2D/3D block used for sparse caches, compaction, dirty rebuilds, or workgroup remapping. It is an implementation/storage term. |
-| `voxel region` | A high-level candidate or dirty region used by placement/routing. Prefer this term in prose; current compatibility APIs may still expose names such as `candidate_voxel_sparses*`, `dirty_tiles`, or `tile_id`. |
+| `tile` | A fixed-size 2D/3D block used for sparse storage, compaction, dirty rebuilds, or workgroup remapping. It is an implementation/storage term. |
+| `SceneVoxelTile` | An SV-owned coarse cell index/dirty record that stores dirty flags, voxel bounds, object id ranges, and summaries. Default tile size is fixed `4x4x4` voxels and can be overridden by `meshfill/scene_voxel_tile/size_voxels`; it is not committed `SceneVoxel` payload. |
+| `voxel region` | A high-level candidate or dirty region used by placement/routing. Prefer this term in prose; runtime APIs expose current `candidate_voxel_regions_by_asset` / `candidate_voxel_regions` fields plus legacy/debug `candidate_voxel_sparses*`, `dirty_tiles`, or `tile_id` storage names. |
+
+## 测试场景
+
+| 场景 | 说明 | Godot 场景 |
+| --- | --- | --- |
+| [文档总览](../demos/docs-readme/docs-readme.md) | 测试方法与验收标准 | [`../demos/docs-readme/docs-readme.tscn`](../demos/docs-readme/docs-readme.tscn) |
+| [Docs Index And Graphs](../demos/modules/docs-index-and-graphs/docs-index-and-graphs.md) | 测试方法与验收标准 | [`../demos/modules/docs-index-and-graphs/docs-index-and-graphs.tscn`](../demos/modules/docs-index-and-graphs/docs-index-and-graphs.tscn) |

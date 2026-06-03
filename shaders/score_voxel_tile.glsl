@@ -1,4 +1,4 @@
-#[compute]
+﻿#[compute]
 #version 450
 
 // Scores candidate object origins inside 8x8x8 voxel tiles.
@@ -12,9 +12,9 @@
 // DebugVoxelOutput: NUM_DEBUG_CHANNELS floats per voxel for visualization.
 // Channel layout:
 //   0: target_coverage   — weighted fraction of footprint overlapping target
-//   1: target_value_fit  — 1 − mean |target − degree|, higher = better
+//   1: target_complexity_fit  — 1 − mean |target complexity - collision strength|, higher = better
 //   2: target_color_fit  — 1 − mean RGB distance to asset_color, higher = better
-//   3: target_density    — average target value under footprint
+//   3: target_density    — average target complexity under footprint
 //   4: placement_score   — final candidate score
 //   5: support_ratio
 //   6: solid_collision
@@ -31,7 +31,7 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer FootprintPos {
-    ivec4 footprint_pos_degree[];
+    ivec4 footprint_pos_strength[];
 };
 
 layout(set = 0, binding = 3, std430) restrict readonly buffer FootprintWeight {
@@ -58,6 +58,93 @@ layout(set = 0, binding = 8, std430) restrict buffer DebugVoxelOutput {
     float debug_voxel[];
 };
 
+layout(set = 1, binding = 0, std430) restrict readonly buffer RuntimeAlive {
+    int runtime_alive[];
+};
+
+layout(set = 1, binding = 1, std430) restrict readonly buffer RuntimeGeneration {
+    int runtime_generation[];
+};
+
+layout(set = 1, binding = 2, std430) restrict readonly buffer RuntimeType {
+    int runtime_type[];
+};
+
+layout(set = 1, binding = 3, std430) restrict readonly buffer RuntimeProfile {
+    int runtime_profile[];
+};
+
+layout(set = 1, binding = 4, std430) restrict readonly buffer RuntimeBoundsMin {
+    ivec4 runtime_bounds_min[];
+};
+
+layout(set = 1, binding = 5, std430) restrict readonly buffer RuntimeBoundsMax {
+    ivec4 runtime_bounds_max[];
+};
+
+struct RuntimeProfileTableRecord {
+    uvec4 ids;
+    uvec4 ranges;
+    vec4 color_complexity;
+    vec4 density_radius_hash_pad;
+};
+
+struct RuntimeProbeRecord {
+    vec4 offset_weight;
+    uvec4 expected_flags_kind;
+};
+
+struct RuntimeCollisionRecord {
+    uvec4 meta;
+    vec4 center_radius;
+    vec4 size_y_min;
+    vec4 y_max_erosion_dilation_strength;
+};
+
+struct RuntimePivotRecord {
+    vec4 offset_bias;
+    uvec4 ids_pad;
+};
+
+layout(set = 1, binding = 6, std430) restrict readonly buffer RuntimeProfileTable {
+    RuntimeProfileTableRecord runtime_profile_table[];
+};
+
+layout(set = 1, binding = 7, std430) restrict readonly buffer ScoreRuntimeProfileParams {
+    ivec4 contract_counts; // enabled, runtime object capacity, profile count, asset profile id
+    ivec4 contract_modes;  // runtime avoidance, profile complexity debug, reserved, reserved
+    ivec4 profile_side_counts; // probe records, collision records, pivot records, reserved
+    vec4 runtime_spacing_params; // min_distance_voxels, reserved, reserved, reserved
+};
+
+layout(set = 1, binding = 8, std430) restrict buffer ScoreRuntimeProfileDebug {
+    uint score_contract_debug[];
+};
+
+layout(set = 1, binding = 9, std430) restrict readonly buffer RuntimeProbeRecords {
+    RuntimeProbeRecord runtime_probe_records[];
+};
+
+layout(set = 1, binding = 10, std430) restrict readonly buffer RuntimeCollisionRecords {
+    RuntimeCollisionRecord runtime_collision_records[];
+};
+
+layout(set = 1, binding = 11, std430) restrict readonly buffer RuntimePivotRecords {
+    RuntimePivotRecord runtime_pivot_records[];
+};
+
+layout(set = 2, binding = 0, std430) restrict readonly buffer CandidateRouteRecords {
+    uvec4 candidate_route_records[];
+};
+
+layout(set = 2, binding = 1, std430) restrict readonly buffer CandidateRouteRanges {
+    uvec4 candidate_route_ranges[];
+};
+
+layout(set = 2, binding = 2, std430) restrict buffer CandidateRouteBindingDebug {
+    uint candidate_route_binding_debug[];
+};
+
 layout(push_constant, std430) uniform Params {
     ivec4 grid_size_tile_count;    // x, y, z, total tile count
     ivec4 tile_counts_topk;        // tile_count_x, tile_count_y, tile_count_z, top_k
@@ -77,15 +164,46 @@ const uint FOOTPRINT_CAPACITY = 128u;
 const uint RECORD_STRIDE = 4u;
 const uint NUM_DEBUG_CHANNELS = 8u;
 const uint DEBUG_CH_TARGET_COVERAGE   = 0u;
-const uint DEBUG_CH_TARGET_VALUE_FIT  = 1u;
+const uint DEBUG_CH_TARGET_COMPLEXITY_FIT  = 1u;
 const uint DEBUG_CH_TARGET_COLOR_FIT  = 2u;
 const uint DEBUG_CH_TARGET_DENSITY    = 3u;
 const uint DEBUG_CH_PLACEMENT_SCORE   = 4u;
 const uint DEBUG_CH_SUPPORT_RATIO     = 5u;
 const uint DEBUG_CH_SOLID_COLLISION   = 6u;
 const uint DEBUG_CH_CLEARANCE_OVERLAP = 7u;
+const uint SCORE_CONTRACT_MAGIC = 0x4D465052u;
+const uint SCORE_DEBUG_MAGIC = 0u;
+const uint SCORE_DEBUG_ENABLED = 1u;
+const uint SCORE_DEBUG_RUNTIME_OBJECT_CAPACITY = 2u;
+const uint SCORE_DEBUG_PROFILE_COUNT = 3u;
+const uint SCORE_DEBUG_ALIVE_OBJECT_READS = 4u;
+const uint SCORE_DEBUG_PROFILE_RECORDS_MATCHED = 5u;
+const uint SCORE_DEBUG_RUNTIME_OVERLAP_TESTS = 6u;
+const uint SCORE_DEBUG_RUNTIME_OVERLAP_HITS = 7u;
+const uint SCORE_DEBUG_PROFILE_TABLE_READS = 8u;
+const uint SCORE_DEBUG_ASSET_PROFILE_ID = 9u;
+const uint SCORE_DEBUG_CANDIDATE_INVOCATIONS = 10u;
+const uint SCORE_DEBUG_PROFILE_COMPLEXITY_Q1000 = 11u;
+const uint SCORE_DEBUG_RUNTIME_PROFILE_READS = 12u;
+const uint SCORE_DEBUG_RUNTIME_PROFILE_MATCHES = 13u;
+const uint SCORE_DEBUG_PROBE_RECORD_READS = 14u;
+const uint SCORE_DEBUG_COLLISION_RECORD_READS = 15u;
+const uint SCORE_DEBUG_PIVOT_RECORD_READS = 16u;
+const uint SCORE_DEBUG_PROBE_WEIGHT_Q1000 = 17u;
+const uint SCORE_DEBUG_COLLISION_STRENGTH_Q1000 = 18u;
+const uint SCORE_DEBUG_PIVOT_BIAS_Q1000 = 19u;
+const uint SCORE_DEBUG_PROFILE_PROBE_COUNT = 20u;
+const uint SCORE_DEBUG_PROFILE_COLLISION_COUNT = 21u;
+const uint SCORE_DEBUG_PROFILE_PIVOT_COUNT = 22u;
+const uint SCORE_DEBUG_DEBUG_MAX_BASE = 23u;
+const uint SCORE_DEBUG_RUNTIME_SPACING_TESTS = 31u;
+const uint SCORE_DEBUG_RUNTIME_SPACING_PROFILE_MATCHES = 32u;
+const uint SCORE_DEBUG_RUNTIME_SPACING_REJECTIONS = 33u;
+const uint SCORE_DEBUG_RUNTIME_SPACING_MIN_DISTANCE_Q1000 = 34u;
+const int RUNTIME_CONTRACT_SCAN_CAP = 4096;
+const int PROFILE_CONTRACT_SCAN_CAP = 1024;
 
-shared ivec4 s_footprint_pos_degree[128];
+shared ivec4 s_footprint_pos_strength[128];
 shared vec4 s_footprint_weight_flags[128];
 shared float s_scores[512];
 shared ivec4 s_candidate_origins[512];
@@ -107,7 +225,7 @@ struct EvalResult {
     float support_total;
     bool valid;
     float target_coverage;
-    float target_value_fit;
+    float target_complexity_fit;
     float target_color_dist;
     float target_density;
     float target_total_weight;
@@ -124,6 +242,199 @@ vec4 unpack_rgba8(uint packed) {
 
 vec4 unpack_asset_color() {
     return unpack_rgba8(uint(sample_min_pad.w));
+}
+
+bool runtime_profile_contract_enabled() {
+    return contract_counts.x != 0;
+}
+
+int runtime_contract_object_capacity() {
+    return clamp(contract_counts.y, 0, RUNTIME_CONTRACT_SCAN_CAP);
+}
+
+int runtime_contract_profile_count() {
+    return clamp(contract_counts.z, 0, PROFILE_CONTRACT_SCAN_CAP);
+}
+
+int asset_profile_id() {
+    return contract_counts.w;
+}
+
+uint q1000(float value) {
+    return uint(round(clamp(value, 0.0, 1.0) * 1000.0));
+}
+
+uint q1000_nonnegative(float value) {
+    return uint(round(clamp(value, 0.0, 4294967.0) * 1000.0));
+}
+
+float runtime_min_distance_voxels() {
+    return max(runtime_spacing_params.x, 0.0);
+}
+
+void touch_profile_side_buffers(RuntimeProfileTableRecord record) {
+    uint probe_start = record.ids.z;
+    uint probe_count = record.ids.w;
+    uint collision_start = record.ranges.x;
+    uint collision_count = record.ranges.y;
+    uint pivot_start = record.ranges.z;
+    uint pivot_count = record.ranges.w;
+
+    atomicMax(score_contract_debug[SCORE_DEBUG_PROFILE_PROBE_COUNT], probe_count);
+    atomicMax(score_contract_debug[SCORE_DEBUG_PROFILE_COLLISION_COUNT], collision_count);
+    atomicMax(score_contract_debug[SCORE_DEBUG_PROFILE_PIVOT_COUNT], pivot_count);
+
+    if (probe_count > 0u && profile_side_counts.x > 0) {
+        uint probe_index = min(probe_start, uint(profile_side_counts.x - 1));
+        RuntimeProbeRecord probe = runtime_probe_records[probe_index];
+        atomicAdd(score_contract_debug[SCORE_DEBUG_PROBE_RECORD_READS], 1u);
+        atomicMax(score_contract_debug[SCORE_DEBUG_PROBE_WEIGHT_Q1000], q1000(probe.offset_weight.w));
+    }
+
+    if (collision_count > 0u && profile_side_counts.y > 0) {
+        uint collision_index = min(collision_start, uint(profile_side_counts.y - 1));
+        RuntimeCollisionRecord collision = runtime_collision_records[collision_index];
+        atomicAdd(score_contract_debug[SCORE_DEBUG_COLLISION_RECORD_READS], 1u);
+        atomicMax(score_contract_debug[SCORE_DEBUG_COLLISION_STRENGTH_Q1000], q1000(collision.y_max_erosion_dilation_strength.w));
+    }
+
+    if (pivot_count > 0u && profile_side_counts.z > 0) {
+        uint pivot_index = min(pivot_start, uint(profile_side_counts.z - 1));
+        RuntimePivotRecord pivot = runtime_pivot_records[pivot_index];
+        atomicAdd(score_contract_debug[SCORE_DEBUG_PIVOT_RECORD_READS], 1u);
+        atomicMax(score_contract_debug[SCORE_DEBUG_PIVOT_BIAS_Q1000], q1000(abs(pivot.offset_bias.w)));
+    }
+}
+
+float read_asset_profile_complexity() {
+    if (!runtime_profile_contract_enabled()) {
+        return 0.0;
+    }
+
+    int profile_count = runtime_contract_profile_count();
+    int requested_profile_id = asset_profile_id();
+    for (int i = 0; i < profile_count; i++) {
+        atomicAdd(score_contract_debug[SCORE_DEBUG_PROFILE_TABLE_READS], 1u);
+        RuntimeProfileTableRecord record = runtime_profile_table[i];
+        if (requested_profile_id <= 0 || int(record.ids.x) == requested_profile_id) {
+            atomicAdd(score_contract_debug[SCORE_DEBUG_PROFILE_RECORDS_MATCHED], 1u);
+            touch_profile_side_buffers(record);
+            return clamp(record.color_complexity.w, 0.0, 1.0);
+        }
+    }
+    return 0.0;
+}
+
+bool runtime_bounds_overlap_origin(ivec3 origin) {
+    if (!runtime_profile_contract_enabled() || contract_modes.x == 0) {
+        return false;
+    }
+
+    int capacity = runtime_contract_object_capacity();
+    bool hit = false;
+    for (int i = 0; i < capacity; i++) {
+        atomicAdd(score_contract_debug[SCORE_DEBUG_ALIVE_OBJECT_READS], 1u);
+        if (runtime_alive[i] == 0) {
+            continue;
+        }
+        int object_profile_id = runtime_profile[i];
+        atomicAdd(score_contract_debug[SCORE_DEBUG_RUNTIME_PROFILE_READS], 1u);
+        if (asset_profile_id() <= 0 || object_profile_id == asset_profile_id()) {
+            atomicAdd(score_contract_debug[SCORE_DEBUG_RUNTIME_PROFILE_MATCHES], 1u);
+        }
+        ivec3 bmin = runtime_bounds_min[i].xyz;
+        ivec3 bmax = runtime_bounds_max[i].xyz;
+        atomicAdd(score_contract_debug[SCORE_DEBUG_RUNTIME_OVERLAP_TESTS], 1u);
+        bool inside = origin.x >= bmin.x && origin.y >= bmin.y && origin.z >= bmin.z
+            && origin.x < bmax.x && origin.y < bmax.y && origin.z < bmax.z;
+        if (inside) {
+            atomicAdd(score_contract_debug[SCORE_DEBUG_RUNTIME_OVERLAP_HITS], 1u);
+            hit = true;
+        }
+    }
+    return hit;
+}
+
+bool runtime_same_profile_min_spacing_hit(ivec3 origin) {
+    if (!runtime_profile_contract_enabled() || contract_modes.x == 0) {
+        return false;
+    }
+
+    int requested_profile_id = asset_profile_id();
+    float min_distance = runtime_min_distance_voxels();
+    if (requested_profile_id <= 0 || min_distance <= 0.0) {
+        return false;
+    }
+
+    atomicMax(score_contract_debug[SCORE_DEBUG_RUNTIME_SPACING_MIN_DISTANCE_Q1000], q1000_nonnegative(min_distance));
+
+    int capacity = runtime_contract_object_capacity();
+    vec2 candidate_center = vec2(float(origin.x), float(origin.z));
+    float min_distance_sq = min_distance * min_distance;
+    bool hit = false;
+    for (int i = 0; i < capacity; i++) {
+        if (runtime_alive[i] == 0) {
+            continue;
+        }
+
+        atomicAdd(score_contract_debug[SCORE_DEBUG_RUNTIME_SPACING_TESTS], 1u);
+        int object_profile_id = runtime_profile[i];
+        if (object_profile_id != requested_profile_id) {
+            continue;
+        }
+
+        atomicAdd(score_contract_debug[SCORE_DEBUG_RUNTIME_SPACING_PROFILE_MATCHES], 1u);
+        ivec3 bmin = runtime_bounds_min[i].xyz;
+        ivec3 bmax = runtime_bounds_max[i].xyz;
+        vec2 runtime_center = (vec2(float(bmin.x), float(bmin.z)) + vec2(float(bmax.x), float(bmax.z))) * 0.5;
+        vec2 delta = candidate_center - runtime_center;
+        if (dot(delta, delta) < min_distance_sq) {
+            atomicAdd(score_contract_debug[SCORE_DEBUG_RUNTIME_SPACING_REJECTIONS], 1u);
+            hit = true;
+        }
+    }
+    return hit;
+}
+
+void write_runtime_profile_contract_header(float profile_complexity) {
+    if (!runtime_profile_contract_enabled()) {
+        score_contract_debug[SCORE_DEBUG_MAGIC] = SCORE_CONTRACT_MAGIC;
+        score_contract_debug[SCORE_DEBUG_ENABLED] = 0u;
+        return;
+    }
+
+    score_contract_debug[SCORE_DEBUG_MAGIC] = SCORE_CONTRACT_MAGIC;
+    score_contract_debug[SCORE_DEBUG_ENABLED] = 1u;
+    score_contract_debug[SCORE_DEBUG_RUNTIME_OBJECT_CAPACITY] = uint(runtime_contract_object_capacity());
+    score_contract_debug[SCORE_DEBUG_PROFILE_COUNT] = uint(runtime_contract_profile_count());
+    score_contract_debug[SCORE_DEBUG_ASSET_PROFILE_ID] = uint(max(asset_profile_id(), 0));
+    score_contract_debug[SCORE_DEBUG_PROFILE_COMPLEXITY_Q1000] = uint(round(clamp(profile_complexity, 0.0, 1.0) * 1000.0));
+}
+
+void touch_candidate_route_binding(uint group_index) {
+    if (candidate_route_binding_debug[0] == 0u) {
+        return;
+    }
+
+    uint range_count = candidate_route_binding_debug[1];
+    if (range_count == 0u) {
+        return;
+    }
+
+    uint range_index = min(group_index, range_count - 1u);
+    uvec4 route_range = candidate_route_ranges[range_index];
+    atomicAdd(candidate_route_binding_debug[2], 1u);
+    candidate_route_binding_debug[4] = route_range.x;
+    candidate_route_binding_debug[5] = route_range.y;
+
+    if (route_range.y == 0u) {
+        return;
+    }
+
+    uvec4 route_record = candidate_route_records[route_range.x];
+    atomicAdd(candidate_route_binding_debug[3], 1u);
+    candidate_route_binding_debug[6] = route_record.x;
+    candidate_route_binding_debug[7] = route_record.y;
 }
 
 bool in_grid_bounds(ivec3 p) {
@@ -171,13 +482,24 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
     r.support_total = 0.0;
     r.valid = false;
     r.target_coverage = 0.0;
-    r.target_value_fit = 0.0;
+    r.target_complexity_fit = 0.0;
     r.target_color_dist = 0.0;
     r.target_density = 0.0;
     r.target_total_weight = 0.0;
 
     if (!in_grid_bounds(candidate_origin)) {
         return r;
+    }
+    if (runtime_profile_contract_enabled()) {
+        atomicAdd(score_contract_debug[SCORE_DEBUG_CANDIDATE_INVOCATIONS], 1u);
+        if (runtime_bounds_overlap_origin(candidate_origin)) {
+            r.clearance_overlap = thresholds.w + 1.0;
+            return r;
+        }
+        if (runtime_same_profile_min_spacing_hit(candidate_origin)) {
+            r.clearance_overlap = thresholds.w + 1.0;
+            return r;
+        }
     }
 
     int has_target = sample_max_pad.w;
@@ -193,11 +515,11 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
 
     int footprint_count = min(ids_counts.x, int(FOOTPRINT_CAPACITY));
     for (int i = 0; i < footprint_count; i++) {
-        ivec4 fp = s_footprint_pos_degree[i];
+        ivec4 fp = s_footprint_pos_strength[i];
         vec4 wf = s_footprint_weight_flags[i];
         float weight = max(wf.x, 0.0);
         uint flags = uint(max(wf.y, 0.0) + 0.5);
-        float degree = clamp(float(fp.w) / 255.0, 0.0, 1.0);
+        float footprint_collision_strength = clamp(float(fp.w) / 255.0, 0.0, 1.0);
         ivec3 p = candidate_origin + fp.xyz;
 
         VoxelSample voxel_sample = sample_voxel(p);
@@ -206,10 +528,10 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
             continue;
         }
 
-        if (degree >= thresholds.x) {
+        if (footprint_collision_strength >= thresholds.x) {
             r.solid_collision += voxel_sample.collision * weight;
         } else {
-            r.scene_overlap += voxel_sample.scene * degree * weight;
+            r.scene_overlap += voxel_sample.scene * footprint_collision_strength * weight;
         }
 
         if ((flags & FLAG_CLEARANCE) != 0u) {
@@ -228,12 +550,12 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
 
         if (has_target != 0 && in_grid_bounds(p) && in_sample_bounds(p)) {
             int idx = voxel_index(p);
-            float target_val = target_occupancy[idx];
+            float target_complexity = target_occupancy[idx];
             r.target_total_weight += weight;
-            r.target_density += target_val * weight;
-            if (target_val > 0.01) {
+            r.target_density += target_complexity * weight;
+            if (target_complexity > 0.01) {
                 r.target_coverage += weight;
-                r.target_value_fit += abs(target_val - degree) * weight;
+                r.target_complexity_fit += abs(target_complexity - footprint_collision_strength) * weight;
                 vec4 tc = unpack_rgba8(target_color[idx]);
                 r.target_color_dist += distance(tc.rgb, asset_col.rgb) * weight;
             }
@@ -258,12 +580,12 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
         float inv_w = 1.0 / r.target_total_weight;
         r.target_density *= inv_w;
         float coverage_ratio = r.target_coverage * inv_w;
-        float mean_val_diff = r.target_coverage > 0.0
-            ? r.target_value_fit / r.target_coverage : 1.0;
+        float mean_complexity_diff = r.target_coverage > 0.0
+            ? r.target_complexity_fit / r.target_coverage : 1.0;
         float mean_color_dist = r.target_coverage > 0.0
             ? r.target_color_dist / r.target_coverage : 1.0;
         r.target_coverage = coverage_ratio;
-        r.target_value_fit = clamp(1.0 - mean_val_diff, 0.0, 1.0);
+        r.target_complexity_fit = clamp(1.0 - mean_complexity_diff, 0.0, 1.0);
         r.target_color_dist = clamp(1.0 - mean_color_dist / 1.732, 0.0, 1.0);
     }
 
@@ -282,7 +604,7 @@ EvalResult evaluate_best_near(ivec3 base_candidate, out ivec3 best_origin) {
     best_result.support_total = 0.0;
     best_result.valid = false;
     best_result.target_coverage = 0.0;
-    best_result.target_value_fit = 0.0;
+    best_result.target_complexity_fit = 0.0;
     best_result.target_color_dist = 0.0;
     best_result.target_density = 0.0;
     best_result.target_total_weight = 0.0;
@@ -319,37 +641,53 @@ void write_debug_voxel(ivec3 origin, EvalResult r) {
     if (!in_grid_bounds(origin)) return;
     uint base = uint(voxel_index(origin)) * NUM_DEBUG_CHANNELS;
     debug_voxel[base + DEBUG_CH_TARGET_COVERAGE]   = r.target_coverage;
-    debug_voxel[base + DEBUG_CH_TARGET_VALUE_FIT]   = r.target_value_fit;
+    debug_voxel[base + DEBUG_CH_TARGET_COMPLEXITY_FIT]   = r.target_complexity_fit;
     debug_voxel[base + DEBUG_CH_TARGET_COLOR_FIT]   = r.target_color_dist;
     debug_voxel[base + DEBUG_CH_TARGET_DENSITY]     = r.target_density;
     debug_voxel[base + DEBUG_CH_PLACEMENT_SCORE]    = r.score;
     debug_voxel[base + DEBUG_CH_SUPPORT_RATIO]      = r.support_ratio;
     debug_voxel[base + DEBUG_CH_SOLID_COLLISION]    = r.solid_collision;
     debug_voxel[base + DEBUG_CH_CLEARANCE_OVERLAP]  = r.clearance_overlap;
+
+    atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_TARGET_COVERAGE], q1000(r.target_coverage));
+    atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_TARGET_COMPLEXITY_FIT], q1000(r.target_complexity_fit));
+    atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_TARGET_COLOR_FIT], q1000(r.target_color_dist));
+    atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_TARGET_DENSITY], q1000(r.target_density));
+    atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_PLACEMENT_SCORE], q1000(r.score));
+    atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_SUPPORT_RATIO], q1000(r.support_ratio));
+    atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_SOLID_COLLISION], q1000(r.solid_collision));
+    atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_CLEARANCE_OVERLAP], q1000(r.clearance_overlap));
 }
 
 void main() {
     uint local_index = gl_LocalInvocationIndex;
     uint group_index = gl_WorkGroupID.x;
     uint tile_count = uint(grid_size_tile_count.w);
-    uint candidate_voxel_sparse_count = uint(max(dispatch_search.x, 0));
+    bool direct_all_tiles = dispatch_search.x < 0;
+    uint candidate_voxel_sparse_count = direct_all_tiles
+        ? uint(-dispatch_search.x)
+        : uint(max(dispatch_search.x, 0));
     uint top_k = uint(tile_counts_topk.w);
 
     if (group_index >= candidate_voxel_sparse_count) {
         return;
     }
 
-    uint tile_id = candidate_voxel_sparse_ids[group_index];
+    uint tile_id = direct_all_tiles ? group_index : candidate_voxel_sparse_ids[group_index];
     if (tile_id >= tile_count) {
         return;
     }
 
     int footprint_count = min(ids_counts.x, int(FOOTPRINT_CAPACITY));
     if (local_index < uint(footprint_count)) {
-        s_footprint_pos_degree[local_index] = footprint_pos_degree[local_index];
+        s_footprint_pos_strength[local_index] = footprint_pos_strength[local_index];
         s_footprint_weight_flags[local_index] = footprint_weight_flags[local_index];
     }
-
+    if (local_index == 0u) {
+        float profile_complexity = read_asset_profile_complexity();
+        write_runtime_profile_contract_header(profile_complexity);
+        touch_candidate_route_binding(group_index);
+    }
     s_scores[local_index] = -1.0;
     s_candidate_origins[local_index] = ivec4(0);
     barrier();
@@ -416,7 +754,7 @@ void main() {
             empty_result.support_total = 0.0;
             empty_result.valid = false;
             empty_result.target_coverage = 0.0;
-            empty_result.target_value_fit = 0.0;
+            empty_result.target_complexity_fit = 0.0;
             empty_result.target_color_dist = 0.0;
             empty_result.target_density = 0.0;
             empty_result.target_total_weight = 0.0;

@@ -3,12 +3,12 @@
 importer="glsl"
 type="RDShaderFile"
 uid="uid://b0u1v4mxfnarg"
-path="res://.godot/imported/reduce_anchor_topk_to_voxel_sparses.glsl-f903bf5c576291af60759165915b791c.res"
+path="res://.godot/imported/reduce_anchor_topk_to_voxel_regions.glsl-c31d4d21371b74595c899d563fcccb1b.res"
 
 [deps]
 
-source_file="res://shaders/reduce_anchor_topk_to_voxel_sparses.glsl"
-dest_files=["res://.godot/imported/reduce_anchor_topk_to_voxel_sparses.glsl-f903bf5c576291af60759165915b791c.res"]
+source_file="res://shaders/reduce_anchor_topk_to_voxel_regions.glsl"
+dest_files=["res://.godot/imported/reduce_anchor_topk_to_voxel_regions.glsl-c31d4d21371b74595c899d563fcccb1b.res"]
 
 [params]
 

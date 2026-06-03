@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://b1elief66lt5o"
+path="res://.godot/imported/target_sv_preview.glsl-11c9b3bc3a034ff110e87f6d1868af22.res"
+
+[deps]
+
+source_file="res://shaders/target_sv_preview.glsl"
+dest_files=["res://.godot/imported/target_sv_preview.glsl-11c9b3bc3a034ff110e87f6d1868af22.res"]
+
+[params]
+

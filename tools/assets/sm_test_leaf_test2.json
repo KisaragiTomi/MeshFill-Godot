@@ -1,8 +1,6 @@
 {
   "type": "vegetation",
   "subtype": "test_leaf",
-  "class_name": "AutoTestLeaf",
-  "script_path": "res://scripts/auto_test_leaf.gd",
   "asset_path": "res://assets/vegetation/sm_test_leaf_test2_asset.tres",
   "descriptor_path": "res://assets/vegetation/sm_test_leaf_test2_descriptor.tres",
   "asset_id": "sm_test_leaf_test2",
@@ -11,7 +9,7 @@
   "radius": 0.65,
   "color": [0.35, 0.58, 0.24, 0.45],
   "complexity": 0.45,
-  "collision_voxels": [],
+  "collision": [],
   "scatter_min_distance": 1.0,
   "scatter_max_count": 450,
   "scatter_max_scale": 0.14,

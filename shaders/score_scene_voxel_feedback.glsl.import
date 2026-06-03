@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://derkga3snmpl1"
+path="res://.godot/imported/score_scene_voxel_feedback.glsl-ec1d6d2b9d95e66a25dff34307015bff.res"
+
+[deps]
+
+source_file="res://shaders/score_scene_voxel_feedback.glsl"
+dest_files=["res://.godot/imported/score_scene_voxel_feedback.glsl-ec1d6d2b9d95e66a25dff34307015bff.res"]
+
+[params]
+

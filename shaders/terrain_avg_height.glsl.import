@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://c2k2gxv73404v"
+path="res://.godot/imported/terrain_avg_height.glsl-6fba9d3ad887d387ec13a4bd3fbc22b6.res"
+
+[deps]
+
+source_file="res://shaders/terrain_avg_height.glsl"
+dest_files=["res://.godot/imported/terrain_avg_height.glsl-6fba9d3ad887d387ec13a4bd3fbc22b6.res"]
+
+[params]
+

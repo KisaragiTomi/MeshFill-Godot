@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cwbipwy7hws6t"
+path="res://.godot/imported/vegetation_split_channel_masks_with_counts.glsl-0116c58478c47ca0314b3c50873eba7c.res"
+
+[deps]
+
+source_file="res://shaders/vegetation_split_channel_masks_with_counts.glsl"
+dest_files=["res://.godot/imported/vegetation_split_channel_masks_with_counts.glsl-0116c58478c47ca0314b3c50873eba7c.res"]
+
+[params]
+

@@ -1,4 +1,4 @@
-﻿# Asset Properties
+# Asset Properties
 
 ![AutoObject asset properties map](../graphs/autoobject_asset_properties.svg)
 
@@ -6,233 +6,139 @@
 
 ![AutoAssetFactory relationships](../graphs/autoassetfactory_relationships.svg)
 
-本文是当前资产字段、descriptor 兼容入口和 metadata 规则的可靠速查。旧版同名文档曾因编码问题变成 mojibake，已不再作为来源；本版以当前 GDScript 为准。
+本文是资产字段、descriptor 入口、runtime write record 和 metadata 边界的速查。字段事实以当前 GDScript、相邻核心文档和工具测试为准。源码已在 export 字段旁维护逐项含义，本页只写跨层契约和归属边界。
 
-资产语义唯一主来源规则：
+## 核心规则
 
-- `AutoVoxelDescriptor` 是资产体素语义的唯一权威来源。
-- `AutoObject.voxel_descriptor` 是运行时节点持有 descriptor 的入口。
-- `AutoObject` 上与 descriptor 重复的语义字段只保留为 Inspector / 配置字典兼容入口。
-- 新代码读取资产语义时必须走 descriptor 或 `AutoObject` 的 descriptor-backed getter。
-- 新代码写入资产语义时应优先写 descriptor，再按兼容需要同步旧字段；不要把旧字段当成第二套状态。
-- 新增语义字段时默认加到 `AutoVoxelDescriptor`；除非明确是运行时身份、放置约束或调试索引，否则不要再加到 `AutoObject`。
-- 若字段在 `AutoObject`、`voxel_write_spec` 和 `SceneVoxel` 中语义一致，应加入 `SharedPropertyType.SHARED_FIELD_KEYS`，并通过共享字段契约统一归一化和传播。
-- visual / ecological layer 写入概念已标记为丢弃；`channel_entries` / `channel` 仅作为旧运行时兼容字段保留。
+- `AutoVoxelDescriptor` 是资产默认体素语义的 canonical source；`AutoVoxelProfile` 只作为已有资产 / 导入 preset fallback 进入同一 shared-field 归一化路径。
+- `AutoVoxelDescriptor.collision` 是权威字段；新 config、descriptor record 和 shared fields 只读写 `collision`。
+- `SharedPropertyType.SHARED_FIELD_KEYS == ["color", "complexity", "collision"]`。
+- `channel` 不进入共享语义；`vegetation_channel` / `vegetation_radius` 只属于植被 scatter profile。
+- `AutoObject` 上的同名 mirror 和 metadata 只用于 Inspector、查询和调试；语义读取走 descriptor-backed getters。
+- `instance_stamp_write_spec`（`ISWS`）是本轮实例 / stamp 写入 `SV` / `SceneVoxel` 的 payload 和查询 handle，不是资产默认语义容器；当前源码提供 canonical `instance_stamp_write_spec` metadata / wrapper，并保留 `voxel_write_spec` 变量、函数和 metadata key 作为 legacy-named accessors。
+- committed `SceneVoxel` public payload 只暴露 `complexity` / `color` / `collision`，可选 `auto_mix`；`channel`、`occupied`、`type`、`source_type`、`commit_tick` 和 record id 留在 source/debug buffers、object-ref index 或 debug view。
+- `AutoVoxelRuntimeProfileContainer` 是 GPU-first profile 注册 / staging / upload 入口；CPU 只负责 descriptor 归一化、staging 和 debug readback，不能把未上传或非 resident debug snapshot 写成 runtime resident success。
 
-相关边界：
+## 范围与生命周期
 
-- `meshfill-framework.md` 说明数据归属和主流程。
-- `scene-voxel-field-system.md` 说明 `voxel_write_spec`、source voxel write path、`SceneVoxel`、同级 `collision_voxels` 字段和派生 collision cache。
-- `asset-semantic-probes.md` 说明资产侧 semantic probes。
-- `autoobject_descriptor_relationship.svg` 展示 `AutoObject` 运行时节点、descriptor 权威语义、compatibility mirror 和 `voxel_write_spec` 导出的关系。
-- `autoassetfactory_relationships.svg` 展示 `AutoAssetFactory` 与脚手架、资产类、`AutoObject` helper 和 SV runtime path 的职责边界。
+| 项 | 当前契约 |
+| --- | --- |
+| 职责 | 说明 asset defaults、descriptor-backed getter、shared fields、`ISWS` 和 metadata 的字段归属。 |
+| 输入 | `.tres` / `.tscn` 资产、脚手架 JSON、Inspector config、`AutoVoxelProfile` fallback。 |
+| 输出 | descriptor-backed shared fields、runtime `ISWS` record、metadata handle、committed `SceneVoxel` public payload。 |
+| 生命周期 | author / scaffold -> descriptor 或 typed asset 保存 -> `AutoObject` 读取 descriptor -> 构造 `ISWS` -> source write -> `blend_scene_voxels()` 发布 committed `SceneVoxel`。 |
+| Source of truth | 资产默认值在 `AutoVoxelDescriptor`；shared schema 在 `SharedPropertyType`；committed runtime read model 在 `SceneVoxelCommitter`。 |
+| Placement 边界 | placement 读取 descriptor-backed asset defs、collision footprint、candidate regions 和 `ISWS`，但不定义资产默认字段，也不把 candidate regions 当作 committed `SceneVoxel`。 |
+| Core runtime 边界 | `SceneVoxel` source / commit / resident buffers 由 `scene-voxel-field-system.md` 维护；本文只维护资产字段到 runtime record 的交接。 |
+| GPU runtime 边界 | GPU runtime 通过 descriptor-backed getters、profile staging、prefilter packing 和 VPG runtime/profile contract 消费资产语义；profile container 不能替代 descriptor/profile source assets。 |
 
-## 资产层级
+## 类型边界
 
-| 类型 | 角色 | 主要文件 |
+| 类型 | 职责 | 文件 |
 | --- | --- | --- |
-| `AutoObject` | 所有自动放置对象的运行时基类；持有 descriptor 入口、运行时状态和 `voxel_write_spec` 构造入口 | `scripts/auto_object.gd` |
-| `AutoRock` / `AutoCliffRock` | 岩石对象类型 | `scripts/auto_rock.gd` / `scripts/auto_cliff_rock.gd` |
-| `AutoVegetation` 及子类 | 植被对象类型 | `scripts/auto_vegetation.gd` 等 |
-| `AutoVoxelDescriptor` | 资产默认体素语义、pivot、semantic probe 配置，以及植被资源保存入口 | `scripts/auto_voxel_descriptor.gd` |
-| `SharedPropertyType` | `AutoObject`、`voxel_write_spec`、`SceneVoxel` 的同语义字段契约 | `scripts/shared_property_type.gd` |
-| `AutoVoxelProfile` | 旧资源 / 导入 fallback 的轻量 profile；新资产默认语义应迁入 `AutoVoxelDescriptor` | `scripts/auto_voxel_profile.gd` |
-| `AutoAssetFactory` | 脚手架 / 导入 helper；创建、加载和保存资产，并保留到 `AutoObject` helper 的兼容转调 | `scripts/auto_asset_factory.gd` |
+| `AutoVoxelDescriptor` | 资产默认语义、collision、pivot、semantic probe；植被还保存 mesh / scatter / script | `scripts/auto_voxel_descriptor.gd` |
+| `AutoObject` | 运行时节点、实例身份、descriptor 入口、placement helper、legacy-named `voxel_write_spec` / `ISWS` 构造 | `scripts/auto_object.gd` |
+| `AutoRock` | 岩石资产和生成原型 | `scripts/auto_rock.gd` |
+| `AutoVegetation` | 植被实例基类；由 descriptor 实例化或配置 | `scripts/auto_vegetation.gd` |
+| `SharedPropertyType` | `color` / `complexity` / `collision` 的归一化、record 和 `SceneVoxel` 传播 | `scripts/shared_property_type.gd` |
+| `AutoAssetFactory` | 脚手架和导入 helper；创建 descriptor / profile / typed asset；通过当前 helper 输出 `ISWS` record | `scripts/auto_asset_factory.gd` |
 
-当前植被资产直接保存为 `AutoVoxelDescriptor` `.tres`：同一个资源持有 color、complexity、collision、pivot、probe、mesh、scatter、visual layer、group 和可选 `vegetation_script`。不再使用单独的植被包装资源。
+## Descriptor 字段
 
-## `AutoObject` 运行时字段 / descriptor 兼容入口
+Descriptor export 字段的逐项含义已迁移到 `scripts/auto_voxel_descriptor.gd` 顶部声明；`to_record_fields()` 的导出 record 字段在返回字典旁维护同侧注释。
 
-`AutoObject` 是场景里的运行时节点，负责对象身份、来源、mesh、放置约束和运行时 `voxel_write_spec`。资产侧体素语义的唯一权威来源是 `voxel_descriptor`；表中标为“兼容入口”的字段会同步到 descriptor，用来支持旧资产、Inspector 编辑和配置字典，不能作为新的语义状态来源。
+Descriptor 是资产默认语义的 source of truth：
 
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `auto_id` | `String` | 稳定对象 id；为空时可回退到节点名。 |
-| `instance_id` | `int` | Godot 运行时实例 id。 |
-| `auto_source` | `String` | 来源标记，如 `generated`、`scatter`、`brush`。 |
-| `object_type` | `String` | 运行时 grouping / debug metadata；可用于 same-type exclusion，但不是资产默认语义来源。 |
-| `object_subtype` | `String` | 运行时 grouping / debug metadata；用于细分同类互斥和记录回查，不作为 descriptor 替代来源。 |
-| `visual_layer` | `int` | 调试或可视分层。 |
-| `min_spacing` | `float` | XZ 中心间距约束；`0` 表示自动计算。 |
-| `bound_min_length` | `float` | mesh bounds 最小轴长度，用于默认间距。 |
-| `source_mesh` / `source_mesh_path` | `Mesh` / `String` | 原始 mesh 或资源路径。 |
-| `voxel_descriptor` | `AutoVoxelDescriptor` / `Resource` | 资产体素语义唯一权威来源；集中持有 color、complexity、collision、pivots 和 probes。 |
-| `voxel_color` | `Color` | descriptor 兼容入口；同步到 `voxel_descriptor.color`，`a` 与 complexity 同步。 |
-| `voxel_complexity` | `float` | descriptor 兼容入口；同步到 `voxel_descriptor.complexity`，范围 `0.0-1.0`。 |
-| `collision_voxels` | `Array[Dictionary]` | descriptor 兼容入口；同步到 `voxel_descriptor.collision_voxels`；当前表示浮点 collision voxel 样本。 |
-| `pivot_variants` | `Array[Dictionary]` | descriptor 兼容入口；同步到 `voxel_descriptor.pivot_variants`。 |
-| `semantic_probe_profile` | `Resource` | descriptor 兼容入口；同步到 `voxel_descriptor.semantic_probe_profile`。 |
-| `semantic_probe_density` | `float` | descriptor 兼容入口；同步到 `voxel_descriptor.semantic_probe_density`。 |
-| `context_sensing_radius` | `float` | descriptor 兼容入口；同步到 `voxel_descriptor.context_sensing_radius`。 |
-| `allowed_anchor_kinds` | `PackedStringArray` | 限制资产可参与的 anchor 类型，如 `ground`、`target_top`。 |
-| `voxel_write_spec` | `Dictionary` | SV write payload / query handle；字段结构见 `scene-voxel-field-system.md`。 |
+- `get_color()` / `get_complexity()` 归一化默认颜色和强度，并保持 `color.a == complexity`。
+- `get_collision()` 只从 `collision` 读取，并通过 `normalize_collision()` 归一化局部 footprint sample。
+- `to_record_fields()` 先走 `SharedPropertyType.from_descriptor()`，再追加 pivot、vertical-pivot 标记、probe density 和已存在的 `semantic_probes`。
+- `get_scatter_profile()` 只为植被 scatter 输出 `channel` / `radius`；这些字段不进入 shared fields。
+- `object_type` / `object_subtype` 在 descriptor 中只能作为 grouping / debug / compatibility metadata；新 runtime schema 不新增 `object_subtype` 语义。
 
-读取资产语义时必须走 `voxel_descriptor` 或 `get_voxel_color()`、`get_collision_voxels()`、`get_pivot_variants()` 等 getter；这些 getter 会通过 `_ensure_voxel_descriptor()` 使用 descriptor，并返回归一化后的结果。不要在新逻辑中直接读取 `voxel_color`、`voxel_complexity`、`collision_voxels`、`pivot_variants`、`semantic_probe_profile`、`semantic_probe_density` 或 `context_sensing_radius` 作为权威语义。
+## AutoObject 边界
 
-兼容入口降级计划：
+`AutoObject` 可以接收已有 config 和 Inspector 字段，但运行时语义读取必须通过 descriptor-backed getter。
 
-| 阶段 | 规则 |
-| --- | --- |
-| 当前 | 保留 `AutoObject` 同名字段的 export 和同步，保证 Inspector 和配置字典仍可工作；植被资产资源本身使用 `AutoVoxelDescriptor`。 |
-| 新代码 | 只把同名字段当作输入兼容层；读取和运行时决策都使用 descriptor-backed getter。 |
-| 迁移后 | 运行时节点可逐步隐藏或移除同名 export 字段，只保留必要的导入转换。 |
-| 禁止 | 不再新增 `AutoObject` 同名语义字段，不把 metadata、`voxel_write_spec` 或旧字段当作 descriptor 的替代来源。 |
+`AutoObject` export / runtime 字段的逐项含义已迁移到 `scripts/auto_object.gd` 顶部声明；getter 的 descriptor-backed 读取来源保留在对应函数体中。
 
-`AutoObject.configure_auto_object()` 会强制 `scale = Vector3.ONE`。资产运行时缩放不作为 semantic probe 或 voxel 语义来源。
+当前边界：
 
-`object_type` / `object_subtype` 当前仍由 placement、same-type exclusion 和 debug record 使用。它们的边界是“运行时分组 metadata”，不是资产默认体素语义；需要表达资产视觉、collision、probe 或 routing 偏好时，仍应优先使用具体资产类、`voxel_descriptor`、`semantic_probes`、`allowed_anchor_kinds`、footprint 和 collision 语义。后续如果引入 `exclusion_group` 或 `placement_group`，应先从这些字段迁移。
+- `configure_auto_object()` 接收 `color` / `complexity` / `collision`，归一化后同步到 descriptor。
+- `get_voxel_color()`、`get_voxel_complexity()`、`get_collision()`、`get_semantic_probes()` 是运行时读取语义的稳定入口。
+- `make_instance_stamp_write_spec()` / `set_instance_stamp_write_spec()` / `get_instance_stamp_write_spec()` 是 canonical wrapper；`make_voxel_write_spec()` / `set_voxel_write_spec()` / `get_voxel_write_spec()` 是 legacy API name。它们操作的是同一个 `ISWS` record。
+- `source_voxel_type`、`source_kind`、`producer_stage`、`position`、`rotation_degrees`、`scale`、`base_pixel` 和 `channel` 属于 write record 上下文，不是 descriptor 默认语义。
 
-## `AutoVoxelDescriptor`
-
-`AutoVoxelDescriptor` 是资产侧体素描述资源，也是资产语义唯一权威来源。它保存会影响 routing、probe、footprint、source voxel 写入和 target fit 的默认语义；植被资产还在同一资源上保存 mesh、scatter、visual layer、group 和实例化脚本。
-
-资产侧 collision 必须进入 `AutoVoxelDescriptor.collision_voxels`。`AutoObject.collision_voxels` 和 `AutoVoxelProfile.collision_voxels` 只作为配置输入 / authoring fallback；当前植被 `.tres` 资源自身就是 descriptor，不再通过 wrapper 引用外部 descriptor。
-
-| 字段 | 含义 |
-| --- | --- |
-| `color` / `complexity` | 默认颜色与复杂度；`get_color()` 会把 alpha 设为 complexity。 |
-| `collision_voxels` | 浮点 collision voxel 样本；与 `color` / `complexity` 同级，归一化后供 footprint、source voxel 写入和 probe 使用。 |
-| `pivot_variants` | 显式 pivot 列表；为空时可从 collision 高度自动生成。 |
-| `auto_generate_vertical_pivots` | 根据 collision 高度生成 bottom / middle / upper pivot。 |
-| `semantic_probe_profile` | 保存或生成 `semantic_probes`。 |
-| `semantic_probe_density` | 自动 probe 生成密度。 |
-| `context_sensing_radius` | 为小型资产增加 AABB 外围 context probes。 |
-| `asset_id` / `object_type` / `object_subtype` | 植被资产 id 与分组 metadata。 |
-| `mesh` / `source_mesh` / `source_mesh_path` | 植被资产显示 mesh 与 source mesh。 |
-| `vegetation_script` | 可选 `AutoVegetation` 子类脚本；缺失时实例化基础 `AutoVegetation`。 |
-| `vegetation_channel` / `vegetation_radius` | 植被散布 profile 参数。 |
-| `scatter_min_distance` / `scatter_max_count` / `scatter_max_scale` | 植被散布数量、间距和缩放参数。 |
-| `visual_layer` / `group` / `material` | 实例化时传给 `AutoVegetation` 的可视层、分组和材质。 |
-
-`to_record_fields()` 会导出 `color`、`complexity`、`collision_voxels`、`pivot_variants`、`semantic_probe_density` 和可选 `semantic_probes`。
-
-## TODO: Runtime profile 容器
-
-需要新增一个大的 runtime profile 容器，用来收集并常驻每一个资产的运行时 profile。该容器不是 `AutoVoxelDescriptor` 本身，而是由 descriptor 编译出的运行时数据集；descriptor 仍然只作为资产语义源数据和构建输入。
-
-目标数据流：
-
-```text
-AutoVoxelDescriptor
-  ↓ build / normalize
-AutoVoxelRuntimeProfile
-  ↓ register / pack
-AutoVoxelRuntimeProfileContainer
-  ↓ GPU upload / resident buffers
-shader / SV runtime 通过 profile_id 采样资产 profile
-```
-
-职责边界：
-
-| 类型 | 职责 |
-| --- | --- |
-| `AutoVoxelDescriptor` | 资产默认语义权威来源；保存 color、complexity、collision、pivot、semantic probe 配置；植被资产还保存 mesh / scatter / script。 |
-| `AutoVoxelRuntimeProfile` | descriptor 编译后的单资产运行时 profile；保存 `profile_id`、descriptor hash、probe / collision / pivot 的 offset 和 count。 |
-| `AutoVoxelRuntimeProfileContainer` | 全局运行时容器；收集所有资产 profile，负责去重、分配 `profile_id`、pack buffer、上传 GPU，并让 profile 常驻显存。 |
-| `voxel_write_spec` | 当前实例写入 `SV` / `SceneVoxel` 的 payload；后续应优先携带 `profile_id` 和实例上下文，而不是复制完整 descriptor 语义。 |
-
-容器应至少管理：
-
-- `profile_table_buffer`：每个资产 profile 的索引表，记录 color、complexity、probe offset/count、collision offset/count、pivot offset/count。
-- `probe_buffer`：所有资产的 semantic probes 打包结果。
-- `collision_voxel_buffer`：所有资产的局部 collision voxel / footprint 样本。
-- `pivot_buffer`：所有资产的 pivot variants。
-- `descriptor_hash -> profile_id`：用于去重、热更新和 dirty rebuild。
-
-运行时写入规则：
-
-- `AutoObject` 通过 `voxel_descriptor` 获取资产语义，并向 runtime profile 容器注册或查询 `profile_id`。
-- `AutoSceneVoxel` 写入时应优先使用 `profile_id` 采样常驻 profile，再叠加本次实例的 transform、base voxel、source kind 和 channel 写入上下文。
-- `voxel_write_spec` 不再作为资产默认语义的长期容器；它只保存本次写入上下文、`profile_id` 和必要的调试回查字段。
-- descriptor 变更后，由 runtime profile 容器根据 descriptor hash 标记 dirty，并重建对应 profile / buffer range。
-
-开放问题：
-
-- 容器命名最终使用 `AutoVoxelRuntimeProfileContainer`、`AutoVoxelProfileRegistry` 还是 `AutoVoxelProfileAtlas`。
-- GPU buffer 是否按 profile table / probe / collision / pivot 分离，还是合并为一个结构化 atlas。
-- 常驻显存策略是加载即注册、场景引用注册，还是按 asset library 显式预热。
-- 多个资产共享相同 descriptor hash 时，是否复用同一个 `profile_id`。
+不要在新逻辑中把 `voxel_color`、`voxel_complexity`、metadata 或 `ISWS` 当作 descriptor 的替代来源。
 
 ## 共享字段契约
 
-`SharedPropertyType` 只收敛跨层语义一致的字段。当前共享字段为 `color`、`complexity` 和 `collision_voxels`；这些字段从 descriptor / profile 进入 `voxel_write_spec`，再进入 source voxel write path 和 committed `SceneVoxel`。新增同语义字段时，先加入 `SHARED_FIELD_KEYS`，再使用共享函数，不要在多个 builder 或 commit 路径里手写复制。
+当前共享字段只包含 `color`、`complexity` 和 `collision`；逐项注释维护在 `scripts/shared_property_type.gd` 的 `SHARED_FIELD_KEYS` 声明旁。
 
-| 契约入口 | 作用 |
+`SharedPropertyType.normalize_shared_fields()` 会同步 `color.a == complexity` 并归一化 `collision`。`apply_to_record()` 和 `apply_to_scene_voxel()` 只传播这些共享字段。
+
+| 不共享字段 | 原因 |
 | --- | --- |
-| `SHARED_FIELD_KEYS` | 定义需要在 `AutoObject`、`voxel_write_spec`、`SceneVoxel` 间保持同语义的字段集合。 |
-| `from_descriptor()` / `from_profile()` | 从 `AutoVoxelDescriptor` 或 `AutoVoxelProfile` 生成规范化共享字段。 |
-| `normalize_shared_fields()` | 统一 `color.a == complexity`，并深拷贝 `collision_voxels`。 |
-| `apply_to_record()` | 把共享字段写入 `voxel_write_spec` 或 source record。 |
-| `apply_to_scene_voxel()` | 把共享字段写入 source voxel 或 committed `SceneVoxel`。 |
+| `channel` | single-voxel channel tag，不是资产默认语义。 |
+| `vegetation_channel` / `vegetation_radius` | descriptor scatter 参数，只用于 `get_scatter_profile()` / 植被散布。 |
 
-数据关系：
+## ISWS 与 SceneVoxel 边界
+
+`ISWS` 是实例本轮写入场景体素系统的 stamp payload / record，不是资产默认值表，也不是 profile cache。当前数据流保持为：
 
 ```text
 AutoVoxelDescriptor / AutoVoxelProfile
-  ↓ SharedPropertyType
-AutoObject compatibility mirrors + voxel_write_spec
-  ↓ source voxel write path
-SceneVoxel(color, complexity, collision_voxels)
+  -> SharedPropertyType
+  -> ISWS record
+  -> source voxel write path
+  -> committed SceneVoxel
 ```
 
-非共享字段边界：
+`AutoObject.make_profile_voxel_write_spec()` 会先把 profile / descriptor-backed shared fields 写入 record，再追加实例上下文和 source 分类。`channel` 可作为 rock 或 vegetation placement 的 write context 出现在 record 中，但不因此变成 shared field。prefilter 传入的 candidate regions 只限制 placement 搜索范围；只有 source write 和 `blend_scene_voxels()` 才会发布 committed `SceneVoxel`。
 
-| 字段 / 输入 | 归属 | 规则 |
-| --- | --- | --- |
-| `channel_entries` | discarded legacy runtime payload | 旧 visual/ecological channel 写入条目；仅为兼容现有 runtime 路径保留，不再作为新设计入口。 |
-| `channel` | discarded legacy output | 旧单 voxel 通道标记；不是资产默认语义，也不再作为新的 source/committed voxel 概念扩展。 |
-| `vegetation_channel` / `vegetation_radius` | `AutoVoxelDescriptor` scatter 参数 | 用于 `get_scatter_profile()` 生成散布 profile；不写入 descriptor shared fields。 |
-
-## Visual layer 记录（丢弃）
-
-丢弃：不再把 visual / ecological channel 作为独立记录概念推进。`channel_entries` / `channel` 只保留现有 runtime 兼容；新增资产、descriptor、profile、source voxel 或 committed voxel 设计不应再围绕该概念建模。
-
-旧兼容来源：
-
-| 来源 | 生成方式 |
-| --- | --- |
-| rock / cliff | `AutoObject.DEFAULT_ROCK_CHANNELS` 或 `main.gd` 中的显式 rock channel entries。 |
-| vegetation asset | `AutoVoxelDescriptor.vegetation_channel` / `vegetation_radius` → `get_scatter_profile()`。 |
-| brush / custom record | 调用方显式传入 `channel_entries`。 |
-
-| 旧字段 | 类型 | 兼容来源 |
-| --- | --- | --- |
-| `channel` | `int` | 显式 RGBA channel/profile id，由调用方提供。 |
-| `radius` | `float` | 写入半径；缺失或 `<= 0` 时使用调用方默认半径。 |
-| `color` | `Color` | 缺失时使用资产颜色。 |
-| `complexity` | `float` | 缺失时使用资产复杂度。 |
-
-## Collision 记录
-
-`collision_voxels` 会通过 `AutoVoxelProfile.normalize_collision_voxels()` 归一化。当前主表示是局部体素坐标上的浮点 collision 强度，不引入复杂距离场、扩散场或软排斥缓存。旧的 `shape` / `radius` 字段仍可作为资产编写辅助输入，但进入 placement 前会被烘焙为浮点 voxel footprint。
-
-| 字段 | 类型 | 默认 / 说明 |
-| --- | --- | --- |
-| `voxel` / `local_pos` / `voxel_offset` | `Vector3i` / `Vector3` / `Array` / `Dictionary` | 局部 voxel 坐标；归一化后写入 `voxel` 和 `local_pos`。 |
-| `value` | `float` | 默认 `1.0`；collision 强度，范围 `0.0-1.0`。 |
-| `collision_degree` | `int` | 可选；`0-255` 的内部碰撞强度，缺少 `value` 时会转换为 `value`。 |
-| `weight` | `float` | 默认 `1.0`；placement footprint 权重。 |
-| `enabled` | `bool` | 默认 `true`；为 `false` 时消费端跳过该 voxel。 |
-| `shape` / `radius` / `y_min` / `y_max` | authoring helper | 兼容旧资产；`cylinder` 会烘焙为多个浮点 voxel footprint 样本。 |
-| `half_extents` / `size` | authoring helper | 兼容旧资产；`box` / `cube` 会烘焙为多个浮点 voxel footprint 样本。 |
-
-Collision 的最终归属见 `scene-voxel-field-system.md`：`collision_voxels` 与 `color` / `complexity` 同级，从资产默认值进入 record / source voxel，并可作为 committed `SceneVoxel` 的同级字段保留；提交后的 `collision_field` 是由它重建的派生查询缓存视图。
-
-## SV write payload 边界
-
-`voxel_write_spec` 属于 `SV` / `SceneVoxel` write payload 和 source voxel write path 数据，不是资产默认值主结构。`AutoObject.make_asset_voxel_record()` 是资产实例侧标准构造入口，`AutoObject.make_profile_asset_voxel_record()` 是 profile-based 共享 helper；字段解释、source 类型归一化和提交规则见 `scene-voxel-field-system.md`。
+committed `SceneVoxel` 的 public payload 是 `complexity`、`color`、`collision`，可选 `auto_mix`。`channel` 只作为 write context / scatter profile 输入，不进入 committed read payload；查询缓存、占用状态、source 类型、commit tick 和 record id 属于 SV resident state、source/debug buffers、object-ref index 或 debug view。
 
 ## Metadata 规则
 
-运行时 metadata 只用于索引、回查和调试，不是资产默认值的主来源。
+Metadata 只保留索引、回查和调试入口。当前 `AutoObject._sync_auto_metadata()` 写入 `auto_id`、`auto_instance_id` / `instance_id` 和 `instance_mesh_id`；`set_voxel_write_spec()` / `set_instance_stamp_write_spec()` 同时通过 canonical metadata key `instance_stamp_write_spec` 和 legacy key `voxel_write_spec` 暴露同一个 `ISWS` handle。
 
-| Metadata | 来源 |
-| --- | --- |
-| `auto_id` | `AutoObject.auto_id` |
-| `auto_instance_id` / `instance_id` | `AutoObject.instance_id` |
-| `instance_mesh_id` | 实际 `MeshInstance3D.get_instance_id()` |
-| `auto_source` | `AutoObject.auto_source` |
-| `auto_object_type` | 旧兼容索引；新逻辑优先使用 `object_type` / `object_subtype` 或后续显式 grouping key |
-| `voxel_write_spec` | 当前实例写入场景体素系统的 record handle；字段结构见 `scene-voxel-field-system.md` |
+`auto_source`、`object_type`、`object_subtype` 等来源 / 分组字段可以存在于 `ISWS` record 或 debug record 中，但不要新增一套 metadata 语义镜像。新增资产语义字段时优先进入 `AutoVoxelDescriptor`。
 
-维护规则：新增字段时先判断它属于资产默认值、运行时 record、source voxel write path、TargetSV 目标画布还是最终 `SceneVoxel` 状态，不要把 metadata 当成第二套状态系统。不要新增另一套 `subtype` 字段；如果现有 `object_type` / `object_subtype` 不够表达互斥或 routing 分组，应新增明确命名的 `exclusion_group` / `placement_group` 并提供迁移路径。
+`object_type` 保留为 placement、same-type exclusion、GPU runtime record 和 debug record 的粗粒度类型字段。已有 `object_subtype` 只作为 compatibility / debug metadata；新 schema 不新增 `object_subtype`，更细的资产差异应进入 `AutoVoxelDescriptor` / runtime `profile_id`。
+
+## Runtime Profile Contract
+
+`AutoVoxelRuntimeProfileContainer` 负责把 descriptor/profile 数据归一化为 profile id、probe/collision/pivot ranges 和 staging/debug table。它属于 GPU-first runtime contract 的 profile 入口；GDScript 字典、数组和 debug snapshot 只用于上传准备或回查，不是 CPU 替代路径。
+
+当前 GPU-first profile flow：
+
+```text
+AutoVoxelDescriptor
+  -> build / normalize
+AutoVoxelRuntimeProfile
+  -> register / pack
+AutoVoxelRuntimeProfileContainer
+  -> GPU storage buffer upload / readback debug snapshot
+shader / SV 通过 profile_id 采样资产 profile
+```
+
+热更新时，`AutoVoxelRuntimeProfileContainer.dirty_profile_ids` 交给 `GPUAutoObjectRuntime.mark_profile_objects_dirty()` 反查 GPU live object refs，并以 dirty delta 交给 `SceneVoxelCommitter.apply_gpu_autoobject_dirty_delta()` 映射为 `SceneVoxelTile` dirty。该路径仍只把 CPU 用作 control / debug plane，不恢复 CPU runtime fallback。
+
+开放问题：
+
+- 常驻策略是加载即注册、场景引用注册，还是按 asset library 预热。
+- 无 RenderingDevice 时只能 SKIP GPU upload / placement 验证，不能改走 CPU 替代路径。
+
+## 相关文档
+
+- `meshfill-framework.md`：框架数据归属和主流程。
+- `scene-voxel-field-system.md`：`instance_stamp_write_spec` / `ISWS`、source voxel、committed `SceneVoxel` 和 SV resident collision field。
+- `asset-semantic-probes.md`：descriptor-backed semantic probes。
+- `auto-asset-scripting.md`：`AutoAssetFactory` 和 `tools/scaffold_auto_asset.gd` 的 JSON 输入。
+
+## 测试场景
+
+| 场景 | 说明 | Godot 场景 |
+| --- | --- | --- |
+| [资产字段总览](../../demos/core-asset-properties/core-asset-properties.md) | 测试方法与验收标准 | [`../../demos/core-asset-properties/core-asset-properties.tscn`](../../demos/core-asset-properties/core-asset-properties.tscn) |
+| [Asset Defaults Descriptor](../../demos/modules/asset-defaults-descriptor/asset-defaults-descriptor.md) | 测试方法与验收标准 | [`../../demos/modules/asset-defaults-descriptor/asset-defaults-descriptor.tscn`](../../demos/modules/asset-defaults-descriptor/asset-defaults-descriptor.tscn) |
+| [Auto Asset Scaffolding](../../demos/modules/auto-asset-scaffolding/auto-asset-scaffolding.md) | 测试方法与验收标准 | [`../../demos/modules/auto-asset-scaffolding/auto-asset-scaffolding.tscn`](../../demos/modules/auto-asset-scaffolding/auto-asset-scaffolding.tscn) |

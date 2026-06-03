@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bbkbfts7ycjpk"
+path="res://.godot/imported/clear_override_tile.glsl-1cbda96dc3792dcc92ce98a57ee26997.res"
+
+[deps]
+
+source_file="res://shaders/clear_override_tile.glsl"
+dest_files=["res://.godot/imported/clear_override_tile.glsl-1cbda96dc3792dcc92ce98a57ee26997.res"]
+
+[params]
+

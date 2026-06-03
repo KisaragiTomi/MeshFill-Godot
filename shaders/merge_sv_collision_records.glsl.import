@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bfaan0yw7rpi"
+path="res://.godot/imported/merge_sv_collision_records.glsl-e33685cdb5c1158d7a080941acaeac2a.res"
+
+[deps]
+
+source_file="res://shaders/merge_sv_collision_records.glsl"
+dest_files=["res://.godot/imported/merge_sv_collision_records.glsl-e33685cdb5c1158d7a080941acaeac2a.res"]
+
+[params]
+

@@ -1,165 +1,167 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="980" viewBox="0 0 1560 980" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1640" height="980" viewBox="0 0 1640 980" role="img" aria-labelledby="title desc">
   <title id="title">AutoObject Probe Prefilter Pipeline</title>
-  <desc id="desc">GPU-only AutoObject probe prefilter pipeline: SceneVoxelActor owns SceneVoxelLocal, TargetSV, BrushSV, TargetSV_B, AutoObject registry, GPU AnchorState, and candidate route buffers for the same SceneVoxel epoch.</desc>
+  <desc id="desc">AutoObject probe prefilter pipeline from autoobject-probe-prefilter.md.</desc>
+
   <defs>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#34495e"/>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
     </marker>
-    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
-      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.16"/>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#ea580c"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.12"/>
     </filter>
-    <style>
-      .bg { fill: #f7fafc; }
-      .title { font: 700 34px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #102033; }
-      .subtitle { font: 500 16px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #56687a; }
-      .section { font: 700 20px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #25364a; }
-      .text { font: 500 16px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #203043; }
-      .small { font: 500 13px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #4c5d70; }
-      .mono { font: 600 13px Consolas, 'Cascadia Mono', monospace; fill: #27364a; }
-      .label { font: 700 13px 'Segoe UI', 'Microsoft YaHei', Arial, sans-serif; fill: #ffffff; }
-      .box { fill: #ffffff; stroke: #cbd7e3; stroke-width: 2; rx: 16; filter: url(#shadow); }
-      .box-blue { fill: #eaf3ff; stroke: #7fb2f0; stroke-width: 2; rx: 16; filter: url(#shadow); }
-      .box-green { fill: #eaf8ee; stroke: #75c58c; stroke-width: 2; rx: 16; filter: url(#shadow); }
-      .box-yellow { fill: #fff8df; stroke: #e5be4d; stroke-width: 2; rx: 16; filter: url(#shadow); }
-      .box-purple { fill: #f4efff; stroke: #a995e8; stroke-width: 2; rx: 16; filter: url(#shadow); }
-      .box-gray { fill: #f2f5f8; stroke: #9aa8b7; stroke-width: 2; rx: 16; filter: url(#shadow); }
-      .box-red { fill: #fff0f0; stroke: #e28282; stroke-width: 2; rx: 16; filter: url(#shadow); }
-      .lane { fill: #edf2f7; stroke: #d0d9e4; stroke-width: 1.5; rx: 22; }
-      .arrow { stroke: #34495e; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
-      .arrow-soft { stroke: #7890a8; stroke-width: 2; fill: none; marker-end: url(#arrow); }
-      .dash { stroke-dasharray: 7 6; }
-      .badge { rx: 10; }
-      /* meshfill-graph-style: shared light engineering diagram theme */
-      :root { color-scheme: light; }
-      .bg, rect[fill="url(#bg)"] { fill: #f8fafc; }
-      svg > circle[opacity] { opacity: 0; }
-      .grid { stroke: #e2e8f0; stroke-width: 1; }
-      .title { font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #0f172a; letter-spacing: 0; }
-      .subtitle { font: 500 16px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #475569; letter-spacing: 0; }
-      .section, .section-title { font: 700 18px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #1e293b; letter-spacing: 0; }
-      .band-title, .lane-title { font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #334155; letter-spacing: 0; }
-      .label, .node-title, .pill-text { font: 700 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #0f172a; letter-spacing: 0; }
-      .text { font: 500 16px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #1f2937; letter-spacing: 0; }
-      .small { font: 500 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #475569; letter-spacing: 0; }
-      .tiny { font: 500 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #64748b; letter-spacing: 0; }
-      .mono, .mono-strong, .formula { font: 600 12px Consolas, "Cascadia Mono", monospace; fill: #334155; letter-spacing: 0; }
-      .lane, .band, .band2d, .band3d, .band-field, .band-post, .lane-type, .lane-resource, .lane-field, .lane-runtime, .lane-factory, .lane-owner, .lane-tool, .state-band, .target-band, .asset-band, .route-band, .place-band { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; }
-      .node, .card, .soft, .tick, .legend { stroke-width: 1.4; filter: url(#shadow); }
-      .box, .box-gray, .card, .soft, .support, .tool, .owner, .factory, .downstream, .legacy, .getter, .runtime, .tick, .legend { fill: #ffffff; stroke: #cbd5e1; }
-      .box-blue, .input, .entry, .field, .state, .sv, .target, .target-card, .gpu-card, .gpu { fill: #dbeafe; stroke: #2563eb; }
-      .box-green, .asset, .resource, .autoobject, .input-card, .source-card, .contract, .sv-card, .ok, .prefilter-card { fill: #dcfce7; stroke: #16a34a; }
-      .box-purple, .route, .route-card, .rerank-card, .gate-card, .descriptor, .record-card, .vdb-card, .debug-card { fill: #ede9fe; stroke: #7c3aed; }
-      .box-yellow, .placement, .placement-card, .commit-card, .persist-card, .aggregate-card { fill: #fef3c7; stroke: #d97706; }
-      .box-red, .hardgate, .prune-card { fill: #fee2e2; stroke: #ef4444; }
-      .record, .record-card { fill: #fef3c7; stroke: #d97706; }
-      .cache, .cache-card, .scene_voxel_runtime { fill: #ccfbf1; stroke: #0f766e; }
-      .note, .warn { fill: #e6edf5; stroke: #b6c4d4; }
-      .pill, .pill-blue, .pill-pink, .pill-amber { fill: #f8fafc; stroke: #cbd5e1; }
-      rect[fill="#0f172a"], rect[fill="#111827"], rect[fill="#172033"], rect[fill="#16213a"], rect[fill="#101827"], rect[fill="#111c31"], rect[fill="#082f49"], rect[fill="#052e2b"], rect[fill="#052e16"], rect[fill="#064e3b"], rect[fill="#062f26"], rect[fill="#2e1065"], rect[fill="#2b2038"], rect[fill="#2b1d35"], rect[fill="#0f1f2f"], rect[fill="#182135"], rect[fill="#1e2030"], rect[fill="#1b2330"], rect[fill="#3a2510"], rect[fill="#0e2a1d"], rect[fill="#10251e"] { fill: #ffffff; stroke: #cbd5e1; }
-      .edge, .arrow, .dash { fill: none; stroke: #334155; stroke-width: 2.2; }
-      .edge-soft, .arrow-soft { fill: none; stroke: #64748b; stroke-width: 2; }
-      .edge-blue, .arrow-blue { fill: none; stroke: #2563eb; stroke-width: 2.3; }
-      .edge-green, .arrow-green, .dash-green { fill: none; stroke: #059669; stroke-width: 2.3; }
-      .edge-orange, .edge-amber, .arrow-purple, .dash-purple { fill: none; stroke: #d97706; stroke-width: 2.3; }
-      .edge-purple { fill: none; stroke: #7c3aed; stroke-width: 2.3; }
-      .arrow-red, .dash-red, .dash-pink { fill: none; stroke: #dc2626; stroke-width: 2.2; }
-      .dash, .dash-green, .dash-red, .dash-pink, .dash-purple, .edge-soft, .arrow-soft { stroke-dasharray: 7 7; }
-      #arrow path { fill: #334155; }
-      #arrowGreen path, #arrow-green path { fill: #059669; }
-      #arrowBlue path, #arrow-blue path { fill: #2563eb; }
-      #arrowRed path, #arrow-red path { fill: #dc2626; }
-      #arrowPurple path, #arrow-purple path, #arrow-orange path, #arrow-amber path { fill: #d97706; }
-    </style>
+    <pattern id="autoobject-dot-bg" patternUnits="userSpaceOnUse" width="12" height="12">
+      <rect width="12" height="12" fill="#cffafe"/>
+      <circle cx="3" cy="3" r="1.25" fill="#0891b2" opacity="0.256281"/>
+      <circle cx="9" cy="9" r="1.25" fill="#0891b2" opacity="0.256281"/>
+    </pattern>
+    <pattern id="descriptor-grid" patternUnits="userSpaceOnUse" width="9.3334" height="9.3334">
+      <rect width="9.3334" height="9.3334" fill="#dcfce7"/>
+      <path d="M4.6667 0H0V4.6667" stroke="#16a34a" stroke-width="0.3333" opacity="0.257576"/>
+      <path d="M0 4.6667L4.6667 0" stroke="#16a34a" stroke-width="0.3333" opacity="0.257576"/>
+    </pattern>
+    <pattern id="sv-stripe-blue" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#dbeafe"/>
+      <rect y="1" width="10" height="2" fill="#0284c7" opacity="0.235023"/>
+      <rect y="6" width="10" height="1.5" fill="#0284c7" opacity="0.235023"/>
+    </pattern>
+    <pattern id="sv-stripe-amber" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#fef3c7"/>
+      <rect y="1" width="10" height="2" fill="#d97706" opacity="0.264249"/>
+      <rect y="6" width="10" height="1.5" fill="#d97706" opacity="0.264249"/>
+    </pattern>
+    <pattern id="note-hatch" patternUnits="userSpaceOnUse" width="10" height="10" patternTransform="rotate(45)">
+      <rect width="10" height="10" fill="#f1f5f9"/>
+      <rect x="0" y="0" width="10" height="2" fill="#64748b" opacity="0.361702"/>
+    </pattern>
   </defs>
+  <style>
+    :root { color-scheme: light; }
+    .bg { fill: #f8fafc; }
+    .grid { stroke: #e2e8f0; stroke-width: 1; opacity: 0.7; }
+    .title { fill: #0f172a; font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .subtitle { fill: #475569; font: 500 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .lane-title { fill: #334155; font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .node-title { fill: #0f172a; font: 700 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .small { fill: #475569; font: 500 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .mono { fill: #334155; font: 600 11px Consolas, "Cascadia Mono", monospace; letter-spacing: 0; }
+    .note-text { fill: #0f172a; font: 600 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .lane { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; filter: url(#shadow); }
+    .node { stroke-width: 1.5; filter: url(#shadow); }
+    .edge { stroke: #334155; stroke-width: 2.1; fill: none; marker-end: url(#arrow); }
+    .edge-blue { stroke: #2563eb; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+    .edge-green { stroke: #059669; stroke-width: 2.2; fill: none; marker-end: url(#arrow-green); }
+    .edge-orange { stroke: #ea580c; stroke-width: 2.2; fill: none; marker-end: url(#arrow-orange); }
+    .edge-dash { stroke: #64748b; stroke-width: 1.9; fill: none; stroke-dasharray: 7 7; marker-end: url(#arrow); }
+    .edge-warn { stroke: #dc2626; stroke-width: 2; fill: none; stroke-dasharray: 8 6; marker-end: url(#arrow); }
+  </style>
 
-  <rect class="bg" x="0" y="0" width="1560" height="980"/>
-  <text class="title" x="60" y="62">AutoObject Probe 粗筛：SceneVoxelActor 与 GPU AnchorState</text>
-  <text class="subtitle" x="62" y="94">score / top-K 留在 GPU，生命周期跟随当前 SceneVoxel epoch；CPU readback 只作 debug / 兼容</text>
-
-  <rect class="lane" x="40" y="126" width="1480" height="170"/>
-  <text class="section" x="68" y="162">SceneVoxelActor[tick] 同生命周期输入</text>
-
-  <rect class="box-blue" x="70" y="190" width="300" height="82"/>
-  <text class="section" x="94" y="224">SV + SceneVoxelLocal</text>
-  <text class="small" x="94" y="250">scene_field / collision_field sampling buffers</text>
-
-  <rect class="box-blue" x="410" y="190" width="300" height="82"/>
-  <text class="section" x="434" y="224">TargetSV + BrushSV</text>
-  <text class="small" x="434" y="250">stored source canvas + stored brush delta</text>
-
-  <rect class="box-blue" x="750" y="190" width="300" height="82"/>
-  <text class="section" x="774" y="224">TargetSV_B</text>
-  <text class="small" x="774" y="250">composited target read buffers</text>
-
-  <rect class="box-blue" x="1090" y="190" width="300" height="82"/>
-  <text class="section" x="1114" y="224">AutoObject registry</text>
-  <text class="small" x="1114" y="250">descriptor-backed probe buffers</text>
-
-  <path class="arrow-soft" d="M220 272 V330"/>
-  <path class="arrow-soft" d="M560 272 V330"/>
-  <path class="arrow-soft" d="M900 272 V330"/>
-  <path class="arrow-soft" d="M1240 272 V330"/>
-
-  <rect class="lane" x="40" y="320" width="1480" height="250"/>
-  <text class="section" x="68" y="356">GPU-only prefilter：4 个 compute dispatch</text>
-
-  <rect class="box-green" x="70" y="395" width="320" height="112"/>
-  <text class="section" x="94" y="430">1. collect_sv_anchors</text>
-  <text class="small" x="94" y="458">dirty regions (tiles compat) 内提取 anchor</text>
-  <text class="mono" x="94" y="482">ground + target_top</text>
-
-  <rect class="box-yellow" x="430" y="395" width="320" height="112"/>
-  <text class="section" x="454" y="430">2. score_anchor_asset_probes</text>
-  <text class="small" x="454" y="458">anchor × asset probe scoring</text>
-  <text class="mono" x="454" y="482">scene / target / collision sample</text>
-
-  <rect class="box-purple" x="790" y="395" width="320" height="112"/>
-  <text class="section" x="814" y="430">3. select_anchor_topk</text>
-  <text class="small" x="814" y="458">每个 anchor 选择 TOPK asset</text>
-  <text class="mono" x="814" y="482">score &gt;= min_prefilter_score</text>
-
-  <rect class="box-green" x="1150" y="395" width="320" height="112"/>
-  <text class="section" x="1174" y="430">4. reduce_to_voxel_regions</text>
-  <text class="small" x="1174" y="458">按 asset 聚合 voxel-region votes</text>
-  <text class="mono" x="1174" y="482">asset_id * tile_count + tile_id</text>
-
-  <path class="arrow" d="M390 451 H430"/>
-  <path class="arrow" d="M750 451 H790"/>
-  <path class="arrow" d="M1110 451 H1150"/>
-
-  <rect class="box-gray" x="310" y="530" width="940" height="58"/>
-  <text class="mono" x="336" y="564">GPU AnchorState: anchor_buf / asset_scores_buf / topk_buf / candidate route votes</text>
-
-  <path class="arrow-soft" d="M780 588 V638"/>
-
-  <rect class="lane" x="40" y="626" width="1480" height="300"/>
-  <text class="section" x="68" y="662">后续放置与可选兼容 readback</text>
-
-  <rect class="box-yellow" x="70" y="700" width="360" height="150"/>
-  <text class="section" x="94" y="735">GPU route buffer</text>
-  <text class="text" x="94" y="766">常驻 actor 生命周期内</text>
-  <text class="mono" x="94" y="794">AnchorState.score/topK</text>
-  <text class="mono" x="94" y="818">route votes (voxel_sparse_votes compat)</text>
-
-  <rect class="box-purple" x="500" y="700" width="380" height="150"/>
-  <text class="section" x="524" y="735">optional CPU compat view</text>
-  <text class="small" x="524" y="764">只用于 debug / 统计 / 旧接口接入</text>
-  <text class="mono" x="524" y="792">compat/debug candidate_sparses</text>
-  <text class="tiny" x="524" y="810">autoobject_candidate_voxel_sparses</text>
-  <text class="mono" x="524" y="832">score/topK 不要求 readback</text>
-
-  <rect class="box-green" x="950" y="700" width="480" height="150"/>
-  <text class="section" x="974" y="735">VoxelPlacementGenerator / GPU placement</text>
-  <text class="mono" x="974" y="766">candidate route limits dispatch</text>
-  <text class="small" x="974" y="794">按 asset_index / route buffer 进入后续 physical scoring</text>
-  <text class="small" x="974" y="820">只限定候选区域；物理由 score_voxel_tile.glsl 精筛</text>
-
-  <path class="arrow" d="M430 775 H500"/>
-  <path class="arrow" d="M880 775 H950"/>
-
-  <rect x="78" y="878" width="610" height="34" rx="10" fill="#e6edf5" stroke="#b6c4d4"/>
-  <text class="small" x="98" y="900">权威运行时结果：GPU AnchorState + candidate route buffer；生命周期跟随 SceneVoxelActor[tick]。</text>
-
-  <rect x="780" y="878" width="650" height="34" rx="10" fill="#e6edf5" stroke="#b6c4d4"/>
-  <text class="small" x="800" y="900">TargetSV 与 BrushSV 需要存储；TargetSV_B 是合成读取缓存，不替代源状态。</text>
+  <rect class="bg" x="0" y="0" width="1640" height="980"/>
+  <g opacity="0.65"><line class="grid" x1="40" y1="86" x2="40" y2="944"/><line class="grid" x1="120" y1="86" x2="120" y2="944"/><line class="grid" x1="200" y1="86" x2="200" y2="944"/><line class="grid" x1="280" y1="86" x2="280" y2="944"/><line class="grid" x1="360" y1="86" x2="360" y2="944"/><line class="grid" x1="440" y1="86" x2="440" y2="944"/><line class="grid" x1="520" y1="86" x2="520" y2="944"/><line class="grid" x1="600" y1="86" x2="600" y2="944"/><line class="grid" x1="680" y1="86" x2="680" y2="944"/><line class="grid" x1="760" y1="86" x2="760" y2="944"/><line class="grid" x1="840" y1="86" x2="840" y2="944"/><line class="grid" x1="920" y1="86" x2="920" y2="944"/><line class="grid" x1="1000" y1="86" x2="1000" y2="944"/><line class="grid" x1="1080" y1="86" x2="1080" y2="944"/><line class="grid" x1="1160" y1="86" x2="1160" y2="944"/><line class="grid" x1="1240" y1="86" x2="1240" y2="944"/><line class="grid" x1="1320" y1="86" x2="1320" y2="944"/><line class="grid" x1="1400" y1="86" x2="1400" y2="944"/><line class="grid" x1="1480" y1="86" x2="1480" y2="944"/><line class="grid" x1="1560" y1="86" x2="1560" y2="944"/><line class="grid" x1="30" y1="120" x2="1610" y2="120"/><line class="grid" x1="30" y1="200" x2="1610" y2="200"/><line class="grid" x1="30" y1="280" x2="1610" y2="280"/><line class="grid" x1="30" y1="360" x2="1610" y2="360"/><line class="grid" x1="30" y1="440" x2="1610" y2="440"/><line class="grid" x1="30" y1="520" x2="1610" y2="520"/><line class="grid" x1="30" y1="600" x2="1610" y2="600"/><line class="grid" x1="30" y1="680" x2="1610" y2="680"/><line class="grid" x1="30" y1="760" x2="1610" y2="760"/><line class="grid" x1="30" y1="840" x2="1610" y2="840"/><line class="grid" x1="30" y1="920" x2="1610" y2="920"/></g>
+  <text class="title" x="48" y="54">AutoObject Probe Prefilter Pipeline</text>
+  <text class="subtitle" x="48" y="82">GPU-only coarse filtering from dirty regions to per-asset candidate voxel regions.</text>
+  <g>
+    <rect class="lane" x="50" y="115" width="340" height="720" rx="8"/>
+    <text class="lane-title" x="68" y="141">INPUTS</text>
+    <rect class="lane" x="430" y="115" width="520" height="720" rx="8"/>
+    <text class="lane-title" x="448" y="141">GPU DISPATCH</text>
+    <rect class="lane" x="990" y="115" width="600" height="720" rx="8"/>
+    <text class="lane-title" x="1008" y="141">READBACK + PLACEMENT CONTRACT</text>
+  </g>
+  <g>
+    <path class="edge-blue" d="M 350 205 L 470 195"/>
+    <path class="edge-blue" d="M 350 368 L 470 338"/>
+    <path class="edge-green" d="M 350 530 L 470 338"/>
+    <path class="edge" d="M 350 695 L 470 195"/>
+    <path class="edge" d="M 625 240 L 625 285"/>
+    <path class="edge" d="M 625 390 L 625 445"/>
+    <path class="edge" d="M 625 540 L 625 595"/>
+    <path class="edge-orange" d="M 780 650 L 1035 210"/>
+    <path class="edge" d="M 1185 265 L 1185 330"/>
+    <path class="edge" d="M 1185 455 L 1185 525"/>
+    <path class="edge-orange" d="M 1185 640 L 1185 705"/>
+    <path class="edge-dash" d="M 1335 390 L 1380 410"/>
+  </g>
+  <g>
+    <g id="sv[t---1]-fields">
+    <rect class="node" x="85" y="155" width="265" height="105" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="103" y="183">SV[t - 1] fields</text>
+    <text class="small"><tspan x="103" y="205">scene_field</tspan><tspan x="103" y="222">collision_field</tspan><tspan x="103" y="239">BlendSV-backed resident input</tspan></text>
+    </g>
+    <g id="targetsv_b-buffers">
+    <rect class="node" x="85" y="315" width="265" height="105" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="103" y="343">TargetSV_B buffers</text>
+    <text class="small"><tspan x="103" y="365">target_occupancy</tspan><tspan x="103" y="382">target_color</tspan><tspan x="103" y="399">brush-composited target</tspan></text>
+    </g>
+    <g id="autoobject-registry">
+    <rect class="node" x="85" y="475" width="265" height="115" rx="8" fill="url(#autoobject-dot-bg)" stroke="#0891b2"/>
+    <text class="node-title" x="103" y="503">AutoObject registry</text>
+    <text class="small"><tspan x="103" y="525">descriptor-backed probes</tspan><tspan x="103" y="542">collision footprint</tspan><tspan x="103" y="559">context radius</tspan></text>
+    </g>
+    <g id="dirty-voxel-regions">
+    <rect class="node" x="85" y="650" width="265" height="90" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="103" y="678">Dirty voxel regions</text>
+    <text class="small"><tspan x="103" y="700">anchor collection scope</tspan><tspan x="103" y="717">dirty tiles</tspan></text>
+    </g>
+    <g id="collect_sv_anchors.glsl">
+    <rect class="node" x="470" y="150" width="310" height="90" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="488" y="178">collect_sv_anchors.glsl</text>
+    <text class="small"><tspan x="488" y="200">supported candidates</tspan><tspan x="488" y="217">column-top candidates</tspan></text>
+    </g>
+    <g id="score_anchor_asset_probes.glsl">
+    <rect class="node" x="470" y="285" width="310" height="105" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="488" y="313">score_anchor_asset_probes.glsl</text>
+    <text class="small"><tspan x="488" y="335">anchor x asset x probe</tspan><tspan x="488" y="352">sample SV + TargetSV_B</tspan></text>
+    </g>
+    <g id="select_anchor_topk.glsl">
+    <rect class="node" x="470" y="445" width="310" height="95" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="488" y="473">select_anchor_topk.glsl</text>
+    <text class="small"><tspan x="488" y="495">top-K assets per anchor</tspan><tspan x="488" y="512">internal GPU buffer</tspan></text>
+    </g>
+    <g id="reduce_anchor_topk_to_voxel_regions.glsl">
+    <rect class="node" x="470" y="595" width="310" height="105" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="488" y="623">reduce_anchor_topk_to_voxel_regions.glsl</text>
+    <text class="small"><tspan x="488" y="645">per-asset voxel-region votes</tspan><tspan x="488" y="662">vote tile only</tspan></text>
+    </g>
+    <g id="readback-votes">
+    <rect class="node" x="1035" y="155" width="300" height="110" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
+    <text class="node-title" x="1053" y="183">Readback votes</text>
+    <text class="small"><tspan x="1053" y="205">decode voted regions</tspan><tspan x="1053" y="222">anchors/debug counts</tspan><tspan x="1053" y="239">no CPU scoring fallback</tspan></text>
+    </g>
+    <g id="expand-route-profiles">
+    <rect class="node" x="1035" y="330" width="300" height="125" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
+    <text class="node-title" x="1053" y="358">Expand route profiles</text>
+    <text class="small"><tspan x="1053" y="380">footprint bounds</tspan><tspan x="1053" y="397">probe offset bounds</tspan><tspan x="1053" y="414">context_sensing_radius</tspan><tspan x="1053" y="431">interpolation guard &gt;= 1</tspan></text>
+    </g>
+    <g id="candidate_voxel_regions_by_asset">
+    <rect class="node" x="1035" y="525" width="300" height="115" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="1053" y="553">candidate_voxel_regions_by_asset</text>
+    <text class="small"><tspan x="1053" y="575">debug view</tspan><tspan x="1053" y="592">per-asset candidate regions</tspan><tspan x="1053" y="609">empty list means skip</tspan></text>
+    </g>
+    <g id="voxelplacementgenerator">
+    <rect class="node" x="1035" y="705" width="300" height="90" rx="8" fill="#ffedd5" stroke="#ea580c"/>
+    <text class="node-title" x="1053" y="733">VoxelPlacementGenerator</text>
+    <text class="small"><tspan x="1053" y="755">run_multi_asset()</tspan><tspan x="1053" y="772">physical scoring owns final fit</tspan></text>
+    </g>
+    <g id="debug-outputs">
+    <rect class="node" x="1380" y="350" width="170" height="130" rx="8" fill="url(#note-hatch)" stroke="#64748b"/>
+    <text class="node-title" x="1398" y="378">Debug outputs</text>
+    <text class="small"><tspan x="1398" y="400">anchors</tspan><tspan x="1398" y="417">route profiles</tspan><tspan x="1398" y="434">candidate regions</tspan><tspan x="1398" y="451">anchor_count</tspan></text>
+    </g>
+  </g>
+  <g>
+    <g>
+    <rect x="430" y="820" width="910" height="70" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="1.3"/>
+    <text class="note-text" x="444" y="844">Boundary</text>
+    <text class="small"><tspan x="444" y="865">Prefilter reduces candidates only. It never writes SceneVoxel and never replaces score_voxel_tile.glsl physical scoring.</tspan></text>
+  </g>
+  </g>
 </svg>

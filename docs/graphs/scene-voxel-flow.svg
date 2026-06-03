@@ -1,282 +1,166 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100" role="img" aria-labelledby="title desc">
-  <title id="title">SceneVoxel SV source commit and runtime sampling view flow</title>
-  <desc id="desc">Diagram showing how upstream asset and brush inputs become source voxel write streams, how blend_scene_voxels publishes the committed SceneVoxel read model, and how SceneVoxelLocal maintains current-epoch scene_field, collision_field, dirty voxel regions, and sampling/query buffers without becoming a semantic authority.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1660" height="1060" viewBox="0 0 1660 1060" role="img" aria-labelledby="title desc">
+  <title id="title">SceneVoxel Source Commit and Resident Field Flow</title>
+  <desc id="desc">Scene voxel field system flow from scene-voxel-field-system.md.</desc>
+
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#06101f"/>
-      <stop offset="0.56" stop-color="#0b1728"/>
-      <stop offset="1" stop-color="#111827"/>
-    </linearGradient>
-    <linearGradient id="input" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f766e"/>
-      <stop offset="1" stop-color="#1d4ed8"/>
-    </linearGradient>
-    <linearGradient id="record" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1e3a8a"/>
-      <stop offset="1" stop-color="#312e81"/>
-    </linearGradient>
-    <linearGradient id="source" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7c3aed"/>
-      <stop offset="1" stop-color="#2563eb"/>
-    </linearGradient>
-    <linearGradient id="commit" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#b45309"/>
-      <stop offset="1" stop-color="#be123c"/>
-    </linearGradient>
-    <linearGradient id="sv" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#065f46"/>
-      <stop offset="0.48" stop-color="#047857"/>
-      <stop offset="1" stop-color="#65a30d"/>
-    </linearGradient>
-    <linearGradient id="cache" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f172a"/>
-      <stop offset="1" stop-color="#164e63"/>
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.35"/>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#ea580c"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.12"/>
     </filter>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8dd3ff"/>
-    </marker>
-    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#86efac"/>
-    </marker>
-    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#fca5a5"/>
-    </marker>
-    <style>
-      .title { font: 700 34px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #f8fafc; }
-      .subtitle { font: 500 16px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #a5b4fc; }
-      .section { font: 700 18px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #f8fafc; }
-      .label { font: 600 15px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #e5e7eb; }
-      .small { font: 500 13px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #cbd5e1; }
-      .tiny { font: 500 12px "Microsoft YaHei", "Segoe UI", Arial, sans-serif; fill: #94a3b8; }
-      .mono { font: 600 12px Consolas, "Cascadia Mono", monospace; fill: #dbeafe; }
-      .card { fill: #0f172a; stroke: #334155; stroke-width: 1.4; rx: 18; filter: url(#shadow); }
-      .input-card { fill: url(#input); stroke: #67e8f9; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .record-card { fill: url(#record); stroke: #818cf8; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .source-card { fill: url(#source); stroke: #c4b5fd; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .commit-card { fill: url(#commit); stroke: #fed7aa; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .sv-card { fill: url(#sv); stroke: #bbf7d0; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .cache-card { fill: url(#cache); stroke: #7dd3fc; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .soft { fill: rgba(15, 23, 42, 0.72); stroke: #64748b; stroke-width: 1.1; rx: 14; }
-      .ok { fill: #062f26; stroke: #86efac; stroke-width: 1.2; rx: 12; }
-      .warn { fill: #2b2038; stroke: #fca5a5; stroke-width: 1.2; rx: 12; }
-      .note { fill: #16213a; stroke: #334155; stroke-width: 1; rx: 12; }
-      .arrow { fill: none; stroke: #8dd3ff; stroke-width: 3; marker-end: url(#arrow); }
-      .arrow-green { fill: none; stroke: #86efac; stroke-width: 3; marker-end: url(#arrowGreen); }
-      .arrow-red { fill: none; stroke: #fca5a5; stroke-width: 2.7; marker-end: url(#arrowRed); }
-      .dash { fill: none; stroke: #64748b; stroke-width: 2.2; stroke-dasharray: 8 7; marker-end: url(#arrow); }
-      .dash-green { fill: none; stroke: #86efac; stroke-width: 2.3; stroke-dasharray: 8 7; marker-end: url(#arrowGreen); }
-      .dash-red { fill: none; stroke: #fca5a5; stroke-width: 2.2; stroke-dasharray: 8 7; marker-end: url(#arrowRed); }
-      /* meshfill-graph-style: shared light engineering diagram theme */
-      :root { color-scheme: light; }
-      .bg, rect[fill="url(#bg)"] { fill: #f8fafc; }
-      svg > circle[opacity] { opacity: 0; }
-      .grid { stroke: #e2e8f0; stroke-width: 1; }
-      .title { font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #0f172a; letter-spacing: 0; }
-      .subtitle { font: 500 16px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #475569; letter-spacing: 0; }
-      .section, .section-title { font: 700 18px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #1e293b; letter-spacing: 0; }
-      .band-title, .lane-title { font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #334155; letter-spacing: 0; }
-      .label, .node-title, .pill-text { font: 700 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #0f172a; letter-spacing: 0; }
-      .text { font: 500 16px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #1f2937; letter-spacing: 0; }
-      .small { font: 500 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #475569; letter-spacing: 0; }
-      .tiny { font: 500 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #64748b; letter-spacing: 0; }
-      .mono, .mono-strong, .formula { font: 600 12px Consolas, "Cascadia Mono", monospace; fill: #334155; letter-spacing: 0; }
-      .lane, .band, .band2d, .band3d, .band-field, .band-post, .lane-type, .lane-resource, .lane-field, .lane-runtime, .lane-factory, .lane-owner, .lane-tool, .state-band, .target-band, .asset-band, .route-band, .place-band { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; }
-      .node, .card, .soft, .tick, .legend { stroke-width: 1.4; filter: url(#shadow); }
-      .box, .box-gray, .card, .soft, .support, .tool, .owner, .factory, .downstream, .legacy, .getter, .runtime, .tick, .legend { fill: #ffffff; stroke: #cbd5e1; }
-      .box-blue, .input, .entry, .field, .state, .sv, .target, .target-card, .gpu-card, .gpu { fill: #dbeafe; stroke: #2563eb; }
-      .box-green, .asset, .resource, .autoobject, .input-card, .source-card, .contract, .sv-card, .ok, .prefilter-card { fill: #dcfce7; stroke: #16a34a; }
-      .box-purple, .route, .route-card, .rerank-card, .gate-card, .descriptor, .record-card, .vdb-card, .debug-card { fill: #ede9fe; stroke: #7c3aed; }
-      .box-yellow, .placement, .placement-card, .commit-card, .persist-card, .aggregate-card { fill: #fef3c7; stroke: #d97706; }
-      .box-red, .hardgate, .prune-card { fill: #fee2e2; stroke: #ef4444; }
-      .record, .record-card { fill: #fef3c7; stroke: #d97706; }
-      .cache, .cache-card, .scene_voxel_runtime { fill: #ccfbf1; stroke: #0f766e; }
-      .note, .warn { fill: #e6edf5; stroke: #b6c4d4; }
-      .pill, .pill-blue, .pill-pink, .pill-amber { fill: #f8fafc; stroke: #cbd5e1; }
-      rect[fill="#0f172a"], rect[fill="#111827"], rect[fill="#172033"], rect[fill="#16213a"], rect[fill="#101827"], rect[fill="#111c31"], rect[fill="#082f49"], rect[fill="#052e2b"], rect[fill="#052e16"], rect[fill="#064e3b"], rect[fill="#062f26"], rect[fill="#2e1065"], rect[fill="#2b2038"], rect[fill="#2b1d35"], rect[fill="#0f1f2f"], rect[fill="#182135"], rect[fill="#1e2030"], rect[fill="#1b2330"], rect[fill="#3a2510"], rect[fill="#0e2a1d"], rect[fill="#10251e"] { fill: #ffffff; stroke: #cbd5e1; }
-      .edge, .arrow, .dash { fill: none; stroke: #334155; stroke-width: 2.2; }
-      .edge-soft, .arrow-soft { fill: none; stroke: #64748b; stroke-width: 2; }
-      .edge-blue, .arrow-blue { fill: none; stroke: #2563eb; stroke-width: 2.3; }
-      .edge-green, .arrow-green, .dash-green { fill: none; stroke: #059669; stroke-width: 2.3; }
-      .edge-orange, .edge-amber, .arrow-purple, .dash-purple { fill: none; stroke: #d97706; stroke-width: 2.3; }
-      .edge-purple { fill: none; stroke: #7c3aed; stroke-width: 2.3; }
-      .arrow-red, .dash-red, .dash-pink { fill: none; stroke: #dc2626; stroke-width: 2.2; }
-      .dash, .dash-green, .dash-red, .dash-pink, .dash-purple, .edge-soft, .arrow-soft { stroke-dasharray: 7 7; }
-      #arrow path { fill: #334155; }
-      #arrowGreen path, #arrow-green path { fill: #059669; }
-      #arrowBlue path, #arrow-blue path { fill: #2563eb; }
-      #arrowRed path, #arrow-red path { fill: #dc2626; }
-      #arrowPurple path, #arrow-purple path, #arrow-orange path, #arrow-amber path { fill: #d97706; }
-    </style>
+    <pattern id="autoobject-dot-bg" patternUnits="userSpaceOnUse" width="12" height="12">
+      <rect width="12" height="12" fill="#cffafe"/>
+      <circle cx="3" cy="3" r="1.25" fill="#0891b2" opacity="0.256281"/>
+      <circle cx="9" cy="9" r="1.25" fill="#0891b2" opacity="0.256281"/>
+    </pattern>
+    <pattern id="descriptor-grid" patternUnits="userSpaceOnUse" width="9.3334" height="9.3334">
+      <rect width="9.3334" height="9.3334" fill="#dcfce7"/>
+      <path d="M4.6667 0H0V4.6667" stroke="#16a34a" stroke-width="0.3333" opacity="0.257576"/>
+      <path d="M0 4.6667L4.6667 0" stroke="#16a34a" stroke-width="0.3333" opacity="0.257576"/>
+    </pattern>
+    <pattern id="sv-stripe-blue" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#dbeafe"/>
+      <rect y="1" width="10" height="2" fill="#0284c7" opacity="0.235023"/>
+      <rect y="6" width="10" height="1.5" fill="#0284c7" opacity="0.235023"/>
+    </pattern>
+    <pattern id="sv-stripe-amber" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#fef3c7"/>
+      <rect y="1" width="10" height="2" fill="#d97706" opacity="0.264249"/>
+      <rect y="6" width="10" height="1.5" fill="#d97706" opacity="0.264249"/>
+    </pattern>
+    <pattern id="note-hatch" patternUnits="userSpaceOnUse" width="10" height="10" patternTransform="rotate(45)">
+      <rect width="10" height="10" fill="#f1f5f9"/>
+      <rect x="0" y="0" width="10" height="2" fill="#64748b" opacity="0.361702"/>
+    </pattern>
   </defs>
+  <style>
+    :root { color-scheme: light; }
+    .bg { fill: #f8fafc; }
+    .grid { stroke: #e2e8f0; stroke-width: 1; opacity: 0.7; }
+    .title { fill: #0f172a; font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .subtitle { fill: #475569; font: 500 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .lane-title { fill: #334155; font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .node-title { fill: #0f172a; font: 700 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .small { fill: #475569; font: 500 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .mono { fill: #334155; font: 600 11px Consolas, "Cascadia Mono", monospace; letter-spacing: 0; }
+    .note-text { fill: #0f172a; font: 600 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .lane { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; filter: url(#shadow); }
+    .node { stroke-width: 1.5; filter: url(#shadow); }
+    .edge { stroke: #334155; stroke-width: 2.1; fill: none; marker-end: url(#arrow); }
+    .edge-blue { stroke: #2563eb; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+    .edge-green { stroke: #059669; stroke-width: 2.2; fill: none; marker-end: url(#arrow-green); }
+    .edge-orange { stroke: #ea580c; stroke-width: 2.2; fill: none; marker-end: url(#arrow-orange); }
+    .edge-dash { stroke: #64748b; stroke-width: 1.9; fill: none; stroke-dasharray: 7 7; marker-end: url(#arrow); }
+    .edge-warn { stroke: #dc2626; stroke-width: 2; fill: none; stroke-dasharray: 8 6; marker-end: url(#arrow); }
+  </style>
 
-  <rect width="1600" height="1100" fill="url(#bg)"/>
-  <circle cx="1378" cy="95" r="225" fill="#1e40af" opacity="0.13"/>
-  <circle cx="230" cy="890" r="270" fill="#047857" opacity="0.11"/>
-  <circle cx="835" cy="170" r="180" fill="#7c3aed" opacity="0.09"/>
-
-  <text x="58" y="58" class="title">SceneVoxel / SV 流程 — source write → commit/update → sampling view</text>
-  <text x="58" y="88" class="subtitle">SceneVoxel 是唯一 committed read model；SceneVoxelLocal 是当前 SV epoch 的 sampling/query view，不成为语义权威。</text>
-
-  <rect x="48" y="132" width="278" height="560" class="input-card"/>
-  <text x="78" y="172" class="section">1. 上游输入</text>
-  <text x="78" y="198" class="small">提供写入 payload 或 guidance</text>
-
-  <rect x="78" y="226" width="218" height="74" class="soft"/>
-  <text x="100" y="254" class="label">AutoVoxelDescriptor</text>
-  <text x="100" y="278" class="small">资产默认 color / complexity</text>
-  <text x="100" y="296" class="small">collision footprint / probes</text>
-
-  <rect x="78" y="326" width="218" height="74" class="soft"/>
-  <text x="100" y="354" class="label">Brush edit / erase</text>
-  <text x="100" y="378" class="small">手动写入或覆盖范围</text>
-  <text x="100" y="396" class="small">modified_voxels / auto_mix</text>
-
-  <rect x="78" y="426" width="218" height="86" class="warn"/>
-  <text x="100" y="454" class="label">TargetSV_B guidance</text>
-  <text x="100" y="478" class="small">只参与 routing / scoring</text>
-  <text x="100" y="496" class="small">不进入 blend commit</text>
-
-  <rect x="78" y="538" width="218" height="90" class="note"/>
-  <text x="100" y="566" class="label">Terrain base collision</text>
-  <text x="100" y="590" class="small">地形高度以下保持 solid</text>
-  <text x="100" y="608" class="small">普通 source 不能 erase</text>
-
-  <path d="M 326 266 C 346 266 348 266 368 266" class="arrow"/>
-  <path d="M 326 366 C 346 366 348 366 368 366" class="arrow"/>
-  <path d="M 326 468 C 352 468 352 452 368 430" class="dash-red"/>
-  <path d="M 326 584 C 360 584 370 520 394 476" class="dash-green"/>
-
-  <rect x="368" y="172" width="260" height="312" class="record-card"/>
-  <text x="398" y="212" class="section">2. voxel_write_spec</text>
-  <text x="398" y="238" class="small">本轮实例写入 payload</text>
-
-  <rect x="398" y="268" width="200" height="92" class="soft"/>
-  <text x="418" y="296" class="mono">record_id / position</text>
-  <text x="418" y="320" class="mono">base_pixel / voxel_xz</text>
-  <text x="418" y="344" class="mono">source_kind / channel</text>
-
-  <rect x="398" y="382" width="200" height="76" class="ok"/>
-  <text x="418" y="410" class="mono">color / complexity</text>
-  <text x="418" y="434" class="mono">collision_voxels[]</text>
-
-  <text x="398" y="514" class="tiny">builders: AutoObject / placement / brush</text>
-  <path d="M 628 328 C 650 328 650 328 672 328" class="arrow"/>
-
-  <rect x="672" y="132" width="316" height="430" class="source-card"/>
-  <text x="706" y="172" class="section">3. Source write streams</text>
-  <text x="706" y="198" class="small">当前 tick 的写入意图，不是最终状态</text>
-
-  <rect x="706" y="230" width="248" height="104" class="soft"/>
-  <text x="728" y="258" class="label">AutoSceneVoxel</text>
-  <text x="728" y="282" class="small">自动放置输出</text>
-  <text x="728" y="304" class="mono">color / complexity / channel</text>
-  <text x="728" y="326" class="mono">collision_voxels[]</text>
-
-  <rect x="706" y="360" width="248" height="116" class="soft"/>
-  <text x="728" y="388" class="label">BrushSceneVoxel</text>
-  <text x="728" y="412" class="small">画笔 / erase / 手动 blocker</text>
-  <text x="728" y="434" class="mono">modified_voxels / auto_mix</text>
-  <text x="728" y="456" class="mono">collision_voxels[]</text>
-
-  <rect x="706" y="502" width="248" height="36" class="note"/>
-  <text x="728" y="525" class="small">source stream 可并存；冲突在 commit resolve</text>
-
-  <path d="M 988 346 C 1013 346 1013 346 1038 346" class="arrow"/>
-
-  <rect x="1038" y="204" width="226" height="284" class="commit-card"/>
-  <text x="1066" y="244" class="section">4. Commit</text>
-  <text x="1066" y="270" class="mono">blend_scene_voxels()</text>
-
-  <rect x="1066" y="302" width="170" height="132" class="soft"/>
-  <text x="1086" y="330" class="small">merge source keys</text>
-  <text x="1086" y="354" class="small">resolve priority / blend</text>
-  <text x="1086" y="378" class="small">preserve terrain base</text>
-  <text x="1086" y="402" class="small">publish snapshot metadata</text>
-  <text x="1086" y="426" class="small">refresh collision view</text>
-
-  <path d="M 1264 346 C 1288 346 1288 346 1312 346" class="arrow-green"/>
-
-  <rect x="1312" y="132" width="238" height="430" class="sv-card"/>
-  <text x="1340" y="172" class="section">5. SceneVoxel[tick]</text>
-  <text x="1340" y="198" class="small">唯一 committed read model</text>
-
-  <rect x="1340" y="228" width="182" height="82" class="soft"/>
-  <text x="1360" y="256" class="mono">value / complexity</text>
-  <text x="1360" y="280" class="mono">color / channel</text>
-  <text x="1360" y="304" class="mono">collision_voxels[]</text>
-
-  <rect x="1340" y="334" width="182" height="104" class="ok"/>
-  <text x="1360" y="362" class="label">语义字段</text>
-  <text x="1360" y="386" class="mono">payload only</text>
-  <text x="1360" y="410" class="mono">occupied derived</text>
-  <text x="1360" y="432" class="mono">tick is snapshot meta</text>
-
-  <rect x="1340" y="464" width="182" height="54" class="note"/>
-  <text x="1360" y="488" class="small">source tracking metadata</text>
-  <text x="1360" y="508" class="small">outside per-voxel payload</text>
-
-  <path d="M 1431 562 C 1431 606 1246 612 1246 654" class="arrow-green"/>
-
-  <rect x="912" y="654" width="334" height="246" class="cache-card"/>
-  <text x="946" y="694" class="section">6. Runtime sampling views</text>
-  <text x="946" y="720" class="small">由当前 SV epoch 构建 / 刷新</text>
-
-  <rect x="946" y="750" width="262" height="54" class="soft"/>
-  <text x="968" y="782" class="mono">scene_field ← value / complexity</text>
-
-  <rect x="946" y="824" width="262" height="54" class="soft"/>
-  <text x="968" y="856" class="mono">collision_field ← collision_voxels</text>
-
-  <path d="M 1246 777 C 1268 777 1268 777 1290 777" class="arrow"/>
-
-  <rect x="1290" y="650" width="260" height="330" class="cache-card"/>
-  <text x="1320" y="690" class="section">7. SceneVoxelLocal</text>
-  <text x="1320" y="714" class="section">dirty voxel regions</text>
-  <text x="1320" y="740" class="mono">scripts/scene_voxel_runtime.gd</text>
-
-  <rect x="1320" y="762" width="202" height="112" class="soft"/>
-  <text x="1342" y="790" class="mono">scene_field[]</text>
-  <text x="1342" y="814" class="mono">collision_field[]</text>
-  <text x="1342" y="838" class="mono">dirty voxel regions / rects</text>
-  <text x="1342" y="862" class="mono">tile cache implementation</text>
-
-  <rect x="1320" y="900" width="202" height="62" class="warn"/>
-  <text x="1342" y="926" class="label">不是语义权威</text>
-  <text x="1342" y="948" class="small">只服务查询和增量更新</text>
-
-  <path d="M 1290 918 C 1190 972 978 972 864 912" class="dash"/>
-
-  <rect x="48" y="760" width="370" height="216" class="card"/>
-  <text x="78" y="800" class="section">消费者</text>
-  <text x="78" y="826" class="small">读取 SV / SceneVoxelLocal sampling view</text>
-
-  <rect x="78" y="858" width="132" height="72" class="soft"/>
-  <text x="96" y="886" class="label">placement</text>
-  <text x="96" y="910" class="small">physical scoring</text>
-
-  <rect x="238" y="858" width="150" height="72" class="soft"/>
-  <text x="256" y="886" class="label">validation</text>
-  <text x="256" y="910" class="small">routing / probes</text>
-
-  <path d="M 1290 842 C 936 1030 478 942 388 894" class="dash-green"/>
-  <path d="M 1312 218 C 1030 60 526 80 236 426" class="dash-red"/>
-
-  <rect x="458" y="760" width="374" height="216" class="card"/>
-  <text x="488" y="800" class="section">关键边界</text>
-
-  <rect x="488" y="834" width="314" height="58" class="ok"/>
-  <text x="508" y="858" class="small">SceneVoxel 保存最终语义：</text>
-  <text x="508" y="878" class="mono">value / color / collision_voxels</text>
-
-  <rect x="488" y="910" width="314" height="58" class="warn"/>
-  <text x="508" y="934" class="small">TargetSV_B 是 guidance；</text>
-  <text x="508" y="954" class="small">不写 committed SceneVoxel</text>
-
-  <rect x="48" y="998" width="1502" height="76" class="note"/>
-  <text x="78" y="1026" class="small">Solid arrow = source write / commit；green arrow = committed read model 或 sampling view；dashed arrow = guidance/query only。</text>
-  <text x="78" y="1048" class="small">`collision_field` 来自 committed `collision_voxels`、terrain base collision，并可由 stamp delta 刷新。</text>
-  <text x="78" y="1070" class="small">`SceneVoxelLocal` / `scripts/scene_voxel_runtime.gd` 是 runtime sampling view，不保存新的 SV 语义归属。</text>
+  <rect class="bg" x="0" y="0" width="1660" height="1060"/>
+  <g opacity="0.65"><line class="grid" x1="40" y1="86" x2="40" y2="1024"/><line class="grid" x1="120" y1="86" x2="120" y2="1024"/><line class="grid" x1="200" y1="86" x2="200" y2="1024"/><line class="grid" x1="280" y1="86" x2="280" y2="1024"/><line class="grid" x1="360" y1="86" x2="360" y2="1024"/><line class="grid" x1="440" y1="86" x2="440" y2="1024"/><line class="grid" x1="520" y1="86" x2="520" y2="1024"/><line class="grid" x1="600" y1="86" x2="600" y2="1024"/><line class="grid" x1="680" y1="86" x2="680" y2="1024"/><line class="grid" x1="760" y1="86" x2="760" y2="1024"/><line class="grid" x1="840" y1="86" x2="840" y2="1024"/><line class="grid" x1="920" y1="86" x2="920" y2="1024"/><line class="grid" x1="1000" y1="86" x2="1000" y2="1024"/><line class="grid" x1="1080" y1="86" x2="1080" y2="1024"/><line class="grid" x1="1160" y1="86" x2="1160" y2="1024"/><line class="grid" x1="1240" y1="86" x2="1240" y2="1024"/><line class="grid" x1="1320" y1="86" x2="1320" y2="1024"/><line class="grid" x1="1400" y1="86" x2="1400" y2="1024"/><line class="grid" x1="1480" y1="86" x2="1480" y2="1024"/><line class="grid" x1="1560" y1="86" x2="1560" y2="1024"/><line class="grid" x1="1640" y1="86" x2="1640" y2="1024"/><line class="grid" x1="30" y1="120" x2="1630" y2="120"/><line class="grid" x1="30" y1="200" x2="1630" y2="200"/><line class="grid" x1="30" y1="280" x2="1630" y2="280"/><line class="grid" x1="30" y1="360" x2="1630" y2="360"/><line class="grid" x1="30" y1="440" x2="1630" y2="440"/><line class="grid" x1="30" y1="520" x2="1630" y2="520"/><line class="grid" x1="30" y1="600" x2="1630" y2="600"/><line class="grid" x1="30" y1="680" x2="1630" y2="680"/><line class="grid" x1="30" y1="760" x2="1630" y2="760"/><line class="grid" x1="30" y1="840" x2="1630" y2="840"/><line class="grid" x1="30" y1="920" x2="1630" y2="920"/><line class="grid" x1="30" y1="1000" x2="1630" y2="1000"/></g>
+  <text class="title" x="48" y="54">SceneVoxel Source Commit and Resident Field Flow</text>
+  <text class="subtitle" x="48" y="82">Dirty SceneVoxelTiles rebuild source intent; blend_scene_voxels publishes minimal payload and SV resident fields.</text>
+  <g>
+    <rect class="lane" x="45" y="115" width="355" height="800" rx="8"/>
+    <text class="lane-title" x="63" y="141">WRITE INTENT</text>
+    <rect class="lane" x="440" y="115" width="355" height="800" rx="8"/>
+    <text class="lane-title" x="458" y="141">SOURCE STREAMS</text>
+    <rect class="lane" x="835" y="115" width="355" height="800" rx="8"/>
+    <text class="lane-title" x="853" y="141">COMMIT / PUBLIC READ</text>
+    <rect class="lane" x="1230" y="115" width="385" height="800" rx="8"/>
+    <text class="lane-title" x="1248" y="141">SV RESIDENT OWNER</text>
+  </g>
+  <g>
+    <path class="edge-green" d="M 360 212 L 480 230"/>
+    <path class="edge-orange" d="M 360 588 L 480 230"/>
+    <path class="edge-orange" d="M 360 588 L 480 430"/>
+    <path class="edge" d="M 755 230 L 875 245"/>
+    <path class="edge" d="M 755 430 L 875 245"/>
+    <path class="edge-warn" d="M 755 632 L 875 245"/>
+    <path class="edge" d="M 1012 310 L 1012 405"/>
+    <path class="edge-blue" d="M 1012 535 L 1012 635"/>
+    <path class="edge-blue" d="M 1150 470 L 1270 235"/>
+    <path class="edge" d="M 1420 300 L 1420 390"/>
+    <path class="edge" d="M 1420 515 L 1420 610"/>
+    <path class="edge-dash" d="M 1270 675 L 85 398"/>
+    <text class="mono" x="610" y="820">next tick read input</text>
+    <path class="edge-blue" d="M 360 398 L 85 340"/>
+  </g>
+  <g>
+    <g id="descriptor-/-brush-edit">
+    <rect class="node" x="85" y="155" width="275" height="115" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>
+    <text class="node-title" x="103" y="183">Dirty producers</text>
+    <text class="small"><tspan x="103" y="205">AutoObject / brush / profile</tspan><tspan x="103" y="222">mark SceneVoxelTile dirty</tspan><tspan x="103" y="239">Target guidance is separate</tspan></text>
+    </g>
+    <g id="blendsv[t---1]-/-sv[t---1]">
+    <rect class="node" x="85" y="340" width="275" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="103" y="368">BlendSV[t - 1] / SV[t - 1]</text>
+    <text class="small"><tspan x="103" y="390">stable previous read input</tspan><tspan x="103" y="407">scene_field + collision_field</tspan><tspan x="103" y="424">used by physical sampling</tspan></text>
+    </g>
+    <g id="instance_stamp_write_spec">
+    <rect class="node" x="85" y="530" width="275" height="115" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
+    <text class="node-title" x="103" y="558">ISWS</text>
+    <text class="small"><tspan x="103" y="580">instance stamp write spec</tspan><tspan x="103" y="597">prepared source record</tspan><tspan x="103" y="614">SharedPropertyType normalized</tspan></text>
+    </g>
+    <g id="autoscenevoxel[tick]">
+    <rect class="node" x="480" y="170" width="275" height="120" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
+    <text class="node-title" x="498" y="198">AutoSceneVoxel[tick]</text>
+    <text class="small"><tspan x="498" y="220">auto placement write intent</tspan><tspan x="498" y="237">source metadata / priority</tspan><tspan x="498" y="254">collision samples</tspan></text>
+    </g>
+    <g id="brushscenevoxel[tick]">
+    <rect class="node" x="480" y="370" width="275" height="120" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
+    <text class="node-title" x="498" y="398">BrushSceneVoxel[tick]</text>
+    <text class="small"><tspan x="498" y="420">SVBrush/source stamp intent</tspan><tspan x="498" y="437">rebuilt from dirty tiles</tspan><tspan x="498" y="454">not direct committed write</tspan></text>
+    </g>
+    <g id="targetscenevoxel-skipped">
+    <rect class="node" x="480" y="580" width="275" height="105" rx="8" fill="#fee2e2" stroke="#dc2626"/>
+    <text class="node-title" x="498" y="608">TargetSceneVoxel skipped</text>
+    <text class="small"><tspan x="498" y="630">guidance metadata only</tspan><tspan x="498" y="647">does not enter source stream</tspan></text>
+    </g>
+    <g id="blend_scene_voxels(tick)">
+    <rect class="node" x="875" y="180" width="275" height="130" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="893" y="208">blend_scene_voxels(tick)</text>
+    <text class="small"><tspan x="893" y="230">merge auto + brush</tspan><tspan x="893" y="247">read GPU payloads</tspan><tspan x="893" y="264">publish committed read model</tspan></text>
+    </g>
+    <g id="scenevoxel-public-payload">
+    <rect class="node" x="875" y="405" width="275" height="130" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="893" y="433">SceneVoxel public payload</text>
+    <text class="small"><tspan x="893" y="455">complexity</tspan><tspan x="893" y="472">color</tspan><tspan x="893" y="489">collision</tspan><tspan x="893" y="506">optional auto_mix only</tspan></text>
+    </g>
+    <g id="result-feedback">
+    <rect class="node" x="875" y="635" width="275" height="105" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="893" y="663">Result feedback</text>
+    <text class="small"><tspan x="893" y="685">compare BlendSV[tick]</tspan><tspan x="893" y="702">against TargetSV_B / TargetSV</tspan><tspan x="893" y="719">post-commit helper</tspan></text>
+    </g>
+    <g id="scenevoxelcommitter">
+    <rect class="node" x="1270" y="170" width="300" height="130" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="1288" y="198">SceneVoxelCommitter</text>
+    <text class="small"><tspan x="1288" y="220">owns committed SceneVoxel</tspan><tspan x="1288" y="237">scene_field / collision_field</tspan><tspan x="1288" y="254">grid metadata</tspan></text>
+    </g>
+    <g id="terrain-base-collision">
+    <rect class="node" x="1270" y="390" width="300" height="125" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="1288" y="418">Terrain base collision</text>
+    <text class="small"><tspan x="1288" y="440">preserved below terrain height</tspan><tspan x="1288" y="457">normal erase cannot lower it</tspan><tspan x="1288" y="474">future carve source required</tspan></text>
+    </g>
+    <g id="dirty-regions-/-tiles">
+    <rect class="node" x="1270" y="610" width="300" height="130" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="1288" y="638">SceneVoxelTile dirty</text>
+    <text class="small"><tspan x="1288" y="660">only normal update entry</tspan><tspan x="1288" y="677">rebuild source/object ranges</tspan><tspan x="1288" y="694">full rebuild = dirty all tiles</tspan></text>
+    </g>
+  </g>
+  <g>
+    <g>
+    <rect x="85" y="795" width="700" height="80" rx="8" fill="url(#note-hatch)" stroke="#64748b" stroke-width="1.3"/>
+    <text class="note-text" x="99" y="819">Payload contract</text>
+    <text class="small"><tspan x="99" y="840">SceneVoxelTile dirty is the update boundary; source stamps are rebuilt write intent.</tspan><tspan x="99" y="857">No direct committed payload upload; channel stays source/write context.</tspan></text>
+  </g>
+  </g>
 </svg>

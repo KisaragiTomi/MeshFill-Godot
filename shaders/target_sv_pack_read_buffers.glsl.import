@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dfi8b285c5iw6"
+path="res://.godot/imported/target_sv_pack_read_buffers.glsl-720c539459afecfe3abca1b452f8f683.res"
+
+[deps]
+
+source_file="res://shaders/target_sv_pack_read_buffers.glsl"
+dest_files=["res://.godot/imported/target_sv_pack_read_buffers.glsl-720c539459afecfe3abca1b452f8f683.res"]
+
+[params]
+

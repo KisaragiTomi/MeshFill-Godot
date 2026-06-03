@@ -13,11 +13,12 @@ geo_dir = ROOT_DIR / "geo"
 os.makedirs(out_dir, exist_ok=True)
 
 TARGET_SIZE = 256
-MAX_HEIGHT = 50.0
+MAX_HEIGHT = 120.0
 EXR_DEPTH_BASE = 10000.0
-TERRAIN_HEIGHT_M = 16.0
-CAPTURE_SIZE = 30.0
+TERRAIN_HEIGHT_M = 120.0
+CAPTURE_SIZE = 120.0
 TILE_FILE = "000000000015.png"
+HEIGHTMAP_FILE = "scene_height_0_1.png"
 USE_EXR_SOURCES = False
 
 
@@ -92,10 +93,20 @@ if USE_EXR_SOURCES and all(p.is_file() for p in exr_inputs):
     save_rgba_raw(target_height, zeros, zeros, zeros,
                   out_dir / 'target_height.raw', TARGET_SIZE, TARGET_SIZE)
 else:
-    # Load single tile
-    raw = np.array(Image.open(land_dir / TILE_FILE))[:, :, 0].astype(np.float32)
+    # Load the normalized height map first. Fall back to the legacy landscape
+    # tile only when the committed height map has not been generated yet.
+    heightmap_path = out_dir / HEIGHTMAP_FILE
+    if heightmap_path.is_file():
+        height_source = heightmap_path
+        raw_img = Image.open(height_source).convert("L")
+    else:
+        height_source = land_dir / TILE_FILE
+        raw_img = Image.open(height_source).convert("L")
+    if raw_img.size != (TARGET_SIZE, TARGET_SIZE):
+        raw_img = raw_img.resize((TARGET_SIZE, TARGET_SIZE), Image.Resampling.BILINEAR)
+    raw = np.array(raw_img).astype(np.float32)
     height_m = raw / 255.0 * TERRAIN_HEIGHT_M
-    print(f'Tile {TILE_FILE}: {raw.shape}, height=[{height_m.min():.2f}, {height_m.max():.2f}]m')
+    print(f'Height source {height_source.name}: {raw.shape}, height=[{height_m.min():.2f}, {height_m.max():.2f}]m')
 
     # scene_depth: R = max_height - height
     save_rgba_raw(MAX_HEIGHT - height_m, zeros, zeros, zeros,

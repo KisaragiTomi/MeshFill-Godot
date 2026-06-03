@@ -1,256 +1,162 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
-  <title id="title">TargetSceneVoxel Current Pipeline and Candidate Routing</title>
-  <desc id="desc">Diagram of the current GPU TargetSceneVoxel generation path, optional offline VDB resampling path, persistence, debug preview, and candidate voxel-region routing into placement.</desc>
+  <title id="title">TargetSceneVoxel Current Guidance Flow</title>
+  <desc id="desc">TargetSceneVoxel projection and guidance boundary from target-scene-voxel-projection.md.</desc>
+
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#06101f"/>
-      <stop offset="0.55" stop-color="#0b1728"/>
-      <stop offset="1" stop-color="#111827"/>
-    </linearGradient>
-    <linearGradient id="gpu" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f766e"/>
-      <stop offset="1" stop-color="#1d4ed8"/>
-    </linearGradient>
-    <linearGradient id="vdb" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7c3aed"/>
-      <stop offset="1" stop-color="#2563eb"/>
-    </linearGradient>
-    <linearGradient id="target" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#22c55e"/>
-      <stop offset="0.52" stop-color="#94a3b8"/>
-      <stop offset="1" stop-color="#f59e0b"/>
-    </linearGradient>
-    <linearGradient id="route" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f766e"/>
-      <stop offset="1" stop-color="#65a30d"/>
-    </linearGradient>
-    <linearGradient id="preview" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#16a34a"/>
-      <stop offset="0.48" stop-color="#84cc16"/>
-      <stop offset="1" stop-color="#a3a3a3"/>
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.35"/>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#ea580c"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.12"/>
     </filter>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8dd3ff"/>
-    </marker>
-    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#86efac"/>
-    </marker>
-    <marker id="arrowPurple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c4b5fd"/>
-    </marker>
-    <style>
-      .title { font: 700 34px "Segoe UI", Arial, sans-serif; fill: #f8fafc; }
-      .subtitle { font: 500 16px "Segoe UI", Arial, sans-serif; fill: #a5b4fc; }
-      .section { font: 700 18px "Segoe UI", Arial, sans-serif; fill: #f8fafc; }
-      .label { font: 600 15px "Segoe UI", Arial, sans-serif; fill: #e5e7eb; }
-      .small { font: 500 13px "Segoe UI", Arial, sans-serif; fill: #cbd5e1; }
-      .tiny { font: 500 12px "Segoe UI", Arial, sans-serif; fill: #94a3b8; }
-      .mono { font: 600 12px Consolas, "Cascadia Mono", monospace; fill: #dbeafe; }
-      .card { fill: #0f172a; stroke: #334155; stroke-width: 1.4; rx: 18; filter: url(#shadow); }
-      .soft { fill: #111c31; stroke: #475569; stroke-width: 1.2; rx: 14; }
-      .gpu-card { fill: url(#gpu); stroke: #67e8f9; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .vdb-card { fill: url(#vdb); stroke: #ddd6fe; stroke-width: 1.5; rx: 22; filter: url(#shadow); }
-      .target-card { fill: #101827; stroke: #86efac; stroke-width: 1.5; rx: 20; filter: url(#shadow); }
-      .persist-card { fill: #111827; stroke: #fbbf24; stroke-width: 1.4; rx: 18; filter: url(#shadow); }
-      .route-card { fill: url(#route); stroke: #bbf7d0; stroke-width: 1.4; rx: 18; filter: url(#shadow); }
-      .debug-card { fill: #111827; stroke: #c084fc; stroke-width: 1.4; rx: 18; filter: url(#shadow); }
-      .arrow { fill: none; stroke: #8dd3ff; stroke-width: 3; marker-end: url(#arrow); }
-      .arrow-green { fill: none; stroke: #86efac; stroke-width: 3; marker-end: url(#arrowGreen); }
-      .arrow-purple { fill: none; stroke: #c4b5fd; stroke-width: 3; marker-end: url(#arrowPurple); }
-      .dash { fill: none; stroke: #64748b; stroke-width: 2; stroke-dasharray: 8 7; }
-      .dash-purple { fill: none; stroke: #a78bfa; stroke-width: 2.2; stroke-dasharray: 8 7; marker-end: url(#arrowPurple); }
-      .note { fill: #16213a; stroke: #334155; stroke-width: 1; rx: 12; }
-      .warn { fill: #2b2038; stroke: #a78bfa; stroke-width: 1; rx: 12; }
-
-      /* meshfill-graph-style: shared light engineering diagram theme */
-      :root { color-scheme: light; }
-      .bg, rect[fill="url(#bg)"] { fill: #f8fafc; }
-      svg > circle[opacity] { opacity: 0; }
-      .grid { stroke: #e2e8f0; stroke-width: 1; }
-      .title { font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #0f172a; letter-spacing: 0; }
-      .subtitle { font: 500 16px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #475569; letter-spacing: 0; }
-      .section, .section-title { font: 700 18px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #1e293b; letter-spacing: 0; }
-      .band-title, .lane-title { font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #334155; letter-spacing: 0; }
-      .label, .node-title, .pill-text { font: 700 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #0f172a; letter-spacing: 0; }
-      .text { font: 500 16px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #1f2937; letter-spacing: 0; }
-      .small { font: 500 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #475569; letter-spacing: 0; }
-      .tiny { font: 500 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #64748b; letter-spacing: 0; }
-      .mono, .mono-strong, .formula { font: 600 12px Consolas, "Cascadia Mono", monospace; fill: #334155; letter-spacing: 0; }
-      .lane, .band, .band2d, .band3d, .band-field, .band-post, .lane-type, .lane-resource, .lane-field, .lane-runtime, .lane-factory, .lane-owner, .lane-tool, .state-band, .target-band, .asset-band, .route-band, .place-band { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; }
-      .node, .card, .soft, .tick, .legend { stroke-width: 1.4; filter: url(#shadow); }
-      .box, .box-gray, .card, .soft, .support, .tool, .owner, .factory, .downstream, .legacy, .getter, .runtime, .tick, .legend { fill: #ffffff; stroke: #cbd5e1; }
-      .box-blue, .input, .entry, .field, .state, .sv, .target, .target-card, .gpu-card, .gpu { fill: #dbeafe; stroke: #2563eb; }
-      .box-green, .asset, .resource, .autoobject, .input-card, .source-card, .contract, .sv-card, .ok, .prefilter-card { fill: #dcfce7; stroke: #16a34a; }
-      .box-purple, .route, .route-card, .rerank-card, .gate-card, .descriptor, .record-card, .vdb-card, .debug-card { fill: #ede9fe; stroke: #7c3aed; }
-      .box-yellow, .placement, .placement-card, .commit-card, .persist-card, .aggregate-card { fill: #fef3c7; stroke: #d97706; }
-      .box-red, .hardgate, .prune-card { fill: #fee2e2; stroke: #ef4444; }
-      .record, .record-card { fill: #fef3c7; stroke: #d97706; }
-      .cache, .cache-card, .scene_voxel_runtime { fill: #ccfbf1; stroke: #0f766e; }
-      .note, .warn { fill: #e6edf5; stroke: #b6c4d4; }
-      .pill, .pill-blue, .pill-pink, .pill-amber { fill: #f8fafc; stroke: #cbd5e1; }
-      rect[fill="#0f172a"], rect[fill="#111827"], rect[fill="#172033"], rect[fill="#16213a"], rect[fill="#101827"], rect[fill="#111c31"], rect[fill="#082f49"], rect[fill="#052e2b"], rect[fill="#052e16"], rect[fill="#064e3b"], rect[fill="#062f26"], rect[fill="#2e1065"], rect[fill="#2b2038"], rect[fill="#2b1d35"], rect[fill="#0f1f2f"], rect[fill="#182135"], rect[fill="#1e2030"], rect[fill="#1b2330"], rect[fill="#3a2510"], rect[fill="#0e2a1d"], rect[fill="#10251e"] { fill: #ffffff; stroke: #cbd5e1; }
-      .edge, .arrow, .dash { fill: none; stroke: #334155; stroke-width: 2.2; }
-      .edge-soft, .arrow-soft { fill: none; stroke: #64748b; stroke-width: 2; }
-      .edge-blue, .arrow-blue { fill: none; stroke: #2563eb; stroke-width: 2.3; }
-      .edge-green, .arrow-green, .dash-green { fill: none; stroke: #059669; stroke-width: 2.3; }
-      .edge-orange, .edge-amber, .arrow-purple, .dash-purple { fill: none; stroke: #d97706; stroke-width: 2.3; }
-      .edge-purple { fill: none; stroke: #7c3aed; stroke-width: 2.3; }
-      .arrow-red, .dash-red, .dash-pink { fill: none; stroke: #dc2626; stroke-width: 2.2; }
-      .dash, .dash-green, .dash-red, .dash-pink, .dash-purple, .edge-soft, .arrow-soft { stroke-dasharray: 7 7; }
-      #arrow path { fill: #334155; }
-      #arrowGreen path, #arrow-green path { fill: #059669; }
-      #arrowBlue path, #arrow-blue path { fill: #2563eb; }
-      #arrowRed path, #arrow-red path { fill: #dc2626; }
-      #arrowPurple path, #arrow-purple path, #arrow-orange path, #arrow-amber path { fill: #d97706; }
-    </style>
+    <pattern id="autoobject-dot-bg" patternUnits="userSpaceOnUse" width="12" height="12">
+      <rect width="12" height="12" fill="#cffafe"/>
+      <circle cx="3" cy="3" r="1.25" fill="#0891b2" opacity="0.256281"/>
+      <circle cx="9" cy="9" r="1.25" fill="#0891b2" opacity="0.256281"/>
+    </pattern>
+    <pattern id="descriptor-grid" patternUnits="userSpaceOnUse" width="9.3334" height="9.3334">
+      <rect width="9.3334" height="9.3334" fill="#dcfce7"/>
+      <path d="M4.6667 0H0V4.6667" stroke="#16a34a" stroke-width="0.3333" opacity="0.257576"/>
+      <path d="M0 4.6667L4.6667 0" stroke="#16a34a" stroke-width="0.3333" opacity="0.257576"/>
+    </pattern>
+    <pattern id="sv-stripe-blue" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#dbeafe"/>
+      <rect y="1" width="10" height="2" fill="#0284c7" opacity="0.235023"/>
+      <rect y="6" width="10" height="1.5" fill="#0284c7" opacity="0.235023"/>
+    </pattern>
+    <pattern id="sv-stripe-amber" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#fef3c7"/>
+      <rect y="1" width="10" height="2" fill="#d97706" opacity="0.264249"/>
+      <rect y="6" width="10" height="1.5" fill="#d97706" opacity="0.264249"/>
+    </pattern>
+    <pattern id="note-hatch" patternUnits="userSpaceOnUse" width="10" height="10" patternTransform="rotate(45)">
+      <rect width="10" height="10" fill="#f1f5f9"/>
+      <rect x="0" y="0" width="10" height="2" fill="#64748b" opacity="0.361702"/>
+    </pattern>
   </defs>
+  <style>
+    :root { color-scheme: light; }
+    .bg { fill: #f8fafc; }
+    .grid { stroke: #e2e8f0; stroke-width: 1; opacity: 0.7; }
+    .title { fill: #0f172a; font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .subtitle { fill: #475569; font: 500 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .lane-title { fill: #334155; font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .node-title { fill: #0f172a; font: 700 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .small { fill: #475569; font: 500 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .mono { fill: #334155; font: 600 11px Consolas, "Cascadia Mono", monospace; letter-spacing: 0; }
+    .note-text { fill: #0f172a; font: 600 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .lane { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; filter: url(#shadow); }
+    .node { stroke-width: 1.5; filter: url(#shadow); }
+    .edge { stroke: #334155; stroke-width: 2.1; fill: none; marker-end: url(#arrow); }
+    .edge-blue { stroke: #2563eb; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+    .edge-green { stroke: #059669; stroke-width: 2.2; fill: none; marker-end: url(#arrow-green); }
+    .edge-orange { stroke: #ea580c; stroke-width: 2.2; fill: none; marker-end: url(#arrow-orange); }
+    .edge-dash { stroke: #64748b; stroke-width: 1.9; fill: none; stroke-dasharray: 7 7; marker-end: url(#arrow); }
+    .edge-warn { stroke: #dc2626; stroke-width: 2; fill: none; stroke-dasharray: 8 6; marker-end: url(#arrow); }
+  </style>
 
-  <rect width="1600" height="980" fill="url(#bg)"/>
-  <circle cx="1370" cy="86" r="210" fill="#1e40af" opacity="0.13"/>
-  <circle cx="220" cy="850" r="250" fill="#047857" opacity="0.12"/>
-  <circle cx="860" cy="150" r="150" fill="#7c3aed" opacity="0.09"/>
-
-  <text x="58" y="58" class="title">TargetSceneVoxel 当前实现 + 导入 / 路由设计</text>
-  <text x="58" y="88" class="subtitle">源 TargetSV 保留原始目标；TargetSV_B 是笔刷合成后的实际 prefilter / routing / scoring 输入。</text>
-
-  <rect x="48" y="126" width="268" height="466" class="card"/>
-  <text x="76" y="164" class="section">当前 GPU 输入</text>
-  <text x="76" y="190" class="tiny">来自 main.gd 场景状态</text>
-
-  <rect x="76" y="222" width="212" height="76" class="soft"/>
-  <text x="96" y="250" class="label">scene_depth</text>
-  <text x="96" y="273" class="small">地形 / 当前表面高度</text>
-  <text x="96" y="292" class="mono">sampler2D binding 0</text>
-
-  <rect x="76" y="326" width="212" height="76" class="soft"/>
-  <text x="96" y="354" class="label">target_height</text>
-  <text x="96" y="377" class="small">源目标高度 / brush 合成高度</text>
-  <text x="96" y="396" class="mono">sampler2D binding 1</text>
-
-  <rect x="76" y="430" width="212" height="76" class="soft"/>
-  <text x="96" y="458" class="label">rock_mask + brush</text>
-  <text x="96" y="481" class="small">岩石约束 / 笔刷覆盖</text>
-  <text x="96" y="500" class="mono">sampler2D binding 2</text>
-
-  <rect x="76" y="526" width="212" height="44" class="note"/>
-  <text x="96" y="554" class="small">当前：uniform slice_count = 8</text>
-
-  <path d="M 316 260 C 350 260 360 282 390 302" class="arrow"/>
-  <path d="M 316 364 C 354 364 360 374 390 374" class="arrow"/>
-  <path d="M 316 468 C 350 468 360 444 390 438" class="arrow"/>
-
-  <rect x="390" y="182" width="330" height="372" class="gpu-card"/>
-  <text x="426" y="222" class="section">当前 GPU Compute</text>
-  <text x="426" y="248" class="small">scripts/target_scene_voxel_generator.gd</text>
-  <text x="426" y="270" class="mono">shaders/target_scene_voxel.glsl</text>
-
-  <rect x="426" y="306" width="252" height="72" fill="#082f49" stroke="#7dd3fc" stroke-width="1.2" rx="14"/>
-  <text x="448" y="335" class="label">每个 voxel 计算目标意图</text>
-  <text x="448" y="360" class="small">height delta / slope / rock signal</text>
-
-  <rect x="426" y="408" width="252" height="92" fill="#052e2b" stroke="#99f6e4" stroke-width="1.2" rx="14"/>
-  <text x="448" y="437" class="label">只写中性 TargetSV 字段</text>
-  <text x="448" y="462" class="small">color.rgb + value / complexity</text>
-  <text x="448" y="484" class="small">collision 使用 peak / max</text>
-
-  <rect x="462" y="586" width="320" height="236" class="vdb-card"/>
-  <text x="498" y="626" class="section">外部 VDB 离线导入</text>
-  <text x="498" y="652" class="small">Houdini / DCC 高分辨率 VDB</text>
-  <text x="498" y="674" class="mono">planned offline converter TBD</text>
-
-  <rect x="498" y="708" width="248" height="78" fill="#2e1065" stroke="#ddd6fe" stroke-width="1.2" rx="14"/>
-  <text x="520" y="736" class="label">重采样到 TargetSV 网格</text>
-  <text x="520" y="760" class="small">box / supersampling 下采样</text>
-  <text x="520" y="780" class="small">collision = max / percentile</text>
-
-  <path d="M 720 370 C 764 370 780 370 814 370" class="arrow-green"/>
-  <path d="M 782 696 C 820 660 835 600 850 548" class="arrow-purple"/>
-
-  <rect x="814" y="138" width="344" height="478" class="target-card"/>
-  <text x="852" y="178" class="section">3D TargetSV Source</text>
-  <text x="852" y="206" class="small">visual.rgba32f + collision.r32f</text>
-  <text x="852" y="229" class="tiny">保留原始目标：颜色、复杂度、碰撞意图</text>
-
-  <g transform="translate(866 266)">
-    <polygon points="0,124 118,62 236,124 118,186" fill="url(#target)" opacity="0.86" stroke="#bbf7d0" stroke-width="1.4"/>
-    <polygon points="0,154 118,92 236,154 118,216" fill="url(#target)" opacity="0.64" stroke="#bbf7d0" stroke-width="1.2"/>
-    <polygon points="0,194 118,132 236,194 118,256" fill="url(#target)" opacity="0.42" stroke="#bbf7d0" stroke-width="1.1"/>
-    <polygon points="0,244 118,182 236,244 118,306" fill="url(#target)" opacity="0.26" stroke="#bbf7d0" stroke-width="1"/>
-    <line x1="0" y1="124" x2="0" y2="244" stroke="#86efac" stroke-width="1.2" opacity="0.8"/>
-    <line x1="118" y1="186" x2="118" y2="306" stroke="#86efac" stroke-width="1.2" opacity="0.8"/>
-    <line x1="236" y1="124" x2="236" y2="244" stroke="#86efac" stroke-width="1.2" opacity="0.8"/>
-    <circle cx="76" cy="172" r="9" fill="#22c55e"/>
-    <circle cx="130" cy="136" r="11" fill="#a3a3a3"/>
-    <circle cx="172" cy="206" r="8" fill="#f59e0b"/>
+  <rect class="bg" x="0" y="0" width="1600" height="980"/>
+  <g opacity="0.65"><line class="grid" x1="40" y1="86" x2="40" y2="944"/><line class="grid" x1="120" y1="86" x2="120" y2="944"/><line class="grid" x1="200" y1="86" x2="200" y2="944"/><line class="grid" x1="280" y1="86" x2="280" y2="944"/><line class="grid" x1="360" y1="86" x2="360" y2="944"/><line class="grid" x1="440" y1="86" x2="440" y2="944"/><line class="grid" x1="520" y1="86" x2="520" y2="944"/><line class="grid" x1="600" y1="86" x2="600" y2="944"/><line class="grid" x1="680" y1="86" x2="680" y2="944"/><line class="grid" x1="760" y1="86" x2="760" y2="944"/><line class="grid" x1="840" y1="86" x2="840" y2="944"/><line class="grid" x1="920" y1="86" x2="920" y2="944"/><line class="grid" x1="1000" y1="86" x2="1000" y2="944"/><line class="grid" x1="1080" y1="86" x2="1080" y2="944"/><line class="grid" x1="1160" y1="86" x2="1160" y2="944"/><line class="grid" x1="1240" y1="86" x2="1240" y2="944"/><line class="grid" x1="1320" y1="86" x2="1320" y2="944"/><line class="grid" x1="1400" y1="86" x2="1400" y2="944"/><line class="grid" x1="1480" y1="86" x2="1480" y2="944"/><line class="grid" x1="1560" y1="86" x2="1560" y2="944"/><line class="grid" x1="30" y1="120" x2="1570" y2="120"/><line class="grid" x1="30" y1="200" x2="1570" y2="200"/><line class="grid" x1="30" y1="280" x2="1570" y2="280"/><line class="grid" x1="30" y1="360" x2="1570" y2="360"/><line class="grid" x1="30" y1="440" x2="1570" y2="440"/><line class="grid" x1="30" y1="520" x2="1570" y2="520"/><line class="grid" x1="30" y1="600" x2="1570" y2="600"/><line class="grid" x1="30" y1="680" x2="1570" y2="680"/><line class="grid" x1="30" y1="760" x2="1570" y2="760"/><line class="grid" x1="30" y1="840" x2="1570" y2="840"/><line class="grid" x1="30" y1="920" x2="1570" y2="920"/></g>
+  <text class="title" x="48" y="54">TargetSceneVoxel Current Guidance Flow</text>
+  <text class="subtitle" x="48" y="82">TargetSV and BrushSV compose TargetSV_B, the guidance read buffer for prefilter, scoring, and feedback.</text>
+  <g>
+    <rect class="lane" x="45" y="115" width="345" height="720" rx="8"/>
+    <text class="lane-title" x="63" y="141">SOURCE TARGET CANVAS</text>
+    <rect class="lane" x="430" y="115" width="345" height="720" rx="8"/>
+    <text class="lane-title" x="448" y="141">COMPOSITION + PERSISTENCE</text>
+    <rect class="lane" x="815" y="115" width="345" height="720" rx="8"/>
+    <text class="lane-title" x="833" y="141">RUNTIME CONSUMERS</text>
+    <rect class="lane" x="1200" y="115" width="350" height="720" rx="8"/>
+    <text class="lane-title" x="1218" y="141">BOUNDARIES + PLANS</text>
   </g>
-
-  <rect x="850" y="518" width="272" height="64" fill="#052e16" stroke="#86efac" stroke-width="1.2" rx="14"/>
-  <text x="872" y="546" class="mono">vec4(color.rgb, value)</text>
-  <text x="872" y="568" class="mono">float collision_peak</text>
-
-  <rect x="850" y="86" width="272" height="34" class="warn"/>
-  <text x="874" y="108" class="tiny">规划：progressive y_edges；旧 metadata 回退 uniform Y</text>
-
-  <path d="M 986 616 C 986 652 986 672 986 704" class="arrow"/>
-  <path d="M 1108 604 C 1164 658 1192 678 1230 704" class="arrow"/>
-  <path d="M 1158 390 C 1202 390 1218 390 1252 390" class="arrow-green"/>
-
-  <rect x="822" y="704" width="328" height="166" class="persist-card"/>
-  <text x="856" y="742" class="section">持久化源 TargetSV</text>
-  <text x="856" y="772" class="mono">target_scene_voxel_visual.rgba32f</text>
-  <text x="856" y="796" class="mono">target_scene_voxel_collision.r32f</text>
-  <text x="856" y="820" class="mono">target_scene_voxel_preview.png</text>
-  <text x="856" y="844" class="mono">target_scene_voxel.json</text>
-  <text x="856" y="864" class="tiny">source target only; not sampled by default</text>
-
-  <rect x="1190" y="704" width="230" height="166" class="target-card"/>
-  <text x="1224" y="742" class="section">TargetSV_B 子视图</text>
-  <rect x="1226" y="772" width="82" height="48" fill="url(#preview)" stroke="#bbf7d0" stroke-width="1.2" rx="8"/>
-  <text x="1322" y="792" class="mono">*_b_preview.png</text>
-  <text x="1322" y="816" class="tiny">brush-composited</text>
-  <text x="1224" y="844" class="small">从属 TargetSV 字段契约</text>
-  <text x="1224" y="866" class="tiny">J 显示 / 隐藏 B；routing 默认读取</text>
-
-  <rect x="1252" y="196" width="292" height="348" class="route-card"/>
-  <text x="1286" y="236" class="section">上游候选筛选 / 路由</text>
-  <text x="1286" y="262" class="small">AutoObject probes + TargetSV_B</text>
-  <text x="1286" y="284" class="tiny">不从全资产库重新选最优 asset</text>
-
-  <rect x="1288" y="318" width="220" height="74" fill="#052e16" stroke="#bbf7d0" stroke-width="1.2" rx="14"/>
-  <text x="1310" y="346" class="label">GPU AnchorState</text>
-  <text x="1310" y="370" class="small">ground / target_top anchors</text>
-
-  <rect x="1288" y="420" width="220" height="80" fill="#064e3b" stroke="#bbf7d0" stroke-width="1.2" rx="14"/>
-  <text x="1310" y="448" class="label">candidate voxel regions</text>
-  <text x="1310" y="472" class="small">compat: candidate_sparses</text>
-  <text x="1310" y="492" class="small">只 dispatch 命中 voxel 区域</text>
-
-  <path d="M 1398 544 C 1398 562 1398 570 1398 584" class="arrow-green"/>
-
-  <rect x="1252" y="584" width="292" height="104" class="card"/>
-  <text x="1286" y="622" class="section">VoxelPlacementGenerator</text>
-  <text x="1286" y="652" class="mono">run_multi_asset()</text>
-  <text x="1286" y="676" class="small">score_voxel_tile.glsl 只做物理精筛</text>
-
-  <rect x="58" y="856" width="690" height="76" fill="#111827" stroke="#475569" stroke-width="1.2" rx="18"/>
-  <text x="90" y="888" class="section">Godot 调试输入</text>
-  <text x="90" y="916" class="small">J：读取已持久化 TargetSV_B preview 并显示 / 隐藏；Ctrl+J：全量 GPU 重新计算并保存源 TargetSV 与 TargetSV_B。</text>
-
-  <rect x="58" y="628" width="342" height="166" fill="#172033" stroke="#475569" stroke-width="1.1" rx="16"/>
-  <text x="88" y="664" class="section">TargetSV / TargetSV_B 约束</text>
-  <text x="88" y="696" class="small">不写 asset_id / asset_type</text>
-  <text x="88" y="720" class="small">不写 tree / rock / grass 标签</text>
-  <text x="88" y="744" class="small">color / complexity 可平均混合</text>
-  <text x="88" y="768" class="small">collision 使用 max 保留强 solid</text>
-
-  <path d="M 400 706 C 426 706 438 706 462 706" class="dash-purple"/>
-  <path d="M 748 894 C 792 858 804 832 822 814" class="arrow"/>
-  <path d="M 1150 790 C 1168 790 1176 790 1190 790" class="arrow"/>
-
-  <rect x="1168" y="58" width="372" height="78" fill="#172033" stroke="#475569" stroke-width="1.1" rx="16"/>
-  <text x="1198" y="90" class="label">当前 / 规划边界</text>
-  <text x="1198" y="114" class="tiny">GPU uniform slice 已实现；VDB 导入与非均匀 Y 是离线/下一步接入设计。</text>
+  <g>
+    <path class="edge" d="M 217 275 L 217 335"/>
+    <path class="edge-blue" d="M 350 397 L 470 225"/>
+    <path class="edge-blue" d="M 350 397 L 470 408"/>
+    <path class="edge-blue" d="M 602 465 L 602 535"/>
+    <path class="edge-blue" d="M 735 595 L 855 228"/>
+    <path class="edge-blue" d="M 735 595 L 855 408"/>
+    <path class="edge" d="M 988 285 L 988 350"/>
+    <path class="edge" d="M 988 465 L 988 530"/>
+    <path class="edge-warn" d="M 1120 590 L 1240 445"/>
+    <path class="edge-dash" d="M 350 590 L 1240 650"/>
+  </g>
+  <g>
+    <g id="target-generator">
+    <rect class="node" x="85" y="160" width="265" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="103" y="188">Target generator</text>
+    <text class="small"><tspan x="103" y="210">target_scene_voxel_generator.gd</tspan><tspan x="103" y="227">target_scene_voxel.glsl</tspan><tspan x="103" y="244">procedural transition path</tspan></text>
+    </g>
+    <g id="targetsv-source-buffers">
+    <rect class="node" x="85" y="335" width="265" height="125" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="103" y="363">TargetSV source buffers</text>
+    <text class="small"><tspan x="103" y="385">visual rgba32f</tspan><tspan x="103" y="402">collision r32f</tspan><tspan x="103" y="419">color + complexity + solid intent</tspan></text>
+    </g>
+    <g id="future-sources">
+    <rect class="node" x="85" y="535" width="265" height="110" rx="8" fill="#f5f3ff" stroke="#8b5cf6"/>
+    <text class="node-title" x="103" y="563">Future sources</text>
+    <text class="small"><tspan x="103" y="585">stamp rasterizer plan</tspan><tspan x="103" y="602">external VDB import plan</tspan><tspan x="103" y="619">projection cache plan</tspan></text>
+    </g>
+    <g id="persisted-target-files">
+    <rect class="node" x="470" y="165" width="265" height="120" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
+    <text class="node-title" x="488" y="193">Persisted target files</text>
+    <text class="small"><tspan x="488" y="215">target_scene_voxel_visual</tspan><tspan x="488" y="232">target_scene_voxel_collision</tspan><tspan x="488" y="249">metadata JSON + preview PNG</tspan></text>
+    </g>
+    <g id="brushsv">
+    <rect class="node" x="470" y="350" width="265" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="488" y="378">BrushSV</text>
+    <text class="small"><tspan x="488" y="400">brush delta / override</tspan><tspan x="488" y="417">recomposed with TargetSV</tspan><tspan x="488" y="434">not committed SceneVoxel</tspan></text>
+    </g>
+    <g id="targetsv_b">
+    <rect class="node" x="470" y="535" width="265" height="120" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="488" y="563">TargetSV_B</text>
+    <text class="small"><tspan x="488" y="585">brush-composited read target</tspan><tspan x="488" y="602">target_scene_voxel_b_* files</tspan><tspan x="488" y="619">default runtime guidance</tspan></text>
+    </g>
+    <g id="target_occupancy">
+    <rect class="node" x="855" y="170" width="265" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="873" y="198">target_occupancy</text>
+    <text class="small"><tspan x="873" y="220">complexity / collision intent</tspan><tspan x="873" y="237">mapped from TargetSV_B</tspan><tspan x="873" y="254">input to scoring</tspan></text>
+    </g>
+    <g id="target_color">
+    <rect class="node" x="855" y="350" width="265" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
+    <text class="node-title" x="873" y="378">target_color</text>
+    <text class="small"><tspan x="873" y="400">packed RGBA8</tspan><tspan x="873" y="417">rgb = color</tspan><tspan x="873" y="434">a = complexity</tspan></text>
+    </g>
+    <g id="consumers">
+    <rect class="node" x="855" y="530" width="265" height="135" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+    <text class="node-title" x="873" y="558">Consumers</text>
+    <text class="small"><tspan x="873" y="580">AutoObject probe prefilter</tspan><tspan x="873" y="597">candidate routing</tspan><tspan x="873" y="614">score_voxel_tile.glsl</tspan><tspan x="873" y="631">result feedback comparison</tspan></text>
+    </g>
+    <g id="not-asset-selection">
+    <rect class="node" x="1240" y="175" width="270" height="125" rx="8" fill="#fee2e2" stroke="#dc2626"/>
+    <text class="node-title" x="1258" y="203">Not asset selection</text>
+    <text class="small"><tspan x="1258" y="225">no asset_type / asset_group</tspan><tspan x="1258" y="242">no placement_role</tspan><tspan x="1258" y="259">no committed source metadata</tspan></text>
+    </g>
+    <g id="not-source-write">
+    <rect class="node" x="1240" y="385" width="270" height="125" rx="8" fill="#fee2e2" stroke="#dc2626"/>
+    <text class="node-title" x="1258" y="413">Not source write</text>
+    <text class="small"><tspan x="1258" y="435">TargetSceneVoxel guidance record</tspan><tspan x="1258" y="452">skips AutoSceneVoxel/BrushSceneVoxel</tspan><tspan x="1258" y="469">does not enter blend_scene_voxels()</tspan></text>
+    </g>
+    <g id="plans-stay-optional">
+    <rect class="node" x="1240" y="595" width="270" height="110" rx="8" fill="#f5f3ff" stroke="#8b5cf6"/>
+    <text class="node-title" x="1258" y="623">Plans stay optional</text>
+    <text class="small"><tspan x="1258" y="645">stamp draws target intent</tspan><tspan x="1258" y="662">projection reranks within candidates</tspan><tspan x="1258" y="679">VDB import is offline plan</tspan></text>
+    </g>
+  </g>
+  <g>
+    <g>
+    <rect x="470" y="760" width="650" height="70" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7" stroke-width="1.3"/>
+    <text class="note-text" x="484" y="784">Sampling boundary</text>
+    <text class="small"><tspan x="484" y="805">TargetSV_B samples clamp inside valid target bounds.</tspan><tspan x="484" y="821">It guides placement and feedback but never becomes committed SceneVoxel state.</tspan></text>
+  </g>
+  </g>
 </svg>

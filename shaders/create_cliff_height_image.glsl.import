@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://rfn8ple0fofx"
+path="res://.godot/imported/create_cliff_height_image.glsl-d5590b5c11721862cf905bc3bc25a218.res"
+
+[deps]
+
+source_file="res://shaders/create_cliff_height_image.glsl"
+dest_files=["res://.godot/imported/create_cliff_height_image.glsl-d5590b5c11721862cf905bc3bc25a218.res"]
+
+[params]
+

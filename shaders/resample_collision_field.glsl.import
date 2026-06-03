@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cdavqf7x5q0uu"
+path="res://.godot/imported/resample_collision_field.glsl-3098dc27d47da39cc1767ad5fe986357.res"
+
+[deps]
+
+source_file="res://shaders/resample_collision_field.glsl"
+dest_files=["res://.godot/imported/resample_collision_field.glsl-3098dc27d47da39cc1767ad5fe986357.res"]
+
+[params]
+

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dqcpitsh2li7k"
+path="res://.godot/imported/init_heightfield_fitting.glsl-616c48b4f5cd411f3ee126e4c0d4c2a4.res"
+
+[deps]
+
+source_file="res://shaders/init_heightfield_fitting.glsl"
+dest_files=["res://.godot/imported/init_heightfield_fitting.glsl-616c48b4f5cd411f3ee126e4c0d4c2a4.res"]
+
+[params]
+

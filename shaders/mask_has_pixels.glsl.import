@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bencil42a06ya"
+path="res://.godot/imported/mask_has_pixels.glsl-5e40abc92e6ae888e39085ef15850c0f.res"
+
+[deps]
+
+source_file="res://shaders/mask_has_pixels.glsl"
+dest_files=["res://.godot/imported/mask_has_pixels.glsl-5e40abc92e6ae888e39085ef15850c0f.res"]
+
+[params]
+

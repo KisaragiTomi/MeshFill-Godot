@@ -15,21 +15,43 @@ layout(set = 1, binding = 1, std430) restrict buffer TargetCollision {
     float target_collision[];
 };
 
+layout(set = 1, binding = 2, std430) restrict buffer TargetOccupancy {
+    float target_occupancy[];
+};
+
+layout(set = 1, binding = 3, std430) restrict buffer TargetColorRgba8 {
+    uint target_color_rgba8[];
+};
+
+layout(set = 1, binding = 4, std430) restrict buffer TargetStats {
+    uint target_stats[];
+};
+
+const uint TARGET_STATS_MAX_OCCUPANCY = 0u;
+const uint TARGET_STATS_MAX_COLLISION = 1u;
+const uint TARGET_STATS_ACTIVE_COUNT = 2u;
+const uint TARGET_STATS_COLLISION_COUNT = 3u;
+const uint TARGET_STATS_VISUAL_COUNT = 4u;
+const uint TARGET_STATS_MIN_ACTIVE_PACKED = 5u;
+const uint TARGET_STATS_MAX_VISUAL = 6u;
+const uint TARGET_STATS_MIN_PACK_BASE = 1000001u;
+const float TARGET_STATS_ACTIVE_THRESHOLD = 0.001;
+
 layout(rgba16f, set = 2, binding = 0) uniform image2D rw_preview;
 
 layout(push_constant, std430) uniform Params {
-    float max_height;
-    float capture_size;
-    float vertical_span;
-    float slope_start;
-    float slope_full;
-    int texture_size;
-    int slice_count;
-    int dirty_x;
-    int dirty_y;
-    int dirty_w;
-    int dirty_h;
-    int _pad0;
+    float max_height;     // byte 0
+    float capture_size;   // byte 4
+    float vertical_span;  // byte 8
+    float slope_start;    // byte 12
+    float slope_full;     // byte 16
+    int texture_size;     // byte 20
+    int slice_count;      // byte 24
+    int dirty_x;          // byte 28
+    int dirty_y;          // byte 32
+    int dirty_w;          // byte 36
+    int dirty_h;          // byte 40
+    int _pad0;            // byte 44
 };
 
 struct TargetVoxel {
@@ -117,6 +139,15 @@ vec4 evaluate_preview(ivec2 p) {
     return vec4(color, max(peak_value, peak_collision));
 }
 
+uint pack_rgba8(vec4 color) {
+    uvec4 bytes = uvec4(clamp(round(color * 255.0), vec4(0.0), vec4(255.0)));
+    return (bytes.r << 24u) | (bytes.g << 16u) | (bytes.b << 8u) | bytes.a;
+}
+
+uint quantize_unit(float value) {
+    return uint(clamp(round(value * 1000000.0), 0.0, 1000000.0));
+}
+
 void main() {
     ivec3 id = ivec3(gl_GlobalInvocationID.xyz);
     if (id.x >= dirty_w || id.z >= dirty_h || id.y >= slice_count) {
@@ -133,6 +164,21 @@ void main() {
     int idx = voxel_index(p, id.y);
     target_visual[idx] = vec4(voxel.color, voxel.value);
     target_collision[idx] = voxel.collision;
+    target_occupancy[idx] = max(voxel.value, voxel.collision);
+    target_color_rgba8[idx] = pack_rgba8(vec4(voxel.color, voxel.value));
+    atomicMax(target_stats[TARGET_STATS_MAX_OCCUPANCY], quantize_unit(target_occupancy[idx]));
+    atomicMax(target_stats[TARGET_STATS_MAX_COLLISION], quantize_unit(voxel.collision));
+    if (target_occupancy[idx] > TARGET_STATS_ACTIVE_THRESHOLD) {
+        atomicAdd(target_stats[TARGET_STATS_ACTIVE_COUNT], 1u);
+        atomicMax(target_stats[TARGET_STATS_MIN_ACTIVE_PACKED], TARGET_STATS_MIN_PACK_BASE - quantize_unit(target_occupancy[idx]));
+    }
+    if (voxel.collision > TARGET_STATS_ACTIVE_THRESHOLD) {
+        atomicAdd(target_stats[TARGET_STATS_COLLISION_COUNT], 1u);
+    }
+    if (voxel.value > TARGET_STATS_ACTIVE_THRESHOLD) {
+        atomicAdd(target_stats[TARGET_STATS_VISUAL_COUNT], 1u);
+    }
+    atomicMax(target_stats[TARGET_STATS_MAX_VISUAL], quantize_unit(voxel.value));
 
     if (id.y == 0) {
         imageStore(rw_preview, p, evaluate_preview(p));

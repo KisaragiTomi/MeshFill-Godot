@@ -1,0 +1,39 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
+
+[node name="CoreSceneVoxelFieldSystemDemo" type="Node3D"]
+script = ExtResource("1_contract")
+metadata/source_doc = "res://docs/core/scene-voxel-field-system.md"
+metadata/test_doc = "res://demos/core-scene-voxel-field-system/core-scene-voxel-field-system.md"
+metadata/focus = "SceneVoxel source write, commit payload, collision, and SV resident fields"
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 9)
+current = true
+fov = 45.0
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.707, -0.354, 0.612, 0, 0.866, 0.5, -0.707, -0.354, 0.612, 0, 4, 4)
+light_energy = 1.2
+
+[node name="Title" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.6, 0)
+text = "core/scene-voxel-field-system.md\nSceneVoxel Field Fixture"
+font_size = 38
+pixel_size = 0.01
+outline_size = 6
+
+[node name="TestMethod" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+text = "Method\n- run SceneVoxel commit tests\n- run placement record and feedback tests"
+font_size = 28
+pixel_size = 0.01
+outline_size = 4
+
+[node name="Acceptance" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.8, 0)
+text = "Acceptance\n- committed payload is minimal\n- SV resident fields are rebuilt from committed state"
+font_size = 28
+pixel_size = 0.01
+outline_size = 4

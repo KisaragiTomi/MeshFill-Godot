@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://br0mpritmjgdx"
+path="res://.godot/imported/reduce_scene_voxel_tile_summaries.glsl-42dff4f7e1b64e5086eb4ae85e76ca07.res"
+
+[deps]
+
+source_file="res://shaders/reduce_scene_voxel_tile_summaries.glsl"
+dest_files=["res://.godot/imported/reduce_scene_voxel_tile_summaries.glsl-42dff4f7e1b64e5086eb4ae85e76ca07.res"]
+
+[params]
+

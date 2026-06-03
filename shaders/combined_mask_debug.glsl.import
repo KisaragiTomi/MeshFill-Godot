@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bn50wlowg4fkq"
+path="res://.godot/imported/combined_mask_debug.glsl-9eff4f9fbb53c5da6db0b6f8756edd57.res"
+
+[deps]
+
+source_file="res://shaders/combined_mask_debug.glsl"
+dest_files=["res://.godot/imported/combined_mask_debug.glsl-9eff4f9fbb53c5da6db0b6f8756edd57.res"]
+
+[params]
+

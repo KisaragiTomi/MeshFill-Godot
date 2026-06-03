@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dhthsgsvhq5ji"
+path="res://.godot/imported/height_channel_minmax.glsl-afcb1674281467b4fe9848c0e245f1de.res"
+
+[deps]
+
+source_file="res://shaders/height_channel_minmax.glsl"
+dest_files=["res://.godot/imported/height_channel_minmax.glsl-afcb1674281467b4fe9848c0e245f1de.res"]
+
+[params]
+

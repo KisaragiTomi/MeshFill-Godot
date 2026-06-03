@@ -16,8 +16,12 @@ const STAMP_BOUNDS_STRIDE := 2
 const FLAG_SUPPORT := 1
 const FLAG_CLEARANCE := 2
 const NUM_DEBUG_CHANNELS := 8
-const SCORE_CONTRACT_DEBUG_WORDS := 32
+const SCORE_CONTRACT_DEBUG_WORDS := 40
 const SCORE_CONTRACT_MAGIC := 0x4D465052 # MFPR: MeshFill placement runtime/profile.
+const CANDIDATE_ROUTE_BINDING_DEBUG_WORDS := 16
+const CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS := 4
+const CANDIDATE_ROUTE_INDIRECT_ARGS_BYTES := 12
+const CANDIDATE_ROUTE_SPARSE_ADAPTER_LOCAL_SIZE := 64
 const BOX_FOOTPRINT_BAKE_SHADER_PATH := "res://shaders/bake_box_footprint.glsl"
 const BOX_FOOTPRINT_BAKE_LOCAL_SIZE := 64
 const CYLINDER_FOOTPRINT_BAKE_SHADER_PATH := "res://shaders/bake_cylinder_footprint.glsl"
@@ -38,6 +42,9 @@ const CANDIDATE_REGION_BY_ASSET_CONFIG_KEYS := [
 	"candidate_voxel_regions_by_asset",
 	"candidate_voxel_sparses_by_asset",
 ]
+const CANDIDATE_ROUTE_CONTRACT_SCHEMA_VERSION := 1
+const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := 16
+const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := 16
 const ASSET_CANDIDATE_REGION_CONFIG_KEYS := [
 	"candidate_voxel_regions",
 	"candidate_voxel_sparses",
@@ -101,10 +108,19 @@ const SCORE_CONTRACT_DEBUG_NAMES: PackedStringArray = [
 	"debug_max_support_ratio_q1000",
 	"debug_max_solid_collision_q1000",
 	"debug_max_clearance_overlap_q1000",
-	"reserved31",
+	"runtime_spacing_tests",
+	"runtime_spacing_profile_matches",
+	"runtime_spacing_rejections",
+	"runtime_spacing_min_distance_q1000",
+	"reserved35",
+	"reserved36",
+	"reserved37",
+	"reserved38",
+	"reserved39",
 ]
 const SCENE_VOXEL_COMMITTER_CONFIG_KEY := "scene_voxel_committer"
 const PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY := "vegetation" + "_exclusion"
+const STAGE_SCENE_VOXEL_SOURCE_CANDIDATES_CONFIG_KEY := "stage_scene_voxel_source_candidates_to_resident_buffers"
 const VOXEL_WRITE_SPEC_CONFIG_KEYS := [
 	"asset",
 	"base_pixel",
@@ -151,6 +167,11 @@ const SCENE_VOXEL_SOURCE_WRITE_DIAGNOSTIC_KEYS := [
 	"resident_source_range_buffer_capacity",
 	"resident_source_range_buffer_count",
 	"resident_source_candidate_staging_epoch",
+	"runtime_read_source",
+	"final_source_stream_resident",
+	"final_source_stream_resident_source",
+	"resident_gpu_allocator_writeback",
+	"resident_gpu_allocator_writeback_mode",
 ]
 
 var top_k: int = 4
@@ -175,10 +196,14 @@ var _shader_score: RID
 var _shader_reduce: RID
 var _shader_init_stamp_bounds: RID
 var _shader_stamp: RID
+var _shader_candidate_route_sparse_adapter: RID
+var _shader_candidate_route_sparse_adapter_finalize: RID
 var _pipeline_score: RID
 var _pipeline_reduce: RID
 var _pipeline_init_stamp_bounds: RID
 var _pipeline_stamp: RID
+var _pipeline_candidate_route_sparse_adapter: RID
+var _pipeline_candidate_route_sparse_adapter_finalize: RID
 
 
 static func _get_config_voxel_write_spec(config: Dictionary) -> Dictionary:
@@ -217,12 +242,16 @@ static func _candidate_regions_by_asset_from_settings(settings: Dictionary) -> D
 static func _candidate_route_readback_source_from_settings(settings: Dictionary) -> String:
 	if _has_candidate_regions_by_asset(settings):
 		return "gpu_vote_buffer_readback"
+	if bool(_candidate_route_input_contract_from_settings(settings).get("resident_route_input_ready", false)):
+		return "resident_route_snapshot"
 	return "none"
 
 
 static func _candidate_route_runtime_read_source_from_settings(settings: Dictionary) -> String:
 	if _has_candidate_regions_by_asset(settings):
 		return "cpu_debug_bridge"
+	if bool(_candidate_route_input_contract_from_settings(settings).get("resident_route_input_ready", false)):
+		return "resident"
 	return "none"
 
 
@@ -231,20 +260,141 @@ static func _candidate_route_input_contract_from_settings(settings: Dictionary) 
 	var requested_readback := str(settings.get("candidate_route_readback_source", "none"))
 	var requested_runtime := str(settings.get("candidate_route_runtime_read_source", "none"))
 	var requested_resident_label := requested_readback != "none" or requested_runtime != "none"
+	var raw_contract = settings.get("candidate_route_input_contract", {})
+	var resident_contract := (raw_contract as Dictionary).duplicate(true) if raw_contract is Dictionary else {}
+	if settings.get("resident_candidate_route_contract", null) is Dictionary:
+		resident_contract = (settings.get("resident_candidate_route_contract") as Dictionary).duplicate(true)
+
+	var record_rid: RID = _rid_from_contract(resident_contract, "resident_route_record_rid", "resident_route_record_buffer_rid")
+	var range_rid: RID = _rid_from_contract(resident_contract, "resident_route_range_rid", "resident_route_range_buffer_rid")
+	var record_stride := int(resident_contract.get("resident_route_record_stride", resident_contract.get("resident_route_record_stride_bytes", 0)))
+	var range_stride := int(resident_contract.get("resident_route_range_stride", resident_contract.get("resident_route_range_stride_bytes", 0)))
+	var range_count := int(resident_contract.get("resident_route_range_count", 0))
+	var record_capacity := int(resident_contract.get("resident_route_record_capacity", resident_contract.get("resident_route_record_count", 0)))
+	var schema_version := int(resident_contract.get("schema_version", resident_contract.get("resident_route_schema_version", 0)))
+	var vpg_binds_route_buffers := bool(resident_contract.get("vpg_binds_route_buffers", false))
+	var cpu_expanded := bool(resident_contract.get("cpu_expanded_route_input", false))
+	var direct_all_tiles := bool(resident_contract.get("direct_all_tiles", false))
+	var route_sparse_adapter := bool(resident_contract.get("resident_route_sparse_adapter", false))
+	var rd_matches_vpg := bool(resident_contract.get("same_rendering_device_as_vpg", false))
+	if resident_contract.get("rendering_device_matches_vpg", null) is bool:
+		rd_matches_vpg = bool(resident_contract.get("rendering_device_matches_vpg"))
+	var debug_api := str(resident_contract.get("debug_snapshot_api", "none"))
+	var debug_status := str(resident_contract.get("debug_snapshot_status", "none" if debug_api == "none" else "available"))
+
+	var record_rid_valid := record_rid.is_valid()
+	var range_rid_valid := range_rid.is_valid()
+	var rejection_reason := "none"
+	if has_cpu_route:
+		rejection_reason = "cpu_debug_bridge_route_dictionary"
+	elif requested_resident_label and resident_contract.is_empty():
+		rejection_reason = "metadata_only_route_labels"
+	elif requested_resident_label and not record_rid_valid:
+		rejection_reason = "missing_or_invalid_route_record_rid"
+	elif requested_resident_label and not range_rid_valid:
+		rejection_reason = "missing_or_invalid_route_range_rid"
+	elif requested_resident_label and not rd_matches_vpg:
+		rejection_reason = "rendering_device_mismatch_or_unverified"
+	elif requested_resident_label and record_stride != CANDIDATE_ROUTE_RECORD_STRIDE_BYTES:
+		rejection_reason = "route_record_stride_mismatch"
+	elif requested_resident_label and range_stride != CANDIDATE_ROUTE_RANGE_STRIDE_BYTES:
+		rejection_reason = "route_range_stride_mismatch"
+	elif requested_resident_label and range_count <= 0:
+		rejection_reason = "route_range_count_not_positive"
+	elif requested_resident_label and schema_version != CANDIDATE_ROUTE_CONTRACT_SCHEMA_VERSION:
+		rejection_reason = "route_schema_version_mismatch"
+	elif requested_resident_label and not vpg_binds_route_buffers:
+		rejection_reason = "vpg_route_buffer_binding_not_implemented"
+	elif requested_resident_label and record_capacity <= 0:
+		rejection_reason = "resident_route_record_capacity_missing"
+	elif requested_resident_label and (cpu_expanded or direct_all_tiles or not route_sparse_adapter):
+		rejection_reason = "route_dispatch_not_resident_sparse"
+
+	var resident_ready := not has_cpu_route \
+		and requested_resident_label \
+		and record_rid_valid \
+		and range_rid_valid \
+		and rd_matches_vpg \
+		and record_stride == CANDIDATE_ROUTE_RECORD_STRIDE_BYTES \
+		and range_stride == CANDIDATE_ROUTE_RANGE_STRIDE_BYTES \
+		and range_count > 0 \
+		and schema_version == CANDIDATE_ROUTE_CONTRACT_SCHEMA_VERSION \
+		and vpg_binds_route_buffers \
+		and record_capacity > 0 \
+		and not cpu_expanded \
+		and not direct_all_tiles \
+		and route_sparse_adapter
+	var normalized_readback := "gpu_vote_buffer_readback" if has_cpu_route else ("resident_route_snapshot" if resident_ready else "none")
+	var normalized_runtime := "cpu_debug_bridge" if has_cpu_route else ("resident" if resident_ready else "none")
+	var route_input := "common_cpu_dictionary" if has_cpu_route else ("resident_contract" if requested_resident_label and not resident_contract.is_empty() else "none")
 	return {
-		"route_input": "common_cpu_dictionary" if has_cpu_route else "none",
-		"resident_route_input_ready": false,
-		"resident_route_owner": "none",
-		"resident_route_buffer_lifetime": "none",
-		"resident_route_record_stride": 0,
-		"resident_route_range_count": 0,
-		"debug_snapshot_api": "none",
+		"route_input": route_input,
+		"resident_route_input_ready": resident_ready,
+		"resident_route_owner": str(resident_contract.get("owner", resident_contract.get("resident_route_owner", "none"))),
+		"resident_route_buffer_rid": "valid" if record_rid_valid else "none",
+		"resident_route_record_rid": "valid" if record_rid_valid else "none",
+		"resident_route_range_rid": "valid" if range_rid_valid else "none",
+		"resident_route_record_rid_valid": record_rid_valid,
+		"resident_route_range_rid_valid": range_rid_valid,
+		"resident_route_buffer_lifetime": str(resident_contract.get("resident_route_buffer_lifetime", "none")),
+		"resident_route_record_stride": record_stride if record_rid_valid or requested_resident_label else 0,
+		"resident_route_record_capacity": record_capacity if record_rid_valid or requested_resident_label else 0,
+		"resident_route_range_stride": range_stride if range_rid_valid or requested_resident_label else 0,
+		"resident_route_range_count": range_count if range_rid_valid or requested_resident_label else 0,
+		"resident_route_schema_version": schema_version if requested_resident_label else 0,
+		"same_rendering_device_as_vpg": rd_matches_vpg,
+		"vpg_binds_route_buffers": vpg_binds_route_buffers,
+		"cpu_expanded_route_input": cpu_expanded,
+		"direct_all_tiles": direct_all_tiles,
+		"asset_count": int(resident_contract.get("asset_count", 0)),
+		"profile_count": int(resident_contract.get("profile_count", 0)),
+		"debug_snapshot_api": debug_api,
+		"debug_snapshot_status": debug_status,
+		"vpg_route_buffer_binding_source": str(resident_contract.get("vpg_route_buffer_binding_source", "none")),
+		"vpg_route_buffer_binding_debug_source": str(resident_contract.get("vpg_route_buffer_binding_debug_source", "none")),
+		"vpg_route_buffer_binding_block_reason": str(resident_contract.get("vpg_route_buffer_binding_block_reason", "none")),
+		"vpg_route_buffer_binding_debug_enabled": bool(resident_contract.get("vpg_route_buffer_binding_debug_enabled", false)),
+		"vpg_route_buffer_binding_range_reads": int(resident_contract.get("vpg_route_buffer_binding_range_reads", 0)),
+		"vpg_route_buffer_binding_record_reads": int(resident_contract.get("vpg_route_buffer_binding_record_reads", 0)),
+		"resident_route_sparse_adapter": route_sparse_adapter,
+		"resident_route_sparse_adapter_source": str(resident_contract.get("resident_route_sparse_adapter_source", "none")),
+		"resident_route_sparse_adapter_mode": str(resident_contract.get("resident_route_sparse_adapter_mode", "none")),
+		"resident_route_sparse_adapter_record_reads": int(resident_contract.get("resident_route_sparse_adapter_record_reads", 0)),
+		"resident_route_sparse_adapter_candidate_count": int(resident_contract.get("resident_route_sparse_adapter_candidate_count", 0)),
+		"resident_route_sparse_adapter_candidate_count_source": str(resident_contract.get("resident_route_sparse_adapter_candidate_count_source", "none")),
+		"resident_route_sparse_adapter_candidate_count_semantics": str(resident_contract.get("resident_route_sparse_adapter_candidate_count_semantics", "none")),
+		"resident_route_sparse_adapter_candidate_count_cpu_readback_required": bool(resident_contract.get("resident_route_sparse_adapter_candidate_count_cpu_readback_required", false)),
+		"resident_route_sparse_adapter_output_capacity": int(resident_contract.get("resident_route_sparse_adapter_output_capacity", 0)),
+		"resident_route_sparse_adapter_count_record_reads": int(resident_contract.get("resident_route_sparse_adapter_count_record_reads", 0)),
+		"resident_route_sparse_adapter_count_truncation_or_overflow": int(resident_contract.get("resident_route_sparse_adapter_count_truncation_or_overflow", 0)),
+		"resident_route_sparse_adapter_indirect_args_ready": bool(resident_contract.get("resident_route_sparse_adapter_indirect_args_ready", false)),
+		"resident_route_sparse_adapter_indirect_args_layout": str(resident_contract.get("resident_route_sparse_adapter_indirect_args_layout", "none")),
+		"resident_route_sparse_adapter_indirect_args_words": resident_contract.get("resident_route_sparse_adapter_indirect_args_words", PackedInt32Array()),
+		"resident_route_sparse_adapter_indirect_args_source": str(resident_contract.get("resident_route_sparse_adapter_indirect_args_source", "none")),
+		"resident_route_sparse_adapter_debug_snapshot_enabled": bool(resident_contract.get("resident_route_sparse_adapter_debug_snapshot_enabled", false)),
+		"resident_route_sparse_adapter_debug_snapshot_status": str(resident_contract.get("resident_route_sparse_adapter_debug_snapshot_status", "disabled")),
+		"resident_route_sparse_adapter_debug_count_snapshot": int(resident_contract.get("resident_route_sparse_adapter_debug_count_snapshot", -1)),
+		"resident_route_sparse_adapter_debug_count_snapshot_source": str(resident_contract.get("resident_route_sparse_adapter_debug_count_snapshot_source", "disabled")),
+		"resident_route_sparse_adapter_debug_sparse_ids_snapshot": resident_contract.get("resident_route_sparse_adapter_debug_sparse_ids_snapshot", PackedInt32Array()),
+		"resident_route_sparse_adapter_debug_sparse_ids_snapshot_source": str(resident_contract.get("resident_route_sparse_adapter_debug_sparse_ids_snapshot_source", "disabled")),
+		"resident_route_sparse_adapter_debug_indirect_args_snapshot_source": str(resident_contract.get("resident_route_sparse_adapter_debug_indirect_args_snapshot_source", "disabled")),
+		"resident_route_sparse_adapter_score_dispatch_indirect": bool(resident_contract.get("resident_route_sparse_adapter_score_dispatch_indirect", false)),
+		"resident_route_sparse_adapter_score_dispatch_indirect_block_reason": str(resident_contract.get("resident_route_sparse_adapter_score_dispatch_indirect_block_reason", "none")),
+		"resident_route_sparse_adapter_score_dispatch_indirect_api_supported": bool(resident_contract.get("resident_route_sparse_adapter_score_dispatch_indirect_api_supported", false)),
+		"rejection_reason": "none" if resident_ready else rejection_reason,
 		"requested_readback_source": requested_readback,
 		"requested_runtime_read_source": requested_runtime,
 		"requested_source_labels_normalized": requested_resident_label,
-		"normalized_readback_source": _candidate_route_readback_source_from_settings(settings),
-		"normalized_runtime_read_source": _candidate_route_runtime_read_source_from_settings(settings),
+		"normalized_readback_source": normalized_readback,
+		"normalized_runtime_read_source": normalized_runtime,
 	}
+
+
+static func _rid_from_contract(contract: Dictionary, key_a: String, key_b: String) -> RID:
+	var raw = contract.get(key_a, contract.get(key_b, RID()))
+	if raw is RID:
+		return raw as RID
+	return RID()
 
 
 static func _full_field_readback_contract(voxel_count: int, output_source: String, is_gpu_readback: bool) -> Dictionary:
@@ -321,6 +471,7 @@ func run_multi_asset(
 	var current_collision := collision_field.duplicate()
 	var total_placed := 0
 	var global_quota := int(common_settings.get("global_quota", -1))
+	var candidate_route_output_settings := common_settings.duplicate(true)
 
 	var order := _sort_asset_defs_by_priority_weight(asset_defs, common_settings)
 	var result_by_index: Dictionary = {}
@@ -410,8 +561,10 @@ func run_multi_asset(
 					gpu_out.get("gpu_runtime_profile_contract", gpu_contract),
 					common_settings
 				)
+			if gpu_out.has("candidate_route_input_contract"):
+				candidate_route_output_settings["candidate_route_input_contract"] = gpu_out.get("candidate_route_input_contract", {})
 			var pivot_score := _placement_output_score(gpu_out) + float(pivot.get("score_bias", 0.0))
-			if not gpu_out.is_empty() and pivot_score > best_pivot_score:
+			if not gpu_out.is_empty() and (best_gpu_out.is_empty() or pivot_score > best_pivot_score):
 				best_gpu_out = gpu_out
 				best_pivot = pivot
 				best_pivot_score = pivot_score
@@ -421,6 +574,10 @@ func run_multi_asset(
 				"asset_index": orig_idx, "results": [], "world_results": [], "result_count": 0,
 			}
 			continue
+		if best_gpu_out.has("candidate_route_input_contract"):
+			candidate_route_output_settings["candidate_route_input_contract"] = best_gpu_out.get("candidate_route_input_contract", {})
+			candidate_route_output_settings["candidate_route_readback_source"] = str(best_gpu_out.get("candidate_route_readback_source", "none"))
+			candidate_route_output_settings["candidate_route_runtime_read_source"] = str(best_gpu_out.get("candidate_route_runtime_read_source", "none"))
 
 		var count := int(best_gpu_out.get("result_count", 0))
 		var raw_results: Array = best_gpu_out.get("results", [])
@@ -445,6 +602,11 @@ func run_multi_asset(
 		}
 		if best_gpu_out.has("gpu_runtime_profile_contract"):
 			asset_result["gpu_runtime_profile_contract"] = best_gpu_out.get("gpu_runtime_profile_contract", {})
+		if best_gpu_out.has("candidate_route_input_contract"):
+			asset_result["candidate_route_readback_source"] = str(best_gpu_out.get("candidate_route_readback_source", "none"))
+			asset_result["candidate_route_runtime_read_source"] = str(best_gpu_out.get("candidate_route_runtime_read_source", "none"))
+			asset_result["candidate_route_input_contract"] = best_gpu_out.get("candidate_route_input_contract", {})
+			asset_result["candidate_route_binding_debug"] = best_gpu_out.get("candidate_route_binding_debug", {})
 		if bool(best_gpu_out.get("contract_blocked", false)):
 			asset_result["contract_blocked"] = true
 		if best_gpu_out.has("cpu_fallback"):
@@ -514,10 +676,16 @@ func run_multi_asset(
 		"total_placed": total_placed,
 		"processing_order": order,
 		"gpu_runtime_profile_contract": gpu_contract,
-		"candidate_route_readback_source": _candidate_route_readback_source_from_settings(common_settings),
-		"candidate_route_runtime_read_source": _candidate_route_runtime_read_source_from_settings(common_settings),
-		"candidate_route_input_contract": _candidate_route_input_contract_from_settings(common_settings),
 	}
+	var candidate_route_output_contract: Dictionary = candidate_route_output_settings.get("candidate_route_input_contract", {})
+	if candidate_route_output_contract.has("normalized_readback_source"):
+		output["candidate_route_readback_source"] = str(candidate_route_output_contract.get("normalized_readback_source", "none"))
+		output["candidate_route_runtime_read_source"] = str(candidate_route_output_contract.get("normalized_runtime_read_source", "none"))
+		output["candidate_route_input_contract"] = candidate_route_output_contract
+	else:
+		output["candidate_route_readback_source"] = _candidate_route_readback_source_from_settings(candidate_route_output_settings)
+		output["candidate_route_runtime_read_source"] = _candidate_route_runtime_read_source_from_settings(candidate_route_output_settings)
+		output["candidate_route_input_contract"] = _candidate_route_input_contract_from_settings(candidate_route_output_settings)
 	if write_accepted_placements_to_gpu_runtime:
 		output["gpu_autoobject_runtime_writeback"] = runtime_writeback_report
 	if not instance_stamp_writeback.is_empty():
@@ -547,6 +715,129 @@ static func _runtime_writeback_mode_from_api(spawn_api: String, enabled: bool) -
 	return "cpu_dictionary_to_gpu_runtime_spawn"
 
 
+static func _copy_gpu_autoobject_runtime_flush_contract(report: Dictionary, flush_result: Dictionary) -> void:
+	if flush_result.is_empty():
+		return
+	var shader_consumed := bool(flush_result.get("accepted_placement_record_shader_consumed", false))
+	for key in [
+		"runtime_command_flush_mode",
+		"accepted_placement_record_schema_version",
+		"accepted_placement_record_stride_bytes",
+		"accepted_placement_record_count",
+		"accepted_placement_record_byte_count",
+		"accepted_placement_record_debug_packed",
+		"accepted_placement_record_shader_consumed",
+		"accepted_placement_record_shader_name",
+		"accepted_placement_record_shader_path",
+		"accepted_placement_record_shader_dispatch_count",
+		"accepted_placement_record_shader_local_size_x",
+		"resident_gpu_allocator_writeback",
+		"resident_gpu_allocator_writeback_mode",
+	]:
+		if flush_result.has(key):
+			report[key] = flush_result[key]
+	var shader_stats = flush_result.get("accepted_placement_record_shader_stats", {})
+	report["accepted_placement_record_shader_stats"] = (shader_stats as Dictionary).duplicate(true) if shader_stats is Dictionary else {}
+	var blocked_reason := str(flush_result.get(
+		"resident_gpu_allocator_writeback_blocked_reason",
+		"none" if shader_consumed else "no_resident_allocator_shader_dispatch"
+	))
+	if not shader_consumed and blocked_reason == "none":
+		blocked_reason = str(flush_result.get("reason", "accepted_placement_record_shader_not_consumed"))
+	report["resident_gpu_allocator_writeback_blocked_reason"] = blocked_reason
+	if shader_consumed:
+		report["runtime_command_flush_mode"] = str(flush_result.get("runtime_command_flush_mode", "resident_accepted_placement_record_shader_writeback"))
+		report["accepted_placement_record_shader_consumed"] = true
+		report["resident_gpu_allocator_writeback_mode"] = str(flush_result.get("resident_gpu_allocator_writeback_mode", "resident_object_buffer_writeback"))
+		report["resident_gpu_allocator_record_stride_bytes"] = int(flush_result.get(
+			"resident_gpu_allocator_record_stride_bytes",
+			flush_result.get("accepted_placement_record_stride_bytes", report.get("accepted_placement_record_stride_bytes", 0))
+		))
+		report["resident_gpu_allocator_owner"] = str(flush_result.get("resident_gpu_allocator_owner", "GPUAutoObjectRuntime"))
+	elif flush_result.has("resident_gpu_allocator_record_stride_bytes"):
+		report["resident_gpu_allocator_record_stride_bytes"] = int(flush_result.get("resident_gpu_allocator_record_stride_bytes", 0))
+	if not shader_consumed and flush_result.has("resident_gpu_allocator_owner"):
+		report["resident_gpu_allocator_owner"] = str(flush_result.get("resident_gpu_allocator_owner", "none"))
+
+
+static func _merge_gpu_autoobject_runtime_shader_stats(target: Dictionary, source: Dictionary) -> Dictionary:
+	var merged := {}
+	for key in target.keys():
+		merged[key] = target[key]
+	for key in source.keys():
+		var source_value = source[key]
+		if source_value is int or source_value is float:
+			merged[key] = int(merged.get(key, 0)) + int(source_value)
+		else:
+			merged[key] = source_value
+	return merged
+
+
+static func _merge_gpu_autoobject_runtime_flush_contract(target: Dictionary, source: Dictionary) -> void:
+	if source.is_empty():
+		return
+	var source_record_count := int(source.get("accepted_placement_record_count", 0))
+	var target_record_count_before := int(target.get("accepted_placement_record_count", 0))
+	var source_shader_consumed := bool(source.get("accepted_placement_record_shader_consumed", false))
+	for key in [
+		"accepted_placement_record_schema_version",
+		"accepted_placement_record_stride_bytes",
+		"accepted_placement_record_shader_local_size_x",
+	]:
+		if source.has(key) and int(target.get(key, 0)) == 0:
+			target[key] = source[key]
+	for key in [
+		"accepted_placement_record_shader_name",
+		"accepted_placement_record_shader_path",
+	]:
+		var source_text := str(source.get(key, "none"))
+		if source.has(key) and source_text != "none" and str(target.get(key, "none")) == "none":
+			target[key] = source[key]
+	if source.has("runtime_command_flush_mode"):
+		var source_mode := str(source.get("runtime_command_flush_mode", "none"))
+		var target_mode := str(target.get("runtime_command_flush_mode", "none"))
+		if target_record_count_before <= 0 or target_mode == "none":
+			target["runtime_command_flush_mode"] = source_mode
+		elif source_mode != "none" and target_mode != source_mode:
+			target["runtime_command_flush_mode"] = "mixed"
+	target["accepted_placement_record_count"] = target_record_count_before + source_record_count
+	target["accepted_placement_record_byte_count"] = int(target.get("accepted_placement_record_byte_count", 0)) + int(source.get("accepted_placement_record_byte_count", 0))
+	if source_record_count > 0:
+		target["accepted_placement_record_debug_packed"] = bool(source.get("accepted_placement_record_debug_packed", false)) if target_record_count_before <= 0 else bool(target.get("accepted_placement_record_debug_packed", false)) and bool(source.get("accepted_placement_record_debug_packed", false))
+		target["accepted_placement_record_shader_consumed"] = source_shader_consumed if target_record_count_before <= 0 else bool(target.get("accepted_placement_record_shader_consumed", false)) and source_shader_consumed
+	elif source_shader_consumed:
+		target["accepted_placement_record_shader_consumed"] = true
+	target["accepted_placement_record_shader_dispatch_count"] = int(target.get("accepted_placement_record_shader_dispatch_count", 0)) + int(source.get("accepted_placement_record_shader_dispatch_count", 0))
+	var target_stats = target.get("accepted_placement_record_shader_stats", {})
+	var source_stats = source.get("accepted_placement_record_shader_stats", {})
+	target["accepted_placement_record_shader_stats"] = _merge_gpu_autoobject_runtime_shader_stats(
+		(target_stats as Dictionary) if target_stats is Dictionary else {},
+		(source_stats as Dictionary) if source_stats is Dictionary else {}
+	)
+	if source.has("resident_gpu_allocator_writeback"):
+		target["resident_gpu_allocator_writeback"] = bool(target.get("resident_gpu_allocator_writeback", false)) or bool(source.get("resident_gpu_allocator_writeback", false))
+	if source.has("resident_gpu_allocator_writeback_mode"):
+		var source_writeback_mode := str(source.get("resident_gpu_allocator_writeback_mode", "none"))
+		var target_writeback_mode := str(target.get("resident_gpu_allocator_writeback_mode", "none"))
+		if target_record_count_before <= 0 or target_writeback_mode == "none":
+			target["resident_gpu_allocator_writeback_mode"] = source_writeback_mode
+		elif source_record_count > 0 and target_writeback_mode != source_writeback_mode:
+			target["resident_gpu_allocator_writeback_mode"] = "mixed"
+	if source.has("resident_gpu_allocator_record_stride_bytes") and int(target.get("resident_gpu_allocator_record_stride_bytes", 0)) == 0:
+		target["resident_gpu_allocator_record_stride_bytes"] = int(source.get("resident_gpu_allocator_record_stride_bytes", 0))
+	if source.has("resident_gpu_allocator_owner") and str(target.get("resident_gpu_allocator_owner", "none")) == "none":
+		target["resident_gpu_allocator_owner"] = str(source.get("resident_gpu_allocator_owner", "none"))
+	var consumed_after := bool(target.get("accepted_placement_record_shader_consumed", false))
+	var source_blocked_reason := str(source.get(
+		"resident_gpu_allocator_writeback_blocked_reason",
+		"none" if source_shader_consumed else "no_resident_allocator_shader_dispatch"
+	))
+	if consumed_after:
+		target["resident_gpu_allocator_writeback_blocked_reason"] = "none"
+	elif source_blocked_reason != "none":
+		target["resident_gpu_allocator_writeback_blocked_reason"] = source_blocked_reason
+
+
 func _new_gpu_autoobject_runtime_writeback_report(
 	runtime_provider: Object,
 	profile_container: Object,
@@ -572,11 +863,23 @@ func _new_gpu_autoobject_runtime_writeback_report(
 		"accepted_placement_spawn_api": spawn_api,
 		"cpu_batched_command_queue_bridge": command_queue_bridge,
 		"cpu_batch_bridge": command_queue_bridge,
+		"runtime_command_flush_mode": "none",
+		"accepted_placement_record_schema_version": 0,
 		"accepted_placement_record_stride_bytes": 0,
+		"accepted_placement_record_count": 0,
+		"accepted_placement_record_byte_count": 0,
+		"accepted_placement_record_debug_packed": false,
+		"accepted_placement_record_shader_consumed": false,
+		"accepted_placement_record_shader_name": "none",
+		"accepted_placement_record_shader_path": "none",
+		"accepted_placement_record_shader_dispatch_count": 0,
+		"accepted_placement_record_shader_local_size_x": 0,
+		"accepted_placement_record_shader_stats": {},
 		"resident_gpu_allocator_writeback": false,
 		"resident_gpu_allocator_writeback_mode": "none",
 		"resident_gpu_allocator_record_stride_bytes": 0,
 		"resident_gpu_allocator_owner": "none",
+		"resident_gpu_allocator_writeback_blocked_reason": "no_resident_allocator_shader_dispatch" if command_queue_bridge else "none",
 		"accepted_count": 0,
 		"spawned_count": 0,
 		"failed_count": 0,
@@ -624,11 +927,10 @@ func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: 
 		"cpu_batched_command_queue_bridge",
 		"cpu_batch_bridge",
 		"accepted_placement_record_stride_bytes",
-		"resident_gpu_allocator_record_stride_bytes",
-		"resident_gpu_allocator_owner",
 	]:
 		if source.has(key):
 			target[key] = source[key]
+	_merge_gpu_autoobject_runtime_flush_contract(target, source)
 	target["command_queue_stage_count"] = int(target.get("command_queue_stage_count", 0)) + int(source.get("command_queue_stage_count", 0))
 	target["command_queue_flush_count"] = int(target.get("command_queue_flush_count", 0)) + int(source.get("command_queue_flush_count", 0))
 	if not bool(target.get("ok", false)):
@@ -680,6 +982,9 @@ func _write_accepted_placements_to_scene_voxel_committer(
 		"resident_source_range_buffer_capacity": 0,
 		"resident_source_range_buffer_count": 0,
 		"resident_source_candidate_staging_epoch": 0,
+		"runtime_read_source": "none",
+		"final_source_stream_resident": false,
+		"final_source_stream_resident_source": "none",
 		"resident_gpu_allocator_writeback": false,
 		"resident_gpu_allocator_writeback_mode": "none",
 		"source_record_count": 0,
@@ -762,6 +1067,9 @@ func _apply_asset_placements_to_scene_voxel_committer(
 		"resident_source_range_buffer_capacity": 0,
 		"resident_source_range_buffer_count": 0,
 		"resident_source_candidate_staging_epoch": 0,
+		"runtime_read_source": "none",
+		"final_source_stream_resident": false,
+		"final_source_stream_resident_source": "none",
 		"resident_gpu_allocator_writeback": false,
 		"resident_gpu_allocator_writeback_mode": "none",
 		"source_record_count": 0,
@@ -844,6 +1152,23 @@ func _apply_asset_placements_to_scene_voxel_committer(
 				report["ok"] = false
 				report["reason"] = "scene_voxel_committer_apply_failed"
 				report["failed_count"] = int(report.get("failed_count", 0)) + 1
+	if bool(cfg.get(STAGE_SCENE_VOXEL_SOURCE_CANDIDATES_CONFIG_KEY, false)) and int(report.get("applied_count", 0)) > 0:
+		if target.has_method("stage_pending_scene_voxel_source_candidates_to_resident_buffers"):
+			var staging_result = target.call("stage_pending_scene_voxel_source_candidates_to_resident_buffers")
+			if staging_result is Dictionary:
+				var staging_report := staging_result as Dictionary
+				report["source_candidate_staging_report"] = staging_report.duplicate(true)
+				for key in SCENE_VOXEL_SOURCE_WRITE_DIAGNOSTIC_KEYS:
+					report[key] = staging_report.get(key, report.get(key))
+				if not bool(staging_report.get("ok", false)):
+					report["ok"] = false
+					report["reason"] = str(staging_report.get("reason", "scene_voxel_committer_source_candidate_staging_failed"))
+			else:
+				report["ok"] = false
+				report["reason"] = "scene_voxel_committer_source_candidate_staging_failed"
+		else:
+			report["ok"] = false
+			report["reason"] = "missing_scene_voxel_source_candidate_staging_api"
 	if target.has_method("get_committed_tick"):
 		report["committed_tick"] = int(target.call("get_committed_tick"))
 	if target.has_method("get_voxel_write_spec_count"):
@@ -973,11 +1298,23 @@ func _write_accepted_placements_to_gpu_runtime(
 		"accepted_placement_spawn_api": spawn_api,
 		"cpu_batched_command_queue_bridge": command_queue_bridge,
 		"cpu_batch_bridge": command_queue_bridge,
+		"runtime_command_flush_mode": "none",
+		"accepted_placement_record_schema_version": 0,
 		"accepted_placement_record_stride_bytes": 0,
+		"accepted_placement_record_count": 0,
+		"accepted_placement_record_byte_count": 0,
+		"accepted_placement_record_debug_packed": false,
+		"accepted_placement_record_shader_consumed": false,
+		"accepted_placement_record_shader_name": "none",
+		"accepted_placement_record_shader_path": "none",
+		"accepted_placement_record_shader_dispatch_count": 0,
+		"accepted_placement_record_shader_local_size_x": 0,
+		"accepted_placement_record_shader_stats": {},
 		"resident_gpu_allocator_writeback": false,
 		"resident_gpu_allocator_writeback_mode": "none",
 		"resident_gpu_allocator_record_stride_bytes": 0,
 		"resident_gpu_allocator_owner": "none",
+		"resident_gpu_allocator_writeback_blocked_reason": "no_resident_allocator_shader_dispatch" if command_queue_bridge else "none",
 		"accepted_count": min(world_results.size(), raw_results.size()),
 		"spawned_count": 0,
 		"failed_count": 0,
@@ -1060,6 +1397,7 @@ func _write_accepted_placements_to_gpu_runtime(
 				var flush_result := (raw_flush_result as Dictionary).duplicate(true)
 				report["runtime_command_queue_flush_report"] = flush_result
 				report["command_queue_flush_count"] = 1
+				_copy_gpu_autoobject_runtime_flush_contract(report, flush_result)
 				if not bool(flush_result.get("ok", false)):
 					report["ok"] = false
 					report["reason"] = "runtime_spawn_failed"
@@ -1753,6 +2091,37 @@ func run_minimal(
 			_gpu_contract_result(false, "placement_shader_pipeline_not_ready")
 		)
 
+	var route_binding := _prepare_candidate_route_binding(settings, direct_all_tiles)
+	var route_settings: Dictionary = route_binding.get("settings", settings)
+	var resident_route_sparse := _prepare_candidate_sparse_ids_from_resident_route_gpu(route_binding, tile_count)
+	var resident_route_sparse_gpu := bool(resident_route_sparse.get("ok", false))
+	if resident_route_sparse_gpu:
+		candidate_voxel_sparse_ids = resident_route_sparse.get("candidate_voxel_sparse_ids", PackedInt32Array())
+		direct_all_tiles = false
+		candidate_voxel_sparse_count = candidate_voxel_sparse_ids.size()
+		_mark_candidate_route_sparse_adapter_ready(route_settings, resident_route_sparse)
+		route_binding["settings"] = route_settings
+	elif bool(route_binding.get("bindable", false)):
+		_mark_candidate_route_sparse_adapter_blocked(route_settings, str(resident_route_sparse.get("reason", "resident_route_gpu_sparse_adapter_blocked")))
+		route_binding["settings"] = route_settings
+		candidate_voxel_sparse_ids = PackedInt32Array()
+		direct_all_tiles = false
+		candidate_voxel_sparse_count = 0
+	if candidate_voxel_sparse_count <= 0:
+		_free_gpu()
+		var empty_output := _empty_prefilter_output(
+			scene_data,
+			collision_data,
+			voxel_count,
+			tile_count,
+			tile_counts,
+			candidate_voxel_sparse_ids
+		)
+		empty_output["candidate_route_readback_source"] = _candidate_route_readback_source_from_settings(route_settings)
+		empty_output["candidate_route_runtime_read_source"] = _candidate_route_runtime_read_source_from_settings(route_settings)
+		empty_output["candidate_route_input_contract"] = _candidate_route_input_contract_from_settings(route_settings)
+		return empty_output
+
 	var candidate_count := candidate_voxel_sparse_count * top_k
 	var stamp_capacity := result_capacity * footprint.size()
 
@@ -1780,8 +2149,28 @@ func run_minimal(
 
 	var debug_voxel_buffer := storage_buffer_zero(voxel_count * NUM_DEBUG_CHANNELS * 4)
 	var score_contract_debug_buffer := storage_buffer_from_bytes(_pack_score_contract_debug_reset())
+	var candidate_route_adapter_count_buffer := RID()
+	var candidate_route_indirect_args_buffer := RID()
 
-	_dispatch_score(
+	if resident_route_sparse_gpu:
+		candidate_route_adapter_count_buffer = storage_buffer_zero(
+			CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS * 4,
+			SCOPE_FRAME,
+			"candidate_route_adapter_count_u32x4"
+		)
+		candidate_route_indirect_args_buffer = dispatch_indirect_args_buffer_zero(
+			SCOPE_FRAME,
+			"candidate_route_score_indirect_args_u32x3"
+		)
+		_dispatch_candidate_route_sparse_adapter(
+			route_binding,
+			candidate_voxel_sparse_buffer,
+			candidate_route_adapter_count_buffer,
+			candidate_route_indirect_args_buffer,
+			tile_count,
+			candidate_voxel_sparse_count
+		)
+	var score_dispatch := _dispatch_score(
 		scene_buffer,
 		collision_buffer,
 		footprint_pos_buffer,
@@ -1792,6 +2181,8 @@ func run_minimal(
 		target_color_buffer,
 		debug_voxel_buffer,
 		score_contract_debug_buffer,
+		route_binding,
+		candidate_route_indirect_args_buffer,
 		grid_size,
 		tile_counts,
 		tile_count,
@@ -1800,8 +2191,11 @@ func run_minimal(
 		footprint.size(),
 		has_target,
 		gpu_contract,
-		settings
+		route_settings
 	)
+	if resident_route_sparse_gpu:
+		resident_route_sparse["score_dispatch_indirect"] = bool(score_dispatch.get("score_dispatch_indirect", false))
+		resident_route_sparse["score_dispatch_indirect_block_reason"] = str(score_dispatch.get("score_dispatch_indirect_block_reason", "none"))
 	_dispatch_reduce(tile_topk_buffer, result_buffer, result_count_buffer, candidate_count)
 	_dispatch_stamp(
 		scene_buffer,
@@ -1838,6 +2232,31 @@ func run_minimal(
 	var debug_voxel_data := _rd.buffer_get_data(debug_voxel_buffer) if read_debug_voxel else PackedByteArray()
 	var score_contract_debug_data := _rd.buffer_get_data(score_contract_debug_buffer)
 	var score_contract_debug := _decode_score_contract_debug(score_contract_debug_data)
+	var read_route_adapter_debug := bool(route_settings.get(
+		"read_candidate_route_sparse_adapter_debug",
+		route_settings.get("read_resident_route_sparse_adapter_debug", false)
+	))
+	var read_route_binding_debug := bool(route_settings.get(
+		"read_candidate_route_binding_debug",
+		read_route_adapter_debug
+	))
+	var route_binding_debug := _read_candidate_route_binding_debug(route_binding, read_route_binding_debug)
+	if resident_route_sparse_gpu:
+		resident_route_sparse = _read_candidate_route_sparse_adapter_result(
+			candidate_voxel_sparse_buffer,
+			candidate_route_adapter_count_buffer,
+			candidate_route_indirect_args_buffer,
+			route_binding_debug,
+			tile_count,
+			candidate_voxel_sparse_count,
+			score_dispatch,
+			read_route_adapter_debug
+		)
+		candidate_voxel_sparse_ids = resident_route_sparse.get("candidate_voxel_sparse_ids", PackedInt32Array())
+		candidate_voxel_sparse_count = int(resident_route_sparse.get("candidate_count", candidate_voxel_sparse_ids.size()))
+		_mark_candidate_route_sparse_adapter_ready(route_settings, resident_route_sparse)
+	if read_route_binding_debug:
+		_merge_candidate_route_binding_debug_into_settings(route_settings, route_binding_debug)
 	gpu_contract = _annotate_score_contract_debug(gpu_contract, score_contract_debug)
 	if not bool(gpu_contract.get("ok", true)):
 		var blocked_output := _gpu_contract_blocked_minimal_output(
@@ -1885,9 +2304,13 @@ func run_minimal(
 		"candidate_voxel_sparse_count": candidate_voxel_sparse_count,
 		"candidate_voxel_sparse_ids": candidate_voxel_sparse_ids,
 		"candidate_voxel_dispatch_mode": "direct_all_tiles" if direct_all_tiles else "sparse_buffer",
-		"candidate_count": candidate_count,
+		"candidate_count": candidate_voxel_sparse_count * top_k,
 		"gpu_runtime_profile_contract": gpu_contract,
 		"gpu_runtime_profile_binding_debug": score_contract_debug,
+		"candidate_route_readback_source": _candidate_route_readback_source_from_settings(route_settings),
+		"candidate_route_runtime_read_source": _candidate_route_runtime_read_source_from_settings(route_settings),
+		"candidate_route_input_contract": _candidate_route_input_contract_from_settings(route_settings),
+		"candidate_route_binding_debug": route_binding_debug,
 	}
 	if str(gpu_contract.get("reason", "")) != "not_requested":
 		output["cpu_fallback"] = false
@@ -2134,6 +2557,26 @@ func _gpu_contract_result(
 		result["runtime_summary"] = _object_summary(runtime_provider)
 	if profile_container != null:
 		result["profile_summary"] = _object_summary(profile_container)
+	return _with_same_type_exclusion_defaults(result)
+
+
+static func _with_same_type_exclusion_defaults(result: Dictionary) -> Dictionary:
+	if not result.has("score_shader_same_type_min_spacing_exclusion"):
+		result["score_shader_same_type_min_spacing_exclusion"] = false
+	if not result.has("score_shader_same_type_min_spacing_rejections"):
+		result["score_shader_same_type_min_spacing_rejections"] = 0
+	if not result.has("score_shader_same_type_min_spacing_tests"):
+		result["score_shader_same_type_min_spacing_tests"] = 0
+	if not result.has("score_shader_same_type_min_spacing_profile_matches"):
+		result["score_shader_same_type_min_spacing_profile_matches"] = 0
+	if not result.has("score_shader_same_type_min_spacing_min_distance"):
+		result["score_shader_same_type_min_spacing_min_distance"] = 0.0
+	if not result.has("same_type_exclusion_read_source"):
+		result["same_type_exclusion_read_source"] = "none"
+	if not result.has("same_type_exclusion_object_ref_read_source"):
+		result["same_type_exclusion_object_ref_read_source"] = "none"
+	if not result.has("scene_voxel_tile_object_ref_exclusion"):
+		result["scene_voxel_tile_object_ref_exclusion"] = false
 	return result
 
 
@@ -2205,6 +2648,8 @@ func _load_shaders() -> void:
 	_shader_reduce = load_compute_shader("res://shaders/reduce_voxel_tiles.glsl")
 	_shader_init_stamp_bounds = load_compute_shader("res://shaders/init_stamp_bounds.glsl")
 	_shader_stamp = load_compute_shader("res://shaders/stamp_voxel_field.glsl")
+	_shader_candidate_route_sparse_adapter = load_compute_shader("res://shaders/candidate_route_sparse_adapter.glsl")
+	_shader_candidate_route_sparse_adapter_finalize = load_compute_shader("res://shaders/candidate_route_sparse_adapter_finalize.glsl")
 	if _shader_score.is_valid():
 		_pipeline_score = create_compute_pipeline(_shader_score)
 	if _shader_reduce.is_valid():
@@ -2213,6 +2658,10 @@ func _load_shaders() -> void:
 		_pipeline_init_stamp_bounds = create_compute_pipeline(_shader_init_stamp_bounds)
 	if _shader_stamp.is_valid():
 		_pipeline_stamp = create_compute_pipeline(_shader_stamp)
+	if _shader_candidate_route_sparse_adapter.is_valid():
+		_pipeline_candidate_route_sparse_adapter = create_compute_pipeline(_shader_candidate_route_sparse_adapter)
+	if _shader_candidate_route_sparse_adapter_finalize.is_valid():
+		_pipeline_candidate_route_sparse_adapter_finalize = create_compute_pipeline(_shader_candidate_route_sparse_adapter_finalize)
 
 
 func _placement_pipeline_ready() -> bool:
@@ -2232,10 +2681,14 @@ func _free_gpu() -> void:
 	_pipeline_reduce = RID()
 	_pipeline_init_stamp_bounds = RID()
 	_pipeline_stamp = RID()
+	_pipeline_candidate_route_sparse_adapter = RID()
+	_pipeline_candidate_route_sparse_adapter_finalize = RID()
 	_shader_score = RID()
 	_shader_reduce = RID()
 	_shader_init_stamp_bounds = RID()
 	_shader_stamp = RID()
+	_shader_candidate_route_sparse_adapter = RID()
+	_shader_candidate_route_sparse_adapter_finalize = RID()
 
 
 func _build_candidate_voxel_sparse_ids(settings: Dictionary, tile_counts: Vector3i, tile_count: int) -> PackedInt32Array:
@@ -2308,6 +2761,8 @@ func _dispatch_score(
 	target_color_buffer: RID,
 	debug_voxel_buffer: RID,
 	score_contract_debug_buffer: RID,
+	route_binding: Dictionary,
+	candidate_route_indirect_args_buffer: RID,
 	grid_size: Vector3i,
 	tile_counts: Vector3i,
 	tile_count: int,
@@ -2317,7 +2772,7 @@ func _dispatch_score(
 	has_target: int,
 	gpu_contract: Dictionary,
 	settings: Dictionary
-) -> void:
+) -> Dictionary:
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, scene_buffer),
 		make_storage_uniform(1, collision_buffer),
@@ -2339,6 +2794,7 @@ func _dispatch_score(
 		score_contract_params_buffer,
 		score_contract_debug_buffer
 	)
+	var set2 := _create_candidate_route_binding_set(route_binding)
 
 	var sample_min: Vector3i = settings.get("sample_min", Vector3i.ZERO)
 	var sample_max: Vector3i = settings.get("sample_max", grid_size)
@@ -2384,9 +2840,546 @@ func _dispatch_score(
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	if set1.is_valid():
 		_rd.compute_list_bind_uniform_set(cl, set1, 1)
+	if set2.is_valid():
+		_rd.compute_list_bind_uniform_set(cl, set2, 2)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, candidate_voxel_sparse_count, 1, 1)
+	var dispatch_result := _score_dispatch_indirect_decision(
+		candidate_route_indirect_args_buffer,
+		candidate_voxel_sparse_count,
+		direct_all_tiles
+	)
+	if bool(dispatch_result.get("score_dispatch_indirect", false)):
+		_rd.compute_list_dispatch_indirect(cl, candidate_route_indirect_args_buffer, 0)
+	elif candidate_voxel_sparse_count > 0:
+		_rd.compute_list_dispatch(cl, candidate_voxel_sparse_count, 1, 1)
 	end_compute_list()
+	return dispatch_result
+
+
+func _score_dispatch_indirect_decision(
+	candidate_route_indirect_args_buffer: RID,
+	candidate_voxel_sparse_count: int,
+	direct_all_tiles: bool
+) -> Dictionary:
+	var api_supported := _rd != null and _rd.has_method("compute_list_dispatch_indirect")
+	if direct_all_tiles:
+		return {
+			"score_dispatch_indirect": false,
+			"score_dispatch_indirect_block_reason": "direct_all_tiles_dispatch",
+			"score_dispatch_indirect_api_supported": api_supported,
+		}
+	if candidate_voxel_sparse_count <= 0:
+		return {
+			"score_dispatch_indirect": false,
+			"score_dispatch_indirect_block_reason": "zero_candidate_count_indirect_dispatch_gated",
+			"score_dispatch_indirect_api_supported": api_supported,
+		}
+	if not candidate_route_indirect_args_buffer.is_valid():
+		return {
+			"score_dispatch_indirect": false,
+			"score_dispatch_indirect_block_reason": "missing_route_adapter_indirect_args_buffer",
+			"score_dispatch_indirect_api_supported": api_supported,
+		}
+	if not api_supported:
+		return {
+			"score_dispatch_indirect": false,
+			"score_dispatch_indirect_block_reason": "rendering_device_dispatch_indirect_api_unavailable",
+			"score_dispatch_indirect_api_supported": false,
+		}
+	return {
+		"score_dispatch_indirect": true,
+		"score_dispatch_indirect_block_reason": "none",
+		"score_dispatch_indirect_api_supported": true,
+	}
+
+
+func _prepare_candidate_sparse_ids_from_resident_route_gpu(route_binding: Dictionary, tile_count: int) -> Dictionary:
+	if not bool(route_binding.get("bindable", false)):
+		return {"ok": false, "reason": "route_binding_not_bindable"}
+	if not _pipeline_candidate_route_sparse_adapter.is_valid() or not _shader_candidate_route_sparse_adapter.is_valid():
+		return {"ok": false, "reason": "candidate_route_sparse_adapter_shader_not_ready"}
+	if not _pipeline_candidate_route_sparse_adapter_finalize.is_valid() or not _shader_candidate_route_sparse_adapter_finalize.is_valid():
+		return {"ok": false, "reason": "candidate_route_sparse_adapter_finalize_shader_not_ready"}
+	if tile_count <= 0:
+		return {"ok": false, "reason": "tile_count_not_positive"}
+	var range_buffer: RID = route_binding.get("range_buffer", RID())
+	var record_buffer: RID = route_binding.get("record_buffer", RID())
+	var range_count := int(route_binding.get("range_count", 0))
+	var record_capacity := int(route_binding.get("record_capacity", 0))
+	if not range_buffer.is_valid() or not record_buffer.is_valid() or range_count <= 0:
+		return {"ok": false, "reason": "missing_resident_route_buffers"}
+	if record_capacity <= 0:
+		return {"ok": false, "reason": "resident_route_record_capacity_missing"}
+	var range_index := clampi(asset_index, 0, range_count - 1)
+	var output_capacity := mini(record_capacity, tile_count)
+
+	var ids := PackedInt32Array()
+	ids.resize(output_capacity)
+	ids.fill(tile_count)
+	return {
+		"ok": true,
+		"reason": "ok",
+		"candidate_voxel_sparse_ids": ids,
+		"range_index": range_index,
+		"range_start": 0,
+		"range_count": 0,
+		"record_reads": 0,
+		"candidate_count": output_capacity,
+		"source": "resident_route_gpu_sparse_adapter",
+		"adapter_mode": "gpu_compute_copy_filter",
+		"output_capacity": output_capacity,
+		"resident_route_record_capacity": record_capacity,
+		"candidate_count_source": "route_adapter_indirect_args_buffer",
+		"candidate_count_semantics": "gpu_owned_runtime_count",
+		"candidate_count_cpu_readback_required": false,
+		"indirect_args_ready": true,
+		"indirect_args_layout": "u32x3_group_count_xyz",
+		"indirect_args_words": PackedInt32Array(),
+		"indirect_args_source": "route_adapter_indirect_args_buffer",
+		"debug_snapshot_enabled": false,
+		"debug_snapshot_status": "disabled",
+		"debug_count_snapshot_source": "disabled",
+		"debug_sparse_ids_snapshot_source": "disabled",
+		"debug_indirect_args_snapshot_source": "disabled",
+	}
+
+
+func _dispatch_candidate_route_sparse_adapter(
+	route_binding: Dictionary,
+	candidate_voxel_sparse_buffer: RID,
+	candidate_route_adapter_count_buffer: RID,
+	candidate_route_indirect_args_buffer: RID,
+	tile_count: int,
+	output_capacity: int
+) -> void:
+	if not _pipeline_candidate_route_sparse_adapter.is_valid() or not _shader_candidate_route_sparse_adapter.is_valid():
+		return
+	if not _pipeline_candidate_route_sparse_adapter_finalize.is_valid() or not _shader_candidate_route_sparse_adapter_finalize.is_valid():
+		return
+	var record_buffer: RID = route_binding.get("record_buffer", RID())
+	var range_buffer: RID = route_binding.get("range_buffer", RID())
+	var debug_buffer: RID = route_binding.get("debug_buffer", RID())
+	if not record_buffer.is_valid() or not range_buffer.is_valid() \
+	   or not candidate_voxel_sparse_buffer.is_valid() or not debug_buffer.is_valid() \
+	   or not candidate_route_adapter_count_buffer.is_valid() or not candidate_route_indirect_args_buffer.is_valid():
+		return
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, record_buffer),
+		make_storage_uniform(1, range_buffer),
+		make_storage_uniform(2, candidate_voxel_sparse_buffer),
+		make_storage_uniform(3, debug_buffer),
+		make_storage_uniform(4, candidate_route_adapter_count_buffer),
+	], _shader_candidate_route_sparse_adapter, 0, SCOPE_PASS, "candidate_route_sparse_adapter")
+	var finalize_set0 := create_uniform_set([
+		make_storage_uniform(0, candidate_route_adapter_count_buffer),
+		make_storage_uniform(1, candidate_route_indirect_args_buffer),
+	], _shader_candidate_route_sparse_adapter_finalize, 0, SCOPE_PASS, "candidate_route_sparse_adapter_finalize")
+
+	var push := PackedByteArray()
+	push.resize(32)
+	push.encode_s32(0, asset_index)
+	push.encode_s32(4, int(route_binding.get("range_count", 0)))
+	push.encode_s32(8, tile_count)
+	push.encode_s32(12, output_capacity)
+	push.encode_s32(16, int(route_binding.get("record_capacity", 0)))
+
+	var cl := begin_compute_list()
+	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_candidate_route_sparse_adapter)
+	_rd.compute_list_bind_uniform_set(cl, set0, 0)
+	_rd.compute_list_set_push_constant(cl, push, push.size())
+	_rd.compute_list_dispatch(cl, ceil_div(output_capacity, CANDIDATE_ROUTE_SPARSE_ADAPTER_LOCAL_SIZE), 1, 1)
+	_rd.compute_list_add_barrier(cl)
+	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_candidate_route_sparse_adapter_finalize)
+	_rd.compute_list_bind_uniform_set(cl, finalize_set0, 0)
+	_rd.compute_list_set_push_constant(cl, push, push.size())
+	_rd.compute_list_dispatch(cl, 1, 1, 1)
+	_rd.compute_list_add_barrier(cl)
+	end_compute_list()
+
+
+func _read_candidate_route_sparse_adapter_result(
+	candidate_voxel_sparse_buffer: RID,
+	candidate_route_adapter_count_buffer: RID,
+	candidate_route_indirect_args_buffer: RID,
+	route_binding_debug: Dictionary,
+	tile_count: int,
+	output_capacity: int,
+	score_dispatch: Dictionary = {},
+	read_debug_snapshot: bool = false
+) -> Dictionary:
+	var ids := PackedInt32Array()
+	if read_debug_snapshot:
+		ids.resize(output_capacity)
+		ids.fill(tile_count)
+	var count_words := PackedInt32Array()
+	count_words.resize(CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS)
+	var debug_count_snapshot_source := "disabled"
+	var debug_sparse_ids_snapshot_source := "disabled"
+	var debug_indirect_args_snapshot_source := "disabled"
+	if read_debug_snapshot and candidate_route_adapter_count_buffer.is_valid():
+		var count_bytes := _rd.buffer_get_data(
+			candidate_route_adapter_count_buffer,
+			0,
+			CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS * 4
+		)
+		var count_available := mini(int(count_bytes.size() / 4), CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS)
+		for i in range(count_available):
+			count_words[i] = int(count_bytes.decode_u32(i * 4))
+		debug_count_snapshot_source = "route_adapter_count_buffer_debug_readback"
+	var indirect_words := PackedInt32Array()
+	if read_debug_snapshot and candidate_route_indirect_args_buffer.is_valid():
+		indirect_words.resize(3)
+		var indirect_bytes := _rd.buffer_get_data(
+			candidate_route_indirect_args_buffer,
+			0,
+			CANDIDATE_ROUTE_INDIRECT_ARGS_BYTES
+		)
+		var indirect_available := mini(int(indirect_bytes.size() / 4), 3)
+		for i in range(indirect_available):
+			indirect_words[i] = int(indirect_bytes.decode_u32(i * 4))
+		debug_indirect_args_snapshot_source = "route_adapter_indirect_args_debug_readback"
+	var debug_requested_count := clampi(int(count_words[0]), 0, output_capacity) if read_debug_snapshot else 0
+	var debug_ids := PackedInt32Array()
+	if read_debug_snapshot and candidate_voxel_sparse_buffer.is_valid() and debug_requested_count > 0:
+		var bytes := _rd.buffer_get_data(candidate_voxel_sparse_buffer, 0, output_capacity * 4)
+		var available := mini(int(bytes.size() / 4), output_capacity)
+		for i in range(available):
+			var tile_id := int(bytes.decode_u32(i * 4))
+			if tile_id >= 0 and tile_id < tile_count:
+				debug_ids.append(tile_id)
+				if debug_ids.size() >= debug_requested_count:
+					break
+		if not debug_ids.is_empty():
+			ids = debug_ids
+		debug_sparse_ids_snapshot_source = "candidate_voxel_sparse_ids_debug_readback"
+	return {
+		"ok": output_capacity > 0,
+		"reason": "ok" if output_capacity > 0 else "resident_route_gpu_sparse_adapter_no_output_capacity",
+		"candidate_voxel_sparse_ids": ids,
+		"range_index": int(route_binding_debug.get("sparse_adapter_range_index", clampi(asset_index, 0, maxi(int(route_binding_debug.get("range_count", 1)) - 1, 0)))),
+		"range_start": int(route_binding_debug.get("sparse_adapter_range_start", route_binding_debug.get("first_range_start", 0))),
+		"range_count": int(route_binding_debug.get("sparse_adapter_range_count", route_binding_debug.get("first_range_count", 0))),
+		"record_reads": int(route_binding_debug.get("sparse_adapter_record_reads", route_binding_debug.get("record_reads", 0))),
+		"candidate_count": output_capacity,
+		"source": "resident_route_gpu_sparse_adapter",
+		"adapter_mode": "gpu_compute_copy_filter",
+		"output_capacity": output_capacity,
+		"resident_route_record_capacity": int(route_binding_debug.get("sparse_adapter_record_capacity", 0)),
+		"candidate_count_source": "route_adapter_indirect_args_buffer",
+		"candidate_count_semantics": "gpu_owned_runtime_count",
+		"candidate_count_cpu_readback_required": false,
+		"count_words": count_words,
+		"count_record_reads": int(count_words[1]) if read_debug_snapshot else int(route_binding_debug.get("sparse_adapter_range_count", 0)),
+		"count_truncation_or_overflow": int(count_words[2]) if read_debug_snapshot else 0,
+		"count_magic": int(count_words[3]) if read_debug_snapshot else 0,
+		"indirect_args_words": indirect_words,
+		"indirect_args_ready": candidate_route_indirect_args_buffer.is_valid(),
+		"indirect_args_layout": "u32x3_group_count_xyz",
+		"indirect_args_source": "route_adapter_indirect_args_buffer",
+		"debug_snapshot_enabled": read_debug_snapshot,
+		"debug_snapshot_status": "available" if read_debug_snapshot else "disabled",
+		"debug_count_snapshot": int(count_words[0]) if read_debug_snapshot else -1,
+		"debug_count_snapshot_source": debug_count_snapshot_source,
+		"debug_sparse_ids_snapshot": debug_ids,
+		"debug_sparse_ids_snapshot_source": debug_sparse_ids_snapshot_source,
+		"debug_indirect_args_snapshot_source": debug_indirect_args_snapshot_source,
+		"score_dispatch_indirect": bool(score_dispatch.get("score_dispatch_indirect", false)),
+		"score_dispatch_indirect_block_reason": str(score_dispatch.get("score_dispatch_indirect_block_reason", "none")),
+		"score_dispatch_indirect_api_supported": bool(score_dispatch.get("score_dispatch_indirect_api_supported", false)),
+	}
+
+
+func _build_candidate_sparse_ids_from_resident_route_cpu_debug(route_binding: Dictionary, tile_count: int) -> Dictionary:
+	if not bool(route_binding.get("bindable", false)):
+		return {"ok": false, "reason": "route_binding_not_bindable"}
+	var range_buffer: RID = route_binding.get("range_buffer", RID())
+	var record_buffer: RID = route_binding.get("record_buffer", RID())
+	var range_count := int(route_binding.get("range_count", 0))
+	if not range_buffer.is_valid() or not record_buffer.is_valid() or range_count <= 0:
+		return {"ok": false, "reason": "missing_resident_route_buffers"}
+
+	var range_bytes := _rd.buffer_get_data(range_buffer, 0, range_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES)
+	if range_bytes.size() < range_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES:
+		return {"ok": false, "reason": "resident_route_range_readback_failed"}
+	var range_index := clampi(asset_index, 0, range_count - 1)
+	var range_offset := range_index * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES
+	var record_start := int(range_bytes.decode_u32(range_offset + 0))
+	var record_count := int(range_bytes.decode_u32(range_offset + 4))
+	if record_count <= 0:
+		return {"ok": false, "reason": "resident_route_range_empty"}
+
+	var record_bytes := _rd.buffer_get_data(
+		record_buffer,
+		record_start * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
+		record_count * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES
+	)
+	if record_bytes.size() < record_count * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES:
+		return {"ok": false, "reason": "resident_route_record_readback_failed"}
+
+	var ids := PackedInt32Array()
+	var seen := {}
+	for i in range(record_count):
+		var record_offset := i * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES
+		var tile_id := int(record_bytes.decode_u32(record_offset + 0))
+		if tile_id < 0 or tile_id >= tile_count or seen.has(tile_id):
+			continue
+		seen[tile_id] = true
+		ids.append(tile_id)
+	if ids.is_empty():
+		return {"ok": false, "reason": "resident_route_records_no_valid_tiles"}
+
+	return {
+		"ok": true,
+		"reason": "ok",
+		"candidate_voxel_sparse_ids": ids,
+		"range_index": range_index,
+		"range_start": record_start,
+		"range_count": record_count,
+		"record_reads": record_count,
+		"candidate_count": ids.size(),
+		"source": "resident_route_cpu_debug_sparse_adapter",
+		"adapter_mode": "cpu_debug_readback_fallback",
+	}
+
+
+func _mark_candidate_route_sparse_adapter_ready(route_settings: Dictionary, resident_route_sparse: Dictionary) -> void:
+	var raw_contract = route_settings.get("candidate_route_input_contract", {})
+	if not raw_contract is Dictionary:
+		return
+	var contract := raw_contract as Dictionary
+	if contract.is_empty():
+		return
+	contract["direct_all_tiles"] = false
+	contract["cpu_expanded_route_input"] = false
+	contract["resident_route_sparse_adapter"] = true
+	contract["resident_route_sparse_adapter_source"] = str(resident_route_sparse.get("source", "resident_route_gpu_sparse_adapter"))
+	contract["resident_route_sparse_adapter_mode"] = str(resident_route_sparse.get("adapter_mode", "gpu_compute_copy_filter"))
+	contract["resident_route_sparse_adapter_range_index"] = int(resident_route_sparse.get("range_index", 0))
+	contract["resident_route_sparse_adapter_range_start"] = int(resident_route_sparse.get("range_start", 0))
+	contract["resident_route_sparse_adapter_range_count"] = int(resident_route_sparse.get("range_count", 0))
+	contract["resident_route_sparse_adapter_record_reads"] = int(resident_route_sparse.get("record_reads", 0))
+	contract["resident_route_sparse_adapter_candidate_count"] = int(resident_route_sparse.get("candidate_count", 0))
+	contract["resident_route_sparse_adapter_candidate_count_source"] = str(resident_route_sparse.get("candidate_count_source", "none"))
+	contract["resident_route_sparse_adapter_candidate_count_semantics"] = str(resident_route_sparse.get("candidate_count_semantics", "none"))
+	contract["resident_route_sparse_adapter_candidate_count_cpu_readback_required"] = bool(resident_route_sparse.get("candidate_count_cpu_readback_required", false))
+	contract["resident_route_sparse_adapter_output_capacity"] = int(resident_route_sparse.get("output_capacity", 0))
+	contract["resident_route_sparse_adapter_count_record_reads"] = int(resident_route_sparse.get("count_record_reads", 0))
+	contract["resident_route_sparse_adapter_count_truncation_or_overflow"] = int(resident_route_sparse.get("count_truncation_or_overflow", 0))
+	contract["resident_route_sparse_adapter_count_magic"] = int(resident_route_sparse.get("count_magic", 0))
+	contract["resident_route_sparse_adapter_indirect_args_ready"] = bool(resident_route_sparse.get("indirect_args_ready", false))
+	contract["resident_route_sparse_adapter_indirect_args_layout"] = str(resident_route_sparse.get("indirect_args_layout", "none"))
+	contract["resident_route_sparse_adapter_indirect_args_words"] = resident_route_sparse.get("indirect_args_words", PackedInt32Array())
+	contract["resident_route_sparse_adapter_indirect_args_source"] = str(resident_route_sparse.get("indirect_args_source", "none"))
+	contract["resident_route_sparse_adapter_debug_snapshot_enabled"] = bool(resident_route_sparse.get("debug_snapshot_enabled", false))
+	contract["resident_route_sparse_adapter_debug_snapshot_status"] = str(resident_route_sparse.get("debug_snapshot_status", "disabled"))
+	contract["resident_route_sparse_adapter_debug_count_snapshot"] = int(resident_route_sparse.get("debug_count_snapshot", -1))
+	contract["resident_route_sparse_adapter_debug_count_snapshot_source"] = str(resident_route_sparse.get("debug_count_snapshot_source", "disabled"))
+	contract["resident_route_sparse_adapter_debug_sparse_ids_snapshot"] = resident_route_sparse.get("debug_sparse_ids_snapshot", PackedInt32Array())
+	contract["resident_route_sparse_adapter_debug_sparse_ids_snapshot_source"] = str(resident_route_sparse.get("debug_sparse_ids_snapshot_source", "disabled"))
+	contract["resident_route_sparse_adapter_debug_indirect_args_snapshot_source"] = str(resident_route_sparse.get("debug_indirect_args_snapshot_source", "disabled"))
+	contract["resident_route_sparse_adapter_score_dispatch_indirect"] = bool(resident_route_sparse.get("score_dispatch_indirect", false))
+	contract["resident_route_sparse_adapter_score_dispatch_indirect_block_reason"] = str(resident_route_sparse.get("score_dispatch_indirect_block_reason", "none"))
+	contract["resident_route_sparse_adapter_score_dispatch_indirect_api_supported"] = bool(resident_route_sparse.get("score_dispatch_indirect_api_supported", false))
+	contract["resident_route_sparse_adapter_block_reason"] = "none"
+	route_settings["candidate_route_input_contract"] = contract
+	route_settings["resident_candidate_route_contract"] = contract
+
+
+func _mark_candidate_route_sparse_adapter_blocked(route_settings: Dictionary, reason: String) -> void:
+	var raw_contract = route_settings.get("candidate_route_input_contract", {})
+	if not raw_contract is Dictionary:
+		return
+	var contract := raw_contract as Dictionary
+	if contract.is_empty():
+		return
+	contract["direct_all_tiles"] = false
+	contract["resident_route_sparse_adapter"] = false
+	contract["resident_route_sparse_adapter_block_reason"] = reason
+	contract["resident_route_sparse_adapter_output_capacity"] = 0
+	contract["resident_route_sparse_adapter_candidate_count"] = 0
+	contract["resident_route_sparse_adapter_candidate_count_source"] = "none"
+	contract["resident_route_sparse_adapter_candidate_count_semantics"] = "none"
+	contract["resident_route_sparse_adapter_candidate_count_cpu_readback_required"] = false
+	contract["resident_route_sparse_adapter_indirect_args_ready"] = false
+	contract["resident_route_sparse_adapter_indirect_args_layout"] = "none"
+	contract["resident_route_sparse_adapter_indirect_args_source"] = "none"
+	contract["resident_route_sparse_adapter_debug_snapshot_enabled"] = false
+	contract["resident_route_sparse_adapter_debug_snapshot_status"] = "disabled"
+	contract["resident_route_sparse_adapter_debug_count_snapshot_source"] = "disabled"
+	contract["resident_route_sparse_adapter_debug_sparse_ids_snapshot_source"] = "disabled"
+	contract["resident_route_sparse_adapter_debug_indirect_args_snapshot_source"] = "disabled"
+	contract["resident_route_sparse_adapter_score_dispatch_indirect"] = false
+	contract["resident_route_sparse_adapter_score_dispatch_indirect_block_reason"] = reason
+	route_settings["candidate_route_input_contract"] = contract
+	route_settings["resident_candidate_route_contract"] = contract
+
+
+func _prepare_candidate_route_binding(settings: Dictionary, direct_all_tiles: bool) -> Dictionary:
+	var route_settings := settings.duplicate(true)
+	var raw_contract = route_settings.get("candidate_route_input_contract", {})
+	var resident_contract := (raw_contract as Dictionary).duplicate(true) if raw_contract is Dictionary else {}
+	if route_settings.get("resident_candidate_route_contract", null) is Dictionary:
+		resident_contract = (route_settings.get("resident_candidate_route_contract") as Dictionary).duplicate(true)
+	var has_resident_contract := not resident_contract.is_empty()
+
+	var record_rid: RID = _rid_from_contract(resident_contract, "resident_route_record_rid", "resident_route_record_buffer_rid")
+	var range_rid: RID = _rid_from_contract(resident_contract, "resident_route_range_rid", "resident_route_range_buffer_rid")
+	var record_stride := int(resident_contract.get("resident_route_record_stride", resident_contract.get("resident_route_record_stride_bytes", 0)))
+	var range_stride := int(resident_contract.get("resident_route_range_stride", resident_contract.get("resident_route_range_stride_bytes", 0)))
+	var range_count := int(resident_contract.get("resident_route_range_count", 0))
+	var record_capacity := int(resident_contract.get("resident_route_record_capacity", resident_contract.get("resident_route_record_count", 0)))
+	var schema_version := int(resident_contract.get("schema_version", resident_contract.get("resident_route_schema_version", 0)))
+	var requested_readback := str(route_settings.get("candidate_route_readback_source", "none"))
+	var requested_runtime := str(route_settings.get("candidate_route_runtime_read_source", "none"))
+	var requested_resident_label := requested_readback != "none" or requested_runtime != "none"
+	var cpu_route_dictionary := _has_candidate_regions_by_asset(route_settings)
+	var cpu_expanded_route_input := _has_asset_candidate_regions(route_settings)
+	var rd_matches_vpg := bool(resident_contract.get("same_rendering_device_as_vpg", resident_contract.get("rendering_device_matches_vpg", false)))
+	var bindable := requested_resident_label \
+		and has_resident_contract \
+		and not cpu_route_dictionary \
+		and record_rid.is_valid() \
+		and range_rid.is_valid() \
+		and rd_matches_vpg \
+		and record_stride == CANDIDATE_ROUTE_RECORD_STRIDE_BYTES \
+		and range_stride == CANDIDATE_ROUTE_RANGE_STRIDE_BYTES \
+		and range_count > 0 \
+		and schema_version == CANDIDATE_ROUTE_CONTRACT_SCHEMA_VERSION
+	var bindable_block_reason := "none"
+	if not bindable:
+		if not requested_resident_label:
+			bindable_block_reason = "resident_route_not_requested"
+		elif not has_resident_contract:
+			bindable_block_reason = "missing_resident_route_contract"
+		elif cpu_route_dictionary:
+			bindable_block_reason = "cpu_route_dictionary_present"
+		elif cpu_expanded_route_input:
+			bindable_block_reason = "asset_cpu_route_present"
+		elif not record_rid.is_valid():
+			bindable_block_reason = "missing_or_invalid_route_record_rid"
+		elif not range_rid.is_valid():
+			bindable_block_reason = "missing_or_invalid_route_range_rid"
+		elif not rd_matches_vpg:
+			bindable_block_reason = "rendering_device_mismatch_or_unverified"
+		elif record_stride != CANDIDATE_ROUTE_RECORD_STRIDE_BYTES:
+			bindable_block_reason = "route_record_stride_mismatch"
+		elif range_stride != CANDIDATE_ROUTE_RANGE_STRIDE_BYTES:
+			bindable_block_reason = "route_range_stride_mismatch"
+		elif range_count <= 0:
+			bindable_block_reason = "route_range_count_not_positive"
+		elif schema_version != CANDIDATE_ROUTE_CONTRACT_SCHEMA_VERSION:
+			bindable_block_reason = "route_schema_version_mismatch"
+		else:
+			bindable_block_reason = "unknown_route_binding_block"
+
+	if bindable:
+		track_borrowed_rid(record_rid, KIND_BUFFER, SCOPE_FRAME, "candidate_route_records")
+		track_borrowed_rid(range_rid, KIND_BUFFER, SCOPE_FRAME, "candidate_route_ranges")
+
+	var debug_bytes := PackedByteArray()
+	debug_bytes.resize(CANDIDATE_ROUTE_BINDING_DEBUG_WORDS * 4)
+	debug_bytes.encode_u32(0, 1 if bindable else 0)
+	debug_bytes.encode_u32(4, maxi(range_count, 0) if bindable else 0)
+	var debug_buffer := storage_buffer_from_bytes(debug_bytes, SCOPE_FRAME, "candidate_route_binding_debug")
+
+	if has_resident_contract:
+		resident_contract["vpg_binds_route_buffers"] = bindable
+		resident_contract["vpg_route_buffer_binding_source"] = "score_shader_set2_uniform_set" if bindable else "none"
+		resident_contract["vpg_route_buffer_binding_debug_source"] = "score_shader_candidate_route_binding_debug" if bindable else "none"
+		resident_contract["vpg_route_buffer_binding_block_reason"] = bindable_block_reason
+		resident_contract["cpu_expanded_route_input"] = bool(resident_contract.get("cpu_expanded_route_input", false)) or cpu_route_dictionary or cpu_expanded_route_input
+		resident_contract["direct_all_tiles"] = bool(resident_contract.get("direct_all_tiles", false)) or direct_all_tiles
+		route_settings["candidate_route_input_contract"] = resident_contract
+		route_settings["resident_candidate_route_contract"] = resident_contract
+
+	return {
+		"settings": route_settings,
+		"record_buffer": record_rid if bindable else RID(),
+		"range_buffer": range_rid if bindable else RID(),
+		"debug_buffer": debug_buffer,
+		"bindable": bindable,
+		"range_count": range_count if bindable else 0,
+		"record_capacity": record_capacity if bindable else 0,
+	}
+
+
+func _create_candidate_route_binding_set(route_binding: Dictionary) -> RID:
+	var debug_buffer: RID = route_binding.get("debug_buffer", RID())
+	if not debug_buffer.is_valid():
+		return RID()
+	var dummy_buffer := storage_buffer_zero(16, SCOPE_PASS, "candidate_route_binding_dummy")
+	var record_buffer: RID = route_binding.get("record_buffer", RID())
+	var range_buffer: RID = route_binding.get("range_buffer", RID())
+	if not record_buffer.is_valid():
+		record_buffer = dummy_buffer
+	if not range_buffer.is_valid():
+		range_buffer = dummy_buffer
+	return create_uniform_set([
+		make_storage_uniform(0, record_buffer),
+		make_storage_uniform(1, range_buffer),
+		make_storage_uniform(2, debug_buffer),
+	], _shader_score, 2, SCOPE_PASS, "candidate_route_binding")
+
+
+func _read_candidate_route_binding_debug(route_binding: Dictionary, read_debug_snapshot: bool = false) -> Dictionary:
+	var debug_buffer: RID = route_binding.get("debug_buffer", RID())
+	var words := PackedInt32Array()
+	words.resize(CANDIDATE_ROUTE_BINDING_DEBUG_WORDS)
+	if not read_debug_snapshot or not debug_buffer.is_valid():
+		return {
+			"read_source": "disabled" if not read_debug_snapshot else "none",
+			"word_count": CANDIDATE_ROUTE_BINDING_DEBUG_WORDS,
+			"words": words,
+			"enabled": false,
+			"range_count": int(route_binding.get("range_count", 0)),
+			"range_reads": 0,
+			"record_reads": 0,
+			"sparse_adapter_output_capacity": int(route_binding.get("record_capacity", 0)),
+			"sparse_adapter_record_capacity": int(route_binding.get("record_capacity", 0)),
+		}
+	var bytes := _rd.buffer_get_data(debug_buffer, 0, CANDIDATE_ROUTE_BINDING_DEBUG_WORDS * 4)
+	var available := mini(int(bytes.size() / 4), CANDIDATE_ROUTE_BINDING_DEBUG_WORDS)
+	for i in range(available):
+		words[i] = bytes.decode_s32(i * 4)
+	return {
+		"read_source": "score_shader_candidate_route_binding_debug",
+		"word_count": CANDIDATE_ROUTE_BINDING_DEBUG_WORDS,
+		"words": words,
+		"enabled": int(words[0]) != 0,
+		"range_count": int(words[1]),
+		"range_reads": int(words[2]),
+		"record_reads": int(words[3]),
+		"first_range_start": int(words[4]),
+		"first_range_count": int(words[5]),
+		"first_record_x": int(words[6]),
+		"first_record_y": int(words[7]),
+		"sparse_adapter_candidate_count": int(words[8]) if words.size() > 8 else 0,
+		"sparse_adapter_record_reads": int(words[9]) if words.size() > 9 else 0,
+		"sparse_adapter_range_index": int(words[10]) if words.size() > 10 else 0,
+		"sparse_adapter_output_capacity": int(words[11]) if words.size() > 11 else 0,
+		"sparse_adapter_range_start": int(words[12]) if words.size() > 12 else 0,
+		"sparse_adapter_range_count": int(words[13]) if words.size() > 13 else 0,
+		"sparse_adapter_record_capacity": int(words[14]) if words.size() > 14 else 0,
+	}
+
+
+func _merge_candidate_route_binding_debug_into_settings(route_settings: Dictionary, route_binding_debug: Dictionary) -> void:
+	var raw_contract = route_settings.get("candidate_route_input_contract", {})
+	if not raw_contract is Dictionary:
+		return
+	var contract := raw_contract as Dictionary
+	if contract.is_empty():
+		return
+	contract["vpg_route_buffer_binding_range_reads"] = int(route_binding_debug.get("range_reads", 0))
+	contract["vpg_route_buffer_binding_record_reads"] = int(route_binding_debug.get("record_reads", 0))
+	contract["vpg_route_buffer_binding_debug_enabled"] = bool(route_binding_debug.get("enabled", false))
+	if int(route_binding_debug.get("sparse_adapter_output_capacity", 0)) > 0:
+		contract["resident_route_sparse_adapter_record_reads"] = int(route_binding_debug.get("sparse_adapter_record_reads", 0))
+		contract["resident_route_sparse_adapter_output_capacity"] = int(route_binding_debug.get("sparse_adapter_output_capacity", 0))
+		contract["resident_route_sparse_adapter_range_start"] = int(route_binding_debug.get("sparse_adapter_range_start", 0))
+		contract["resident_route_sparse_adapter_range_count"] = int(route_binding_debug.get("sparse_adapter_range_count", 0))
+	route_settings["candidate_route_input_contract"] = contract
+	route_settings["resident_candidate_route_contract"] = contract
 
 
 func _create_score_runtime_profile_set(
@@ -2471,6 +3464,10 @@ func _pack_score_contract_params(gpu_contract: Dictionary, settings: Dictionary)
 	bytes.encode_s32(36, collision_record_count)
 	bytes.encode_s32(40, pivot_record_count)
 	bytes.encode_s32(44, 0)
+	bytes.encode_float(48, maxf(float(settings.get("min_distance_voxels", min_distance_voxels)), 0.0))
+	bytes.encode_float(52, 0.0)
+	bytes.encode_float(56, 0.0)
+	bytes.encode_float(60, 0.0)
 	return bytes
 
 
@@ -2520,6 +3517,10 @@ func _decode_score_contract_debug(bytes: PackedByteArray) -> Dictionary:
 		"profile_probe_count": int(words[20]),
 		"profile_collision_count": int(words[21]),
 		"profile_pivot_count": int(words[22]),
+		"runtime_spacing_tests": int(words[31]),
+		"runtime_spacing_profile_matches": int(words[32]),
+		"runtime_spacing_rejections": int(words[33]),
+		"runtime_spacing_min_distance": float(words[34]) / 1000.0,
 		"debug_channel_max": debug_channel_max,
 		"debug_channel_max_source": "score_shader_storage_buffer",
 	}
@@ -2533,7 +3534,7 @@ func _pack_score_contract_debug_reset() -> PackedByteArray:
 
 
 func _annotate_score_contract_debug(gpu_contract: Dictionary, score_contract_debug: Dictionary) -> Dictionary:
-	var annotated := gpu_contract.duplicate(true)
+	var annotated := _with_same_type_exclusion_defaults(gpu_contract.duplicate(true))
 	if str(annotated.get("reason", "")) == "gpu_runtime_profile_buffers_ready":
 		var runtime_summary: Dictionary = annotated.get("runtime_summary", {})
 		var runtime_live_count := int(runtime_summary.get("live_count", 0))
@@ -2562,6 +3563,13 @@ func _annotate_score_contract_debug(gpu_contract: Dictionary, score_contract_deb
 		annotated["score_shader_probe_record_reads"] = int(score_contract_debug.get("probe_record_reads", 0))
 		annotated["score_shader_collision_record_reads"] = int(score_contract_debug.get("collision_record_reads", 0))
 		annotated["score_shader_pivot_record_reads"] = int(score_contract_debug.get("pivot_record_reads", 0))
+		annotated["score_shader_same_type_min_spacing_tests"] = int(score_contract_debug.get("runtime_spacing_tests", 0))
+		annotated["score_shader_same_type_min_spacing_profile_matches"] = int(score_contract_debug.get("runtime_spacing_profile_matches", 0))
+		annotated["score_shader_same_type_min_spacing_rejections"] = int(score_contract_debug.get("runtime_spacing_rejections", 0))
+		annotated["score_shader_same_type_min_spacing_min_distance"] = float(score_contract_debug.get("runtime_spacing_min_distance", 0.0))
+		if int(score_contract_debug.get("runtime_spacing_rejections", 0)) > 0:
+			annotated["score_shader_same_type_min_spacing_exclusion"] = true
+			annotated["same_type_exclusion_read_source"] = "score_shader_storage_buffer"
 		if not bool(annotated.get("score_shader_bound_runtime_profile_buffers", false)):
 			annotated["ok"] = false
 			annotated["reason"] = "score_runtime_profile_binding_missing"

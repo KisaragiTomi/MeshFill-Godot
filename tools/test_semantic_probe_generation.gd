@@ -12,7 +12,7 @@ func _init() -> void:
 	ok = ok and _test_leaf_asset_probe_generation()
 	ok = ok and _test_probe_density_scaling()
 	ok = ok and _test_convex_probe_generation()
-	ok = ok and _test_collision_voxel_probe_generation()
+	ok = ok and _test_collision_sample_probe_generation()
 	ok = ok and _test_world_min_distance_constant()
 	ok = ok and _test_asset_instance_probe_transfer()
 
@@ -106,8 +106,8 @@ func _test_convex_probe_generation() -> bool:
 	return true
 
 
-func _test_collision_voxel_probe_generation() -> bool:
-	print("[SemanticProbeGeneration] test_collision_voxel_probe_generation...")
+func _test_collision_sample_probe_generation() -> bool:
+	print("[SemanticProbeGeneration] test_collision_sample_probe_generation...")
 	var mesh := BoxMesh.new()
 	mesh.size = Vector3(2.0, 2.0, 2.0)
 	var probes := SemanticProbeProfileScript.generate_from_mesh(
@@ -117,7 +117,7 @@ func _test_collision_voxel_probe_generation() -> bool:
 			"radius": 0.45,
 			"y_min": -0.5,
 			"y_max": 0.5,
-			"value": 0.8,
+			"collision_strength": 0.8,
 		}],
 		TEST_LEAF_COLOR,
 		TEST_LEAF_COMPLEXITY,
@@ -180,8 +180,8 @@ func _test_asset_instance_probe_transfer() -> bool:
 	if instance == null:
 		push_error("  FAIL: instantiate_vegetation returned null")
 		return false
-	if instance.object_subtype != "test_leaf":
-		push_error("  FAIL: instance subtype should be test_leaf, got %s" % instance.object_subtype)
+	if instance.get_record_object_subtype() != "test_leaf":
+		push_error("  FAIL: instance subtype should be test_leaf, got %s" % instance.get_record_object_subtype())
 		instance.free()
 		return false
 	if instance.vegetation_channel != 1:
@@ -222,8 +222,8 @@ func _load_test_leaf_asset() -> AutoVoxelDescriptor:
 	if asset.get_mesh() == null:
 		push_error("  FAIL: asset has no mesh")
 		return null
-	if asset.get_collision_voxels().size() != 0:
-		push_error("  FAIL: test leaf should not generate collision voxels")
+	if asset.get_collision().size() != 0:
+		push_error("  FAIL: test leaf should not generate collision samples")
 		return null
 	return asset
 

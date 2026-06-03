@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://coemhe5hhngtq"
+path="res://.godot/imported/height_to_grayscale.glsl-938d4f8eca9c894bb533e592a99eaeb5.res"
+
+[deps]
+
+source_file="res://shaders/height_to_grayscale.glsl"
+dest_files=["res://.godot/imported/height_to_grayscale.glsl-938d4f8eca9c894bb533e592a99eaeb5.res"]
+
+[params]
+

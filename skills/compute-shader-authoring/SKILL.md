@@ -210,9 +210,9 @@ For terrain/object placement pipelines, treat the GPU work as a staged solver:
 - `find`: reduce to best pixel, tile, object, or placement.
 - `update`: write current height, occupancy, mask, and compact result records.
 
-MeshFill-Godot memory source: the project uses `scripts/cliff_generator.gd` to
-manage `init -> target_height -> blur -> extent_mask -> fill -> find -> update`
-over depth, normal, target-height, rock-mask, and result textures.
+MeshFill-Godot memory source: the project uses `scripts/placement_fitting_generator.gd`
+plus the current voxel placement path to manage heightfield fitting, candidate-region scoring,
+stamping, and BlendSV-backed `instance_stamp_write_spec` / `ISWS` output over SV / TargetSV_B resident fields; `voxel_write_spec` is a legacy compatibility alias.
 
 ## Sparse Pixel And Thread Remapping
 
@@ -415,16 +415,16 @@ For 3D, `readback_tile_coords()` returns `Array[Vector3i]`.
 For voxel generation or scatter exclusion:
 
 - Keep visual/ecological height-band occupancy separate from rigid collision occupancy.
-- Store persistent voxel defaults on the object when possible: `voxel_color`, `voxel_complexity`, and `collision_voxels`.
+- Store persistent voxel defaults on the object when possible: `voxel_color`, `voxel_complexity`, and `collision` / `collision_strength`.
 - Treat shared voxel profiles as presets/fallbacks, not the only source of truth.
-- Write only coarse solid parts to collision voxels, such as trunks or large rock masses.
-- Avoid writing grass, leaves, and thin branches into rigid collision voxels.
+- Write only coarse solid parts to `collision`, such as trunks or large rock masses.
+- Avoid writing grass, leaves, and thin branches into rigid collision.
 - Use erosion followed by dilation when a collision footprint needs thin-part removal plus conservative blocking.
 - Make occupancy writes idempotent with max-style writes or monotonic masks.
 
-MeshFill-Godot memory source: collision voxels are a separate layer from RGBA
-height-band occupancy; crowns can overlap across bands, but trunks cannot occupy
-the same collision voxel.
+MeshFill-Godot memory source: `collision` is the rigid collision semantic and
+`collision_strength` is the per-sample/per-voxel intensity; crowns can overlap
+across visual bands, but trunks cannot occupy the same rigid collision space.
 
 ## Godot Gotchas
 

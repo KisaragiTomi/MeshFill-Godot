@@ -1,0 +1,40 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
+
+[node name="ModuleSceneVoxelTileDirty" type="Node3D"]
+script = ExtResource("1_contract")
+metadata/module_id = "scenevoxel-tile-dirty"
+metadata/source_docs = "res://docs/core/scenevoxeltile.md; res://docs/core/scene-voxel-field-system.md; res://docs/core/autoobject-gpu-runtime-architecture.md"
+metadata/test_doc = "res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md"
+metadata/focus = "SceneVoxelTile dirty API, tile size, summaries, object/source ranges, GPU dirty delta handoff, and GPU lifecycle revision guards"
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 9)
+current = true
+fov = 45.0
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.707, -0.354, 0.612, 0, 0.866, 0.5, -0.707, -0.354, 0.612, 0, 4, 4)
+light_energy = 1.2
+
+[node name="Title" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.55, 0)
+text = "Module: SceneVoxelTile Dirty"
+font_size = 38
+pixel_size = 0.01
+outline_size = 6
+
+[node name="Method" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, 0)
+text = "Method\n- run headless SKIP smoke\n- run Vulkan RD buffer readback\n- inspect GPU summary/stale guards"
+font_size = 27
+pixel_size = 0.01
+outline_size = 4
+
+[node name="Acceptance" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -1.15, 0)
+text = "Acceptance\n- SceneVoxelTile is SV-owned sidecar\n- stale buffers are not runtime source\n- clean dirty index after auto-upload"
+font_size = 27
+pixel_size = 0.01
+outline_size = 4

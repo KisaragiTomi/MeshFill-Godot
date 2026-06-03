@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bma2lutndsccj"
+path="res://.godot/imported/raw_depth_to_height_png.glsl-20c99edeac3e6f95204ae62c227c793e.res"
+
+[deps]
+
+source_file="res://shaders/raw_depth_to_height_png.glsl"
+dest_files=["res://.godot/imported/raw_depth_to_height_png.glsl-20c99edeac3e6f95204ae62c227c793e.res"]
+
+[params]
+

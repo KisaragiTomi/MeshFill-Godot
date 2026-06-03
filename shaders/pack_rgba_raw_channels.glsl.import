@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://b6pyhfifabi7q"
+path="res://.godot/imported/pack_rgba_raw_channels.glsl-aa51ce3926b6134fc170938f1ec7f938.res"
+
+[deps]
+
+source_file="res://shaders/pack_rgba_raw_channels.glsl"
+dest_files=["res://.godot/imported/pack_rgba_raw_channels.glsl-aa51ce3926b6134fc170938f1ec7f938.res"]
+
+[params]
+

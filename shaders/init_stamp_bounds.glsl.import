@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bmdaqfpefup3v"
+path="res://.godot/imported/init_stamp_bounds.glsl-b7f93b47bafaac419bebce6027d1b482.res"
+
+[deps]
+
+source_file="res://shaders/init_stamp_bounds.glsl"
+dest_files=["res://.godot/imported/init_stamp_bounds.glsl-b7f93b47bafaac419bebce6027d1b482.res"]
+
+[params]
+

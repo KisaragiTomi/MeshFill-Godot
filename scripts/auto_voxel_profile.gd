@@ -3,7 +3,7 @@ extends Resource
 
 @export var color: Color = Color.WHITE
 @export_range(0.0, 1.0) var complexity: float = 1.0
-@export var collision_voxels: Array[Dictionary] = []
+@export var collision: Array[Dictionary] = []
 
 
 func get_color() -> Color:
@@ -16,69 +16,12 @@ func get_complexity() -> float:
 	return clampf(complexity, 0.0, 1.0)
 
 
-func get_collision_voxels(default_radius: float = 0.0) -> Array[Dictionary]:
-	return normalize_collision_voxels(collision_voxels, default_radius)
+func get_collision(default_radius: float = 0.0) -> Array[Dictionary]:
+	return normalize_collision(collision, default_radius)
 
 
-static func normalize_collision_voxels(source: Array, default_radius: float = 0.0) -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
-	for raw_collision in source:
-		if not raw_collision is Dictionary:
-			continue
-		var collision := (raw_collision as Dictionary).duplicate(true)
-		if _is_float_collision_voxel(collision):
-			var voxel := _vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
-			collision["voxel"] = voxel
-			collision["local_pos"] = voxel
-			if not collision.has("value") and collision.has("collision_degree"):
-				collision["value"] = clampf(float(collision.get("collision_degree", 255)) / 255.0, 0.0, 1.0)
-			if not collision.has("value"):
-				collision["value"] = 1.0
-			collision["value"] = clampf(float(collision.get("value", 1.0)), 0.0, 1.0)
-			if not collision.has("weight"):
-				collision["weight"] = 1.0
-			result.append(collision)
-			continue
-		if not collision.has("shape"):
-			collision["shape"] = "cylinder"
-		if not collision.has("radius") or float(collision.radius) <= 0.0:
-			collision["radius"] = default_radius
-		if not collision.has("y_min"):
-			collision["y_min"] = 0.0
-		if not collision.has("y_max"):
-			collision["y_max"] = 2.0
-		if not collision.has("erosion_radius"):
-			collision["erosion_radius"] = 0.0
-		if not collision.has("dilation_radius"):
-			collision["dilation_radius"] = 0.0
-		if not collision.has("value"):
-			collision["value"] = 1.0
-		result.append(collision)
-	return result
-
-
-static func _is_float_collision_voxel(collision: Dictionary) -> bool:
-	return collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset")
-
-
-static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
-	if value is Vector3i:
-		return value as Vector3i
-	if value is Vector3:
-		var v := value as Vector3
-		return Vector3i(roundi(v.x), roundi(v.y), roundi(v.z))
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Vector3i(
-			int(dict.get("x", fallback.x)),
-			int(dict.get("y", fallback.y)),
-			int(dict.get("z", fallback.z))
-		)
-	return fallback
+static func normalize_collision(source: Array, default_radius: float = 0.0) -> Array[Dictionary]:
+	return AutoVoxelDescriptor.normalize_collision(source, default_radius)
 
 
 static func create_profile(entry_color: Color, entry_complexity: float) -> AutoVoxelProfile:
@@ -88,20 +31,20 @@ static func create_profile(entry_color: Color, entry_complexity: float) -> AutoV
 	return profile
 
 
-static func make_collision_voxel(
+static func make_collision_sample(
 	voxel: Vector3i,
-	value: float = 1.0,
+	collision_strength: float = 1.0,
 	weight: float = 1.0
 ) -> Dictionary:
 	return {
 		"voxel": voxel,
 		"local_pos": voxel,
-		"value": clampf(value, 0.0, 1.0),
+		"collision_strength": clampf(collision_strength, 0.0, 1.0),
 		"weight": maxf(weight, 0.0),
 	}
 
 
-static func make_legacy_cylinder_collision(
+static func make_cylinder_collision(
 	radius: float,
 	y_min: float = 0.0,
 	y_max: float = 2.0,
@@ -115,5 +58,5 @@ static func make_legacy_cylinder_collision(
 		"y_max": y_max,
 		"erosion_radius": erosion_radius,
 		"dilation_radius": dilation_radius,
-		"value": 1.0,
+		"collision_strength": 1.0,
 	}
