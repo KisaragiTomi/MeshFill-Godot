@@ -3,6 +3,7 @@ extends SceneTree
 const Prefilter := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
 const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
+const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
 
 
 func _has_rendering_device() -> bool:
@@ -23,6 +24,7 @@ func _init() -> void:
 	ok = ok and _test_probe_expected_rgba8_repacked_for_shader()
 	ok = ok and _test_prefilter_accepts_prepacked_target_color_rgba8()
 	ok = ok and _test_prefilter_accepts_prepacked_target_occupancy()
+	ok = ok and _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_uploads()
 	ok = ok and _test_prefilter_output_reports_gpu_profile_probe_contract()
 	ok = ok and _test_profile_pack_block_reasons_fail_contract()
 	ok = ok and _test_pipeline_readiness_contract()
@@ -78,7 +80,8 @@ func _test_position_only_anchor_layers() -> bool:
 		_all_tile_ids(sv),
 		null,
 		_pack_target_color_rgba8(target_color),
-		target.to_byte_array()
+		target.to_byte_array(),
+		{"debug_read_candidate_route_cpu_expansion": true}
 	)
 	var anchors: Array = result.get("anchors", [])
 	var candidate_voxel_sparses: Dictionary = result.get("autoobject_candidate_voxel_sparses", {})
@@ -249,6 +252,11 @@ func _test_candidate_route_handoff_payload_schema() -> bool:
 	   or not bool(payload.get("readback_derived", false)):
 		push_error("  FAIL: handoff payload should label readback-derived CPU pack source: %s" % str(payload))
 		return false
+	if str(payload.get("record_order", "")) != "asset_range_score_desc_tile_id_ascending" \
+	   or not bool(payload.get("score_order_preserved", false)) \
+	   or bool(payload.get("gpu_route_pack", true)):
+		push_error("  FAIL: default handoff payload should remain CPU score-sorted with GPU route pack disabled: %s" % str(payload))
+		return false
 	if int(payload.get("record_count", -1)) != 2 \
 	   or int(payload.get("range_count", -1)) != 3 \
 	   or int(payload.get("duplicate_tile_id_count", -1)) != 1 \
@@ -274,13 +282,15 @@ func _test_candidate_route_handoff_payload_schema() -> bool:
 		return false
 	if int(range_bytes.decode_u32(16)) != 1 \
 	   or int(range_bytes.decode_u32(20)) != 0 \
-	   or int(range_bytes.decode_u32(24)) != 1:
-		push_error("  FAIL: empty asset 1 range should preserve start/count without emitting a tile-0 record")
+	   or int(range_bytes.decode_u32(24)) != 0 \
+	   or int(range_bytes.decode_u32(28)) != 0:
+		push_error("  FAIL: empty asset 1 range should preserve start/count and zero reserved words without emitting a tile-0 record")
 		return false
 	if int(range_bytes.decode_u32(32)) != 1 \
 	   or int(range_bytes.decode_u32(36)) != 1 \
-	   or int(range_bytes.decode_u32(40)) != 2:
-		push_error("  FAIL: asset 2 range should use string-keyed regions")
+	   or int(range_bytes.decode_u32(40)) != 0 \
+	   or int(range_bytes.decode_u32(44)) != 0:
+		push_error("  FAIL: asset 2 range should use string-keyed regions and zero reserved words")
 		return false
 
 	print("  OK: handoff records=%d ranges=%d" % [int(payload.get("record_count", 0)), int(payload.get("range_count", 0))])
@@ -337,6 +347,11 @@ func _test_prefilter_decode_output_contract() -> bool:
 	   or int(handoff_payload.get("schema_version", 0)) != 1 \
 	   or str(handoff_payload.get("source_label", "")) != "gpu_vote_buffer_readback_cpu_pack":
 		push_error("  FAIL: decode output should include readback-derived candidate route handoff payload diagnostics")
+		return false
+	if str(result.get("candidate_route_payload_source_label", "")) != "gpu_vote_buffer_readback_cpu_pack" \
+	   or str(result.get("candidate_route_payload_ordering_contract", "")) != "score_sorted_cpu_expansion" \
+	   or bool(handoff_payload.get("gpu_route_pack_used", true)):
+		push_error("  FAIL: decode output should keep the default CPU-packed route payload selected")
 		return false
 	if not _assert_route_input_contract(
 		result,
@@ -537,6 +552,90 @@ func _test_prefilter_accepts_prepacked_target_occupancy() -> bool:
 			return false
 
 	print("  OK: prefilter consumes TargetSV prepacked occupancy bytes without array packing fallback")
+	return true
+
+
+func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_uploads() -> bool:
+	print("[AutoObjectProbePrefilter] test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_uploads...")
+	if not _has_rendering_device():
+		print("  SKIP: no RenderingDevice available for GPU-only TargetSV read-buffer borrowing")
+		return true
+
+	var grid_size := Vector3i(2, 2, 2)
+	var voxel_count := grid_size.x * grid_size.y * grid_size.z
+	var expected_bytes := voxel_count * 4
+	var color_bytes := PackedByteArray()
+	var occupancy_bytes := PackedByteArray()
+	color_bytes.resize(expected_bytes)
+	occupancy_bytes.resize(expected_bytes)
+	for i in range(voxel_count):
+		color_bytes.encode_u32(i * 4, 0xC0002000 | i)
+		occupancy_bytes.encode_float(i * 4, 0.1 + float(i) * 0.05)
+
+	var actor := ScenePlacementActorScript.new()
+	var target_buffers := actor.prepare_target_read_buffers_from_common_gpu({
+		"target_color_rgba8_bytes": color_bytes,
+		"target_occupancy_bytes": occupancy_bytes,
+	}, {"grid_size": grid_size})
+	if not bool(target_buffers.get("ok", false)):
+		actor.dispose(true)
+		push_error("  FAIL: resident TargetSV producer should be ready: %s" % str(target_buffers))
+		return false
+
+	var prefilter := Prefilter.new()
+	if not prefilter.attach_rendering_device(actor.get_rendering_device(), false):
+		actor.dispose(true)
+		push_error("  FAIL: prefilter should attach actor RenderingDevice for same-RD borrow")
+		return false
+	var borrowed: Dictionary = prefilter._target_read_buffer_pack(target_buffers, PackedByteArray(), PackedByteArray(), voxel_count)
+	if not bool(borrowed.get("target_read_buffers_borrowed", false)) \
+			or str(borrowed.get("target_read_buffer_source", "")) != "borrowed_scene_placement_actor_resident" \
+			or str(borrowed.get("target_read_buffer_ownership", "")) != "borrowed_external" \
+			or bool(borrowed.get("cpu_fallback", true)):
+		prefilter.dispose()
+		actor.dispose(true)
+		push_error("  FAIL: same-RD resident buffers should be borrowed without CPU fallback: %s" % str(borrowed))
+		return false
+	var borrowed_summary := prefilter._target_read_buffer_summary(borrowed)
+	if str(borrowed_summary.get("owner", "")) != "ScenePlacementActor" \
+			or str(borrowed_summary.get("target_color_rgba8_buffer_rid", "")) != "valid" \
+			or str(borrowed_summary.get("target_occupancy_buffer_rid", "")) != "valid" \
+			or str(borrowed_summary.get("target_read_buffer_lifetime", "")) == "none":
+		prefilter.dispose()
+		actor.dispose(true)
+		push_error("  FAIL: borrowed diagnostics should expose owner/RID/lifetime: %s" % str(borrowed_summary))
+		return false
+	prefilter.dispose()
+
+	var mismatch_prefilter := Prefilter.new()
+	if not mismatch_prefilter.ensure_device(true, false):
+		actor.dispose(true)
+		print("  SKIP: no second local RenderingDevice available for mismatch upload branch")
+		return true
+	var uploaded: Dictionary = mismatch_prefilter._target_read_buffer_pack(target_buffers, color_bytes, occupancy_bytes, voxel_count)
+	if bool(uploaded.get("target_read_buffers_borrowed", true)) \
+			or not bool(uploaded.get("target_read_buffers_uploaded", false)) \
+			or str(uploaded.get("target_read_buffer_source", "")) != "uploaded_target_bytes" \
+			or str(uploaded.get("source_reason", "")) != "resident_target_read_buffer_rendering_device_mismatch" \
+			or bool(uploaded.get("cpu_fallback", true)):
+		mismatch_prefilter.dispose()
+		actor.dispose(true)
+		push_error("  FAIL: RD mismatch should preserve byte-upload compatibility: %s" % str(uploaded))
+		return false
+	var blocked: Dictionary = mismatch_prefilter._target_read_buffer_pack(target_buffers, PackedByteArray(), PackedByteArray(), voxel_count)
+	if bool(blocked.get("ready", true)) \
+			or not bool(blocked.get("contract_blocked", false)) \
+			or str(blocked.get("reason", "")) != "resident_target_read_buffer_rendering_device_mismatch_no_debug_or_legacy_bytes" \
+			or bool(blocked.get("target_read_buffers_uploaded", true)) \
+			or bool(blocked.get("cpu_fallback", true)):
+		mismatch_prefilter.dispose()
+		actor.dispose(true)
+		push_error("  FAIL: RD mismatch without debug/legacy bytes should block explicitly: %s" % str(blocked))
+		return false
+	mismatch_prefilter.dispose()
+	actor.dispose(true)
+
+	print("  OK: same-RD resident TargetSV buffers are borrowed; RD mismatch uploads only with explicit bytes")
 	return true
 
 

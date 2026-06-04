@@ -1,6 +1,6 @@
 # Project Docs
 
-This folder keeps MeshFill architecture notes, data schemas, pipeline plans, generated diagrams, and historical migration notes out of the project root. The root [`../README.md`](../README.md) is the GitHub entry page; this file is the detailed documentation index.
+This folder keeps MeshFill architecture notes, data schemas, pipeline plans, and generated diagrams. The root [`../README.md`](../README.md) is the GitHub entry page; this file is the detailed documentation index.
 
 ## Folder Map
 
@@ -9,7 +9,6 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | [`core/`](core/) | Framework ownership, asset fields, source voxel state, and asset authoring notes |
 | [`placement/`](placement/) | TargetSV, probe prefiltering, semantic routing, placement, and exclusion-field plans |
 | [`graphs/`](graphs/) | SVG, GraphML, and rendered QA previews |
-| [`history/`](history/) | Completed migration records and temporarily discarded design notes |
 
 ## Core Framework
 
@@ -23,7 +22,6 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | [`core/scene-voxel-field-system.md`](core/scene-voxel-field-system.md) | SV write payloads, source voxel writes, final `SceneVoxel`, and GPU-resident SV query channels |
 | [`core/scenevoxeltile.md`](core/scenevoxeltile.md) | `SceneVoxelTile` coarse SV cell index for dirty tracking, voxel bounds, AutoObject references, summaries, and partial rebuilds |
 | [`core/auto-asset-scripting.md`](core/auto-asset-scripting.md) | Scripted rock and vegetation asset creation through Godot headless tools |
-| [`core/vegetation-scatter.md`](core/vegetation-scatter.md) | `scripts/vegetation_scatter.gd` source map, procedural vegetation mesh factory, and GPU occupancy mask/count helper contracts |
 | [`core/asset-semantic-probes.md`](core/asset-semantic-probes.md) | Asset-side semantic probes used by current prefilter and planned candidate-only route validation |
 
 ## Placement And Target Fields
@@ -54,12 +52,6 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, gen
 | [`graphs/scenevoxeltile.svg`](graphs/scenevoxeltile.svg) | `SceneVoxelTile` coarse SV cell index, dirty triggers, SV owner boundary, object id ranges, summaries, and consumers |
 | [`graphs/target-scene-voxel-current.svg`](graphs/target-scene-voxel-current.svg) | `TargetSV`, `BrushSV`, `TargetSV_B`, target read buffers, consumer boundaries, and planned guidance sources |
 | [`graphs/voxel-semantic-routing.svg`](graphs/voxel-semantic-routing.svg) | Candidate voxel-region routing, conservative readback expansion, empty-route skip, same-type exclusion, and physical scoring boundary |
-
-## History
-
-| File | Purpose |
-| --- | --- |
-| [`history/voxel-3d-migration-plan.md`](history/voxel-3d-migration-plan.md) | Completed historical 3D voxel placement implementation record |
 
 ## Documentation Rules
 

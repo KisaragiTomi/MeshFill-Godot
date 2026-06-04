@@ -112,9 +112,12 @@ layout(set = 1, binding = 6, std430) restrict readonly buffer RuntimeProfileTabl
 
 layout(set = 1, binding = 7, std430) restrict readonly buffer ScoreRuntimeProfileParams {
     ivec4 contract_counts; // enabled, runtime object capacity, profile count, asset profile id
-    ivec4 contract_modes;  // runtime avoidance, profile complexity debug, reserved, reserved
+    ivec4 contract_modes;  // runtime avoidance, profile complexity debug, object-ref spacing, debug full-scan spacing
     ivec4 profile_side_counts; // probe records, collision records, pivot records, reserved
     vec4 runtime_spacing_params; // min_distance_voxels, reserved, reserved, reserved
+    ivec4 object_ref_counts; // enabled, tile_count, refs_per_tile, object_ref_capacity
+    ivec4 object_ref_tile_grid; // tile_grid x/y/z, tile_size
+    ivec4 object_ref_modes; // full-scan debug fallback, require object refs, numeric schema confirmed, reserved
 };
 
 layout(set = 1, binding = 8, std430) restrict buffer ScoreRuntimeProfileDebug {
@@ -131,6 +134,10 @@ layout(set = 1, binding = 10, std430) restrict readonly buffer RuntimeCollisionR
 
 layout(set = 1, binding = 11, std430) restrict readonly buffer RuntimePivotRecords {
     RuntimePivotRecord runtime_pivot_records[];
+};
+
+layout(set = 1, binding = 12, std430) restrict readonly buffer SceneVoxelTileObjectRefs {
+    uint scene_voxel_tile_object_refs[];
 };
 
 layout(set = 2, binding = 0, std430) restrict readonly buffer CandidateRouteRecords {
@@ -200,6 +207,11 @@ const uint SCORE_DEBUG_RUNTIME_SPACING_TESTS = 31u;
 const uint SCORE_DEBUG_RUNTIME_SPACING_PROFILE_MATCHES = 32u;
 const uint SCORE_DEBUG_RUNTIME_SPACING_REJECTIONS = 33u;
 const uint SCORE_DEBUG_RUNTIME_SPACING_MIN_DISTANCE_Q1000 = 34u;
+const uint SCORE_DEBUG_OBJECT_REF_ENABLED = 35u;
+const uint SCORE_DEBUG_OBJECT_REF_TILE_READS = 36u;
+const uint SCORE_DEBUG_OBJECT_REF_SLOT_READS = 37u;
+const uint SCORE_DEBUG_OBJECT_REF_OBJECT_READS = 38u;
+const uint SCORE_DEBUG_OBJECT_REF_DUPLICATE_READS = 39u;
 const int RUNTIME_CONTRACT_SCAN_CAP = 4096;
 const int PROFILE_CONTRACT_SCAN_CAP = 1024;
 
@@ -270,6 +282,39 @@ uint q1000_nonnegative(float value) {
 
 float runtime_min_distance_voxels() {
     return max(runtime_spacing_params.x, 0.0);
+}
+
+bool scene_voxel_tile_object_ref_exclusion_enabled() {
+    return object_ref_counts.x != 0 && object_ref_modes.z != 0;
+}
+
+bool runtime_spacing_full_scan_debug_fallback_enabled() {
+    return object_ref_modes.x != 0;
+}
+
+int scene_voxel_tile_object_ref_tile_size() {
+    return max(object_ref_tile_grid.w, 1);
+}
+
+ivec3 scene_voxel_tile_object_ref_grid() {
+    return max(object_ref_tile_grid.xyz, ivec3(0));
+}
+
+int scene_voxel_tile_object_ref_tile_count() {
+    return max(object_ref_counts.y, 0);
+}
+
+int scene_voxel_tile_object_ref_refs_per_tile() {
+    return max(object_ref_counts.z, 0);
+}
+
+int scene_voxel_tile_object_ref_capacity() {
+    return max(object_ref_counts.w, 0);
+}
+
+int scene_voxel_tile_object_ref_tile_index(ivec3 tile_coord) {
+    ivec3 tile_grid = scene_voxel_tile_object_ref_grid();
+    return tile_coord.x + tile_grid.x * (tile_coord.z + tile_grid.z * tile_coord.y);
 }
 
 void touch_profile_side_buffers(RuntimeProfileTableRecord record) {
@@ -355,7 +400,7 @@ bool runtime_bounds_overlap_origin(ivec3 origin) {
     return hit;
 }
 
-bool runtime_same_profile_min_spacing_hit(ivec3 origin) {
+bool runtime_same_profile_min_spacing_hit_full_scan(ivec3 origin) {
     if (!runtime_profile_contract_enabled() || contract_modes.x == 0) {
         return false;
     }
@@ -394,6 +439,106 @@ bool runtime_same_profile_min_spacing_hit(ivec3 origin) {
         }
     }
     return hit;
+}
+
+bool runtime_same_profile_min_spacing_hit_object_refs(ivec3 origin) {
+    if (!runtime_profile_contract_enabled() || contract_modes.x == 0) {
+        return false;
+    }
+
+    int requested_profile_id = asset_profile_id();
+    float min_distance = runtime_min_distance_voxels();
+    if (requested_profile_id <= 0 || min_distance <= 0.0) {
+        return false;
+    }
+
+    ivec3 tile_grid = scene_voxel_tile_object_ref_grid();
+    int tile_count = scene_voxel_tile_object_ref_tile_count();
+    int refs_per_tile = scene_voxel_tile_object_ref_refs_per_tile();
+    int object_ref_capacity = scene_voxel_tile_object_ref_capacity();
+    int tile_size = scene_voxel_tile_object_ref_tile_size();
+    if (tile_grid.x <= 0 || tile_grid.y <= 0 || tile_grid.z <= 0
+            || tile_count <= 0 || refs_per_tile <= 0 || object_ref_capacity <= 0) {
+        return false;
+    }
+
+    atomicMax(score_contract_debug[SCORE_DEBUG_OBJECT_REF_ENABLED], 1u);
+    atomicMax(score_contract_debug[SCORE_DEBUG_RUNTIME_SPACING_MIN_DISTANCE_Q1000], q1000_nonnegative(min_distance));
+
+    int tile_min_x = clamp(int(floor((float(origin.x) - min_distance) / float(tile_size))), 0, tile_grid.x - 1);
+    int tile_max_x = clamp(int(floor((float(origin.x) + min_distance) / float(tile_size))), 0, tile_grid.x - 1);
+    int tile_min_z = clamp(int(floor((float(origin.z) - min_distance) / float(tile_size))), 0, tile_grid.z - 1);
+    int tile_max_z = clamp(int(floor((float(origin.z) + min_distance) / float(tile_size))), 0, tile_grid.z - 1);
+    int capacity = runtime_contract_object_capacity();
+    vec2 candidate_center = vec2(float(origin.x), float(origin.z));
+    float min_distance_sq = min_distance * min_distance;
+
+    for (int ty = 0; ty < tile_grid.y; ty++) {
+        for (int tz = tile_min_z; tz <= tile_max_z; tz++) {
+            for (int tx = tile_min_x; tx <= tile_max_x; tx++) {
+                int tile_index = scene_voxel_tile_object_ref_tile_index(ivec3(tx, ty, tz));
+                if (tile_index < 0 || tile_index >= tile_count) {
+                    continue;
+                }
+                int slot_base = tile_index * refs_per_tile;
+                if (slot_base < 0 || slot_base >= object_ref_capacity) {
+                    continue;
+                }
+                atomicAdd(score_contract_debug[SCORE_DEBUG_OBJECT_REF_TILE_READS], 1u);
+                for (int slot = 0; slot < refs_per_tile; slot++) {
+                    int ref_index = slot_base + slot;
+                    if (ref_index < 0 || ref_index >= object_ref_capacity) {
+                        continue;
+                    }
+                    uint ref_key = scene_voxel_tile_object_refs[ref_index];
+                    atomicAdd(score_contract_debug[SCORE_DEBUG_OBJECT_REF_SLOT_READS], 1u);
+                    if (ref_key == 0u) {
+                        continue;
+                    }
+
+                    uint object_id_u = ref_key - 1u;
+                    if (object_id_u >= uint(capacity)) {
+                        continue;
+                    }
+                    int object_id = int(object_id_u);
+                    atomicAdd(score_contract_debug[SCORE_DEBUG_OBJECT_REF_OBJECT_READS], 1u);
+                    if (runtime_alive[object_id] == 0) {
+                        continue;
+                    }
+
+                    atomicAdd(score_contract_debug[SCORE_DEBUG_RUNTIME_SPACING_TESTS], 1u);
+                    int object_profile_id = runtime_profile[object_id];
+                    if (object_profile_id != requested_profile_id) {
+                        continue;
+                    }
+
+                    atomicAdd(score_contract_debug[SCORE_DEBUG_RUNTIME_SPACING_PROFILE_MATCHES], 1u);
+                    ivec3 bmin = runtime_bounds_min[object_id].xyz;
+                    ivec3 bmax = runtime_bounds_max[object_id].xyz;
+                    if (bmax.x <= bmin.x || bmax.z <= bmin.z) {
+                        continue;
+                    }
+                    vec2 runtime_center = (vec2(float(bmin.x), float(bmin.z)) + vec2(float(bmax.x), float(bmax.z))) * 0.5;
+                    vec2 delta = candidate_center - runtime_center;
+                    if (dot(delta, delta) < min_distance_sq) {
+                        atomicAdd(score_contract_debug[SCORE_DEBUG_RUNTIME_SPACING_REJECTIONS], 1u);
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool runtime_same_profile_min_spacing_hit(ivec3 origin) {
+    if (scene_voxel_tile_object_ref_exclusion_enabled()) {
+        return runtime_same_profile_min_spacing_hit_object_refs(origin);
+    }
+    if (runtime_spacing_full_scan_debug_fallback_enabled()) {
+        return runtime_same_profile_min_spacing_hit_full_scan(origin);
+    }
+    return false;
 }
 
 void write_runtime_profile_contract_header(float profile_complexity) {

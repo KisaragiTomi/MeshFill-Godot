@@ -138,16 +138,15 @@ static func make_profile_voxel_write_spec(
 	record["base_pixel"] = base_pixel                   # placement base XZ pixel
 	record["voxel_xz"] = base_pixel
 	record["volume_xz_resolution"] = volume_xz_resolution # source volume XZ resolution
-	if not record.has("channel") and object_type == "rock":
+	if not record.has("channel"):
 		record["channel"] = 0
-	if record.has("channel"):
-		record["channel"] = int(record.channel)
-		if not record.has("radius"):
-			record["radius"] = default_radius
-		if not record.has("y_min"):
-			record["y_min"] = y_min
-		if not record.has("y_max"):
-			record["y_max"] = y_max
+	record["channel"] = int(record.channel)
+	if not record.has("radius"):
+		record["radius"] = default_radius
+	if not record.has("y_min"):
+		record["y_min"] = y_min
+	if not record.has("y_max"):
+		record["y_max"] = y_max
 	record["source_voxel_type"] = source_type           # AutoSceneVoxel / BrushSceneVoxel / TargetSceneVoxel
 	return record
 

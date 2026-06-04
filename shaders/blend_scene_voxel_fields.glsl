@@ -15,11 +15,23 @@ layout(set = 0, binding = 2, std430) restrict buffer OutputScene {
     float out_scene[];
 };
 
+layout(set = 0, binding = 3, std430) restrict readonly buffer CommittedSceneVoxelPayloads {
+    float committed_payloads[];
+};
+
+layout(set = 0, binding = 4, std430) restrict readonly buffer CommittedSceneVoxelKeyCoords {
+    ivec4 committed_key_coords[];
+};
+
 layout(push_constant, std430) uniform Params {
     int key_count;
     int source_stride;
     int xz_res;
     int total_slices;
+    int projection_mode;
+    int committed_payload_stride;
+    int committed_key_coord_stride_bytes;
+    int _pad0;
 };
 
 const int SRC_COMPLEXITY = 0;
@@ -29,9 +41,54 @@ const int SRC_SLICE_INDEX = 8;
 const int SRC_VOXEL_X = 9;
 const int SRC_VOXEL_Z = 10;
 
+const int OUT_COMPLEXITY = 0;
+const int OUT_SOURCE_SELECTOR = 5;
+const int OUT_VALID = 7;
+
+const int PROJECTION_SOURCE_STREAMS = 0;
+const int PROJECTION_COMMITTED_PAYLOADS = 1;
+const int COMMITTED_KEY_COORD_STRIDE_BYTES = 16;
+
+void scatter_committed_payload_slot(uint idx) {
+    if (committed_payload_stride < 8 || committed_key_coord_stride_bytes != COMMITTED_KEY_COORD_STRIDE_BYTES) {
+        return;
+    }
+
+    uint payload_base = idx * uint(committed_payload_stride);
+    bool payload_valid = committed_payloads[payload_base + OUT_VALID] > 0.5
+        && committed_payloads[payload_base + OUT_SOURCE_SELECTOR] > 0.5;
+    if (!payload_valid) {
+        return;
+    }
+
+    ivec4 coord = committed_key_coords[idx];
+    int slice_index = coord.x;
+    int voxel_x = coord.y;
+    int voxel_z = coord.z;
+    if (
+        voxel_x < 0 || voxel_x >= xz_res ||
+        voxel_z < 0 || voxel_z >= xz_res ||
+        slice_index < 0 || slice_index >= total_slices
+    ) {
+        return;
+    }
+
+    uint out_idx = uint(voxel_x + xz_res * (voxel_z + xz_res * slice_index));
+    out_scene[out_idx] = clamp(committed_payloads[payload_base + OUT_COMPLEXITY], 0.0, 1.0);
+}
+
 void main() {
+    if (key_count <= 0) {
+        return;
+    }
+
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= uint(key_count)) {
+        return;
+    }
+
+    if (projection_mode == PROJECTION_COMMITTED_PAYLOADS) {
+        scatter_committed_payload_slot(idx);
         return;
     }
 

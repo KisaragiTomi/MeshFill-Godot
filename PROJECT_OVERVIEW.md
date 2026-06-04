@@ -1,4 +1,4 @@
-# MeshFill-Godot：体素引导的程序化内容生成框架（未完成）
+# MeshFill-Godot：体素引导的程序化内容生成框架
 
 ## 项目简介
 
@@ -6,10 +6,7 @@ MeshFill-Godot 是一套运行在 Godot 4.x 上的 GPU 加速程序化内容生�
 
 ## 核心理念：目标画布与生成的解耦
 
-传统 PCG 系统中，"我想要什么效果"的决策和"如何放置"的执行是紧耦合的————————规则引擎既决定目标也执行放置。
-这意味着执行生成的人，必须要对放置逻辑有一定的了解。
-但对于工具使用者而言，他们只想关心，区域会有什么样的美术效果，放置结果对玩法有什么影响。
-为了实现这样的目标设计了本架构。
+传统 PCG 系统中，"在哪里放什么"的决策和"如何放置"的执行是紧耦合的——规则引擎既决定目标也执行放置。
 
 MeshFill 采用截然不同的设计：
 
@@ -101,7 +98,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 
 ## 为什么适合 AI 训练
 
-1. **单一监督信号**：AI 只需预测 `TargetSceneVoxel`（一个 3D 体素网格的 complexity + color + collision + 风格特征向量），不需要学习离散的资产选择或物理约束。
+1. **单一监督信号**：AI 只需预测 `TargetSceneVoxel`（一个 3D 体素网格的 complexity + color），不需要学习离散的资产选择或物理约束。
 2. **可微分的目标函数**：反馈评分（`score_blendsv_feedback_against_target`）比较生成结果与目标画布的差异，可直接作为 AI 的 loss/reward。
 3. **闭环迭代**：TargetSV → 生成 → SceneVoxel → 反馈评分 → 更新 TargetSV/策略，形成完整的 RL 训练循环。
 4. **资产无关**：AI 不关心资产库中有什么，只需描述场景的视觉和结构意图。资产库可以独立扩充而不需要重新训练模型。
@@ -117,6 +114,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 - [`docs/placement/target-scene-voxel-projection.md`](docs/placement/target-scene-voxel-projection.md) — TargetSV 目标画布边界
 - [`docs/placement/autoobject-probe-prefilter.md`](docs/placement/autoobject-probe-prefilter.md) — 语义探针粗筛流程
 - [`docs/placement/voxel-semantic-routing.md`](docs/placement/voxel-semantic-routing.md) — 候选资产路由契约
+- [`GPU_OPTIMIZATION_AUDIT.md`](GPU_OPTIMIZATION_AUDIT.md) — GPU 优化审计与优先级路线图
 
 ## 技术栈
 

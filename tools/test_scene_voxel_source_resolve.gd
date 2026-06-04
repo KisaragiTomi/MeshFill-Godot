@@ -39,7 +39,7 @@ func _test_gpu_source_resolve_or_skip() -> bool:
 	_write_priority_candidates(committer, tick)
 	committer.blend_scene_voxels(tick)
 
-	var result := _check_priority_winner(committer, "compute_winner_indices")
+	var result := _check_priority_winner(committer, "resolve_resident_source_streams")
 	committer.dispose(true)
 	if not result:
 		return false
@@ -56,7 +56,7 @@ func _test_gpu_source_resolve_or_skip() -> bool:
 		return false
 
 	committer.dispose(true)
-	print("  OK: source candidate winner index came from compute dispatch")
+	print("  OK: source candidate winners publish resident final source streams")
 	return true
 
 
@@ -98,17 +98,29 @@ func _check_priority_winner(committer: SceneVoxelCommitter, expected_mode: Strin
 	if bool(summary.get("cpu_runtime_fallback", true)):
 		push_error("  FAIL: source resolve must not advertise CPU runtime fallback")
 		return false
-	if str(summary.get("source_candidate_winner_readback_source", "")) != "resolve_source_winner_indices_buffer_get_data":
-		push_error("  FAIL: source resolve should report winner index readback source: %s" % str(summary))
+	if str(summary.get("source_candidate_winner_readback_source", "")) != "none":
+		push_error("  FAIL: source resolve must not read back winner indices: %s" % str(summary))
 		return false
-	if int(summary.get("source_candidate_winner_readback_count", -1)) != int(summary.get("candidate_group_count", 0)):
-		push_error("  FAIL: winner readback count should match candidate groups: %s" % str(summary))
+	if int(summary.get("source_candidate_winner_readback_count", -1)) != 0:
+		push_error("  FAIL: winner readback count should stay zero: %s" % str(summary))
 		return false
-	if not bool(summary.get("source_candidate_cpu_apply_bridge", false)):
-		push_error("  FAIL: source resolve should expose CPU apply bridge to final source streams: %s" % str(summary))
+	if bool(summary.get("source_candidate_cpu_apply_bridge", true)):
+		push_error("  FAIL: source resolve must not report CPU apply bridge success: %s" % str(summary))
 		return false
-	if bool(summary.get("final_source_stream_resident", true)):
-		push_error("  FAIL: final source stream should not be reported as GPU-resident: %s" % str(summary))
+	if str(summary.get("source_candidate_cpu_apply_bridge_target", "")) != "none":
+		push_error("  FAIL: source resolve CPU apply bridge target should stay none: %s" % str(summary))
+		return false
+	if not bool(summary.get("final_source_stream_resident", false)):
+		push_error("  FAIL: final source stream should be reported as GPU-resident: %s" % str(summary))
+		return false
+	if str(summary.get("final_source_stream_resident_source", "")) != "resolve_scene_voxel_sources.glsl":
+		push_error("  FAIL: final source stream should come from resolve_scene_voxel_sources.glsl: %s" % str(summary))
+		return false
+	if int(summary.get("final_source_stream_resident_stride_bytes", -1)) != SVC.SCENE_VOXEL_SOURCE_PAYLOAD_STRIDE_BYTES:
+		push_error("  FAIL: final source stream stride should match source payload stride: %s" % str(summary))
+		return false
+	if int(summary.get("final_source_stream_resident_count", 0)) <= 0:
+		push_error("  FAIL: final source stream should retain a resident count: %s" % str(summary))
 		return false
 	return true
 

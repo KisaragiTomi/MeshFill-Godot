@@ -17,14 +17,11 @@
 
 ## 当前状态
 
+GPU probe prefilter、CPU readback debug view、Candidate region expansion、`candidate_route_profiles`、`run_multi_asset()` 路由消费均已实现。以下为未完成项：
+
 | 层 | 状态 | 契约 |
 | --- | --- | --- |
-| GPU probe prefilter | 已实现 | `collect_sv_anchors.glsl`、`score_anchor_asset_probes.glsl`、`select_anchor_topk.glsl`、`reduce_anchor_topk_to_voxel_regions.glsl` 生成 anchor/top-K 和 per-asset voxel-region votes。 |
-| CPU readback debug view | 已实现 | `scripts/autoobject_probe_prefilter_gpu.gd` 解码 votes，docs-facing 输出为 `candidate_voxel_regions_by_asset`；`autoobject_candidate_voxel_sparses` / `candidate_voxel_sparses_by_asset` 只作为 debug / legacy alias。 |
-| Candidate region expansion | 已实现 | readback 按 footprint、probe offset、`context_sensing_radius` 和至少 `1` voxel interpolation guard 扩张 candidate voxel regions。 |
-| `candidate_route_profiles` | 已实现，debug | 记录每个 asset 的 route profile / expansion 信息；不是 placement 必需输入，也不是 route score。 |
-| `run_multi_asset()` 消费路由 | 已实现 | 优先读取 `candidate_voxel_regions_by_asset` / asset 自带 `candidate_voxel_regions`，并兼容 legacy sparse key。空 candidate regions 直接 `skipped_prefilter`，不回退 full grid。 |
-| 同类型 AutoObject 互斥 | 规划中 | 复用 per-voxel object refs、`SceneVoxelTile` 粗过滤和 `GPUAutoObjectRuntime` object/profile buffers；不再维护 CPU manager gate。 |
+| 同类型 AutoObject 互斥 | 规划中 | 复用 per-voxel object refs、`SceneVoxelTile` 粗过滤和 `GPUAutoObjectRuntime` object/profile buffers。 |
 | Semantic rerank / context pooling | TODO | `semantic_score`、`route_score`、`voxel_context_buffer`、`target_scene_context_rgba8_buffer` 只保留为候选内验证计划。 |
 
 ## 数据流

@@ -365,7 +365,7 @@ func _init() -> void:
 	if not _test_scene_placement_pipeline_reports_normalized_route_source():
 		quit(1)
 		return
-	if not _test_scene_placement_resident_route_handoff_opt_in():
+	if not _test_scene_placement_resident_route_handoff_default():
 		quit(1)
 		return
 
@@ -960,7 +960,7 @@ func _test_scene_placement_pipeline_reports_normalized_route_source() -> bool:
 	return true
 
 
-func _test_scene_placement_resident_route_handoff_opt_in() -> bool:
+func _test_scene_placement_resident_route_handoff_default() -> bool:
 	var actor := SPA.new()
 	if not actor.initialize(true, false):
 		print("[VoxelCandidateRouting] SKIP: no RenderingDevice for ScenePlacementActor resident route handoff")
@@ -994,6 +994,11 @@ func _test_scene_placement_resident_route_handoff_opt_in() -> bool:
 		return false
 
 	var fake_prefilter := FakeResidentRoutePrefilter.new()
+	if not fake_prefilter.attach_rendering_device(actor.get_rendering_device(), false):
+		runtime.dispose(true)
+		actor.dispose(true)
+		push_error("[VoxelCandidateRouting] Resident route handoff fake prefilter should attach to SPA RenderingDevice")
+		return false
 	actor._prefilter = fake_prefilter
 	var asset_defs: Array = actor._build_placement_asset_defs()
 	if asset_defs.is_empty() or not asset_defs[0] is Dictionary or (asset_defs[0] as Dictionary).get("collision", []).is_empty():
@@ -1017,7 +1022,6 @@ func _test_scene_placement_resident_route_handoff_opt_in() -> bool:
 		"scene_field": PackedFloat32Array([0.0]),
 		"collision_field": PackedFloat32Array([0.0]),
 	}, [], 1, {
-		"use_resident_candidate_route_handoff": true,
 		"read_candidate_route_sparse_adapter_debug": true,
 	}).duplicate(true)
 	runtime.dispose(true)
@@ -1034,8 +1038,8 @@ func _test_scene_placement_resident_route_handoff_opt_in() -> bool:
 	var contract: Dictionary = placement.get("candidate_route_input_contract", {})
 	if str(contract.get("route_input", "")) != "resident_contract" \
 	   or not bool(contract.get("resident_route_input_ready", false)) \
-	   or str(contract.get("resident_route_owner", "")) != "ScenePlacementActor":
-		push_error("[VoxelCandidateRouting] VPG should report resident ScenePlacementActor route contract readiness: %s" % str(contract))
+	   or str(contract.get("resident_route_owner", "")) != "AutoObjectProbePrefilterGPU":
+		push_error("[VoxelCandidateRouting] VPG should report borrowed resident prefilter route contract readiness: %s" % str(contract))
 		return false
 	if bool(contract.get("cpu_expanded_route_input", true)) \
 	   or str(contract.get("rejection_reason", "")) != "none":
@@ -1045,7 +1049,7 @@ func _test_scene_placement_resident_route_handoff_opt_in() -> bool:
 	   or not bool(contract.get("resident_route_sparse_adapter", false)) \
 	   or int(contract.get("vpg_route_buffer_binding_record_reads", 0)) <= 0 \
 	   or int(contract.get("vpg_route_buffer_binding_range_reads", 0)) <= 0:
-		push_error("[VoxelCandidateRouting] VPG should bind/read resident route buffers in opt-in handoff: %s" % str(contract))
+		push_error("[VoxelCandidateRouting] VPG should bind/read resident route buffers in default handoff: %s" % str(contract))
 		return false
 	var handoff: Dictionary = result.get("resident_candidate_route_handoff", {})
 	if not bool(handoff.get("upload_ok", false)) \
@@ -1053,13 +1057,27 @@ func _test_scene_placement_resident_route_handoff_opt_in() -> bool:
 	   or not bool(handoff.get("vpg_resident_route_input_ready", false)):
 		push_error("[VoxelCandidateRouting] SPA resident route handoff success must come from VPG normalized result: %s" % str(handoff))
 		return false
+	if bool(handoff.get("resident_candidate_route_handoff_opt_in", true)) \
+	   or not bool(handoff.get("resident_candidate_route_handoff_defaulted", false)):
+		push_error("[VoxelCandidateRouting] SPA should default to resident route handoff without requiring the opt-in setting: %s" % str(handoff))
+		return false
 	var handoff_contract: Dictionary = handoff.get("contract", {})
-	if str(handoff_contract.get("owner", "")) != "ScenePlacementActor" \
+	if str(handoff_contract.get("owner", "")) != "AutoObjectProbePrefilterGPU" \
 	   or str(handoff_contract.get("producer", "")) != "AutoObjectProbePrefilterGPU" \
-	   or str(handoff_contract.get("source_label", "")) != "gpu_vote_buffer_readback_cpu_pack" \
+	   or str(handoff_contract.get("source_label", "")) != "gpu_vote_buffer_gpu_pack" \
 	   or int(handoff_contract.get("resident_route_record_stride", 0)) != 16 \
 	   or int(handoff_contract.get("resident_route_range_stride", 0)) != 16:
-		push_error("[VoxelCandidateRouting] SPA handoff contract should expose owner/producer/source/stride: %s" % str(handoff_contract))
+		push_error("[VoxelCandidateRouting] SPA handoff contract should expose borrowed owner/producer/source/stride: %s" % str(handoff_contract))
+		return false
+	if not bool(handoff_contract.get("resident_route_buffer_borrowed", false)) \
+	   or bool(handoff_contract.get("resident_route_readback_derived", true)) \
+	   or bool(handoff_contract.get("cpu_expanded_route_input", true)):
+		push_error("[VoxelCandidateRouting] SPA should borrow resident prefilter route RIDs without CPU byte expansion: %s" % str(handoff_contract))
+		return false
+	if bool(handoff.get("readback_derived", true)) \
+	   or not bool(handoff.get("resident_route_buffer_borrowed", false)) \
+	   or str(handoff.get("resident_route_buffer_owner", "")) != "AutoObjectProbePrefilterGPU":
+		push_error("[VoxelCandidateRouting] SPA handoff summary should report borrowed non-readback route buffers: %s" % str(handoff))
 		return false
 	if str(result.get("candidate_route_readback_source", "")) != "resident_route_snapshot" \
 	   or str(result.get("candidate_route_runtime_read_source", "")) != "resident":
@@ -1070,7 +1088,7 @@ func _test_scene_placement_resident_route_handoff_opt_in() -> bool:
 		push_error("[VoxelCandidateRouting] Prefilter debug dictionary should remain available even when SPA omits it from VPG handoff")
 		return false
 
-	print("[VoxelCandidateRouting] ScenePlacementActor resident route handoff opt-in OK")
+	print("[VoxelCandidateRouting] ScenePlacementActor resident route handoff default OK")
 	return true
 
 
@@ -1083,7 +1101,8 @@ class FakeRouteSourcePrefilter:
 		dirty_tile_ids: Array[int] = [],
 		runtime_profile_container: Object = null,
 		target_color_rgba8_bytes: PackedByteArray = PackedByteArray(),
-		target_occupancy_bytes: PackedByteArray = PackedByteArray()
+		target_occupancy_bytes: PackedByteArray = PackedByteArray(),
+		target_read_buffers: Dictionary = {}
 	) -> Dictionary:
 		return {
 			"ok": true,
@@ -1109,17 +1128,44 @@ class FakeRouteSourcePrefilter:
 class FakeResidentRoutePrefilter:
 	extends "res://scripts/autoobject_probe_prefilter_gpu.gd"
 
+	var _fake_record_rid: RID
+	var _fake_range_rid: RID
+
 	func run_probe_prefilter(
 		sv: Dictionary,
 		autoobjects: Array,
 		dirty_tile_ids: Array[int] = [],
 		runtime_profile_container: Object = null,
 		target_color_rgba8_bytes: PackedByteArray = PackedByteArray(),
-		target_occupancy_bytes: PackedByteArray = PackedByteArray()
+		target_occupancy_bytes: PackedByteArray = PackedByteArray(),
+		target_read_buffers: Dictionary = {}
 	) -> Dictionary:
 		var regions := {
 			0: [Vector3i.ZERO],
 		}
+		if _fake_record_rid.is_valid():
+			release_rid(_fake_record_rid)
+		if _fake_range_rid.is_valid():
+			release_rid(_fake_range_rid)
+		var record_bytes := PackedByteArray()
+		record_bytes.resize(16)
+		record_bytes.encode_u32(0, 0)
+		var range_bytes := PackedByteArray()
+		range_bytes.resize(16)
+		range_bytes.encode_u32(0, 0)
+		range_bytes.encode_u32(4, 1)
+		_fake_record_rid = track_rid(
+			_rd.storage_buffer_create(record_bytes.size(), record_bytes),
+			KIND_BUFFER,
+			SCOPE_PERSISTENT,
+			"fake_prefilter_resident_route_records"
+		)
+		_fake_range_rid = track_rid(
+			_rd.storage_buffer_create(range_bytes.size(), range_bytes),
+			KIND_BUFFER,
+			SCOPE_PERSISTENT,
+			"fake_prefilter_resident_route_ranges"
+		)
 		return {
 			"ok": true,
 			"anchors": [],
@@ -1134,6 +1180,46 @@ class FakeResidentRoutePrefilter:
 			"candidate_route_readback_source": "gpu_vote_buffer_readback",
 			"candidate_route_runtime_read_source": "cpu_debug_bridge",
 			"candidate_route_input_contract": {},
+			"candidate_route_handoff_payload": {
+				"ok": _fake_record_rid.is_valid() and _fake_range_rid.is_valid(),
+				"reason": "ok",
+				"source": "gpu_vote_buffer_gpu_pack",
+				"source_label": "gpu_vote_buffer_gpu_pack",
+				"producer": "AutoObjectProbePrefilterGPU",
+				"schema_version": 1,
+				"resident_route_schema_version": 1,
+				"record_stride_bytes": 16,
+				"range_stride_bytes": 16,
+				"resident_route_record_stride_bytes": 16,
+				"resident_route_range_stride_bytes": 16,
+				"resident_route_record_rid": _fake_record_rid,
+				"resident_route_range_rid": _fake_range_rid,
+				"resident_route_record_rid_valid": _fake_record_rid.is_valid(),
+				"resident_route_range_rid_valid": _fake_range_rid.is_valid(),
+				"resident_route_record_capacity": 1,
+				"resident_route_record_count": 1,
+				"resident_route_range_count": 1,
+				"record_count": 1,
+				"range_count": 1,
+				"asset_count": 1,
+				"record_bytes": PackedByteArray(),
+				"range_bytes": PackedByteArray(),
+				"has_records": true,
+				"resident_route_buffer_owner": "AutoObjectProbePrefilterGPU",
+				"resident_route_owner": "AutoObjectProbePrefilterGPU",
+				"resident_route_producer": "AutoObjectProbePrefilterGPU",
+				"resident_route_source_label": "gpu_vote_buffer_gpu_pack",
+				"resident_route_buffer_lifetime": "AutoObjectProbePrefilterGPU owned until fake prefilter dispose",
+				"same_rendering_device_as_vpg": true,
+				"rendering_device_matches_vpg": true,
+				"readback_derived": false,
+				"debug_readback_derived": false,
+				"resident_route_input_ready": true,
+				"resident_candidate_route_handoff": true,
+				"cpu_expanded_route_input": false,
+				"status": "gpu_pack_resident",
+				"debug_status": "gpu_route_pack_resident_no_record_range_readback",
+			},
 			"anchor_count": 0,
 			"profile_probe_pack": {},
 			"prefilter_reason": "fake_resident_route_handoff",

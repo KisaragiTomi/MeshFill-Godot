@@ -3,10 +3,7 @@ extends RefCounted
 
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const SUPPORTED_VEGETATION_MESH_CREATE_METHODS := [
-	"create_tree_mesh",
-	"create_midstory_mesh",
-	"create_bush_mesh",
-	"create_flower_mesh",
+	"create_sample_autoobject_mesh",
 ]
 
 
@@ -61,7 +58,7 @@ static func create_voxel_descriptor(
 	)
 
 
-static func load_or_new_rock_asset(asset_path: String) -> AutoRock:
+static func load_or_new_object_asset(asset_path: String) -> AutoRock:
 	var existing = load(asset_path) if not asset_path.is_empty() else null
 	if existing is PackedScene:
 		var instance := (existing as PackedScene).instantiate()
@@ -72,7 +69,7 @@ static func load_or_new_rock_asset(asset_path: String) -> AutoRock:
 	return AutoRock.new()
 
 
-static func create_or_update_rock_asset(
+static func create_or_update_object_asset(
 	asset: AutoRock,
 	mesh: Mesh,
 	mesh_height_texture: Texture2D,
@@ -124,7 +121,7 @@ static func create_or_update_rock_asset(
 	if result.has_method("configure_asset"):
 		result.call("configure_asset", cfg)
 	else:
-		result.configure_rock(cfg)
+		result.configure_object(cfg)
 	if sync_exported_fields:
 		result.voxel_color = direct_color
 		result.voxel_complexity = direct_complexity
@@ -132,20 +129,20 @@ static func create_or_update_rock_asset(
 	return result
 
 
-static func configure_rock_instance(rock: AutoRock, asset: AutoRock, config: Dictionary = {}) -> void:
-	if rock == null or asset == null:
+static func configure_object_instance(obj: AutoRock, asset: AutoRock, config: Dictionary = {}) -> void:
+	if obj == null or asset == null:
 		return
-	rock.configure_from_rock_asset(asset, config)
+	obj.configure_from_asset(asset, config)
 
 
-static func save_rock_asset(rock: AutoRock, resource_path: String) -> int:
-	if rock == null or resource_path.is_empty():
+static func save_object_asset(obj: AutoRock, resource_path: String) -> int:
+	if obj == null or resource_path.is_empty():
 		return ERR_INVALID_PARAMETER
 	var err := _ensure_parent_dir(resource_path)
 	if err != OK:
 		return err
 	var packed := PackedScene.new()
-	err = packed.pack(rock)
+	err = packed.pack(obj)
 	if err != OK:
 		return err
 	return ResourceSaver.save(packed, resource_path)
@@ -231,54 +228,54 @@ static func make_profile_instance_stamp_write_spec(
 	)
 
 
-static func make_rock_voxel_write_spec(
+static func make_object_voxel_write_spec(
 	record_id: String,
-	rock: MeshInstance3D,
+	obj: MeshInstance3D,
 	mesh_index: int,
 	asset: AutoRock,
 	base_pixel: Vector2i,
 	volume_xz_resolution: int,
 	extra_fields: Dictionary = {}
 ) -> Dictionary:
-	if rock == null or asset == null:
+	if obj == null or asset == null:
 		return {}
 	var fields := extra_fields.duplicate(true)
 	fields["mesh_index"] = mesh_index
-	if rock is AutoRock:
-		return (rock as AutoRock).make_voxel_write_spec(record_id, base_pixel, volume_xz_resolution, fields)
-	var record_rock: AutoRock = null
+	if obj is AutoRock:
+		return (obj as AutoRock).make_voxel_write_spec(record_id, base_pixel, volume_xz_resolution, fields)
+	var record_obj: AutoRock = null
 	var duplicate_node = asset.duplicate()
 	if duplicate_node is AutoRock:
-		record_rock = duplicate_node as AutoRock
+		record_obj = duplicate_node as AutoRock
 	elif duplicate_node != null:
 		duplicate_node.free()
-	if record_rock == null:
-		record_rock = AutoRock.new()
-	record_rock.configure_from_rock_asset(asset, {
-		"mesh": rock.mesh,
-		"position": rock.position,
+	if record_obj == null:
+		record_obj = AutoRock.new()
+	record_obj.configure_from_asset(asset, {
+		"mesh": obj.mesh,
+		"position": obj.position,
 		"rotation_mode": "XYZ",
-		"rotation_degrees": rock.rotation_degrees,
+		"rotation_degrees": obj.rotation_degrees,
 		"mesh_index": mesh_index,
 	})
-	record_rock.scale = rock.scale
-	var record := record_rock.make_voxel_write_spec(record_id, base_pixel, volume_xz_resolution, fields)
-	record_rock.free()
+	record_obj.scale = obj.scale
+	var record := record_obj.make_voxel_write_spec(record_id, base_pixel, volume_xz_resolution, fields)
+	record_obj.free()
 	return record
 
 
-static func make_rock_instance_stamp_write_spec(
+static func make_object_instance_stamp_write_spec(
 	record_id: String,
-	rock: MeshInstance3D,
+	obj: MeshInstance3D,
 	mesh_index: int,
 	asset: AutoRock,
 	base_pixel: Vector2i,
 	volume_xz_resolution: int,
 	extra_fields: Dictionary = {}
 ) -> Dictionary:
-	return make_rock_voxel_write_spec(
+	return make_object_voxel_write_spec(
 		record_id,
-		rock,
+		obj,
 		mesh_index,
 		asset,
 		base_pixel,
@@ -512,7 +509,7 @@ static func write_vegetation_subclass(
 	return write_text_file(script_path, content)
 
 
-static func write_rock_subclass(
+static func write_object_subclass(
 	class_name_value: String,
 	object_subtype: String,
 	group_name: String,
@@ -531,7 +528,7 @@ static func write_rock_subclass(
 		+ "\tcfg[\"object_subtype\"] = DEFAULT_SUBTYPE\n"
 		+ "\tif not cfg.has(\"group\") and not DEFAULT_GROUP.is_empty():\n"
 		+ "\t\tcfg[\"group\"] = DEFAULT_GROUP\n"
-		+ "\tconfigure_rock(cfg)\n"
+		+ "\tconfigure_object(cfg)\n"
 	) % [class_name_value, object_subtype, group_name, method_name]
 	return write_text_file(script_path, content)
 

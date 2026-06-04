@@ -4,8 +4,7 @@
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D rock_mask_tex;
-layout(set = 0, binding = 1) uniform sampler2D tree_mask_tex;
-layout(set = 0, binding = 2) uniform sampler2D bush_mask_tex;
+layout(set = 0, binding = 1) uniform sampler2D autoobject_mask_tex;
 
 layout(rgba8, set = 1, binding = 0) restrict writeonly uniform image2D out_debug_img;
 
@@ -23,7 +22,7 @@ void main() {
 	}
 
 	float rock_v = clamp(texelFetch(rock_mask_tex, p, 0).r, 0.0, 1.0);
-	float tree_v = clamp(texelFetch(tree_mask_tex, p, 0).r, 0.0, 1.0);
-	float bush_v = clamp(texelFetch(bush_mask_tex, p, 0).r, 0.0, 1.0);
-	imageStore(out_debug_img, p, vec4(rock_v, tree_v, bush_v, 1.0));
+	vec4 autoobject_channels = clamp(texelFetch(autoobject_mask_tex, p, 0), vec4(0.0), vec4(1.0));
+	float autoobject_v = max(max(autoobject_channels.r, autoobject_channels.g), max(autoobject_channels.b, autoobject_channels.a));
+	imageStore(out_debug_img, p, vec4(rock_v, autoobject_v, 0.0, 1.0));
 }

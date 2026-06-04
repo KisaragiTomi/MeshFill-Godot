@@ -5,7 +5,7 @@ layout(local_size_x = 8, local_size_y = 4, local_size_z = 8) in;
 
 layout(set = 0, binding = 0) uniform sampler2D t_scene_depth;
 layout(set = 0, binding = 1) uniform sampler2D t_target_height;
-layout(set = 0, binding = 2) uniform sampler2D t_rock_mask;
+layout(set = 0, binding = 2) uniform sampler2D t_object_mask;
 
 layout(set = 1, binding = 0, std430) restrict buffer TargetVisual {
     vec4 target_visual[];
@@ -89,30 +89,30 @@ float surface_slope(ivec2 p) {
 TargetVoxel evaluate_voxel(ivec2 p, int slice_index) {
     float terrain_h = terrain_height(p);
     float target_h = texelFetch(t_target_height, p, 0).r;
-    float rock_mask = clamp(texelFetch(t_rock_mask, p, 0).r, 0.0, 1.0);
+    float object_mask = clamp(texelFetch(t_object_mask, p, 0).r, 0.0, 1.0);
     float slope = surface_slope(p);
     float slope_signal = smoothstep(slope_start, slope_full, slope);
     float height_delta = max(target_h - terrain_h, 0.0);
     float fill_signal = smoothstep(0.25, max(vertical_span * 0.35, 0.5), height_delta);
-    float rock_signal = clamp(max(max(slope_signal, fill_signal), rock_mask), 0.0, 1.0);
+    float solid_signal = clamp(max(max(slope_signal, fill_signal), object_mask), 0.0, 1.0);
     float local_y = (float(slice_index) + 0.5) / max(float(slice_count), 1.0) * vertical_span;
 
-    float rock_top = clamp(max(1.5, height_delta + 3.0), 1.5, vertical_span);
-    float rock_vertical = 1.0 - smoothstep(rock_top, min(rock_top + 1.5, vertical_span + 0.01), local_y);
-    float rock_value = clamp(rock_signal * rock_vertical, 0.0, 1.0);
+    float solid_top = clamp(max(1.5, height_delta + 3.0), 1.5, vertical_span);
+    float solid_vertical = 1.0 - smoothstep(solid_top, min(solid_top + 1.5, vertical_span + 0.01), local_y);
+    float solid_value = clamp(solid_signal * solid_vertical, 0.0, 1.0);
 
     float flat_signal = 1.0 - smoothstep(slope_start, slope_full, slope);
-    float grass_vertical = 1.0 - smoothstep(0.15, 1.1, local_y);
-    float grass_value = clamp(flat_signal * grass_vertical * (1.0 - rock_signal) * 0.45, 0.0, 1.0);
+    float surface_vertical = 1.0 - smoothstep(0.15, 1.1, local_y);
+    float surface_value = clamp(flat_signal * surface_vertical * (1.0 - solid_signal) * 0.45, 0.0, 1.0);
 
-    vec3 rock_color = vec3(0.56, 0.52, 0.46);
-    vec3 grass_color = vec3(0.20, 0.48, 0.18);
-    float visual_weight = rock_value + grass_value;
+    vec3 solid_color = vec3(0.56, 0.52, 0.46);
+    vec3 surface_color = vec3(0.20, 0.48, 0.18);
+    float visual_weight = solid_value + surface_value;
     vec3 color = visual_weight > 0.0001
-        ? (rock_color * rock_value + grass_color * grass_value) / visual_weight
+        ? (solid_color * solid_value + surface_color * surface_value) / visual_weight
         : vec3(0.0);
-    float value = clamp(max(rock_value, grass_value), 0.0, 1.0);
-    float collision = clamp(max(rock_value * 0.95, grass_value * 0.08), 0.0, 1.0);
+    float value = clamp(max(solid_value, surface_value), 0.0, 1.0);
+    float collision = clamp(max(solid_value * 0.95, surface_value * 0.08), 0.0, 1.0);
 
     TargetVoxel voxel;
     voxel.color = color;

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cteuheskg7bag"
+path="res://.godot/imported/candidate_route_sparse_adapter.glsl-889566cc16c58f99d8cd190a74c9df65.res"
+
+[deps]
+
+source_file="res://shaders/candidate_route_sparse_adapter.glsl"
+dest_files=["res://.godot/imported/candidate_route_sparse_adapter.glsl-889566cc16c58f99d8cd190a74c9df65.res"]
+
+[params]
+

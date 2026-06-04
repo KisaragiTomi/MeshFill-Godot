@@ -476,10 +476,45 @@ func _test_bake_rotated_set() -> bool:
 		{"shape": "cylinder", "radius": 0.3, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}
 	]
 	var voxel_size := Vector3(0.5, 0.5, 0.5)
+	var rendering_device := RenderingServer.create_local_rendering_device()
+	if rendering_device == null:
+		print("  SKIP: default rotated footprint bake requires GPU rotation")
+		return true
+	rendering_device.free()
+
+	var gpu := VPG.bake_rotated_footprints_gpu(collision, voxel_size, 24, true, 1)
+	if not bool(gpu.get("ok", false)):
+		push_error("  FAIL: GPU rotated footprint bake failed: %s" % str(gpu))
+		return false
+	if bool(gpu.get("cpu_fallback", true)):
+		push_error("  FAIL: GPU rotated footprint bake must not report CPU fallback")
+		return false
+	if int(gpu.get("rotation_count", 0)) != 24:
+		push_error("  FAIL: GPU rotated footprint metadata should report 24 rotations")
+		return false
+	if int(gpu.get("identity_rotation_count", 0)) != 1 or int(gpu.get("gpu_rotation_count", 0)) != 23:
+		push_error("  FAIL: expected one identity rotation and 23 GPU rotations: %s" % str(gpu))
+		return false
+	var readback_sources: PackedStringArray = gpu.get("rotation_readback_sources", PackedStringArray())
+	if readback_sources.size() != 24:
+		push_error("  FAIL: expected 24 rotation readback sources, got %d" % readback_sources.size())
+		return false
+	if readback_sources[0] != "identity_base_footprint":
+		push_error("  FAIL: 0-degree rotation should preserve base footprint identity")
+		return false
+	for i in range(1, readback_sources.size()):
+		if readback_sources[i] != "rotate_footprint_y_compute":
+			push_error("  FAIL: rotation %d should use GPU rotate helper, got %s" % [i, readback_sources[i]])
+			return false
+
 	var rotations := VPG.bake_rotated_footprints(collision, voxel_size, 24, true, 1)
+	var cpu_debug_rotations := VPG.bake_rotated_footprints(collision, voxel_size, 24, true, 1, false)
 
 	if rotations.size() != 24:
 		push_error("  FAIL: expected 24 rotations, got %d" % rotations.size())
+		return false
+	if cpu_debug_rotations.size() != 24:
+		push_error("  FAIL: expected 24 CPU debug rotations, got %d" % cpu_debug_rotations.size())
 		return false
 
 	for i in range(24):
@@ -487,8 +522,16 @@ func _test_bake_rotated_set() -> bool:
 		if fp.is_empty():
 			push_error("  FAIL: rotation %d produced empty footprint" % i)
 			return false
+		var gpu_fp: Array = (gpu.get("rotations", []) as Array)[i]
+		if not _footprints_match(fp, gpu_fp):
+			push_error("  FAIL: default rotated footprint %d should match GPU diagnostic path" % i)
+			return false
+		var cpu_debug_fp: Array = cpu_debug_rotations[i]
+		if not _footprints_match(fp, cpu_debug_fp):
+			push_error("  FAIL: default rotated footprint %d changed CPU/debug semantics" % i)
+			return false
 
-	print("  OK: 24 rotations, each non-empty")
+	print("  OK: 24 rotations, identity preserved, 23 GPU rotations verified")
 	return true
 
 
@@ -640,6 +683,28 @@ func _test_results_to_world() -> bool:
 		return false
 
 	print("  OK: position=%s yaw=%.1f (filtered invalid)" % [str(pos), yaw])
+	return true
+
+
+func _footprints_match(a: Array, b: Array) -> bool:
+	if a.size() != b.size():
+		return false
+	var by_pos := _footprint_by_pos(a)
+	for raw_entry in b:
+		if not raw_entry is Dictionary:
+			return false
+		var entry := raw_entry as Dictionary
+		var pos: Vector3i = entry.get("local_pos", Vector3i.ZERO)
+		var key := "%d,%d,%d" % [pos.x, pos.y, pos.z]
+		if not by_pos.has(key):
+			return false
+		var other: Dictionary = by_pos[key]
+		if absf(float(other.get("collision_strength", 0.0)) - float(entry.get("collision_strength", 0.0))) > (1.0 / 255.0 + 0.001):
+			return false
+		if int(other.get("flags", 0)) != int(entry.get("flags", 0)):
+			return false
+		if absf(float(other.get("weight", 0.0)) - float(entry.get("weight", 0.0))) > 0.001:
+			return false
 	return true
 
 

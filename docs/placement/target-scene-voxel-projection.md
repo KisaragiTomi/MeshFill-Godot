@@ -20,40 +20,11 @@
 | `placement_role` | role 应由 probe、projection 或 matcher 推断。 |
 | committed source metadata | `TargetSV_B` 不进入 `blend_scene_voxels()`。 |
 
-## 当前实现
+当前实现通过 `target_scene_voxel.glsl` 生成 `TargetSV` / `TargetSV_B` raw buffers，支持持久化和 `target_occupancy` / `target_color` 解码。
 
-| 项 | 当前实现 |
+| 项 | 状态 |
 | --- | --- |
-| 生成脚本 | `scripts/target_scene_voxel_generator.gd` |
-| Compute shader | `shaders/target_scene_voxel.glsl` |
-| 数据形态 | `texture_size x slice_count x texture_size` 的 3D flat buffer |
-| 源 visual buffer | `target_scene_voxel_visual.rgba32f`，每 voxel 为 `vec4(color.rgb, complexity)` |
-| 源 collision buffer | `target_scene_voxel_collision.r32f`，每 voxel 为 `collision_peak` |
-| brush-composited visual | `target_scene_voxel_b_visual.rgba32f` |
-| brush-composited collision | `target_scene_voxel_b_collision.r32f` |
-| preview | `target_scene_voxel_preview.png` / `target_scene_voxel_b_preview.png` |
-| metadata | `target_scene_voxel.json` / `target_scene_voxel_b.json` |
-| 保存目录 | `user://target_scene_voxel/` |
-
-当前交互：
-
-| 输入 | 行为 |
-| --- | --- |
-| `Ctrl+J` | 全量重新计算源 `TargetSV`，再与已保存 / 当前 `BrushSV` 合成并保存 `TargetSV_B`。 |
-| `J` | 显示 / 隐藏已持久化的 `TargetSV_B` preview overlay。 |
-
-当前生成仍是程序化过渡版：由 terrain depth、target height 和 rock mask 推导目标颜色 / complexity / collision。Stamp 和外部 VDB 导入仍是计划。
-
-## 实现进度
-
-| 项 | 状态 | 代码 / 测试 |
-| --- | --- | --- |
-| GPU 生成 `TargetSV` / `TargetSV_B` raw buffers | 已实现 | `TargetSceneVoxelGenerator.generate()`、`target_scene_voxel.glsl` |
-| 持久化 `rgba32f` / `r32f` / preview / metadata | 已实现 | `main.gd` 的 `_save_target_scene_voxel()` / `_load_persisted_target_scene_voxel_variant()` |
-| `TargetSV_B` -> `target_occupancy` / `target_color` 解码 | 已实现 | `TargetSceneVoxelGenerator.decode_target_read_buffers()`、`tools/test_target_sv_buffer_decode.gd` |
-| Probe Inspect 使用统一 read arrays | 已实现 | `main.gd` 的 `_decode_target_sv_b_read_buffers()`、`_probe_inspect_at_screen()` |
-| Guidance-only 边界 | 已测试 | `tools/test_target_guidance_source_boundary.gd` |
-| Stamp rasterizer / 外部 VDB 导入 / projection cache | 未实现 | 仍在计划阶段 |
+| Stamp rasterizer / 外部 VDB 导入 / projection cache | 未实现 |
 
 ## Source / Guidance 契约
 

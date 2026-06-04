@@ -1,14 +1,14 @@
 #[compute]
 #version 450
 
-// Split RGBA vegetation occupancy into four R32F masks in one dispatch.
+// Split RGBA occupancy into four R32F object-channel masks in one dispatch.
 // Input:
 //   set0/binding0: RGBA16F occupancy texture.
 // Outputs:
-//   set1/binding0: R32F red/grass channel mask.
-//   set1/binding1: R32F green/bush channel mask.
-//   set1/binding2: R32F blue/midstory channel mask.
-//   set1/binding3: R32F alpha/tree channel mask.
+//   set1/binding0: R32F channel_0 mask.
+//   set1/binding1: R32F channel_1 mask.
+//   set1/binding2: R32F channel_2 mask.
+//   set1/binding3: R32F channel_3 mask.
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 

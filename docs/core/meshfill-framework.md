@@ -1,6 +1,6 @@
 # MeshFill Framework
 
-本文整理当前 MeshFill-Godot 框架的数据归属、生成主线、候选路由和运行时查询边界。本文只保留跨模块总览；资产字段细节见 [`asset-properties.md`](asset-properties.md)；SceneVoxel/source 写入、collision 和 SV 常驻显存规则见 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)；TargetSV 设计见 [`target-scene-voxel-projection.md`](../placement/target-scene-voxel-projection.md)；候选资产路由见 [`voxel-semantic-routing.md`](../placement/voxel-semantic-routing.md)；AutoObject probe 粗筛见 [`autoobject-probe-prefilter.md`](../placement/autoobject-probe-prefilter.md)。**SPA**（`ScenePlacementActor`）是 MeshFill 的运行时统一编排器，管理 descriptor 注册、GPU buffer 生命周期和 prefilter→placement→commit 三阶段流水线；完整契约见 [`scene-placement-actor.md`](scene-placement-actor.md)。
+本文整理当前 MeshFill-Godot 框架的数据归属、生成主线、候选路由和运行时查询边界。本文只保留跨模块总览；`AutoVoxelDescriptor` 定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)，资产字段归属边界见 [`asset-properties.md`](asset-properties.md)；SceneVoxel/source 写入、collision 和 SV 常驻显存规则见 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)；TargetSV 设计见 [`target-scene-voxel-projection.md`](../placement/target-scene-voxel-projection.md)；候选资产路由见 [`voxel-semantic-routing.md`](../placement/voxel-semantic-routing.md)；AutoObject probe 粗筛见 [`autoobject-probe-prefilter.md`](../placement/autoobject-probe-prefilter.md)。**SPA**（`ScenePlacementActor`）是 MeshFill 的运行时统一编排器，管理 descriptor 注册、GPU buffer 生命周期和 prefilter→placement→commit 三阶段流水线；完整契约见 [`scene-placement-actor.md`](scene-placement-actor.md)。
 
 ![MeshFill 当前框架总览](../graphs/meshfill_current_framework.svg)
 
@@ -14,8 +14,8 @@
 
 ## 核心约束
 
-- `TargetSceneVoxel` / `TargetSV`、`BrushSV` 和合成后的 `TargetSV_B` 是目标效果画布：只提供 prefilter / routing / scoring / target fit / result feedback 的目标信号，不写入 `tree`、`rock`、`grass` 等 asset 标签；源 `TargetSV` 与 `BrushSV` 需要存储，`TargetSV_B` 是默认读取输入。`TargetSceneVoxel` guidance record 只作为 guidance metadata，不进入 committed source 或 `SceneVoxel`。
-- `AutoVoxelDescriptor` 是「资产是什么」的唯一语义主来源；`AutoObject` 只持有 descriptor 入口、运行时身份、mesh、放置约束和配置入口。
+- `TargetSceneVoxel` / `TargetSV`、`BrushSV` 和合成后的 `TargetSV_B` 是目标效果画布：只提供 prefilter / routing / scoring / target fit / result feedback 的目标信号，不写入 asset 类型标签；源 `TargetSV` 与 `BrushSV` 需要存储，`TargetSV_B` 是默认读取输入。`TargetSceneVoxel` guidance record 只作为 guidance metadata，不进入 committed source 或 `SceneVoxel`。
+- [`AutoVoxelDescriptor`](auto-voxel-descriptor.md) 是「资产是什么」的唯一语义主来源；`AutoObject` 只持有 descriptor 入口、运行时身份、mesh、放置约束和配置入口。
 - 运行时 record / `instance_stamp_write_spec`（`ISWS`）只回答「本次实例放在哪里、写什么 payload」；提交后的 `SceneVoxel` 才是后续系统读取的结果，公开 per-voxel payload 统一写作 `complexity`、`color`、`collision` 和可选 `auto_mix`。`channel` 只属于 source/write context 或 scatter profile，不进入 committed read payload；`complexity` 是唯一强度字段。
 - `collision` 是 descriptor、runtime record、source voxel 和 committed `SceneVoxel` 之间的 canonical shared field；placement footprint record/API 也使用同名 `collision`。`occupied`、`type`、`source_type`、`source_voxel_type` 和 `commit_tick` 不作为 committed per-voxel payload。
 - probe prefilter 只减少候选 `AutoObject` / voxel regions，不直接写最终 `SceneVoxel`；当前 score / top-K 留在本轮 GPU dispatch 内部，readback 只输出 anchors、candidate voxel regions 和 debug profile，不能作为运行时成功路径替代 GPU resident buffer contract。
@@ -28,18 +28,7 @@
 - `GPUAutoObjectRuntime` 只拥有 runtime object state、profile id、bounds / exclusion inputs 和 dirty object delta；per-voxel object refs、SV grid、`SceneVoxelTile` dirty、source range rebuild、commit 和 SV resident fields 仍由 `SceneVoxelCommitter` / SV owner 维护。
 - runtime metadata 只能提供查询、索引、debug 和候选剪枝，不成为资产默认值或 committed SceneVoxel 的第二套权威状态。
 
-## 术语
-
-本文沿用 `scene-voxel-field-system.md` 的体素术语：
-
-| Term | Meaning |
-| --- | --- |
-| `volume` | 整个体素数据域或承载存储，例如 `scene_field`、`collision_field`、TargetSV read buffer。 |
-| `voxel` | `volume` 中的单个 cell / element。 |
-| `tile` | 固定大小 voxel block；`SceneVoxelTile` 是 SV owner 的 dirty / rebuild sidecar，legacy `_sv_dirty_tiles` 是过渡期 storage。 |
-| `voxel bounds` | 对象、source write 或 target 更新覆盖的 voxel 范围；由 SV owner 映射为 affected `SceneVoxelTile`。 |
-| `voxel region` | placement / routing 的候选范围；可以由一个或多个 `tile` 覆盖，不等同于单个 `SceneVoxelTile` 或单个 `voxel`。 |
-| `SPA` | `ScenePlacementActor`，MeshFill 运行时数据的一站式编排容器，管理 asset registry、GPU buffer 和三阶段流水线。详见 [`scene-placement-actor.md`](scene-placement-actor.md)。 |
+体素与计算术语参见顶层 [`README.md`](../README.md#voxel-and-compute-terminology)。`SPA` 即 `ScenePlacementActor`，MeshFill 运行时数据的一站式编排容器，详见 [`scene-placement-actor.md`](scene-placement-actor.md)。
 
 ## Ownership
 
@@ -48,7 +37,7 @@
 | SPA (MeshFill orchestrator) | `ScenePlacementActor` | 拥有 `AutoVoxelRuntimeProfileContainer` 完整生命周期；管理 asset registry、GPU buffer 就绪、prefilter→placement→commit 三阶段流水线编排；暴露 `is_gpu_ready()`、`run_placement_pipeline()` 等统一入口。 |
 | SV runtime owner | `SceneVoxelCommitter` | 持有 committed `SceneVoxel`、SV resident buffers、`SceneVoxelTile` dirty sidecar 和 debug buffer/readback 边界；placement 时把 `TargetSV_B`、AutoObject registry 与 dirty tile ids 传给 prefilter。通过 SPA 注入引用。 |
 | Target canvas | `TargetSceneVoxel` / `BrushSV` / `TargetSV_B` / `TargetSceneVoxelGenerator` | 源 `TargetSV` 保存中性原始目标；`BrushSV` 保存笔刷 delta / override；`TargetSV_B` 是二者合成后的实际采样目标；当前支持 GPU 生成、持久化和 dirty 更新。 |
-| Asset defaults | `AutoVoxelDescriptor` / `AutoObject.voxel_descriptor` / typed assets | descriptor 保存资产默认语义、体素颜色、复杂度、碰撞 footprint、pivot variants、semantic probes 和可选 profile fallback；`AutoObject` 同名字段只作为 Inspector / 配置字典入口。descriptor 通过 SPA.register_asset() 注册并立即上传 GPU。 |
+| Asset defaults | `AutoVoxelDescriptor` / `AutoObject.voxel_descriptor` / typed assets | descriptor 保存所有资产种类的默认语义；字段定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。`AutoObject` 同名字段只作为 Inspector / 配置字典入口，descriptor 通过 SPA.register_asset() 注册并立即上传 GPU。 |
 | Probe prefilter | `AutoVoxelDescriptor.semantic_probe_profile` / `AutoObjectProbePrefilterGPU` | 从 SV `SV[t - 1]` / `TargetSV_B` 读取可放置 anchor，按 descriptor probes 在 GPU 内部打分和 top-K，并 readback voxel-region votes。SPA 创建 prefilter worker 并注入共享 RD。 |
 | Candidate routing | `candidate_voxel_regions_by_asset` / legacy `candidate_voxel_sparses_by_asset` debug view，`candidate_route_profiles` debug | Host readback 后按 footprint、probe offset、context radius 和 interpolation guard 扩张为每个 asset 的 candidate voxel regions；这是 VPG candidate 输入，不是 CPU placement 替代路径。 |
 | Physical placement | `VoxelPlacementGenerator` / placement shaders | 只对 routed asset / candidate voxel regions 做 GPU score、reduce、stamp；可在 GPU scoring 前执行同类型 candidate voxel-region 剪枝；如果 asset 没有候选区域，本轮可跳过。SPA 创建 placer worker 并注入共享 RD + profile_container。 |
@@ -172,7 +161,7 @@ placement
 | SPA (ScenePlacementActor) | `scripts/scene_placement_actor.gd` | 运行时编排器，拥有 `AutoVoxelRuntimeProfileContainer` 完整生命周期，管理 asset registry、GPU buffer 就绪和 prefilter→placement→commit 三阶段流水线。详见 [`scene-placement-actor.md`](scene-placement-actor.md)。 |
 | TargetSV generation | `scripts/target_scene_voxel_generator.gd` / `shaders/target_scene_voxel.glsl` | 当前 GPU 生成 TargetSV visual / collision buffers、decode read buffers 和 debug preview。 |
 | TargetSV persistence | `scripts/main.gd` | 保存、加载、重算和显示 TargetSV overlay。 |
-| Asset model | `scripts/auto_object.gd` / `scripts/auto_voxel_descriptor.gd` / typed asset scripts | `AutoObject` 是共同运行时基类；`AutoVoxelDescriptor` 是资产默认语义唯一权威来源，profile 只作为共享数据和生成辅助。descriptor 通过 SPA.register_asset() 注册并即时上传 GPU。 |
+| Asset model | `scripts/auto_object.gd` / `scripts/auto_voxel_descriptor.gd` / typed asset scripts | `AutoObject` 是共同运行时基类；`AutoVoxelDescriptor` 的统一定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。profile 只作为共享数据和生成辅助，descriptor 通过 SPA.register_asset() 注册并即时上传 GPU。 |
 | Probe prefilter | `scripts/autoobject_probe_prefilter_gpu.gd` / [`autoobject-probe-prefilter.md`](../placement/autoobject-probe-prefilter.md) | GPU-only 粗筛路径；`anchor_autoobject_topk` 当前不回读，公开输出以 `candidate_voxel_regions_by_asset` 为主；`autoobject_candidate_voxel_sparses` / `candidate_voxel_sparses_by_asset` 仅作为 legacy/debug alias；不保留 CPU 替代路径。SPA 创建 prefilter worker 并注入共享 RD + profile_container。 |
 | Semantic routing | [`voxel-semantic-routing.md`](../placement/voxel-semantic-routing.md) | 定义当前 `candidate_voxel_regions_by_asset` / legacy `candidate_voxel_sparses_by_asset` candidate voxel-region 合约、TargetSV_B clamp 采样、空候选 skip，以及候选内 rerank / route validation 边界。 |
 | 3D voxel placement | `scripts/voxel_placement_generator.gd` / `shaders/score_voxel_tile.glsl` / `shaders/reduce_voxel_tiles.glsl` / `shaders/stamp_voxel_field.glsl` | 物理精筛和 stamp 主路径；不负责全库语义查找。SPA 创建 placer worker 并注入共享 RD + profile_container。 |
@@ -213,7 +202,7 @@ dirty target bounds
 
 ## Maintenance Rules
 
-- 新增资产语义字段时默认加入 `AutoVoxelDescriptor`，不要在 `AutoObject` 上新增第二套同名语义状态。
+- 新增资产语义字段时默认加入 [`AutoVoxelDescriptor`](auto-voxel-descriptor.md)，不要在 `AutoObject` 上新增第二套同名语义状态。
 - 新增资产字段时，先判断它属于资产默认值、运行时 record、source voxel write path、TargetSV 目标画布还是最终 `SceneVoxel` 状态。
 - metadata 只能挂索引、调试字段和 `instance_stamp_write_spec` / `ISWS` handle，不能成为对象默认值的主来源；`voxel_write_spec` 只作为 legacy compatibility alias。
 - 自动生成和画笔修改先进入 `SceneVoxelTile` dirty，再通过本 tick source voxel write path 更新 `SceneVoxel`；具体 source / commit 规则见 `scene-voxel-field-system.md`。

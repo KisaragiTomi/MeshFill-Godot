@@ -1,6 +1,6 @@
 # Scene Voxel Field System
 
-本文维护 MeshFill 中 `SceneVoxel`、source write、`collision` 和 SV 常驻显存状态的契约。跨模块总览见 [`meshfill-framework.md`](meshfill-framework.md)；资产默认字段见 [`asset-properties.md`](asset-properties.md)；粗粒度 SV cell 管理见 [`scenevoxeltile.md`](scenevoxeltile.md)；AutoObject GPU-first 方向见 [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)；TargetSV、候选路由和 heightfield placement 分别见 [`target-scene-voxel-projection.md`](../placement/target-scene-voxel-projection.md)、[`voxel-semantic-routing.md`](../placement/voxel-semantic-routing.md)、[`meshfill-rock-placement-flow.md`](../placement/meshfill-rock-placement-flow.md)。**SPA**（`ScenePlacementActor`）是 MeshFill 运行时编排器，借用 `SceneVoxelCommitter` 引用并在 commit 阶段调用 `apply_voxel_write_spec()`；详见 [`scene-placement-actor.md`](scene-placement-actor.md)。
+本文维护 MeshFill 中 `SceneVoxel`、source write、`collision` 和 SV 常驻显存状态的契约。跨模块总览见 [`meshfill-framework.md`](meshfill-framework.md)；`AutoVoxelDescriptor` 定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)，资产字段归属见 [`asset-properties.md`](asset-properties.md)；粗粒度 SV cell 管理见 [`scenevoxeltile.md`](scenevoxeltile.md)；AutoObject GPU-first 方向见 [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)；TargetSV、候选路由和 heightfield placement 分别见 [`target-scene-voxel-projection.md`](../placement/target-scene-voxel-projection.md)、[`voxel-semantic-routing.md`](../placement/voxel-semantic-routing.md)、[`meshfill-rock-placement-flow.md`](../placement/meshfill-rock-placement-flow.md)。**SPA**（`ScenePlacementActor`）是 MeshFill 运行时编排器，借用 `SceneVoxelCommitter` 引用并在 commit 阶段调用 `apply_voxel_write_spec()`；详见 [`scene-placement-actor.md`](scene-placement-actor.md)。
 
 ![SceneVoxel / SV source commit and resident GPU field flow](../graphs/scene-voxel-flow.svg)
 
@@ -15,7 +15,7 @@
 ## 核心契约
 
 - `SceneVoxel` / `SV` 是 committed runtime read model，不是资产 authoring schema。
-- `AutoVoxelDescriptor` / `AutoVoxelProfile` 是资产默认语义来源；`AutoObject` 负责把 descriptor/profile 语义构造成本轮 `instance_stamp_write_spec`（`ISWS`）。
+- [`AutoVoxelDescriptor`](auto-voxel-descriptor.md) / `AutoVoxelProfile` 是资产默认语义来源；`AutoObject` 负责把 descriptor/profile 语义构造成本轮 `instance_stamp_write_spec`（`ISWS`）。
 - shared fields 只有 `color`、`complexity`、`collision`。`collision` 是权威 shared field。
 - committed `SceneVoxel` 对外 read payload 最小化为 `complexity`、`color`、`collision`，可选 `auto_mix`。`channel` 只属于 source/write context 或 scatter profile，不进入 committed read payload；`complexity` 是唯一强度字段。
 - `occupied`、`type`、`source_type`、`source_voxel_type`、`commit_tick` 不作为 committed per-voxel payload；占用由 `complexity` 是否非 0 推导，source provenance 放在 source/debug buffer，commit tick 只作为当前 SV snapshot 的全局 epoch。
@@ -29,25 +29,13 @@
 - `TargetSV_B` / target guidance 变化只触发 routing、prefilter、scoring 或 feedback 侧 dirty，不写入 source stream，也不直接更新 committed `SceneVoxel`。
 - 文档和新调用优先使用 `mark_scene_voxel_tile_dirty()` / `mark_scene_voxel_tile_bounds_dirty()`；当前源码仍保留 `_sv_dirty_tiles` / `_sv_dirty_rects`、`invalidate_sv_tile()` / `invalidate_sv_rect()` 和 `SV_RESIDENT_TILE_SIZE = 8` 作为 dirty storage compatibility，不是新的核心概念，也不改变 `SceneVoxelTile` contract。
 
-## 术语
-
-| 术语 | 含义 |
-| --- | --- |
-| `volume` | 整个体素数据域及其承载存储，例如 flat buffer、3D texture 或当前 `_volume` 容器。 |
-| `voxel` | `volume` 中的单个 `(x, y, z)` cell / element。 |
-| `voxel region` | placement / routing / dirty update 使用的高层候选或脏区域。 |
-| `tile` | 底层固定大小 voxel block；用于 sparse storage、dirty rebuild、storage key 或 workgroup 映射。 |
-| `SceneVoxelTile` | SV 拥有的命名粗粒度 cell index / dirty record；默认固定 `4x4x4` voxels，可由 `meshfill/scene_voxel_tile/size_voxels` 调整，保存 dirty flags、voxel bounds、tile 级 object id ranges 和 summary，不进入 committed `SceneVoxel` payload。per-voxel object refs 保存在 SV GPU resident object-ref buffer 中。 |
-| `collision` | canonical shared collision field，跨 descriptor、record、source voxel 和 committed SV 使用。 |
-| `collision_strength` | 单个 collision sample 或单个 SV voxel 的标量强度，范围 `0.0-1.0`。 |
-| `instance_stamp_write_spec` / `ISWS` | canonical per-instance/per-stamp runtime write spec；由 AutoObject / placement builder 生成，进入 `_prepare_source_record()` 后才成为规范化 source record。 |
-| `voxel_write_spec` | legacy compatibility alias；旧 metadata、旧 API 和测试中可能仍出现，语义上等同 `ISWS`。 |
+体素与计算术语参见顶层 [`README.md`](../README.md#voxel-and-compute-terminology)。`collision` 是 canonical shared collision field；`instance_stamp_write_spec` / `ISWS` 是 canonical per-instance runtime write spec；`voxel_write_spec` 是 legacy alias。`SPA` 参见 [`scene-placement-actor.md`](scene-placement-actor.md)。
 
 ## 责任、输入和输出
 
 | 类型 / 阶段 | 责任 | 输入 | 输出 | Source of truth |
 | --- | --- | --- | --- | --- |
-| `AutoVoxelDescriptor` / `AutoVoxelProfile` | 资产默认语义。 | authoring config、imported profile。 | descriptor-backed `color`、`complexity`、`collision`、probe / pivot defaults。 | descriptor/profile 资源；详见 [`asset-properties.md`](asset-properties.md)。 |
+| `AutoVoxelDescriptor` / `AutoVoxelProfile` | 资产默认语义。 | authoring config、imported profile。 | descriptor-backed shared fields、probe / pivot defaults。 | descriptor/profile 资源；定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。 |
 | `instance_stamp_write_spec` / `ISWS` | 描述本轮实例 stamp 的 source write context。 | `AutoObject` descriptor-backed getters、placement result、extra write fields。 | 归一化前的 per-instance write record；legacy 名称是 `voxel_write_spec`。 | 当前 tick 的 `AutoObject` / placement builder 输出。 |
 | `AutoSceneVoxel` / `BrushSceneVoxel` source stream | 保存当前 tick 的 auto / brush 写入意图。 | `_prepare_source_record()` 归一化后的 `ISWS` / brush stamp。 | source records、priority、brush scope、collision samples、debug labels。 | `SceneVoxelCommitter` 的 source stream；不是 public payload。 |
 | `SceneVoxel` / `BlendSV` | 发布 committed per-voxel read model。 | 同 tick `AutoSceneVoxel` / `BrushSceneVoxel`，以及 terrain base collision。 | public payload：`complexity`、`color`、`collision`，可选 `auto_mix`。 | `SceneVoxelCommitter.blend_scene_voxels()` 的 committed result。 |
@@ -200,7 +188,7 @@ committed SceneVoxel
 
 Footprint authoring 仍可用局部 sample 列表描述形状：
 
-局部 collision sample 字段含义维护在 `AutoVoxelDescriptor.normalize_collision()`、`SharedPropertyType.collision_from_fields()` 和 `VoxelPlacementGenerator.bake_footprint_from_collision()` 附近；`SceneVoxelCommitter` 只复用共享 field stamp 路径发布 resident field。
+局部 collision sample 字段含义维护在 [`AutoVoxelDescriptor.normalize_collision()`](auto-voxel-descriptor.md)、`SharedPropertyType.collision_from_fields()` 和 `VoxelPlacementGenerator.bake_footprint_from_collision()` 附近；`SceneVoxelCommitter` 只复用共享 field stamp 路径发布 resident field。
 
 `collision_field` 是 SV resident GPU collision read channel，由 committed `SceneVoxel.collision` 与 terrain base collision 发布得到。它不改变 `collision` 的语义归属，也不是第二套权威数据。
 

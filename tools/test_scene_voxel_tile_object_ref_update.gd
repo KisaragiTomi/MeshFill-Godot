@@ -6,7 +6,7 @@ const SHADER_PATH := "res://shaders/scene_voxel_tile_object_ref_update.glsl"
 const LOCAL_SIZE_X := 64
 const DIRTY_DELTA_STRIDE_WORDS := 20
 const DIRTY_DELTA_STRIDE_BYTES := DIRTY_DELTA_STRIDE_WORDS * 4
-const STATS_CAPACITY := 8
+const STATS_CAPACITY := 10
 
 const STAT_OVERFLOW := 0
 const STAT_NON_NUMERIC := 1
@@ -184,6 +184,7 @@ func _dispatch_object_ref_update(
 			"cpu_fallback": false,
 		}
 
+	var tile_count := tile_grid.x * tile_grid.y * tile_grid.z
 	var dirty_delta_buf: RID = compute.storage_buffer_from_bytes(
 		dirty_delta_bytes,
 		ComputeShaderBaseScript.SCOPE_FRAME,
@@ -199,7 +200,18 @@ func _dispatch_object_ref_update(
 		ComputeShaderBaseScript.SCOPE_FRAME,
 		"stats"
 	)
-	if not dirty_delta_buf.is_valid() or not object_ref_buf.is_valid() or not stats_buf.is_valid():
+	var dirty_tile_flags_buf: RID = compute.storage_buffer_from_bytes(
+		_zero_bytes(tile_count * 4),
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"dirty_tile_flags"
+	)
+	var dirty_tile_worklist_buf: RID = compute.storage_buffer_from_bytes(
+		_zero_bytes(tile_count * 4),
+		ComputeShaderBaseScript.SCOPE_FRAME,
+		"dirty_tile_worklist"
+	)
+	if not dirty_delta_buf.is_valid() or not object_ref_buf.is_valid() or not stats_buf.is_valid() \
+			or not dirty_tile_flags_buf.is_valid() or not dirty_tile_worklist_buf.is_valid():
 		compute.dispose()
 		return {
 			"ok": false,
@@ -211,6 +223,8 @@ func _dispatch_object_ref_update(
 		compute.make_storage_uniform(0, dirty_delta_buf),
 		compute.make_storage_uniform(1, object_ref_buf),
 		compute.make_storage_uniform(2, stats_buf),
+		compute.make_storage_uniform(3, dirty_tile_flags_buf),
+		compute.make_storage_uniform(4, dirty_tile_worklist_buf),
 	], shader, 0, ComputeShaderBaseScript.SCOPE_PASS, "object_ref_update_set0")
 	if not uniform_set.is_valid():
 		compute.dispose()
@@ -220,7 +234,6 @@ func _dispatch_object_ref_update(
 			"cpu_fallback": false,
 		}
 
-	var tile_count := tile_grid.x * tile_grid.y * tile_grid.z
 	var push := _pack_push_constants(
 		grid_size,
 		dirty_delta_count,
@@ -232,7 +245,9 @@ func _dispatch_object_ref_update(
 		object_ref_capacity,
 		32,
 		STATS_CAPACITY,
-		0
+		0,
+		tile_count,
+		tile_count
 	)
 	var dispatch_groups := Vector3i(1, 1, 1)
 	var cl := compute.begin_compute_list()
@@ -301,7 +316,9 @@ func _pack_push_constants(
 	object_ref_capacity: int,
 	max_object_id_count: int,
 	stats_capacity: int,
-	options_x: int
+	options_x: int,
+	dirty_tile_flag_capacity: int = 0,
+	dirty_tile_worklist_capacity: int = 0
 ) -> PackedByteArray:
 	var push := PackedByteArray()
 	push.resize(80)
@@ -322,8 +339,8 @@ func _pack_push_constants(
 	push.encode_s32(56, max_object_id_count)
 	push.encode_s32(60, stats_capacity)
 	push.encode_s32(64, options_x)
-	push.encode_s32(68, 0)
-	push.encode_s32(72, 0)
+	push.encode_s32(68, dirty_tile_flag_capacity)
+	push.encode_s32(72, dirty_tile_worklist_capacity)
 	push.encode_s32(76, 0)
 	return push
 

@@ -41,6 +41,7 @@ func _init() -> void:
 	ok = ok and _test_dirty_count_write_failure_rejects_dirty_append()
 	ok = ok and _test_profile_dirty_capacity_failure_clears_readback_source()
 	ok = ok and _test_capacity_and_debug_readback()
+	ok = ok and _test_accepted_placement_object_id_reservation_contract()
 	ok = ok and _test_kill_clears_scene_voxel_ref()
 	ok = ok and _test_bulk_spawn_command_flush_uses_batched_buffer_updates()
 	ok = ok and _test_bulk_spawn_opt_in_accepted_record_shader_writeback_matches_cpu()
@@ -91,24 +92,31 @@ func _test_spawn_update_flush_to_scene_voxel_tiles() -> bool:
 		return false
 	var deltas: Array = result.get("dirty_deltas", [])
 	if deltas.size() != 2:
-		push_error("  FAIL: expected spawn and update dirty deltas, got %d" % deltas.size())
+		push_error("  FAIL: RenderingDevice-mismatch flush should CPU-read back spawn and update dirty deltas, got %d" % deltas.size())
 		return false
 	if int(result.get("dirty_delta_count", -1)) != 2 or int(result.get("commit_result_count", -1)) != 2:
-		push_error("  FAIL: runtime flush should report dirty and commit result counts")
+		push_error("  FAIL: RenderingDevice-mismatch flush should report dirty and CPU projection result counts")
 		return false
 	if str(result.get("dirty_delta_apply_api", "")) != "apply_gpu_autoobject_dirty_deltas":
-		push_error("  FAIL: runtime flush should prefer committer dirty-delta batch API")
+		push_error("  FAIL: RenderingDevice-mismatch flush should use committer batch API after readback")
 		return false
-	if str(result.get("dirty_delta_bridge_mode", "")) != "cpu_batch_scene_voxel_tile_ref_dirty_bridge":
-		push_error("  FAIL: runtime flush should report CPU batch dirty-delta bridge")
+	if str(result.get("dirty_delta_bridge_mode", "")) != "gpu_scene_voxel_tile_object_ref_update_with_cpu_debug_projection":
+		push_error("  FAIL: RenderingDevice-mismatch flush should stage CPU-readback deltas into GPU object-ref update")
 		return false
-	if bool(result.get("resident_gpu_dirty_delta_update_pass", true)):
-		push_error("  FAIL: runtime flush must not claim resident GPU dirty-delta update pass")
+	if not bool(result.get("resident_gpu_dirty_delta_update_pass", false)):
+		push_error("  FAIL: runtime flush should claim resident GPU dirty-delta update pass")
 		return false
-	if str(result.get("resident_gpu_dirty_delta_update_pass_owner", "")) != "none" \
-	   or str(result.get("resident_gpu_dirty_delta_update_pass_shader", "")) != "none" \
-	   or int(result.get("resident_gpu_dirty_delta_update_pass_dispatch_count", -1)) != 0:
-		push_error("  FAIL: resident GPU dirty-delta update-pass diagnostics should stay none/0")
+	if str(result.get("resident_gpu_dirty_delta_update_pass_owner", "")) != "SceneVoxelCommitter" \
+	   or str(result.get("resident_gpu_dirty_delta_update_pass_shader", "")) != SVC.SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_NAME \
+	   or int(result.get("resident_gpu_dirty_delta_update_pass_dispatch_count", 0)) != 1:
+		push_error("  FAIL: resident GPU dirty-delta update-pass diagnostics should name the committer shader")
+		return false
+	if str(result.get("readback_source", "")) != "gpu_dirty_delta_buffer" \
+	   or str(result.get("failed_readback_source", "")) != "none":
+		push_error("  FAIL: RenderingDevice-mismatch flush should identify GPU dirty-delta readback source")
+		return false
+	if int(result.get("pending_dirty_delta_count", -1)) != 0 or runtime.get_pending_dirty_delta_count() != 0:
+		push_error("  FAIL: flush should clear pending dirty count")
 		return false
 	if not _assert_object_ref_range_policy(result, "runtime flush"):
 		return false
@@ -119,22 +127,12 @@ func _test_spawn_update_flush_to_scene_voxel_tiles() -> bool:
 	if update_delta.get("new_voxel_max", Vector3i.ZERO) != Vector3i(17, 1, 17):
 		push_error("  FAIL: update delta missing current voxel max")
 		return false
-
-	var dirty_tiles := committer.get_dirty_scene_voxel_tiles()
-	if int(result.get("dirty_scene_voxel_tile_count", -1)) != dirty_tiles.size():
-		push_error("  FAIL: runtime flush dirty SceneVoxelTile count mismatch")
-		return false
-	for expected_id in ["0:0:0", "3:0:3", "4:0:4"]:
-		if not dirty_tiles.has(expected_id):
-			push_error("  FAIL: missing dirty SceneVoxelTile %s after runtime flush" % expected_id)
-			return false
-	var sv := committer.get_sv()
-	if int(sv.get("scene_voxel_tile_gpu_autoobject_ref_count", 0)) != 1:
-		push_error("  FAIL: expected one live GPU AutoObject ref after update")
-		return false
-	var object_ids: Array = sv.get("scene_voxel_tile_object_ids_debug", [])
-	if not object_ids.has("0"):
-		push_error("  FAIL: SceneVoxelTile debug ids missing runtime object id")
+	if not _assert_transient_dirty_tile_result(
+		result,
+		["0:0:0", "3:0:3", "4:0:3", "3:0:4", "4:0:4"],
+		"scene_voxel_tile_dirty_flags",
+		"spawn/update staged runtime flush"
+	):
 		return false
 	var summary := runtime.get_object_summary(object_id)
 	if not bool(summary.get("readback_snapshot", false)):
@@ -148,7 +146,7 @@ func _test_spawn_update_flush_to_scene_voxel_tiles() -> bool:
 		return false
 
 	runtime.dispose()
-	print("  OK: spawn/update flushed old-new bounds into SceneVoxelTile bridge")
+	print("  OK: spawn/update readback bridge stages deltas into resident SceneVoxelTile object-ref pass")
 	return true
 
 
@@ -194,9 +192,8 @@ func _test_resident_opt_in_flush_uses_borrowed_dirty_delta_buffer() -> bool:
 		push_error("  FAIL: resident opt-in should have one pending dirty delta before flush")
 		return false
 
-	var result := runtime.flush_to_scene_voxel_committer(committer, {
-		"use_resident_gpu_dirty_delta_update_pass": true,
-	})
+	# P0: resident GPU update pass 现在默认启用，不再需要显式 opt-in flag。
+	var result := runtime.flush_to_scene_voxel_committer(committer, {})
 	if not bool(result.get("ok", false)):
 		push_error("  FAIL: resident opt-in flush should dispatch: %s" % str(result))
 		return false
@@ -222,6 +219,13 @@ func _test_resident_opt_in_flush_uses_borrowed_dirty_delta_buffer() -> bool:
 	   or not bool(result.get("object_ref_update_gpu_dispatched", false)) \
 	   or int(result.get("object_ref_inserted_slot_count", 0)) != 1:
 		push_error("  FAIL: resident opt-in should expose dispatch stats: %s" % str(result))
+		return false
+	if not _assert_transient_dirty_tile_result(
+		result,
+		["0:0:0"],
+		"gpu_autoobject_runtime_dirty_flags",
+		"resident opt-in borrowed runtime buffer"
+	):
 		return false
 	if str(result.get("readback_source", "")) != "borrowed_gpu_dirty_delta_buffer" \
 	   or str(result.get("failed_readback_source", "")) != "none":
@@ -482,6 +486,20 @@ func _test_scene_placement_actor_scopes_accepted_record_shader_opt_in() -> bool:
 		return false
 
 	var placement_result: Dictionary = result.get("placement_result", {})
+	if not bool(placement_result.get("use_compact_state_chain_received", false)) \
+			or str(placement_result.get("cpu_state_chain_mode_received", "")) != "compact_stamp_deltas":
+		push_error("  FAIL: SPA should pass compact stamp-delta chain settings to VPG when resident writeback is ready: %s" % str(placement_result))
+		actor.dispose(true)
+		return false
+	var compact_summary: Dictionary = result.get("compact_state_chain_summary", {})
+	if not bool(compact_summary.get("ok", false)) \
+			or str(compact_summary.get("mode", "")) != "compact_stamp_deltas" \
+			or not bool(compact_summary.get("avoids_full_field_readback", false)) \
+			or bool(compact_summary.get("full_field_readback_required", true)) \
+			or bool(compact_summary.get("cpu_fallback", true)):
+		push_error("  FAIL: SPA compact summary should report stamp deltas with no full-field readback and no CPU fallback: %s" % str(compact_summary))
+		actor.dispose(true)
+		return false
 	var writeback: Dictionary = placement_result.get("gpu_autoobject_runtime_writeback", {})
 	if not bool(writeback.get("ok", false)):
 		push_error("  FAIL: fake placer no-option command flush should succeed: %s" % str(writeback))
@@ -578,21 +596,60 @@ func _test_scene_placement_actor_scopes_accepted_record_shader_opt_in() -> bool:
 	return true
 
 
+func _assert_transient_dirty_tile_result(
+	result: Dictionary,
+	expected_tile_ids: Array,
+	expected_schema: String,
+	label: String
+) -> bool:
+	if not bool(result.get("transient_dirty_scene_voxel_tile_gpu_emitted", false)):
+		push_error("  FAIL: %s should report GPU-emitted transient dirty SceneVoxelTiles" % label)
+		return false
+	if int(result.get("transient_dirty_scene_voxel_tile_count", -1)) != expected_tile_ids.size():
+		push_error("  FAIL: %s transient dirty tile count mismatch: %s" % [label, str(result)])
+		return false
+	if int(result.get("transient_dirty_scene_voxel_tile_worklist_count", -1)) != expected_tile_ids.size():
+		push_error("  FAIL: %s transient dirty worklist count mismatch: %s" % [label, str(result)])
+		return false
+	if int(result.get("transient_dirty_scene_voxel_tile_worklist_overflow_count", -1)) != 0:
+		push_error("  FAIL: %s transient dirty worklist should not overflow: %s" % [label, str(result)])
+		return false
+	if str(result.get("transient_dirty_scene_voxel_tile_flag_schema", "")) != expected_schema:
+		push_error("  FAIL: %s transient dirty flag schema mismatch: %s" % [label, str(result)])
+		return false
+	if str(result.get("transient_dirty_scene_voxel_tile_cpu_metadata_bridge", "")) != "none":
+		push_error("  FAIL: %s should not claim a CPU metadata bridge for transient dirty tiles" % label)
+		return false
+
+	var tile_ids: Array = result.get("transient_dirty_scene_voxel_tile_ids", [])
+	var flags_by_id: Dictionary = result.get("transient_dirty_scene_voxel_tile_flags", {})
+	for raw_id in expected_tile_ids:
+		var tile_id := str(raw_id)
+		if not tile_ids.has(tile_id):
+			push_error("  FAIL: %s missing transient dirty SceneVoxelTile %s in %s" % [label, tile_id, str(tile_ids)])
+			return false
+		var flags: Dictionary = flags_by_id.get(tile_id, {})
+		if not bool(flags.get("auto", false)) or not bool(flags.get("object_refs", false)):
+			push_error("  FAIL: %s transient dirty flags missing auto/object_refs for %s: %s" % [label, tile_id, str(flags)])
+			return false
+	return true
+
+
 func _assert_object_ref_range_policy(result: Dictionary, label: String) -> bool:
-	if str(result.get("object_ref_range_policy", "")) != "fixed_per_tile_pending_shader":
-		push_error("  FAIL: %s should report fixed per-tile pending-shader object-ref policy" % label)
+	if str(result.get("object_ref_range_policy", "")) != "fixed_per_tile_object_ref_update_pass":
+		push_error("  FAIL: %s should report fixed per-tile object-ref update policy" % label)
 		return false
 	if str(result.get("object_ref_range_owner", "")) != "SceneVoxelCommitter":
 		push_error("  FAIL: %s should report SceneVoxelCommitter as object-ref range owner" % label)
 		return false
-	if str(result.get("object_ref_range_shader", "")) != "none":
-		push_error("  FAIL: %s should not report an object-ref range shader yet" % label)
+	if str(result.get("object_ref_range_shader", "")) != SVC.SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_NAME:
+		push_error("  FAIL: %s should report the object-ref update shader" % label)
 		return false
-	if str(result.get("object_ref_range_shader_path", "")) != "none":
-		push_error("  FAIL: %s should not report an object-ref range shader path yet" % label)
+	if str(result.get("object_ref_range_shader_path", "")) != SVC.SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_PATH:
+		push_error("  FAIL: %s should report the object-ref update shader path" % label)
 		return false
-	if bool(result.get("object_ref_range_shader_ready", true)):
-		push_error("  FAIL: %s should keep object-ref shader readiness false" % label)
+	if not bool(result.get("object_ref_range_shader_ready", false)):
+		push_error("  FAIL: %s should report object-ref shader readiness" % label)
 		return false
 	var refs_per_tile := int(result.get("refs_per_tile", -1))
 	var tile_count := int(result.get("object_ref_tile_count", -1))
@@ -606,23 +663,15 @@ func _assert_object_ref_range_policy(result: Dictionary, label: String) -> bool:
 	if int(result.get("object_ref_overflow_count", -1)) != 0 or int(result.get("overflow_tile_count", -1)) != 0:
 		push_error("  FAIL: %s should report zero object-ref overflow diagnostics" % label)
 		return false
-	if bool(result.get("object_ref_update_stats_available", true)):
-		push_error("  FAIL: %s should not report object-ref shader update stats yet" % label)
+	if bool(result.get("object_ref_update_gpu_dispatched", false)) and int(result.get("object_ref_update_dispatch_count", -1)) <= 0:
+		push_error("  FAIL: %s should report a positive dispatch count when object-ref shader dispatch is true" % label)
 		return false
-	if str(result.get("object_ref_update_source", "")) != "none":
-		push_error("  FAIL: %s should keep object-ref update source none" % label)
-		return false
-	if str(result.get("object_ref_update_reason", "")) != "resident_object_ref_update_pass_not_enabled":
-		push_error("  FAIL: %s should explain that the object-ref update pass is not enabled" % label)
-		return false
-	if bool(result.get("object_ref_update_gpu_dispatched", true)) or int(result.get("object_ref_update_dispatch_count", -1)) != 0:
-		push_error("  FAIL: %s should not report object-ref shader dispatch" % label)
-		return false
-	if int(result.get("object_ref_non_numeric_count", -1)) != 0 \
-	   or int(result.get("object_ref_duplicate_count", -1)) != 0 \
-	   or int(result.get("object_ref_touched_count", -1)) != 0:
-		push_error("  FAIL: %s should report zero object-ref shader stats while pending" % label)
-		return false
+	if not bool(result.get("object_ref_update_gpu_dispatched", false)):
+		if int(result.get("object_ref_non_numeric_count", -1)) != 0 \
+		   or int(result.get("object_ref_duplicate_count", -1)) != 0 \
+		   or int(result.get("object_ref_touched_count", -1)) != 0:
+			push_error("  FAIL: %s should report zero object-ref shader stats before dispatch" % label)
+			return false
 	if str(result.get("gpu_autoobject_ref_key_schema", "")) != "u32_numeric_ref_key_v1":
 		push_error("  FAIL: %s should report explicit numeric GPU AutoObject ref-key schema" % label)
 		return false
@@ -1055,6 +1104,75 @@ func _test_capacity_and_debug_readback() -> bool:
 
 	runtime.dispose()
 	print("  OK: fixed capacity and selected debug readback are stable")
+	return true
+
+
+func _test_accepted_placement_object_id_reservation_contract() -> bool:
+	print("[GPUAutoObjectRuntimeBridge] test_accepted_placement_object_id_reservation_contract...")
+	var runtime := Runtime.new(4)
+	if not _runtime_ready_or_skip(runtime):
+		return true
+
+	var reservation := runtime.reserve_accepted_placement_object_ids(2)
+	var reserved_ids: Array = reservation.get("object_ids", [])
+	if not bool(reservation.get("ok", false)) or reserved_ids.size() != 2 or int(reserved_ids[0]) != 0 or int(reserved_ids[1]) != 1:
+		push_error("  FAIL: reservation should return deterministic record-order ids [0, 1]: %s" % str(reservation))
+		runtime.dispose()
+		return false
+	if bool(runtime.get_object_summary(0).get("alive", true)) or bool(runtime.get_object_summary(1).get("alive", true)):
+		push_error("  FAIL: reserved ids must remain reserved-but-not-alive")
+		runtime.dispose()
+		return false
+	var debug := runtime.get_selected_debug_summary([0, 1])
+	if int(debug.get("live_count", -1)) != 0 \
+			or int(debug.get("reserved_object_id_count", -1)) != 2 \
+			or int(debug.get("free_count", -1)) != 2:
+		push_error("  FAIL: reservation should remove ids from free pool without making them live: %s" % str(debug))
+		runtime.dispose()
+		return false
+
+	var ordinary_spawn_id := runtime.spawn(7, 3, Vector3i(2, 0, 2), Vector3i(3, 1, 3))
+	if ordinary_spawn_id != 2:
+		push_error("  FAIL: ordinary spawn must not reuse reserved ids before rollback, got %d" % ordinary_spawn_id)
+		runtime.dispose()
+		return false
+
+	var premature_finalize := runtime.finalize_accepted_placement_object_id_reservation(reservation, {
+		"ok": true,
+		"accepted_placement_record_shader_consumed": false,
+	})
+	if bool(premature_finalize.get("ok", true)) \
+			or str(premature_finalize.get("reason", "")) != "accepted_record_shader_success_required":
+		push_error("  FAIL: finalize should require accepted-record shader success before commit: %s" % str(premature_finalize))
+		runtime.dispose()
+		return false
+
+	var rollback := runtime.rollback_accepted_placement_object_ids(reservation)
+	if not bool(rollback.get("ok", false)) \
+			or int(rollback.get("released_count", -1)) != 2 \
+			or int(rollback.get("reserved_object_id_count", -1)) != 0:
+		push_error("  FAIL: rollback should release both uncommitted reserved ids: %s" % str(rollback))
+		runtime.dispose()
+		return false
+	var double_rollback := runtime.rollback_accepted_placement_object_ids(reserved_ids)
+	if bool(double_rollback.get("ok", true)) \
+			or int(double_rollback.get("released_count", -1)) != 0 \
+			or int(double_rollback.get("skipped_count", -1)) != 2:
+		push_error("  FAIL: double rollback should skip without double-freeing ids: %s" % str(double_rollback))
+		runtime.dispose()
+		return false
+
+	var reused_a := runtime.spawn(8, 4, Vector3i(4, 0, 4), Vector3i(5, 1, 5))
+	var reused_b := runtime.spawn(9, 5, Vector3i(6, 0, 6), Vector3i(7, 1, 7))
+	var final_id := runtime.spawn(10, 6, Vector3i(8, 0, 8), Vector3i(9, 1, 9))
+	var overflow_id := runtime.spawn(11, 7, Vector3i(10, 0, 10), Vector3i(11, 1, 11))
+	if reused_a != 1 or reused_b != 0 or final_id != 3 or overflow_id != -1:
+		push_error("  FAIL: rollback should restore each id exactly once, got [%d, %d, %d, %d]" % [reused_a, reused_b, final_id, overflow_id])
+		runtime.dispose()
+		return false
+
+	runtime.dispose()
+	print("  OK: accepted-placement object-id reservation orders, rolls back, and blocks spawn reuse")
 	return true
 
 
@@ -1562,7 +1680,8 @@ class SPADirtyDeltaFakePrefilter:
 		_dirty_tile_ids: Array[int] = [],
 		_runtime_profile_container: Object = null,
 		_target_color_rgba8_bytes: PackedByteArray = PackedByteArray(),
-		_target_occupancy_bytes: PackedByteArray = PackedByteArray()
+		_target_occupancy_bytes: PackedByteArray = PackedByteArray(),
+		_target_read_buffers: Dictionary = {}
 	) -> Dictionary:
 		return {
 			"ok": true,
@@ -1669,6 +1788,28 @@ class SPAAcceptedRecordFakePlacer:
 				writeback = runtime.call("flush_command_queue")
 			elif runtime.has_method("get_pending_command_count") and int(runtime.call("get_pending_command_count")) > 0:
 				writeback = runtime.call("flush_command_queue")
+		var use_compact_state_chain := bool(common_settings.get("use_compact_state_chain", false))
+		var cpu_state_chain_mode := str(common_settings.get("cpu_state_chain_mode", "none"))
+		var cpu_state_chain := {
+			"mode": cpu_state_chain_mode,
+			"source": "stamp_shader_storage_buffer" if use_compact_state_chain else "scene_collision_storage_buffer_full_field_readback",
+			"cpu_state_chaining": true,
+			"full_field_readback_required": not use_compact_state_chain,
+			"stamp_delta_cpu_state_chaining": use_compact_state_chain,
+			"stamp_delta_count": 2 if use_compact_state_chain else 0,
+			"applied_delta_count": 2 if use_compact_state_chain else 0,
+		}
+		var full_field_readback := {
+			"scene_field_out_source": "cpu_state_chain_compact_stamp_deltas" if use_compact_state_chain else "scene_collision_storage_buffer_full_field_readback",
+			"collision_field_out_source": "cpu_state_chain_compact_stamp_deltas" if use_compact_state_chain else "scene_collision_storage_buffer_full_field_readback",
+			"scene_field_out_is_full_field": not use_compact_state_chain,
+			"collision_field_out_is_full_field": not use_compact_state_chain,
+			"scene_field_out_gpu_storage_buffer_readback": false,
+			"collision_field_out_gpu_storage_buffer_readback": false,
+			"cpu_state_chain_mode": cpu_state_chain_mode,
+			"stamp_delta_cpu_state_chaining": use_compact_state_chain,
+			"full_field_readback_required": not use_compact_state_chain,
+		}
 		return {
 			"ok": bool(writeback.get("ok", false)),
 			"reason": "ok" if bool(writeback.get("ok", false)) else str(writeback.get("reason", "fake_runtime_flush_failed")),
@@ -1686,6 +1827,11 @@ class SPAAcceptedRecordFakePlacer:
 			"candidate_route_readback_source": "fake_spa_prefilter",
 			"candidate_route_runtime_read_source": "fake_spa_prefilter",
 			"candidate_route_input_contract": {},
+			"use_compact_state_chain_received": use_compact_state_chain,
+			"cpu_state_chain_mode_received": cpu_state_chain_mode,
+			"cpu_state_chain": cpu_state_chain,
+			"full_field_readback": full_field_readback,
+			"stamp_delta_readback_source": "stamp_shader_storage_buffer" if use_compact_state_chain else "disabled",
 			"gpu_autoobject_runtime_writeback": writeback,
 			"grid_size": grid_size,
 			"voxel_size": voxel_size,

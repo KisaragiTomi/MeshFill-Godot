@@ -76,8 +76,21 @@ func _test_sv_control_snapshot_from_commit() -> bool:
 	var expected_count := grid_size.x * grid_size.y * grid_size.z
 	var scene_field: PackedFloat32Array = sv.get("scene_field", PackedFloat32Array())
 	var collision_field: PackedFloat32Array = sv.get("collision_field", PackedFloat32Array())
-	if scene_field.size() != expected_count or collision_field.size() != expected_count:
-		push_error("  FAIL: SV resident buffers have unexpected size")
+	var scene_field_resident := _sv_scene_field_is_resident(sv)
+	var collision_field_resident := _sv_collision_field_is_resident(sv)
+	var resident_field_summary_required := scene_field_resident or collision_field_resident
+
+	if scene_field.is_empty() and not scene_field_resident:
+		push_error("  FAIL: CPU scene_field snapshot is empty without resident GPU field metadata")
+		return false
+	if collision_field.is_empty() and not collision_field_resident:
+		push_error("  FAIL: CPU collision_field snapshot is empty without resident GPU field metadata")
+		return false
+	if not scene_field.is_empty() and scene_field.size() != expected_count:
+		push_error("  FAIL: CPU scene_field snapshot has unexpected size")
+		return false
+	if not collision_field.is_empty() and collision_field.size() != expected_count:
+		push_error("  FAIL: CPU collision_field snapshot has unexpected size")
 		return false
 
 	var scene_max := 0.0
@@ -86,8 +99,17 @@ func _test_sv_control_snapshot_from_commit() -> bool:
 		scene_max = maxf(scene_max, value)
 	for value in collision_field:
 		collision_max = maxf(collision_max, value)
-	if scene_max <= 0.01 or collision_max <= 0.01:
-		push_error("  FAIL: expected non-empty scene and collision resident buffers")
+	if not scene_field.is_empty() and scene_max <= 0.01:
+		push_error("  FAIL: expected non-empty CPU scene_field snapshot")
+		return false
+	if not collision_field.is_empty() and collision_max <= 0.01:
+		push_error("  FAIL: expected non-empty CPU collision_field snapshot")
+		return false
+	if resident_field_summary_required and not _assert_scene_voxel_tile_resident_field_summary(
+		committer,
+		expected_count,
+		"SV control snapshot"
+	):
 		return false
 
 	print("  OK: control snapshot tiles=%d voxels=%d scene_max=%.2f collision_max=%.2f" % [
@@ -1104,20 +1126,36 @@ func _test_committer_import_filter_pipeline_rids_or_skip() -> bool:
 		push_error("  FAIL: expected committed SceneVoxel payload blend from compute, got %s" % str(commit_summary))
 		return false
 	var sv := committer.get_sv()
-	if str(sv.get("scene_field_source", "")) != "auto_brush_source_stream_compute":
-		push_error("  FAIL: expected resident scene_field to come from Auto/Brush compute blend, got %s" % str(sv.get("scene_field_source", "")))
+	if str(sv.get("scene_field_source", "")) != "resident_committed_scene_voxel_payload_buffers" \
+			or str(sv.get("scene_field_projection_mode", "")) != "committed_payload_dense_scatter" \
+			or str(sv.get("scene_field_runtime_read_source", "")) != "resident_committed_scene_voxel_payload_buffer" \
+			or not bool(sv.get("scene_field_committed_payload_projection", false)):
+		push_error("  FAIL: expected resident scene_field to project from committed payload buffers, got %s" % str(sv))
 		return false
 	if not bool(sv.get("tile_summary_gpu_dispatched", false)):
 		push_error("  FAIL: expected SceneVoxelTile summaries to come from compute reduce, got %s" % str(sv))
 		return false
 	var scene_field: PackedFloat32Array = sv.get("scene_field", PackedFloat32Array())
 	var center_idx := 4 + 8 * (4 + 8 * 0)
-	if center_idx >= scene_field.size() or absf(scene_field[center_idx] - 0.4) > 0.001:
-		push_error("  FAIL: Auto/Brush compute blend value mismatch at center: %s" % str(scene_field))
-		return false
+	if scene_field.is_empty():
+		var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
+		var expected_count := grid_size.x * grid_size.y * grid_size.z
+		if not _sv_scene_field_is_resident(sv):
+			push_error("  FAIL: committed-payload scene_field is empty without resident GPU field metadata")
+			return false
+		if not _assert_scene_voxel_tile_resident_field_summary(
+			committer,
+			expected_count,
+			"committed-payload projection"
+		):
+			return false
+	else:
+		if center_idx >= scene_field.size() or absf(scene_field[center_idx] - 0.4) > 0.001:
+			push_error("  FAIL: Auto/Brush compute blend value mismatch at center: %s" % str(scene_field))
+			return false
 	var source_resolve_summary := committer.get_last_scene_voxel_source_resolve_summary()
-	if str(source_resolve_summary.get("mode", "")) != "compute_winner_indices":
-		push_error("  FAIL: expected source resolver winner indices from compute, got %s" % str(source_resolve_summary))
+	if str(source_resolve_summary.get("mode", "")) != "resolve_resident_source_streams":
+		push_error("  FAIL: expected source resolver to report resident source streams, got %s" % str(source_resolve_summary))
 		return false
 
 	committer.dispose(true)
@@ -1264,7 +1302,7 @@ func _test_gpu_autoobject_dirty_delta_batch_tile_refs() -> bool:
 
 	var result := committer.apply_gpu_autoobject_dirty_deltas([
 		{
-			"object_id": "gpu_autoobject_batch_a",
+			"object_id": 7,
 			"old_voxel_min": Vector3i(0, 0, 0),
 			"old_voxel_max": Vector3i(4, 1, 4),
 			"new_voxel_min": Vector3i(12, 0, 12),
@@ -1272,7 +1310,7 @@ func _test_gpu_autoobject_dirty_delta_batch_tile_refs() -> bool:
 			"dirty_flags": {"collision": true},
 		},
 		{
-			"object_id": "gpu_autoobject_batch_b",
+			"object_id": 8,
 			"old_voxel_min": Vector3i(4, 0, 4),
 			"old_voxel_max": Vector3i(8, 1, 8),
 			"new_voxel_min": Vector3i(8, 0, 8),
@@ -1291,18 +1329,92 @@ func _test_gpu_autoobject_dirty_delta_batch_tile_refs() -> bool:
 	if str(result.get("dirty_delta_apply_api", "")) != "apply_gpu_autoobject_dirty_deltas":
 		push_error("  FAIL: dirty-delta batch should report its batch API")
 		return false
-	if str(result.get("dirty_delta_bridge_mode", "")) != "cpu_batch_scene_voxel_tile_ref_dirty_bridge":
-		push_error("  FAIL: dirty-delta batch should report CPU SceneVoxelTile bridge")
+	if bool(result.get("cpu_fallback", true)):
+		push_error("  FAIL: dirty-delta batch must not report CPU fallback")
 		return false
-	if bool(result.get("resident_gpu_dirty_delta_update_pass", true)):
-		push_error("  FAIL: dirty-delta batch must not claim resident GPU update pass")
+	if str(result.get("dirty_delta_bridge_mode", "")) != "gpu_scene_voxel_tile_object_ref_update_with_cpu_debug_projection":
+		push_error("  FAIL: numeric dirty-delta batch should report resident object-ref update bridge: %s" % str(result))
 		return false
-	if str(result.get("resident_gpu_dirty_delta_update_pass_owner", "")) != "none" \
-	   or str(result.get("resident_gpu_dirty_delta_update_pass_shader", "")) != "none" \
-	   or int(result.get("resident_gpu_dirty_delta_update_pass_dispatch_count", -1)) != 0:
-		push_error("  FAIL: dirty-delta batch resident update-pass fields should stay none/0")
+	if not bool(result.get("resident_gpu_dirty_delta_update_pass", false)):
+		push_error("  FAIL: numeric dirty-delta batch should claim resident GPU update pass")
+		return false
+	if str(result.get("resident_gpu_dirty_delta_update_pass_owner", "")) != "SceneVoxelCommitter" \
+	   or str(result.get("resident_gpu_dirty_delta_update_pass_shader", "")) != SVC.SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_NAME \
+	   or int(result.get("resident_gpu_dirty_delta_update_pass_dispatch_count", 0)) != 1:
+		push_error("  FAIL: dirty-delta batch resident update-pass diagnostics mismatch: %s" % str(result))
+		return false
+	if not bool(result.get("object_ref_update_stats_available", false)) \
+	   or not bool(result.get("object_ref_update_gpu_dispatched", false)) \
+	   or int(result.get("object_ref_update_dispatch_count", 0)) != 1:
+		push_error("  FAIL: dirty-delta batch should expose resident object-ref dispatch stats: %s" % str(result))
+		return false
+	if int(result.get("object_ref_inserted_slot_count", -1)) != 2 \
+	   or int(result.get("object_ref_non_numeric_count", -1)) != 0 \
+	   or int(result.get("object_ref_overflow_count", -1)) != 0 \
+	   or int(result.get("object_ref_invalid_bounds_count", -1)) != 0:
+		push_error("  FAIL: dirty-delta batch object-ref update stats mismatch: %s" % str(result))
 		return false
 	if not _assert_object_ref_range_policy(result, "dirty-delta batch"):
+		return false
+	if not _assert_transient_dirty_tile_result(
+		result,
+		["0:0:0", "1:0:1", "2:0:2", "3:0:3"],
+		"scene_voxel_tile_dirty_flags",
+		"dirty-delta batch"
+	):
+		return false
+	var update_result: Dictionary = result.get("object_ref_update_result", {})
+	var resident_worklist_rid := str(update_result.get("resident_dirty_tile_worklist_buffer_rid", "none"))
+	var resident_flag_rid := str(update_result.get("resident_dirty_tile_flag_buffer_rid", "none"))
+	if resident_worklist_rid == "none" or resident_worklist_rid.is_empty() \
+	   or resident_flag_rid == "none" or resident_flag_rid.is_empty():
+		push_error("  FAIL: dirty-delta batch should expose resident dirty tile worklist/flag RIDs: %s" % str(update_result))
+		return false
+	if int(update_result.get("resident_dirty_tile_worklist_capacity", 0)) < int(result.get("transient_dirty_scene_voxel_tile_count", 0)) \
+	   or int(update_result.get("resident_dirty_tile_flag_capacity", 0)) < int(result.get("object_ref_tile_count", 0)):
+		push_error("  FAIL: dirty-delta batch resident dirty tile capacities mismatch: %s" % str(update_result))
+		return false
+	if not bool(update_result.get("cpu_readback_debug_only", false)):
+		push_error("  FAIL: dirty-delta batch should mark CPU dirty-tile readback as debug-only")
+		return false
+
+	var stale_summary := committer.get_scene_voxel_tile_gpu_buffer_summary()
+	if not bool(stale_summary.get("buffers_stale", false)) \
+	   or bool(stale_summary.get("runtime_ready", true)) \
+	   or str(stale_summary.get("runtime_read_source", "")) != "none" \
+	   or str(stale_summary.get("resident_field_read_source", "")) != "none":
+		push_error("  FAIL: CPU debug projection should stale SceneVoxelTile runtime reads after resident dispatch: %s" % str(stale_summary))
+		return false
+	if bool(stale_summary.get("cpu_fallback", true)):
+		push_error("  FAIL: stale dirty-delta batch summary must not report CPU fallback")
+		return false
+	var object_ref_rid := committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_OBJECT_REF_BUFFER)
+	var stale_buffers: Dictionary = stale_summary.get("buffers", {})
+	var stale_object_ref_buffer: Dictionary = stale_buffers.get(SVC.SCENE_VOXEL_TILE_OBJECT_REF_BUFFER, {})
+	if not object_ref_rid.is_valid() or not bool(stale_object_ref_buffer.get("rid_valid", false)):
+		push_error("  FAIL: dirty-delta batch should retain a valid resident object-ref buffer RID while metadata is stale")
+		return false
+	if int(stale_object_ref_buffer.get("record_count", -1)) != int(result.get("object_ref_capacity", -2)):
+		push_error("  FAIL: stale object-ref buffer record count should match capacity")
+		return false
+
+	if not committer.ensure_scene_voxel_tile_buffers_uploaded(false):
+		push_error("  FAIL: dirty-delta batch should re-upload staged CPU debug projection for readback")
+		return false
+	var gpu_summary := committer.get_scene_voxel_tile_gpu_buffer_summary()
+	if not bool(gpu_summary.get("runtime_ready", false)) \
+	   or bool(gpu_summary.get("cpu_fallback", true)) \
+	   or str(gpu_summary.get("runtime_read_source", "")) != "gpu_storage_buffers":
+		push_error("  FAIL: dirty-delta batch re-upload should restore SceneVoxelTile GPU runtime reads: %s" % str(gpu_summary))
+		return false
+	var buffers: Dictionary = gpu_summary.get("buffers", {})
+	var object_ref_buffer: Dictionary = buffers.get(SVC.SCENE_VOXEL_TILE_OBJECT_REF_BUFFER, {})
+	var uploaded_object_ref_rid := committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_OBJECT_REF_BUFFER)
+	if not uploaded_object_ref_rid.is_valid() or not bool(object_ref_buffer.get("rid_valid", false)):
+		push_error("  FAIL: dirty-delta batch re-uploaded object-ref buffer RID should be valid")
+		return false
+	if int(object_ref_buffer.get("record_count", -1)) != int(result.get("object_ref_capacity", -2)):
+		push_error("  FAIL: re-uploaded object-ref buffer record count should match capacity")
 		return false
 	var dirty_tiles: Dictionary = result.get("dirty_scene_voxel_tiles", {})
 	if dirty_tiles.is_empty():
@@ -1312,21 +1424,33 @@ func _test_gpu_autoobject_dirty_delta_batch_tile_refs() -> bool:
 		if not dirty_tiles.has(expected_id):
 			push_error("  FAIL: dirty-delta batch missing SceneVoxelTile %s" % expected_id)
 			return false
+	var snapshot := committer.readback_scene_voxel_tile_debug_snapshot()
+	var object_ref_bytes: PackedByteArray = snapshot.get("object_ref_bytes", PackedByteArray())
+	var tile_grid: Vector3i = result.get("object_ref_tile_grid_size", Vector3i.ZERO)
+	var refs_per_tile := int(result.get("refs_per_tile", SVC.SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT))
+	var batch_a_tile_index := _scene_voxel_tile_flattened_index(Vector3i(3, 0, 3), tile_grid)
+	var batch_b_tile_index := _scene_voxel_tile_flattened_index(Vector3i(2, 0, 2), tile_grid)
+	if not _object_ref_slots_contain(object_ref_bytes, batch_a_tile_index, refs_per_tile, 8):
+		push_error("  FAIL: dirty-delta batch should write object_id+1 ref for object 7 into new tile")
+		return false
+	if not _object_ref_slots_contain(object_ref_bytes, batch_b_tile_index, refs_per_tile, 9):
+		push_error("  FAIL: dirty-delta batch should write object_id+1 ref for object 8 into new tile")
+		return false
 	var sv := committer.get_sv()
 	if int(sv.get("scene_voxel_tile_gpu_autoobject_ref_count", 0)) != 2:
 		push_error("  FAIL: dirty-delta batch should publish two GPU AutoObject refs")
 		return false
 	var object_ids: Array = sv.get("scene_voxel_tile_object_ids_debug", [])
-	if not object_ids.has("gpu_autoobject_batch_a") or not object_ids.has("gpu_autoobject_batch_b"):
+	if not object_ids.has("7") or not object_ids.has("8"):
 		push_error("  FAIL: dirty-delta batch compact object ids missing batch refs")
 		return false
 
-	print("  OK: GPU AutoObject delta batch marked dirty tiles and compact object refs")
+	print("  OK: GPU AutoObject numeric delta batch used resident object-ref update and dirty handoff")
 	return true
 
 
 func _test_gpu_autoobject_object_ref_pending_shader_contract() -> bool:
-	print("[VoxelDirtyTile] test_gpu_autoobject_object_ref_pending_shader_contract...")
+	print("[VoxelDirtyTile] test_gpu_autoobject_object_ref_update_shader_contract...")
 	var committer := _make_committer_with_voxel()
 	committer.clear_sv_dirty()
 
@@ -1339,22 +1463,23 @@ func _test_gpu_autoobject_object_ref_pending_shader_contract() -> bool:
 		"dirty_flags": {"object_refs": true},
 	})
 	if not bool(result.get("ok", false)):
-		push_error("  FAIL: numeric GPU AutoObject dirty delta should apply through CPU bridge")
+		push_error("  FAIL: numeric GPU AutoObject dirty delta should apply through SceneVoxelTile bridge")
 		return false
 	var diagnostics := committer.get_gpu_autoobject_object_ref_range_policy_diagnostics()
 	if not _assert_object_ref_range_policy(diagnostics, "single dirty-delta diagnostics"):
 		return false
 	if bool(diagnostics.get("object_ref_update_gpu_dispatched", true)):
-		push_error("  FAIL: object-ref diagnostics must not claim shader dispatch")
+		push_error("  FAIL: single-delta CPU debug projection must not claim shader dispatch")
 		return false
 
-	print("  OK: GPU AutoObject object-ref diagnostics remain pending shader/nonresident")
+	print("  OK: GPU AutoObject object-ref diagnostics report resident shader availability")
 	return true
 
 
 func _test_gpu_autoobject_object_ref_update_pass_or_skip() -> bool:
 	print("[VoxelDirtyTile] test_gpu_autoobject_object_ref_update_pass_or_skip...")
 	var committer := _make_committer_with_voxel()
+	committer.clear_sv_dirty()
 	if not committer.ensure_scene_voxel_tile_buffers_uploaded(true):
 		var skipped_summary := committer.get_scene_voxel_tile_gpu_buffer_summary()
 		if str(skipped_summary.get("gpu_upload_status", "")) == "skip":
@@ -1408,6 +1533,16 @@ func _test_gpu_autoobject_object_ref_update_pass_or_skip() -> bool:
 	   or int(result.get("object_ref_non_numeric_count", -1)) != 0:
 		push_error("  FAIL: opt-in pass stats mismatch: %s" % str(result))
 		return false
+	if not _assert_transient_dirty_tile_result(
+		result,
+		["0:0:0"],
+		"scene_voxel_tile_dirty_flags",
+		"staged opt-in pass"
+	):
+		return false
+	if not committer.get_dirty_scene_voxel_tiles().is_empty():
+		push_error("  FAIL: opt-in pass should not mutate CPU SceneVoxelTile dirty metadata")
+		return false
 
 	var snapshot := committer.readback_scene_voxel_tile_debug_snapshot()
 	var object_ref_bytes: PackedByteArray = snapshot.get("object_ref_bytes", PackedByteArray())
@@ -1422,8 +1557,8 @@ func _test_gpu_autoobject_object_ref_update_pass_or_skip() -> bool:
 		10,
 		Vector3i(0, 0, 0),
 		Vector3i(1, 1, 1),
-		Vector3i(0, 0, 0),
-		Vector3i(4, 1, 4),
+		Vector3i(4, 0, 4),
+		Vector3i(8, 1, 8),
 		false,
 		true
 	)
@@ -1453,9 +1588,17 @@ func _test_gpu_autoobject_object_ref_update_pass_or_skip() -> bool:
 	   or int(buffer_result.get("object_ref_inserted_slot_count", 0)) != 1:
 		push_error("  FAIL: borrowed-buffer opt-in pass dispatch diagnostics mismatch: %s" % str(buffer_result))
 		return false
+	if not _assert_transient_dirty_tile_result(
+		buffer_result,
+		["0:0:0", "1:0:1"],
+		"scene_voxel_tile_dirty_flags",
+		"borrowed-buffer opt-in pass"
+	):
+		return false
 	var buffer_snapshot := committer.readback_scene_voxel_tile_debug_snapshot()
 	var buffer_object_ref_bytes: PackedByteArray = buffer_snapshot.get("object_ref_bytes", PackedByteArray())
-	if not _object_ref_slots_contain(buffer_object_ref_bytes, tile_index, refs_per_tile, 11):
+	var buffer_tile_index := _scene_voxel_tile_flattened_index(Vector3i(1, 0, 1), tile_grid)
+	if not _object_ref_slots_contain(buffer_object_ref_bytes, buffer_tile_index, refs_per_tile, 11):
 		push_error("  FAIL: borrowed-buffer opt-in pass should write numeric object_id+1 ref into fixed tile slots")
 		return false
 
@@ -1468,39 +1611,144 @@ func _test_gpu_autoobject_object_ref_update_pass_or_skip() -> bool:
 		"dirty_flags": {"object_refs": true},
 	}])
 	if not bool(bridge_result.get("ok", false)):
-		push_error("  FAIL: normal dirty-delta CPU bridge should still apply")
+		push_error("  FAIL: normal dirty-delta batch should still apply")
 		return false
-	if str(bridge_result.get("dirty_delta_bridge_mode", "")) != "cpu_batch_scene_voxel_tile_ref_dirty_bridge":
-		push_error("  FAIL: normal dirty-delta batch should keep CPU bridge mode")
+	if str(bridge_result.get("dirty_delta_bridge_mode", "")) != "gpu_scene_voxel_tile_object_ref_update_with_cpu_debug_projection":
+		push_error("  FAIL: normal numeric dirty-delta batch should use GPU object-ref update with CPU debug projection")
 		return false
-	if bool(bridge_result.get("resident_gpu_dirty_delta_update_pass", true)) \
-	   or str(bridge_result.get("resident_gpu_dirty_delta_update_pass_owner", "")) != "none" \
-	   or str(bridge_result.get("resident_gpu_dirty_delta_update_pass_shader", "")) != "none" \
-	   or int(bridge_result.get("resident_gpu_dirty_delta_update_pass_dispatch_count", -1)) != 0:
-		push_error("  FAIL: normal dirty-delta batch must remain nonresident unless opt-in API is called")
+	if not bool(bridge_result.get("resident_gpu_dirty_delta_update_pass", false)) \
+	   or str(bridge_result.get("resident_gpu_dirty_delta_update_pass_owner", "")) != "SceneVoxelCommitter" \
+	   or str(bridge_result.get("resident_gpu_dirty_delta_update_pass_shader", "")) != SVC.SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_NAME \
+	   or int(bridge_result.get("resident_gpu_dirty_delta_update_pass_dispatch_count", 0)) != 1:
+		push_error("  FAIL: normal numeric dirty-delta batch should dispatch resident object-ref update")
 		return false
 	if not _assert_object_ref_range_policy(bridge_result, "post-opt-in normal dirty-delta batch"):
 		return false
 
-	print("  OK: opt-in object-ref shader dispatch updates fixed slots while normal bridge remains nonresident")
+	print("  OK: object-ref shader dispatch updates fixed slots for opt-in, borrowed-buffer, and numeric batch paths")
+	return true
+
+
+func _sv_scene_field_is_resident(sv: Dictionary) -> bool:
+	var runtime_read_source := str(sv.get("scene_field_runtime_read_source", "none"))
+	var projection_read_source := str(sv.get("public_scene_voxel_projection_runtime_read_source", "none"))
+	return bool(sv.get("scene_field_buffer_resident", false)) \
+		or bool(sv.get("scene_field_final_source_stream_resident", false)) \
+		or runtime_read_source == "gpu_resident_blend_output" \
+		or runtime_read_source.begins_with("resident_") \
+		or projection_read_source.begins_with("resident_") \
+		or str(sv.get("scene_voxel_tile_resident_field_read_source", "none")) == "gpu_storage_buffers"
+
+
+func _sv_collision_field_is_resident(sv: Dictionary) -> bool:
+	var runtime_read_source := str(sv.get("collision_field_runtime_read_source", "none"))
+	return runtime_read_source == "resident_gpu_buffer" \
+		or runtime_read_source.begins_with("resident_") \
+		or str(sv.get("scene_voxel_tile_resident_field_read_source", "none")) == "gpu_storage_buffers"
+
+
+func _assert_scene_voxel_tile_resident_field_summary(
+	committer: SceneVoxelCommitter,
+	expected_count: int,
+	label: String
+) -> bool:
+	if expected_count <= 0:
+		push_error("  FAIL: %s expected voxel count must be positive" % label)
+		return false
+	if not committer.ensure_scene_voxel_tile_buffers_uploaded(true):
+		var failed_summary := committer.get_scene_voxel_tile_gpu_buffer_summary()
+		push_error("  FAIL: %s resident SceneVoxelTile buffer upload failed: %s" % [label, str(failed_summary)])
+		return false
+
+	var summary := committer.get_scene_voxel_tile_gpu_buffer_summary()
+	if not bool(summary.get("runtime_ready", false)):
+		push_error("  FAIL: %s resident SceneVoxelTile summary should be runtime ready: %s" % [label, str(summary)])
+		return false
+	if bool(summary.get("cpu_fallback", true)):
+		push_error("  FAIL: %s resident SceneVoxelTile summary must not report CPU fallback" % label)
+		return false
+	if str(summary.get("resident_field_read_source", "")) != "gpu_storage_buffers":
+		push_error("  FAIL: %s resident SceneVoxelTile fields should read from GPU storage buffers" % label)
+		return false
+	if int(summary.get("resident_field_voxel_count", -1)) != expected_count:
+		push_error("  FAIL: %s resident field voxel count mismatch: %s" % [label, str(summary)])
+		return false
+	if int(summary.get("scene_field_voxel_count", -1)) != expected_count:
+		push_error("  FAIL: %s scene field voxel count mismatch: %s" % [label, str(summary)])
+		return false
+	if int(summary.get("collision_field_voxel_count", -1)) != expected_count:
+		push_error("  FAIL: %s collision field voxel count mismatch: %s" % [label, str(summary)])
+		return false
+
+	var buffers: Dictionary = summary.get("buffers", {})
+	var scene_field_buffer: Dictionary = buffers.get(SVC.SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER, {})
+	var collision_field_buffer: Dictionary = buffers.get(SVC.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER, {})
+	if not bool(scene_field_buffer.get("rid_valid", false)) or not bool(collision_field_buffer.get("rid_valid", false)):
+		push_error("  FAIL: %s resident scene/collision buffer RIDs should be valid" % label)
+		return false
+	if int(scene_field_buffer.get("record_count", -1)) != expected_count:
+		push_error("  FAIL: %s scene field buffer record count mismatch" % label)
+		return false
+	if int(collision_field_buffer.get("record_count", -1)) != expected_count:
+		push_error("  FAIL: %s collision field buffer record count mismatch" % label)
+		return false
+	return true
+
+
+func _assert_transient_dirty_tile_result(
+	result: Dictionary,
+	expected_tile_ids: Array,
+	expected_schema: String,
+	label: String
+) -> bool:
+	if not bool(result.get("transient_dirty_scene_voxel_tile_gpu_emitted", false)):
+		push_error("  FAIL: %s should report GPU-emitted transient dirty SceneVoxelTiles" % label)
+		return false
+	if int(result.get("transient_dirty_scene_voxel_tile_count", -1)) != expected_tile_ids.size():
+		push_error("  FAIL: %s transient dirty tile count mismatch: %s" % [label, str(result)])
+		return false
+	if int(result.get("transient_dirty_scene_voxel_tile_worklist_count", -1)) != expected_tile_ids.size():
+		push_error("  FAIL: %s transient dirty worklist count mismatch: %s" % [label, str(result)])
+		return false
+	if int(result.get("transient_dirty_scene_voxel_tile_worklist_overflow_count", -1)) != 0:
+		push_error("  FAIL: %s transient dirty worklist should not overflow: %s" % [label, str(result)])
+		return false
+	if str(result.get("transient_dirty_scene_voxel_tile_flag_schema", "")) != expected_schema:
+		push_error("  FAIL: %s transient dirty flag schema mismatch: %s" % [label, str(result)])
+		return false
+	if str(result.get("transient_dirty_scene_voxel_tile_cpu_metadata_bridge", "")) != "none":
+		push_error("  FAIL: %s should not claim a CPU metadata bridge for transient dirty tiles" % label)
+		return false
+
+	var tile_ids: Array = result.get("transient_dirty_scene_voxel_tile_ids", [])
+	var flags_by_id: Dictionary = result.get("transient_dirty_scene_voxel_tile_flags", {})
+	for raw_id in expected_tile_ids:
+		var tile_id := str(raw_id)
+		if not tile_ids.has(tile_id):
+			push_error("  FAIL: %s missing transient dirty SceneVoxelTile %s in %s" % [label, tile_id, str(tile_ids)])
+			return false
+		var flags: Dictionary = flags_by_id.get(tile_id, {})
+		if not bool(flags.get("auto", false)) or not bool(flags.get("object_refs", false)):
+			push_error("  FAIL: %s transient dirty flags missing auto/object_refs for %s: %s" % [label, tile_id, str(flags)])
+			return false
 	return true
 
 
 func _assert_object_ref_range_policy(result: Dictionary, label: String) -> bool:
-	if str(result.get("object_ref_range_policy", "")) != "fixed_per_tile_pending_shader":
-		push_error("  FAIL: %s should report fixed per-tile pending-shader object-ref policy" % label)
+	if str(result.get("object_ref_range_policy", "")) != "fixed_per_tile_object_ref_update_pass":
+		push_error("  FAIL: %s should report fixed per-tile object-ref update policy" % label)
 		return false
 	if str(result.get("object_ref_range_owner", "")) != "SceneVoxelCommitter":
 		push_error("  FAIL: %s should report SceneVoxelCommitter as object-ref range owner" % label)
 		return false
-	if str(result.get("object_ref_range_shader", "")) != "none":
-		push_error("  FAIL: %s should not report an object-ref range shader yet" % label)
+	if str(result.get("object_ref_range_shader", "")) != SVC.SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_NAME:
+		push_error("  FAIL: %s should report the object-ref update shader" % label)
 		return false
-	if str(result.get("object_ref_range_shader_path", "")) != "none":
-		push_error("  FAIL: %s should not report an object-ref range shader path yet" % label)
+	if str(result.get("object_ref_range_shader_path", "")) != SVC.SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_PATH:
+		push_error("  FAIL: %s should report the object-ref update shader path" % label)
 		return false
-	if bool(result.get("object_ref_range_shader_ready", true)):
-		push_error("  FAIL: %s should keep object-ref shader readiness false" % label)
+	if not bool(result.get("object_ref_range_shader_ready", false)):
+		push_error("  FAIL: %s should report object-ref shader readiness" % label)
 		return false
 	var refs_per_tile := int(result.get("refs_per_tile", -1))
 	var tile_count := int(result.get("object_ref_tile_count", -1))
@@ -1514,23 +1762,15 @@ func _assert_object_ref_range_policy(result: Dictionary, label: String) -> bool:
 	if int(result.get("object_ref_overflow_count", -1)) != 0 or int(result.get("overflow_tile_count", -1)) != 0:
 		push_error("  FAIL: %s should report zero object-ref overflow diagnostics" % label)
 		return false
-	if bool(result.get("object_ref_update_stats_available", true)):
-		push_error("  FAIL: %s should not report object-ref shader update stats yet" % label)
+	if bool(result.get("object_ref_update_gpu_dispatched", false)) and int(result.get("object_ref_update_dispatch_count", -1)) <= 0:
+		push_error("  FAIL: %s should report a positive dispatch count when object-ref shader dispatch is true" % label)
 		return false
-	if str(result.get("object_ref_update_source", "")) != "none":
-		push_error("  FAIL: %s should keep object-ref update source none" % label)
-		return false
-	if str(result.get("object_ref_update_reason", "")) != "resident_object_ref_update_pass_not_enabled":
-		push_error("  FAIL: %s should explain that the object-ref update pass is not enabled" % label)
-		return false
-	if bool(result.get("object_ref_update_gpu_dispatched", true)) or int(result.get("object_ref_update_dispatch_count", -1)) != 0:
-		push_error("  FAIL: %s should not report object-ref shader dispatch" % label)
-		return false
-	if int(result.get("object_ref_non_numeric_count", -1)) != 0 \
-	   or int(result.get("object_ref_duplicate_count", -1)) != 0 \
-	   or int(result.get("object_ref_touched_count", -1)) != 0:
-		push_error("  FAIL: %s should report zero object-ref shader stats while pending" % label)
-		return false
+	if not bool(result.get("object_ref_update_gpu_dispatched", false)):
+		if int(result.get("object_ref_non_numeric_count", -1)) != 0 \
+		   or int(result.get("object_ref_duplicate_count", -1)) != 0 \
+		   or int(result.get("object_ref_touched_count", -1)) != 0:
+			push_error("  FAIL: %s should report zero object-ref shader stats before dispatch" % label)
+			return false
 	if str(result.get("gpu_autoobject_ref_key_schema", "")) != "u32_numeric_ref_key_v1":
 		push_error("  FAIL: %s should report explicit numeric GPU AutoObject ref-key schema" % label)
 		return false

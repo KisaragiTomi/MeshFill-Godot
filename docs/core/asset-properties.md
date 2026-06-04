@@ -6,11 +6,11 @@
 
 ![AutoAssetFactory relationships](../graphs/autoassetfactory_relationships.svg)
 
-本文是资产字段、descriptor 入口、runtime write record 和 metadata 边界的速查。字段事实以当前 GDScript、相邻核心文档和工具测试为准。源码已在 export 字段旁维护逐项含义，本页只写跨层契约和归属边界。
+本文是资产字段、descriptor 入口、runtime write record 和 metadata 边界的速查。`AutoVoxelDescriptor` 的统一定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)；源码已在 export 字段旁维护逐项含义，本页只写跨层契约和归属边界。
 
 ## 核心规则
 
-- `AutoVoxelDescriptor` 是资产默认体素语义的 canonical source；`AutoVoxelProfile` 只作为已有资产 / 导入 preset fallback 进入同一 shared-field 归一化路径。
+- [`AutoVoxelDescriptor`](auto-voxel-descriptor.md) 是所有资产种类默认体素语义的 canonical source；`AutoVoxelProfile` 只作为已有资产 / 导入 preset fallback 进入同一 shared-field 归一化路径。
 - `AutoVoxelDescriptor.collision` 是权威字段；新 config、descriptor record 和 shared fields 只读写 `collision`。
 - `SharedPropertyType.SHARED_FIELD_KEYS == ["color", "complexity", "collision"]`。
 - `channel` 不进入共享语义；`vegetation_channel` / `vegetation_radius` 只属于植被 scatter profile。
@@ -36,24 +36,16 @@
 
 | 类型 | 职责 | 文件 |
 | --- | --- | --- |
-| `AutoVoxelDescriptor` | 资产默认语义、collision、pivot、semantic probe；植被还保存 mesh / scatter / script | `scripts/auto_voxel_descriptor.gd` |
+| `AutoVoxelDescriptor` | 所有资产种类的默认语义 descriptor；字段定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md) | `scripts/auto_voxel_descriptor.gd` |
 | `AutoObject` | 运行时节点、实例身份、descriptor 入口、placement helper、legacy-named `voxel_write_spec` / `ISWS` 构造 | `scripts/auto_object.gd` |
 | `AutoRock` | 岩石资产和生成原型 | `scripts/auto_rock.gd` |
-| `AutoVegetation` | 植被实例基类；由 descriptor 实例化或配置 | `scripts/auto_vegetation.gd` |
+| Generated vegetation script | typed `AutoObject` façade；由 descriptor / scaffold config 实例化或配置 | `tools/scaffold_auto_asset.gd` / generated script |
 | `SharedPropertyType` | `color` / `complexity` / `collision` 的归一化、record 和 `SceneVoxel` 传播 | `scripts/shared_property_type.gd` |
 | `AutoAssetFactory` | 脚手架和导入 helper；创建 descriptor / profile / typed asset；通过当前 helper 输出 `ISWS` record | `scripts/auto_asset_factory.gd` |
 
 ## Descriptor 字段
 
-Descriptor export 字段的逐项含义已迁移到 `scripts/auto_voxel_descriptor.gd` 顶部声明；`to_record_fields()` 的导出 record 字段在返回字典旁维护同侧注释。
-
-Descriptor 是资产默认语义的 source of truth：
-
-- `get_color()` / `get_complexity()` 归一化默认颜色和强度，并保持 `color.a == complexity`。
-- `get_collision()` 只从 `collision` 读取，并通过 `normalize_collision()` 归一化局部 footprint sample。
-- `to_record_fields()` 先走 `SharedPropertyType.from_descriptor()`，再追加 pivot、vertical-pivot 标记、probe density 和已存在的 `semantic_probes`。
-- `get_scatter_profile()` 只为植被 scatter 输出 `channel` / `radius`；这些字段不进入 shared fields。
-- `object_type` / `object_subtype` 在 descriptor 中只能作为 grouping / debug / compatibility metadata；新 runtime schema 不新增 `object_subtype` 语义。
+Descriptor 字段、归一化入口和 authoring 规则统一维护在 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。本页只保留跨层交接：descriptor 输出 shared fields / profile payload；`AutoObject`、metadata、`ISWS`、runtime profile 和 committed `SceneVoxel` 都不能反向成为资产默认语义来源。
 
 ## AutoObject 边界
 
@@ -101,7 +93,7 @@ committed `SceneVoxel` 的 public payload 是 `complexity`、`color`、`collisio
 
 Metadata 只保留索引、回查和调试入口。当前 `AutoObject._sync_auto_metadata()` 写入 `auto_id`、`auto_instance_id` / `instance_id` 和 `instance_mesh_id`；`set_voxel_write_spec()` / `set_instance_stamp_write_spec()` 同时通过 canonical metadata key `instance_stamp_write_spec` 和 legacy key `voxel_write_spec` 暴露同一个 `ISWS` handle。
 
-`auto_source`、`object_type`、`object_subtype` 等来源 / 分组字段可以存在于 `ISWS` record 或 debug record 中，但不要新增一套 metadata 语义镜像。新增资产语义字段时优先进入 `AutoVoxelDescriptor`。
+`auto_source`、`object_type`、`object_subtype` 等来源 / 分组字段可以存在于 `ISWS` record 或 debug record 中，但不要新增一套 metadata 语义镜像。新增资产语义字段时优先进入 [`AutoVoxelDescriptor`](auto-voxel-descriptor.md)。
 
 `object_type` 保留为 placement、same-type exclusion、GPU runtime record 和 debug record 的粗粒度类型字段。已有 `object_subtype` 只作为 compatibility / debug metadata；新 schema 不新增 `object_subtype`，更细的资产差异应进入 `AutoVoxelDescriptor` / runtime `profile_id`。
 
@@ -130,6 +122,7 @@ shader / SV 通过 profile_id 采样资产 profile
 
 ## 相关文档
 
+- `auto-voxel-descriptor.md`：`AutoVoxelDescriptor` 的统一定义、字段分组和 authoring 规则。
 - `meshfill-framework.md`：框架数据归属和主流程。
 - `scene-voxel-field-system.md`：`instance_stamp_write_spec` / `ISWS`、source voxel、committed `SceneVoxel` 和 SV resident collision field。
 - `asset-semantic-probes.md`：descriptor-backed semantic probes。

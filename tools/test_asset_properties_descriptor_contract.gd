@@ -45,6 +45,16 @@ func _test_shared_field_contract() -> bool:
 	if collision.is_empty() or not _approx(float((collision[0] as Dictionary).get("collision_strength", 0.0)), 0.25, 0.001):
 		push_error("Expected collision_strength to normalize from canonical collision")
 		return false
+	var collision_only_record := SharedPropertyTypeScript.apply_to_record({}, {
+		"collision": [{"shape": "cylinder", "radius": 0.5, "collision_strength": 0.5}],
+	})
+	if not collision_only_record.has("collision"):
+		push_error("Expected collision-only shared fields to propagate through apply_to_record")
+		return false
+	var collision_only: Array = collision_only_record.collision
+	if collision_only.is_empty() or not _approx(float((collision_only[0] as Dictionary).get("collision_strength", 0.0)), 0.5, 0.001):
+		push_error("Expected collision-only apply_to_record to normalize collision")
+		return false
 	return true
 
 
@@ -172,17 +182,17 @@ func _test_factory_and_subclass_canonical_collision() -> bool:
 		push_error("Expected factory-created descriptor to keep collision")
 		return false
 
-	var rock: AutoRock = AutoRockScript.new()
-	rock.configure_rock({
+	var obj: AutoRock = AutoRockScript.new()
+	obj.configure_object({
 		"color": Color(0.5, 0.5, 0.5, 1.0),
 		"complexity": 0.5,
 		"collision": [{"shape": "cylinder", "radius": 0.4, "collision_strength": 0.6}],
 	})
-	if rock.get_collision(0.4).is_empty():
+	if obj.get_collision(0.4).is_empty():
 		push_error("Expected AutoRock to accept canonical collision")
-		rock.free()
+		obj.free()
 		return false
-	rock.free()
+	obj.free()
 	return true
 
 

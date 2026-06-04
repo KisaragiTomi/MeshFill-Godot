@@ -510,40 +510,18 @@ func _test_legacy_scene_voxel_scatter_removed() -> bool:
 		if committer_source.find(forbidden) >= 0:
 			push_error("  FAIL: SceneVoxelCommitter still contains legacy scatter loop term '%s'" % forbidden)
 			ok = false
-	for required in [
-		"legacy CPU vegetation scatter was removed",
-		"AutoObjectProbePrefilterGPU + VoxelPlacementGenerator",
+	# 验证三个函数已完全删除，不再以任何形式存在
+	for removed_func in [
+		"func scatter(",
+		"func scatter_from_mask(",
+		"func _reject_legacy_scatter",
 	]:
-		if committer_source.find(required) < 0:
-			push_error("  FAIL: SceneVoxelCommitter missing removed scatter contract term '%s'" % required)
+		if committer_source.find(removed_func) >= 0:
+			push_error("  FAIL: SceneVoxelCommitter still contains removed scatter function '%s'" % removed_func)
 			ok = false
 
-	if not _has_rendering_device():
-		if ok:
-			_record_gpu_skip("no RenderingDevice available for removed scatter runtime check")
-		return ok
-
-	var committer = SceneVoxelCommitterScript.new(8, 8.0, false)
-	var mask := Image.create(2, 2, false, Image.FORMAT_RF)
-	mask.fill(Color(1.0, 0.0, 0.0, 0.0))
-	var depth := Image.create(8, 8, false, Image.FORMAT_RF)
-	depth.fill(Color(0.0, 0.0, 0.0, 0.0))
-	var result := committer.scatter_from_mask(
-		SceneVoxelCommitterScript.profile_channel(0),
-		mask,
-		depth,
-		1.0
-	)
-	if not result.is_empty():
-		push_error("  FAIL: removed scatter_from_mask path should return no CPU placements")
-		ok = false
-	if committer.get_voxel_write_spec_count() != 0:
-		push_error("  FAIL: removed scatter_from_mask path should not stamp voxel write specs")
-		ok = false
-	committer.dispose()
-
 	if ok:
-		print("  OK: legacy SceneVoxelCommitter scatter no longer produces CPU placements")
+		print("  OK: legacy SceneVoxelCommitter scatter functions fully removed")
 	return ok
 
 

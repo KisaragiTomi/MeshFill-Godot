@@ -5,7 +5,8 @@ const SVC := preload("res://scripts/scene_voxel_committer.gd")
 
 
 func _init() -> void:
-	var mesh := VegetationScatter.create_bush_mesh()
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(0.5, 0.75, 0.5)
 	var committer := SVC.new(32, 32.0, false)
 	committer.configure_scene_voxel_grid(Vector3i(32, 4, 32), Vector3(0.5, 0.5, 0.5), Vector3(-8.0, 0.0, -8.0))
 
@@ -19,9 +20,9 @@ func _init() -> void:
 		"score": 7.5,
 	}
 
-	var node := VPG.instantiate_placement(world_result, "bush", mesh, {
-		"name": "VoxelBushRecord_0",
-		"record_id": "voxel_bush_record_0",
+	var node := VPG.instantiate_placement(world_result, "autoobject", mesh, {
+		"name": "VoxelAutoObjectRecord_0",
+		"record_id": "voxel_autoobject_record_0",
 		"create_voxel_write_spec": true,
 		"scene_voxel_committer": committer,
 		"capture_size": 32.0,
@@ -44,8 +45,8 @@ func _init() -> void:
 		return
 
 	var record: Dictionary = node.get_instance_stamp_write_spec()
-	if str(record.get("id", "")) != "voxel_bush_record_0":
-		push_error("Expected voxel_bush_record_0 record id, got %s" % str(record.get("id", "")))
+	if str(record.get("id", "")) != "voxel_autoobject_record_0":
+		push_error("Expected voxel_autoobject_record_0 record id, got %s" % str(record.get("id", "")))
 		node.free()
 		quit(1)
 		return
@@ -54,8 +55,8 @@ func _init() -> void:
 		node.free()
 		quit(1)
 		return
-	var committed_record := committer.get_instance_stamp_write_spec("voxel_bush_record_0")
-	if str(committed_record.get("id", "")) != "voxel_bush_record_0":
+	var committed_record := committer.get_instance_stamp_write_spec("voxel_autoobject_record_0")
+	if str(committed_record.get("id", "")) != "voxel_autoobject_record_0":
 		push_error("Expected committer ISWS record readback")
 		node.free()
 		quit(1)

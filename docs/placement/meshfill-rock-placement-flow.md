@@ -16,10 +16,6 @@
 
 | 项 | 状态 | 代码 / 测试 |
 | --- | --- | --- |
-| Heightfield fitting GPU producer | 已实现 | `PlacementFittingGenerator.generate_placement()` / `generate_surface_placement()` |
-| 石头 consumer 实例化 | 已实现 | `main.gd` 将 fitting result 实例化为 `AutoRock` |
-| Runtime 写入 payload | 已实现 | 实例派生 `instance_stamp_write_spec`，由 `SceneVoxelCommitter.apply_instance_stamp_write_spec()` 提交 |
-| Descriptor-backed 语义 | 已实现 | `AutoRock` / `AutoObject` descriptor-backed getters；`tools/test_markdown_contracts.gd` 覆盖 shared fields |
 | TargetSV_B / semantic probe routing 接入 | 部分实现 | 已有 target read arrays、prefilter route 和 VPG 消费；石头 heightfield fitting 仍是独立 producer |
 | Stamp rasterizer 替代 heightfield fitting | 未实现 | 仍在 TargetSV / stamp 计划阶段 |
 

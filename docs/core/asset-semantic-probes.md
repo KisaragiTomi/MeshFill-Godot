@@ -1,6 +1,6 @@
 # Asset Semantic Probes: 资产语义采样点
 
-本文记录 `AutoVoxelDescriptor.semantic_probe_profile` 的资产侧约定。Probe 是 descriptor-backed asset default：当前 GPU prefilter 用它对 `anchor x asset` 评分并收窄候选 `AutoObject` / voxel regions；后续候选内部 rerank / validation 也只能在这些候选内使用。Probe 不负责从全资产库发现新候选，也不写 committed `SceneVoxel`。
+本文记录 `AutoVoxelDescriptor.semantic_probe_profile` 的资产侧约定。`AutoVoxelDescriptor` 整体定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。Probe 是 descriptor-backed asset default：当前 GPU prefilter 用它对 `anchor x asset` 评分并收窄候选 `AutoObject` / voxel regions；后续候选内部 rerank / validation 也只能在这些候选内使用。Probe 不负责从全资产库发现新候选，也不写 committed `SceneVoxel`。
 
 Descriptor 通过 SPA（`ScenePlacementActor`）注册到 GPU profile container，使其 probes/collision/pivots 即刻 GPU 可读；SPA 生命周期和访问接口见 [`scene-placement-actor.md`](scene-placement-actor.md)。
 
@@ -11,7 +11,7 @@ Descriptor 通过 SPA（`ScenePlacementActor`）注册到 GPU profile container�
 | 项 | 当前规则 |
 | --- | --- |
 | 职责 | 表达资产局部采样期望，供 prefilter 对 `anchor x asset` 打分。 |
-| 语义来源 | `AutoVoxelDescriptor.semantic_probe_profile`。`AutoObject` 同名字段只是 Inspector / config mirror。 |
+| 语义来源 | [`AutoVoxelDescriptor.semantic_probe_profile`](auto-voxel-descriptor.md)。`AutoObject` 同名字段只是 Inspector / config mirror。 |
 | 读取入口 | `AutoObject.get_semantic_probes()` / descriptor `get_semantic_probes()`。 |
 | 输入 | descriptor `color` / `complexity` / `collision`、mesh、density、`context_sensing_radius`、当前 `SV[t - 1]` 和 `TargetSV_B` read buffers。 |
 | 当前消费者 | `AutoObjectProbePrefilterGPU` 消费 probes 做候选收窄；VPG score contract 消费 `profile_table` / `probe_records` / `collision_records` / `pivot_records` 做物理评分绑定验收。两个 worker 均由 SPA 懒创建并注入共享 RD + profile_container。 |
@@ -62,7 +62,7 @@ probe_range_buf[asset_id] = uvec2(start, count)
 
 ## 生成来源
 
-`SemanticProbeProfile.generate_from_mesh()` 按优先级生成候选点。collision 输入来自 `AutoVoxelDescriptor.collision`；`collision` 只作为 placement footprint API 命名保留。
+`SemanticProbeProfile.generate_from_mesh()` 按优先级生成候选点。collision 输入来自 [`AutoVoxelDescriptor.collision`](auto-voxel-descriptor.md)；`collision` 只作为 placement footprint API 命名保留。
 
 | 优先级 | `shape_source` | `source` | 来源 | 用途 |
 | --- | --- | --- | --- | --- |
@@ -160,7 +160,7 @@ Prefilter 可以从 supported candidate position 和 column-top candidate positi
 ```json
 {
   "type": "vegetation",
-  "asset_id": "bush",
+  "asset_id": "sample_autoobject",
   "channel": 1,
   "radius": 0.45,
   "color": [0.25, 0.55, 0.22, 0.6],
@@ -174,8 +174,8 @@ Prefilter 可以从 supported candidate position 和 column-top candidate positi
       "collision_strength": 0.5
     }
   ],
-  "group": "placed_bushes",
-  "mesh_create_method": "create_bush_mesh"
+  "group": "placed_autoobjects",
+  "mesh_create_method": "create_sample_autoobject_mesh"
 }
 ```
 
@@ -193,6 +193,7 @@ Prefilter 可以从 supported candidate position 和 column-top candidate positi
 
 - `scripts/semantic_probe_profile.gd`：probe 生成、规范化、字段默认值与 selection priority。
 - `scripts/auto_voxel_descriptor.gd`：descriptor-backed `semantic_probe_profile`、density、context radius 与 `get_semantic_probes()`。
+- `auto-voxel-descriptor.md`：descriptor 的统一定义、字段分组和 authoring 边界。
 - `scripts/auto_voxel_runtime_profile_container.gd`：descriptor / profile 去重、`profile_id`、GPU resident profile/probe/collision/pivot buffers 与 debug readback。
 - `scripts/autoobject_probe_prefilter_gpu.gd`：GPU buffer packing、dispatch、readback decode 与 route profile expansion。
 - `shaders/score_anchor_asset_probes.glsl`：clamped sampling、score terms、`min_prefilter_score` 前的 probe evaluation。

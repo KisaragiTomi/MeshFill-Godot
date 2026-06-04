@@ -33,7 +33,7 @@ func _test_blendsv_feedback_scores_committed_result_against_target() -> bool:
 	var write_tick := committer.begin_generation_tick(committer.get_generation_tick())
 	var record := {
 		"id": "feedback_auto_0",
-		"type": "grass",
+		"type": "autoobject",
 		"source_voxel_type": "AutoSceneVoxel",
 		"position": Vector3.ZERO,
 		"base_pixel": Vector2i(16, 16),
@@ -99,7 +99,7 @@ func _test_committed_payload_and_debug_query_boundaries() -> bool:
 	var write_tick := committer.begin_generation_tick(committer.get_generation_tick())
 	var record := {
 		"id": "payload_boundary_auto_0",
-		"type": "grass",
+		"type": "autoobject",
 		"source_type": "BrushSceneVoxel",
 		"source_voxel_type": "AutoSceneVoxel",
 		"commit_tick": 999,

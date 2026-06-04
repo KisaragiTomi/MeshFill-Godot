@@ -5,7 +5,7 @@ func _init() -> void:
 	var ok := true
 	ok = _test_vegetation_descriptor_factory_contract() and ok
 	ok = _test_vegetation_instance_configuration() and ok
-	ok = _test_rock_factory_collision_contract() and ok
+	ok = _test_object_factory_collision_contract() and ok
 	ok = _test_profile_fallback_keeps_descriptor_collision() and ok
 	ok = _test_typed_profile_fallback_keeps_descriptor_shared_fields() and ok
 	ok = _test_isws_metadata_alias_contract() and ok
@@ -44,13 +44,16 @@ func _test_vegetation_descriptor_factory_contract() -> bool:
 	descriptor.scatter_max_scale = 0.7
 	descriptor.visual_layer = 14
 	descriptor.group = "placed_flowers"
-	descriptor.mesh_create_method = "create_flower_mesh"
+	descriptor.mesh_create_method = "create_sample_autoobject_mesh"
 
-	for method_name in ["create_tree_mesh", "create_midstory_mesh", "create_bush_mesh", "create_flower_mesh"]:
-		if not AutoAssetFactory.is_supported_vegetation_mesh_create_method(method_name):
-			push_error("  FAIL: supported mesh_create_method rejected: %s" % method_name)
+	if not AutoAssetFactory.is_supported_vegetation_mesh_create_method("create_sample_autoobject_mesh"):
+		push_error("  FAIL: supported mesh_create_method rejected")
+		return false
+	for method_name in ["create_legacy_mesh", "create_old_scatter_mesh"]:
+		if AutoAssetFactory.is_supported_vegetation_mesh_create_method(method_name):
+			push_error("  FAIL: unsupported mesh_create_method accepted: %s" % method_name)
 			return false
-	if AutoAssetFactory.is_supported_vegetation_mesh_create_method("create_grass_mesh"):
+	if AutoAssetFactory.is_supported_vegetation_mesh_create_method("create_procedural_asset_mesh"):
 		push_error("  FAIL: unsupported mesh_create_method accepted")
 		return false
 	if descriptor.get_mesh() == null:
@@ -86,7 +89,7 @@ func _test_vegetation_instance_configuration() -> bool:
 	) as AutoVoxelDescriptor
 	descriptor.object_type = "vegetation"
 	descriptor.object_subtype = "flower"
-	descriptor.mesh_create_method = "create_flower_mesh"
+	descriptor.mesh_create_method = "create_sample_autoobject_mesh"
 	descriptor.group = "placed_flowers"
 
 	var vegetation := AutoObject.new()
@@ -110,8 +113,8 @@ func _test_vegetation_instance_configuration() -> bool:
 	return true
 
 
-func _test_rock_factory_collision_contract() -> bool:
-	print("[AutoAssetScripting] test_rock_factory_collision_contract...")
+func _test_object_factory_collision_contract() -> bool:
+	print("[AutoAssetScripting] test_object_factory_collision_contract...")
 	var image := Image.create(1, 1, false, Image.FORMAT_RGBA8)
 	image.fill(Color.WHITE)
 	var height_texture := ImageTexture.create_from_image(image)
@@ -121,7 +124,7 @@ func _test_rock_factory_collision_contract() -> bool:
 		"y_min": 0.0,
 		"y_max": 2.0,
 	}]
-	var rock := AutoAssetFactory.create_or_update_rock_asset(
+	var obj := AutoAssetFactory.create_or_update_object_asset(
 		AutoRock.new(),
 		BoxMesh.new(),
 		height_texture,
@@ -131,27 +134,27 @@ func _test_rock_factory_collision_contract() -> bool:
 		1.0,
 		collision
 	)
-	if not rock is AutoRock:
+	if not obj is AutoRock:
 		push_error("  FAIL: expected AutoRock asset")
-		rock.free()
+		obj.free()
 		return false
-	var config := rock.make_instance_config()
+	var config := obj.make_instance_config()
 	if not config.has("collision"):
-		push_error("  FAIL: rock config should keep only canonical collision")
-		rock.free()
+		push_error("  FAIL: object config should keep only canonical collision")
+		obj.free()
 		return false
-	var rock_collision: Array = rock.get_collision(rock.mesh_size * 0.5)
-	if rock_collision.size() != 1:
-		push_error("  FAIL: rock collision did not persist through descriptor-backed fields")
-		rock.free()
+	var obj_collision: Array = obj.get_collision(obj.mesh_size * 0.5)
+	if obj_collision.size() != 1:
+		push_error("  FAIL: object collision did not persist through descriptor-backed fields")
+		obj.free()
 		return false
-	if not is_equal_approx(float(rock_collision[0].get("radius", 0.0)), 1.2):
-		push_error("  FAIL: rock collision radius mismatch")
-		rock.free()
+	if not is_equal_approx(float(obj_collision[0].get("radius", 0.0)), 1.2):
+		push_error("  FAIL: object collision radius mismatch")
+		obj.free()
 		return false
 
-	print("  OK: rock factory writes descriptor-backed canonical collision config")
-	rock.free()
+	print("  OK: object factory writes descriptor-backed canonical collision config")
+	obj.free()
 	return true
 
 
@@ -170,27 +173,27 @@ func _test_profile_fallback_keeps_descriptor_collision() -> bool:
 	profile.complexity = 0.9
 	profile.collision = [{"voxel": Vector3i(9, 0, 0), "collision_strength": 1.0}]
 
-	var rock := AutoRock.new()
-	rock.voxel_descriptor = descriptor
-	rock = AutoAssetFactory.create_or_update_rock_asset(
-		rock,
+	var obj := AutoRock.new()
+	obj.voxel_descriptor = descriptor
+	obj = AutoAssetFactory.create_or_update_object_asset(
+		obj,
 		BoxMesh.new(),
 		height_texture,
 		2.0,
 		profile
 	)
-	var got_collision: Array = rock.get_collision(1.0)
+	var got_collision: Array = obj.get_collision(1.0)
 	if got_collision.is_empty() or got_collision[0].get("voxel", Vector3i.ZERO) != Vector3i(1, 0, 0):
 		push_error("  FAIL: profile fallback overwrote descriptor canonical collision")
-		rock.free()
+		obj.free()
 		return false
-	if not _color_close(rock.get_voxel_color(), Color(0.1, 0.2, 0.3, 0.4), 0.001):
+	if not _color_close(obj.get_voxel_color(), Color(0.1, 0.2, 0.3, 0.4), 0.001):
 		push_error("  FAIL: profile fallback overwrote descriptor color/complexity")
-		rock.free()
+		obj.free()
 		return false
 
 	print("  OK: profile fallback does not overwrite descriptor canonical shared fields")
-	rock.free()
+	obj.free()
 	return true
 
 
@@ -207,7 +210,7 @@ func _test_typed_profile_fallback_keeps_descriptor_shared_fields() -> bool:
 
 	var rock := AutoRock.new()
 	rock.voxel_descriptor = rock_descriptor
-	rock.configure_rock({"voxel_profile": profile})
+	obj.configure_object({"voxel_profile": profile})
 	if not _color_close(rock.get_voxel_color(), Color(0.1, 0.2, 0.3, 0.4), 0.001):
 		push_error("  FAIL: rock profile fallback overwrote descriptor color/complexity")
 		rock.free()

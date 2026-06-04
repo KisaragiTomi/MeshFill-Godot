@@ -4,13 +4,13 @@
 
 ![ScenePlacementActor runtime orchestration](../graphs/scene-placement-actor.svg)
 
-SPA 使 `AutoVoxelDescriptor` 的 probes、collision 和 pivots 在注册后立即 GPU 可读；SV（`SceneVoxel`）和 `AutoObject` 数据流经单条编排流水线：
+SPA 使 [`AutoVoxelDescriptor`](auto-voxel-descriptor.md) 的 probes、collision 和 pivots 在注册后立即 GPU 可读；SV（`SceneVoxel`）和 `AutoObject` 数据流经单条编排流水线：
 
 ```text
 register assets → prefilter（SV→candidates）→ placement（candidates→instances）→ commit
 ```
 
-跨模块总览见 [`meshfill-framework.md`](meshfill-framework.md)；GPU runtime/profile 契约见 [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)；资产 probe schema 见 [`asset-semantic-probes.md`](asset-semantic-probes.md)；SV commit / resident state 见 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)。
+跨模块总览见 [`meshfill-framework.md`](meshfill-framework.md)；`AutoVoxelDescriptor` 定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)；GPU runtime/profile 契约见 [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)；资产 probe schema 见 [`asset-semantic-probes.md`](asset-semantic-probes.md)；SV commit / resident state 见 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)。
 
 ## 本文范围
 
@@ -46,7 +46,7 @@ register assets → prefilter（SV→candidates）→ placement（candidates→i
 
 | 数据 | 权威来源 / 持有者 | SPA 的角色 | 说明 |
 | --- | --- | --- | --- |
-| 资产默认语义 | `AutoVoxelDescriptor` / `AutoVoxelProfile` | asset registry 保存 descriptor 引用 | descriptor 是资产语义主来源；SPA 不复制资产数据。 |
+| 资产默认语义 | `AutoVoxelDescriptor` / `AutoVoxelProfile` | asset registry 保存 descriptor 引用 | descriptor 是资产语义主来源；字段定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。SPA 不复制资产数据。 |
 | Runtime profile GPU buffers | `AutoVoxelRuntimeProfileContainer`（SPA 拥有） | 创建、管理、暴露、释放 | `profile_table`、`probe_records`、`collision_records`、`pivot_records` 全部 GPU resident；`register_asset()` 即时上传。 |
 | SPA 状态 | `ScenePlacementActor` | 拥有 `_initialized`、`_last_pipeline_result`、wrapper 缓存 | 暴露 `is_gpu_ready()` / `get_gpu_readiness_report()` 查询当前就绪状态。 |
 | BrushSV persistence | `ScenePlacementActor` | 保存 brush delta / override 的持久化和序列化入口 | `BrushSV` 内容常驻于 SPA 生命周期；debug 通过稳定 buffer / readback 观察，CPU 只保留控制面元数据。 |
@@ -266,6 +266,7 @@ spa.dispose()
 ## 相关文档
 
 - [`meshfill-framework.md`](meshfill-framework.md)：总框架 ownership、routing、placement、commit 和 feedback 流程。
+- [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)：`AutoVoxelDescriptor` 统一定义和 authoring 边界。
 - [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)：`GPUAutoObjectRuntime`、profile container 和 VPG runtime/profile contract。
 - [`asset-semantic-probes.md`](asset-semantic-probes.md)：descriptor-backed semantic probes 与 borrowed probe buffer。
 - [`scene-voxel-field-system.md`](scene-voxel-field-system.md)：`SceneVoxelCommitter`、source write、commit 和 SV resident state。

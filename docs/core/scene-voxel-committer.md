@@ -1,6 +1,6 @@
 # SceneVoxelCommitter 源码导览
 
-本文按源码职责展示 [`scripts/scene_voxel_committer.gd`](../../scripts/scene_voxel_committer.gd) 的主要内容。它不是替代契约文档；`SceneVoxel` source 写入 / 已提交 payload 见 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)，`SceneVoxelTile` dirty 和常驻 buffer 细节见 [`scenevoxeltile.md`](scenevoxeltile.md)，框架级所有权见 [`meshfill-framework.md`](meshfill-framework.md)。
+本文按源码职责展示 [`scripts/scene_voxel_committer.gd`](../../scripts/scene_voxel_committer.gd) 的主要内容。它不是替代契约文档；`AutoVoxelDescriptor` 资产默认语义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)，`SceneVoxel` source 写入 / 已提交 payload 见 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)，`SceneVoxelTile` dirty 和常驻 buffer 细节见 [`scenevoxeltile.md`](scenevoxeltile.md)，框架级所有权见 [`meshfill-framework.md`](meshfill-framework.md)。
 
 `SceneVoxelCommitter` 是 MeshFill 的 SV 运行时所有者 / 提交器。它持有 grid 参数、source 写入暂存、已提交 `SceneVoxel`、SV 常驻 `scene_field` / `collision_field`、`SceneVoxelTile` dirty sidecar、GPU storage buffer 和调试 readback 边界。
 
@@ -11,28 +11,13 @@
 - 说明 `build_voxel_volume()`、`apply_voxel_write_spec()`、`blend_scene_voxels()`、`_rebuild_sv()`、`ensure_scene_voxel_tile_buffers_uploaded()` 的数据流。
 - 标明当前 GPU-first 边界：GDScript Dictionary 多用于控制 / 暂存 / 调试，不是运行时权威数据源。
 
-## 源码地图
+源码按功能模块划分，详见 `scene_voxel_committer.gd` 源码注释。主要功能域：
 
-| 范围 | 内容 |
-| --- | --- |
-| `1-181` | `SceneVoxelCommitter` 类声明、GPU buffer 名称、stride、dirty flag、shader RID 和基础状态。 |
-| `183-575` | 初始化、GPU shader / pipeline 创建、统一 dispatch helper 和资源释放。 |
-| `581-884` | grid metadata、world / voxel / pixel 坐标转换、collision image 合成。 |
-| `884-1908` | mask import、disc stamp、shared field stamp、legacy scatter 拒绝和基础 query image getter。 |
-| `1908-2065` | terrain base collision、write spec 查询、generation tick、`SceneVoxelTile` project setting。 |
-| `2065-2790` | `SceneVoxelTile` record / summary 构造、bounds 遍历、dirty snapshot 和调试 ref。 |
-| `2860-4551` | `SceneVoxelTile` GPU storage buffer 上传、局部 dirty range 更新、readback、pack / decode。 |
-| `4557-4670` | legacy `_sv_dirty_tiles` / `_sv_dirty_rects` 兼容存储。 |
-| `4696-5183` | source payload GPU 合并、常驻 scene field 计算、collision volume field 计算。 |
-| `5183-5772` | source record 模板、Auto / Brush pending candidate 暂存和 GPU source resolve。 |
-| `5833-6363` | tile summary reduce、legacy tile summary、`_rebuild_sv()` 发布 SV snapshot。 |
-| `6363-6588` | source 写入 stamp、`apply_voxel_write_spec()`、批量 apply。 |
-| `6648-6768` | `_volume`、source stream、SV state、tile GPU buffer revision 和 tick 状态。 |
-| `6770-7064` | mesh write spec helper、record rebuild、`blend_scene_voxels()` 提交发布。 |
-| `7064-7205` | `score_blendsv_feedback_against_target()` GPU feedback scoring。 |
-| `7205-7518` | `build_voxel_volume()`、occupancy slice GPU 构建、voxel query 和 SV getter。 |
-| `7532-8068` | 对外 dirty API、GPU AutoObject dirty delta handoff、dirty clear。 |
-| `8094-8519` | committed tick getter、slice getter、GPU stats reduce、validation、debug column export。 |
+- **初始化与 GPU pipeline**：shader/pipeline 创建、dispatch helper、资源释放
+- **Grid 与坐标转换**：world/voxel/pixel 映射、collision image 合成
+- **SceneVoxelTile 管理**：record/summary 构造、GPU buffer 上传、readback、dirty 兼容
+- **Source 写入与合成**：`ISWS` 归一化、Auto/Brush source stream、`blend_scene_voxels()` 发布
+- **SV 状态与查询**：volume 构建、occupancy 查询、feedback scoring、dirty API
 
 ## 状态域
 
@@ -160,7 +145,6 @@ GPU dispatch 失败会在对应路径中报告失败或返回空结果。脚本�
 | GPU AutoObject delta | `apply_gpu_autoobject_dirty_delta()`、`apply_gpu_autoobject_dirty_deltas()` | 把 object 新旧 voxel bounds 映射成 dirty `SceneVoxelTile` record。 |
 | Object-ref update pass | `try_apply_gpu_autoobject_object_ref_update_pass()`、`try_apply_gpu_autoobject_object_ref_update_pass_from_buffer()` | 带 diagnostics 的可选 resident object-ref update pass。 |
 | 统计 / 验证 | `get_voxel_stats()`、`validate_voxel()` | GPU reduce occupancy、collision 和 validation metrics。 |
-| Legacy scatter | `scatter()`、`scatter_from_mask()` | 已禁用；runtime placement 属于 `AutoObjectProbePrefilterGPU` + `VoxelPlacementGenerator`。 |
 
 ## 发布的 SV Snapshot
 
@@ -257,6 +241,6 @@ godot --path . --rendering-driver vulkan --script tools/test_blendsv_feedback_sc
 - 修改 source write / public payload 时，同时检查 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)。
 - 修改 tile dirty、buffer pack / decode 或 readback 时，同时检查 [`scenevoxeltile.md`](scenevoxeltile.md)。
 - 修改运行时 ownership 或 SPA 调用路径时，同时检查 [`scene-placement-actor.md`](scene-placement-actor.md) 和 [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)。
-- 不要重新启用 legacy `scatter()` / `scatter_from_mask()` 的 CPU runtime placement。
+- `scatter()` / `scatter_from_mask()` 已完全删除；placement 必须通过 `AutoObjectProbePrefilterGPU` + `VoxelPlacementGenerator`。
 - 不要把 `_sv`、`_scene_voxel_tiles` 或 `_scene_source_metadata` 写成运行时权威数据源；它们是 SV owner 的控制 / 调试平面。
 - GPU-required path 缺少 `RenderingDevice` 时必须明确 skip 或 fail，不要新增 CPU fallback 后报告 GPU path passing。

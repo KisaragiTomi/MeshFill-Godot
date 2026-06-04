@@ -145,16 +145,20 @@ func get_mesh() -> Mesh:
 	if mesh != null:
 		return mesh
 	match mesh_create_method.strip_edges():
-		"create_tree_mesh":
-			return VegetationScatter.create_tree_mesh()
-		"create_midstory_mesh":
-			return VegetationScatter.create_midstory_mesh()
-		"create_bush_mesh":
-			return VegetationScatter.create_bush_mesh()
-		"create_flower_mesh":
-			return VegetationScatter.create_flower_mesh()
+		"create_sample_autoobject_mesh":
+			return AutoVoxelDescriptor.create_sample_autoobject_mesh()
 		_:
 			return null
+
+
+static func create_sample_autoobject_mesh() -> Mesh:
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(0.35, 0.6, 0.35)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.35, 0.70, 0.45)
+	mat.roughness = 0.85
+	mesh.material = mat
+	return mesh
 
 
 func get_source_mesh() -> Mesh:

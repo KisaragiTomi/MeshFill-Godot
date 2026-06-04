@@ -1,6 +1,7 @@
 extends SceneTree
 
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
+const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
 const FLAG_SUPPORT := 1
 const FLAG_CLEARANCE := 2
 
@@ -69,25 +70,43 @@ func _init() -> void:
 		push_error("[VoxelPlacementTest] Result readback byte range should match compact result count")
 		quit(1)
 		return
+	# P0 #1 (Compact State Chain): compact_stamp_deltas is now the default.
+	# Full-field readback is opt-in via force_full_field_readback=true.
 	var first_full_field: Dictionary = first.get("full_field_readback", {})
-	if str(first_full_field.get("scene_field_out_source", "")) != "scene_collision_storage_buffer_full_field_readback":
-		push_error("[VoxelPlacementTest] Scene field output should report full-field storage-buffer readback")
+	if str(first_full_field.get("scene_field_out_source", "")) != "cpu_state_chain_compact_stamp_deltas":
+		push_error("[VoxelPlacementTest] Scene field output should report compact-stamp-delta state chain (P0 #1 default)")
 		quit(1)
 		return
-	if str(first_full_field.get("collision_field_out_source", "")) != "scene_collision_storage_buffer_full_field_readback":
-		push_error("[VoxelPlacementTest] Collision field output should report full-field storage-buffer readback")
+	if str(first_full_field.get("collision_field_out_source", "")) != "cpu_state_chain_compact_stamp_deltas":
+		push_error("[VoxelPlacementTest] Collision field output should report compact-stamp-delta state chain (P0 #1 default)")
 		quit(1)
 		return
-	if not bool(first_full_field.get("scene_field_out_gpu_storage_buffer_readback", false)) or not bool(first_full_field.get("collision_field_out_gpu_storage_buffer_readback", false)):
-		push_error("[VoxelPlacementTest] Full-field scene/collision handoff should be marked as GPU storage-buffer readback")
+	if bool(first_full_field.get("scene_field_out_is_full_field", true)):
+		push_error("[VoxelPlacementTest] Compact state chain should not be marked as full-field scene output")
 		quit(1)
 		return
-	if int(first_full_field.get("scene_field_out_byte_count", -1)) != voxel_count * 4 or int(first_full_field.get("collision_field_out_byte_count", -1)) != voxel_count * 4:
-		push_error("[VoxelPlacementTest] Full-field readback byte counts should match scene/collision field size")
+	if bool(first_full_field.get("collision_field_out_is_full_field", true)):
+		push_error("[VoxelPlacementTest] Compact state chain should not be marked as full-field collision output")
+		quit(1)
+		return
+	if bool(first_full_field.get("scene_field_out_gpu_storage_buffer_readback", true)):
+		push_error("[VoxelPlacementTest] Compact state chain should skip GPU full-field scene storage-buffer readback")
+		quit(1)
+		return
+	if bool(first_full_field.get("collision_field_out_gpu_storage_buffer_readback", true)):
+		push_error("[VoxelPlacementTest] Compact state chain should skip GPU full-field collision storage-buffer readback")
+		quit(1)
+		return
+	if int(first_full_field.get("scene_field_out_byte_count", -1)) != 0 or int(first_full_field.get("collision_field_out_byte_count", -1)) != 0:
+		push_error("[VoxelPlacementTest] Compact stamp-delta readback should have zero full-field byte count")
 		quit(1)
 		return
 	if not bool(first_full_field.get("cpu_state_chaining", false)):
-		push_error("[VoxelPlacementTest] Full-field readback should be marked as CPU state chaining")
+		push_error("[VoxelPlacementTest] Compact stamp-delta state chain should be marked as CPU state chaining")
+		quit(1)
+		return
+	if str(first_full_field.get("cpu_state_chain_mode", "")) != "compact_stamp_deltas":
+		push_error("[VoxelPlacementTest] Compact state chain mode should be compact_stamp_deltas")
 		quit(1)
 		return
 	if str(first.get("tile_topk_readback_source", "")) != "disabled" or not (first.get("tile_topk", []) as Array).is_empty():
@@ -102,6 +121,9 @@ func _init() -> void:
 		push_error("[VoxelPlacementTest] Direct all-tile dispatch should not build a CPU sparse id list")
 		quit(1)
 		return
+	if not _test_gpu_footprint_bake_entrypoint():
+		quit(1)
+		return
 
 	var results: Array = first.get("results", [])
 	var first_result: Dictionary = results[0]
@@ -113,6 +135,104 @@ func _init() -> void:
 		push_error("[VoxelPlacementTest] Expected full support under first placement")
 		quit(1)
 		return
+
+	var actor = ScenePlacementActorScript.new()
+	if not actor.initialize(true, false):
+		push_error("[VoxelPlacementTest] Expected ScenePlacementActor to initialize for resident TargetSV test")
+		quit(1)
+		return
+	var target_color_rgba8 := PackedByteArray()
+	target_color_rgba8.resize(voxel_count * 4)
+	var target_occupancy := PackedByteArray()
+	target_occupancy.resize(voxel_count * 4)
+	for i in range(voxel_count):
+		target_occupancy.encode_float(i * 4, 1.0)
+	var target_buffers: Dictionary = actor.prepare_target_read_buffers_from_common_gpu(
+		{
+			"target_color_rgba8_bytes": target_color_rgba8,
+			"target_occupancy_bytes": target_occupancy,
+		},
+		{"grid_size": grid_size}
+	)
+	if not bool(target_buffers.get("resident_target_read_buffer_handoff", false)):
+		actor.dispose()
+		push_error("[VoxelPlacementTest] Expected resident TargetSV read-buffer handoff")
+		quit(1)
+		return
+	generator.attach_rendering_device(actor.get_rendering_device(), false)
+	var borrowed_settings := settings.duplicate(true)
+	borrowed_settings["target_read_buffers"] = target_buffers
+	borrowed_settings["target_color_rgba8_bytes"] = target_color_rgba8
+	borrowed_settings["target_occupancy_bytes"] = target_occupancy
+	var borrowed := generator.run_minimal(scene, collision, footprint, grid_size, borrowed_settings)
+	var borrowed_summary: Dictionary = borrowed.get("target_read_buffer_summary", {})
+	if str(borrowed_summary.get("target_read_buffer_source", "")) != "borrowed_scene_placement_actor_resident":
+		actor.dispose()
+		push_error("[VoxelPlacementTest] VPG should borrow resident TargetSV buffers, got %s" % str(borrowed_summary))
+		quit(1)
+		return
+	if not bool(borrowed_summary.get("target_read_buffers_borrowed", false)) or bool(borrowed_summary.get("target_read_buffers_uploaded", true)):
+		actor.dispose()
+		push_error("[VoxelPlacementTest] Borrowed TargetSV summary should not report byte upload")
+		quit(1)
+		return
+	if str(borrowed_summary.get("target_read_buffer_ownership", "")) != "borrowed_external":
+		actor.dispose()
+		push_error("[VoxelPlacementTest] Borrowed TargetSV summary should report external ownership")
+		quit(1)
+		return
+	if not bool(borrowed_summary.get("rendering_device_match", false)) or not bool(borrowed_summary.get("target_color_rgba8_buffer_rid_valid", false)) or not bool(borrowed_summary.get("target_occupancy_buffer_rid_valid", false)):
+		actor.dispose()
+		push_error("[VoxelPlacementTest] Borrowed TargetSV summary should report valid same-RD RIDs")
+		quit(1)
+		return
+	if bool(borrowed_summary.get("cpu_fallback", true)):
+		actor.dispose()
+		push_error("[VoxelPlacementTest] Borrowed TargetSV path must not report CPU fallback")
+		quit(1)
+		return
+	generator.attach_rendering_device(actor.get_rendering_device(), false)
+	var mismatch_buffers := target_buffers.duplicate(true)
+	mismatch_buffers["target_color_rgba8_byte_count"] = 4
+	var mismatch_settings := borrowed_settings.duplicate(true)
+	mismatch_settings["target_read_buffers"] = mismatch_buffers
+	var mismatch := generator.run_minimal(scene, collision, footprint, grid_size, mismatch_settings)
+	var mismatch_summary: Dictionary = mismatch.get("target_read_buffer_summary", {})
+	if str(mismatch_summary.get("target_read_buffer_source", "")) != "uploaded_target_bytes":
+		actor.dispose()
+		push_error("[VoxelPlacementTest] Mismatched TargetSV resident byte counts should upload bytes, got %s" % str(mismatch_summary))
+		quit(1)
+		return
+	if str(mismatch_summary.get("source_reason", "")) != "resident_target_read_buffer_byte_count_mismatch":
+		actor.dispose()
+		push_error("[VoxelPlacementTest] Mismatched TargetSV fallback should report byte-count reason")
+		quit(1)
+		return
+	if bool(mismatch_summary.get("target_read_buffers_borrowed", true)) or not bool(mismatch_summary.get("target_read_buffers_uploaded", false)):
+		actor.dispose()
+		push_error("[VoxelPlacementTest] Mismatched TargetSV fallback should use uploaded bytes")
+		quit(1)
+		return
+	generator.attach_rendering_device(actor.get_rendering_device(), false)
+	var blocked_settings := settings.duplicate(true)
+	blocked_settings["target_read_buffers"] = mismatch_buffers
+	var blocked := generator.run_minimal(scene, collision, footprint, grid_size, blocked_settings)
+	var blocked_summary: Dictionary = blocked.get("target_read_buffer_summary", {})
+	if not bool(blocked.get("contract_blocked", false)) \
+			or str(blocked.get("target_read_buffer_blocked_reason", "")) != "resident_target_read_buffer_byte_count_mismatch_no_debug_or_legacy_bytes":
+		actor.dispose()
+		push_error("[VoxelPlacementTest] Mismatched resident TargetSV without bytes should block explicitly, got %s" % str(blocked))
+		quit(1)
+		return
+	if not bool(blocked_summary.get("contract_blocked", false)) \
+			or bool(blocked_summary.get("target_read_buffers_uploaded", true)) \
+			or bool(blocked_summary.get("target_read_buffers_borrowed", true)) \
+			or bool(blocked_summary.get("cpu_fallback", true)):
+		actor.dispose()
+		push_error("[VoxelPlacementTest] Blocked TargetSV summary should expose no upload/borrow fallback: %s" % str(blocked_summary))
+		quit(1)
+		return
+	actor.dispose()
 
 	var first_origin: Vector3i = first_result.voxel_origin
 	var stamped_collision: PackedFloat32Array = first.get("collision_field_out", PackedFloat32Array())
@@ -305,6 +425,66 @@ func _is_missing_rendering_device_skip(result: Dictionary) -> bool:
 	if str(result.get("readback_source", "")) != "none":
 		push_error("[VoxelPlacementTest] GPU blocked path must not expose readback_source")
 		return false
+	return true
+
+
+func _test_gpu_footprint_bake_entrypoint() -> bool:
+	var collision := {
+		"shape": "cylinder",
+		"offset": Vector3(0.5, 0.25, -0.5),
+		"radius": 0.75,
+		"y_min": 0.0,
+		"y_max": 1.0,
+		"collision_strength": 0.65,
+	}
+	var voxel_size := Vector3(0.5, 0.5, 0.5)
+	var gpu := VoxelPlacementGeneratorScript.bake_cylinder_footprint_gpu(collision, voxel_size, true, 1)
+	if not bool(gpu.get("ok", false)):
+		push_error("[VoxelPlacementTest] Expected GPU cylinder footprint bake, got %s" % str(gpu))
+		return false
+	if bool(gpu.get("cpu_fallback", true)):
+		push_error("[VoxelPlacementTest] GPU footprint bake must not report CPU fallback")
+		return false
+	if str(gpu.get("readback_source", "")) != "bake_cylinder_footprint_compute":
+		push_error("[VoxelPlacementTest] GPU footprint bake should report compute readback source")
+		return false
+	var default_footprint := VoxelPlacementGeneratorScript.bake_footprint_from_collision([collision], voxel_size, true, 1)
+	var cpu_debug_footprint := VoxelPlacementGeneratorScript.bake_footprint_from_collision([collision], voxel_size, true, 1, false)
+	var gpu_footprint: Array = gpu.get("footprint", [])
+	if default_footprint.size() != gpu_footprint.size():
+		push_error("[VoxelPlacementTest] Default footprint entrypoint should use GPU bake count")
+		return false
+	if not _footprints_match(default_footprint, cpu_debug_footprint):
+		push_error("[VoxelPlacementTest] GPU default footprint should preserve CPU/debug collision semantics")
+		return false
+	return true
+
+
+func _footprints_match(a: Array, b: Array) -> bool:
+	if a.size() != b.size():
+		return false
+	var by_pos := {}
+	for raw_entry in a:
+		if not raw_entry is Dictionary:
+			return false
+		var entry := raw_entry as Dictionary
+		var pos: Vector3i = entry.get("local_pos", Vector3i.ZERO)
+		by_pos["%d,%d,%d" % [pos.x, pos.y, pos.z]] = entry
+	for raw_entry in b:
+		if not raw_entry is Dictionary:
+			return false
+		var entry := raw_entry as Dictionary
+		var pos: Vector3i = entry.get("local_pos", Vector3i.ZERO)
+		var key := "%d,%d,%d" % [pos.x, pos.y, pos.z]
+		if not by_pos.has(key):
+			return false
+		var other: Dictionary = by_pos[key]
+		if absf(float(other.get("collision_strength", 0.0)) - float(entry.get("collision_strength", 0.0))) > (1.0 / 255.0 + 0.001):
+			return false
+		if int(other.get("flags", 0)) != int(entry.get("flags", 0)):
+			return false
+		if absf(float(other.get("weight", 0.0)) - float(entry.get("weight", 0.0))) > 0.001:
+			return false
 	return true
 
 

@@ -28,6 +28,9 @@ const int SRC_COLOR_G = 2;
 const int SRC_COLOR_B = 3;
 const int SRC_HAS_SOURCE = 5;
 const int SRC_AUTO_MIX = 6;
+const int SRC_HAS_COLLISION = 7;
+const int SRC_COLLISION_STRENGTH = 13;
+const int SRC_COLLISION_LAYER_COUNT = 14;
 
 const int OUT_COMPLEXITY = 0;
 const int OUT_COLOR_R = 1;
@@ -37,10 +40,37 @@ const int OUT_COLOR_A = 4;
 const int OUT_SOURCE_SELECTOR = 5;
 const int OUT_AUTO_MIX = 6;
 const int OUT_VALID = 7;
+const int OUT_COLLISION_STRENGTH = 8;
+const int OUT_COLLISION_LAYER_COUNT = 9;
+const int OUT_HAS_COLLISION = 10;
+const int OUT_RESERVED = 11;
 
 const float SOURCE_NONE = 0.0;
 const float SOURCE_AUTO = 1.0;
 const float SOURCE_BRUSH = 2.0;
+
+void write_collision_empty(uint out_base) {
+    out_payload[out_base + OUT_COLLISION_STRENGTH] = 0.0;
+    out_payload[out_base + OUT_COLLISION_LAYER_COUNT] = 0.0;
+    out_payload[out_base + OUT_HAS_COLLISION] = 0.0;
+    out_payload[out_base + OUT_RESERVED] = 0.0;
+}
+
+void write_collision_from_auto(uint auto_base, uint out_base) {
+    float has_collision = auto_source[auto_base + SRC_HAS_COLLISION] > 0.5 ? 1.0 : 0.0;
+    out_payload[out_base + OUT_COLLISION_STRENGTH] = has_collision * clamp(auto_source[auto_base + SRC_COLLISION_STRENGTH], 0.0, 1.0);
+    out_payload[out_base + OUT_COLLISION_LAYER_COUNT] = has_collision * max(auto_source[auto_base + SRC_COLLISION_LAYER_COUNT], 0.0);
+    out_payload[out_base + OUT_HAS_COLLISION] = has_collision;
+    out_payload[out_base + OUT_RESERVED] = 0.0;
+}
+
+void write_collision_from_brush(uint brush_base, uint out_base) {
+    float has_collision = brush_source[brush_base + SRC_HAS_COLLISION] > 0.5 ? 1.0 : 0.0;
+    out_payload[out_base + OUT_COLLISION_STRENGTH] = has_collision * clamp(brush_source[brush_base + SRC_COLLISION_STRENGTH], 0.0, 1.0);
+    out_payload[out_base + OUT_COLLISION_LAYER_COUNT] = has_collision * max(brush_source[brush_base + SRC_COLLISION_LAYER_COUNT], 0.0);
+    out_payload[out_base + OUT_HAS_COLLISION] = has_collision;
+    out_payload[out_base + OUT_RESERVED] = 0.0;
+}
 
 void write_empty(uint out_base) {
     out_payload[out_base + OUT_COMPLEXITY] = 0.0;
@@ -51,6 +81,7 @@ void write_empty(uint out_base) {
     out_payload[out_base + OUT_SOURCE_SELECTOR] = SOURCE_NONE;
     out_payload[out_base + OUT_AUTO_MIX] = 0.0;
     out_payload[out_base + OUT_VALID] = 0.0;
+    write_collision_empty(out_base);
 }
 
 void write_from_auto(uint auto_base, uint out_base) {
@@ -63,6 +94,7 @@ void write_from_auto(uint auto_base, uint out_base) {
     out_payload[out_base + OUT_SOURCE_SELECTOR] = SOURCE_AUTO;
     out_payload[out_base + OUT_AUTO_MIX] = 1.0;
     out_payload[out_base + OUT_VALID] = 1.0;
+    write_collision_from_auto(auto_base, out_base);
 }
 
 void write_from_brush(uint brush_base, uint out_base, float auto_mix_out) {
@@ -75,6 +107,7 @@ void write_from_brush(uint brush_base, uint out_base, float auto_mix_out) {
     out_payload[out_base + OUT_SOURCE_SELECTOR] = SOURCE_BRUSH;
     out_payload[out_base + OUT_AUTO_MIX] = clamp(auto_mix_out, 0.0, 1.0);
     out_payload[out_base + OUT_VALID] = 1.0;
+    write_collision_from_brush(brush_base, out_base);
 }
 
 void write_mixed(uint auto_base, uint brush_base, uint out_base, float auto_mix) {
@@ -103,9 +136,14 @@ void write_mixed(uint auto_base, uint brush_base, uint out_base, float auto_mix)
     out_payload[out_base + OUT_SOURCE_SELECTOR] = SOURCE_BRUSH;
     out_payload[out_base + OUT_AUTO_MIX] = mix_ratio;
     out_payload[out_base + OUT_VALID] = 1.0;
+    write_collision_from_brush(brush_base, out_base);
 }
 
 void main() {
+    if (source_stride <= SRC_COLLISION_LAYER_COUNT || output_stride <= OUT_RESERVED) {
+        return;
+    }
+
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= uint(key_count)) {
         return;

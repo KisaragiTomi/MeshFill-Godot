@@ -6,28 +6,7 @@
 
 ![AutoObject probe scoring logic](../graphs/autoobject_probe_scoring_logic.svg)
 
-## 当前实现
-
-| 项 | 状态 | 说明 |
-| --- | --- | --- |
-| GPU pipeline | 已实现 | `collect_sv_anchors.glsl` -> `score_anchor_asset_probes.glsl` -> `select_anchor_topk.glsl` -> `reduce_anchor_topk_to_voxel_regions.glsl`。 |
-| Host | 已实现 | `scripts/autoobject_probe_prefilter_gpu.gd` 打包 probes / buffers、dispatch GPU、readback debug / 结果。 |
-| Anchor | 已实现 | `anchor_buffer` 只保存 voxel position，`w` 保留；不存 `anchor_kind`。 |
-| Probe source | 已实现 | 通过 `AutoObject.get_semantic_probes()` 读取 descriptor-backed semantic probes。 |
-| Candidate regions | 已实现 | GPU votes readback 后按 route profile 扩张，docs-facing 输出为 `candidate_voxel_regions_by_asset` / `candidate_voxel_regions`；`autoobject_candidate_voxel_sparses` 与 `candidate_voxel_sparses_by_asset` 仅保留为 legacy/debug alias。 |
-| Route profile debug | 已实现 | `candidate_route_profiles` 记录 footprint / probe / context / interpolation guard 的扩张信息。 |
-| CPU scoring path | 已删除 | 正常路径不在 GDScript 中做 `anchor_count x asset_count x probe_count` 全采样。 |
-
-## 实现进度
-
-| 项 | 状态 | 覆盖 |
-| --- | --- | --- |
-| GPU anchor collection / probe scoring / top-K / reduce | 已实现 | `autoobject_probe_prefilter_gpu.gd` 与 4 个 prefilter shader |
-| `TargetSV_B` read input | 已实现 | `TargetSceneVoxelGenerator.decode_target_read_buffers()` 生成 `target_occupancy` / `target_color` |
-| Candidate region readback + route expansion | 已实现 | `candidate_route_profiles` debug 输出；`tools/test_autoobject_probe_prefilter.gd` 覆盖 footprint / probe / context guard 扩张 |
-| `run_multi_asset()` route 消费 | 已实现 | `tools/test_voxel_candidate_routing_contract.gd` 覆盖空 route、int/string asset key |
-| GPU resident route buffer | 未实现 | 仍为 CPU readback debug view |
-| Route validation / semantic rerank / MLP | 未实现 | 只作为候选内验证计划 |
+当前实现已稳定：GPU pipeline、Host、Anchor、Probe source、Candidate regions、Route profile debug 均已实现，CPU scoring path 已删除。以下输入/输出契约仅作为架构参考。
 
 ## 输入 / 输出
 
@@ -58,6 +37,11 @@ dirty voxel regions
   -> reduce_anchor_topk_to_voxel_regions.glsl
   -> readback voxel-region votes
   -> expand by candidate_route_profiles
+
+opt-in route payload branch:
+dense voxel-region votes
+  -> pack_candidate_route_records_from_votes.glsl
+  -> readback schema-v1 record_bytes / range_bytes
 ```
 
 Shader 职责：
@@ -68,8 +52,11 @@ Shader 职责：
 | `score_anchor_asset_probes.glsl` | 每个 anchor / asset 组合按 probes 采样 `SV` 与 `TargetSV_B` buffer，输出 asset score。 |
 | `select_anchor_topk.glsl` | 为每个 anchor 选择 top-K assets。 |
 | `reduce_anchor_topk_to_voxel_regions.glsl` | 把 anchor top-K 聚合成 `voxel_sparse_votes[asset_id * tile_count + tile_id]`。 |
+| `pack_candidate_route_records_from_votes.glsl` | Opt-in producer pass，把 dense votes 按 route radius 标记后输出 schema-v1 `candidate_route_records` / `candidate_route_ranges` bytes。 |
 
 `reduce_anchor_topk_to_voxel_regions.glsl` 只聚合 anchor 所在 tile vote。footprint、probe offset、context radius 和 interpolation guard 的扩张发生在 `autoobject_probe_prefilter_gpu.gd` 的 readback 解码阶段。
+
+Opt-in route payload branch 使用同一份 `candidate_route_profiles.tile_radius` 在 GPU 中扩张候选集合。该分支的 record 顺序是 per-asset tile-id ascending，不声明 CPU score order；默认 CPU pack 仍保持 score desc、tile_id asc 的排序，用于避免静默改变 placement capacity / tie 行为。
 
 ## Anchor 规则
 
@@ -123,7 +110,9 @@ tile_radius = footprint bounds
 - route profile 使用 `get_collision()` 烘焙出的 footprint bounds。
 - route profile 使用 semantic probe offset bounds。
 - `candidate_route_profiles` 暴露这些值用于 debug。
-- 扩张后的 docs-facing 结果写入 `candidate_voxel_regions_by_asset`，供 `run_multi_asset()` 消费；旧 `candidate_voxel_sparses_by_asset` 只作为 legacy/debug alias。
+- 扩张后的 docs-facing 结果写入 `candidate_voxel_regions_by_asset`，作为 debug/API 输出；旧 `candidate_voxel_sparses_by_asset` 只作为 legacy/debug alias。
+- 默认 `candidate_route_handoff_payload` 由 CPU vote-entry pack 生成，保持 score-sorted route order。
+- 启用 `use_gpu_candidate_route_pack` 或同义 option 时，`candidate_route_handoff_payload` 可由 GPU route pack pass 生成，metadata 标记 `source_label = "gpu_vote_buffer_gpu_pack"`、`score_order_preserved = false`。
 
 相关测试覆盖 `candidate_routes_expand_for_probe_footprint_context_guard`。
 

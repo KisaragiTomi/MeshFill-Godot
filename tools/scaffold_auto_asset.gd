@@ -18,7 +18,7 @@ func _run() -> int:
 	var asset_type := str(_get_value(args, config, "type", ""))
 	match asset_type:
 		"rock":
-			return _scaffold_rock(args, config)
+			return _scaffold_object(args, config)
 		"vegetation":
 			return _scaffold_vegetation(args, config)
 		_:
@@ -27,10 +27,10 @@ func _run() -> int:
 			return ERR_INVALID_PARAMETER
 
 
-func _scaffold_rock(args: Array, config: Dictionary) -> int:
+func _scaffold_object(args: Array, config: Dictionary) -> int:
 	var asset_path := str(_get_value(args, config, "asset_path", ""))
 	if asset_path.is_empty():
-		push_error("Rock config requires asset_path")
+		push_error("Object config requires asset_path")
 		return ERR_INVALID_PARAMETER
 
 	var mesh_path := str(_get_value(args, config, "mesh", ""))
@@ -39,7 +39,7 @@ func _scaffold_rock(args: Array, config: Dictionary) -> int:
 	var raw_width := int(_get_value(args, config, "raw_width", 256))
 	var raw_height := int(_get_value(args, config, "raw_height", 256))
 
-	var asset: AutoRock = AutoAssetFactoryScript.load_or_new_rock_asset(asset_path)
+	var asset: AutoRock = AutoAssetFactoryScript.load_or_new_object_asset(asset_path)
 	var mesh := asset.mesh
 	var source_mesh := asset.get_source_mesh()
 	var source_mesh_path := asset.source_mesh_path
@@ -52,10 +52,10 @@ func _scaffold_rock(args: Array, config: Dictionary) -> int:
 		height_texture = AutoAssetFactoryScript.load_texture_or_raw(height_path, raw_width, raw_height)
 
 	if mesh == null:
-		push_error("Rock config requires a mesh path or an existing AutoRock.mesh")
+		push_error("Object config requires a mesh path or an existing AutoRock.mesh")
 		return ERR_FILE_NOT_FOUND
 	if height_texture == null:
-		push_error("Rock config requires height_texture/height or an existing AutoRock.mesh_height_texture")
+		push_error("Object config requires height_texture/height or an existing AutoRock.mesh_height_texture")
 		return ERR_FILE_NOT_FOUND
 
 	var color := AutoAssetFactoryScript.color_from_value(
@@ -79,7 +79,7 @@ func _scaffold_rock(args: Array, config: Dictionary) -> int:
 
 	var err := AutoAssetFactoryScript.save_resource(profile, profile_path)
 	if err != OK:
-		push_error("Failed to save rock profile: %s" % profile_path)
+		push_error("Failed to save object profile: %s" % profile_path)
 		return err
 
 	var mesh_size := float(_get_value(args, config, "mesh_size", asset.mesh_size))
@@ -99,19 +99,19 @@ func _scaffold_rock(args: Array, config: Dictionary) -> int:
 	var class_name_value := str(_get_value(args, config, "class_name", ""))
 	var script_path := str(_get_value(args, config, "script_path", ""))
 	if not class_name_value.is_empty() and not script_path.is_empty():
-		var subtype := str(_get_value(args, config, "subtype", "rock"))
-		var group := str(_get_value(args, config, "group", "placed_rocks"))
-		err = AutoAssetFactoryScript.write_rock_subclass(class_name_value, subtype, group, script_path)
+		var subtype := str(_get_value(args, config, "subtype", "object"))
+		var group := str(_get_value(args, config, "group", "placed_objects"))
+		err = AutoAssetFactoryScript.write_object_subclass(class_name_value, subtype, group, script_path)
 		if err != OK:
-			push_error("Failed to write rock subclass: %s" % script_path)
+			push_error("Failed to write object subclass: %s" % script_path)
 			return err
-		var rock_script := load(script_path)
-		if rock_script != null:
-			var scripted_asset = rock_script.new()
+		var object_script := load(script_path)
+		if object_script != null:
+			var scripted_asset = object_script.new()
 			if scripted_asset is AutoRock:
 				asset = scripted_asset as AutoRock
 
-	asset = AutoAssetFactoryScript.create_or_update_rock_asset(
+	asset = AutoAssetFactoryScript.create_or_update_object_asset(
 		asset,
 		mesh,
 		height_texture,
@@ -131,12 +131,12 @@ func _scaffold_rock(args: Array, config: Dictionary) -> int:
 	asset.asset_id = str(_get_value(args, config, "asset_id", asset_path.get_file().get_basename()))
 	if asset.name.is_empty():
 		asset.name = asset.asset_id
-	err = AutoAssetFactoryScript.save_rock_asset(asset, asset_path)
+	err = AutoAssetFactoryScript.save_object_asset(asset, asset_path)
 	if err != OK:
-		push_error("Failed to save AutoRock scene asset: %s" % asset_path)
+		push_error("Failed to save AutoObject scene asset: %s" % asset_path)
 		return err
 
-	print("Rock asset scaffolded:")
+	print("Object asset scaffolded:")
 	print("  asset:   %s" % asset_path)
 	print("  profile: %s" % profile_path)
 	if not script_path.is_empty():
@@ -308,10 +308,10 @@ func _print_help() -> void:
 Usage:
   godot --headless --path . --script tools/scaffold_auto_asset.gd -- --config res://path/to/asset.json
 
-Rock JSON:
+Object JSON:
   {
     "type": "rock",
-    "asset_path": "res://assets/rocks/cliff_03_asset.tscn",
+    "asset_path": "res://assets/objects/cliff_03_asset.tscn",
     "mesh": "res://geo/cliff_03.FBX",
     "height_texture": "res://geo/cliff_03_height.raw",
     "mesh_size": 4.2,
@@ -341,6 +341,6 @@ Vegetation JSON:
     "scatter_max_scale": 0.7,
     "visual_layer": 14,
     "group": "placed_flowers",
-    "mesh_create_method": "create_flower_mesh"
+    "mesh_create_method": "create_sample_autoobject_mesh"
   }
 """)

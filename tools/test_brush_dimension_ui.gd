@@ -13,8 +13,6 @@ func _run() -> void:
 	var ok := true
 	ok = _test_brush_dimensions_drive_footprint_and_slices() and ok
 	ok = _test_landscape_cliff_mask_contract() and ok
-	ok = _test_cliff_tree_mask_contract() and ok
-	ok = _test_tree_grass_mask_contract() and ok
 	ok = _test_vegetation_channel_mask_contract() and ok
 	ok = _test_has_mask_pixels_contract() and ok
 	ok = _test_target_height_override_composite_contract() and ok
@@ -115,67 +113,6 @@ func _test_landscape_cliff_mask_contract() -> bool:
 
 	main.free()
 	print("  OK: flat mask stays empty and sloped mask activates")
-	return true
-
-
-func _test_cliff_tree_mask_contract() -> bool:
-	print("[BrushDimensionUI] test_cliff_tree_mask_contract...")
-	var main = MainScript.new()
-	main.capture_size = 256.0
-	main.cliff_tree_stamp_radius = 3.0
-	main.cliff_tree_stamp_inner_radius = 1.0
-
-	var flat := Image.create(8, 8, false, Image.FORMAT_RF)
-	flat.fill(Color(0.0, 0.0, 0.0, 0.0))
-	var rock := Image.create(256, 256, false, Image.FORMAT_RF)
-	rock.fill(Color(0.0, 0.0, 0.0, 0.0))
-	var center := Vector2i(128, 128)
-	rock.set_pixelv(center, Color(0.75, 0.0, 0.0, 0.0))
-
-	var mask: Image = main._make_cliff_tree_mask(rock, flat)
-	if mask.get_pixelv(center).r > 0.001:
-		push_error("  FAIL: source rock pixel should be cleared from cliff tree mask")
-		main.free()
-		return false
-	if mask.get_pixelv(center + Vector2i(2, 0)).r <= 0.01:
-		push_error("  FAIL: annulus around rock pixel should be active")
-		main.free()
-		return false
-	if mask.get_pixelv(center + Vector2i(8, 0)).r > 0.001:
-		push_error("  FAIL: far pixel should remain empty")
-		main.free()
-		return false
-
-	main.free()
-	print("  OK: source cleared, annulus active, far field empty")
-	return true
-
-
-func _test_tree_grass_mask_contract() -> bool:
-	print("[BrushDimensionUI] test_tree_grass_mask_contract...")
-	var main = MainScript.new()
-	main.capture_size = 256.0
-	main.tree_grass_stamp_radius = 3.0
-
-	var center := Vector2i(128, 128)
-	var mask: Image = main._make_tree_grass_mask([{
-		"position": Vector3.ZERO,
-	}])
-	if mask.get_pixelv(center).r <= 0.01:
-		push_error("  FAIL: tree grass mask should mark the tree center")
-		main.free()
-		return false
-	if mask.get_pixelv(center + Vector2i(3, 0)).r <= 0.01:
-		push_error("  FAIL: tree grass mask should mark pixels inside radius")
-		main.free()
-		return false
-	if mask.get_pixelv(center + Vector2i(8, 0)).r > 0.001:
-		push_error("  FAIL: tree grass mask should leave far pixels empty")
-		main.free()
-		return false
-
-	main.free()
-	print("  OK: center and radius active, far field empty")
 	return true
 
 
@@ -362,18 +299,15 @@ func _test_combined_mask_debug_contract() -> bool:
 	var main = MainScript.new()
 	main._current_rock_mask_img = Image.create(256, 256, false, Image.FORMAT_RF)
 	main._current_rock_mask_img.fill(Color(0.0, 0.0, 0.0, 0.0))
-	main._tree_mask_image = Image.create(256, 256, false, Image.FORMAT_RF)
-	main._tree_mask_image.fill(Color(0.0, 0.0, 0.0, 0.0))
-	main._bush_mask_image = Image.create(256, 256, false, Image.FORMAT_RF)
-	main._bush_mask_image.fill(Color(0.0, 0.0, 0.0, 0.0))
+	main._autoobject_mask_image = Image.create(256, 256, false, Image.FORMAT_RGBAH)
+	main._autoobject_mask_image.fill(Color(0.0, 0.0, 0.0, 0.0))
 	var px := Vector2i(32, 48)
 	main._current_rock_mask_img.set_pixelv(px, Color(0.25, 0.0, 0.0, 0.0))
-	main._tree_mask_image.set_pixelv(px, Color(0.5, 0.0, 0.0, 0.0))
-	main._bush_mask_image.set_pixelv(px, Color(0.75, 0.0, 0.0, 0.0))
+	main._autoobject_mask_image.set_pixelv(px, Color(0.0, 0.5, 0.75, 0.0))
 
 	var img := main._make_combined_mask_debug_image()
 	var c := img.get_pixelv(px)
-	if absf(c.r - 0.25) > 0.01 or absf(c.g - 0.5) > 0.01 or absf(c.b - 0.75) > 0.01 or absf(c.a - 1.0) > 0.01:
+	if absf(c.r - 0.25) > 0.01 or absf(c.g - 0.75) > 0.01 or c.b > 0.01 or absf(c.a - 1.0) > 0.01:
 		push_error("  FAIL: combined mask debug image packed unexpected color %s" % str(c))
 		main.free()
 		return false
@@ -384,7 +318,7 @@ func _test_combined_mask_debug_contract() -> bool:
 		return false
 
 	main.free()
-	print("  OK: rock/tree/bush channels packed into RGBA8 on GPU")
+	print("  OK: rock and AutoObject activity channels packed into RGBA8 on GPU")
 	return true
 
 
@@ -396,15 +330,12 @@ func _test_debug_mask_terrain_uses_combined_mask_contract() -> bool:
 	main._cached_textures = {"scene_depth": ImageTexture.create_from_image(depth)}
 	main._current_rock_mask_img = Image.create(256, 256, false, Image.FORMAT_RF)
 	main._current_rock_mask_img.fill(Color(0.0, 0.0, 0.0, 0.0))
-	main._tree_mask_image = Image.create(256, 256, false, Image.FORMAT_RF)
-	main._tree_mask_image.fill(Color(0.0, 0.0, 0.0, 0.0))
-	main._bush_mask_image = Image.create(256, 256, false, Image.FORMAT_RF)
-	main._bush_mask_image.fill(Color(0.0, 0.0, 0.0, 0.0))
+	main._autoobject_mask_image = Image.create(256, 256, false, Image.FORMAT_RGBAH)
+	main._autoobject_mask_image.fill(Color(0.0, 0.0, 0.0, 0.0))
 
 	var px := Vector2i(32, 48)
 	main._current_rock_mask_img.set_pixelv(px, Color(0.25, 0.0, 0.0, 0.0))
-	main._tree_mask_image.set_pixelv(px, Color(0.5, 0.0, 0.0, 0.0))
-	main._bush_mask_image.set_pixelv(px, Color(0.75, 0.0, 0.0, 0.0))
+	main._autoobject_mask_image.set_pixelv(px, Color(0.0, 0.5, 0.75, 0.0))
 	main._build_debug_mask_terrain()
 
 	if main._debug_mask_terrain == null or main._debug_mask_terrain.mesh == null:
@@ -415,7 +346,7 @@ func _test_debug_mask_terrain_uses_combined_mask_contract() -> bool:
 	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
 	var active := colors[px.y * 256 + px.x]
-	if absf(active.r - 0.25) > 0.01 or absf(active.g - 0.5) > 0.01 or absf(active.b - 0.75) > 0.01:
+	if absf(active.r - 0.25) > 0.01 or absf(active.g - 0.75) > 0.01 or active.b > 0.01:
 		push_error("  FAIL: debug terrain did not use packed GPU mask channels: %s" % str(active))
 		main.free()
 		return false

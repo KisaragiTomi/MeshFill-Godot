@@ -2,7 +2,6 @@ extends SceneTree
 
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
 const SceneVoxelCommitPayloadScript := preload("res://scripts/scene_voxel_commit_payload.gd")
-const SceneVoxelValidationScript := preload("res://scripts/scene_voxel_validation.gd")
 
 
 func _init() -> void:
@@ -25,9 +24,6 @@ func _init() -> void:
 		quit(1)
 		return
 	if not _test_voxel_stats_slice_texture_contract():
-		quit(1)
-		return
-	if not _test_static_scene_voxel_validation_slice_texture_contract():
 		quit(1)
 		return
 
@@ -60,6 +56,11 @@ func _init() -> void:
 		{"channel": 0, "color": Color(0.2, 0.8, 0.2, 1.0), "complexity": 1.0, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
 	])
 
+	var pre_map_column := committer.get_voxel_column(8, 8)
+	if pre_map_column.is_empty():
+		push_error("Expected voxel column debug output to hydrate from committed payload buffers")
+		quit(1)
+		return
 	var scene_voxels := committer.get_scene_voxels()
 	var sv: Dictionary = committer.get_sv()
 	var initial_sv_dirty_scene_tile_count := int(sv.get("dirty_scene_voxel_tile_count", -1))
@@ -176,7 +177,35 @@ func _init() -> void:
 				return
 	var committed_collision = committed_center.get("collision", [])
 	if not committed_collision is Array or (committed_collision as Array).is_empty():
-		push_error("Expected shared collision to propagate to SceneVoxel")
+		push_error("Expected committed payload collision summary to propagate to SceneVoxel")
+		quit(1)
+		return
+	var committed_collision_summary := (committed_collision as Array)[0] as Dictionary
+	if not bool(committed_collision_summary.get("debug_summary", false)) \
+			or str(committed_collision_summary.get("summary_source", "")) != "committed_scene_voxel_payload" \
+			or bool(committed_collision_summary.get("exact_layer_fidelity", true)) \
+			or int(committed_collision_summary.get("layer_count", 0)) != 1 \
+			or absf(float(committed_collision_summary.get("collision_strength", 0.0)) - 1.0) > 0.001:
+		push_error("Expected public collision to be a normalized committed-payload debug summary, got %s" % str(committed_collision_summary))
+		quit(1)
+		return
+	var committed_payload_summary := committer.get_committed_scene_voxel_payload_buffer_summary()
+	if not bool(committed_payload_summary.get("committed_scene_voxel_payload_collision_summary", false)) \
+			or str(committed_payload_summary.get("committed_scene_voxel_payload_collision_summary_source", "")) != "resident_committed_scene_voxel_payload_buffer" \
+			or bool(committed_payload_summary.get("committed_scene_voxel_payload_collision_exact_layers", true)) \
+			or str(committed_payload_summary.get("public_scene_voxel_collision_projection_source", "")) != "resident_committed_scene_voxel_payload_buffer" \
+			or str(committed_payload_summary.get("public_scene_voxel_collision_projection_readback_source", "")) != "resident_committed_scene_voxel_payload_buffer_debug_api_readback":
+		push_error("Expected committed payload summary to prove resident collision debug projection, got %s" % str(committed_payload_summary))
+		quit(1)
+		return
+	var committed_column := committer.get_voxel_column(8, 8)
+	if committed_column.is_empty():
+		push_error("Expected voxel column debug output at committed center")
+		quit(1)
+		return
+	var column_collision = (committed_column[0] as Dictionary).get("collision", [])
+	if not column_collision is Array or (column_collision as Array).is_empty():
+		push_error("Expected voxel column debug output to include shared collision")
 		quit(1)
 		return
 	if committer.has_method("get_scene_voxel_sidecar") or committer.has_method("get_scene_voxel_local"):
@@ -424,44 +453,6 @@ func _test_voxel_stats_slice_texture_contract() -> bool:
 	return true
 
 
-func _test_static_scene_voxel_validation_slice_texture_contract() -> bool:
-	var slice_a := Image.create(4, 4, false, Image.FORMAT_RF)
-	slice_a.fill(Color(0.0, 0.0, 0.0, 0.0))
-	slice_a.set_pixelv(Vector2i(0, 0), Color(0.5, 0.0, 0.0, 0.0))
-	slice_a.set_pixelv(Vector2i(1, 1), Color(0.6, 0.0, 0.0, 0.0))
-	var slice_b := Image.create(4, 4, false, Image.FORMAT_RF)
-	slice_b.fill(Color(0.0, 0.0, 0.0, 0.0))
-	slice_b.set_pixelv(Vector2i(2, 2), Color(0.7, 0.0, 0.0, 0.0))
-
-	var validation := SceneVoxelValidationScript.validate_volume({
-		"xz_res": 4,
-		"slices": [slice_a, slice_b],
-		"slice_meta": [
-			{"channel": 0},
-			{"channel": 1},
-		],
-	}, {
-		"min_diversity_score": 2,
-		"min_channel_occupancy": {0: 10.0, 1: 5.0},
-		"max_channel_occupancy": {0: 20.0, 1: 10.0},
-	}, 2, 0.01)
-	if not bool(validation.get("passed", false)):
-		push_error("Expected static SceneVoxelValidation slice texture path to pass: %s" % str(validation))
-		return false
-	var metrics: Dictionary = validation.get("metrics", {})
-	if not bool(metrics.get("gpu_dispatched", false)) or bool(metrics.get("cpu_fallback", true)):
-		push_error("Expected static SceneVoxelValidation to use GPU-only counting: %s" % str(validation))
-		return false
-	if str(metrics.get("stats_source", "")) != "volume_slice_texture":
-		push_error("Expected static SceneVoxelValidation stats source to be volume_slice_texture: %s" % str(validation))
-		return false
-	var occupancy: Array = metrics.get("channel_occupancy_pct", [])
-	if occupancy.size() < 2 or absf(float(occupancy[0]) - 12.5) > 0.001 or absf(float(occupancy[1]) - 6.25) > 0.001:
-		push_error("Expected static SceneVoxelValidation occupancy 12.5/6.25, got %s" % str(validation))
-		return false
-	return true
-
-
 func _test_dirty_tile_limited_source_write() -> bool:
 	var committer := SVC.new(32, 32.0)
 	committer.build_voxel_volume(16, [
@@ -497,8 +488,11 @@ func _test_dirty_tile_limited_source_write() -> bool:
 	if not bool(summary.get("gpu_first", false)):
 		push_error("Dirty-limited source commit should mark gpu_first=true")
 		return false
-	if str(summary.get("runtime_read_source", "")) != "none":
-		push_error("Dirty-limited source commit must not claim runtime read authority")
+	if str(summary.get("runtime_read_source", "")) != "resident_resolved_source_stream_buffers":
+		push_error("Dirty-limited source commit should blend from resident resolved source streams: %s" % str(summary))
+		return false
+	if not bool(summary.get("final_source_stream_resident", false)):
+		push_error("Dirty-limited source commit should retain resident final source stream diagnostics: %s" % str(summary))
 		return false
 	if int(summary.get("processed_source_key_count", 0)) >= int(summary.get("total_source_key_count", 0)):
 		push_error("Dirty-limited source commit processed the full source key set: %s" % str(summary))

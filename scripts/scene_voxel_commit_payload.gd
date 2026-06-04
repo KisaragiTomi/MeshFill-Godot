@@ -4,6 +4,14 @@ const COMMIT_SOURCE_NONE := 0
 const COMMIT_SOURCE_AUTO := 1
 const COMMIT_SOURCE_BRUSH := 2
 
+const SRC_HAS_COLLISION := 7
+const SRC_COLLISION_STRENGTH := 13
+const SRC_COLLISION_LAYER_COUNT := 14
+
+const OUT_COLLISION_STRENGTH := 8
+const OUT_COLLISION_LAYER_COUNT := 9
+const OUT_HAS_COLLISION := 10
+
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const SceneVoxelPayloadScript := preload("res://scripts/scene_voxel_payload.gd")
 
@@ -51,7 +59,8 @@ static func pack_source_values(source_stream: Dictionary, source_keys: Array, so
 		values[base + 4] = complexity
 		values[base + 5] = 1.0
 		values[base + 6] = clampf(float(voxel.get("auto_mix", 0.0)), 0.0, 1.0)
-		values[base + 7] = 1.0 if SharedPropertyTypeScript.has_collision_fields(voxel) else 0.0
+		var collision_summary := collision_summary_from_source(voxel)
+		values[base + SRC_HAS_COLLISION] = 1.0 if bool(collision_summary.get("has_collision", false)) else 0.0
 		values[base + 8] = float(int(voxel.get("slice_index", -1)))
 
 		var voxel_xz = voxel.get("voxel_xz", Vector2i(-1, -1))
@@ -63,8 +72,88 @@ static func pack_source_values(source_stream: Dictionary, source_keys: Array, so
 		if base_pixel is Vector2i:
 			values[base + 11] = float((base_pixel as Vector2i).x)
 			values[base + 12] = float((base_pixel as Vector2i).y)
+		if source_float_stride > SRC_COLLISION_STRENGTH:
+			values[base + SRC_COLLISION_STRENGTH] = clampf(float(collision_summary.get("collision_strength", 0.0)), 0.0, 1.0)
+		if source_float_stride > SRC_COLLISION_LAYER_COUNT:
+			values[base + SRC_COLLISION_LAYER_COUNT] = float(maxi(int(collision_summary.get("layer_count", 0)), 0))
 
 	return values
+
+static func collision_summary_from_source(source: Dictionary) -> Dictionary:
+	var has_collision := SharedPropertyTypeScript.has_collision_fields(source)
+	var summary := {
+		"has_collision": has_collision,
+		"collision_strength": 0.0,
+		"layer_count": 0,
+	}
+	if not has_collision:
+		return summary
+
+	var raw_collision = source.get("collision", [])
+	if raw_collision is float or raw_collision is int:
+		var scalar_strength := clampf(float(raw_collision), 0.0, 1.0)
+		summary["collision_strength"] = scalar_strength
+		summary["layer_count"] = 1 if scalar_strength > 0.0 else 0
+		return summary
+
+	if not raw_collision is Array:
+		return summary
+
+	var layers := SharedPropertyTypeScript.collision_from_fields(source)
+	summary["layer_count"] = layers.size()
+	var max_strength := 0.0
+	for layer in layers:
+		max_strength = maxf(max_strength, clampf(float(layer.get("collision_strength", 1.0)), 0.0, 1.0))
+	summary["collision_strength"] = max_strength
+	return summary
+
+static func collision_summary_from_payload(
+	payloads: PackedFloat32Array,
+	payload_base: int,
+	output_float_stride: int
+) -> Dictionary:
+	var summary := {
+		"has_collision": false,
+		"collision_strength": 0.0,
+		"layer_count": 0,
+		"summary_source": "committed_scene_voxel_payload",
+	}
+	if payload_base + output_float_stride > payloads.size():
+		return summary
+	if output_float_stride <= OUT_HAS_COLLISION:
+		return summary
+	var has_collision := payloads[payload_base + OUT_HAS_COLLISION] > 0.5
+	summary["has_collision"] = has_collision
+	if not has_collision:
+		return summary
+	summary["collision_strength"] = clampf(payloads[payload_base + OUT_COLLISION_STRENGTH], 0.0, 1.0)
+	summary["layer_count"] = maxi(int(payloads[payload_base + OUT_COLLISION_LAYER_COUNT] + 0.5), 0)
+	return summary
+
+static func collision_debug_array_from_summary(
+	summary: Dictionary,
+	slice_index: int = -1,
+	voxel_xz: Vector2i = Vector2i(-1, -1)
+) -> Array:
+	if not bool(summary.get("has_collision", false)):
+		return []
+	var layer_count := maxi(int(summary.get("layer_count", 0)), 0)
+	var collision_strength := clampf(float(summary.get("collision_strength", 0.0)), 0.0, 1.0)
+	if layer_count <= 0 and collision_strength <= 0.0:
+		return []
+
+	return [{
+		"shape": "debug_summary",
+		"collision_shape": "debug_summary",
+		"debug_summary": true,
+		"summary_source": str(summary.get("summary_source", "committed_scene_voxel_payload")),
+		"exact_layer_fidelity": false,
+		"layer_count": layer_count,
+		"collision_strength": collision_strength,
+		"max_collision_strength": collision_strength,
+		"slice_index": slice_index,
+		"voxel_xz": voxel_xz,
+	}]
 
 static func source_selector_from_payload(payloads: PackedFloat32Array, payload_base: int) -> int:
 	if payload_base + 5 >= payloads.size():
@@ -138,9 +227,18 @@ static func committed_scene_voxel_from_payload(
 		"color": color,
 		"complexity": complexity,
 	}
-	var include_collision := SharedPropertyTypeScript.has_collision_fields(selected)
+	var collision_summary := collision_summary_from_payload(payloads, payload_base, output_float_stride)
+	var include_collision := bool(collision_summary.get("has_collision", false))
 	if include_collision:
-		source_fields["collision"] = selected.get("collision", [])
+		var selected_collision := SharedPropertyTypeScript.collision_from_fields(selected)
+		if not selected_collision.is_empty():
+			source_fields["collision"] = selected_collision
+		else:
+			source_fields["collision"] = collision_debug_array_from_summary(
+				collision_summary,
+				int(scene_voxel.get("slice_index", -1)),
+				scene_voxel.get("voxel_xz", Vector2i(-1, -1))
+			)
 
 	return SceneVoxelPayloadScript.internal_payload(
 		SharedPropertyTypeScript.apply_to_scene_voxel(

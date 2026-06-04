@@ -88,7 +88,12 @@ var _command_queue: Array[Dictionary] = []
 var _dirty_delta_count := 0
 var _flush_epoch := 0
 var _command_flush_epoch := 0
+# P0 #5: The VPG always explicitly passes use_accepted_placement_record_shader=true
+# when calling flush_command_queue or spawn_batch_from_accepted_placement_records.
+# This flag is kept as the default for callers that don't pass explicit options
+# (e.g. direct flush_command_queue() calls without the VPG bridge).
 var _use_resident_accepted_placement_writeback := false
+var _reserved_object_ids := {}
 
 var _alive_buffer: RID
 var _generation_buffer: RID
@@ -117,6 +122,7 @@ func configure_capacity(p_max_objects: int, p_enable_gpu: bool = true) -> void:
 	_flush_epoch = 0
 	_command_flush_epoch = 0
 	_free_ids.clear()
+	_reserved_object_ids.clear()
 	_command_queue.clear()
 	for i in range(max_objects):
 		_free_ids.append(max_objects - 1 - i)
@@ -141,6 +147,199 @@ func set_use_resident_accepted_placement_writeback(enabled: bool) -> void:
 
 func get_use_resident_accepted_placement_writeback() -> bool:
 	return _use_resident_accepted_placement_writeback
+
+
+func reserve_accepted_placement_object_ids(record_count: int) -> Dictionary:
+	if not _gpu_ready:
+		return _object_id_reservation_result(false, "runtime_not_ready", [], record_count)
+	if record_count < 0:
+		return _object_id_reservation_result(false, "invalid_record_count", [], record_count)
+	if record_count == 0:
+		return _object_id_reservation_result(true, "ok", [], record_count)
+
+	var reserved_ids: Array[int] = []
+	for _i in range(record_count):
+		var object_id := _allocate_id()
+		if object_id < 0:
+			rollback_accepted_placement_object_ids(reserved_ids)
+			return _object_id_reservation_result(false, "capacity_full", [], record_count)
+		if bool(_read_object_state(object_id).get("alive", false)):
+			rollback_accepted_placement_object_ids(reserved_ids)
+			return _object_id_reservation_result(false, "allocated_id_already_alive", [], record_count)
+		_reserved_object_ids[object_id] = true
+		reserved_ids.append(object_id)
+	return _object_id_reservation_result(true, "ok", reserved_ids, record_count)
+
+
+func rollback_accepted_placement_object_ids(object_ids) -> Dictionary:
+	var ids := _object_id_array_from_value(object_ids)
+	var released_ids: Array[int] = []
+	var skipped_ids: Array[int] = []
+	for object_id in ids:
+		if _release_reserved_object_id_for_rollback(object_id):
+			released_ids.append(object_id)
+		else:
+			skipped_ids.append(object_id)
+	return {
+		"ok": skipped_ids.is_empty(),
+		"reason": "ok" if skipped_ids.is_empty() else "some_ids_not_released",
+		"object_ids": ids,
+		"released_object_ids": released_ids,
+		"skipped_object_ids": skipped_ids,
+		"released_count": released_ids.size(),
+		"skipped_count": skipped_ids.size(),
+		"reserved_object_id_count": _reserved_object_ids.size(),
+		"runtime_ready": _gpu_ready,
+		"gpu_first": true,
+		"cpu_fallback": false,
+		"readback_source": "gpu_storage_buffers" if _gpu_ready else "none",
+	}
+
+
+func finalize_accepted_placement_object_id_reservation(object_ids, accepted_record_result: Dictionary = {}) -> Dictionary:
+	var ids := _object_id_array_from_value(object_ids)
+	if not _gpu_ready:
+		return _object_id_finalize_result(false, "runtime_not_ready", ids, [])
+	if not bool(accepted_record_result.get("ok", false)) \
+			or not bool(accepted_record_result.get("accepted_placement_record_shader_consumed", false)):
+		return _object_id_finalize_result(false, "accepted_record_shader_success_required", ids, [])
+
+	var finalized_ids: Array[int] = []
+	for object_id in ids:
+		if not _is_reserved_object_id(object_id):
+			return _object_id_finalize_result(false, "object_id_not_reserved", ids, finalized_ids)
+		if not _is_alive_id(object_id):
+			return _object_id_finalize_result(false, "reserved_object_id_not_alive", ids, finalized_ids)
+		finalized_ids.append(object_id)
+
+	for object_id in finalized_ids:
+		_reserved_object_ids.erase(object_id)
+	return _object_id_finalize_result(true, "ok", ids, finalized_ids)
+
+
+# P0 #5: Batch-spawn accepted placements via GPU shader writeback ONLY.
+# GPU-only path — no CPU bulk write fallback.
+# The shader writes alive=1, object_type, profile, object_flags, bounds,
+# transforms, and dirty deltas — all in parallel on the GPU.
+# When the shader fails, return failure directly.
+func spawn_batch_from_accepted_placement_records(
+	spawn_records: Array[Dictionary],
+	options: Dictionary = {}
+) -> Dictionary:
+	if not _gpu_ready:
+		return {
+			"ok": false, "reason": "runtime_not_ready",
+			"spawned_count": 0, "failed_count": spawn_records.size(),
+			"object_ids": [],
+			"accepted_placement_record_shader_consumed": false,
+		}
+	if spawn_records.is_empty():
+		return {
+			"ok": true, "reason": "empty_batch",
+			"spawned_count": 0, "failed_count": 0,
+			"object_ids": [],
+			"accepted_placement_record_shader_consumed": false,
+		}
+
+	# Guard: ensure enough free IDs and dirty delta capacity.
+	if _free_ids.size() < spawn_records.size():
+		return {
+			"ok": false, "reason": "capacity_full",
+			"spawned_count": 0, "failed_count": spawn_records.size(),
+			"object_ids": [],
+			"accepted_placement_record_shader_consumed": false,
+		}
+	if _dirty_delta_count + spawn_records.size() > dirty_delta_capacity:
+		return {
+			"ok": false, "reason": "dirty_delta_capacity_full",
+			"spawned_count": 0, "failed_count": spawn_records.size(),
+			"object_ids": [],
+			"accepted_placement_record_shader_consumed": false,
+		}
+
+	# Step 1: Allocate object IDs for all records atomically.
+	var object_ids: Array[int] = []
+	for _i in range(spawn_records.size()):
+		var object_id := _allocate_id()
+		if object_id < 0:
+			# Rollback: release any IDs we already allocated.
+			for free_id in object_ids:
+				_free_ids.append(free_id)
+			return {
+				"ok": false, "reason": "capacity_full_mid_alloc",
+				"spawned_count": 0, "failed_count": spawn_records.size(),
+				"object_ids": [],
+				"accepted_placement_record_shader_consumed": false,
+			}
+		object_ids.append(object_id)
+
+	# Step 2: Build internal record format (same as _pack_bulk_spawn_records).
+	# Read generation from GPU resident buffer to preserve recycled-ID state.
+	var records: Array[Dictionary] = []
+	for i in range(spawn_records.size()):
+		var spawn_params: Dictionary = spawn_records[i]
+		var object_id := object_ids[i]
+		var voxel_min: Vector3i = spawn_params.get("voxel_min", Vector3i.ZERO)
+		var voxel_max: Vector3i = spawn_params.get("voxel_max", Vector3i.ONE)
+		var dirty_flags: Dictionary = spawn_params.get("dirty_flags", {})
+		var generation := _read_generation(object_id)
+		records.append({
+			"object_id": object_id,
+			"profile_id": int(spawn_params.get("profile_id", -1)),
+			"object_type": int(spawn_params.get("object_type", 0)),
+			"object_flags": _object_flags_from_value(spawn_params.get("object_flags", spawn_params.get("flags", 0))),
+			"generation": generation,
+			"voxel_min": voxel_min,
+			"voxel_max": voxel_max,
+			"previous_voxel_min": voxel_min,
+			"previous_voxel_max": voxel_max,
+			"transform": spawn_params.get("transform", Transform3D.IDENTITY),
+			"dirty_flags": _merge_dirty_flags(dirty_flags),
+			"dirty_flag_bits": _dirty_flags_to_bits(dirty_flags),
+			"asset_index": int(spawn_params.get("asset_index", -1)),
+			"result_index": int(spawn_params.get("result_index", i)),
+			"reserved": 0,
+		})
+
+	# Step 3: Pack records into the GPU-compatible byte buffer.
+	var accepted_placement_record_bytes := _pack_accepted_placement_spawn_records(records)
+
+	# Step 4: Dispatch the GPU shader for batched writeback.
+	var shader_options := options.duplicate(true)
+	shader_options["use_accepted_placement_record_shader"] = true
+	var shader_result := _try_apply_accepted_placement_record_shader(
+		records,
+		accepted_placement_record_bytes,
+		shader_options
+	)
+
+	# Step 5: GPU-only path — no CPU bulk write fallback.
+	# When the shader fails, return failure directly.
+	if not bool(shader_result.get("ok", false)):
+		# Rollback: release all allocated IDs on failure.
+		for free_id in object_ids:
+			_free_ids.append(free_id)
+		return {
+			"ok": false,
+			"reason": str(shader_result.get("reason", "shader_batch_spawn_failed")),
+			"spawned_count": 0, "failed_count": spawn_records.size(),
+			"object_ids": [],
+			"accepted_placement_record_shader_consumed": bool(shader_result.get("accepted_placement_record_shader_consumed", false)),
+			"accepted_placement_record_shader_stats": shader_result.get("accepted_placement_record_shader_stats", {}),
+			"resident_gpu_allocator_writeback_blocked_reason": str(shader_result.get("resident_gpu_allocator_writeback_blocked_reason", "none")),
+		}
+
+	return {
+		"ok": true, "reason": "ok",
+		"spawned_count": records.size(), "failed_count": 0,
+		"object_ids": object_ids,
+		"accepted_placement_record_shader_consumed": bool(shader_result.get("accepted_placement_record_shader_consumed", false)),
+		"accepted_placement_record_shader_stats": shader_result.get("accepted_placement_record_shader_stats", {}),
+		"accepted_placement_record_shader_name": str(shader_result.get("accepted_placement_record_shader_name", "none")),
+		"accepted_placement_record_shader_path": str(shader_result.get("accepted_placement_record_shader_path", "none")),
+		"accepted_placement_record_shader_dispatch_count": int(shader_result.get("accepted_placement_record_shader_dispatch_count", 0)),
+		"runtime_command_flush_mode": str(shader_result.get("runtime_command_flush_mode", "resident_accepted_placement_record_shader_writeback")),
+	}
 
 
 func setup_for_scene_voxel_committer(
@@ -552,9 +751,15 @@ func stage_command(command: Dictionary) -> Dictionary:
 	if command_name == "spawn":
 		if not _can_stage_dirty_delta_command():
 			return _stage_result(false, object_id, "dirty_delta_capacity_full", command_name)
-		object_id = _allocate_id()
-		if object_id < 0:
-			return _stage_result(false, -1, "capacity_full", command_name)
+		if object_id >= 0:
+			if not _is_reserved_object_id(object_id):
+				return _stage_result(false, object_id, "object_id_not_reserved", command_name)
+			if bool(_read_object_state(object_id).get("alive", false)):
+				return _stage_result(false, object_id, "reserved_object_id_already_alive", command_name)
+		else:
+			object_id = _allocate_id()
+			if object_id < 0:
+				return _stage_result(false, -1, "capacity_full", command_name)
 		staged["object_id"] = object_id
 		staged["_reserved_object_id"] = true
 	elif _command_appends_dirty_delta(command_name):
@@ -609,7 +814,7 @@ func flush_command_queue(options: Dictionary = {}) -> Dictionary:
 		else:
 			failed_count += 1
 			ok = false
-			if bool(staged.get("_reserved_object_id", false)):
+			if bool(staged.get("_reserved_object_id", false)) and not bool(staged.get("accepted_placement_object_id_reserved", false)):
 				_release_reserved_id(int(staged.get("object_id", -1)))
 	_command_flush_epoch += 1
 	return {
@@ -642,7 +847,7 @@ func flush_commands(options: Dictionary = {}) -> Dictionary:
 
 func clear_command_queue() -> void:
 	for staged in _command_queue:
-		if bool(staged.get("_reserved_object_id", false)):
+		if bool(staged.get("_reserved_object_id", false)) and not bool(staged.get("accepted_placement_object_id_reserved", false)):
 			_release_reserved_id(int(staged.get("object_id", -1)))
 	_command_queue.clear()
 
@@ -731,13 +936,13 @@ func _flush_bulk_spawn_command_queue(queued: Array, options: Dictionary = {}) ->
 		accepted_placement_record_bytes,
 		options
 	)
-	var use_shader_result := bool(shader_result.get("attempted", false))
-	var write_result := shader_result if use_shader_result else _write_bulk_spawn_records(records)
+	var attempted := bool(shader_result.get("attempted", false))
+	var write_result := shader_result if attempted else _write_bulk_spawn_records(records)
 	var ok := bool(write_result.get("ok", false))
 	var results: Array[Dictionary] = []
 	var applied_count := 0
 	var failed_count := 0
-	var flush_mode := str(write_result.get("runtime_command_flush_mode", "resident_accepted_placement_record_shader_writeback" if use_shader_result else "cpu_bulk_spawn_buffer_update"))
+	var flush_mode := str(write_result.get("runtime_command_flush_mode", "resident_accepted_placement_record_shader_writeback" if attempted else "cpu_bulk_spawn_buffer_update"))
 	for i in range(records.size()):
 		var record: Dictionary = records[i]
 		var staged: Dictionary = queued[i]
@@ -749,7 +954,7 @@ func _flush_bulk_spawn_command_queue(queued: Array, options: Dictionary = {}) ->
 			applied_count += 1
 		else:
 			failed_count += 1
-			if bool(staged.get("_reserved_object_id", false)):
+			if bool(staged.get("_reserved_object_id", false)) and not bool(staged.get("accepted_placement_object_id_reserved", false)):
 				_release_reserved_id(object_id)
 	if ok:
 		_dirty_delta_count = int(write_result.get("pending_dirty_delta_count", _dirty_delta_count))
@@ -771,7 +976,7 @@ func _flush_bulk_spawn_command_queue(queued: Array, options: Dictionary = {}) ->
 		"runtime_command_flush_mode": flush_mode,
 		"resident_gpu_allocator_writeback": false,
 		"resident_gpu_allocator_writeback_mode": str(write_result.get("resident_gpu_allocator_writeback_mode", "none")),
-		"accepted_placement_record_source": "cpu_bulk_spawn_command_staging_debug_buffer",
+		"accepted_placement_record_source": "resident_accepted_placement_record_shader" if attempted else "cpu_bulk_spawn_command_staging_debug_buffer",
 		"accepted_placement_record_schema_version": ACCEPTED_PLACEMENT_RECORD_SCHEMA_VERSION,
 		"accepted_placement_record_stride_bytes": ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
 		"accepted_placement_record_count": records.size(),
@@ -783,7 +988,7 @@ func _flush_bulk_spawn_command_queue(queued: Array, options: Dictionary = {}) ->
 		"accepted_placement_record_shader_dispatch_count": int(write_result.get("accepted_placement_record_shader_dispatch_count", 0)),
 		"accepted_placement_record_shader_local_size_x": ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X,
 		"accepted_placement_record_shader_stats": write_result.get("accepted_placement_record_shader_stats", {}),
-		"resident_gpu_allocator_writeback_blocked_reason": str(write_result.get("resident_gpu_allocator_writeback_blocked_reason", "none" if ok and use_shader_result else "no_resident_allocator_shader_dispatch")),
+		"resident_gpu_allocator_writeback_blocked_reason": str(write_result.get("resident_gpu_allocator_writeback_blocked_reason", "none" if ok and attempted else "no_resident_allocator_shader_dispatch")),
 	}
 
 
@@ -895,33 +1100,46 @@ func _try_apply_accepted_placement_record_shader(
 	end_compute_list()
 	submit_and_sync()
 
-	var stats := _read_accepted_placement_record_shader_stats(stats_buffer)
-	var stats_ok := int(stats.get("applied", 0)) == record_count \
-		and int(stats.get("invalid_object_id", 0)) == 0 \
-		and int(stats.get("dirty_overflow", 0)) == 0 \
-		and int(stats.get("already_alive", 0)) == 0 \
-		and int(stats.get("skipped", 0)) == 0 \
-		and int(stats.get("dispatched", 0)) == 1
-	var count_result := _read_dirty_delta_count_result()
-	gc_frame()
-	if not bool(count_result.get("ok", false)):
-		base_result["reason"] = str(count_result.get("reason", "dirty_count_readback_failed"))
-		base_result["failed_readback_source"] = str(count_result.get("failed_readback_source", "gpu_dirty_count_buffer"))
+	# P0 #9: Stats readback is debug-only. Production path uses fence+barrier without readback.
+	var readback_stats := bool(options.get("readback_stats", false))
+	if readback_stats:
+		var stats := _read_accepted_placement_record_shader_stats(stats_buffer)
+		var stats_ok := int(stats.get("applied", 0)) == record_count \
+			and int(stats.get("invalid_object_id", 0)) == 0 \
+			and int(stats.get("dirty_overflow", 0)) == 0 \
+			and int(stats.get("already_alive", 0)) == 0 \
+			and int(stats.get("skipped", 0)) == 0 \
+			and int(stats.get("dispatched", 0)) == 1
+		var count_result := _read_dirty_delta_count_result()
 		base_result["accepted_placement_record_shader_stats"] = stats
-		base_result["resident_gpu_allocator_writeback_blocked_reason"] = "dirty_count_readback_failed"
-		return base_result
-	_dirty_delta_count = int(count_result.get("count", _dirty_delta_count))
-	base_result["pending_dirty_delta_count"] = _dirty_delta_count
-	base_result["accepted_placement_record_shader_stats"] = stats
-	base_result["accepted_placement_record_shader_dispatch_count"] = group_count
-	if not stats_ok:
-		base_result["reason"] = "accepted_placement_record_shader_stats_failed"
-		base_result["resident_gpu_allocator_writeback_blocked_reason"] = "accepted_placement_record_shader_stats_failed"
-		return base_result
-	if _dirty_delta_count != dirty_base + record_count:
-		base_result["reason"] = "accepted_placement_record_dirty_count_mismatch"
-		base_result["resident_gpu_allocator_writeback_blocked_reason"] = "accepted_placement_record_dirty_count_mismatch"
-		return base_result
+		base_result["accepted_placement_record_shader_dispatch_count"] = group_count
+		gc_frame()
+		if not bool(count_result.get("ok", false)):
+			base_result["reason"] = str(count_result.get("reason", "dirty_count_readback_failed"))
+			base_result["failed_readback_source"] = str(count_result.get("failed_readback_source", "gpu_dirty_count_buffer"))
+			base_result["resident_gpu_allocator_writeback_blocked_reason"] = "dirty_count_readback_failed"
+			return base_result
+		_dirty_delta_count = int(count_result.get("count", _dirty_delta_count))
+		base_result["pending_dirty_delta_count"] = _dirty_delta_count
+		if not stats_ok:
+			base_result["reason"] = "accepted_placement_record_shader_stats_failed"
+			base_result["resident_gpu_allocator_writeback_blocked_reason"] = "accepted_placement_record_shader_stats_failed"
+			return base_result
+		if _dirty_delta_count != dirty_base + record_count:
+			base_result["reason"] = "accepted_placement_record_dirty_count_mismatch"
+			base_result["resident_gpu_allocator_writeback_blocked_reason"] = "accepted_placement_record_dirty_count_mismatch"
+			return base_result
+	else:
+		# Production path: no readback, trust GPU execution after submit+sync barrier.
+		gc_frame()
+		_dirty_delta_count = dirty_base + record_count
+		base_result["pending_dirty_delta_count"] = _dirty_delta_count
+		base_result["accepted_placement_record_shader_dispatch_count"] = group_count
+		base_result["accepted_placement_record_shader_stats"] = {
+			"ok": true,
+			"reason": "deferred_no_readback",
+			"readback_source": "none",
+		}
 
 	base_result["ok"] = true
 	base_result["reason"] = "ok"
@@ -1143,6 +1361,9 @@ func _pack_accepted_placement_record_shader_push(
 	return bytes
 
 
+
+# Debug-only: reads GPU stats buffer via buffer_get_data after accepted placement shader dispatch.
+# Production path (readback_stats=false) skips this readback entirely.
 func _read_accepted_placement_record_shader_stats(stats_buffer: RID) -> Dictionary:
 	var bytes := _read_buffer_bytes(stats_buffer, 0, ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT * 4)
 	if bytes.size() < ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT * 4:
@@ -1240,6 +1461,75 @@ func _release_reserved_id(object_id: int) -> void:
 		_free_ids.append(object_id)
 
 
+func _release_reserved_object_id_for_rollback(object_id: int) -> bool:
+	if not _is_reserved_object_id(object_id):
+		return false
+	if _is_alive_id(object_id):
+		return false
+	if _free_ids.find(object_id) >= 0:
+		return false
+	_reserved_object_ids.erase(object_id)
+	_free_ids.append(object_id)
+	return true
+
+
+func _is_reserved_object_id(object_id: int) -> bool:
+	return _is_valid_id(object_id) and bool(_reserved_object_ids.get(object_id, false))
+
+
+func _object_id_array_from_value(value) -> Array[int]:
+	var ids: Array[int] = []
+	if value is Dictionary:
+		var dict := value as Dictionary
+		return _object_id_array_from_value(dict.get("object_ids", dict.get("reserved_object_ids", [])))
+	if value is PackedInt32Array:
+		for raw_id in value:
+			ids.append(int(raw_id))
+		return ids
+	if value is Array:
+		for raw_id in value:
+			ids.append(int(raw_id))
+		return ids
+	if value is int or value is float:
+		ids.append(int(value))
+	return ids
+
+
+func _object_id_reservation_result(ok: bool, reason: String, object_ids: Array[int], requested_count: int) -> Dictionary:
+	return {
+		"ok": ok,
+		"reason": reason,
+		"object_ids": object_ids,
+		"reserved_object_ids": object_ids,
+		"reserved_count": object_ids.size() if ok else 0,
+		"requested_count": requested_count,
+		"reserved_object_id_count": _reserved_object_ids.size(),
+		"runtime_ready": _gpu_ready,
+		"gpu_first": true,
+		"cpu_fallback": false,
+		"readback_source": "gpu_storage_buffers" if ok and _gpu_ready else "none",
+		"reservation_state": "reserved_not_alive" if ok else "none",
+		"accepted_placement_record_shader_consumed": false,
+		"commit_status": "accepted_record_shader_success_required",
+	}
+
+
+func _object_id_finalize_result(ok: bool, reason: String, object_ids: Array[int], finalized_ids: Array[int]) -> Dictionary:
+	return {
+		"ok": ok,
+		"reason": reason,
+		"object_ids": object_ids,
+		"finalized_object_ids": finalized_ids,
+		"finalized_count": finalized_ids.size(),
+		"reserved_object_id_count": _reserved_object_ids.size(),
+		"runtime_ready": _gpu_ready,
+		"gpu_first": true,
+		"cpu_fallback": false,
+		"readback_source": "gpu_storage_buffers" if ok else "none",
+		"commit_status": "committed" if ok else "accepted_record_shader_success_required",
+	}
+
+
 func _enqueue_result(ok: bool, object_id: int, reason: String) -> Dictionary:
 	return {
 		"ok": ok,
@@ -1254,6 +1544,10 @@ func _enqueue_result(ok: bool, object_id: int, reason: String) -> Dictionary:
 	}
 
 
+
+# Debug-only: reads dirty delta count + raw dirty delta bytes from GPU via buffer_get_data.
+# Production path uses resident GPU-to-GPU handoff (flush_to_scene_voxel_committer).
+# Only used by flush_dirty_deltas() (legacy snapshot) and debug/test paths.
 func _flush_dirty_deltas_result() -> Dictionary:
 	if not _gpu_ready:
 		return _dirty_delta_flush_failure_result("runtime_not_ready", 0, "none")
@@ -1322,6 +1616,9 @@ func flush_dirty_deltas() -> Array[Dictionary]:
 	return deltas
 
 
+# P0 Task #2: Resident GPU dirty delta → SceneVoxelTile update pass.
+# 此方法现在是默认路径：dirty delta 从 GPU→GPU 常驻，CPU 不再逐 delta 更新字典。
+# 仅在 resident path 阻塞（无 RD、buffer 未上传等）时回退到 CPU bridge。
 func _try_flush_resident_dirty_delta_buffer_to_scene_voxel_committer(committer, options: Dictionary) -> Dictionary:
 	var result := {
 		"ok": false,
@@ -1342,8 +1639,8 @@ func _try_flush_resident_dirty_delta_buffer_to_scene_voxel_committer(committer, 
 		"resident_gpu_dirty_delta_update_pass_dispatch_count": 0,
 		"object_ref_update_result": {},
 	}
-	if not bool(options.get("use_resident_gpu_dirty_delta_update_pass", false)):
-		return result
+	# P0: 默认启用 resident GPU update pass，不再需要 opt-in flag。
+	# 若调用方需要强制 CPU fallback，应直接调用 committer.apply_gpu_autoobject_dirty_deltas()。
 	if committer == null or not committer.has_method("try_apply_gpu_autoobject_object_ref_update_pass_from_buffer"):
 		result["reason"] = "missing_resident_dirty_delta_buffer_api"
 		return result
@@ -1466,8 +1763,11 @@ func flush_to_scene_voxel_committer(committer, options: Dictionary = {}) -> Dict
 			"resident_gpu_dirty_delta_update_pass_dispatch_count": 0,
 		}
 
+	# P0 #4: Resident GPU dirty delta pass ONLY — no CPU bridge fallback.
+	# When resident GPU path fails/blocked, return failure directly.
+	# Callers that need CPU fallback should call committer.apply_gpu_autoobject_dirty_deltas() directly.
 	var resident_result := _try_flush_resident_dirty_delta_buffer_to_scene_voxel_committer(committer, options)
-	if bool(options.get("use_resident_gpu_dirty_delta_update_pass", false)) and bool(resident_result.get("resident_gpu_dirty_delta_update_pass", false)):
+	if bool(resident_result.get("resident_gpu_dirty_delta_update_pass", false)):
 		var resident_dirty_tiles := {}
 		if committer.has_method("get_dirty_scene_voxel_tiles"):
 			resident_dirty_tiles = committer.call("get_dirty_scene_voxel_tiles")
@@ -1475,118 +1775,35 @@ func flush_to_scene_voxel_committer(committer, options: Dictionary = {}) -> Dict
 		resident_result["dirty_scene_voxel_tile_count"] = resident_dirty_tiles.size()
 		return resident_result
 
-	var flush_result := _flush_dirty_deltas_result()
-	if not bool(flush_result.get("ok", false)):
-		return {
-			"ok": false,
-			"reason": str(flush_result.get("reason", "dirty_delta_readback_failed")),
-			"dirty_deltas": [],
-			"dirty_delta_count": 0,
-			"results": results,
-			"commit_result_count": 0,
-			"failed_commit_result_count": 0,
-			"pending_dirty_delta_count": int(flush_result.get("pending_dirty_delta_count", get_pending_dirty_delta_count())),
-			"runtime_ready": _gpu_ready,
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"readback_source": "none",
-			"failed_readback_source": str(flush_result.get("failed_readback_source", flush_result.get("readback_source", "gpu_dirty_delta_buffer"))),
-			"dirty_delta_bridge_mode": "none",
-			"dirty_delta_apply_api": "none",
-			"resident_gpu_dirty_delta_update_pass": false,
-			"resident_gpu_dirty_delta_update_pass_owner": "none",
-			"resident_gpu_dirty_delta_update_pass_shader": "none",
-			"resident_gpu_dirty_delta_update_pass_dispatch_count": 0,
-		}
-	var deltas: Array = flush_result.get("dirty_deltas", [])
-	var ok := true
-	var reason := "ok"
-	var failed_count := 0
-	var bridge_mode := "cpu_per_delta_scene_voxel_tile_ref_dirty_bridge"
-	var apply_api := "apply_gpu_autoobject_dirty_delta"
-	var object_ref_range_diagnostics := {}
-	if has_batch_api:
-		var batch_result: Dictionary = committer.apply_gpu_autoobject_dirty_deltas(deltas)
-		var raw_results: Array = batch_result.get("results", [])
-		for raw_result in raw_results:
-			if raw_result is Dictionary:
-				results.append(raw_result as Dictionary)
-		ok = bool(batch_result.get("ok", false))
-		reason = str(batch_result.get("reason", "dirty_delta_apply_failed"))
-		failed_count = int(batch_result.get("failed_commit_result_count", 0))
-		bridge_mode = str(batch_result.get("dirty_delta_bridge_mode", "cpu_batch_scene_voxel_tile_ref_dirty_bridge"))
-		apply_api = str(batch_result.get("dirty_delta_apply_api", "apply_gpu_autoobject_dirty_deltas"))
-		for key in [
-			"object_ref_range_policy",
-			"object_ref_range_owner",
-			"object_ref_range_shader",
-			"object_ref_range_shader_path",
-			"object_ref_range_shader_ready",
-			"object_ref_range_stride_bytes",
-			"refs_per_tile",
-			"object_ref_capacity",
-			"object_ref_tile_count",
-			"object_ref_tile_size",
-			"object_ref_tile_grid_size",
-			"object_ref_rebuild_required",
-			"object_ref_update_stats_available",
-			"object_ref_update_source",
-			"object_ref_update_reason",
-			"object_ref_update_gpu_dispatched",
-			"object_ref_update_dispatch_count",
-			"object_ref_overflow_count",
-			"overflow_tile_count",
-			"object_ref_non_numeric_count",
-			"object_ref_duplicate_count",
-			"object_ref_touched_count",
-			"object_ref_removed_slot_count",
-			"object_ref_inserted_slot_count",
-			"object_ref_invalid_bounds_count",
-			"object_ref_skipped_count",
-			"gpu_autoobject_ref_key_schema",
-			"gpu_autoobject_ref_key_schema_note",
-		]:
-			if batch_result.has(key):
-				object_ref_range_diagnostics[key] = batch_result[key]
-	else:
-		for delta in deltas:
-			var commit_result: Dictionary = committer.apply_gpu_autoobject_dirty_delta(delta)
-			results.append(commit_result)
-			if commit_result.is_empty() or not bool(commit_result.get("ok", false)):
-				ok = false
-				failed_count += 1
-				if reason == "ok":
-					reason = str(commit_result.get("reason", "dirty_delta_apply_failed"))
+	# Resident GPU pass blocked/failed — no CPU readback or bridge.
+	var blocked_reason := str(resident_result.get("reason", "resident_dirty_delta_update_pass_blocked"))
 	var dirty_tiles := {}
 	if committer.has_method("get_dirty_scene_voxel_tiles"):
 		dirty_tiles = committer.call("get_dirty_scene_voxel_tiles")
-	var result := {
-		"ok": ok,
-		"reason": reason,
-		"dirty_deltas": deltas,
-		"dirty_delta_count": deltas.size(),
-		"results": results,
-		"commit_result_count": results.size(),
-		"failed_commit_result_count": failed_count,
+	return {
+		"ok": false,
+		"reason": blocked_reason,
+		"dirty_deltas": [],
+		"dirty_delta_count": 0,
+		"results": [],
+		"commit_result_count": 0,
+		"failed_commit_result_count": 0,
+		"pending_dirty_delta_count": int(resident_result.get("pending_dirty_delta_count", get_pending_dirty_delta_count())),
 		"dirty_scene_voxel_tiles": dirty_tiles,
 		"dirty_scene_voxel_tile_count": dirty_tiles.size(),
 		"runtime_ready": _gpu_ready,
 		"gpu_first": true,
 		"cpu_fallback": false,
-		"readback_source": "gpu_dirty_delta_buffer" if ok and _gpu_ready else "none",
-		"failed_readback_source": "none" if ok else "gpu_dirty_delta_buffer",
-		"dirty_delta_bridge_mode": bridge_mode,
-		"dirty_delta_apply_api": apply_api,
+		"readback_source": "none",
+		"failed_readback_source": "none",
+		"dirty_delta_bridge_mode": "none",
+		"dirty_delta_apply_api": "none",
 		"resident_gpu_dirty_delta_update_pass": false,
 		"resident_gpu_dirty_delta_update_pass_owner": "none",
 		"resident_gpu_dirty_delta_update_pass_shader": "none",
 		"resident_gpu_dirty_delta_update_pass_dispatch_count": 0,
+		"resident_gpu_dirty_delta_update_pass_blocked_reason": blocked_reason,
 	}
-	if bool(options.get("use_resident_gpu_dirty_delta_update_pass", false)) and bool(resident_result.get("blocked", false)):
-		result["resident_gpu_dirty_delta_update_pass_opt_in"] = true
-		result["resident_gpu_dirty_delta_update_pass_blocked_reason"] = str(resident_result.get("reason", "not_dispatched"))
-	result.merge(object_ref_range_diagnostics, true)
-	return result
 
 
 func get_object_ids_for_profile(profile_ids) -> Dictionary:
@@ -1755,7 +1972,8 @@ func get_selected_debug_summary(object_ids: Array = []) -> Dictionary:
 	return {
 		"max_objects": max_objects,
 		"live_count": get_live_count(),
-		"free_count": maxi(max_objects - get_live_count(), 0) if _gpu_ready else 0,
+		"free_count": _free_ids.size() if _gpu_ready else 0,
+		"reserved_object_id_count": _reserved_object_ids.size() if _gpu_ready else 0,
 		"pending_command_count": get_pending_command_count(),
 		"pending_delta_count": get_pending_dirty_delta_count(),
 		"dirty_delta_capacity": dirty_delta_capacity,
@@ -1771,6 +1989,7 @@ func get_selected_debug_summary(object_ids: Array = []) -> Dictionary:
 		"accepted_placement_record_stride_bytes": ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
 		"resident_gpu_allocator_writeback": false,
 		"resident_gpu_allocator_writeback_mode": "none",
+		"accepted_placement_object_id_reservation": true,
 		"reason": _not_ready_reason,
 		"objects": summaries,
 	}
@@ -1829,6 +2048,8 @@ func get_gpu_buffer_summary() -> Dictionary:
 		"cpu_fallback": false,
 		"max_objects": max_objects,
 		"live_count": get_live_count(),
+		"free_count": _free_ids.size() if _gpu_ready else 0,
+		"reserved_object_id_count": _reserved_object_ids.size() if _gpu_ready else 0,
 		"dirty_delta_capacity": dirty_delta_capacity,
 		"pending_command_count": get_pending_command_count(),
 		"command_staging": true,
@@ -1846,6 +2067,7 @@ func get_gpu_buffer_summary() -> Dictionary:
 		"accepted_placement_record_stride_bytes": ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
 		"resident_gpu_allocator_writeback": false,
 		"resident_gpu_allocator_writeback_mode": "none",
+		"accepted_placement_object_id_reservation": true,
 		"buffers": buffers,
 	}
 
@@ -2234,6 +2456,9 @@ func _read_dirty_deltas(count: int) -> Array[Dictionary]:
 	return []
 
 
+
+# Debug-only: reads raw dirty delta bytes from GPU via buffer_get_data and decodes them.
+# Only called from _flush_dirty_deltas_result / flush_dirty_deltas (legacy debug paths).
 func _read_dirty_deltas_result(count: int) -> Dictionary:
 	var deltas: Array[Dictionary] = []
 	var safe_count := clampi(count, 0, dirty_delta_capacity)
@@ -2390,6 +2615,8 @@ func _write_buffer(buffer: RID, offset: int, bytes: PackedByteArray, sync_after:
 	return true
 
 
+# Low-level GPU readback via rd.buffer_get_data. Debug/test-only in production runtime paths.
+# All production paths use resident GPU-to-GPU handoff instead of readback.
 func _read_buffer_bytes(buffer: RID, offset: int, byte_count: int) -> PackedByteArray:
 	if _rd == null or not buffer.is_valid() or byte_count <= 0:
 		return PackedByteArray()

@@ -112,7 +112,7 @@ static func apply_to_record(record: Dictionary, shared_fields: Dictionary) -> Di
 			result[key] = duplicate_dictionary_array(shared_entry)
 		else:
 			result[key] = shared_entry
-	if result.has(COLOR_KEY) or result.has(COMPLEXITY_KEY):
+	if result.has(COLOR_KEY) or result.has(COMPLEXITY_KEY) or result.has(COLLISION_KEY):
 		var normalized := normalize_shared_fields(result)
 		result[COLOR_KEY] = normalized[COLOR_KEY]
 		result[COMPLEXITY_KEY] = normalized[COMPLEXITY_KEY]

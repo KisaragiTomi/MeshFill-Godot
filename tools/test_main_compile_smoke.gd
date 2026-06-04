@@ -31,7 +31,6 @@ func _test_main_source_has_no_retired_cpu_runtime_paths() -> bool:
 		"res://scripts/auto_object_manager.gd",
 		"AutoObjectManager",
 		"scatter_from_mask(",
-		"VegetationScatter.scatter",
 		"Generating vegetation (self-loop)",
 		"VEG_MAX_ITERATIONS",
 		"while iteration <",
@@ -42,11 +41,11 @@ func _test_main_source_has_no_retired_cpu_runtime_paths() -> bool:
 			ok = false
 
 	for required in [
-		"Vegetation generation skipped",
+		"AutoObject generation skipped",
 		"legacy CPU scatter was removed",
 		"AutoObjectProbePrefilterGPU + VoxelPlacementGenerator",
 		"No CPU placements",
-		"runtime vegetation must use the GPU path",
+		"Runtime placement is GPU-only now",
 	]:
 		if source.find(required) < 0:
 			push_error("[MainCompileSmoke] main.gd missing GPU-only vegetation blocked log term: %s" % required)

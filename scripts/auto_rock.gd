@@ -10,11 +10,11 @@ extends AutoObject
 @export var mesh_index: int = -1                             # placement result 的资产索引
 
 
-func configure_rock(config: Dictionary) -> void:
+func configure_object(config: Dictionary) -> void:
 	var cfg := config.duplicate(true)
-	cfg["object_type"] = "rock"
+	cfg["object_type"] = "object"
 	if not cfg.has("group"):
-		cfg["group"] = "placed_rocks"
+		cfg["group"] = "placed_objects"
 
 	if cfg.has("asset_id"):
 		asset_id = str(cfg.asset_id)
@@ -43,10 +43,10 @@ func configure_rock(config: Dictionary) -> void:
 		mesh_index = int(cfg.mesh_index)
 
 
-func configure_from_rock_asset(asset: AutoRock, config: Dictionary = {}) -> void:
+func configure_from_asset(asset: AutoRock, config: Dictionary = {}) -> void:
 	if asset == null:
 		return
-	configure_rock(asset.make_instance_config(config))
+	configure_object(asset.make_instance_config(config))
 
 
 func get_collision(default_radius: float = 0.0) -> Array[Dictionary]:
@@ -57,7 +57,7 @@ func get_collision(default_radius: float = 0.0) -> Array[Dictionary]:
 
 
 func get_record_object_type() -> String:
-	return "rock"
+	return "object"
 
 
 func get_record_radius() -> float:
@@ -71,7 +71,7 @@ func get_voxel_write_spec_extra_fields(extra_fields: Dictionary = {}) -> Diction
 	return fields
 
 
-func is_valid_rock_asset() -> bool:
+func is_valid_asset() -> bool:
 	return mesh != null and mesh_height_texture != null and mesh_size > 0.0
 
 
@@ -96,12 +96,12 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 
 func _clear_subclass_state_mirror_metadata() -> void:
 	for key in [
-		"rock_mesh_index",
-		"rock_asset_id",
-		"rock_mesh_size",
-		"rock_random_rotate",
-		"rock_random_scale",
-		"rock_random_height_offset",
+		"object_mesh_index",
+		"object_asset_id",
+		"object_mesh_size",
+		"object_random_rotate",
+		"object_random_scale",
+		"object_random_height_offset",
 	]:
 		if has_meta(key):
 			remove_meta(key)

@@ -15,6 +15,11 @@
 //     Optional diagnostics. Bind at least a 1-u32 dummy buffer and set
 //     capacities.w = 0 to disable writes. If enabled, zero before dispatch when
 //     non-cumulative stats are desired.
+//   binding 3: uint dirty_tile_flags[]
+//     Transient per-tile dirty flag bits emitted from the same dirty-delta
+//     traversal. Zero before dispatch. Length is options.y u32s.
+//   binding 4: uint dirty_tile_worklist[]
+//     Transient unique tile_index worklist. Length is options.z u32s.
 //
 // Push constants:
 //   grid_size.xyz    = voxel grid dimensions
@@ -29,6 +34,10 @@
 //   capacities.w     = stats_capacity in u32 counters
 //   options.x bit 0  = parallel-by-delta mode. When unset, invocation 0 applies
 //                      deltas in input order for conservative same-object safety.
+//   options.y        = dirty_tile_flags capacity in u32s
+//   options.z        = dirty_tile_worklist capacity in u32s
+//   options.w        = dirty flag schema: 0 = SceneVoxelTile bits,
+//                      1 = GPUAutoObjectRuntime bits
 //
 // Stats layout:
 //   0 overflow        insertion found no empty slot, or slot range exceeded capacity
@@ -39,6 +48,8 @@
 //   5 inserted_slots  ref slots filled
 //   6 invalid_bounds  invalid grid/tile/object-ref parameters
 //   7 skipped         deltas skipped by conservative guards
+//   8 dirty_tiles     unique transient dirty tiles appended to worklist
+//   9 dirty_overflow  transient dirty worklist append exceeded capacity
 //
 // Tile flattening follows the SceneVoxelTile GPU AutoObject convention:
 //   tile_index = x + tile_grid_x * (z + tile_grid_z * y)
@@ -55,6 +66,14 @@ layout(set = 0, binding = 1, std430) restrict buffer ObjectRefs {
 
 layout(set = 0, binding = 2, std430) restrict buffer Stats {
     uint stats[];
+};
+
+layout(set = 0, binding = 3, std430) restrict buffer DirtyTileFlags {
+    uint dirty_tile_flags[];
+};
+
+layout(set = 0, binding = 4, std430) restrict buffer DirtyTileWorklist {
+    uint dirty_tile_worklist[];
 };
 
 layout(push_constant, std430) uniform Params {
@@ -79,6 +98,7 @@ const uint DELTA_ALIVE_AFTER = 11u;
 const uint DELTA_NEW_MIN_X = 12u;
 const uint DELTA_NEW_MIN_Y = 13u;
 const uint DELTA_NEW_MIN_Z = 14u;
+const uint DELTA_DIRTY_FLAGS = 15u;
 const uint DELTA_NEW_MAX_X = 16u;
 const uint DELTA_NEW_MAX_Y = 17u;
 const uint DELTA_NEW_MAX_Z = 18u;
@@ -91,20 +111,49 @@ const uint STAT_REMOVED_SLOTS = 4u;
 const uint STAT_INSERTED_SLOTS = 5u;
 const uint STAT_INVALID_BOUNDS = 6u;
 const uint STAT_SKIPPED = 7u;
+const uint STAT_DIRTY_TILES = 8u;
+const uint STAT_DIRTY_WORKLIST_OVERFLOW = 9u;
 
 const int MODE_PARALLEL_BY_DELTA = 1;
 
-void stat_add(uint stat_index, uint amount) {
+const int DIRTY_FLAG_SCHEMA_SCENE_VOXEL_TILE = 0;
+const int DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME = 1;
+
+const uint SV_FLAG_SCENE = 1u;
+const uint SV_FLAG_COLLISION = 2u;
+const uint SV_FLAG_AUTO = 4u;
+const uint SV_FLAG_BRUSH = 8u;
+const uint SV_FLAG_TARGET = 16u;
+const uint SV_FLAG_ROUTING = 32u;
+const uint SV_FLAG_SCORING = 64u;
+const uint SV_FLAG_FEEDBACK = 128u;
+const uint SV_FLAG_OBJECT_REFS = 256u;
+const uint SV_FLAG_MASK = 512u;
+
+const uint RUNTIME_FLAG_AUTO = 1u;
+const uint RUNTIME_FLAG_OBJECT_REFS = 2u;
+const uint RUNTIME_FLAG_SCENE = 4u;
+const uint RUNTIME_FLAG_COLLISION = 8u;
+const uint RUNTIME_FLAG_TARGET = 16u;
+const uint RUNTIME_FLAG_ROUTING = 32u;
+const uint RUNTIME_FLAG_SCORING = 64u;
+const uint RUNTIME_FLAG_FEEDBACK = 128u;
+
+uint stat_add_return_previous(uint stat_index, uint amount) {
     if (amount == 0u) {
-        return;
+        return 0u;
     }
 
     int stats_capacity = max(capacities.w, 0);
     if (stat_index >= uint(stats_capacity)) {
-        return;
+        return 0u;
     }
 
-    atomicAdd(stats[stat_index], amount);
+    return atomicAdd(stats[stat_index], amount);
+}
+
+void stat_add(uint stat_index, uint amount) {
+    stat_add_return_previous(stat_index, amount);
 }
 
 int dirty_delta_count() {
@@ -133,6 +182,52 @@ bool params_are_valid() {
         && tile_count() > 0
         && capacities.y > 0
     );
+}
+
+uint scene_voxel_tile_dirty_flags_from_delta(uint raw_bits) {
+    uint flags = 0u;
+
+    if (options.w == DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME) {
+        if ((raw_bits & RUNTIME_FLAG_SCENE) != 0u) {
+            flags |= SV_FLAG_SCENE;
+        }
+        if ((raw_bits & RUNTIME_FLAG_COLLISION) != 0u) {
+            flags |= SV_FLAG_COLLISION;
+        }
+        if ((raw_bits & RUNTIME_FLAG_AUTO) != 0u) {
+            flags |= SV_FLAG_AUTO;
+        }
+        if ((raw_bits & RUNTIME_FLAG_OBJECT_REFS) != 0u) {
+            flags |= SV_FLAG_OBJECT_REFS;
+        }
+        if ((raw_bits & RUNTIME_FLAG_TARGET) != 0u) {
+            flags |= SV_FLAG_TARGET;
+        }
+        if ((raw_bits & RUNTIME_FLAG_ROUTING) != 0u) {
+            flags |= SV_FLAG_ROUTING;
+        }
+        if ((raw_bits & RUNTIME_FLAG_SCORING) != 0u) {
+            flags |= SV_FLAG_SCORING;
+        }
+        if ((raw_bits & RUNTIME_FLAG_FEEDBACK) != 0u) {
+            flags |= SV_FLAG_FEEDBACK;
+        }
+    } else {
+        flags = raw_bits & (
+            SV_FLAG_SCENE
+            | SV_FLAG_COLLISION
+            | SV_FLAG_AUTO
+            | SV_FLAG_BRUSH
+            | SV_FLAG_TARGET
+            | SV_FLAG_ROUTING
+            | SV_FLAG_SCORING
+            | SV_FLAG_FEEDBACK
+            | SV_FLAG_OBJECT_REFS
+            | SV_FLAG_MASK
+        );
+    }
+
+    return flags | SV_FLAG_AUTO | SV_FLAG_OBJECT_REFS;
 }
 
 ivec3 normalize_min(ivec3 voxel_min, ivec3 voxel_max) {
@@ -247,7 +342,33 @@ void insert_ref_into_tile(int tile_index, uint ref_key) {
     stat_add(STAT_OVERFLOW, 1u);
 }
 
-void visit_tiles_for_bounds(ivec3 voxel_min, ivec3 voxel_max, uint ref_key, bool remove_ref) {
+void mark_transient_dirty_tile(int tile_index, uint dirty_flags) {
+    int safe_tile_count = tile_count();
+    int flag_capacity = min(max(options.y, 0), safe_tile_count);
+    if (tile_index < 0 || tile_index >= flag_capacity) {
+        stat_add(STAT_INVALID_BOUNDS, 1u);
+        return;
+    }
+
+    uint previous_flags = atomicOr(dirty_tile_flags[tile_index], dirty_flags);
+    if (previous_flags != 0u) {
+        return;
+    }
+
+    if (uint(max(capacities.w, 0)) <= STAT_DIRTY_TILES) {
+        return;
+    }
+
+    uint worklist_slot = atomicAdd(stats[STAT_DIRTY_TILES], 1u);
+    uint worklist_capacity = uint(max(options.z, 0));
+    if (worklist_slot < worklist_capacity) {
+        dirty_tile_worklist[worklist_slot] = uint(tile_index);
+    } else {
+        stat_add(STAT_DIRTY_WORKLIST_OVERFLOW, 1u);
+    }
+}
+
+void visit_tiles_for_bounds(ivec3 voxel_min, ivec3 voxel_max, uint ref_key, uint dirty_flags, bool remove_ref) {
     ivec3 tile_min;
     ivec3 tile_max;
     if (!tile_range_from_bounds(voxel_min, voxel_max, tile_min, tile_max)) {
@@ -264,6 +385,8 @@ void visit_tiles_for_bounds(ivec3 voxel_min, ivec3 voxel_max, uint ref_key, bool
                     stat_add(STAT_INVALID_BOUNDS, 1u);
                     continue;
                 }
+
+                mark_transient_dirty_tile(tile_index, dirty_flags);
 
                 if (remove_ref) {
                     remove_ref_from_tile(tile_index, ref_key);
@@ -315,10 +438,11 @@ void process_delta(uint delta_index) {
 
     bool removed = dirty_delta_words[base + DELTA_REMOVED] != 0;
     bool alive_after = dirty_delta_words[base + DELTA_ALIVE_AFTER] != 0;
+    uint dirty_flags = scene_voxel_tile_dirty_flags_from_delta(uint(max(dirty_delta_words[base + DELTA_DIRTY_FLAGS], 0)));
 
-    visit_tiles_for_bounds(old_min, old_max, ref_key, true);
+    visit_tiles_for_bounds(old_min, old_max, ref_key, dirty_flags, true);
     if (!removed && alive_after) {
-        visit_tiles_for_bounds(new_min, new_max, ref_key, false);
+        visit_tiles_for_bounds(new_min, new_max, ref_key, dirty_flags, false);
     }
 }
 

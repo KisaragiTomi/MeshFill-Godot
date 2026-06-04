@@ -4,6 +4,7 @@ const VPG := preload("res://scripts/voxel_placement_generator.gd")
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
 const Runtime := preload("res://scripts/gpu_autoobject_runtime.gd")
 const ProfileContainer := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
+const SPA := preload("res://scripts/scene_placement_actor.gd")
 
 
 func _has_rendering_device() -> bool:
@@ -19,9 +20,11 @@ func _has_rendering_device() -> bool:
 func _init() -> void:
 	var ok := true
 	ok = ok and _test_multi_asset_pipeline()
+	ok = ok and _test_run_multi_asset_compact_state_chain_or_skip()
 	ok = ok and _test_gpu_runtime_profile_contract_or_skip()
 	ok = ok and _test_score_dispatch_consumes_gpu_runtime_profile_buffers_or_skip()
 	ok = ok and _test_same_profile_min_spacing_excludes_runtime_neighbor_or_skip()
+	ok = ok and _test_same_profile_min_spacing_uses_scene_voxel_tile_object_refs_or_skip()
 	ok = ok and _test_vpg_pipeline_rids_ready_or_skip()
 	ok = ok and _test_post_dispatch_contract_failure_blocks_multi_asset_or_skip()
 	ok = ok and _test_accepted_placement_writeback_to_gpu_runtime_or_blocked()
@@ -29,6 +32,7 @@ func _init() -> void:
 	ok = ok and _test_accepted_placement_writeback_failure_reason_or_skip()
 	ok = ok and _test_run_multi_asset_writes_instance_stamp_specs_to_committer_or_skip()
 	ok = ok and _test_run_multi_asset_stages_source_candidates_to_resident_buffers_or_skip()
+	ok = ok and _test_run_multi_asset_preserves_target_read_buffer_diagnostics_or_skip()
 	ok = ok and _test_gpu_runtime_profile_contract_has_no_cpu_fallback()
 	ok = ok and _test_gpu_compute_blocked_has_no_empty_success()
 	ok = ok and _test_instantiate_placements()
@@ -124,6 +128,142 @@ func _test_multi_asset_pipeline() -> bool:
 
 	print("  OK: asset0=%d asset1=%d total=%d world0=%d world1=%d" % [
 		a0_count, a1_count, total, a0_world.size(), a1_world.size()])
+	return true
+
+
+func _test_run_multi_asset_compact_state_chain_or_skip() -> bool:
+	print("[VoxelMultiAsset] test_run_multi_asset_compact_state_chain_or_skip...")
+	if not _has_rendering_device():
+		print("  SKIP: no RenderingDevice available for compact state-chain placement")
+		return true
+
+	var grid_size := Vector3i(16, 8, 16)
+	var voxel_count := grid_size.x * grid_size.y * grid_size.z
+	var voxel_size := Vector3(0.5, 0.5, 0.5)
+	var scene := PackedFloat32Array()
+	var collision := PackedFloat32Array()
+	scene.resize(voxel_count)
+	collision.resize(voxel_count)
+
+	var fill_generator := VPG.new()
+	for z in range(grid_size.z):
+		for x in range(grid_size.x):
+			scene[fill_generator.voxel_index(Vector3i(x, 0, z), grid_size)] = 1.0
+	fill_generator.dispose()
+
+	var asset_defs: Array = [
+		{
+			"collision": [
+				{"shape": "cylinder", "radius": 0.45, "y_min": 0.0, "y_max": 2.0, "collision_strength": 1.0}
+			],
+			"result_capacity": 2,
+			"min_distance_voxels": 3.0,
+			"priority": 10,
+		},
+		{
+			"collision": [
+				{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 0.8}
+			],
+			"result_capacity": 3,
+			"min_distance_voxels": 2.0,
+			"priority": 0,
+		},
+	]
+	var common_settings := {
+		"top_k": 4,
+		"collision_limit": 0.0,
+		"min_support_ratio": 1.0,
+		"clearance_limit": 0.0,
+		"seed": 42,
+	}
+
+	var full_generator := VPG.new()
+	var full_result := full_generator.run_multi_asset(
+		scene,
+		collision,
+		asset_defs,
+		grid_size,
+		voxel_size,
+		Vector3.ZERO,
+		common_settings
+	)
+	full_generator.dispose()
+	if full_result.is_empty() or int(full_result.get("total_placed", 0)) <= 0:
+		push_error("  FAIL: full-field chain baseline returned no placements")
+		return false
+
+	var compact_settings := common_settings.duplicate(true)
+	compact_settings["use_compact_state_chain"] = true
+	var compact_generator := VPG.new()
+	var compact_result := compact_generator.run_multi_asset(
+		scene,
+		collision,
+		asset_defs,
+		grid_size,
+		voxel_size,
+		Vector3.ZERO,
+		compact_settings
+	)
+	compact_generator.dispose()
+	if compact_result.is_empty():
+		push_error("  FAIL: compact state-chain run_multi_asset returned empty")
+		return false
+	if int(compact_result.get("total_placed", -1)) != int(full_result.get("total_placed", -2)):
+		push_error("  FAIL: compact state chain changed placement count, compact=%d full=%d" % [
+			int(compact_result.get("total_placed", -1)),
+			int(full_result.get("total_placed", -2)),
+		])
+		return false
+
+	var chain: Dictionary = compact_result.get("cpu_state_chain", {})
+	if str(chain.get("mode", "")) != "compact_stamp_deltas" \
+			or not bool(chain.get("stamp_delta_cpu_state_chaining", false)) \
+			or bool(chain.get("full_field_readback_required", true)) \
+			or int(chain.get("applied_delta_count", 0)) <= 0:
+		push_error("  FAIL: compact aggregate state-chain contract is invalid: %s" % str(chain))
+		return false
+
+	var asset_results: Array = compact_result.get("asset_results", [])
+	if asset_results.size() != asset_defs.size():
+		push_error("  FAIL: compact state-chain asset result count mismatch")
+		return false
+	for raw_asset in asset_results:
+		if not raw_asset is Dictionary:
+			push_error("  FAIL: compact state-chain asset result is not a Dictionary")
+			return false
+		var asset_result: Dictionary = raw_asset
+		if int(asset_result.get("result_count", 0)) <= 0:
+			continue
+		var full_field: Dictionary = asset_result.get("full_field_readback", {})
+		if bool(full_field.get("scene_field_out_is_full_field", true)) \
+				or bool(full_field.get("collision_field_out_is_full_field", true)) \
+				or bool(full_field.get("scene_field_out_gpu_storage_buffer_readback", true)) \
+				or bool(full_field.get("collision_field_out_gpu_storage_buffer_readback", true)) \
+				or bool(full_field.get("full_field_readback_required", true)):
+			push_error("  FAIL: compact asset should not require full scene/collision field readback: %s" % str(full_field))
+			return false
+		if str(full_field.get("cpu_state_chain_mode", "")) != "compact_stamp_deltas" \
+				or not bool(full_field.get("stamp_delta_cpu_state_chaining", false)):
+			push_error("  FAIL: compact asset full-field contract should identify compact stamp deltas: %s" % str(full_field))
+			return false
+		if str(asset_result.get("stamp_delta_readback_source", "")) != "stamp_shader_storage_buffer" \
+				or (asset_result.get("stamp_deltas", []) as Array).is_empty():
+			push_error("  FAIL: compact asset should read existing stamp deltas for CPU state chaining")
+			return false
+		var compact_asset_chain: Dictionary = asset_result.get("compact_state_chain", {})
+		if int(compact_asset_chain.get("applied_delta_count", 0)) <= 0:
+			push_error("  FAIL: compact asset state-chain report should apply at least one delta: %s" % str(compact_asset_chain))
+			return false
+
+	var compact_scene: PackedFloat32Array = compact_result.get("scene_field_out", PackedFloat32Array())
+	var compact_collision: PackedFloat32Array = compact_result.get("collision_field_out", PackedFloat32Array())
+	var full_scene: PackedFloat32Array = full_result.get("scene_field_out", PackedFloat32Array())
+	var full_collision: PackedFloat32Array = full_result.get("collision_field_out", PackedFloat32Array())
+	if not _float_arrays_match(compact_scene, full_scene) or not _float_arrays_match(compact_collision, full_collision):
+		push_error("  FAIL: compact stamp-delta state chain should match full-field chained scene/collision state")
+		return false
+
+	print("  OK: compact state chain applied %d deltas without per-asset full-field readback" % int(chain.get("applied_delta_count", 0)))
 	return true
 
 
@@ -298,6 +438,7 @@ func _test_score_dispatch_consumes_gpu_runtime_profile_buffers_or_skip() -> bool
 		"collision_limit": 0.0,
 		"clearance_limit": 0.0,
 		"score_runtime_profile_avoidance": true,
+		"min_distance_voxels": 0.0,
 	})
 	if result.is_empty():
 		push_error("  FAIL: run_minimal returned empty for GPU runtime/profile score contract")
@@ -470,6 +611,8 @@ func _test_same_profile_min_spacing_excludes_runtime_neighbor_or_skip() -> bool:
 		"clearance_limit": 0.0,
 		"score_runtime_profile_avoidance": true,
 		"min_distance_voxels": 16.0,
+		"allow_runtime_spacing_full_scan_debug": true,
+		"runtime_spacing_full_scan_debug_max_objects": 4,
 	})
 	var same_contract: Dictionary = same_result.get("gpu_runtime_profile_contract", {})
 	var same_debug: Dictionary = same_result.get("gpu_runtime_profile_binding_debug", {})
@@ -519,6 +662,12 @@ func _test_same_profile_min_spacing_excludes_runtime_neighbor_or_skip() -> bool:
 		container.dispose()
 		runtime.dispose()
 		return false
+	if not bool(same_contract.get("same_type_exclusion_full_runtime_scan_debug_fallback", false)):
+		push_error("  FAIL: full runtime scan spacing requires explicit debug fallback annotation: %s" % str(same_contract))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
 	generator.dispose()
 	container.dispose()
 	runtime.dispose()
@@ -561,6 +710,8 @@ func _test_same_profile_min_spacing_excludes_runtime_neighbor_or_skip() -> bool:
 		"clearance_limit": 0.0,
 		"score_runtime_profile_avoidance": true,
 		"min_distance_voxels": 16.0,
+		"allow_runtime_spacing_full_scan_debug": true,
+		"runtime_spacing_full_scan_debug_max_objects": 4,
 	})
 	var other_contract: Dictionary = other_result.get("gpu_runtime_profile_contract", {})
 	var other_debug: Dictionary = other_result.get("gpu_runtime_profile_binding_debug", {})
@@ -590,9 +741,15 @@ func _test_same_profile_min_spacing_excludes_runtime_neighbor_or_skip() -> bool:
 		runtime_other.dispose()
 		return false
 	if bool(other_contract.get("score_shader_same_type_min_spacing_exclusion", false)) \
-			or str(other_contract.get("same_type_exclusion_read_source", "")) != "none" \
 			or bool(other_contract.get("scene_voxel_tile_object_ref_exclusion", true)):
 		push_error("  FAIL: different-profile spacing contract should keep exclusion fields default: %s" % str(other_contract))
+		generator_other.dispose()
+		container_other.dispose()
+		runtime_other.dispose()
+		return false
+	if str(other_contract.get("same_type_exclusion_read_source", "")) != "score_shader_storage_buffer" \
+			or not bool(other_contract.get("same_type_exclusion_full_runtime_scan_debug_fallback", false)):
+		push_error("  FAIL: different-profile debug fallback should report storage-buffer read source without exclusion: %s" % str(other_contract))
 		generator_other.dispose()
 		container_other.dispose()
 		runtime_other.dispose()
@@ -602,6 +759,146 @@ func _test_same_profile_min_spacing_excludes_runtime_neighbor_or_skip() -> bool:
 	container_other.dispose()
 	runtime_other.dispose()
 	print("  OK: same-profile runtime spacing rejects; different profile does not")
+	return true
+
+
+func _test_same_profile_min_spacing_uses_scene_voxel_tile_object_refs_or_skip() -> bool:
+	print("[VoxelMultiAsset] test_same_profile_min_spacing_uses_scene_voxel_tile_object_refs_or_skip...")
+	var committer := SVC.new(8, 8.0, false)
+	committer.configure_scene_voxel_grid(Vector3i(8, 2, 8), Vector3.ONE, Vector3.ZERO)
+	if not committer.ensure_scene_voxel_tile_buffers_uploaded(true):
+		print("  SKIP: SceneVoxelTile GPU buffers unavailable for object-ref spacing")
+		committer.dispose()
+		return true
+
+	var runtime := Runtime.new(0)
+	var setup_result := runtime.setup_for_scene_voxel_committer(committer, 4, true)
+	if not bool(setup_result.get("ok", false)) or not runtime.is_gpu_ready():
+		print("  SKIP: GPUAutoObjectRuntime could not share SceneVoxelTile RenderingDevice: %s" % str(setup_result))
+		runtime.dispose()
+		committer.dispose()
+		return true
+
+	var container = ProfileContainer.new()
+	if not container.attach_rendering_device(runtime.get_rendering_device(), false):
+		push_error("  FAIL: profile container should attach object-ref runtime RenderingDevice")
+		runtime.dispose()
+		committer.dispose()
+		return false
+
+	var profile := {
+		"color": Color(0.25, 0.65, 0.35, 0.8),
+		"complexity": 0.8,
+		"collision": [
+			{"voxel": Vector3i.ZERO, "collision_strength": 1.0, "weight": 1.0}
+		],
+		"pivot_variants": [
+			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
+		],
+	}
+	var profile_id: int = container.register_normalized_profile(profile.duplicate(true))
+	if profile_id <= 0 or not container.upload_profiles():
+		push_error("  FAIL: expected uploaded profiles for SceneVoxelTile object-ref spacing")
+		container.dispose()
+		runtime.dispose()
+		committer.dispose()
+		return false
+
+	var object_id := runtime.spawn(profile_id, 51, Vector3i(4, 0, 0), Vector3i(5, 1, 1))
+	if object_id < 0:
+		push_error("  FAIL: runtime should spawn object-ref spacing neighbor")
+		container.dispose()
+		runtime.dispose()
+		committer.dispose()
+		return false
+	var flush_result := runtime.flush_to_scene_voxel_committer(committer, {})
+	if not bool(flush_result.get("resident_gpu_dirty_delta_update_pass", false)):
+		push_error("  FAIL: expected resident object-ref update pass before VPG scoring: %s" % str(flush_result))
+		container.dispose()
+		runtime.dispose()
+		committer.dispose()
+		return false
+
+	var summary := committer.get_scene_voxel_tile_gpu_buffer_summary()
+	if str(summary.get("gpu_autoobject_ref_key_schema", "")) != "u32_numeric_ref_key_v1" \
+			or not bool(summary.get("gpu_autoobject_ref_key_schema_numeric_confirmed", false)):
+		push_error("  FAIL: committer must expose numeric object-ref schema before VPG borrow: %s" % str(summary))
+		container.dispose()
+		runtime.dispose()
+		committer.dispose()
+		return false
+
+	var grid_size := Vector3i(8, 2, 8)
+	var voxel_count := grid_size.x * grid_size.y * grid_size.z
+	var scene := PackedFloat32Array()
+	var collision := PackedFloat32Array()
+	scene.resize(voxel_count)
+	collision.resize(voxel_count)
+	var footprint := [{
+		"local_pos": Vector3i.ZERO,
+		"collision_strength": 1.0,
+		"weight": 1.0,
+		"flags": 0,
+	}]
+
+	var generator := VPG.new()
+	var result := generator.run_minimal(scene, collision, footprint, grid_size, {
+		"require_gpu_runtime_profile_contract": true,
+		"gpu_autoobject_runtime": runtime,
+		"auto_voxel_runtime_profile_container": container,
+		"scene_voxel_committer": committer,
+		"require_scene_voxel_tile_object_ref_exclusion": true,
+		"profile_id": profile_id,
+		"top_k": 1,
+		"result_capacity": 1,
+		"candidate_voxel_sparses": [Vector3i.ZERO],
+		"min_support_ratio": 0.0,
+		"collision_limit": 0.0,
+		"clearance_limit": 0.0,
+		"score_runtime_profile_avoidance": true,
+		"min_distance_voxels": 16.0,
+	})
+	var contract: Dictionary = result.get("gpu_runtime_profile_contract", {})
+	var debug: Dictionary = result.get("gpu_runtime_profile_binding_debug", {})
+	if result.is_empty() or bool(result.get("contract_blocked", false)):
+		push_error("  FAIL: object-ref spacing run should complete on GPU: %s" % str(contract))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		committer.dispose()
+		return false
+	if int(result.get("result_count", -1)) != 0:
+		push_error("  FAIL: SceneVoxelTile object-ref spacing should reject the candidate")
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		committer.dispose()
+		return false
+	if not bool(contract.get("scene_voxel_tile_object_ref_exclusion", false)) \
+			or str(contract.get("same_type_exclusion_object_ref_read_source", "none")) != "scene_voxel_tile_object_refs" \
+			or str(contract.get("same_type_exclusion_read_source", "none")) != "scene_voxel_tile_object_refs":
+		push_error("  FAIL: contract should report SceneVoxelTile object-ref spacing: %s" % str(contract))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		committer.dispose()
+		return false
+	if int(debug.get("scene_voxel_tile_object_ref_tile_reads", 0)) <= 0 \
+			or int(debug.get("scene_voxel_tile_object_ref_slot_reads", 0)) <= 0 \
+			or int(debug.get("scene_voxel_tile_object_ref_object_reads", 0)) <= 0 \
+			or int(debug.get("runtime_spacing_rejections", 0)) <= 0:
+		push_error("  FAIL: score shader should read SceneVoxelTile refs and reject via spacing: %s" % str(debug))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		committer.dispose()
+		return false
+
+	generator.dispose()
+	container.dispose()
+	runtime.dispose()
+	committer.dispose()
+	print("  OK: same-profile spacing uses SceneVoxelTile object refs as GPU shortlist")
 	return true
 
 
@@ -824,6 +1121,7 @@ func _test_accepted_placement_writeback_to_gpu_runtime_or_blocked() -> bool:
 			"require_gpu_runtime_profile_contract": true,
 			"gpu_autoobject_runtime": runtime,
 			"auto_voxel_runtime_profile_container": container,
+			"min_distance_voxels": 0.0,
 			"write_accepted_placements_to_gpu_runtime": true,
 			"runtime_writeback_object_type": writeback_object_type,
 			"runtime_writeback_dirty_flags": {"auto": true, "collision": true, "scoring": true},
@@ -866,6 +1164,12 @@ func _test_accepted_placement_writeback_to_gpu_runtime_or_blocked() -> bool:
 		return false
 	if bool(runtime_debug.get("cpu_fallback", false)):
 		push_error("  FAIL: runtime debug summary must not claim CPU fallback")
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	if int(runtime_debug.get("reserved_object_id_count", -1)) != 0:
+		push_error("  FAIL: successful VPG writeback should not leave reserved object IDs: %s" % str(runtime_debug))
 		generator.dispose()
 		container.dispose()
 		runtime.dispose()
@@ -921,6 +1225,16 @@ func _test_accepted_placement_writeback_to_gpu_runtime_or_blocked() -> bool:
 		container.dispose()
 		runtime.dispose()
 		return false
+	var asset_writeback: Dictionary = ((result.get("asset_results", []) as Array)[0] as Dictionary).get("gpu_autoobject_runtime_writeback", {})
+	var reservation: Dictionary = asset_writeback.get("accepted_placement_object_id_reservation", {})
+	if not bool(reservation.get("ok", false)) \
+			or int(reservation.get("reserved_count", 0)) < accepted_count \
+			or int(reservation.get("reserved_object_id_count", -1)) < accepted_count:
+		push_error("  FAIL: VPG writeback should reserve accepted-placement object IDs before staging: %s" % str(writeback))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
 	if str(writeback.get("runtime_command_flush_mode", "")) != "resident_accepted_placement_record_shader_writeback":
 		push_error("  FAIL: VPG writeback should surface resident accepted-record shader flush mode: %s" % str(writeback))
 		generator.dispose()
@@ -965,19 +1279,25 @@ func _test_accepted_placement_writeback_to_gpu_runtime_or_blocked() -> bool:
 		runtime.dispose()
 		return false
 	var shader_stats: Dictionary = writeback.get("accepted_placement_record_shader_stats", {})
-	if int(shader_stats.get("applied", -1)) < accepted_count \
-			or int(shader_stats.get("record_count", -1)) != record_count \
-			or int(shader_stats.get("invalid_object_id", -1)) != 0 \
-			or int(shader_stats.get("dirty_overflow", -1)) != 0 \
-			or int(shader_stats.get("already_alive", -1)) != 0 \
-			or int(shader_stats.get("skipped", -1)) != 0:
-		push_error("  FAIL: VPG writeback should surface accepted-record shader stats: %s" % str(writeback))
+	if not bool(shader_stats.get("ok", false)) \
+			or str(shader_stats.get("reason", "")) != "deferred_no_readback" \
+			or str(shader_stats.get("readback_source", "")) != "none":
+		push_error("  FAIL: VPG writeback should surface accepted-record shader no-readback contract: %s" % str(writeback))
 		generator.dispose()
 		container.dispose()
 		runtime.dispose()
 		return false
 	if bool(writeback.get("resident_gpu_allocator_writeback", true)):
 		push_error("  FAIL: accepted-record shader path must not claim resident GPU allocator ownership")
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	var finalize: Dictionary = asset_writeback.get("accepted_placement_object_id_reservation_finalize", {})
+	if not bool(finalize.get("ok", false)) \
+			or int(finalize.get("finalized_count", 0)) < accepted_count \
+			or int(finalize.get("reserved_object_id_count", -1)) != 0:
+		push_error("  FAIL: VPG writeback should finalize reserved IDs only after accepted-record shader success: %s" % str(writeback))
 		generator.dispose()
 		container.dispose()
 		runtime.dispose()
@@ -1316,21 +1636,31 @@ func _test_accepted_placement_writeback_failure_reason_or_skip() -> bool:
 		container.dispose()
 		runtime.dispose()
 		return false
-	if int(writeback.get("spawned_count", -1)) != 1 or int(writeback.get("failed_count", 0)) <= 0:
-		push_error("  FAIL: writeback should spawn exactly one object and count later failures")
+	if int(writeback.get("spawned_count", -1)) != 0 or int(writeback.get("failed_count", 0)) < accepted_count:
+		push_error("  FAIL: reservation failure should block staging and count accepted placements as failed")
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	var reservation: Dictionary = asset_writeback.get("accepted_placement_object_id_reservation", {})
+	if bool(reservation.get("ok", true)) \
+			or str(reservation.get("reason", "")) != "capacity_full" \
+			or int(reservation.get("reserved_object_id_count", -1)) != 0:
+		push_error("  FAIL: capacity-limited writeback should fail reservation without leaking reserved IDs: %s" % str(asset_writeback))
+		generator.dispose()
+		container.dispose()
+		runtime.dispose()
+		return false
+	var runtime_debug := runtime.get_debug_summary()
+	if int(runtime_debug.get("reserved_object_id_count", -1)) != 0:
+		push_error("  FAIL: failed VPG reservation path should leave no reserved object IDs: %s" % str(runtime_debug))
 		generator.dispose()
 		container.dispose()
 		runtime.dispose()
 		return false
 	var source_writeback: Dictionary = result.get("instance_stamp_writeback", {})
-	if source_writeback.is_empty():
-		push_error("  FAIL: partial runtime writeback should still report source writeback for successful spawns")
-		generator.dispose()
-		container.dispose()
-		runtime.dispose()
-		return false
-	if int(source_writeback.get("applied_count", 0)) > int(writeback.get("spawned_count", 0)):
-		push_error("  FAIL: source writeback must not apply placements that failed GPU runtime spawn")
+	if not source_writeback.is_empty() and int(source_writeback.get("applied_count", 0)) > 0:
+		push_error("  FAIL: reservation failure must not apply source writeback for unspawned placements")
 		generator.dispose()
 		container.dispose()
 		runtime.dispose()
@@ -1461,6 +1791,7 @@ func _test_run_multi_asset_writes_instance_stamp_specs_to_committer_or_skip() ->
 			"require_gpu_runtime_profile_contract": true,
 			"gpu_autoobject_runtime": runtime,
 			"auto_voxel_runtime_profile_container": container,
+			"min_distance_voxels": 0.0,
 			"write_accepted_placements_to_gpu_runtime": true,
 			"runtime_writeback_object_type": writeback_object_type,
 			"runtime_writeback_dirty_flags": {"auto": true, "collision": true, "scoring": true},
@@ -1668,6 +1999,30 @@ func _test_run_multi_asset_stages_source_candidates_to_resident_buffers_or_skip(
 		generator.dispose()
 		committer.dispose(true)
 		return false
+	var staging_report := _source_candidate_staging_report_from_writeback(source_writeback)
+	if staging_report.is_empty():
+		push_error("  FAIL: opt-in handoff should include a full source-candidate staging report")
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if not bool(staging_report.get("resident_source_candidate_payload_buffer", false)) \
+			or not bool(staging_report.get("resident_source_candidate_group_index_buffer", false)):
+		push_error("  FAIL: staged handoff should include resident full candidate payload and key-index buffers: %s" % str(staging_report))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if int(staging_report.get("resident_source_candidate_payload_buffer_stride_bytes", -1)) != SVC.SCENE_VOXEL_SOURCE_PAYLOAD_STRIDE_BYTES \
+			or int(staging_report.get("resident_source_candidate_group_index_buffer_stride_bytes", -1)) != 4:
+		push_error("  FAIL: staged payload/group-index strides should be 64/4 bytes: %s" % str(staging_report))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if int(staging_report.get("resident_source_candidate_payload_buffer_count", 0)) <= 0 \
+			or int(staging_report.get("resident_source_candidate_group_index_buffer_count", 0)) <= 0:
+		push_error("  FAIL: staged payload/group-index counts should be positive: %s" % str(staging_report))
+		generator.dispose()
+		committer.dispose(true)
+		return false
 	if str(source_writeback.get("runtime_read_source", "")) != "none" \
 			or bool(source_writeback.get("final_source_stream_resident", true)) \
 			or str(source_writeback.get("final_source_stream_resident_source", "")) != "none":
@@ -1688,22 +2043,450 @@ func _test_run_multi_asset_stages_source_candidates_to_resident_buffers_or_skip(
 		return false
 
 	committer.blend_scene_voxels()
-	if committer.get_scene_voxels().is_empty():
-		push_error("  FAIL: deferred staged source candidates should materialize after blend")
+	var blend_summary_before_api := committer.get_last_blend_scene_voxel_commit_summary()
+	if not bool(blend_summary_before_api.get("resident_committed_scene_voxel_payload_buffer", false)) \
+			or str(blend_summary_before_api.get("committed_scene_voxel_runtime_read_source", "")) != "resident_committed_scene_voxel_payload_buffer":
+		push_error("  FAIL: blend should retain the committed SceneVoxel payload buffer as the runtime source before public API access: %s" % str(blend_summary_before_api))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if not _assert_public_scene_voxel_debug_api_projection(blend_summary_before_api, "blend summary before public API", false):
+		generator.dispose()
+		committer.dispose(true)
+		return false
+
+	var public_scene_voxels_after_blend := committer.get_scene_voxels()
+	if public_scene_voxels_after_blend.is_empty():
+		push_error("  FAIL: deferred staged source candidates should hydrate public SceneVoxel cache on API access")
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	var first_public_key := str(public_scene_voxels_after_blend.keys()[0])
+	var first_public_key_parts := first_public_key.split(":")
+	if first_public_key_parts.size() != 3:
+		push_error("  FAIL: hydrated public SceneVoxel key should be slice:x:z, got %s" % first_public_key)
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	var public_scene_voxel := committer.get_scene_voxel(
+		int(first_public_key_parts[0]),
+		Vector2i(int(first_public_key_parts[1]), int(first_public_key_parts[2]))
+	)
+	if public_scene_voxel.is_empty():
+		push_error("  FAIL: get_scene_voxel should read from the hydrated debug/API cache for key %s" % first_public_key)
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	var resolve_summary := committer.get_last_scene_voxel_source_resolve_summary()
+	if not bool(resolve_summary.get("gpu_dispatched", false)) \
+			or bool(resolve_summary.get("cpu_runtime_fallback", true)):
+		push_error("  FAIL: source candidate resolve should be a real GPU dispatch without CPU runtime fallback: %s" % str(resolve_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if not bool(resolve_summary.get("final_source_stream_resident", false)) \
+			or str(resolve_summary.get("final_source_stream_resident_source", "")) != "resolve_scene_voxel_sources.glsl":
+		push_error("  FAIL: GPU resolve should publish resident final source streams: %s" % str(resolve_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if str(resolve_summary.get("source_candidate_winner_readback_source", "")) != "none" \
+			or int(resolve_summary.get("source_candidate_winner_readback_count", -1)) != 0 \
+			or bool(resolve_summary.get("source_candidate_cpu_apply_bridge", true)) \
+			or str(resolve_summary.get("source_candidate_cpu_apply_bridge_target", "")) != "none":
+		push_error("  FAIL: GPU resolve must not read back winners or use the CPU apply bridge: %s" % str(resolve_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if int(resolve_summary.get("final_source_stream_resident_stride_bytes", -1)) != SVC.SCENE_VOXEL_SOURCE_PAYLOAD_STRIDE_BYTES \
+			or int(resolve_summary.get("final_source_stream_resident_count", 0)) <= 0:
+		push_error("  FAIL: resident final source stream diagnostics should retain count/stride: %s" % str(resolve_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if str(resolve_summary.get("resident_auto_source_stream_buffer_rid", "none")) == "none" \
+			or str(resolve_summary.get("resident_brush_source_stream_buffer_rid", "none")) == "none":
+		push_error("  FAIL: resident final Auto/Brush source stream RIDs should be retained: %s" % str(resolve_summary))
 		generator.dispose()
 		committer.dispose(true)
 		return false
 	var blend_summary := committer.get_last_blend_scene_voxel_commit_summary()
-	if not bool(blend_summary.get("source_candidate_cpu_apply_bridge", false)) \
-			or bool(blend_summary.get("final_source_stream_resident", true)):
-		push_error("  FAIL: blend should resolve staged candidates through CPU apply bridge without resident final streams: %s" % str(blend_summary))
+	if bool(blend_summary.get("source_candidate_cpu_apply_bridge", true)) \
+			or not bool(blend_summary.get("final_source_stream_resident", false)) \
+			or bool(blend_summary.get("cpu_fallback", true)):
+		push_error("  FAIL: blend should keep CPU dictionaries as projection while using GPU-resident final source streams: %s" % str(blend_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if str(blend_summary.get("source_candidate_winner_readback_source", "")) != "none" \
+			or int(blend_summary.get("source_candidate_winner_readback_count", -1)) != 0 \
+			or str(blend_summary.get("source_candidate_cpu_apply_bridge_target", "")) != "none":
+		push_error("  FAIL: blend summary must preserve no winner readback / no CPU apply bridge diagnostics: %s" % str(blend_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if str(blend_summary.get("runtime_read_source", "")) != "resident_resolved_source_stream_buffers":
+		push_error("  FAIL: blend summary should identify the resident resolved source stream path: %s" % str(blend_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if not bool(blend_summary.get("resident_committed_scene_voxel_payload_buffer", false)) \
+			or str(blend_summary.get("committed_scene_voxel_runtime_read_source", "")) != "resident_committed_scene_voxel_payload_buffer":
+		push_error("  FAIL: blend should retain the committed SceneVoxel payload buffer as the runtime source: %s" % str(blend_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if str(blend_summary.get("committed_scene_voxel_payload_buffer_rid", "none")) == "none" \
+			or int(blend_summary.get("committed_scene_voxel_payload_buffer_stride_bytes", -1)) != SVC.SCENE_VOXEL_COMMITTED_PAYLOAD_STRIDE_BYTES \
+			or int(blend_summary.get("committed_scene_voxel_payload_buffer_count", 0)) <= 0:
+		push_error("  FAIL: committed SceneVoxel payload buffer RID/stride/count diagnostics are invalid: %s" % str(blend_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	var committed_payload_count := int(blend_summary.get("committed_scene_voxel_payload_buffer_count", 0))
+	if not bool(blend_summary.get("resident_committed_scene_voxel_key_coord_buffer", false)) \
+			or str(blend_summary.get("committed_scene_voxel_key_coord_runtime_read_source", "")) != "resident_committed_scene_voxel_key_coord_buffer":
+		push_error("  FAIL: committed SceneVoxel payload slots should have a resident key/coordinate map: %s" % str(blend_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if str(blend_summary.get("committed_scene_voxel_key_coord_buffer_rid", "none")) == "none" \
+			or str(blend_summary.get("committed_scene_voxel_key_coord_buffer_owner", "")) != "SceneVoxelCommitter" \
+			or str(blend_summary.get("committed_scene_voxel_key_coord_buffer_lifetime", "")) != "persistent_until_next_scene_voxel_commit" \
+			or int(blend_summary.get("committed_scene_voxel_key_coord_buffer_stride_bytes", -1)) != SVC.SCENE_VOXEL_COMMITTED_KEY_COORD_STRIDE_BYTES \
+			or str(blend_summary.get("committed_scene_voxel_key_coord_buffer_format", "")) != SVC.SCENE_VOXEL_COMMITTED_KEY_COORD_FORMAT \
+			or int(blend_summary.get("committed_scene_voxel_key_coord_buffer_count", -1)) != committed_payload_count:
+		push_error("  FAIL: committed SceneVoxel key/coordinate buffer RID/owner/lifetime/stride/format/count diagnostics are invalid: %s" % str(blend_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if str(blend_summary.get("committed_scene_voxel_payload_slot_map_runtime_source", "")) != "resident_committed_scene_voxel_key_coord_buffer" \
+			or bool(blend_summary.get("committed_scene_voxel_payload_slot_map_cpu_dictionary_source", true)) \
+			or bool(blend_summary.get("committed_scene_voxel_payload_slot_map_public_dictionary_source", true)):
+		push_error("  FAIL: committed payload slot mapping must not claim CPU source-key order or public dictionaries as runtime source: %s" % str(blend_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if not _assert_public_scene_voxel_debug_api_projection(blend_summary, "blend summary"):
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	var committed_payload_summary := committer.get_committed_scene_voxel_payload_buffer_summary()
+	if not bool(committed_payload_summary.get("rendering_device_available", false)) \
+			or not bool(committed_payload_summary.get("resident_committed_scene_voxel_payload_buffer", false)) \
+			or bool(committed_payload_summary.get("cpu_fallback", true)):
+		push_error("  FAIL: committed SceneVoxel payload summary must prove a resident RD buffer with no CPU fallback: %s" % str(committed_payload_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if not _assert_public_scene_voxel_debug_api_projection(committed_payload_summary, "committed payload summary"):
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	var committed_key_coord_summary := committer.get_committed_scene_voxel_key_coord_buffer_summary()
+	if not committer.get_committed_scene_voxel_key_coord_buffer().is_valid() \
+			or not bool(committed_key_coord_summary.get("rendering_device_available", false)) \
+			or not bool(committed_key_coord_summary.get("resident_committed_scene_voxel_key_coord_buffer", false)) \
+			or bool(committed_key_coord_summary.get("cpu_fallback", true)) \
+			or str(committed_key_coord_summary.get("committed_scene_voxel_payload_slot_map_runtime_source", "")) != "resident_committed_scene_voxel_key_coord_buffer" \
+			or bool(committed_key_coord_summary.get("committed_scene_voxel_payload_slot_map_cpu_dictionary_source", true)) \
+			or bool(committed_key_coord_summary.get("committed_scene_voxel_payload_slot_map_public_dictionary_source", true)):
+		push_error("  FAIL: committed SceneVoxel key/coordinate summary/accessor must prove resident RD slot mapping without CPU dictionary runtime source: %s" % str(committed_key_coord_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	var sv := committer.get_sv()
+	if str(sv.get("scene_field_source", "")) != "resident_committed_scene_voxel_payload_buffers" \
+			or str(sv.get("scene_field_projection_mode", "")) != "committed_payload_dense_scatter" \
+			or str(sv.get("scene_field_runtime_read_source", "")) != "resident_committed_scene_voxel_payload_buffer" \
+			or not bool(sv.get("scene_field_committed_payload_projection", false)):
+		push_error("  FAIL: dense SV scene_field should scatter from resident committed payload/key buffers, not CPU source-key projection: %s" % str(sv))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if int(sv.get("scene_field_committed_payload_count", -1)) != committed_payload_count \
+			or int(sv.get("scene_field_committed_key_coord_count", -1)) != committed_payload_count:
+		push_error("  FAIL: dense SV scene_field committed payload/key scatter counts should match committed payload count: %s" % str(sv))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	var sv_payload_summary: Dictionary = sv.get("committed_scene_voxel_payload_buffer_summary", {})
+	if not bool(sv_payload_summary.get("committed_scene_voxel_dense_projection_ready", false)) \
+			or str(sv_payload_summary.get("committed_scene_voxel_scene_field_projection_source", "")) != "resident_committed_scene_voxel_payload_buffer":
+		push_error("  FAIL: SV should carry committed-payload dense projection diagnostics: %s" % str(sv_payload_summary))
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if not _assert_public_scene_voxel_debug_api_projection(sv_payload_summary, "SV payload summary"):
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	if not _assert_public_scene_voxel_debug_api_projection(sv, "SV public projection"):
+		generator.dispose()
+		committer.dispose(true)
+		return false
+	var scene_field: PackedFloat32Array = sv.get("scene_field", PackedFloat32Array())
+	var nonzero_scene_field_cells := 0
+	for value in scene_field:
+		if float(value) > 0.001:
+			nonzero_scene_field_cells += 1
+	if nonzero_scene_field_cells <= 0:
+		push_error("  FAIL: dense SV scene_field scatter from committed payloads produced no occupied cells")
 		generator.dispose()
 		committer.dispose(true)
 		return false
 
 	generator.dispose()
 	committer.dispose(true)
-	print("  OK: opt-in VPG handoff stages resident source candidates before deferred blend")
+	print("  OK: opt-in VPG handoff resolves source streams and retains committed SceneVoxel payload/key-coordinate buffers")
+	return true
+
+
+func _assert_public_scene_voxel_debug_api_projection(summary: Dictionary, label: String, expect_hydrated: bool = true) -> bool:
+	if str(summary.get("public_scene_voxel_projection_source", "")) != "resident_committed_scene_voxel_payload_key_coord_buffers" \
+			or str(summary.get("public_scene_voxel_projection_role", "")) != "debug_api_projection" \
+			or not bool(summary.get("public_scene_voxel_projection_debug_only", false)) \
+			or not bool(summary.get("public_scene_voxel_projection_api_only", false)) \
+			or bool(summary.get("public_scene_voxel_projection_runtime_owner", true)) \
+			or bool(summary.get("public_scene_voxel_projection_scene_field_source", true)) \
+			or str(summary.get("public_scene_voxel_projection_runtime_read_source", "")) != "none" \
+			or str(summary.get("public_scene_voxel_projection_api", "")) != "get_scene_voxels/get_scene_voxel":
+		push_error("  FAIL: %s must label public SceneVoxel dictionaries as debug/API-only readback, not runtime ownership/source: %s" % [label, str(summary)])
+		return false
+	if bool(summary.get("public_scene_voxel_projection_readback", false)) != expect_hydrated \
+			or bool(summary.get("public_scene_voxel_projection_cache_hydrated", false)) != expect_hydrated:
+		push_error("  FAIL: %s public SceneVoxel cache hydrated/readback state mismatch: %s" % [label, str(summary)])
+		return false
+	if int(summary.get("public_scene_voxel_projection_expected_count", 0)) <= 0:
+		push_error("  FAIL: %s public SceneVoxel projection should retain expected count: %s" % [label, str(summary)])
+		return false
+	if expect_hydrated:
+		if str(summary.get("public_scene_voxel_projection_readback_source", "")) != "resident_committed_scene_voxel_payload_buffer_debug_api_readback" \
+				or bool(summary.get("public_scene_voxel_projection_cache_pending", true)) \
+				or int(summary.get("public_scene_voxel_projection_cache_count", 0)) <= 0:
+			push_error("  FAIL: %s should report hydrated debug/API readback from resident committed buffers: %s" % [label, str(summary)])
+			return false
+	elif str(summary.get("public_scene_voxel_projection_readback_source", "")) != "none" \
+			or not bool(summary.get("public_scene_voxel_projection_cache_pending", false)) \
+			or int(summary.get("public_scene_voxel_projection_cache_count", -1)) != 0:
+		push_error("  FAIL: %s should report pending lazy debug/API cache before public getter access: %s" % [label, str(summary)])
+		return false
+	return true
+
+
+func _source_candidate_staging_report_from_writeback(source_writeback: Dictionary) -> Dictionary:
+	var direct = source_writeback.get("source_candidate_staging_report", {})
+	if direct is Dictionary and not (direct as Dictionary).is_empty():
+		return (direct as Dictionary).duplicate(true)
+
+	var asset_reports: Array = source_writeback.get("asset_reports", [])
+	for raw_report in asset_reports:
+		if not raw_report is Dictionary:
+			continue
+		var asset_report := raw_report as Dictionary
+		var nested = asset_report.get("source_candidate_staging_report", {})
+		if nested is Dictionary and not (nested as Dictionary).is_empty():
+			return (nested as Dictionary).duplicate(true)
+	return {}
+
+
+func _test_run_multi_asset_preserves_target_read_buffer_diagnostics_or_skip() -> bool:
+	print("[VoxelMultiAsset] test_run_multi_asset_preserves_target_read_buffer_diagnostics_or_skip...")
+	if not _has_rendering_device():
+		print("  SKIP: no RenderingDevice available for resident TargetSV read-buffer handoff")
+		return true
+
+	var grid_size := Vector3i(8, 4, 8)
+	var voxel_count := grid_size.x * grid_size.y * grid_size.z
+	var scene := PackedFloat32Array()
+	var collision := PackedFloat32Array()
+	scene.resize(voxel_count)
+	collision.resize(voxel_count)
+
+	var fill_generator := VPG.new()
+	for z in range(grid_size.z):
+		for x in range(grid_size.x):
+			scene[fill_generator.voxel_index(Vector3i(x, 0, z), grid_size)] = 1.0
+	fill_generator.dispose()
+
+	var expected_bytes := voxel_count * 4
+	var target_color_rgba8_bytes := PackedByteArray()
+	var target_occupancy_bytes := PackedByteArray()
+	target_color_rgba8_bytes.resize(expected_bytes)
+	target_occupancy_bytes.resize(expected_bytes)
+	for i in range(voxel_count):
+		target_color_rgba8_bytes.encode_u32(i * 4, 0x3366ccff)
+		target_occupancy_bytes.encode_float(i * 4, 0.5)
+
+	var asset_defs := [
+		{
+			"collision": [
+				{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}
+			],
+			"result_capacity": 1,
+		}
+	]
+	var common_settings := {
+		"top_k": 1,
+		"collision_limit": 0.0,
+		"min_support_ratio": 1.0,
+		"clearance_limit": 0.0,
+		"target_color_rgba8_bytes": target_color_rgba8_bytes,
+		"target_occupancy_bytes": target_occupancy_bytes,
+	}
+
+	var actor := SPA.new()
+	if not actor.initialize(true, false):
+		push_error("  FAIL: ScenePlacementActor should initialize a RenderingDevice for resident TargetSV buffers")
+		actor.dispose(true)
+		return false
+	var target_settings := common_settings.duplicate(true)
+	target_settings[SPA.RESIDENT_TARGET_READ_BUFFERS_OPT_IN_KEY] = true
+	var sv := {
+		"grid_size": grid_size,
+		"voxel_size": Vector3.ONE,
+		"scene_field": scene,
+		"collision_field": collision,
+	}
+	var target_buffers: Dictionary = actor.prepare_target_read_buffers_from_common_gpu(target_settings, sv)
+	if not bool(target_buffers.get("ok", false)) or not bool(target_buffers.get("resident_target_read_buffer_handoff", false)):
+		push_error("  FAIL: resident TargetSV read-buffer prep should succeed: %s" % str(target_buffers))
+		actor.dispose(true)
+		return false
+
+	var borrowed_generator := VPG.new()
+	if not borrowed_generator.attach_rendering_device(actor.get_rendering_device(), false):
+		push_error("  FAIL: VPG should attach the ScenePlacementActor RenderingDevice")
+		actor.dispose(true)
+		return false
+	var external_scene_field_buffer := actor.storage_buffer_from_floats(scene, "persistent", "test_external_scene_field")
+	var external_collision_field_buffer := actor.storage_buffer_from_floats(collision, "persistent", "test_external_collision_field")
+	if not external_scene_field_buffer.is_valid() or not external_collision_field_buffer.is_valid():
+		push_error("  FAIL: external resident scene/collision test buffers should be valid")
+		actor.dispose(true)
+		return false
+	var borrowed_settings := common_settings.duplicate(true)
+	borrowed_settings["target_read_buffers"] = target_buffers
+	borrowed_settings["scene_field_buffer_rid"] = external_scene_field_buffer
+	borrowed_settings["collision_field_buffer_rid"] = external_collision_field_buffer
+	borrowed_settings["scene_field_buffer_borrowed"] = true
+	borrowed_settings["collision_field_buffer_borrowed"] = true
+	borrowed_settings["scene_field_buffer_owner"] = "test_external_scene_voxel_committer"
+	borrowed_settings["collision_field_buffer_owner"] = "test_external_scene_voxel_committer"
+	borrowed_settings["gpu_state_chain_source"] = "test_external_scene_voxel_tile_resident_fields"
+	var borrowed_result := borrowed_generator.run_multi_asset(
+		scene,
+		collision,
+		asset_defs,
+		grid_size,
+		Vector3.ONE,
+		Vector3.ZERO,
+		borrowed_settings
+	)
+	if not _assert_target_read_buffer_summary(borrowed_result, true, expected_bytes, "borrowed resident TargetSV"):
+		actor.dispose(true)
+		return false
+	if not _assert_external_field_buffer_handoff(
+		borrowed_result,
+		external_scene_field_buffer,
+		external_collision_field_buffer
+	):
+		actor.dispose(true)
+		return false
+	actor.dispose(true)
+
+	var uploaded_generator := VPG.new()
+	var uploaded_result := uploaded_generator.run_multi_asset(
+		scene,
+		collision,
+		asset_defs,
+		grid_size,
+		Vector3.ONE,
+		Vector3.ZERO,
+		common_settings
+	)
+	if not _assert_target_read_buffer_summary(uploaded_result, false, expected_bytes, "uploaded TargetSV bytes"):
+		uploaded_generator.dispose()
+		return false
+	uploaded_generator.dispose()
+
+	print("  OK: multi-asset preserves TargetSV read-buffer diagnostics for resident borrow and byte upload")
+	return true
+
+
+func _assert_external_field_buffer_handoff(result: Dictionary, scene_rid: RID, collision_rid: RID) -> bool:
+	var chain: Dictionary = result.get("gpu_state_chain", {})
+	if chain.is_empty():
+		push_error("  FAIL: borrowed field run should report gpu_state_chain diagnostics")
+		return false
+	if not bool(chain.get("gpu_state_chaining", false)) or bool(chain.get("cpu_state_chaining", true)):
+		push_error("  FAIL: borrowed field chain should stay GPU-resident: %s" % str(chain))
+		return false
+	var result_scene_rid: RID = chain.get("scene_field_buffer_rid", RID())
+	var result_collision_rid: RID = chain.get("collision_field_buffer_rid", RID())
+	if result_scene_rid != scene_rid or result_collision_rid != collision_rid:
+		push_error("  FAIL: VPG overwrote caller-provided field RIDs: %s" % str(chain))
+		return false
+	if not bool(chain.get("scene_field_buffer_borrowed", false)) or not bool(chain.get("collision_field_buffer_borrowed", false)):
+		push_error("  FAIL: VPG should report caller field RIDs as borrowed: %s" % str(chain))
+		return false
+	if str(chain.get("source", "")) != "test_external_scene_voxel_tile_resident_fields":
+		push_error("  FAIL: VPG should preserve external field source label: %s" % str(chain))
+		return false
+	var scene_out: PackedFloat32Array = result.get("scene_field_out", PackedFloat32Array())
+	var collision_out: PackedFloat32Array = result.get("collision_field_out", PackedFloat32Array())
+	if scene_out.size() > 0 or collision_out.size() > 0:
+		push_error("  FAIL: resident field chain should not read back full fields by default")
+		return false
+	return true
+
+
+func _assert_target_read_buffer_summary(result: Dictionary, expect_borrowed: bool, expected_bytes: int, label: String) -> bool:
+	if result.is_empty():
+		push_error("  FAIL: %s run_multi_asset returned empty" % label)
+		return false
+	if bool(result.get("cpu_fallback", false)):
+		push_error("  FAIL: %s aggregate must not claim CPU fallback" % label)
+		return false
+	var asset_results: Array = result.get("asset_results", [])
+	if asset_results.size() != 1:
+		push_error("  FAIL: %s expected one asset result, got %d" % [label, asset_results.size()])
+		return false
+	var aggregate_summary: Dictionary = result.get("target_read_buffer_summary", {})
+	var asset_summary: Dictionary = (asset_results[0] as Dictionary).get("target_read_buffer_summary", {})
+	for summary in [aggregate_summary, asset_summary]:
+		if summary.is_empty():
+			push_error("  FAIL: %s missing target_read_buffer_summary in aggregate or per-asset result" % label)
+			return false
+		if not bool(summary.get("ready", false)):
+			push_error("  FAIL: %s target summary should report ready=true: %s" % [label, str(summary)])
+			return false
+		if bool(summary.get("cpu_fallback", true)) or not bool(summary.get("gpu_first", false)):
+			push_error("  FAIL: %s target summary must stay GPU-first with cpu_fallback=false: %s" % [label, str(summary)])
+			return false
+		if int(summary.get("target_color_rgba8_byte_count", 0)) != expected_bytes \
+				or int(summary.get("target_occupancy_byte_count", 0)) != expected_bytes:
+			push_error("  FAIL: %s target byte counts were not preserved: %s" % [label, str(summary)])
+			return false
+		if bool(summary.get("target_read_buffers_borrowed", false)) != expect_borrowed:
+			push_error("  FAIL: %s borrowed flag mismatch: %s" % [label, str(summary)])
+			return false
+		if bool(summary.get("target_read_buffers_uploaded", false)) == expect_borrowed:
+			push_error("  FAIL: %s uploaded flag mismatch: %s" % [label, str(summary)])
+			return false
+		var expected_source := "borrowed_scene_placement_actor_resident" if expect_borrowed else "uploaded_target_bytes"
+		if str(summary.get("target_read_buffer_source", "")) != expected_source:
+			push_error("  FAIL: %s target source mismatch: %s" % [label, str(summary)])
+			return false
+		if expect_borrowed:
+			if str(summary.get("borrowed_from", "")) != "ScenePlacementActor" \
+					or str(summary.get("owner", "")) != "ScenePlacementActor" \
+					or not bool(summary.get("rendering_device_match", false)):
+				push_error("  FAIL: %s resident borrow ownership diagnostics missing: %s" % [label, str(summary)])
+				return false
+		elif str(summary.get("borrowed_from", "")) != "none" or bool(summary.get("rendering_device_match", true)):
+			push_error("  FAIL: %s uploaded byte path should stay explicit and non-borrowed: %s" % [label, str(summary)])
+			return false
 	return true
 
 
@@ -1838,10 +2621,10 @@ func _test_gpu_compute_blocked_has_no_empty_success() -> bool:
 
 func _test_instantiate_placements() -> bool:
 	print("[VoxelMultiAsset] test_instantiate_placements...")
-	var tree_mesh := VegetationScatter.create_tree_mesh()
-	var bush_mesh := VegetationScatter.create_bush_mesh()
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(0.5, 0.75, 0.5)
 
-	var tree_results: Array = [
+	var world_results: Array = [
 		{
 			"position": Vector3(1.0, 0.5, 2.0),
 			"rotation_degrees": Vector3(0.0, 45.0, 0.0),
@@ -1856,80 +2639,55 @@ func _test_instantiate_placements() -> bool:
 		},
 	]
 
-	var bush_results: Array = [
-		{
-			"position": Vector3(3.0, 0.3, 1.0),
-			"rotation_degrees": Vector3(0.0, 15.0, 0.0),
-			"scale": Vector3.ONE * 0.8,
-			"asset_index": 1,
-		},
-	]
-
-	var tree_config := {
+	var config := {
 		"color": Color(0.25, 0.50, 0.20, 0.8),
 		"complexity": 0.8,
-		"visual_layer": VegetationScatter.TREE_VISUAL_LAYER,
+		"object_type": "object",
 	}
 
-	var tree_nodes := VPG.instantiate_placements(tree_results, "canopy_tree", tree_mesh, tree_config)
-	var bush_nodes := VPG.instantiate_placements(bush_results, "bush", bush_mesh)
+	var nodes := VPG.instantiate_placements(world_results, "autoobject", mesh, config)
 
-	if tree_nodes.size() != 2:
-		push_error("  FAIL: expected 2 tree nodes, got %d" % tree_nodes.size())
-		_free_nodes(tree_nodes)
-		_free_nodes(bush_nodes)
+	if nodes.size() != 2:
+		push_error("  FAIL: expected 2 AutoObject nodes, got %d" % nodes.size())
+		_free_nodes(nodes)
 		return false
 
-	if bush_nodes.size() != 1:
-		push_error("  FAIL: expected 1 bush node, got %d" % bush_nodes.size())
-		_free_nodes(tree_nodes)
-		_free_nodes(bush_nodes)
+	var node0: AutoObject = nodes[0]
+	if not node0 is AutoObject:
+		push_error("  FAIL: instantiated node is not AutoObject")
+		_free_nodes(nodes)
 		return false
 
-	var t0: AutoObject = tree_nodes[0]
-	if not t0 is AutoObject:
-		push_error("  FAIL: tree node is not AutoObject")
-		_free_nodes(tree_nodes)
-		_free_nodes(bush_nodes)
+	if node0.position.distance_to(Vector3(1.0, 0.5, 2.0)) > 0.01:
+		push_error("  FAIL: AutoObject position mismatch: %s" % str(node0.position))
+		_free_nodes(nodes)
 		return false
 
-	if t0.position.distance_to(Vector3(1.0, 0.5, 2.0)) > 0.01:
-		push_error("  FAIL: tree position mismatch: %s" % str(t0.position))
-		_free_nodes(tree_nodes)
-		_free_nodes(bush_nodes)
+	if node0.mesh == null:
+		push_error("  FAIL: AutoObject has no mesh")
+		_free_nodes(nodes)
 		return false
 
-	if t0.mesh == null:
-		push_error("  FAIL: tree has no mesh")
-		_free_nodes(tree_nodes)
-		_free_nodes(bush_nodes)
+	if node0.get_record_object_type() != "object":
+		push_error("  FAIL: AutoObject type should come from config, got %s" % node0.get_record_object_type())
+		_free_nodes(nodes)
 		return false
 
-	var b0: AutoObject = bush_nodes[0]
-	if not b0 is AutoObject:
-		push_error("  FAIL: bush node is not AutoObject")
-		_free_nodes(tree_nodes)
-		_free_nodes(bush_nodes)
+	if not node0.get_record_object_subtype().is_empty():
+		push_error("  FAIL: generic AutoObject should not get a hardcoded subtype")
+		_free_nodes(nodes)
 		return false
 
-	var bush_subtype := b0.get_record_object_subtype()
-	if bush_subtype != "bush":
-		push_error("  FAIL: bush subtype is '%s'" % bush_subtype)
-		_free_nodes(tree_nodes)
-		_free_nodes(bush_nodes)
-		return false
-
-	print("  OK: trees=%d bushes=%d type=%s subtype=%s pos=%s" % [
-		tree_nodes.size(), bush_nodes.size(),
-		t0.get_class(), bush_subtype, str(t0.position)])
-	_free_nodes(tree_nodes)
-	_free_nodes(bush_nodes)
+	print("  OK: autoobjects=%d type=%s pos=%s" % [
+		nodes.size(), node0.get_class(), str(node0.position)])
+	_free_nodes(nodes)
 	return true
 
 
 func _test_instantiate_placement_voxel_write_spec_commit() -> bool:
 	print("[VoxelMultiAsset] test_instantiate_placement_voxel_write_spec_commit...")
-	var mesh := VegetationScatter.create_bush_mesh()
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(0.5, 0.75, 0.5)
 	var committer := SVC.new(32, 32.0, false)
 
 	var world_result := {
@@ -1942,9 +2700,9 @@ func _test_instantiate_placement_voxel_write_spec_commit() -> bool:
 		"score": 7.5,
 	}
 
-	var node := VPG.instantiate_placement(world_result, "bush", mesh, {
-		"name": "VoxelBushRecord_0",
-		"record_id": "voxel_bush_record_0",
+	var node := VPG.instantiate_placement(world_result, "autoobject", mesh, {
+		"name": "VoxelAutoObjectRecord_0",
+		"record_id": "voxel_autoobject_record_0",
 		"create_voxel_write_spec": true,
 		"scene_voxel_committer": committer,
 		"capture_size": 32.0,
@@ -1966,7 +2724,7 @@ func _test_instantiate_placement_voxel_write_spec_commit() -> bool:
 		return false
 
 	var record: Dictionary = node.get_instance_stamp_write_spec()
-	if str(record.get("id", "")) != "voxel_bush_record_0":
+	if str(record.get("id", "")) != "voxel_autoobject_record_0":
 		push_error("  FAIL: wrong record id: %s" % str(record.get("id", "")))
 		node.free()
 		return false
@@ -1974,8 +2732,8 @@ func _test_instantiate_placement_voxel_write_spec_commit() -> bool:
 		push_error("  FAIL: base_pixel mismatch: %s" % str(record.get("base_pixel", Vector2i(-1, -1))))
 		node.free()
 		return false
-	var committed_record := committer.get_instance_stamp_write_spec("voxel_bush_record_0")
-	if str(committed_record.get("id", "")) != "voxel_bush_record_0":
+	var committed_record := committer.get_instance_stamp_write_spec("voxel_autoobject_record_0")
+	if str(committed_record.get("id", "")) != "voxel_autoobject_record_0":
 		push_error("  FAIL: committer could not read back canonical ISWS record")
 		node.free()
 		return false
@@ -2068,6 +2826,15 @@ func _test_multi_asset_collision_avoidance() -> bool:
 
 	print("  OK: large=%d small=%d (no collision overlap)" % [
 		large_results.size(), small_results.size()])
+	return true
+
+
+func _float_arrays_match(a: PackedFloat32Array, b: PackedFloat32Array, epsilon: float = 0.0001) -> bool:
+	if a.size() != b.size():
+		return false
+	for i in range(a.size()):
+		if absf(a[i] - b[i]) > epsilon:
+			return false
 	return true
 
 

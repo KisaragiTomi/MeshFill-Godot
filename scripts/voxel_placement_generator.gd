@@ -16,7 +16,8 @@ const STAMP_BOUNDS_STRIDE := 2
 const FLAG_SUPPORT := 1
 const FLAG_CLEARANCE := 2
 const NUM_DEBUG_CHANNELS := 8
-const SCORE_CONTRACT_DEBUG_WORDS := 40
+const ACCEPTED_PLACEMENT_SOURCE_BUFFER_INCOMPLETE_REASON := "incomplete_source_candidate_handoff_missing_payload_and_group_index_buffers"
+const SCORE_CONTRACT_DEBUG_WORDS := 48
 const SCORE_CONTRACT_MAGIC := 0x4D465052 # MFPR: MeshFill placement runtime/profile.
 const CANDIDATE_ROUTE_BINDING_DEBUG_WORDS := 16
 const CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS := 4
@@ -112,13 +113,30 @@ const SCORE_CONTRACT_DEBUG_NAMES: PackedStringArray = [
 	"runtime_spacing_profile_matches",
 	"runtime_spacing_rejections",
 	"runtime_spacing_min_distance_q1000",
-	"reserved35",
-	"reserved36",
-	"reserved37",
-	"reserved38",
-	"reserved39",
+	"scene_voxel_tile_object_ref_enabled",
+	"scene_voxel_tile_object_ref_tile_reads",
+	"scene_voxel_tile_object_ref_slot_reads",
+	"scene_voxel_tile_object_ref_object_reads",
+	"scene_voxel_tile_object_ref_duplicate_reads",
+	"reserved40",
+	"reserved41",
+	"reserved42",
+	"reserved43",
+	"reserved44",
+	"reserved45",
+	"reserved46",
+	"reserved47",
 ]
 const SCENE_VOXEL_COMMITTER_CONFIG_KEY := "scene_voxel_committer"
+const SCENE_VOXEL_TILE_COMMITTER_CONFIG_KEYS := [
+	SCENE_VOXEL_COMMITTER_CONFIG_KEY,
+	"sv_committer",
+	"scene_voxel_tile_committer",
+]
+const SCENE_VOXEL_TILE_OBJECT_REF_BUFFER_NAME := "scene_voxel_tile_object_refs"
+const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
+const SCENE_VOXEL_TILE_OBJECT_REF_STRIDE_BYTES := 4
+const SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT := 8
 const PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY := "vegetation" + "_exclusion"
 const STAGE_SCENE_VOXEL_SOURCE_CANDIDATES_CONFIG_KEY := "stage_scene_voxel_source_candidates_to_resident_buffers"
 const VOXEL_WRITE_SPEC_CONFIG_KEYS := [
@@ -397,6 +415,14 @@ static func _rid_from_contract(contract: Dictionary, key_a: String, key_b: Strin
 	return RID()
 
 
+static func _rid_from_value(value) -> RID:
+	if value is RID:
+		return value as RID
+	return RID()
+
+
+## Legacy debug-only: full-field CPU readback contract.
+## Only used when `read_full_field_outputs` is explicitly set to `true`.
 static func _full_field_readback_contract(voxel_count: int, output_source: String, is_gpu_readback: bool) -> Dictionary:
 	var byte_count := maxi(voxel_count, 0) * 4
 	return {
@@ -409,6 +435,171 @@ static func _full_field_readback_contract(voxel_count: int, output_source: Strin
 		"scene_field_out_gpu_storage_buffer_readback": is_gpu_readback,
 		"collision_field_out_gpu_storage_buffer_readback": is_gpu_readback,
 		"cpu_state_chaining": true,
+		"cpu_state_chain_mode": "full_field_readback",
+		"cpu_state_chain_source": output_source,
+		"stamp_delta_cpu_state_chaining": false,
+		"full_field_readback_required": true,
+	}
+
+
+## Legacy/debug: compact stamp-delta state chain contract.
+## Kept for backward compatibility with tests and debug paths.
+static func _compact_delta_state_chain_contract(
+	voxel_count: int,
+	stamp_delta_count: int,
+	decoded_delta_count: int
+) -> Dictionary:
+	return {
+		"scene_field_out_source": "cpu_state_chain_compact_stamp_deltas",
+		"collision_field_out_source": "cpu_state_chain_compact_stamp_deltas",
+		"scene_field_out_is_full_field": false,
+		"collision_field_out_is_full_field": false,
+		"scene_field_out_byte_count": 0,
+		"collision_field_out_byte_count": 0,
+		"scene_field_out_gpu_storage_buffer_readback": false,
+		"collision_field_out_gpu_storage_buffer_readback": false,
+		"cpu_state_chaining": true,
+		"cpu_state_chain_mode": "compact_stamp_deltas",
+		"cpu_state_chain_source": "stamp_shader_storage_buffer",
+		"stamp_delta_cpu_state_chaining": true,
+		"stamp_delta_gpu_storage_buffer_readback": true,
+		"stamp_delta_count": stamp_delta_count,
+		"stamp_delta_decoded_count": decoded_delta_count,
+		"voxel_count": maxi(voxel_count, 0),
+		"full_field_readback_required": false,
+	}
+
+
+## GPU-resident state chain: scene/collision buffers live on GPU as borrowed RIDs.
+## No full-field readback, no CPU array pass-through. This is the production default.
+static func _gpu_resident_state_chain_contract(
+	voxel_count: int,
+	gpu_resident: bool,
+	scene_rid: RID,
+	collision_rid: RID,
+	source_label: String = "caller_provided_rid",
+	owner: String = "external",
+	borrowed_external: bool = true,
+	blocked_reason: String = "none"
+) -> Dictionary:
+	return {
+		"scene_field_out_source": "gpu_resident_buffer" if gpu_resident else "gpu_resident_unavailable",
+		"collision_field_out_source": "gpu_resident_buffer" if gpu_resident else "gpu_resident_unavailable",
+		"scene_field_out_is_full_field": false,
+		"collision_field_out_is_full_field": false,
+		"scene_field_out_byte_count": 0,
+		"collision_field_out_byte_count": 0,
+		"scene_field_out_gpu_storage_buffer_readback": false,
+		"collision_field_out_gpu_storage_buffer_readback": false,
+		"gpu_state_chaining": gpu_resident,
+		"gpu_state_chain_mode": "resident_buffer_borrow",
+		"gpu_state_chain_source": source_label if gpu_resident else "none",
+		"gpu_state_chain_owner": owner if gpu_resident else "none",
+		"gpu_state_chain_borrowed_external": gpu_resident and borrowed_external,
+		"gpu_state_chain_blocked_reason": "none" if gpu_resident else blocked_reason,
+		"cpu_state_chaining": false,
+		"cpu_state_chain_mode": "none",
+		"stamp_delta_cpu_state_chaining": false,
+		"stamp_delta_gpu_storage_buffer_readback": false,
+		"stamp_delta_count": 0,
+		"stamp_delta_decoded_count": 0,
+		"voxel_count": maxi(voxel_count, 0),
+		"full_field_readback_required": false,
+		"scene_field_buffer_rid": scene_rid if gpu_resident else RID(),
+		"collision_field_buffer_rid": collision_rid if gpu_resident else RID(),
+	}
+
+
+## Legacy: compact stamp-delta state chaining check.
+## GPU-resident state chain is now the primary path. This function is kept
+## for backward compatibility with tests and debug paths.
+static func _compact_delta_state_chain_requested(settings: Dictionary) -> bool:
+	# Explicit opt-out flags — pass force_full_field_readback=true to fall back to
+	# the legacy full-voxel-field readback path (e.g. for debugging / compatibility).
+	if bool(settings.get("force_full_field_readback", false)):
+		return false
+	if bool(settings.get("disable_compact_state_chain", false)):
+		return false
+	if bool(settings.get("use_full_field_readback", false)):
+		return false
+	var mode := str(settings.get("cpu_state_chain_mode", settings.get("cpu_state_chaining_mode", "")))
+	if mode == "full_field_readback" or mode == "full_field":
+		return false
+	# Legacy opt-in flags (preserved for backward compatibility but now no-ops).
+	if bool(settings.get("use_compact_state_chain", false)):
+		return true
+	if bool(settings.get("use_vpg_compact_state_chain", false)):
+		return true
+	if bool(settings.get("use_stamp_delta_state_chain", false)):
+		return true
+	if mode == "compact_stamp_deltas" or mode == "compact_deltas" or mode == "stamp_deltas":
+		return true
+	# DEFAULT: compact stamp-delta state chaining is enabled.
+	# Reduces PCIe bandwidth by 90%+ (256³=67MB → stamp deltas only).
+	return true
+
+
+## GPU-resident state chain: scene/collision buffers live entirely on GPU.
+## This is the production default path. No CPU arrays for state transfer.
+## Disable via `force_cpu_state_chain=true` or `disable_gpu_state_chain=true`.
+static func _gpu_state_chain_enabled(settings: Dictionary) -> bool:
+	if bool(settings.get("force_cpu_state_chain", false)):
+		return false
+	if bool(settings.get("disable_gpu_state_chain", false)):
+		return false
+	if bool(settings.get("use_cpu_state_chain", false)):
+		return false
+	if bool(settings.get("force_full_field_readback", false)):
+		return false
+	return true
+
+
+static func _apply_stamp_deltas_to_cpu_state(
+	current_scene: PackedFloat32Array,
+	current_collision: PackedFloat32Array,
+	stamp_deltas: Array,
+	grid_size: Vector3i
+) -> Dictionary:
+	var expected_voxel_count := maxi(grid_size.x, 0) * maxi(grid_size.y, 0) * maxi(grid_size.z, 0)
+	var applied_count := 0
+	var scene_write_count := 0
+	var collision_write_count := 0
+	var skipped_count := 0
+	for raw_delta in stamp_deltas:
+		if not raw_delta is Dictionary:
+			skipped_count += 1
+			continue
+		var delta: Dictionary = raw_delta
+		var voxel := _vector3i_from_value(delta.get("voxel", Vector3i.ZERO), Vector3i.ZERO)
+		if voxel.x < 0 or voxel.y < 0 or voxel.z < 0 \
+				or voxel.x >= grid_size.x or voxel.y >= grid_size.y or voxel.z >= grid_size.z:
+			skipped_count += 1
+			continue
+		var index := voxel.x + grid_size.x * (voxel.z + grid_size.z * voxel.y)
+		if index < 0 or index >= current_scene.size() or index >= current_collision.size():
+			skipped_count += 1
+			continue
+		var scene_value := clampf(float(delta.get("scene_complexity", 0.0)), 0.0, 1.0)
+		var collision_value := clampf(float(delta.get("collision_strength", 0.0)), 0.0, 1.0)
+		if scene_value > current_scene[index]:
+			current_scene[index] = scene_value
+			scene_write_count += 1
+		if collision_value > current_collision[index]:
+			current_collision[index] = collision_value
+			collision_write_count += 1
+		applied_count += 1
+	return {
+		"mode": "compact_stamp_deltas",
+		"source": "stamp_shader_storage_buffer",
+		"cpu_state_chaining": true,
+		"full_field_readback_required": false,
+		"stamp_delta_cpu_state_chaining": true,
+		"stamp_delta_count": stamp_deltas.size(),
+		"applied_delta_count": applied_count,
+		"scene_write_count": scene_write_count,
+		"collision_write_count": collision_write_count,
+		"skipped_delta_count": skipped_count,
+		"voxel_count": expected_voxel_count,
 	}
 
 
@@ -472,6 +663,24 @@ func run_multi_asset(
 	var total_placed := 0
 	var global_quota := int(common_settings.get("global_quota", -1))
 	var candidate_route_output_settings := common_settings.duplicate(true)
+	var target_read_buffer_output_summary := {}
+	var compact_state_chain := _compact_delta_state_chain_requested(common_settings)
+	var compact_state_chain_reports: Array[Dictionary] = []
+	var compact_state_chain_applied_count := 0
+
+	var _voxel_count := grid_size.x * grid_size.y * grid_size.z
+	var _gpu_scene_buffer: RID = _rid_from_value(common_settings.get("scene_field_buffer_rid", RID()))
+	var _gpu_collision_buffer: RID = _rid_from_value(common_settings.get("collision_field_buffer_rid", RID()))
+	var _gpu_state_chain_requested := _gpu_state_chain_enabled(common_settings)
+	var _gpu_state_chain_external := _gpu_scene_buffer.is_valid() and _gpu_collision_buffer.is_valid()
+	var _gpu_state_chain_active := _gpu_state_chain_requested and _gpu_state_chain_external
+	var _gpu_state_chain_blocked_reason := "none" if _gpu_state_chain_active else "external_scene_collision_field_buffers_missing" if _gpu_state_chain_requested else "disabled"
+	var _gpu_state_chain_source := str(common_settings.get("gpu_state_chain_source", "caller_provided_scene_collision_field_rids"))
+	var _gpu_state_chain_owner := str(common_settings.get("scene_field_buffer_owner", common_settings.get("resident_scene_field_owner", "external")))
+	var _gpu_state_chain_rd: RenderingDevice = get_rendering_device()
+	var raw_chain_rd = common_settings.get("resident_scene_field_rendering_device", common_settings.get("rendering_device", null))
+	if _gpu_state_chain_rd == null and raw_chain_rd is RenderingDevice:
+		_gpu_state_chain_rd = raw_chain_rd as RenderingDevice
 
 	var order := _sort_asset_defs_by_priority_weight(asset_defs, common_settings)
 	var result_by_index: Dictionary = {}
@@ -508,6 +717,17 @@ func run_multi_asset(
 		var overrides: Dictionary = asset_def.get("settings", {})
 		for key in overrides:
 			per_asset_settings[key] = overrides[key]
+		if _gpu_state_chain_active:
+			if _gpu_state_chain_rd != null and get_rendering_device() != _gpu_state_chain_rd:
+				attach_rendering_device(_gpu_state_chain_rd, false)
+			per_asset_settings["scene_field_buffer_rid"] = _gpu_scene_buffer
+			per_asset_settings["collision_field_buffer_rid"] = _gpu_collision_buffer
+			per_asset_settings["scene_field_buffer_borrowed"] = true
+			per_asset_settings["collision_field_buffer_borrowed"] = true
+			per_asset_settings["scene_field_buffer_owner"] = _gpu_state_chain_owner
+			per_asset_settings["collision_field_buffer_owner"] = str(common_settings.get("collision_field_buffer_owner", _gpu_state_chain_owner))
+			per_asset_settings["gpu_state_chain_source"] = _gpu_state_chain_source
+			per_asset_settings["read_full_field_outputs"] = false
 		var routed_regions_by_asset := _candidate_regions_by_asset_from_settings(common_settings)
 		if _has_asset_candidate_regions(asset_def):
 			var asset_regions: Array = _asset_candidate_regions(asset_def)
@@ -538,6 +758,10 @@ func run_multi_asset(
 				per_asset_settings["profile_id"] = int(asset_def[profile_key])
 				break
 		per_asset_settings["asset_index"] = orig_idx
+		if compact_state_chain and not _gpu_state_chain_active:
+			per_asset_settings["read_stamp_deltas"] = true
+			per_asset_settings["read_full_field_outputs"] = false
+			per_asset_settings["cpu_state_chain_mode"] = "compact_stamp_deltas"
 
 		if global_quota >= 0:
 			var remaining := global_quota - total_placed
@@ -552,6 +776,8 @@ func run_multi_asset(
 			var pivot_offset := _vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
 			var pivot_voxels := _world_offset_to_voxels(pivot_offset, voxel_size)
 			var footprint := apply_pivot_to_footprint(base_footprint, pivot_voxels)
+			if _gpu_state_chain_active and _gpu_state_chain_rd != null and get_rendering_device() != _gpu_state_chain_rd:
+				attach_rendering_device(_gpu_state_chain_rd, false)
 			var gpu_out := run_minimal(current_scene, current_collision, footprint, grid_size, per_asset_settings)
 			if bool(gpu_out.get("contract_blocked", false)):
 				return _gpu_contract_blocked_multi_asset_output(
@@ -578,13 +804,28 @@ func run_multi_asset(
 			candidate_route_output_settings["candidate_route_input_contract"] = best_gpu_out.get("candidate_route_input_contract", {})
 			candidate_route_output_settings["candidate_route_readback_source"] = str(best_gpu_out.get("candidate_route_readback_source", "none"))
 			candidate_route_output_settings["candidate_route_runtime_read_source"] = str(best_gpu_out.get("candidate_route_runtime_read_source", "none"))
+		if best_gpu_out.has("target_read_buffer_summary"):
+			target_read_buffer_output_summary = best_gpu_out.get("target_read_buffer_summary", {})
 
 		var count := int(best_gpu_out.get("result_count", 0))
 		var raw_results: Array = best_gpu_out.get("results", [])
 		var world := results_to_world(raw_results, voxel_size, grid_origin, 24, best_pivot)
 
-		current_scene = best_gpu_out.get("scene_field_out", current_scene)
-		current_collision = best_gpu_out.get("collision_field_out", current_collision)
+		var compact_state_chain_report := {}
+		if compact_state_chain and not _gpu_state_chain_active:
+			compact_state_chain_report = _apply_stamp_deltas_to_cpu_state(
+				current_scene,
+				current_collision,
+				best_gpu_out.get("stamp_deltas", []),
+				grid_size
+			)
+			compact_state_chain_report["asset_index"] = orig_idx
+			compact_state_chain_report["result_count"] = count
+			compact_state_chain_reports.append(compact_state_chain_report)
+			compact_state_chain_applied_count += int(compact_state_chain_report.get("applied_delta_count", 0))
+		elif not _gpu_state_chain_active:
+			current_scene = best_gpu_out.get("scene_field_out", current_scene)
+			current_collision = best_gpu_out.get("collision_field_out", current_collision)
 		total_placed += count
 
 		var asset_result := {
@@ -600,6 +841,12 @@ func run_multi_asset(
 			"pivot_variant": best_pivot,
 			"pivot_variant_count": pivot_variants.size(),
 		}
+		if best_gpu_out.has("full_field_readback"):
+			asset_result["full_field_readback"] = best_gpu_out.get("full_field_readback", {})
+		if best_gpu_out.has("cpu_state_chain"):
+			asset_result["cpu_state_chain"] = best_gpu_out.get("cpu_state_chain", {})
+		if compact_state_chain:
+			asset_result["compact_state_chain"] = compact_state_chain_report
 		if best_gpu_out.has("gpu_runtime_profile_contract"):
 			asset_result["gpu_runtime_profile_contract"] = best_gpu_out.get("gpu_runtime_profile_contract", {})
 		if best_gpu_out.has("candidate_route_input_contract"):
@@ -607,6 +854,8 @@ func run_multi_asset(
 			asset_result["candidate_route_runtime_read_source"] = str(best_gpu_out.get("candidate_route_runtime_read_source", "none"))
 			asset_result["candidate_route_input_contract"] = best_gpu_out.get("candidate_route_input_contract", {})
 			asset_result["candidate_route_binding_debug"] = best_gpu_out.get("candidate_route_binding_debug", {})
+		if best_gpu_out.has("target_read_buffer_summary"):
+			asset_result["target_read_buffer_summary"] = best_gpu_out.get("target_read_buffer_summary", {})
 		if bool(best_gpu_out.get("contract_blocked", false)):
 			asset_result["contract_blocked"] = true
 		if best_gpu_out.has("cpu_fallback"):
@@ -671,12 +920,76 @@ func run_multi_asset(
 
 	var output := {
 		"asset_results": asset_results,
-		"scene_field_out": current_scene,
-		"collision_field_out": current_collision,
+		"scene_field_out": current_scene if not _gpu_state_chain_active else PackedFloat32Array(),
+		"collision_field_out": current_collision if not _gpu_state_chain_active else PackedFloat32Array(),
 		"total_placed": total_placed,
 		"processing_order": order,
 		"gpu_runtime_profile_contract": gpu_contract,
 	}
+	if _gpu_state_chain_active:
+		output["gpu_state_chain"] = {
+			"mode": "gpu_resident",
+			"source": _gpu_state_chain_source,
+			"gpu_state_chaining": true,
+			"cpu_state_chaining": false,
+			"full_field_readback_required": false,
+			"stamp_delta_cpu_state_chaining": false,
+			"read_full_field_outputs": false,
+			"scene_field_buffer_rid": _gpu_scene_buffer,
+			"collision_field_buffer_rid": _gpu_collision_buffer,
+			"scene_field_buffer_borrowed": true,
+			"collision_field_buffer_borrowed": true,
+			"owner": _gpu_state_chain_owner,
+			"borrowed_from": _gpu_state_chain_owner,
+			"blocked_reason": "none",
+		}
+		if bool(common_settings.get("read_full_field_outputs", false)):
+			if _gpu_state_chain_rd != null and get_rendering_device() != _gpu_state_chain_rd:
+				attach_rendering_device(_gpu_state_chain_rd, false)
+			# Debug/readback: read final GPU state back to CPU
+			submit_and_sync(true)
+			if _rd != null:
+				var _scene_out := _rd.buffer_get_data(_gpu_scene_buffer)
+				var _collision_out := _rd.buffer_get_data(_gpu_collision_buffer)
+				output["scene_field_out"] = _decode_float_array(_scene_out, _voxel_count)
+				output["collision_field_out"] = _decode_float_array(_collision_out, _voxel_count)
+				output["gpu_state_chain"]["read_full_field_outputs"] = true
+				output["gpu_state_chain"]["scene_field_out_source"] = "gpu_storage_buffer_full_field_readback_debug"
+				output["gpu_state_chain"]["collision_field_out_source"] = "gpu_storage_buffer_full_field_readback_debug"
+			else:
+				output["gpu_state_chain"]["read_full_field_outputs"] = false
+				output["gpu_state_chain"]["readback_blocked_reason"] = "rendering_device_unavailable_for_debug_readback"
+		else:
+			output["gpu_state_chain"]["scene_field_out_source"] = "gpu_resident_skipped"
+			output["gpu_state_chain"]["collision_field_out_source"] = "gpu_resident_skipped"
+	elif compact_state_chain:
+		if _gpu_state_chain_requested:
+			output["gpu_state_chain"] = {
+				"mode": "inactive",
+				"source": "none",
+				"gpu_state_chaining": false,
+				"cpu_state_chaining": true,
+				"full_field_readback_required": false,
+				"scene_field_buffer_rid": RID(),
+				"collision_field_buffer_rid": RID(),
+				"scene_field_buffer_borrowed": false,
+				"collision_field_buffer_borrowed": false,
+				"owner": "none",
+				"borrowed_from": "none",
+				"blocked_reason": _gpu_state_chain_blocked_reason,
+				"gpu_first": true,
+				"cpu_fallback": false,
+			}
+		output["cpu_state_chain"] = {
+			"mode": "compact_stamp_deltas",
+			"source": "stamp_shader_storage_buffer",
+			"cpu_state_chaining": true,
+			"full_field_readback_required": false,
+			"stamp_delta_cpu_state_chaining": true,
+			"read_stamp_deltas": true,
+			"asset_reports": compact_state_chain_reports,
+			"applied_delta_count": compact_state_chain_applied_count,
+		}
 	var candidate_route_output_contract: Dictionary = candidate_route_output_settings.get("candidate_route_input_contract", {})
 	if candidate_route_output_contract.has("normalized_readback_source"):
 		output["candidate_route_readback_source"] = str(candidate_route_output_contract.get("normalized_readback_source", "none"))
@@ -688,8 +1001,19 @@ func run_multi_asset(
 		output["candidate_route_input_contract"] = _candidate_route_input_contract_from_settings(candidate_route_output_settings)
 	if write_accepted_placements_to_gpu_runtime:
 		output["gpu_autoobject_runtime_writeback"] = runtime_writeback_report
+	if not target_read_buffer_output_summary.is_empty():
+		output["target_read_buffer_summary"] = target_read_buffer_output_summary
 	if not instance_stamp_writeback.is_empty():
 		output["instance_stamp_writeback"] = instance_stamp_writeback
+		# P0 #3: propagate accepted placement RIDs to top-level for SPA handoff
+		var _records_rid = instance_stamp_writeback.get("accepted_placement_source_records_rid", RID())
+		if _records_rid is RID and (_records_rid as RID).is_valid():
+			output["accepted_placement_source_records_rid"] = _records_rid
+		var _ranges_rid = instance_stamp_writeback.get("accepted_placement_source_ranges_rid", RID())
+		if _ranges_rid is RID and (_ranges_rid as RID).is_valid():
+			output["accepted_placement_source_ranges_rid"] = _ranges_rid
+		output["accepted_placement_source_record_count"] = instance_stamp_writeback.get("accepted_placement_source_record_count", 0)
+		output["accepted_placement_source_range_count"] = instance_stamp_writeback.get("accepted_placement_source_range_count", 0)
 	if str(gpu_contract.get("reason", "")) != "not_requested":
 		output["cpu_fallback"] = false
 	return output
@@ -946,6 +1270,9 @@ func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: 
 	target["pending_dirty_delta_count"] = int(source.get("pending_dirty_delta_count", target.get("pending_dirty_delta_count", 0)))
 
 
+## GPU-first: packs accepted placements into source-candidate records/ranges buffers,
+## calls apply_accepted_placement_source_buffer() on the first available committer,
+## and exposes the RIDs so the actor can hand them off without CPU readback.
 func _write_accepted_placements_to_scene_voxel_committer(
 	asset_defs: Array,
 	result_by_index: Dictionary,
@@ -955,15 +1282,258 @@ func _write_accepted_placements_to_scene_voxel_committer(
 	voxel_size: Vector3,
 	grid_origin: Vector3
 ) -> Dictionary:
+	# ---- 1.  gather source-candidate records from every asset ----------------
+	var candidate_priorities := PackedFloat32Array()
+	var candidate_complexities := PackedFloat32Array()
+	var candidate_source_types := PackedFloat32Array()
+	var candidate_has_priority_flags := PackedFloat32Array()
+	var ranges := PackedInt32Array()
+	var target: Object = null
+	var generated_tick := int(common_settings.get("generation_tick", -1))
+	var has_candidates := false
+
+	for orig_idx in range(asset_defs.size()):
+		var asset_def: Dictionary = asset_defs[orig_idx]
+		var asset_result: Dictionary = result_by_index.get(orig_idx, {})
+		if asset_result.is_empty() or int(asset_result.get("result_count", 0)) <= 0:
+			ranges.append(candidate_priorities.size())
+			ranges.append(0)
+			continue
+		var cfg := _runtime_voxel_write_spec_config(asset_def, common_settings, orig_idx, grid_size, voxel_size, grid_origin)
+		if target == null:
+			target = _scene_voxel_committer_from_config(cfg)
+		var provided_record := _get_config_voxel_write_spec(cfg)
+		var should_create := _should_create_voxel_write_spec(cfg) or not provided_record.is_empty()
+		if target == null or not should_create:
+			ranges.append(candidate_priorities.size())
+			ranges.append(0)
+			continue
+		generated_tick = maxi(generated_tick, int(cfg.get("generation_tick", -1)))
+		var world_results: Array = asset_result.get("world_results", [])
+		var result_indices := _scene_voxel_source_write_result_indices(asset_result, world_results.size())
+		var range_start := candidate_priorities.size()
+		var valid_count := 0
+		for raw_i in result_indices:
+			var i := int(raw_i)
+			if i < 0 or i >= world_results.size():
+				continue
+			var world_result: Dictionary = world_results[i]
+			candidate_priorities.append(float(world_result.get("score", 0.0)))
+			var complexity := float(asset_def.get("voxel_complexity", asset_def.get("complexity", 0.5)))
+			if world_result.has("complexity"):
+				complexity = float(world_result.get("complexity", complexity))
+			candidate_complexities.append(clampf(complexity, 0.0, 1.0))
+			# VPG placements are always AutoSceneVoxel (source_type_code = 1)
+			candidate_source_types.append(1.0)
+			candidate_has_priority_flags.append(1.0)
+			valid_count += 1
+			has_candidates = true
+		ranges.append(range_start)
+		ranges.append(valid_count)
+
+	if not has_candidates:
+		return {}
+
+	# ---- 2.  GPU path: pack buffers and handoff to committer -----------------
+	var gpu_ok := false
+	var gpu_reason := "gpu_path_not_attempted"
+	var source_records_rid := RID()
+	var source_ranges_rid := RID()
+
+	if target != null and target.has_method("apply_accepted_placement_source_buffer"):
+		var _committer_rd: Object = null
+		if target.has_method("get_rendering_device"):
+			_committer_rd = target.call("get_rendering_device")
+		if _rd == null and _committer_rd is RenderingDevice:
+			attach_rendering_device(_committer_rd as RenderingDevice, false)
+		if _rd != null and _rd.is_valid():
+			var candidate_count := candidate_priorities.size()
+			var range_count := int(ranges.size() / 2)
+			# interleave 4 fields: [priority, complexity, source_type, has_flag]
+			var candidate_floats := PackedFloat32Array()
+			candidate_floats.resize(candidate_count * 4)
+			for ri in range(candidate_count):
+				candidate_floats[ri * 4 + 0] = candidate_priorities[ri]
+				candidate_floats[ri * 4 + 1] = candidate_complexities[ri]
+				candidate_floats[ri * 4 + 2] = candidate_source_types[ri]
+				candidate_floats[ri * 4 + 3] = candidate_has_priority_flags[ri]
+			var candidate_bytes := pack_float_array(candidate_floats)
+			var range_bytes := pack_u32_array(ranges)
+
+			source_records_rid = storage_buffer_from_bytes(
+				candidate_bytes,
+				SCOPE_PERSISTENT,
+				"vpg_accepted_source_candidate_records"
+			)
+			source_ranges_rid = storage_buffer_from_bytes(
+				range_bytes,
+				SCOPE_PERSISTENT,
+				"vpg_accepted_source_candidate_ranges"
+			)
+
+			if source_records_rid.is_valid() and source_ranges_rid.is_valid():
+				var handoff_result: Dictionary = target.call(
+					"apply_accepted_placement_source_buffer",
+					source_records_rid,
+					source_ranges_rid,
+					candidate_count,
+					range_count,
+					generated_tick
+				)
+				gpu_ok = bool(handoff_result.get("ok", false))
+				gpu_reason = str(handoff_result.get("reason", "gpu_handoff_returned_false"))
+
+	# ---- 3.  GPU path succeeded — emit RID-rich report -----------------------
+	if gpu_ok:
+		var report := {
+			"ok": true,
+			"reason": "gpu_resident_source_buffer_handoff_ok",
+			"gpu_first": true,
+			"cpu_fallback": false,
+			"accepted_placement_writeback_mode": "gpu_resident_source_write_buffer",
+			"accepted_placement_record_source": "gpu_resident_source_candidate_buffer",
+			"source_write_handoff_mode": "gpu_resident_source_write_buffer",
+			"source_write_batch_api": "apply_accepted_placement_source_buffer",
+			"cpu_pending_source_candidate_bridge": false,
+			"pending_source_candidate_flush_api": "none",
+			"source_candidate_resolve_api": "resolve_scene_voxel_sources.glsl",
+			"resident_source_write_buffer": true,
+			"resident_source_write_buffer_owner": "vpg_accepted_placement_buffer",
+			"resident_source_write_buffer_rid": str(source_records_rid),
+			"resident_source_write_buffer_lifetime": "vpg_pass_owned_handoff",
+			"resident_source_write_buffer_stride_bytes": 16,
+			"resident_source_write_buffer_range_count": int(ranges.size() / 2),
+			"resident_source_candidate_buffer_rid": str(source_records_rid),
+			"resident_source_candidate_buffer_stride_bytes": 16,
+			"resident_source_candidate_buffer_capacity": candidate_priorities.size(),
+			"resident_source_candidate_buffer_count": candidate_priorities.size(),
+			"resident_source_range_buffer_rid": str(source_ranges_rid),
+			"resident_source_range_buffer_stride_bytes": 8,
+			"resident_source_range_buffer_capacity": int(ranges.size() / 2),
+			"resident_source_range_buffer_count": int(ranges.size() / 2),
+			"resident_source_candidate_staging_epoch": 0,
+			"runtime_read_source": "resident_gpu_source_candidate_buffer",
+			"final_source_stream_resident": false,
+			"final_source_stream_resident_source": "none",
+			"resident_gpu_allocator_writeback": false,
+			"resident_gpu_allocator_writeback_mode": "none",
+			"source_record_count": candidate_priorities.size(),
+			"applied_count": candidate_priorities.size(),
+			"failed_count": 0,
+			"asset_reports": [],
+			# P0 #3: RIDs for SPA to consume without CPU readback
+			"accepted_placement_source_records_rid": source_records_rid,
+			"accepted_placement_source_ranges_rid": source_ranges_rid,
+			"accepted_placement_source_record_count": candidate_priorities.size(),
+			"accepted_placement_source_range_count": int(ranges.size() / 2),
+		}
+		return report
+
+	# ---- 4.  GPU path failed — release buffers and fall through to CPU --------
+	if source_records_rid.is_valid():
+		release_rid(source_records_rid, false)
+		source_records_rid = RID()
+	if source_ranges_rid.is_valid():
+		release_rid(source_ranges_rid, false)
+		source_ranges_rid = RID()
+
+	if gpu_reason == ACCEPTED_PLACEMENT_SOURCE_BUFFER_INCOMPLETE_REASON:
+		return {
+			"ok": false,
+			"reason": gpu_reason,
+			"gpu_first": true,
+			"cpu_fallback": false,
+			"accepted_placement_writeback_mode": "blocked_gpu_resident_source_write_buffer",
+			"accepted_placement_record_source": "incomplete_gpu_resident_source_candidate_buffer",
+			"source_write_handoff_mode": "blocked_incomplete_gpu_resident_source_write_buffer",
+			"source_write_batch_api": "apply_accepted_placement_source_buffer",
+			"cpu_pending_source_candidate_bridge": false,
+			"pending_source_candidate_flush_api": "none",
+			"source_candidate_resolve_api": "resolve_scene_voxel_sources.glsl",
+			"resident_source_write_buffer": false,
+			"resident_source_write_buffer_owner": "none",
+			"resident_source_write_buffer_rid": "none",
+			"resident_source_write_buffer_lifetime": "none",
+			"resident_source_write_buffer_stride_bytes": 0,
+			"resident_source_write_buffer_range_count": 0,
+			"resident_source_candidate_buffer_rid": "none",
+			"resident_source_candidate_buffer_stride_bytes": 0,
+			"resident_source_candidate_buffer_capacity": 0,
+			"resident_source_candidate_buffer_count": 0,
+			"resident_source_range_buffer_rid": "none",
+			"resident_source_range_buffer_stride_bytes": 0,
+			"resident_source_range_buffer_capacity": 0,
+			"resident_source_range_buffer_count": 0,
+			"resident_source_candidate_payload_buffer": false,
+			"resident_source_candidate_payload_buffer_rid": "none",
+			"resident_source_candidate_payload_buffer_stride_bytes": 0,
+			"resident_source_candidate_payload_buffer_capacity": 0,
+			"resident_source_candidate_payload_buffer_count": 0,
+			"resident_source_candidate_group_index_buffer": false,
+			"resident_source_candidate_group_index_buffer_rid": "none",
+			"resident_source_candidate_group_index_buffer_stride_bytes": 0,
+			"resident_source_candidate_group_index_buffer_capacity": 0,
+			"resident_source_candidate_group_index_buffer_count": 0,
+			"resident_source_candidate_staging_epoch": 0,
+			"runtime_read_source": "none",
+			"final_source_stream_resident": false,
+			"final_source_stream_resident_source": "none",
+			"resident_gpu_allocator_writeback": false,
+			"resident_gpu_allocator_writeback_mode": "none",
+			"source_record_count": candidate_priorities.size(),
+			"applied_count": 0,
+			"failed_count": candidate_priorities.size(),
+			"asset_reports": [],
+			"accepted_placement_source_record_count": candidate_priorities.size(),
+			"accepted_placement_source_range_count": int(ranges.size() / 2),
+			"source_candidate_required_buffers": [
+				"candidate_records",
+				"candidate_ranges",
+				"candidate_payloads",
+				"group_source_key_indices",
+			],
+			"source_candidate_missing_buffers": [
+				"candidate_payloads",
+				"group_source_key_indices",
+			],
+		}
+
+	# ---- 5.  CPU fallback (DEPRECATED — reachable only when GPU handoff fails)
+	return _write_accepted_placements_to_scene_voxel_committer_cpu_fallback(
+		asset_defs,
+		result_by_index,
+		asset_results,
+		common_settings,
+		grid_size,
+		voxel_size,
+		grid_origin,
+		gpu_reason
+	)
+
+
+## CPU fallback (DEPRECATED — dead code pending removal).
+## Reachable only when GPU handoff fails, but contract requires cpu_fallback=false
+## so this path should never execute in production. Kept temporarily for safety
+## during GPU handoff transition; scheduled for deletion after full verification.
+func _write_accepted_placements_to_scene_voxel_committer_cpu_fallback(
+	asset_defs: Array,
+	result_by_index: Dictionary,
+	asset_results: Array[Dictionary],
+	common_settings: Dictionary,
+	grid_size: Vector3i,
+	voxel_size: Vector3,
+	grid_origin: Vector3,
+	gpu_blocked_reason: String
+) -> Dictionary:
 	var report := {
 		"ok": true,
-		"reason": "not_requested",
+		"reason": "cpu_fallback_active_gpu_blocked_by_%s" % gpu_blocked_reason,
 		"gpu_first": true,
-		"cpu_fallback": false,
-		"accepted_placement_writeback_mode": "cpu_dictionary_to_scene_voxel_committer",
-		"accepted_placement_record_source": "cpu_instance_stamp_write_spec_dictionaries",
-		"source_write_handoff_mode": "none",
-		"source_write_batch_api": "none",
+		"cpu_fallback": true,
+		"accepted_placement_writeback_mode": "cpu_fallback_dictionary_to_scene_voxel_committer",
+		"accepted_placement_record_source": "cpu_fallback_instance_stamp_write_spec_dictionaries",
+		"source_write_handoff_mode": "cpu_fallback",
+		"source_write_batch_api": "cpu_fallback",
 		"cpu_pending_source_candidate_bridge": false,
 		"pending_source_candidate_flush_api": "none",
 		"source_candidate_resolve_api": "none",
@@ -1367,15 +1937,51 @@ func _write_accepted_placements_to_gpu_runtime(
 	if command_queue_bridge:
 		var staged_records: Array[Dictionary] = []
 		var stage_reports: Array = []
+		var reserved_object_ids: Array = []
+		var staged_reserved_object_ids: Array = []
+		var finalized_reserved_object_ids: Array = []
+		var use_object_id_reservation := runtime_provider.has_method("reserve_accepted_placement_object_ids") \
+			and runtime_provider.has_method("rollback_accepted_placement_object_ids") \
+			and runtime_provider.has_method("finalize_accepted_placement_object_id_reservation")
+		if use_object_id_reservation:
+			var raw_reservation = runtime_provider.call("reserve_accepted_placement_object_ids", spawn_records.size())
+			if raw_reservation is Dictionary:
+				var reservation := (raw_reservation as Dictionary).duplicate(true)
+				report["accepted_placement_object_id_reservation"] = reservation
+				if bool(reservation.get("ok", false)):
+					reserved_object_ids = reservation.get("object_ids", [])
+					if reserved_object_ids.size() != spawn_records.size():
+						report["ok"] = false
+						report["reason"] = "runtime_spawn_failed"
+						report["writeback_detail_reason"] = "object_id_reservation_count_mismatch"
+						report["failed_count"] = int(report.get("failed_count", 0)) + spawn_records.size()
+				else:
+					report["ok"] = false
+					report["reason"] = "runtime_spawn_failed"
+					report["writeback_detail_reason"] = str(reservation.get("reason", "object_id_reservation_failed"))
+					report["failed_count"] = int(report.get("failed_count", 0)) + spawn_records.size()
+			else:
+				report["ok"] = false
+				report["reason"] = "runtime_spawn_failed"
+				report["writeback_detail_reason"] = "object_id_reservation_result_invalid"
+				report["failed_count"] = int(report.get("failed_count", 0)) + spawn_records.size()
+
 		for i in range(spawn_records.size()):
+			if use_object_id_reservation and not bool(report.get("ok", false)):
+				break
 			var command := spawn_records[i].duplicate(true)
 			command["command"] = "spawn"
+			if use_object_id_reservation:
+				command["object_id"] = int(reserved_object_ids[i])
+				command["accepted_placement_object_id_reserved"] = true
 			var raw_stage_result = runtime_provider.call("stage_command", command)
 			if raw_stage_result is Dictionary:
 				var stage_result := (raw_stage_result as Dictionary).duplicate(true)
 				stage_reports.append(stage_result)
 				if bool(stage_result.get("ok", false)):
 					staged_records.append(command)
+					if use_object_id_reservation:
+						staged_reserved_object_ids.append(int(command.get("object_id", -1)))
 				else:
 					report["ok"] = false
 					report["failed_count"] = int(report.get("failed_count", 0)) + 1
@@ -1391,8 +1997,15 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["runtime_command_queue_stage_results"] = stage_reports
 		report["command_queue_stage_count"] = staged_records.size()
 
+		# P0 #5: Always enable GPU-resident accepted placement shader for
+		# batched writeback. This eliminates the CPU bulk-spawn code path
+		# and lets the shader write alive/type/profile/bounds/transform/dirty
+		# atomically in a single dispatch.
 		if not staged_records.is_empty():
-			var raw_flush_result = runtime_provider.call("flush_command_queue")
+			var raw_flush_result = runtime_provider.call(
+				"flush_command_queue",
+				{"use_accepted_placement_record_shader": true}
+			)
 			if raw_flush_result is Dictionary:
 				var flush_result := (raw_flush_result as Dictionary).duplicate(true)
 				report["runtime_command_queue_flush_report"] = flush_result
@@ -1403,6 +2016,32 @@ func _write_accepted_placements_to_gpu_runtime(
 					report["reason"] = "runtime_spawn_failed"
 					if not report.has("writeback_detail_reason"):
 						report["writeback_detail_reason"] = str(flush_result.get("reason", "flush_command_queue_failed"))
+				elif use_object_id_reservation and bool(flush_result.get("accepted_placement_record_shader_consumed", false)):
+					var raw_finalize = runtime_provider.call(
+						"finalize_accepted_placement_object_id_reservation",
+						staged_reserved_object_ids,
+						flush_result
+					)
+					if raw_finalize is Dictionary:
+						var finalize_result := (raw_finalize as Dictionary).duplicate(true)
+						report["accepted_placement_object_id_reservation_finalize"] = finalize_result
+						if bool(finalize_result.get("ok", false)):
+							finalized_reserved_object_ids = finalize_result.get("finalized_object_ids", [])
+						else:
+							report["ok"] = false
+							report["reason"] = "runtime_spawn_failed"
+							if not report.has("writeback_detail_reason"):
+								report["writeback_detail_reason"] = str(finalize_result.get("reason", "object_id_reservation_finalize_failed"))
+					else:
+						report["ok"] = false
+						report["reason"] = "runtime_spawn_failed"
+						if not report.has("writeback_detail_reason"):
+							report["writeback_detail_reason"] = "object_id_reservation_finalize_result_invalid"
+				elif use_object_id_reservation:
+					report["ok"] = false
+					report["reason"] = "runtime_spawn_failed"
+					if not report.has("writeback_detail_reason"):
+						report["writeback_detail_reason"] = "accepted_record_shader_not_consumed"
 				var queue_results: Array = flush_result.get("results", [])
 				for i in range(staged_records.size()):
 					var spawn_params: Dictionary = staged_records[i]
@@ -1436,36 +2075,80 @@ func _write_accepted_placements_to_gpu_runtime(
 				report["reason"] = "runtime_spawn_failed"
 				report["writeback_detail_reason"] = "flush_command_queue_result_invalid"
 				report["failed_count"] = int(report.get("failed_count", 0)) + staged_records.size()
+		if use_object_id_reservation:
+			var rollback_ids: Array = []
+			for raw_id in reserved_object_ids:
+				var object_id := int(raw_id)
+				if finalized_reserved_object_ids.find(object_id) < 0:
+					rollback_ids.append(object_id)
+			if not rollback_ids.is_empty():
+				var raw_rollback = runtime_provider.call("rollback_accepted_placement_object_ids", rollback_ids)
+				if raw_rollback is Dictionary:
+					report["accepted_placement_object_id_reservation_rollback"] = (raw_rollback as Dictionary).duplicate(true)
+	# P0 #5: GPU batched allocator replaces the old CPU for-loop that
+	# called spawn()/spawn_from_bounds() for each record individually.
+	# spawn_batch_from_accepted_placement_records allocates all IDs,
+	# packs the AcceptedPlacementRecord buffer, and dispatches
+	# autoobject_apply_accepted_placements.glsl in a single GPU pass.
 	else:
-		for i in range(spawn_records.size()):
-			var spawn_params: Dictionary = spawn_records[i]
-			var transform: Transform3D = spawn_params.get("transform", Transform3D.IDENTITY)
-			var object_id := -1
-			if runtime_provider.has_method("spawn_from_bounds"):
-				object_id = int(runtime_provider.call("spawn_from_bounds", spawn_params))
-			elif runtime_provider.has_method("spawn"):
-				object_id = int(runtime_provider.call(
-					"spawn",
-					report["profile_id"],
-					report["object_type"],
-					spawn_params["voxel_min"],
-					spawn_params["voxel_max"],
-					transform,
-					dirty_flags
-				))
-			if object_id < 0:
-				report["ok"] = false
-				report["failed_count"] = int(report.get("failed_count", 0)) + 1
-				if str(report.get("reason", "gpu_runtime_writeback_ready")) == "gpu_runtime_writeback_ready":
+		if runtime_provider.has_method("spawn_batch_from_accepted_placement_records"):
+			var batch_options := {"use_accepted_placement_record_shader": true}
+			var batch_result = runtime_provider.call("spawn_batch_from_accepted_placement_records", spawn_records, batch_options)
+			if batch_result is Dictionary:
+				_copy_gpu_autoobject_runtime_flush_contract(report, batch_result)
+				var batch_object_ids: Array = batch_result.get("object_ids", [])
+				if bool(batch_result.get("ok", false)):
+					report["spawned_count"] = int(batch_result.get("spawned_count", 0))
+					report["object_ids"] = batch_object_ids.duplicate(true)
+					for i in range(batch_object_ids.size()):
+						report["spawned_result_indices"].append(int(spawn_records[i].get("result_index", i)))
+						if runtime_provider.has_method("get_object_summary"):
+							var s = runtime_provider.call("get_object_summary", int(batch_object_ids[i]))
+							if s is Dictionary:
+								report["object_summaries"].append((s as Dictionary).duplicate(true))
+				else:
+					report["ok"] = false
+					report["failed_count"] = int(report.get("failed_count", 0)) + spawn_records.size()
 					report["reason"] = "runtime_spawn_failed"
-				continue
-			report["spawned_count"] = int(report.get("spawned_count", 0)) + 1
-			report["object_ids"].append(object_id)
-			report["spawned_result_indices"].append(int(spawn_params.get("result_index", i)))
-			if runtime_provider.has_method("get_object_summary"):
-				var object_summary = runtime_provider.call("get_object_summary", object_id)
-				if object_summary is Dictionary:
-					report["object_summaries"].append((object_summary as Dictionary).duplicate(true))
+					if not report.has("writeback_detail_reason"):
+						report["writeback_detail_reason"] = str(batch_result.get("reason", "batch_spawn_failed"))
+					report["resident_gpu_allocator_writeback_blocked_reason"] = str(batch_result.get("resident_gpu_allocator_writeback_blocked_reason", "none"))
+			else:
+				report["ok"] = false
+				report["reason"] = "runtime_spawn_failed"
+				report["writeback_detail_reason"] = "batch_spawn_result_invalid"
+				report["failed_count"] = int(report.get("failed_count", 0)) + spawn_records.size()
+		else:
+			# Backward-compatible fallback for runtimes without batch method.
+			for i in range(spawn_records.size()):
+				var spawn_params: Dictionary = spawn_records[i]
+				var transform: Transform3D = spawn_params.get("transform", Transform3D.IDENTITY)
+				var object_id := -1
+				if runtime_provider.has_method("spawn_from_bounds"):
+					object_id = int(runtime_provider.call("spawn_from_bounds", spawn_params))
+				elif runtime_provider.has_method("spawn"):
+					object_id = int(runtime_provider.call(
+						"spawn",
+						report["profile_id"],
+						report["object_type"],
+						spawn_params["voxel_min"],
+						spawn_params["voxel_max"],
+						transform,
+						dirty_flags
+					))
+				if object_id < 0:
+					report["ok"] = false
+					report["failed_count"] = int(report.get("failed_count", 0)) + 1
+					if str(report.get("reason", "gpu_runtime_writeback_ready")) == "gpu_runtime_writeback_ready":
+						report["reason"] = "runtime_spawn_failed"
+					continue
+				report["spawned_count"] = int(report.get("spawned_count", 0)) + 1
+				report["object_ids"].append(object_id)
+				report["spawned_result_indices"].append(int(spawn_params.get("result_index", i)))
+				if runtime_provider.has_method("get_object_summary"):
+					var object_summary = runtime_provider.call("get_object_summary", object_id)
+					if object_summary is Dictionary:
+						report["object_summaries"].append((object_summary as Dictionary).duplicate(true))
 
 	var runtime_summary := _object_summary(runtime_provider)
 	report["runtime_summary"] = runtime_summary
@@ -1732,9 +2415,9 @@ static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> V
 
 
 # ---------------------------------------------------------------------------
-# Instantiation — create AutoObject nodes from GPU placement results
+# Instantiation - create AutoObject nodes from GPU placement results
 # ---------------------------------------------------------------------------
-# node_class: "canopy_tree", "midstory_tree", "bush", "grass", "rock", "vegetation"
+# node_class: all classes create AutoObject (AutoRock for heightfield objects, AutoObject for generic objects).
 
 static func instantiate_placement(
 	world_result: Dictionary,
@@ -1757,7 +2440,7 @@ static func instantiate_placement(
 
 	var asset = cfg.get("asset", null)
 	if node is AutoRock and asset is AutoRock:
-		(node as AutoRock).configure_from_rock_asset(asset as AutoRock, cfg)
+		(node as AutoRock).configure_from_asset(asset as AutoRock, cfg)
 	else:
 		_configure_node(node, node_class, cfg)
 
@@ -1972,8 +2655,6 @@ static func _placement_record_extra_fields(
 
 static func _create_node_for_class(node_class: String) -> AutoObject:
 	match node_class:
-		"canopy_tree", "midstory_tree", "bush", "grass":
-			return AutoObject.new()
 		"rock", "cliff":
 			return AutoRock.new()
 		_:
@@ -1982,33 +2663,9 @@ static func _create_node_for_class(node_class: String) -> AutoObject:
 
 static func _configure_node(node: AutoObject, node_class: String, cfg: Dictionary) -> void:
 	match node_class:
-		"canopy_tree":
-			cfg["object_subtype"] = "canopy_tree"
-			cfg["object_type"] = "vegetation"
-			if not cfg.has("group"):
-				cfg["group"] = "placed_canopy_trees"
-			node.configure_auto_object(cfg)
-		"midstory_tree":
-			cfg["object_subtype"] = "midstory_tree"
-			cfg["object_type"] = "vegetation"
-			if not cfg.has("group"):
-				cfg["group"] = "placed_midstory_trees"
-			node.configure_auto_object(cfg)
-		"bush":
-			cfg["object_subtype"] = "bush"
-			cfg["object_type"] = "vegetation"
-			if not cfg.has("group"):
-				cfg["group"] = "placed_bushes"
-			node.configure_auto_object(cfg)
-		"grass":
-			cfg["object_subtype"] = "grass"
-			cfg["object_type"] = "vegetation"
-			if not cfg.has("group"):
-				cfg["group"] = "placed_grass"
-			node.configure_auto_object(cfg)
 		"rock", "cliff":
 			cfg["object_subtype"] = node_class
-			(node as AutoRock).configure_rock(cfg)
+			(node as AutoRock).configure_object(cfg)
 		_:
 			node.configure_auto_object(cfg)
 
@@ -2034,6 +2691,14 @@ func run_minimal(
 
 	var scene_data := _normalize_float_array(scene_field, voxel_count)
 	var collision_data := _normalize_float_array(collision_field, voxel_count)
+	var _scene_field_gpu_rid: RID = _rid_from_value(settings.get("scene_field_buffer_rid", RID()))
+	var _collision_field_gpu_rid: RID = _rid_from_value(settings.get("collision_field_buffer_rid", RID()))
+	var _scene_field_gpu_resident: bool = _scene_field_gpu_rid.is_valid() and _collision_field_gpu_rid.is_valid()
+	var _scene_field_gpu_borrowed_external := _scene_field_gpu_resident \
+		and bool(settings.get("scene_field_buffer_borrowed", settings.get("scene_field_buffer_external", true))) \
+		and bool(settings.get("collision_field_buffer_borrowed", settings.get("collision_field_buffer_external", true)))
+	var _scene_field_gpu_source := str(settings.get("gpu_state_chain_source", settings.get("scene_field_read_source", "caller_provided_scene_collision_field_rids")))
+	var _scene_field_gpu_owner := str(settings.get("scene_field_buffer_owner", settings.get("resident_scene_field_owner", "external")))
 	var footprint_buffers := _pack_footprint(footprint)
 	var tile_counts := Vector3i(
 		ceili(float(grid_size.x) / float(TILE_SIZE)),
@@ -2091,6 +2756,20 @@ func run_minimal(
 			_gpu_contract_result(false, "placement_shader_pipeline_not_ready")
 		)
 
+	var object_ref_contract := _prepare_scene_voxel_tile_object_ref_exclusion(gpu_contract, settings, tile_counts)
+	gpu_contract = _merge_scene_voxel_tile_object_ref_contract(gpu_contract, object_ref_contract)
+	if bool(gpu_contract.get("contract_blocked", false)):
+		_free_gpu()
+		return _gpu_contract_blocked_minimal_output(
+			scene_data,
+			collision_data,
+			voxel_count,
+			tile_count,
+			tile_counts,
+			candidate_voxel_sparse_ids,
+			gpu_contract
+		)
+
 	var route_binding := _prepare_candidate_route_binding(settings, direct_all_tiles)
 	var route_settings: Dictionary = route_binding.get("settings", settings)
 	var resident_route_sparse := _prepare_candidate_sparse_ids_from_resident_route_gpu(route_binding, tile_count)
@@ -2125,8 +2804,11 @@ func run_minimal(
 	var candidate_count := candidate_voxel_sparse_count * top_k
 	var stamp_capacity := result_capacity * footprint.size()
 
-	var scene_buffer := storage_buffer_from_floats(scene_data)
-	var collision_buffer := storage_buffer_from_floats(collision_data)
+	if _scene_field_gpu_borrowed_external:
+		track_borrowed_rid(_scene_field_gpu_rid, KIND_BUFFER, SCOPE_FRAME, "%s:scene_field" % _scene_field_gpu_owner)
+		track_borrowed_rid(_collision_field_gpu_rid, KIND_BUFFER, SCOPE_FRAME, "%s:collision_field" % _scene_field_gpu_owner)
+	var scene_buffer: RID = _scene_field_gpu_rid if _scene_field_gpu_resident else storage_buffer_from_floats(scene_data)
+	var collision_buffer: RID = _collision_field_gpu_rid if _scene_field_gpu_resident else storage_buffer_from_floats(collision_data)
 	var footprint_pos_buffer := storage_buffer_from_bytes(footprint_buffers.pos_bytes)
 	var footprint_weight_buffer := storage_buffer_from_bytes(footprint_buffers.weight_bytes)
 	var candidate_voxel_sparse_buffer := storage_buffer_from_bytes(
@@ -2139,13 +2821,40 @@ func run_minimal(
 	var stamp_delta_count_buffer := storage_buffer_zero(4)
 	var stamp_bounds_buffer := storage_buffer_zero(maxi(result_capacity, 1) * STAMP_BOUNDS_STRIDE * 16)
 
-	var target_occupancy_pack := _target_occupancy_bytes_from_settings(settings, voxel_count)
-	var has_target := 1 if bool(target_occupancy_pack.get("has_target", false)) else 0
-	var target_buffer := storage_buffer_from_bytes(target_occupancy_pack.get("bytes", PackedByteArray()))
-
-	var target_color_buffer := storage_buffer_from_bytes(
-		_target_color_rgba8_bytes_from_settings(settings, voxel_count)
-	)
+	var target_buffer_pack := _target_read_buffer_pack(settings, voxel_count)
+	if not bool(target_buffer_pack.get("ready", false)):
+		var blocked_reason := str(target_buffer_pack.get("reason", "target_read_buffer_not_ready"))
+		var blocked_output := _gpu_contract_blocked_minimal_output(
+			scene_data,
+			collision_data,
+			voxel_count,
+			tile_count,
+			tile_counts,
+			candidate_voxel_sparse_ids,
+			_gpu_contract_result(false, blocked_reason)
+		)
+		blocked_output["target_read_buffer_summary"] = _target_read_buffer_summary(target_buffer_pack)
+		blocked_output["target_read_buffer_source"] = str(target_buffer_pack.get("target_read_buffer_source", "none"))
+		blocked_output["target_read_buffer_blocked_reason"] = blocked_reason
+		_free_gpu()
+		return blocked_output
+	var has_target := 1 if bool(target_buffer_pack.get("has_target", false)) else 0
+	var target_buffer: RID = target_buffer_pack.get("target_occupancy_buffer", RID())
+	var target_color_buffer: RID = target_buffer_pack.get("target_color_rgba8_buffer", RID())
+	if bool(target_buffer_pack.get("target_read_buffers_borrowed", false)):
+		track_borrowed_rid(target_buffer, KIND_BUFFER, SCOPE_FRAME, "scene_placement_actor:target_occupancy")
+		track_borrowed_rid(target_color_buffer, KIND_BUFFER, SCOPE_FRAME, "scene_placement_actor:target_color_rgba8")
+	else:
+		target_buffer = storage_buffer_from_bytes(
+			target_buffer_pack.get("target_occupancy_bytes", PackedByteArray()),
+			SCOPE_FRAME,
+			"target_occupancy_uploaded"
+		)
+		target_color_buffer = storage_buffer_from_bytes(
+			target_buffer_pack.get("target_color_rgba8_bytes", PackedByteArray()),
+			SCOPE_FRAME,
+			"target_color_rgba8_uploaded"
+		)
 
 	var debug_voxel_buffer := storage_buffer_zero(voxel_count * NUM_DEBUG_CHANNELS * 4)
 	var score_contract_debug_buffer := storage_buffer_from_bytes(_pack_score_contract_debug_reset())
@@ -2221,12 +2930,20 @@ func run_minimal(
 	var result_data := _rd.buffer_get_data(result_buffer, 0, result_readback_bytes)
 	var read_tile_topk := bool(settings.get("read_tile_topk", false))
 	var tile_topk_data := _rd.buffer_get_data(tile_topk_buffer) if read_tile_topk else PackedByteArray()
-	var scene_out_data := _rd.buffer_get_data(scene_buffer)
-	var collision_out_data := _rd.buffer_get_data(collision_buffer)
+	var compact_state_chain := _compact_delta_state_chain_requested(settings)
+	var _gpu_resident_field_input: bool = _scene_field_gpu_resident
+	var read_full_field_outputs := bool(settings.get("read_full_field_outputs", false))
+	if _gpu_resident_field_input and not read_full_field_outputs:
+		pass  # GPU-resident: skip full-field readback, borrowed buffers stay on GPU
+	var scene_out_data := _rd.buffer_get_data(scene_buffer) if read_full_field_outputs else PackedByteArray()
+	var collision_out_data := _rd.buffer_get_data(collision_buffer) if read_full_field_outputs else PackedByteArray()
 	var stamp_delta_count_data := _rd.buffer_get_data(stamp_delta_count_buffer)
 	var stamp_delta_count := clampi(_decode_u32_count(stamp_delta_count_data), 0, stamp_capacity)
 	var read_stamp_deltas := bool(settings.get("read_stamp_deltas", false))
 	var stamp_delta_data := _rd.buffer_get_data(stamp_delta_buffer, 0, stamp_delta_count * DELTA_STRIDE * 16) if read_stamp_deltas else PackedByteArray()
+	var decoded_stamp_deltas: Array[Dictionary] = []
+	if read_stamp_deltas:
+		decoded_stamp_deltas = _decode_stamp_deltas(stamp_delta_data, stamp_delta_count)
 	var stamp_bounds_data := _rd.buffer_get_data(stamp_bounds_buffer, 0, result_count * STAMP_BOUNDS_STRIDE * 16)
 	var read_debug_voxel := bool(settings.get("read_debug_voxel", false))
 	var debug_voxel_data := _rd.buffer_get_data(debug_voxel_buffer) if read_debug_voxel else PackedByteArray()
@@ -2272,7 +2989,23 @@ func run_minimal(
 		_free_gpu()
 		return blocked_output
 
-	var full_field_readback := _full_field_readback_contract(voxel_count, "scene_collision_storage_buffer_full_field_readback", true)
+	var _state_chain_contract := {}
+	if read_full_field_outputs:
+		_state_chain_contract = _full_field_readback_contract(voxel_count, "scene_collision_storage_buffer_full_field_readback", true)
+	elif _gpu_resident_field_input:
+		_state_chain_contract = _gpu_resident_state_chain_contract(
+			voxel_count,
+			true,
+			_scene_field_gpu_rid,
+			_collision_field_gpu_rid,
+			_scene_field_gpu_source,
+			_scene_field_gpu_owner,
+			_scene_field_gpu_borrowed_external
+		)
+	elif compact_state_chain:
+		_state_chain_contract = _compact_delta_state_chain_contract(voxel_count, stamp_delta_count, decoded_stamp_deltas.size())
+	else:
+		_state_chain_contract = _full_field_readback_contract(voxel_count, "scene_collision_storage_buffer_full_field_readback_disabled", false)
 	var output := {
 		"result_count": result_count,
 		"result_readback_bytes": result_readback_bytes,
@@ -2280,14 +3013,14 @@ func run_minimal(
 		"results": _decode_records(result_data, result_count),
 		"tile_topk": _decode_records(tile_topk_data, candidate_count) if read_tile_topk else [],
 		"tile_topk_readback_source": "score_shader_tile_topk_buffer" if read_tile_topk else "disabled",
-		"scene_field_out": _decode_float_array(scene_out_data, voxel_count),
-		"collision_field_out": _decode_float_array(collision_out_data, voxel_count),
-		"scene_field_out_source": full_field_readback.get("scene_field_out_source", ""),
-		"collision_field_out_source": full_field_readback.get("collision_field_out_source", ""),
-		"scene_field_out_byte_count": full_field_readback.get("scene_field_out_byte_count", 0),
-		"collision_field_out_byte_count": full_field_readback.get("collision_field_out_byte_count", 0),
-		"full_field_readback": full_field_readback,
-		"stamp_deltas": _decode_stamp_deltas(stamp_delta_data, stamp_delta_count) if read_stamp_deltas else [],
+		"scene_field_out": _decode_float_array(scene_out_data, voxel_count) if read_full_field_outputs else PackedFloat32Array(),
+		"collision_field_out": _decode_float_array(collision_out_data, voxel_count) if read_full_field_outputs else PackedFloat32Array(),
+		"scene_field_out_source": _state_chain_contract.get("scene_field_out_source", ""),
+		"collision_field_out_source": _state_chain_contract.get("collision_field_out_source", ""),
+		"scene_field_out_byte_count": _state_chain_contract.get("scene_field_out_byte_count", 0),
+		"collision_field_out_byte_count": _state_chain_contract.get("collision_field_out_byte_count", 0),
+		"full_field_readback": _state_chain_contract,
+		"stamp_deltas": decoded_stamp_deltas,
 		"stamp_delta_count": stamp_delta_count,
 		"stamp_delta_count_source": "stamp_shader_storage_buffer",
 		"stamp_delta_readback_source": "stamp_shader_storage_buffer" if read_stamp_deltas else "disabled",
@@ -2311,9 +3044,14 @@ func run_minimal(
 		"candidate_route_runtime_read_source": _candidate_route_runtime_read_source_from_settings(route_settings),
 		"candidate_route_input_contract": _candidate_route_input_contract_from_settings(route_settings),
 		"candidate_route_binding_debug": route_binding_debug,
+		"target_read_buffer_summary": _target_read_buffer_summary(target_buffer_pack),
 	}
 	if str(gpu_contract.get("reason", "")) != "not_requested":
 		output["cpu_fallback"] = false
+	if bool(_state_chain_contract.get("cpu_state_chaining", false)):
+		output["cpu_state_chain"] = _state_chain_contract
+	if bool(_state_chain_contract.get("gpu_state_chaining", false)):
+		output["gpu_state_chain"] = _state_chain_contract
 
 	_free_gpu()
 	return output
@@ -2537,6 +3275,209 @@ func _validate_gpu_runtime_profile_contract(settings: Dictionary) -> Dictionary:
 	return ok
 
 
+func _prepare_scene_voxel_tile_object_ref_exclusion(
+	gpu_contract: Dictionary,
+	settings: Dictionary,
+	tile_counts: Vector3i
+) -> Dictionary:
+	if not _score_same_type_spacing_active(gpu_contract, settings):
+		return _scene_voxel_tile_object_ref_exclusion_result(true, "not_requested")
+
+	var committer := _first_config_object(settings, SCENE_VOXEL_TILE_COMMITTER_CONFIG_KEYS)
+	if committer == null:
+		return _scene_voxel_tile_object_ref_unavailable("missing_scene_voxel_committer", gpu_contract, settings)
+	if not committer.has_method("get_scene_voxel_tile_gpu_buffer") \
+			or not committer.has_method("get_scene_voxel_tile_gpu_buffer_summary"):
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_gpu_buffer_api_missing", gpu_contract, settings)
+
+	var committer_rd: RenderingDevice = _object_rendering_device(committer)
+	if committer_rd == null or _rd == null:
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_rendering_device_missing", gpu_contract, settings)
+	if committer_rd != _rd:
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_rendering_device_mismatch", gpu_contract, settings)
+
+	var raw_summary = committer.call("get_scene_voxel_tile_gpu_buffer_summary")
+	if not raw_summary is Dictionary:
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_summary_invalid", gpu_contract, settings)
+	var summary: Dictionary = raw_summary
+	var object_ref_buffer: RID = committer.call("get_scene_voxel_tile_gpu_buffer", SCENE_VOXEL_TILE_OBJECT_REF_BUFFER_NAME)
+	if not object_ref_buffer.is_valid():
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_object_ref_rid_invalid", gpu_contract, settings)
+
+	var buffers: Dictionary = summary.get("buffers", {})
+	var object_ref_summary: Dictionary = buffers.get(SCENE_VOXEL_TILE_OBJECT_REF_BUFFER_NAME, {})
+	var refs_per_tile := int(summary.get("refs_per_tile", SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT))
+	var object_ref_tile_count := int(summary.get("object_ref_tile_count", 0))
+	var object_ref_capacity := int(summary.get("object_ref_capacity", 0))
+	var object_ref_stride := int(object_ref_summary.get("stride_bytes", 0))
+	var object_ref_record_count := int(object_ref_summary.get("record_count", 0))
+	var object_ref_tile_grid: Vector3i = _vector3i_from_value(
+		summary.get("object_ref_tile_grid_size", tile_counts),
+		tile_counts
+	)
+	var object_ref_tile_size: Vector3i = _vector3i_from_value(
+		summary.get("object_ref_tile_size", Vector3i(TILE_SIZE, TILE_SIZE, TILE_SIZE)),
+		Vector3i(TILE_SIZE, TILE_SIZE, TILE_SIZE)
+	)
+	if object_ref_tile_count <= 0:
+		object_ref_tile_count = object_ref_tile_grid.x * object_ref_tile_grid.y * object_ref_tile_grid.z
+	if object_ref_capacity <= 0:
+		object_ref_capacity = object_ref_record_count
+
+	if not bool(summary.get("runtime_ready", false)):
+		return _scene_voxel_tile_object_ref_unavailable(str(summary.get("reason", "scene_voxel_tile_not_runtime_ready")), gpu_contract, settings)
+	if bool(summary.get("buffers_stale", false)) or not bool(summary.get("uploaded_revision_matches_staging", false)):
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_object_refs_stale", gpu_contract, settings)
+	if bool(summary.get("object_ref_rebuild_required", false)):
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_object_refs_rebuild_required", gpu_contract, settings)
+	if int(summary.get("object_ref_overflow_count", 0)) > 0 or int(summary.get("overflow_tile_count", 0)) > 0:
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_object_refs_overflow", gpu_contract, settings)
+	if object_ref_stride != SCENE_VOXEL_TILE_OBJECT_REF_STRIDE_BYTES:
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_object_ref_stride_mismatch", gpu_contract, settings)
+	if refs_per_tile <= 0 or object_ref_tile_count <= 0 or object_ref_capacity != object_ref_tile_count * refs_per_tile:
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_object_ref_capacity_mismatch", gpu_contract, settings)
+	if object_ref_record_count > 0 and object_ref_record_count != object_ref_capacity:
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_object_ref_record_count_mismatch", gpu_contract, settings)
+	if object_ref_tile_grid.x <= 0 or object_ref_tile_grid.y <= 0 or object_ref_tile_grid.z <= 0:
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_object_ref_tile_grid_invalid", gpu_contract, settings)
+
+	var numeric_schema := str(summary.get("gpu_autoobject_ref_key_schema", summary.get("object_ref_key_schema", "")))
+	var numeric_confirmed := bool(summary.get(
+		"gpu_autoobject_ref_key_schema_numeric_confirmed",
+		summary.get("object_ref_numeric_schema_confirmed", false)
+	)) and numeric_schema == SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC
+	if not numeric_confirmed:
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_object_ref_numeric_schema_unconfirmed", gpu_contract, settings)
+	if int(summary.get("object_ref_non_numeric_count", 0)) > 0:
+		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_object_ref_non_numeric_diagnostics", gpu_contract, settings)
+
+	track_borrowed_rid(object_ref_buffer, KIND_BUFFER, SCOPE_FRAME, "SceneVoxelCommitter:scene_voxel_tile_object_refs")
+	var result := _scene_voxel_tile_object_ref_exclusion_result(true, "ok")
+	result["scene_voxel_tile_object_ref_exclusion"] = true
+	result["scene_voxel_tile_object_ref_buffer"] = object_ref_buffer
+	result["same_type_exclusion_read_source"] = SCENE_VOXEL_TILE_OBJECT_REF_BUFFER_NAME
+	result["same_type_exclusion_object_ref_read_source"] = SCENE_VOXEL_TILE_OBJECT_REF_BUFFER_NAME
+	result["object_ref_tile_count"] = object_ref_tile_count
+	result["object_ref_capacity"] = object_ref_capacity
+	result["refs_per_tile"] = refs_per_tile
+	result["object_ref_tile_grid_size"] = object_ref_tile_grid
+	result["object_ref_tile_size"] = object_ref_tile_size
+	result["object_ref_stride_bytes"] = object_ref_stride
+	result["object_ref_key_schema"] = numeric_schema
+	result["object_ref_numeric_schema_confirmed"] = true
+	result["object_ref_summary"] = summary
+	result["borrowed_from"] = "SceneVoxelCommitter"
+	result["rendering_device_match"] = true
+	return result
+
+
+func _score_same_type_spacing_active(gpu_contract: Dictionary, settings: Dictionary) -> bool:
+	if str(gpu_contract.get("reason", "")) != "gpu_runtime_profile_buffers_ready":
+		return false
+	if not bool(settings.get("score_runtime_profile_avoidance", true)):
+		return false
+	return maxf(float(settings.get("min_distance_voxels", min_distance_voxels)), 0.0) > 0.0
+
+
+func _scene_voxel_tile_object_ref_unavailable(
+	reason: String,
+	gpu_contract: Dictionary,
+	settings: Dictionary
+) -> Dictionary:
+	var require_object_refs := bool(settings.get(
+		"require_scene_voxel_tile_object_ref_exclusion",
+		settings.get("require_same_type_exclusion_object_refs", settings.get("require_object_ref_exclusion", false))
+	))
+	var fallback_allowed := _runtime_spacing_full_scan_debug_fallback_allowed(gpu_contract, settings)
+	if fallback_allowed and not require_object_refs:
+		var fallback := _scene_voxel_tile_object_ref_exclusion_result(true, reason)
+		fallback["scene_voxel_tile_object_ref_exclusion"] = false
+		fallback["same_type_exclusion_read_source"] = "score_shader_storage_buffer"
+		fallback["same_type_exclusion_object_ref_read_source"] = "none"
+		fallback["same_type_exclusion_full_runtime_scan_debug_fallback"] = true
+		fallback["same_type_exclusion_object_ref_blocked_reason"] = reason
+		return fallback
+
+	var blocked_reason := reason if require_object_refs else "%s_full_runtime_scan_debug_fallback_not_enabled" % reason
+	var blocked := _scene_voxel_tile_object_ref_exclusion_result(false, blocked_reason)
+	blocked["contract_blocked"] = true
+	blocked["same_type_exclusion_object_ref_required"] = require_object_refs
+	blocked["same_type_exclusion_full_runtime_scan_debug_fallback"] = false
+	blocked["same_type_exclusion_object_ref_blocked_reason"] = reason
+	return blocked
+
+
+func _runtime_spacing_full_scan_debug_fallback_allowed(gpu_contract: Dictionary, settings: Dictionary) -> bool:
+	var requested := bool(settings.get(
+		"allow_runtime_spacing_full_scan_debug",
+		settings.get(
+			"debug_allow_runtime_spacing_full_scan",
+			settings.get("allow_same_type_exclusion_full_runtime_scan_debug", false)
+		)
+	))
+	if not requested:
+		return false
+	var runtime_summary: Dictionary = gpu_contract.get("runtime_summary", {})
+	var max_debug_objects := int(settings.get("runtime_spacing_full_scan_debug_max_objects", 256))
+	return int(runtime_summary.get("max_objects", 0)) <= maxi(max_debug_objects, 0)
+
+
+func _scene_voxel_tile_object_ref_exclusion_result(ok: bool, reason: String) -> Dictionary:
+	return {
+		"ok": ok,
+		"reason": reason,
+		"gpu_first": true,
+		"cpu_fallback": false,
+		"contract_blocked": not ok,
+		"scene_voxel_tile_object_ref_exclusion": false,
+		"scene_voxel_tile_object_ref_buffer": RID(),
+		"same_type_exclusion_read_source": "none",
+		"same_type_exclusion_object_ref_read_source": "none",
+		"same_type_exclusion_full_runtime_scan_debug_fallback": false,
+		"same_type_exclusion_object_ref_blocked_reason": "none",
+		"object_ref_tile_count": 0,
+		"object_ref_capacity": 0,
+		"refs_per_tile": SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT,
+		"object_ref_tile_grid_size": Vector3i.ZERO,
+		"object_ref_tile_size": Vector3i(TILE_SIZE, TILE_SIZE, TILE_SIZE),
+		"object_ref_stride_bytes": SCENE_VOXEL_TILE_OBJECT_REF_STRIDE_BYTES,
+		"object_ref_key_schema": "none",
+		"object_ref_numeric_schema_confirmed": false,
+		"borrowed_from": "none",
+		"rendering_device_match": false,
+	}
+
+
+func _merge_scene_voxel_tile_object_ref_contract(
+	gpu_contract: Dictionary,
+	object_ref_contract: Dictionary
+) -> Dictionary:
+	var merged := _with_same_type_exclusion_defaults(gpu_contract.duplicate(true))
+	merged["scene_voxel_tile_object_ref_contract"] = object_ref_contract.duplicate(true)
+	for key in [
+		"scene_voxel_tile_object_ref_exclusion",
+		"same_type_exclusion_read_source",
+		"same_type_exclusion_object_ref_read_source",
+		"same_type_exclusion_full_runtime_scan_debug_fallback",
+		"same_type_exclusion_object_ref_blocked_reason",
+		"object_ref_tile_count",
+		"object_ref_capacity",
+		"refs_per_tile",
+		"object_ref_tile_grid_size",
+		"object_ref_tile_size",
+		"object_ref_stride_bytes",
+		"object_ref_key_schema",
+		"object_ref_numeric_schema_confirmed",
+	]:
+		if object_ref_contract.has(key):
+			merged[key] = object_ref_contract[key]
+	if bool(object_ref_contract.get("contract_blocked", false)):
+		merged["ok"] = false
+		merged["contract_blocked"] = true
+		merged["reason"] = str(object_ref_contract.get("reason", "scene_voxel_tile_object_ref_exclusion_blocked"))
+	return merged
+
+
 func _gpu_contract_result(
 	ok: bool,
 	reason: String,
@@ -2577,6 +3518,10 @@ static func _with_same_type_exclusion_defaults(result: Dictionary) -> Dictionary
 		result["same_type_exclusion_object_ref_read_source"] = "none"
 	if not result.has("scene_voxel_tile_object_ref_exclusion"):
 		result["scene_voxel_tile_object_ref_exclusion"] = false
+	if not result.has("same_type_exclusion_full_runtime_scan_debug_fallback"):
+		result["same_type_exclusion_full_runtime_scan_debug_fallback"] = false
+	if not result.has("same_type_exclusion_object_ref_blocked_reason"):
+		result["same_type_exclusion_object_ref_blocked_reason"] = "none"
 	return result
 
 
@@ -3402,6 +4347,10 @@ func _create_score_runtime_profile_set(
 	var probe_records_buffer: RID = _gpu_buffer_or_dummy(profile_buffers, "probe_records", dummy_buffer)
 	var collision_records_buffer: RID = _gpu_buffer_or_dummy(profile_buffers, "collision_records", dummy_buffer)
 	var pivot_records_buffer: RID = _gpu_buffer_or_dummy(profile_buffers, "pivot_records", dummy_buffer)
+	var object_ref_contract: Dictionary = gpu_contract.get("scene_voxel_tile_object_ref_contract", {})
+	var object_ref_buffer: RID = object_ref_contract.get("scene_voxel_tile_object_ref_buffer", RID())
+	if not object_ref_buffer.is_valid():
+		object_ref_buffer = dummy_buffer
 	return create_uniform_set([
 		make_storage_uniform(0, alive_buffer),
 		make_storage_uniform(1, generation_buffer),
@@ -3415,6 +4364,7 @@ func _create_score_runtime_profile_set(
 		make_storage_uniform(9, probe_records_buffer),
 		make_storage_uniform(10, collision_records_buffer),
 		make_storage_uniform(11, pivot_records_buffer),
+		make_storage_uniform(12, object_ref_buffer),
 	], _shader_score, 1, SCOPE_PASS, "score_runtime_profile_contract")
 
 
@@ -3443,6 +4393,14 @@ func _pack_score_contract_params(gpu_contract: Dictionary, settings: Dictionary)
 	var probe_record_count := int((profile_buffers.get("probe_records", {}) as Dictionary).get("record_count", 0)) if profile_buffers.has("probe_records") else 0
 	var collision_record_count := int((profile_buffers.get("collision_records", {}) as Dictionary).get("record_count", 0)) if profile_buffers.has("collision_records") else 0
 	var pivot_record_count := int((profile_buffers.get("pivot_records", {}) as Dictionary).get("record_count", 0)) if profile_buffers.has("pivot_records") else 0
+	var object_ref_contract: Dictionary = gpu_contract.get("scene_voxel_tile_object_ref_contract", {})
+	var object_ref_enabled := bool(object_ref_contract.get("scene_voxel_tile_object_ref_exclusion", false))
+	var object_ref_tile_count := int(object_ref_contract.get("object_ref_tile_count", 0)) if object_ref_enabled else 0
+	var object_ref_capacity := int(object_ref_contract.get("object_ref_capacity", 0)) if object_ref_enabled else 0
+	var refs_per_tile := int(object_ref_contract.get("refs_per_tile", SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT)) if object_ref_enabled else SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT
+	var object_ref_tile_grid: Vector3i = object_ref_contract.get("object_ref_tile_grid_size", Vector3i.ZERO) if object_ref_enabled else Vector3i.ZERO
+	var object_ref_tile_size: Vector3i = object_ref_contract.get("object_ref_tile_size", Vector3i(TILE_SIZE, TILE_SIZE, TILE_SIZE)) if object_ref_enabled else Vector3i(TILE_SIZE, TILE_SIZE, TILE_SIZE)
+	var full_scan_debug_fallback := bool(object_ref_contract.get("same_type_exclusion_full_runtime_scan_debug_fallback", false))
 	var asset_profile_id := int(settings.get(
 		"profile_id",
 		settings.get(
@@ -3451,15 +4409,15 @@ func _pack_score_contract_params(gpu_contract: Dictionary, settings: Dictionary)
 		)
 	))
 	var bytes := PackedByteArray()
-	bytes.resize(64)
+	bytes.resize(112)
 	bytes.encode_s32(0, 1 if contract_enabled else 0)
 	bytes.encode_s32(4, runtime_capacity)
 	bytes.encode_s32(8, profile_count)
 	bytes.encode_s32(12, asset_profile_id)
 	bytes.encode_s32(16, 1 if bool(settings.get("score_runtime_profile_avoidance", true)) else 0)
 	bytes.encode_s32(20, 1 if bool(settings.get("score_profile_complexity_debug", true)) else 0)
-	bytes.encode_s32(24, 0)
-	bytes.encode_s32(28, 0)
+	bytes.encode_s32(24, 1 if object_ref_enabled else 0)
+	bytes.encode_s32(28, 1 if full_scan_debug_fallback else 0)
 	bytes.encode_s32(32, probe_record_count)
 	bytes.encode_s32(36, collision_record_count)
 	bytes.encode_s32(40, pivot_record_count)
@@ -3468,6 +4426,18 @@ func _pack_score_contract_params(gpu_contract: Dictionary, settings: Dictionary)
 	bytes.encode_float(52, 0.0)
 	bytes.encode_float(56, 0.0)
 	bytes.encode_float(60, 0.0)
+	bytes.encode_s32(64, 1 if object_ref_enabled else 0)
+	bytes.encode_s32(68, object_ref_tile_count)
+	bytes.encode_s32(72, refs_per_tile)
+	bytes.encode_s32(76, object_ref_capacity)
+	bytes.encode_s32(80, object_ref_tile_grid.x)
+	bytes.encode_s32(84, object_ref_tile_grid.y)
+	bytes.encode_s32(88, object_ref_tile_grid.z)
+	bytes.encode_s32(92, maxi(object_ref_tile_size.x, 1))
+	bytes.encode_s32(96, 1 if full_scan_debug_fallback else 0)
+	bytes.encode_s32(100, 1 if bool(object_ref_contract.get("same_type_exclusion_object_ref_required", false)) else 0)
+	bytes.encode_s32(104, 1 if bool(object_ref_contract.get("object_ref_numeric_schema_confirmed", false)) else 0)
+	bytes.encode_s32(108, 0)
 	return bytes
 
 
@@ -3521,6 +4491,11 @@ func _decode_score_contract_debug(bytes: PackedByteArray) -> Dictionary:
 		"runtime_spacing_profile_matches": int(words[32]),
 		"runtime_spacing_rejections": int(words[33]),
 		"runtime_spacing_min_distance": float(words[34]) / 1000.0,
+		"scene_voxel_tile_object_ref_enabled": int(words[35]) != 0,
+		"scene_voxel_tile_object_ref_tile_reads": int(words[36]),
+		"scene_voxel_tile_object_ref_slot_reads": int(words[37]),
+		"scene_voxel_tile_object_ref_object_reads": int(words[38]),
+		"scene_voxel_tile_object_ref_duplicate_reads": int(words[39]),
 		"debug_channel_max": debug_channel_max,
 		"debug_channel_max_source": "score_shader_storage_buffer",
 	}
@@ -3567,9 +4542,22 @@ func _annotate_score_contract_debug(gpu_contract: Dictionary, score_contract_deb
 		annotated["score_shader_same_type_min_spacing_profile_matches"] = int(score_contract_debug.get("runtime_spacing_profile_matches", 0))
 		annotated["score_shader_same_type_min_spacing_rejections"] = int(score_contract_debug.get("runtime_spacing_rejections", 0))
 		annotated["score_shader_same_type_min_spacing_min_distance"] = float(score_contract_debug.get("runtime_spacing_min_distance", 0.0))
+		annotated["score_shader_scene_voxel_tile_object_ref_enabled"] = bool(score_contract_debug.get("scene_voxel_tile_object_ref_enabled", false))
+		annotated["score_shader_scene_voxel_tile_object_ref_tile_reads"] = int(score_contract_debug.get("scene_voxel_tile_object_ref_tile_reads", 0))
+		annotated["score_shader_scene_voxel_tile_object_ref_slot_reads"] = int(score_contract_debug.get("scene_voxel_tile_object_ref_slot_reads", 0))
+		annotated["score_shader_scene_voxel_tile_object_ref_object_reads"] = int(score_contract_debug.get("scene_voxel_tile_object_ref_object_reads", 0))
+		annotated["score_shader_scene_voxel_tile_object_ref_duplicate_reads"] = int(score_contract_debug.get("scene_voxel_tile_object_ref_duplicate_reads", 0))
+		var object_ref_contract: Dictionary = annotated.get("scene_voxel_tile_object_ref_contract", {})
+		var object_ref_path_used := bool(object_ref_contract.get("scene_voxel_tile_object_ref_exclusion", false)) \
+			and bool(score_contract_debug.get("scene_voxel_tile_object_ref_enabled", false))
+		if object_ref_path_used:
+			annotated["scene_voxel_tile_object_ref_exclusion"] = true
+			annotated["same_type_exclusion_object_ref_read_source"] = SCENE_VOXEL_TILE_OBJECT_REF_BUFFER_NAME
+			annotated["same_type_exclusion_read_source"] = SCENE_VOXEL_TILE_OBJECT_REF_BUFFER_NAME
 		if int(score_contract_debug.get("runtime_spacing_rejections", 0)) > 0:
 			annotated["score_shader_same_type_min_spacing_exclusion"] = true
-			annotated["same_type_exclusion_read_source"] = "score_shader_storage_buffer"
+			if not object_ref_path_used:
+				annotated["same_type_exclusion_read_source"] = "score_shader_storage_buffer"
 		if not bool(annotated.get("score_shader_bound_runtime_profile_buffers", false)):
 			annotated["ok"] = false
 			annotated["reason"] = "score_runtime_profile_binding_missing"
@@ -3873,6 +4861,213 @@ func _target_color_rgba8_bytes_from_settings(settings: Dictionary, voxel_count: 
 	return bytes
 
 
+func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Dictionary:
+	var expected_bytes := maxi(voxel_count, 1) * 4
+	var target_read_buffers: Dictionary = settings.get("target_read_buffers", {})
+	if target_read_buffers.is_empty() and settings.get("resident_target_read_buffer_handoff_summary", null) is Dictionary:
+		target_read_buffers = settings
+	var borrowed := _borrowed_target_read_buffer_pack(target_read_buffers, expected_bytes)
+	if bool(borrowed.get("ready", false)):
+		return borrowed
+
+	var legacy_byte_settings := settings.duplicate(false)
+	var color_input_bytes := _target_read_buffer_legacy_bytes(settings, target_read_buffers, "target_color_rgba8_bytes")
+	var occupancy_input_bytes := _target_read_buffer_legacy_bytes(settings, target_read_buffers, "target_occupancy_bytes")
+	var upload_reason := str(borrowed.get("reason", "resident_handoff_absent"))
+	if _target_read_buffers_claim_resident(target_read_buffers) \
+			and (color_input_bytes.size() < expected_bytes or occupancy_input_bytes.size() < expected_bytes):
+		return _blocked_target_read_buffer_pack(upload_reason, expected_bytes, color_input_bytes.size(), occupancy_input_bytes.size())
+
+	legacy_byte_settings["target_color_rgba8_bytes"] = color_input_bytes
+	legacy_byte_settings["target_occupancy_bytes"] = occupancy_input_bytes
+	var occupancy_pack := _target_occupancy_bytes_from_settings(legacy_byte_settings, voxel_count)
+	var color_bytes := _target_color_rgba8_bytes_from_settings(legacy_byte_settings, voxel_count)
+	var occupancy_bytes: PackedByteArray = occupancy_pack.get("bytes", PackedByteArray())
+	return {
+		"ready": true,
+		"target_read_buffer_source": "uploaded_target_bytes",
+		"target_read_buffer_ownership": "vpg_uploaded_owned",
+		"target_read_buffer_lifetime": "VoxelPlacementGenerator frame scope",
+		"target_read_buffers_borrowed": false,
+		"target_read_buffers_uploaded": true,
+		"target_color_rgba8_buffer": RID(),
+		"target_occupancy_buffer": RID(),
+		"target_color_rgba8_bytes": color_bytes,
+		"target_occupancy_bytes": occupancy_bytes,
+		"target_color_rgba8_byte_count": color_bytes.size(),
+		"target_occupancy_byte_count": occupancy_bytes.size(),
+		"expected_byte_count": expected_bytes,
+		"target_color_format": "rgba8_u32",
+		"target_occupancy_format": "r32f_word_copy",
+		"target_color_stride_bytes": 4,
+		"target_occupancy_stride_bytes": 4,
+		"has_target": bool(occupancy_pack.get("has_target", false)),
+		"owner": "VoxelPlacementGenerator",
+		"producer": "VoxelPlacementGenerator",
+		"borrowed_from": "none",
+		"source_reason": upload_reason,
+		"rendering_device_match": false,
+		"rid_valid": false,
+		"gpu_first": true,
+		"cpu_fallback": false,
+	}
+
+
+func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected_bytes: int) -> Dictionary:
+	if target_read_buffers.is_empty():
+		return {"ready": false, "reason": "resident_handoff_absent"}
+
+	var summary: Dictionary = target_read_buffers.get("resident_target_read_buffer_handoff_summary", {})
+	var raw_color = target_read_buffers.get(
+		"target_color_rgba8_buffer",
+		target_read_buffers.get("resident_target_color_rgba8_buffer", summary.get("target_color_rgba8_buffer", RID()))
+	)
+	var raw_occupancy = target_read_buffers.get(
+		"target_occupancy_buffer",
+		target_read_buffers.get("resident_target_occupancy_buffer", summary.get("target_occupancy_buffer", RID()))
+	)
+	var color_buffer: RID = raw_color if raw_color is RID else RID()
+	var occupancy_buffer: RID = raw_occupancy if raw_occupancy is RID else RID()
+	if not color_buffer.is_valid() or not occupancy_buffer.is_valid():
+		return {"ready": false, "reason": "resident_target_read_buffer_rid_invalid"}
+
+	var raw_source_rd = target_read_buffers.get("rendering_device", summary.get("rendering_device", null))
+	var source_rd: RenderingDevice = raw_source_rd as RenderingDevice
+	if source_rd == null or _rd == null or source_rd != _rd:
+		return {"ready": false, "reason": "resident_target_read_buffer_rendering_device_mismatch"}
+
+	var color_byte_count := int(target_read_buffers.get("target_color_rgba8_byte_count", summary.get("target_color_rgba8_byte_count", 0)))
+	var occupancy_byte_count := int(target_read_buffers.get("target_occupancy_byte_count", summary.get("target_occupancy_byte_count", 0)))
+	if color_byte_count != expected_bytes or occupancy_byte_count != expected_bytes:
+		return {"ready": false, "reason": "resident_target_read_buffer_byte_count_mismatch"}
+
+	var occupancy_source := str(target_read_buffers.get("target_occupancy_source", summary.get("target_occupancy_source", "target_occupancy_bytes")))
+	return {
+		"ready": true,
+		"target_read_buffer_source": "borrowed_scene_placement_actor_resident",
+		"target_read_buffer_ownership": "borrowed_external",
+		"target_read_buffer_lifetime": str(target_read_buffers.get("resident_target_read_buffer_lifetime", summary.get("target_read_buffer_lifetime", "ScenePlacementActor owned"))),
+		"target_read_buffers_borrowed": true,
+		"target_read_buffers_uploaded": false,
+		"target_color_rgba8_buffer": color_buffer,
+		"target_occupancy_buffer": occupancy_buffer,
+		"target_color_rgba8_bytes": PackedByteArray(),
+		"target_occupancy_bytes": PackedByteArray(),
+		"target_color_rgba8_byte_count": color_byte_count,
+		"target_occupancy_byte_count": occupancy_byte_count,
+		"expected_byte_count": expected_bytes,
+		"target_color_format": str(target_read_buffers.get("target_color_format", summary.get("target_color_format", "rgba8_u32"))),
+		"target_occupancy_format": str(target_read_buffers.get("target_occupancy_format", summary.get("target_occupancy_format", "r32f_word_copy"))),
+		"target_color_stride_bytes": int(target_read_buffers.get("target_color_stride_bytes", summary.get("target_color_rgba8_stride_bytes", 4))),
+		"target_occupancy_stride_bytes": int(target_read_buffers.get("target_occupancy_stride_bytes", summary.get("target_occupancy_stride_bytes", 4))),
+		"has_target": occupancy_source != "none" and occupancy_source != "zero_filled",
+		"owner": str(target_read_buffers.get("resident_target_read_buffer_owner", summary.get("owner", "ScenePlacementActor"))),
+		"producer": str(summary.get("producer", "ScenePlacementActorTargetReadBuffers")),
+		"borrowed_from": "ScenePlacementActor",
+		"source_reason": str(summary.get("reason", "ok")),
+		"rendering_device_match": true,
+		"rid_valid": true,
+		"gpu_first": true,
+		"cpu_fallback": false,
+	}
+
+
+func _target_read_buffers_claim_resident(target_read_buffers: Dictionary) -> bool:
+	if target_read_buffers.is_empty():
+		return false
+	var summary: Dictionary = target_read_buffers.get("resident_target_read_buffer_handoff_summary", {})
+	return bool(target_read_buffers.get(
+		"resident_target_read_buffer_handoff",
+		summary.get("resident_target_read_buffer_handoff", false)
+	))
+
+
+func _target_read_buffer_legacy_bytes(settings: Dictionary, target_read_buffers: Dictionary, key: String) -> PackedByteArray:
+	var raw = settings.get(key, PackedByteArray())
+	if raw is PackedByteArray:
+		var bytes := raw as PackedByteArray
+		if not bytes.is_empty():
+			return bytes
+	var raw_handoff = target_read_buffers.get(key, PackedByteArray())
+	if raw_handoff is PackedByteArray:
+		return raw_handoff
+	return PackedByteArray()
+
+
+func _blocked_target_read_buffer_pack(
+	borrow_reason: String,
+	expected_bytes: int,
+	actual_color_bytes: int,
+	actual_occupancy_bytes: int
+) -> Dictionary:
+	var reason := "%s_no_debug_or_legacy_bytes" % borrow_reason
+	return {
+		"ready": false,
+		"reason": reason,
+		"target_read_buffer_source": "none",
+		"target_read_buffer_ownership": "none",
+		"target_read_buffer_lifetime": "none",
+		"target_read_buffers_borrowed": false,
+		"target_read_buffers_uploaded": false,
+		"target_color_rgba8_buffer": RID(),
+		"target_occupancy_buffer": RID(),
+		"target_color_rgba8_bytes": PackedByteArray(),
+		"target_occupancy_bytes": PackedByteArray(),
+		"target_color_rgba8_byte_count": actual_color_bytes,
+		"target_occupancy_byte_count": actual_occupancy_bytes,
+		"expected_byte_count": expected_bytes,
+		"target_color_format": "rgba8_u32",
+		"target_occupancy_format": "r32f_word_copy",
+		"target_color_stride_bytes": 4,
+		"target_occupancy_stride_bytes": 4,
+		"has_target": false,
+		"owner": "none",
+		"producer": "ScenePlacementActorTargetReadBuffers",
+		"borrowed_from": "ScenePlacementActor",
+		"source_reason": borrow_reason,
+		"rendering_device_match": borrow_reason != "resident_target_read_buffer_rendering_device_mismatch",
+		"rid_valid": false,
+		"contract_blocked": true,
+		"gpu_first": true,
+		"cpu_fallback": false,
+	}
+
+
+func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
+	var raw_color = pack.get("target_color_rgba8_buffer", RID())
+	var raw_occupancy = pack.get("target_occupancy_buffer", RID())
+	var color_buffer: RID = raw_color if raw_color is RID else RID()
+	var occupancy_buffer: RID = raw_occupancy if raw_occupancy is RID else RID()
+	return {
+		"ready": bool(pack.get("ready", false)),
+		"target_read_buffer_source": str(pack.get("target_read_buffer_source", "none")),
+		"target_read_buffer_ownership": str(pack.get("target_read_buffer_ownership", "none")),
+		"target_read_buffer_lifetime": str(pack.get("target_read_buffer_lifetime", "none")),
+		"target_read_buffers_borrowed": bool(pack.get("target_read_buffers_borrowed", false)),
+		"target_read_buffers_uploaded": bool(pack.get("target_read_buffers_uploaded", false)),
+		"target_color_rgba8_buffer_rid": "valid" if color_buffer.is_valid() else "none",
+		"target_occupancy_buffer_rid": "valid" if occupancy_buffer.is_valid() else "none",
+		"target_color_rgba8_buffer_rid_valid": color_buffer.is_valid(),
+		"target_occupancy_buffer_rid_valid": occupancy_buffer.is_valid(),
+		"target_color_rgba8_byte_count": int(pack.get("target_color_rgba8_byte_count", 0)),
+		"target_occupancy_byte_count": int(pack.get("target_occupancy_byte_count", 0)),
+		"expected_byte_count": int(pack.get("expected_byte_count", 0)),
+		"target_color_format": str(pack.get("target_color_format", "none")),
+		"target_occupancy_format": str(pack.get("target_occupancy_format", "none")),
+		"target_color_stride_bytes": int(pack.get("target_color_stride_bytes", 0)),
+		"target_occupancy_stride_bytes": int(pack.get("target_occupancy_stride_bytes", 0)),
+		"has_target": bool(pack.get("has_target", false)),
+		"owner": str(pack.get("owner", "none")),
+		"producer": str(pack.get("producer", "none")),
+		"borrowed_from": str(pack.get("borrowed_from", "none")),
+		"source_reason": str(pack.get("source_reason", "none")),
+		"rendering_device_match": bool(pack.get("rendering_device_match", false)),
+		"contract_blocked": bool(pack.get("contract_blocked", false)),
+		"gpu_first": true,
+		"cpu_fallback": false,
+	}
+
+
 func _target_occupancy_bytes_from_settings(settings: Dictionary, voxel_count: int) -> Dictionary:
 	var expected_bytes := maxi(voxel_count, 1) * 4
 	var prepacked: PackedByteArray = settings.get("target_occupancy_bytes", PackedByteArray())
@@ -4052,7 +5247,8 @@ static func bake_footprint_from_collision(
 	collision_layers: Array,
 	voxel_size: Vector3,
 	add_support: bool = true,
-	clearance_slices: int = 1
+	clearance_slices: int = 1,
+	prefer_gpu: bool = true
 ) -> Array[Dictionary]:
 	var combined: Array[Dictionary] = []
 	var point_samples: Array[Dictionary] = []
@@ -4064,12 +5260,26 @@ static func bake_footprint_from_collision(
 			point_samples.append(collision_entry)
 			continue
 		var shape := str(collision_entry.get("shape", "cylinder")).to_lower()
+		if prefer_gpu:
+			var gpu_result := _bake_footprint_entry_gpu(
+				collision_entry,
+				shape,
+				voxel_size,
+				add_support,
+				clearance_slices
+			)
+			if bool(gpu_result.get("ok", false)):
+				combined.append_array(gpu_result.get("footprint", []))
+				continue
+			push_error("VoxelPlacementGenerator: GPU footprint bake blocked for %s: %s" % [
+				shape,
+				str(gpu_result.get("reason", "unknown")),
+			])
+			return []
 		if shape == "cylinder":
-			combined.append_array(
-				_bake_cylinder(collision_entry, voxel_size, add_support, clearance_slices))
+			combined.append_array(_bake_cylinder(collision_entry, voxel_size, add_support, clearance_slices))
 		elif shape == "box" or shape == "cube":
-			combined.append_array(
-				_bake_box(collision_entry, voxel_size, add_support, clearance_slices))
+			combined.append_array(_bake_box(collision_entry, voxel_size, add_support, clearance_slices))
 	if not point_samples.is_empty():
 		combined.append_array(_bake_point_collision(point_samples, add_support, clearance_slices))
 	var result := _deduplicate_footprint(combined)
@@ -4098,6 +5308,26 @@ static func bake_cylinder_footprint_gpu(
 ) -> Dictionary:
 	var generator := VoxelPlacementGenerator.new()
 	return generator._bake_cylinder_footprint_gpu(collision_entry, voxel_size, add_support, clearance_slices)
+
+
+static func _bake_footprint_entry_gpu(
+	collision_entry: Dictionary,
+	shape: String,
+	voxel_size: Vector3,
+	add_support: bool,
+	clearance_slices: int
+) -> Dictionary:
+	var generator := VoxelPlacementGenerator.new()
+	if shape == "cylinder":
+		return generator._bake_cylinder_footprint_gpu(collision_entry, voxel_size, add_support, clearance_slices)
+	if shape == "box" or shape == "cube":
+		return generator._bake_box_footprint_gpu(collision_entry, voxel_size, add_support, clearance_slices)
+	return {
+		"ok": false,
+		"reason": "unsupported_shape",
+		"gpu_first": true,
+		"cpu_fallback": false,
+	}
 
 
 func _bake_box_footprint_gpu(
@@ -4792,15 +6022,125 @@ static func bake_rotated_footprints(
 	voxel_size: Vector3,
 	rotation_count: int = 24,
 	add_support: bool = true,
-	clearance_slices: int = 1
+	clearance_slices: int = 1,
+	prefer_gpu: bool = true
 ) -> Array:
+	if prefer_gpu:
+		var gpu_result := bake_rotated_footprints_gpu(
+			collision,
+			voxel_size,
+			rotation_count,
+			add_support,
+			clearance_slices
+		)
+		if bool(gpu_result.get("ok", false)):
+			return gpu_result.get("rotations", [])
+		push_error("VoxelPlacementGenerator: GPU rotated footprint bake blocked: %s" % str(gpu_result))
+		return []
+
 	var base := bake_footprint_from_collision(
-		collision, voxel_size, add_support, clearance_slices)
+		collision, voxel_size, add_support, clearance_slices, false)
 	var result: Array = []
 	for i in range(rotation_count):
 		var yaw := float(i) * 360.0 / float(maxi(rotation_count, 1))
 		result.append(rotate_footprint_y(base, yaw))
 	return result
+
+
+static func bake_rotated_footprints_gpu(
+	collision: Array,
+	voxel_size: Vector3,
+	rotation_count: int = 24,
+	add_support: bool = true,
+	clearance_slices: int = 1
+) -> Dictionary:
+	var safe_rotation_count := maxi(rotation_count, 0)
+	var base := bake_footprint_from_collision(
+		collision,
+		voxel_size,
+		add_support,
+		clearance_slices,
+		true
+	)
+	if base.is_empty():
+		return _bake_rotated_footprints_gpu_blocked("base_footprint_gpu_bake_blocked", safe_rotation_count)
+
+	var result: Array = []
+	var rotation_readback_sources := PackedStringArray()
+	var gpu_rotation_count := 0
+	var identity_rotation_count := 0
+	for i in range(safe_rotation_count):
+		var yaw := float(i) * 360.0 / float(maxi(safe_rotation_count, 1))
+		if absf(yaw) < 0.01:
+			var identity: Array[Dictionary] = []
+			for entry in base:
+				identity.append(entry.duplicate())
+			result.append(identity)
+			rotation_readback_sources.append("identity_base_footprint")
+			identity_rotation_count += 1
+			continue
+
+		var gpu_rotation := rotate_footprint_y_gpu(base, yaw)
+		if not bool(gpu_rotation.get("ok", false)):
+			var blocked := _bake_rotated_footprints_gpu_blocked(
+				str(gpu_rotation.get("reason", "rotate_footprint_gpu_blocked")),
+				safe_rotation_count,
+				i,
+				yaw,
+				base.size()
+			)
+			blocked["rotation_gpu_result"] = gpu_rotation
+			blocked["partial_rotation_count"] = result.size()
+			return blocked
+		if bool(gpu_rotation.get("cpu_fallback", false)):
+			var fallback_blocked := _bake_rotated_footprints_gpu_blocked(
+				"rotate_footprint_gpu_reported_cpu_fallback",
+				safe_rotation_count,
+				i,
+				yaw,
+				base.size()
+			)
+			fallback_blocked["rotation_gpu_result"] = gpu_rotation
+			fallback_blocked["partial_rotation_count"] = result.size()
+			return fallback_blocked
+		result.append(gpu_rotation.get("footprint", []))
+		rotation_readback_sources.append(str(gpu_rotation.get("readback_source", "none")))
+		gpu_rotation_count += 1
+
+	return {
+		"ok": true,
+		"reason": "ok",
+		"gpu_first": true,
+		"cpu_fallback": false,
+		"rotation_count": safe_rotation_count,
+		"base_footprint_count": base.size(),
+		"rotations": result,
+		"rotation_readback_sources": rotation_readback_sources,
+		"gpu_rotation_count": gpu_rotation_count,
+		"identity_rotation_count": identity_rotation_count,
+		"readback_source": "rotate_footprint_y_compute",
+	}
+
+
+static func _bake_rotated_footprints_gpu_blocked(
+	reason: String,
+	rotation_count: int = 0,
+	rotation_index: int = -1,
+	yaw_degrees: float = 0.0,
+	base_footprint_count: int = 0
+) -> Dictionary:
+	return {
+		"ok": false,
+		"reason": reason,
+		"gpu_first": true,
+		"cpu_fallback": false,
+		"rotation_count": rotation_count,
+		"rotation_index": rotation_index,
+		"yaw_degrees": yaw_degrees,
+		"base_footprint_count": base_footprint_count,
+		"rotations": [],
+		"readback_source": "none",
+	}
 
 
 # ---------------------------------------------------------------------------
