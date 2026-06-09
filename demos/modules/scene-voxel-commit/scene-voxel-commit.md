@@ -26,5 +26,5 @@
 
 - 可提交 source 只来自 `AutoSceneVoxel` / `BrushSceneVoxel`。
 - committed `SceneVoxel` 公开 payload 保持最小字段；`occupied`、`source_voxel_type`、`commit_tick` 等不进入公开 per-voxel payload。
-- `scene_field` / `collision_field` 是由 committed state 发布的 resident read input，不是第二套 source of truth。
+- `complexity_field` / `collision_field` 是由 committed state 发布的 resident read input，不是第二套 source of truth。
 

@@ -80,7 +80,7 @@ function Invoke-SpaInterfaceAutomationOnce {
     $started = Get-Date
     Write-AutomationLog "BEGIN spa interface automation iteration"
 
-    $candidatePattern = "target_read_buffers_from_common|_target_color_rgba8_bytes_from_common|_target_occupancy_bytes_from_common|run_probe_prefilter|run_multi_asset|auto_voxel_runtime_profile_container|runtime_profile_container|profile_container|BrushSV|brush_sv|mesh_description|meshdescription|get_mesh_description_buffer|get_registered_mesh_descriptions|source_mesh"
+    $candidatePattern = "prepare_target_read_buffers_from_common_gpu|_target_color_rgba8_bytes_from_common|_target_field_data|run_probe_prefilter|run_multi_asset|auto_voxel_runtime_profile_container|runtime_profile_container|profile_container|BrushSV|brush_sv|mesh_description|meshdescription|get_mesh_description_buffer|get_registered_mesh_descriptions|source_mesh"
     $candidateResult = Invoke-LoggedCommand `
         -Label "candidate-scan" `
         -FilePath "rg" `
@@ -94,11 +94,11 @@ function Invoke-SpaInterfaceAutomationOnce {
     }
 
     $interfaceChecks = @()
-    $interfaceChecks += (Test-RequiredSpaInterface -RelativePath "scripts/scene_placement_actor.gd" -Pattern "target_read_buffers_from_common")
+    $interfaceChecks += (Test-RequiredSpaInterface -RelativePath "scripts/scene_placement_actor.gd" -Pattern "prepare_target_read_buffers_from_common_gpu")
     $interfaceChecks += (Test-RequiredSpaInterface -RelativePath "scripts/scene_placement_actor.gd" -Pattern "set_brush_sv_persistence_metadata")
     $interfaceChecks += (Test-RequiredSpaInterface -RelativePath "scripts/scene_placement_actor.gd" -Pattern "get_mesh_description_buffer")
     $interfaceChecks += (Test-RequiredSpaInterface -RelativePath "scripts/scene_placement_actor.gd" -Pattern "readback_mesh_description_debug_snapshot")
-    $interfaceChecks += (Test-RequiredSpaInterface -RelativePath "tools/test_target_sv_buffer_decode.gd" -Pattern "target_read_buffers_from_common")
+    $interfaceChecks += (Test-RequiredSpaInterface -RelativePath "tools/test_target_sv_buffer_decode.gd" -Pattern "prepare_target_read_buffers_from_common_gpu")
     $interfaceChecks += (Test-RequiredSpaInterface -RelativePath "tools/test_target_sv_buffer_decode.gd" -Pattern "get_gpu_readiness_report")
     $interfaceChecks += (Test-RequiredSpaInterface -RelativePath "tools/test_target_sv_buffer_decode.gd" -Pattern "readback_mesh_description_debug_snapshot")
     foreach ($check in $interfaceChecks) {

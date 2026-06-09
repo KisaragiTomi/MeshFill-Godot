@@ -33,23 +33,15 @@ layout(set = 0, binding = 2, std430) restrict readonly buffer ProbeData {
     vec4 probe_data[];
 };
 
-layout(set = 0, binding = 3, std430) restrict readonly buffer SceneOcc {
-    float scene_occ[];
+layout(set = 0, binding = 3, std430) restrict readonly buffer ComplexityCollision {
+    vec2 complexity_coll[];
 };
 
-layout(set = 0, binding = 4, std430) restrict readonly buffer CollisionOcc {
-    float collision_occ[];
+layout(set = 0, binding = 4, std430) restrict readonly buffer TargetField {
+    vec4 target_field[];  // .rgb = target color, .a = occupancy = max(scene_complexity, collision)
 };
 
-layout(set = 0, binding = 5, std430) restrict readonly buffer TargetOcc {
-    float target_occ[];
-};
-
-layout(set = 0, binding = 6, std430) restrict readonly buffer TargetColor {
-    uint target_color[];
-};
-
-layout(set = 0, binding = 7, std430) restrict writeonly buffer ScoresOut {
+layout(set = 0, binding = 5, std430) restrict writeonly buffer ScoresOut {
     float asset_scores[];
 };
 
@@ -103,20 +95,19 @@ vec4 unpack_rgba8(uint packed) {
 
 float eval_probe(ivec3 sp, uint flags, uint kind, vec4 e_col, float e_coll) {
     int idx = voxel_index(sp);
-    float s_scene = scene_occ[idx];
+    float s_complexity = complexity_coll[idx].x;
 
     // Underground: only collision scoring contributes
-    if (s_scene >= UNDERGROUND_OCC_THRESHOLD) {
+    if (s_complexity >= UNDERGROUND_OCC_THRESHOLD) {
         if ((flags & FLAG_COLLISION) == 0u) return 0.0;
         if ((flags & FLAG_EMPTY) != 0u || kind == 1u) return 0.0;  // negative
         if ((flags & FLAG_SUPPORT) != 0u || kind == 2u) return 0.0; // support
-        return clamp(1.0 - abs(target_occ[idx] - e_coll), 0.0, 1.0);
+        return clamp(1.0 - abs(target_field[idx].a - e_coll), 0.0, 1.0);
     }
 
     // Empty / negative
     if ((flags & FLAG_EMPTY) != 0u || kind == 1u) {
-        vec4 sc = unpack_rgba8(target_color[idx]);
-        return 1.0 - max(sc.a, max(target_occ[idx], s_scene));
+        return 1.0 - max(target_field[idx].a, s_complexity);
     }
 
     // Support
@@ -124,20 +115,20 @@ float eval_probe(ivec3 sp, uint flags, uint kind, vec4 e_col, float e_coll) {
         ivec3 below = sp + ivec3(0, -1, 0);
         if (!in_bounds(below)) return 0.0;
         int bi = voxel_index(below);
-        return clamp(max(scene_occ[bi], collision_occ[bi]), 0.0, 1.0);
+        return clamp(max(complexity_coll[bi].x, complexity_coll[bi].y), 0.0, 1.0);
     }
 
     // Positive: weighted color + complexity + collision
-    vec4 sc = unpack_rgba8(target_color[idx]);
-    float s_coll = target_occ[idx];
+    vec4 tf = target_field[idx];
+    float s_coll = tf.a;
     float score = 0.0;
     float wsum = 0.0;
     if ((flags & FLAG_COLOR) != 0u) {
-        score += 1.0 - distance(sc.rgb, e_col.rgb) / 1.732;
+        score += 1.0 - distance(tf.rgb, e_col.rgb) / 1.732;
         wsum += 1.0;
     }
     if ((flags & FLAG_COMPLEXITY) != 0u) {
-        score += 1.0 - abs(sc.a - e_col.a);
+        score += 1.0 - abs(tf.a - e_col.a);
         wsum += 1.0;
     }
     if ((flags & FLAG_COLLISION) != 0u) {
@@ -184,8 +175,8 @@ void main() {
             ivec3 sp = anchor_pos + ivec3(round(offset * voxel_size_inv.xyz));
             sp = clamp(sp, ivec3(0), grid_size_asset_count.xyz - ivec3(1));
             // Underground early-skip for non-collision probes
-            float s_scene = scene_occ[voxel_index(sp)];
-            if (s_scene >= UNDERGROUND_OCC_THRESHOLD && (flags & FLAG_COLLISION) == 0u) {
+            float s_complexity = complexity_coll[voxel_index(sp)].x;
+            if (s_complexity >= UNDERGROUND_OCC_THRESHOLD && (flags & FLAG_COLLISION) == 0u) {
                 continue;
             }
             vec4 e_col = unpack_rgba8(rgba8);

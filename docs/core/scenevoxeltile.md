@@ -16,7 +16,7 @@
 
 | 术语 | 含义 |
 | --- | --- |
-| `volume` | 整个 SV voxel data domain / buffer，例如 committed `scene_field` / `collision_field`。 |
+| `volume` | 整个 SV voxel data domain / buffer，例如 committed `complexity_field` / `collision_field`。 |
 | `voxel` | `volume` 中的一个 `(x, y, z)` cell。 |
 | `tile` | 固定大小 voxel block；在本文中优先指 `SceneVoxelTile` 的 coarse cell index。 |
 | `voxel region` | placement / routing 的候选区域；当前 `score_voxel_tile.glsl` 和 VPG 使用 `TILE_SIZE = 8` 的 region / workgroup，不能等同于默认 `4x4x4` 的 `SceneVoxelTile`。 |
@@ -28,9 +28,9 @@
 - `SceneVoxelTile` 保存 tile 级 object 引用（compacted range handle）；per-voxel object 引用保存在 SV object-ref index / GPU resident buffer 中，不进入 public committed payload。完整对象池、transform、profile、bounds 归 `GPUAutoObjectRuntime` / AutoObject authoring 侧，不复制到 tile 或 voxel。
 - voxel 和 tile 两级都承载 object refs：voxel 直接索引到占据该 voxel 的对象列表；tile 是 tile 内所有 voxel object refs 的 compacted 聚合。空间查询优先走 voxel 级，tile 级用于粗过滤和 dirty 管理。
 - `SceneVoxelTile` 当前通过 `apply_gpu_autoobject_dirty_delta()` 接收 GPU AutoObject dirty delta handoff，同时更新 voxel 级和 tile 级 object refs；它不拥有完整 runtime object state。
-- `SceneVoxelTile` 不进入 `SceneVoxel` public per-voxel payload。公开 `SceneVoxel` 仍只暴露 `complexity`、`color`、`collision`，可选 `auto_mix`。`channel` 不进入 committed read payload；`object_refs` 是独立 object-ref channel，通过 GPU resident buffers / readback 访问。
+- `SceneVoxelTile` 不进入 committed `SceneVoxel` per-voxel accepted fields。公开 `SceneVoxel` 查询仍只返回 `complexity`、`color`、`collision`，可选 `auto_mix`。`channel` 不进入 committed read model；`object_refs` 是独立 object-ref channel，通过 GPU resident buffers / readback 访问。
 - `SceneVoxelTile` 可以包装当前 `_sv_dirty_tiles` / `_sv_dirty_rects` 的语义；这些字段只是 implementation/storage compatibility，新 contract 和新 API 优先写 `SceneVoxelTile`。
-- `SceneVoxelTile` runtime metadata 和 committed scene/collision resident fields 是 GPU-first：`ensure_scene_voxel_tile_buffers_uploaded()` 成功后，tile record、summary、dirty index、object ref、source ref、`scene_field` 和 `collision_field` 都以 GPU storage buffers / readback 为验收路径。`get_scene_voxel_tile_gpu_buffer_summary()` 的 valid RID、record count、resident field source 和 upload revision 才能说明 runtime resident success；CPU dictionary / PackedFloat32Array 只做 command staging、debug label 和无 RD 时的 SKIP 判定。staging revision 前进后，旧 GPU buffers 会标记 stale，不能继续作为 runtime read source。
+- `SceneVoxelTile` runtime metadata 和 committed scene/collision resident fields 是 GPU-first：`ensure_scene_voxel_tile_buffers_uploaded()` 成功后，tile record、summary、dirty index、object ref、source ref、`complexity_field` 和 `collision_field` 都以 GPU storage buffers / readback 为验收路径。`get_scene_voxel_tile_gpu_buffer_summary()` 的 valid RID、record count、resident field source 和 upload revision 才能说明 runtime resident success；CPU dictionary / PackedFloat32Array 只做 command staging、debug label 和无 RD 时的 SKIP 判定。staging revision 前进后，旧 GPU buffers 会标记 stale，不能继续作为 runtime read source。
 - `SceneVoxelTile` 的 voxel bounds 必须覆盖真实 footprint 和 guard expansion，不能只用 object center 或 search radius 近似。
 - 正常 committed SV 增量更新入口只接受 `SceneVoxelTile` dirty；AutoObject、brush、profile 和 placement 都只是 dirty producer。
 - Target guidance 变化只标记 routing / scoring / feedback 相关 dirty；`TargetSceneVoxel` / `TargetSV_B` 不进入 source write，不直接写 committed source，也不修改 `SceneVoxelTile` 的 source range。
@@ -58,10 +58,9 @@ Placement / VPG 的 `TILE_SIZE = 8` 是 candidate voxel region / shader workgrou
 | --- | --- | --- | --- | --- |
 | Grid 参数、voxel size、origin | `SceneVoxelCommitter` / SV owner | `grid_size`、`voxel_size`、`grid_origin`。 | `tile_coord`、`tile_size`、`voxel_min`、`voxel_max`、`base_rect`。 | SV owner。 |
 | Dirty state | `SceneVoxelCommitter` / SV owner | affected voxel bounds、dirty flags、commit epoch。 | `dirty_flags`、`epoch`、`updated_this_commit`、`dirty_scene_voxel_tiles` snapshot。 | SV owner staging table。 |
-| Committed scene/collision summary | `SceneVoxelCommitter` / SV owner | committed `SceneVoxel`、`collision_field` / terrain base collision。 | `scene_minmax`、`collision_minmax`、`non_empty`、scene/collision counts。 | committed SV，可重建 summary。 |
+| Committed scene/collision summary | `SceneVoxelCommitter` / SV owner | committed `SceneVoxel`、`collision_field` / terrain base collision。 | `scene_minmax`、`collision_minmax`、scene/collision counts。 | committed SV，可重建 summary。 |
 | Object refs / dirty delta | `GPUAutoObjectRuntime` / current handoff | `object_id`、previous/current voxel bounds、dirty flags。 | `_scene_voxel_tile_gpu_autoobject_refs`、`object_range_start` / `object_range_count`、debug id range。 | runtime object pool / AutoObject authoring side；tile 只保存 refs。 |
-| Source intent range | source write path / debug labels | `_scene_source_metadata`、source records。 | `source_range_start` / `source_range_count`、debug source id range。 | source stream/debug label；tile range 可重建。 |
-| Target guidance | `TargetSV_B` / target owner | target / brush-composited guidance dirty。 | routing / scoring dirty trigger only；不生成 source range。 | TargetSV / BrushSV cache；不写 committed source。 |
+| Target guidance | `TargetSV_B` / target owner | target / brush-composited guidance dirty。 | routing / scoring dirty trigger only。 | TargetSV / BrushSV cache；不写 committed source。 |
 
 ## 生命周期
 
@@ -89,7 +88,7 @@ Grid initialized / resized
 | 侧 | 当前职责 | 不拥有 |
 | --- | --- | --- |
 | CPU / GDScript | `_scene_voxel_tiles` command staging、named dirty API、legacy dirty sync、debug label map、upload preparation 和 readback display；只作为 SV owner control/debug plane。 | CPU runtime fallback、GPU object SoA buffers、placement shader 的 temporary output。 |
-| GPU storage buffers | `scene_voxel_tile_records`、`scene_voxel_tile_summaries`、`scene_voxel_tile_dirty_indices`、`scene_voxel_tile_object_refs`、`scene_voxel_tile_source_refs`、`scene_voxel_tile_scene_field`、`scene_voxel_tile_collision_field`；有 RD 时作为 tile metadata 和 resident scene/collision runtime read source。 | AutoObject descriptor defaults、完整对象状态、source authoring history。 |
+| GPU storage buffers | `scene_voxel_tile_records`、`scene_voxel_tile_summaries`、`scene_voxel_tile_dirty_indices`、`scene_voxel_tile_object_refs`、`scene_voxel_tile_complexity_field`、`scene_voxel_tile_collision_field`；有 RD 时作为 tile metadata 和 resident scene/collision runtime read source。 | AutoObject descriptor defaults、完整对象状态、source authoring history。 |
 | GPU compute | probe prefilter、candidate voxel-region scoring、dirty-tile-limited resident upload；dirty-tile-limited source finalize 由 `SceneVoxelCommitter.blend_scene_voxels()` 的 dirty `SceneVoxelTile` scope 驱动，不是 GPU source-of-truth。 | `SceneVoxelTile` 的 runtime 替代路径、committed `SceneVoxel` payload、AutoObject descriptor defaults。 |
 | 兼容 storage | `_sv_dirty_tiles` / `_sv_dirty_rects`、`SV_RESIDENT_TILE_SIZE = 8`。 | 新 semantic concept；它们只是 resident buffer / shader path 的 legacy storage。 |
 
@@ -108,15 +107,12 @@ Grid initialized / resized
 | `dirty_flags` | `int` / `Dictionary` | `scene`、`collision`、`auto`、`brush`、`target`、`object_refs` 等 dirty 位 |
 | `epoch` | `int` | 每次变脏递增，用于 GPU/CPU buffer 同步和 stale query 检查 |
 | `last_commit_tick` | `int` | debug record 中复制的 committed SV 全局 epoch；不表达 per-voxel 或 per-tile provenance |
-| `non_empty` | `bool` | summary：该 tile 内是否存在非空 scene/collision 信息 |
 | `scene_minmax` | `Vector2` | committed `complexity` 的粗略 min/max summary |
 | `collision_minmax` | `Vector2` | committed `collision` 的粗略 min/max summary |
+| 内容判定 | — | 该 tile 内是否存在非空 scene/collision 信息，通过 `scene_count > 0 || collision_count > 0` 判断 |
 | `object_range_start` | `int` | 指向 compacted object id buffer 的起点；当前实现指向 `scene_voxel_tile_object_ids_debug` |
 | `object_range_count` | `int` | 该 tile 关联的 object id 数量 |
-| `source_range_start` | `int` | 指向本 tile compacted source intent range 的起点；当前实现指向 `scene_voxel_tile_source_ids_debug` |
-| `source_range_count` | `int` | 本 tile 待重建 / 待合成的 source intent 数量 |
 | `auto_object_ids_debug` | `Array` | CPU/debug 查询可选字段；不能成为 runtime 权威 |
-| `source_ids_debug` | `Array` | GDScript/debug 查询可选字段；由当前 source metadata 重建 |
 
 GPU upload / readback API：
 
@@ -132,7 +128,7 @@ committer.set_scene_voxel_tile_gpu_auto_upload(true)           # optional: uploa
 
 - `get_scene_voxel_tile_gpu_buffer_summary().runtime_ready == true` 且每个 required buffer 的 RID 有效时，才算 metadata / resident fields GPU-ready。
 - summary 必须暴露 `staging_revision`、`uploaded_revision`、`uploaded_revision_matches_staging`、`buffers_stale`、`runtime_read_source`、`resident_field_read_source`、`last_reused_buffers`、`resident_field_buffers_reused`、`last_upload_mode`、`last_upload_tile_ids` 和 `last_upload_range_count`；stale 时这些 runtime read source 只能是 `none`。
-- `scene_voxel_tile_scene_field` / `scene_voxel_tile_collision_field` 的 `record_count` 必须等于 committed resident voxel count，readback 的 float values 必须来自 GPU storage buffer。
+- `scene_voxel_tile_complexity_field` / `scene_voxel_tile_collision_field` 的 `record_count` 必须等于 committed resident voxel count，readback 的 float values 必须来自 GPU storage buffer。
 - 空 dirty index 仍会分配最小 GPU padding bytes，但 `logical_byte_size` / `record_count` 必须为 `0`，readback 不能把 padding 解码成有效 dirty tile。
 - `readback_scene_voxel_tile_debug_snapshot()` 只是 GPU buffer readback debug view；只有 GPU buffers ready 时 `readback_snapshot` 才能为 true，它不能让 CPU staging table 或 snapshot 成为运行时权威。
 - 无 `RenderingDevice` 时测试只能 SKIP GPU upload/readback 子项，不能把 staging table 作为通过条件。
@@ -186,7 +182,7 @@ AutoObject / brush / profile / placement dirty producer
 - Auto placement stamp 标记 `auto`、`scene`、`collision` 和 `object_refs`。
 - AutoObject 移动或删除需要同时标记 previous bounds 和 new bounds 覆盖的 `SceneVoxelTile`。
 - Profile / descriptor 热更新先找引用该 profile 的 object range，再反推 affected `SceneVoxelTile`。
-- Target guidance 变化只标记 routing / scoring / feedback 相关 dirty，不直接进入 committed source，也不产生 `source_range_start` / `source_range_count`。
+- Target guidance 变化只标记 routing / scoring / feedback 相关 dirty，不直接进入 committed source。
 
 其它更新方式评估：
 
@@ -232,7 +228,7 @@ SceneVoxelTile
 | 粒度 | 单个 voxel | 固定大小 voxel block |
 | 主要用途 | 读取最终 `complexity/color/collision` | dirty、索引、summary、局部 rebuild |
 | 对外 payload | 最小化公开字段 | 内部 runtime metadata |
-| object 信息 | 不进入 public payload；object-ref index 保存 per-voxel object refs | 保存 tile 级 object id range（从 per-voxel refs 聚合） |
+| object 信息 | 不进入 committed `SceneVoxel` accepted fields；object-ref index 保存 per-voxel object refs | 保存 tile 级 object id range（从 per-voxel refs 聚合） |
 | 生命周期 | commit 后的 read model | 跟随 SV resident state 和 dirty epoch |
 
 ## 与 Placement 的关系
@@ -251,7 +247,7 @@ placement/exclusion 的邻域查询走 per-voxel object refs（直接通过 voxe
 | 对象查询 | 读取 per-voxel object refs + tile 级粗过滤 | 不持有 object refs，由 caller 自行查询 |
 | 数据流 | dirty producer -> SV commit boundary | `TargetSV_B` + `SV[t - 1]` -> candidate regions -> VPG |
 
-被接受的 placement 结果需要生成 `ISWS` / source record，再通过 `SceneVoxelTile` dirty 和 `blend_scene_voxels()` 发布到 committed `SceneVoxel`；placement shader 的 temporary `scene_field_out` / `collision_field_out` 不直接成为 SV source of truth。
+被接受的 placement 结果需要生成 `ISWS` / source record，再通过 `SceneVoxelTile` dirty 和 `blend_scene_voxels()` 发布到 committed `SceneVoxel`；placement shader 的 temporary `complexity_field_out` / `collision_field_out` 不直接成为 SV source of truth。
 
 Heightfield rock fitting 是独立 producer，输出 placement results 后由 `main.gd` 实例化并派生 `ISWS`；详见 [`meshfill-rock-placement-flow.md`](../placement/meshfill-rock-placement-flow.md)。Target-driven voxel region route 见 [`voxel-semantic-routing.md`](../placement/voxel-semantic-routing.md)。
 

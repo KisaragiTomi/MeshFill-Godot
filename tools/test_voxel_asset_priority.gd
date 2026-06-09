@@ -24,9 +24,9 @@ func _init() -> void:
 func _test_priority_order() -> bool:
 	print("[VoxelAssetPriority] test_priority_order...")
 	var asset_defs: Array = [
-		{"priority": 0, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
-		{"priority": 10, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
-		{"priority": 5, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
+		{"priority": 0, "collision": []},
+		{"priority": 10, "collision": []},
+		{"priority": 5, "collision": []},
 	]
 	var order: Array[int] = VPG._sort_asset_defs_by_priority_weight(asset_defs, {})
 	if order.size() != 3:
@@ -48,9 +48,9 @@ func _test_priority_order() -> bool:
 func _test_weight_shuffle_seeded() -> bool:
 	print("[VoxelAssetPriority] test_weight_shuffle_seeded...")
 	var asset_defs: Array = [
-		{"priority": 0, "weight": 1.0, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
-		{"priority": 0, "weight": 100.0, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
-		{"priority": 0, "weight": 1.0, "collision": [{"shape": "cylinder", "radius": 0.2, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}]},
+		{"priority": 0, "weight": 1.0, "collision": []},
+		{"priority": 0, "weight": 100.0, "collision": []},
+		{"priority": 0, "weight": 1.0, "collision": []},
 	]
 
 	var order_a: Array[int] = VPG._sort_asset_defs_by_priority_weight(asset_defs, {"seed": 42})
@@ -90,12 +90,12 @@ func _test_global_quota() -> bool:
 
 	var asset_defs: Array = [
 		{
-			"collision": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}],
+			"collision": [],
 			"result_capacity": 10,
 			"min_distance_voxels": 2.0,
 		},
 		{
-			"collision": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 0.8}],
+			"collision": [],
 			"result_capacity": 10,
 			"min_distance_voxels": 2.0,
 		},
@@ -143,13 +143,13 @@ func _test_global_quota_caps_per_asset() -> bool:
 	var asset_defs: Array = [
 		{
 			"priority": 10,
-			"collision": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}],
+			"collision": [],
 			"result_capacity": 10,
 			"min_distance_voxels": 2.0,
 		},
 		{
 			"priority": 0,
-			"collision": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 0.8}],
+			"collision": [],
 			"result_capacity": 10,
 			"min_distance_voxels": 2.0,
 		},
@@ -206,13 +206,13 @@ func _test_priority_with_gpu_pipeline() -> bool:
 	var asset_defs: Array = [
 		{
 			"priority": 0,
-			"collision": [{"shape": "cylinder", "radius": 0.45, "y_min": 0.0, "y_max": 2.0, "collision_strength": 1.0}],
+			"collision": [],
 			"result_capacity": 3,
 			"min_distance_voxels": 3.0,
 		},
 		{
 			"priority": 5,
-			"collision": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 0.8}],
+			"collision": [],
 			"result_capacity": 4,
 			"min_distance_voxels": 2.0,
 		},

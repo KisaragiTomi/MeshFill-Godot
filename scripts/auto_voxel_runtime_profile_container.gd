@@ -7,23 +7,19 @@ const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd
 
 const PROFILE_TABLE_BUFFER := "profile_table"
 const PROBE_RECORD_BUFFER := "probe_records"
-const COLLISION_RECORD_BUFFER := "collision_records"
 const PIVOT_RECORD_BUFFER := "pivot_records"
+const COLLISION_RECORD_BUFFER := "collision_records"
 const GPU_BUFFER_NAMES := [
 	PROFILE_TABLE_BUFFER,
 	PROBE_RECORD_BUFFER,
-	COLLISION_RECORD_BUFFER,
 	PIVOT_RECORD_BUFFER,
+	COLLISION_RECORD_BUFFER,
 ]
 
 const PROFILE_TABLE_STRIDE_BYTES := 64
 const PROBE_RECORD_STRIDE_BYTES := 32
-const COLLISION_RECORD_STRIDE_BYTES := 64
 const PIVOT_RECORD_STRIDE_BYTES := 32
-
-const COLLISION_SHAPE_POINT := 1
-const COLLISION_SHAPE_CYLINDER := 2
-const COLLISION_SHAPE_BOX := 3
+const COLLISION_RECORD_STRIDE_BYTES := 32
 
 const PROBE_KIND_POSITIVE := 0
 const PROBE_KIND_NEGATIVE := 1
@@ -40,11 +36,11 @@ var _source_key_to_profile_id: Dictionary = {}
 var _profile_order: Array[int] = []
 var _staging_profile_table: Array[Dictionary] = []
 var _staging_probe_records: Array[Dictionary] = []
-var _staging_collision_records: Array[Dictionary] = []
 var _staging_pivot_records: Array[Dictionary] = []
+var _staging_collision_records: Array[Dictionary] = []
 var _staging_probe_ranges: Array[Dictionary] = []
-var _staging_collision_ranges: Array[Dictionary] = []
 var _staging_pivot_ranges: Array[Dictionary] = []
+var _staging_collision_ranges: Array[Dictionary] = []
 
 var _rd: RenderingDevice
 var _owns_rendering_device := false
@@ -72,11 +68,11 @@ func clear() -> void:
 	_profile_order.clear()
 	_staging_profile_table.clear()
 	_staging_probe_records.clear()
-	_staging_collision_records.clear()
 	_staging_pivot_records.clear()
+	_staging_collision_records.clear()
 	_staging_probe_ranges.clear()
-	_staging_collision_ranges.clear()
 	_staging_pivot_ranges.clear()
+	_staging_collision_ranges.clear()
 	_last_upload_error = ""
 	_mark_staging_changed()
 
@@ -141,8 +137,8 @@ func upload_profiles(force: bool = false) -> bool:
 
 	var packed_profile_table := _pack_profile_table_bytes()
 	var packed_probes := _pack_probe_record_bytes()
-	var packed_collision := _pack_collision_record_bytes()
 	var packed_pivots := _pack_pivot_record_bytes()
+	var packed_collisions := _pack_collision_record_bytes()
 
 	_release_gpu_buffers()
 	var ok := true
@@ -159,16 +155,16 @@ func upload_profiles(force: bool = false) -> bool:
 		PROBE_RECORD_STRIDE_BYTES
 	)
 	ok = ok and _create_storage_buffer(
-		COLLISION_RECORD_BUFFER,
-		packed_collision,
-		_staging_collision_records.size(),
-		COLLISION_RECORD_STRIDE_BYTES
-	)
-	ok = ok and _create_storage_buffer(
 		PIVOT_RECORD_BUFFER,
 		packed_pivots,
 		_staging_pivot_records.size(),
 		PIVOT_RECORD_STRIDE_BYTES
+	)
+	ok = ok and _create_storage_buffer(
+		COLLISION_RECORD_BUFFER,
+		packed_collisions,
+		_staging_collision_records.size(),
+		COLLISION_RECORD_STRIDE_BYTES
 	)
 
 	if not ok:
@@ -210,12 +206,12 @@ func get_probe_buffer() -> RID:
 	return get_gpu_buffer(PROBE_RECORD_BUFFER)
 
 
-func get_collision_buffer() -> RID:
-	return get_gpu_buffer(COLLISION_RECORD_BUFFER)
-
-
 func get_pivot_buffer() -> RID:
 	return get_gpu_buffer(PIVOT_RECORD_BUFFER)
+
+
+func get_collision_records_buffer() -> RID:
+	return get_gpu_buffer(COLLISION_RECORD_BUFFER)
 
 
 func get_gpu_buffer_summary() -> Dictionary:
@@ -300,8 +296,8 @@ func readback_debug_snapshot() -> Dictionary:
 		"buffer_bytes": buffer_bytes,
 		"profile_table_bytes": profile_table_bytes,
 		"probe_record_bytes": buffer_bytes.get(PROBE_RECORD_BUFFER, PackedByteArray()),
-		"collision_record_bytes": buffer_bytes.get(COLLISION_RECORD_BUFFER, PackedByteArray()),
 		"pivot_record_bytes": buffer_bytes.get(PIVOT_RECORD_BUFFER, PackedByteArray()),
+		"collision_record_bytes": buffer_bytes.get(COLLISION_RECORD_BUFFER, PackedByteArray()),
 		"decoded_profile_table": _decode_profile_table_bytes(
 			profile_table_bytes,
 			int(_gpu_record_counts.get(PROFILE_TABLE_BUFFER, 0))
@@ -343,15 +339,15 @@ func register_normalized_profile(raw_profile: Dictionary) -> int:
 	var profile_id := _profile_id_from_hash(profile_hash)
 	var profile_index := _profile_order.size()
 	var probe_range := _append_range(_staging_probe_records, normalized.get("semantic_probes", []))
-	var collision_range := _append_range(_staging_collision_records, normalized.get("collision", []))
 	var pivot_range := _append_range(_staging_pivot_records, normalized.get("pivot_variants", []))
+	var collision_range := _append_range(_staging_collision_records, normalized.get("collision", []))
 
 	var probe_range_entry := _make_range_entry(profile_id, profile_index, probe_range)
-	var collision_range_entry := _make_range_entry(profile_id, profile_index, collision_range)
 	var pivot_range_entry := _make_range_entry(profile_id, profile_index, pivot_range)
+	var collision_range_entry := _make_range_entry(profile_id, profile_index, collision_range)
 	_staging_probe_ranges.append(probe_range_entry)
-	_staging_collision_ranges.append(collision_range_entry)
 	_staging_pivot_ranges.append(pivot_range_entry)
+	_staging_collision_ranges.append(collision_range_entry)
 
 	var table_entry := {
 		"profile_id": profile_id,
@@ -362,8 +358,8 @@ func register_normalized_profile(raw_profile: Dictionary) -> int:
 		"semantic_probe_density": float(normalized.get("semantic_probe_density", 1.0)),
 		"context_sensing_radius": float(normalized.get("context_sensing_radius", 0.0)),
 		"probe_range": probe_range_entry.duplicate(true),
-		"collision_range": collision_range_entry.duplicate(true),
 		"pivot_range": pivot_range_entry.duplicate(true),
+		"collision_range": collision_range_entry.duplicate(true),
 		"source_kind": str(normalized.get("source_kind", "")),
 		"source_path": str(normalized.get("source_path", "")),
 		"asset_id": str(normalized.get("asset_id", "")),
@@ -482,14 +478,6 @@ func get_probe_ranges() -> Array[Dictionary]:
 	return export_probe_ranges()
 
 
-func export_collision_ranges() -> Array[Dictionary]:
-	return _duplicate_dictionary_array(_staging_collision_ranges)
-
-
-func get_collision_ranges() -> Array[Dictionary]:
-	return export_collision_ranges()
-
-
 func export_pivot_ranges() -> Array[Dictionary]:
 	return _duplicate_dictionary_array(_staging_pivot_ranges)
 
@@ -504,14 +492,6 @@ func export_probe_records() -> Array[Dictionary]:
 
 func get_probe_records() -> Array[Dictionary]:
 	return export_probe_records()
-
-
-func export_collision_records() -> Array[Dictionary]:
-	return _duplicate_dictionary_array(_staging_collision_records)
-
-
-func get_collision_records() -> Array[Dictionary]:
-	return export_collision_records()
 
 
 func export_pivot_records() -> Array[Dictionary]:
@@ -615,8 +595,8 @@ func _pack_profile_table_bytes() -> PackedByteArray:
 		var entry: Dictionary = _staging_profile_table[i]
 		var base := i * PROFILE_TABLE_STRIDE_BYTES
 		var probe_range: Dictionary = entry.get("probe_range", {})
-		var collision_range: Dictionary = entry.get("collision_range", {})
 		var pivot_range: Dictionary = entry.get("pivot_range", {})
+		var collision_range: Dictionary = entry.get("collision_range", {})
 		var color := SharedPropertyTypeScript.color_from_value(entry.get("color", Color.WHITE), Color.WHITE)
 		var complexity := clampf(float(entry.get("complexity", color.a)), 0.0, 1.0)
 		color.a = complexity
@@ -664,34 +644,6 @@ func _pack_probe_record_bytes() -> PackedByteArray:
 	return bytes
 
 
-func _pack_collision_record_bytes() -> PackedByteArray:
-	var bytes := PackedByteArray()
-	bytes.resize(_staging_collision_records.size() * COLLISION_RECORD_STRIDE_BYTES)
-	for i in range(_staging_collision_records.size()):
-		var collision: Dictionary = _staging_collision_records[i]
-		var shape_code := _collision_shape_code(collision)
-		var center := _collision_center(collision)
-		var size := _collision_size(collision)
-		var base := i * COLLISION_RECORD_STRIDE_BYTES
-		bytes.encode_u32(base + 0, shape_code)
-		bytes.encode_u32(base + 4, int(collision.get("flags", 0)))
-		bytes.encode_u32(base + 8, 1 if bool(collision.get("enabled", true)) else 0)
-		bytes.encode_float(base + 12, maxf(float(collision.get("weight", 1.0)), 0.0))
-		bytes.encode_float(base + 16, center.x)
-		bytes.encode_float(base + 20, center.y)
-		bytes.encode_float(base + 24, center.z)
-		bytes.encode_float(base + 28, maxf(float(collision.get("radius", 0.0)), 0.0))
-		bytes.encode_float(base + 32, size.x)
-		bytes.encode_float(base + 36, size.y)
-		bytes.encode_float(base + 40, size.z)
-		bytes.encode_float(base + 44, float(collision.get("y_min", 0.0)))
-		bytes.encode_float(base + 48, float(collision.get("y_max", 0.0)))
-		bytes.encode_float(base + 52, maxf(float(collision.get("erosion_radius", 0.0)), 0.0))
-		bytes.encode_float(base + 56, maxf(float(collision.get("dilation_radius", 0.0)), 0.0))
-		bytes.encode_float(base + 60, clampf(float(collision.get("collision_strength", 1.0)), 0.0, 1.0))
-	return bytes
-
-
 func _pack_pivot_record_bytes() -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(_staging_pivot_records.size() * PIVOT_RECORD_STRIDE_BYTES)
@@ -707,6 +659,35 @@ func _pack_pivot_record_bytes() -> PackedByteArray:
 		bytes.encode_u32(base + 20, 0)
 		bytes.encode_u32(base + 24, 0)
 		bytes.encode_u32(base + 28, 0)
+	return bytes
+
+
+func _pack_collision_record_bytes() -> PackedByteArray:
+	var bytes := PackedByteArray()
+	bytes.resize(_staging_collision_records.size() * COLLISION_RECORD_STRIDE_BYTES)
+	for i in range(_staging_collision_records.size()):
+		var entry: Dictionary = _staging_collision_records[i]
+		var center := _vector3_from_value(entry.get("offset", entry.get("center", entry.get("position", Vector3.ZERO))), Vector3.ZERO)
+		var shape := str(entry.get("shape", "cylinder"))
+		var kind := 0
+		if shape == "cylinder":
+			kind = 1
+		elif shape == "box":
+			kind = 2
+		var radius := maxf(float(entry.get("radius", 1.0)), 0.01)
+		var y_min := float(entry.get("y_min", 0.0))
+		var y_max := maxf(float(entry.get("y_max", 2.0)), y_min + 0.01)
+		var strength := clampf(float(entry.get("collision_strength", 1.0)), 0.0, 1.0)
+
+		var base := i * COLLISION_RECORD_STRIDE_BYTES
+		bytes.encode_float(base + 0, center.x)
+		bytes.encode_float(base + 4, center.y)
+		bytes.encode_float(base + 8, center.z)
+		bytes.encode_u32(base + 12, kind)
+		bytes.encode_float(base + 16, radius)
+		bytes.encode_float(base + 20, y_min)
+		bytes.encode_float(base + 24, y_max)
+		bytes.encode_float(base + 28, strength)
 	return bytes
 
 
@@ -746,38 +727,12 @@ func _stride_for_buffer(buffer_name: String) -> int:
 			return PROFILE_TABLE_STRIDE_BYTES
 		PROBE_RECORD_BUFFER:
 			return PROBE_RECORD_STRIDE_BYTES
-		COLLISION_RECORD_BUFFER:
-			return COLLISION_RECORD_STRIDE_BYTES
 		PIVOT_RECORD_BUFFER:
 			return PIVOT_RECORD_STRIDE_BYTES
+		COLLISION_RECORD_BUFFER:
+			return COLLISION_RECORD_STRIDE_BYTES
 		_:
 			return 0
-
-
-func _collision_shape_code(collision: Dictionary) -> int:
-	if collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset"):
-		return COLLISION_SHAPE_POINT
-	var shape := str(collision.get("shape", "cylinder")).to_lower()
-	if shape == "box" or shape == "cube":
-		return COLLISION_SHAPE_BOX
-	return COLLISION_SHAPE_CYLINDER
-
-
-func _collision_center(collision: Dictionary) -> Vector3:
-	if collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset"):
-		return _vector3_from_value(
-			collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3.ZERO))),
-			Vector3.ZERO
-		)
-	return _vector3_from_value(collision.get("offset", collision.get("center", collision.get("position", Vector3.ZERO))), Vector3.ZERO)
-
-
-func _collision_size(collision: Dictionary) -> Vector3:
-	if collision.has("half_extents"):
-		return _vector3_from_value(collision.get("half_extents", Vector3.ZERO), Vector3.ZERO)
-	if collision.has("size"):
-		return _vector3_from_value(collision.get("size", Vector3.ZERO), Vector3.ZERO)
-	return Vector3.ZERO
 
 
 static func _vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vector3:

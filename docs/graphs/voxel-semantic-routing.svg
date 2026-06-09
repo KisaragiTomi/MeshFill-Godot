@@ -97,7 +97,7 @@
     <g id="sv[t---1]-resident">
     <rect class="node" x="85" y="160" width="275" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
     <text class="node-title" x="103" y="188">SV[t - 1] resident</text>
-    <text class="small"><tspan x="103" y="210">scene_field</tspan><tspan x="103" y="227">collision_field</tspan><tspan x="103" y="244">stable placement input</tspan></text>
+    <text class="small"><tspan x="103" y="210">complexity_field</tspan><tspan x="103" y="227">collision_field</tspan><tspan x="103" y="244">stable placement input</tspan></text>
     </g>
     <g id="targetsv_b">
     <rect class="node" x="85" y="330" width="275" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>

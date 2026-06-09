@@ -1,6 +1,7 @@
 extends SceneTree
 
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
+const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 
 
 func _init() -> void:
@@ -11,7 +12,7 @@ func _init() -> void:
 
 	var ok := true
 	ok = _test_blendsv_feedback_scores_committed_result_against_target() and ok
-	ok = _test_committed_payload_and_debug_query_boundaries() and ok
+	ok = _test_committed_scene_voxel_and_debug_query_boundaries() and ok
 	ok = _test_cpu_runtime_managers_are_retired() and ok
 
 	if ok:
@@ -88,8 +89,8 @@ func _test_blendsv_feedback_scores_committed_result_against_target() -> bool:
 	return true
 
 
-func _test_committed_payload_and_debug_query_boundaries() -> bool:
-	print("[BlendSVFeedbackScore] test_committed_payload_and_debug_query_boundaries...")
+func _test_committed_scene_voxel_and_debug_query_boundaries() -> bool:
+	print("[BlendSVFeedbackScore] test_committed_scene_voxel_and_debug_query_boundaries...")
 	var committer := SVC.new(32, 32.0)
 	committer.configure_scene_voxel_grid(Vector3i(8, 1, 8), Vector3(1.0, 1.0, 1.0), Vector3.ZERO)
 	committer.build_voxel_volume(8, [
@@ -98,7 +99,7 @@ func _test_committed_payload_and_debug_query_boundaries() -> bool:
 
 	var write_tick := committer.begin_generation_tick(committer.get_generation_tick())
 	var record := {
-		"id": "payload_boundary_auto_0",
+		"id": "accepted_fields_boundary_auto_0",
 		"type": "autoobject",
 		"source_type": "BrushSceneVoxel",
 		"source_voxel_type": "AutoSceneVoxel",
@@ -117,16 +118,16 @@ func _test_committed_payload_and_debug_query_boundaries() -> bool:
 		"slice_indices": [0],
 	}
 	committer.apply_voxel_write_spec(record, true, write_tick)
-	var public_map := committer.blend_scene_voxels(write_tick)
+	var accepted_map := committer.blend_scene_voxels(write_tick)
 	var scene_voxel := committer.get_scene_voxel(0, Vector2i(4, 4))
 	if scene_voxel.is_empty():
 		push_error("  FAIL: expected committed SceneVoxel at center")
 		return false
-	if not _check_public_scene_voxel_payload(scene_voxel):
+	if not _check_scene_voxel_accepted_fields(scene_voxel):
 		return false
-	for key in public_map.keys():
-		var public_scene_voxel = public_map[key]
-		if public_scene_voxel is Dictionary and not _check_public_scene_voxel_payload(public_scene_voxel as Dictionary):
+	for key in accepted_map.keys():
+		var accepted_scene_voxel = accepted_map[key]
+		if accepted_scene_voxel is Dictionary and not _check_scene_voxel_accepted_fields(accepted_scene_voxel as Dictionary):
 			return false
 
 	var color: Color = scene_voxel.get("color", Color.BLACK)
@@ -137,7 +138,7 @@ func _test_committed_payload_and_debug_query_boundaries() -> bool:
 	if committer.has_method("get_scene_voxel_local") or committer.has_method("get_scene_voxel_sidecar"):
 		push_error("  FAIL: old CPU SceneVoxel sidecar/local query path must stay removed")
 		return false
-	print("  OK: committed payload is minimal; debug metadata stays out of CPU query sidecars")
+	print("  OK: committed SceneVoxel only accepts SV-owned fields; debug metadata stays out of CPU query sidecars")
 	committer.dispose(true)
 	return true
 
@@ -160,26 +161,10 @@ func _test_cpu_runtime_managers_are_retired() -> bool:
 	return true
 
 
-func _check_public_scene_voxel_payload(scene_voxel: Dictionary) -> bool:
-	for key in [
-		"value",
-		"occupied",
-		"type",
-		"source_type",
-		"source_voxel_type",
-		"commit_tick",
-		"write_tick",
-		"read_tick",
-		"generation_tick",
-		"debug",
-		"record_id",
-		"auto_id",
-		"object_type",
-		"channel",
-	]:
-		if scene_voxel.has(key):
-			push_error("  FAIL: committed public SceneVoxel payload must not expose %s: %s" % [key, str(scene_voxel)])
-			return false
+func _check_scene_voxel_accepted_fields(scene_voxel: Dictionary) -> bool:
+	if not SceneVoxelScript.has_only_accepted_fields(scene_voxel):
+		push_error("  FAIL: committed SceneVoxel contains fields outside accepted SV contract: %s" % str(scene_voxel))
+		return false
 	if not scene_voxel.has("complexity") or not scene_voxel.has("color"):
 		push_error("  FAIL: committed public SceneVoxel must expose complexity and color")
 		return false

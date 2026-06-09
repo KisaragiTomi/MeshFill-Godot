@@ -67,13 +67,9 @@ func _test_descriptor_registration_stages_profile_data() -> bool:
 		return false
 
 	var probe_ranges: Array = container.export_probe_ranges()
-	var collision_ranges: Array = container.export_collision_ranges()
 	var pivot_ranges: Array = container.export_pivot_ranges()
 	if probe_ranges.size() != 1 or int((probe_ranges[0] as Dictionary).get("count", 0)) != 1:
 		push_error("  FAIL: expected one probe range with one probe")
-		return false
-	if collision_ranges.size() != 1 or int((collision_ranges[0] as Dictionary).get("count", 0)) != 1:
-		push_error("  FAIL: expected one collision range with one collision sample")
 		return false
 	if pivot_ranges.size() != 1 or int((pivot_ranges[0] as Dictionary).get("count", 0)) != 1:
 		push_error("  FAIL: expected one pivot range with one pivot")
@@ -125,8 +121,8 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 	var expected_counts := {
 		RuntimeProfileContainerScript.PROFILE_TABLE_BUFFER: 1,
 		RuntimeProfileContainerScript.PROBE_RECORD_BUFFER: 1,
-		RuntimeProfileContainerScript.COLLISION_RECORD_BUFFER: 1,
 		RuntimeProfileContainerScript.PIVOT_RECORD_BUFFER: 1,
+		RuntimeProfileContainerScript.COLLISION_RECORD_BUFFER: 0,
 	}
 	for buffer_name in expected_counts.keys():
 		var buffer_summary: Dictionary = buffers.get(buffer_name, {})
@@ -157,16 +153,19 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 		return false
 	var profile_bytes: PackedByteArray = snapshot.get("profile_table_bytes", PackedByteArray())
 	var probe_bytes: PackedByteArray = snapshot.get("probe_record_bytes", PackedByteArray())
-	var collision_bytes: PackedByteArray = snapshot.get("collision_record_bytes", PackedByteArray())
 	var pivot_bytes: PackedByteArray = snapshot.get("pivot_record_bytes", PackedByteArray())
+	var collision_bytes: PackedByteArray = snapshot.get("collision_record_bytes", PackedByteArray())
 	if profile_bytes.size() != RuntimeProfileContainerScript.PROFILE_TABLE_STRIDE_BYTES:
 		push_error("  FAIL: profile table byte size mismatch")
 		return false
 	if probe_bytes.size() != RuntimeProfileContainerScript.PROBE_RECORD_STRIDE_BYTES:
 		push_error("  FAIL: probe byte size mismatch")
 		return false
-	if collision_bytes.size() != RuntimeProfileContainerScript.COLLISION_RECORD_STRIDE_BYTES:
-		push_error("  FAIL: collision byte size mismatch")
+	if not snapshot.has("collision_record_bytes"):
+		push_error("  FAIL: snapshot must include collision_record_bytes for GPU-resident collision buffer")
+		return false
+	if collision_bytes.size() != 0:
+		push_error("  FAIL: GPU collision record byte size mismatch (expected 0-byte empty buffer, got %d)" % collision_bytes.size())
 		return false
 	if pivot_bytes.size() != RuntimeProfileContainerScript.PIVOT_RECORD_STRIDE_BYTES:
 		push_error("  FAIL: pivot byte size mismatch")
@@ -175,8 +174,6 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 	var profile_words := profile_bytes.to_int32_array()
 	var profile_values := profile_bytes.to_float32_array()
 	var probe_values := probe_bytes.to_float32_array()
-	var collision_words := collision_bytes.to_int32_array()
-	var collision_values := collision_bytes.to_float32_array()
 	var pivot_values := pivot_bytes.to_float32_array()
 	var read_profile_id := profile_words[0] if profile_words[0] >= 0 else profile_words[0] + 4294967296
 	if int(read_profile_id) != profile_id:
@@ -185,27 +182,23 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 	if int(profile_words[2]) != 0 or int(profile_words[3]) != 1:
 		push_error("  FAIL: GPU profile table probe range readback mismatch")
 		return false
+	if int(profile_words[4]) != 0 or int(profile_words[5]) != 0:
+		push_error("  FAIL: GPU profile table collision range should be 0/0 for empty collision")
+		return false
 	if not _approx(profile_values[8], 0.2, 0.001) or not _approx(profile_values[11], 0.5, 0.001):
 		push_error("  FAIL: GPU profile table color/complexity readback mismatch")
 		return false
 	if not _approx(probe_values[0], 0.25, 0.001) or not _approx(probe_values[5], 0.3, 0.001):
 		push_error("  FAIL: GPU probe record readback mismatch")
 		return false
-	if int(collision_words[0]) != RuntimeProfileContainerScript.COLLISION_SHAPE_POINT:
-		push_error("  FAIL: GPU collision record should encode point collision sample")
-		return false
-	if not _approx(collision_values[4], 1.0, 0.001) or not _approx(collision_values[15], 0.7, 0.001):
-		push_error("  FAIL: GPU collision record readback mismatch")
-		return false
 	if not _approx(pivot_values[1], -0.25, 0.001) or not _approx(pivot_values[3], 0.1, 0.001):
 		push_error("  FAIL: GPU pivot record readback mismatch")
 		return false
 
-	print("  OK: uploaded profile_id=%d bytes profile/probe/collision/pivot=%d/%d/%d/%d" % [
+	print("  OK: uploaded profile_id=%d bytes profile/probe/pivot=%d/%d/%d" % [
 		profile_id,
 		profile_bytes.size(),
 		probe_bytes.size(),
-		collision_bytes.size(),
 		pivot_bytes.size(),
 	])
 	container.dispose(true)
@@ -447,11 +440,7 @@ func _approx(a: float, b: float, eps: float) -> bool:
 func _make_descriptor() -> AutoVoxelDescriptor:
 	var descriptor: AutoVoxelDescriptor = AutoVoxelDescriptorScript.new()
 	descriptor.set_color_and_complexity(Color(0.2, 0.4, 0.6, 1.0), 0.5)
-	descriptor.set_collision([{
-		"voxel": Vector3i(1, 0, 0),
-		"collision_strength": 0.7,
-		"weight": 0.8,
-	}])
+	descriptor.set_collision([])
 	descriptor.set_pivot_variants([{
 		"name": "root",
 		"offset": Vector3(0.0, -0.25, 0.0),
@@ -475,11 +464,5 @@ func _make_profile() -> AutoVoxelProfile:
 	var profile: AutoVoxelProfile = AutoVoxelProfileScript.new()
 	profile.color = Color(0.15, 0.25, 0.35, 1.0)
 	profile.complexity = 0.65
-	profile.collision = [{
-		"shape": "cylinder",
-		"radius": 0.25,
-		"y_min": 0.0,
-		"y_max": 1.0,
-		"collision_strength": 0.5,
-	}]
+	profile.collision = []
 	return profile

@@ -111,8 +111,8 @@ scene      = SV[t - 1][sample_pos]
 color_fit      = 1 - distance(target.rgb, expected.rgb) / sqrt(3)
 complexity_fit = 1 - abs(target.a - expected.a)
 collision_fit  = 1 - abs(target_occupancy - expected_collision)
-empty_fit      = 1 - max(target.a, target_occupancy, scene_field)
-support_fit    = max(scene_field_below, collision_field_below)
+empty_fit      = 1 - max(target.a, target_occupancy, complexity_field)
+support_fit    = max(complexity_field_below, collision_field_below)
 ```
 
 `weight` 是加性权重；`flags` / `kind` 决定启用 positive、negative / empty、support 或 collision scoring。地下场景采样会跳过非 collision probe，避免把已有实体内部当成普通颜色匹配。
@@ -165,15 +165,7 @@ Prefilter 可以从 supported candidate position 和 column-top candidate positi
   "radius": 0.45,
   "color": [0.25, 0.55, 0.22, 0.6],
   "complexity": 0.6,
-  "collision": [
-    {
-      "shape": "cylinder",
-      "radius": 0.18,
-      "y_min": 0.0,
-      "y_max": 0.9,
-      "collision_strength": 0.5
-    }
-  ],
+  "collision": [],
   "group": "placed_autoobjects",
   "mesh_create_method": "create_sample_autoobject_mesh"
 }

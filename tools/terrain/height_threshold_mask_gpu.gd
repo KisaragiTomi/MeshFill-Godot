@@ -2,6 +2,7 @@ class_name HeightThresholdMaskGPU
 extends RefCounted
 
 const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
+const TerrainGPUUtil := preload("res://tools/terrain/terrain_gpu_util.gd")
 
 const SHADER_PATH := "res://shaders/height_threshold_mask.glsl"
 const STATS_BUFFER_BYTES := 12
@@ -20,12 +21,12 @@ static func make_mask_from_height_image_gpu(
 	sentinel: float = -10000.0
 ) -> Dictionary:
 	if img == null or img.is_empty():
-		return _blocked("missing_height_image")
+		return TerrainGPUUtil.gpu_blocked("missing_height_image")
 
 	var width := img.get_width()
 	var height := img.get_height()
 	if width <= 0 or height <= 0:
-		return _blocked("invalid_dimensions")
+		return TerrainGPUUtil.gpu_blocked("invalid_dimensions")
 
 	var source_img := img
 	if source_img.get_format() != Image.FORMAT_RGBAF:
@@ -36,14 +37,14 @@ static func make_mask_from_height_image_gpu(
 	compute.log_name = "HeightThresholdMaskGPU"
 	if not compute.ensure_device(true, false):
 		compute.dispose()
-		return _blocked("missing_rendering_device", width, height)
+		return TerrainGPUUtil.gpu_blocked("missing_rendering_device", width, height)
 
 	var rd: RenderingDevice = compute.get_rendering_device()
 	var shader := compute.load_compute_shader(SHADER_PATH)
 	var pipeline := compute.create_compute_pipeline(shader)
 	if not shader.is_valid() or not pipeline.is_valid():
 		compute.dispose()
-		return _blocked("shader_not_ready", width, height)
+		return TerrainGPUUtil.gpu_blocked("shader_not_ready", width, height)
 
 	var height_tex := compute.upload_texture_2d(
 		source_img,
@@ -62,12 +63,12 @@ static func make_mask_from_height_image_gpu(
 	var stats_buf := compute.storage_buffer_from_bytes(stats_init, ComputeShaderBaseScript.SCOPE_FRAME, "height_threshold_stats_u32")
 	if not height_tex.is_valid() or not mask_buf.is_valid() or not stats_buf.is_valid():
 		compute.dispose()
-		return _blocked("resource_create_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("resource_create_failed", width, height)
 
 	var sampler := compute.create_linear_sampler()
 	if not sampler.is_valid():
 		compute.dispose()
-		return _blocked("sampler_create_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("sampler_create_failed", width, height)
 
 	var set0 := compute.create_uniform_set([
 		compute.make_sampler_uniform(0, sampler, height_tex),
@@ -76,7 +77,7 @@ static func make_mask_from_height_image_gpu(
 	], shader, 0, ComputeShaderBaseScript.SCOPE_PASS, "height_threshold_mask_set0")
 	if not set0.is_valid():
 		compute.dispose()
-		return _blocked("uniform_set_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("uniform_set_failed", width, height)
 
 	var push := PackedByteArray()
 	push.resize(32)
@@ -90,7 +91,7 @@ static func make_mask_from_height_image_gpu(
 	var cl := compute.begin_compute_list()
 	if cl < 0:
 		compute.dispose()
-		return _blocked("compute_list_begin_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("compute_list_begin_failed", width, height)
 	rd.compute_list_bind_compute_pipeline(cl, pipeline)
 	rd.compute_list_bind_uniform_set(cl, set0, 0)
 	rd.compute_list_set_push_constant(cl, push, push.size())
@@ -102,7 +103,7 @@ static func make_mask_from_height_image_gpu(
 	var stats_bytes := rd.buffer_get_data(stats_buf, 0, STATS_BUFFER_BYTES)
 	compute.dispose()
 	if mask_bytes.size() != width * height * 4 or stats_bytes.size() < STATS_BUFFER_BYTES:
-		return _blocked("readback_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("readback_failed", width, height)
 
 	var active_count := int(stats_bytes.decode_u32(STATS_ACTIVE_COUNT_OFFSET))
 	return {
@@ -122,17 +123,6 @@ static func make_mask_from_height_image_gpu(
 		"mask_words": mask_bytes.to_int32_array(),
 		"mask_bytes": mask_bytes,
 		"stats_source": "height_threshold_mask_compute",
-	}
-
-
-static func _blocked(reason: String, width: int = 0, height: int = 0) -> Dictionary:
-	return {
-		"ok": false,
-		"reason": reason,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"width": width,
-		"height": height,
 	}
 
 

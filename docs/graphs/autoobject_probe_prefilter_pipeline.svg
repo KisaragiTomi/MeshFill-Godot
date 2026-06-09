@@ -94,7 +94,7 @@
     <g id="sv[t---1]-fields">
     <rect class="node" x="85" y="155" width="265" height="105" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
     <text class="node-title" x="103" y="183">SV[t - 1] fields</text>
-    <text class="small"><tspan x="103" y="205">scene_field</tspan><tspan x="103" y="222">collision_field</tspan><tspan x="103" y="239">BlendSV-backed resident input</tspan></text>
+    <text class="small"><tspan x="103" y="205">complexity_field</tspan><tspan x="103" y="222">collision_field</tspan><tspan x="103" y="239">BlendSV-backed resident input</tspan></text>
     </g>
     <g id="targetsv_b-buffers">
     <rect class="node" x="85" y="315" width="265" height="105" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>

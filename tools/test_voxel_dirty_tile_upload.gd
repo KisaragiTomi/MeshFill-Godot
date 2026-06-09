@@ -74,33 +74,33 @@ func _test_sv_control_snapshot_from_commit() -> bool:
 
 	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
 	var expected_count := grid_size.x * grid_size.y * grid_size.z
-	var scene_field: PackedFloat32Array = sv.get("scene_field", PackedFloat32Array())
+	var complexity_field: PackedFloat32Array = sv.get("complexity_field", PackedFloat32Array())
 	var collision_field: PackedFloat32Array = sv.get("collision_field", PackedFloat32Array())
-	var scene_field_resident := _sv_scene_field_is_resident(sv)
+	var complexity_field_resident := _sv_complexity_field_is_resident(sv)
 	var collision_field_resident := _sv_collision_field_is_resident(sv)
-	var resident_field_summary_required := scene_field_resident or collision_field_resident
+	var resident_field_summary_required := complexity_field_resident or collision_field_resident
 
-	if scene_field.is_empty() and not scene_field_resident:
-		push_error("  FAIL: CPU scene_field snapshot is empty without resident GPU field metadata")
+	if complexity_field.is_empty() and not complexity_field_resident:
+		push_error("  FAIL: CPU complexity_field snapshot is empty without resident GPU field metadata")
 		return false
 	if collision_field.is_empty() and not collision_field_resident:
 		push_error("  FAIL: CPU collision_field snapshot is empty without resident GPU field metadata")
 		return false
-	if not scene_field.is_empty() and scene_field.size() != expected_count:
-		push_error("  FAIL: CPU scene_field snapshot has unexpected size")
+	if not complexity_field.is_empty() and complexity_field.size() != expected_count:
+		push_error("  FAIL: CPU complexity_field snapshot has unexpected size")
 		return false
 	if not collision_field.is_empty() and collision_field.size() != expected_count:
 		push_error("  FAIL: CPU collision_field snapshot has unexpected size")
 		return false
 
-	var scene_max := 0.0
+	var complexity_max := 0.0
 	var collision_max := 0.0
-	for value in scene_field:
-		scene_max = maxf(scene_max, value)
+	for value in complexity_field:
+		complexity_max = maxf(complexity_max, value)
 	for value in collision_field:
 		collision_max = maxf(collision_max, value)
-	if not scene_field.is_empty() and scene_max <= 0.01:
-		push_error("  FAIL: expected non-empty CPU scene_field snapshot")
+	if not complexity_field.is_empty() and complexity_max <= 0.01:
+		push_error("  FAIL: expected non-empty CPU complexity_field snapshot")
 		return false
 	if not collision_field.is_empty() and collision_max <= 0.01:
 		push_error("  FAIL: expected non-empty CPU collision_field snapshot")
@@ -112,10 +112,10 @@ func _test_sv_control_snapshot_from_commit() -> bool:
 	):
 		return false
 
-	print("  OK: control snapshot tiles=%d voxels=%d scene_max=%.2f collision_max=%.2f" % [
+	print("  OK: control snapshot tiles=%d voxels=%d complexity_max=%.2f collision_max=%.2f" % [
 		int(sv.get("tile_count", 0)),
 		expected_count,
-		scene_max,
+		complexity_max,
 		collision_max,
 	])
 	return true
@@ -204,10 +204,6 @@ func _test_scene_voxel_tile_named_api() -> bool:
 	   or not bool(mixed_flags.get("object_refs", false)):
 		push_error("  FAIL: legacy invalidation should merge into named SceneVoxelTile flags")
 		return false
-	var mixed_source_ids: Array = mixed_tile.get("source_ids_debug", [])
-	if not mixed_source_ids.has("named_priority_source"):
-		push_error("  FAIL: legacy invalidation must not drop named SceneVoxelTile source refs")
-		return false
 	var tile_size: Vector3i = first_tile.get("tile_size", Vector3i.ZERO)
 	if tile_size != Vector3i(4, 4, 4):
 		push_error("  FAIL: expected default SceneVoxelTile size 4x4x4 voxels, got %s" % str(tile_size))
@@ -227,12 +223,8 @@ func _test_scene_voxel_tile_named_api() -> bool:
 		push_error("  FAIL: SV snapshot should keep SceneVoxelTile sidecar")
 		return false
 	var object_ids: Array = sv.get("scene_voxel_tile_object_ids_debug", [])
-	var source_ids: Array = sv.get("scene_voxel_tile_source_ids_debug", [])
 	if not object_ids.has("dirty_sv_rock_0"):
 		push_error("  FAIL: compact SceneVoxelTile object debug range missing source record id")
-		return false
-	if source_ids.is_empty():
-		push_error("  FAIL: compact SceneVoxelTile source debug range should not be empty")
 		return false
 	var found_fixed_range := false
 	var scene_tile_ids := scene_tiles.keys()
@@ -244,11 +236,9 @@ func _test_scene_voxel_tile_named_api() -> bool:
 			continue
 		var tile: Dictionary = raw_tile
 		var object_count := int(tile.get("object_range_count", 0))
-		var source_count := int(tile.get("source_range_count", 0))
 		if object_count <= 0:
 			continue
 		var object_start := int(tile.get("object_range_start", -1))
-		var source_start := int(tile.get("source_range_start", -1))
 		var tile_coord: Vector3i = tile.get("tile_coord", Vector3i.ZERO)
 		var tile_grid := _scene_voxel_tile_grid_for(committer.grid_size, tile_size)
 		var expected_object_start := _scene_voxel_tile_flattened_index(tile_coord, tile_grid) * SVC.SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT
@@ -263,12 +253,6 @@ func _test_scene_voxel_tile_named_api() -> bool:
 		if object_debug_start < 0 or object_debug_start + object_debug_count > object_ids.size():
 			push_error("  FAIL: SceneVoxelTile compact object debug range outside debug buffer")
 			return false
-		if source_start < 0 or source_start + source_count > source_ids.size():
-			push_error("  FAIL: SceneVoxelTile source range outside compact debug buffer")
-			return false
-		if source_count < object_debug_count:
-			push_error("  FAIL: SceneVoxelTile source range should cover compact object debug refs")
-			return false
 		found_fixed_range = true
 		break
 	if not found_fixed_range:
@@ -280,7 +264,7 @@ func _test_scene_voxel_tile_named_api() -> bool:
 			continue
 		var tile: Dictionary = raw_tile
 		var summary: Dictionary = tile.get("summary", {})
-		if bool(summary.get("non_empty", false)) and int(summary.get("scene_voxel_count", 0)) > 0:
+		if (int(summary.get("scene_voxel_count", 0)) > 0 or int(summary.get("collision_cell_count", 0)) > 0) and int(summary.get("scene_voxel_count", 0)) > 0:
 			var minmax: Vector2 = summary.get("scene_minmax", Vector2.ZERO)
 			if minmax.y <= 0.01:
 				push_error("  FAIL: SceneVoxelTile summary should publish scene complexity min/max")
@@ -339,10 +323,6 @@ func _test_mark_all_scene_voxel_tiles_dirty() -> bool:
 			return false
 		if not bool(tile.get("dirty", false)) or not bool(tile.get("updated_this_commit", false)):
 			push_error("  FAIL: full dirty SceneVoxelTile did not set dirty/update markers")
-			return false
-		var source_ids: Array = tile.get("source_ids_debug", [])
-		if not source_ids.has("maintenance_full_rebuild"):
-			push_error("  FAIL: full dirty source record did not enter SceneVoxelTile sidecar")
 			return false
 		var voxel_min: Vector3i = tile.get("voxel_min", Vector3i.ZERO)
 		var voxel_max: Vector3i = tile.get("voxel_max", Vector3i.ZERO)
@@ -589,7 +569,7 @@ func _test_scene_voxel_tile_gpu_buffers_or_skip() -> bool:
 		push_error("  FAIL: expected resident scene/collision voxel field count")
 		return false
 
-	var uploaded_scene_field_rid := committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER)
+	var uploaded_complexity_field_rid := committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER)
 	var uploaded_collision_field_rid := committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER)
 	var uploaded_revision := int(summary.get("uploaded_revision", -1))
 	committer.mark_scene_voxel_tile_dirty(
@@ -637,11 +617,11 @@ func _test_scene_voxel_tile_gpu_buffers_or_skip() -> bool:
 		push_error("  FAIL: metadata-only SceneVoxelTile upload should reuse resident scene/collision buffers")
 		return false
 	var reused_buffers: Array = summary.get("last_reused_buffers", [])
-	if not reused_buffers.has(SVC.SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER) or not reused_buffers.has(SVC.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER):
+	if not reused_buffers.has(SVC.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER) or not reused_buffers.has(SVC.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER):
 		push_error("  FAIL: resident field reuse summary missing scene/collision buffer names")
 		return false
-	if committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER) != uploaded_scene_field_rid:
-		push_error("  FAIL: scene field RID should be preserved when resident field content is unchanged")
+	if committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER) != uploaded_complexity_field_rid:
+		push_error("  FAIL: complexity field RID should be preserved when resident field content is unchanged")
 		return false
 	if committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER) != uploaded_collision_field_rid:
 		push_error("  FAIL: collision field RID should be preserved when resident field content is unchanged")
@@ -662,19 +642,19 @@ func _test_scene_voxel_tile_gpu_buffers_or_skip() -> bool:
 	if int(summary.get("object_ref_capacity", -1)) != expected_object_ref_slots:
 		push_error("  FAIL: object-ref summary capacity should match fixed slot count")
 		return false
-	var scene_field_buffer: Dictionary = buffers.get(SVC.SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER, {})
+	var complexity_field_buffer: Dictionary = buffers.get(SVC.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER, {})
 	var collision_field_buffer: Dictionary = buffers.get(SVC.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER, {})
-	if not bool(scene_field_buffer.get("reused_last_upload", false)) or not bool(collision_field_buffer.get("reused_last_upload", false)):
+	if not bool(complexity_field_buffer.get("reused_last_upload", false)) or not bool(collision_field_buffer.get("reused_last_upload", false)):
 		push_error("  FAIL: scene/collision field buffer summaries should report metadata-only reuse")
 		return false
-	if int(scene_field_buffer.get("record_count", -1)) != expected_field_count:
-		push_error("  FAIL: scene field GPU record count mismatch")
+	if int(complexity_field_buffer.get("record_count", -1)) != expected_field_count:
+		push_error("  FAIL: complexity field GPU record count mismatch")
 		return false
 	if int(collision_field_buffer.get("record_count", -1)) != expected_field_count:
 		push_error("  FAIL: collision field GPU record count mismatch")
 		return false
-	if int(scene_field_buffer.get("logical_byte_size", -1)) != expected_field_count * SVC.SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES:
-		push_error("  FAIL: scene field GPU logical byte size mismatch")
+	if int(complexity_field_buffer.get("logical_byte_size", -1)) != expected_field_count * SVC.SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES:
+		push_error("  FAIL: complexity field GPU logical byte size mismatch")
 		return false
 	if int(collision_field_buffer.get("logical_byte_size", -1)) != expected_field_count * SVC.SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES:
 		push_error("  FAIL: collision field GPU logical byte size mismatch")
@@ -688,9 +668,9 @@ func _test_scene_voxel_tile_gpu_buffers_or_skip() -> bool:
 	var summary_bytes: PackedByteArray = snapshot.get("summary_record_bytes", PackedByteArray())
 	var dirty_bytes: PackedByteArray = snapshot.get("dirty_index_bytes", PackedByteArray())
 	var object_ref_bytes: PackedByteArray = snapshot.get("object_ref_bytes", PackedByteArray())
-	var scene_field_bytes: PackedByteArray = snapshot.get("scene_field_bytes", PackedByteArray())
+	var complexity_field_bytes: PackedByteArray = snapshot.get("complexity_field_bytes", PackedByteArray())
 	var collision_field_bytes: PackedByteArray = snapshot.get("collision_field_bytes", PackedByteArray())
-	var scene_field_values: PackedFloat32Array = snapshot.get("scene_field_values", PackedFloat32Array())
+	var complexity_field_values: PackedFloat32Array = snapshot.get("complexity_field_values", PackedFloat32Array())
 	var collision_field_values: PackedFloat32Array = snapshot.get("collision_field_values", PackedFloat32Array())
 	if tile_bytes.size() != int(summary.get("tile_count", 0)) * SVC.SCENE_VOXEL_TILE_RECORD_STRIDE_BYTES:
 		push_error("  FAIL: tile record byte size mismatch")
@@ -704,16 +684,16 @@ func _test_scene_voxel_tile_gpu_buffers_or_skip() -> bool:
 	if object_ref_bytes.size() != expected_object_ref_slots * SVC.SCENE_VOXEL_TILE_REF_STRIDE_BYTES:
 		push_error("  FAIL: fixed object-ref byte size mismatch")
 		return false
-	if scene_field_bytes.size() != expected_field_count * SVC.SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES:
-		push_error("  FAIL: scene field byte size mismatch")
+	if complexity_field_bytes.size() != expected_field_count * SVC.SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES:
+		push_error("  FAIL: complexity field byte size mismatch")
 		return false
 	if collision_field_bytes.size() != expected_field_count * SVC.SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES:
 		push_error("  FAIL: collision field byte size mismatch")
 		return false
-	if scene_field_values.size() != expected_field_count or collision_field_values.size() != expected_field_count:
+	if complexity_field_values.size() != expected_field_count or collision_field_values.size() != expected_field_count:
 		push_error("  FAIL: decoded scene/collision field size mismatch")
 		return false
-	if _packed_float_max(scene_field_values) <= 0.01 or _packed_float_max(collision_field_values) <= 0.01:
+	if _packed_float_max(complexity_field_values) <= 0.01 or _packed_float_max(collision_field_values) <= 0.01:
 		push_error("  FAIL: expected non-empty scene/collision field values from GPU readback")
 		return false
 	var dirty_ids: Array = snapshot.get("dirty_tile_ids", [])
@@ -759,9 +739,11 @@ func _test_scene_voxel_tile_gpu_buffers_or_skip() -> bool:
 	var summaries: Array = snapshot.get("summary_records", [])
 	var found_non_empty_summary := false
 	for raw_summary in summaries:
-		if raw_summary is Dictionary and bool((raw_summary as Dictionary).get("non_empty", false)):
-			found_non_empty_summary = true
-			break
+		if raw_summary is Dictionary:
+			var s: Dictionary = raw_summary as Dictionary
+			if int(s.get("scene_voxel_count", 0)) > 0 or int(s.get("collision_cell_count", 0)) > 0:
+				found_non_empty_summary = true
+				break
 	if not found_non_empty_summary:
 		push_error("  FAIL: expected non-empty SceneVoxelTile summary in GPU readback")
 		return false
@@ -837,7 +819,7 @@ func _test_scene_voxel_tile_dirty_range_gpu_upload_or_skip() -> bool:
 	var initial_summary := committer.get_scene_voxel_tile_gpu_buffer_summary()
 	var full_tile_count := int(initial_summary.get("tile_count", 0))
 	var full_field_count := int(initial_summary.get("resident_field_voxel_count", 0))
-	var uploaded_scene_field_rid := committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER)
+	var uploaded_complexity_field_rid := committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER)
 	var uploaded_collision_field_rid := committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER)
 	var scene_voxel_tiles: Dictionary = initial_sv.get("scene_voxel_tiles", {})
 	var selected_tile_id := ""
@@ -899,8 +881,8 @@ func _test_scene_voxel_tile_dirty_range_gpu_upload_or_skip() -> bool:
 	if str(range_summary.get("resident_field_read_source", "")) != "gpu_storage_buffers":
 		push_error("  FAIL: dirty range upload should keep resident fields GPU-backed")
 		return false
-	if committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER) != uploaded_scene_field_rid:
-		push_error("  FAIL: dirty range upload should update scene field buffer in place")
+	if committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER) != uploaded_complexity_field_rid:
+		push_error("  FAIL: dirty range upload should update complexity field buffer in place")
 		return false
 	if committer.get_scene_voxel_tile_gpu_buffer(SVC.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER) != uploaded_collision_field_rid:
 		push_error("  FAIL: dirty range upload should update collision field buffer in place")
@@ -946,7 +928,7 @@ func _test_scene_voxel_tile_resident_gpu_field_update_or_skip() -> bool:
 	var previous_summary := committer.get_scene_voxel_tile_gpu_buffer_summary()
 	var previous_revision := int(previous_summary.get("uploaded_revision", -1))
 	var previous_snapshot := committer.readback_scene_voxel_tile_debug_snapshot()
-	var previous_scene_values: PackedFloat32Array = previous_snapshot.get("scene_field_values", PackedFloat32Array())
+	var previous_scene_values: PackedFloat32Array = previous_snapshot.get("complexity_field_values", PackedFloat32Array())
 	var previous_collision_values: PackedFloat32Array = previous_snapshot.get("collision_field_values", PackedFloat32Array())
 	var previous_scene_count := _packed_float_nonzero_count(previous_scene_values)
 	var previous_collision_count := _packed_float_nonzero_count(previous_collision_values)
@@ -984,20 +966,20 @@ func _test_scene_voxel_tile_resident_gpu_field_update_or_skip() -> bool:
 		push_error("  FAIL: committed scene/collision fields should read from GPU buffers after re-upload")
 		return false
 	var field_update_reused_buffers: Array = updated_summary.get("last_reused_buffers", [])
-	if bool(updated_summary.get("resident_field_buffers_reused", false)) or field_update_reused_buffers.has(SVC.SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER) or field_update_reused_buffers.has(SVC.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER):
+	if bool(updated_summary.get("resident_field_buffers_reused", false)) or field_update_reused_buffers.has(SVC.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER) or field_update_reused_buffers.has(SVC.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER):
 		push_error("  FAIL: committed field content changes must not reuse stale resident scene/collision buffers")
 		return false
 	var updated_snapshot := committer.readback_scene_voxel_tile_debug_snapshot()
-	var updated_scene_values: PackedFloat32Array = updated_snapshot.get("scene_field_values", PackedFloat32Array())
+	var updated_scene_values: PackedFloat32Array = updated_snapshot.get("complexity_field_values", PackedFloat32Array())
 	var updated_collision_values: PackedFloat32Array = updated_snapshot.get("collision_field_values", PackedFloat32Array())
-	if updated_scene_values.size() != int(updated_summary.get("scene_field_voxel_count", 0)):
-		push_error("  FAIL: updated scene field readback count mismatch")
+	if updated_scene_values.size() != int(updated_summary.get("complexity_field_voxel_count", 0)):
+		push_error("  FAIL: updated complexity field readback count mismatch")
 		return false
 	if updated_collision_values.size() != int(updated_summary.get("collision_field_voxel_count", 0)):
 		push_error("  FAIL: updated collision field readback count mismatch")
 		return false
 	if _packed_float_nonzero_count(updated_scene_values) <= previous_scene_count:
-		push_error("  FAIL: committed scene field GPU readback did not include the dirty update")
+		push_error("  FAIL: committed complexity field GPU readback did not include the dirty update")
 		return false
 	if _packed_float_nonzero_count(updated_collision_values) <= previous_collision_count:
 		push_error("  FAIL: committed collision field GPU readback did not include the dirty update")
@@ -1078,11 +1060,8 @@ func _test_committer_import_filter_pipeline_rids_or_skip() -> bool:
 	if not committer._pipeline_filter.is_valid():
 		push_error("  FAIL: filter compute pipeline RID should be valid when committer reports GPU ready")
 		return false
-	if not committer._pipeline_blend_scene_fields.is_valid():
-		push_error("  FAIL: blend scene field compute pipeline RID should be valid when committer reports GPU ready")
-		return false
-	if not committer._pipeline_commit_scene_voxels.is_valid():
-		push_error("  FAIL: commit SceneVoxel payload compute pipeline RID should be valid when committer reports GPU ready")
+	if not committer._pipeline_blend_complexity_fields.is_valid():
+		push_error("  FAIL: blend complexity field compute pipeline RID should be valid when committer reports GPU ready")
 		return false
 	if not committer._pipeline_resolve_scene_sources.is_valid():
 		push_error("  FAIL: source resolver compute pipeline RID should be valid when committer reports GPU ready")
@@ -1108,8 +1087,8 @@ func _test_committer_import_filter_pipeline_rids_or_skip() -> bool:
 	if not committer._pipeline_sample_r32_pixel.is_valid():
 		push_error("  FAIL: R32 pixel sample compute pipeline RID should be valid when committer reports GPU ready")
 		return false
-	if not committer._shader_import.is_valid() or not committer._shader_filter.is_valid() or not committer._shader_blend_scene_fields.is_valid() or not committer._shader_commit_scene_voxels.is_valid() or not committer._shader_resolve_scene_sources.is_valid() or not committer._shader_reduce_scene_voxel_stats.is_valid() or not committer._shader_reduce_scene_voxel_tile_summaries.is_valid() or not committer._shader_init_scene_voxel_tile_summaries.is_valid() or not committer._shader_compact_scene_voxel_tile_summaries.is_valid() or not committer._shader_update_scene_voxel_tile_summary_ranges.is_valid() or not committer._shader_collect_disc_pixels.is_valid() or not committer._shader_sample_r32_pixel.is_valid():
-		push_error("  FAIL: import/filter/blend/commit/source-resolver/reduce/init/compact/summary-range/collector/sample shader RIDs should be valid when committer reports GPU ready")
+	if not committer._shader_import.is_valid() or not committer._shader_filter.is_valid() or not committer._shader_blend_complexity_fields.is_valid() or not committer._shader_resolve_scene_sources.is_valid() or not committer._shader_reduce_scene_voxel_stats.is_valid() or not committer._shader_reduce_scene_voxel_tile_summaries.is_valid() or not committer._shader_init_scene_voxel_tile_summaries.is_valid() or not committer._shader_compact_scene_voxel_tile_summaries.is_valid() or not committer._shader_update_scene_voxel_tile_summary_ranges.is_valid() or not committer._shader_collect_disc_pixels.is_valid() or not committer._shader_sample_r32_pixel.is_valid():
+		push_error("  FAIL: import/filter/blend/source-resolver/reduce/init/compact/summary-range/collector/sample shader RIDs should be valid when committer reports GPU ready")
 		return false
 
 	committer.build_voxel_volume(8, [
@@ -1122,26 +1101,26 @@ func _test_committer_import_filter_pipeline_rids_or_skip() -> bool:
 	committer.apply_voxel_write_spec(brush_record, true, write_tick)
 	committer.blend_scene_voxels(write_tick)
 	var commit_summary := committer.get_last_blend_scene_voxel_commit_summary()
-	if str(commit_summary.get("payload_blend_mode", "")) != "commit_scene_voxel_payloads_compute" or not bool(commit_summary.get("gpu_dispatched", false)):
+	if str(commit_summary.get("payload_blend_mode", "")) != "merged_resolve_commit_gpu" or not bool(commit_summary.get("gpu_dispatched", false)):
 		push_error("  FAIL: expected committed SceneVoxel payload blend from compute, got %s" % str(commit_summary))
 		return false
 	var sv := committer.get_sv()
-	if str(sv.get("scene_field_source", "")) != "resident_committed_scene_voxel_payload_buffers" \
-			or str(sv.get("scene_field_projection_mode", "")) != "committed_payload_dense_scatter" \
-			or str(sv.get("scene_field_runtime_read_source", "")) != "resident_committed_scene_voxel_payload_buffer" \
-			or not bool(sv.get("scene_field_committed_payload_projection", false)):
-		push_error("  FAIL: expected resident scene_field to project from committed payload buffers, got %s" % str(sv))
+	if str(sv.get("complexity_field_source", "")) != "resident_committed_scene_voxel_payload_buffers" \
+			or str(sv.get("complexity_field_projection_mode", "")) != "committed_payload_dense_scatter" \
+			or str(sv.get("complexity_field_runtime_read_source", "")) != "resident_committed_scene_voxel_payload_buffer" \
+			or not bool(sv.get("complexity_field_committed_payload_projection", false)):
+		push_error("  FAIL: expected resident complexity_field to project from committed payload buffers, got %s" % str(sv))
 		return false
 	if not bool(sv.get("tile_summary_gpu_dispatched", false)):
 		push_error("  FAIL: expected SceneVoxelTile summaries to come from compute reduce, got %s" % str(sv))
 		return false
-	var scene_field: PackedFloat32Array = sv.get("scene_field", PackedFloat32Array())
+	var complexity_field: PackedFloat32Array = sv.get("complexity_field", PackedFloat32Array())
 	var center_idx := 4 + 8 * (4 + 8 * 0)
-	if scene_field.is_empty():
+	if complexity_field.is_empty():
 		var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
 		var expected_count := grid_size.x * grid_size.y * grid_size.z
-		if not _sv_scene_field_is_resident(sv):
-			push_error("  FAIL: committed-payload scene_field is empty without resident GPU field metadata")
+		if not _sv_complexity_field_is_resident(sv):
+			push_error("  FAIL: committed-payload complexity_field is empty without resident GPU field metadata")
 			return false
 		if not _assert_scene_voxel_tile_resident_field_summary(
 			committer,
@@ -1150,8 +1129,8 @@ func _test_committer_import_filter_pipeline_rids_or_skip() -> bool:
 		):
 			return false
 	else:
-		if center_idx >= scene_field.size() or absf(scene_field[center_idx] - 0.4) > 0.001:
-			push_error("  FAIL: Auto/Brush compute blend value mismatch at center: %s" % str(scene_field))
+		if center_idx >= complexity_field.size() or absf(complexity_field[center_idx] - 0.4) > 0.001:
+			push_error("  FAIL: Auto/Brush compute blend value mismatch at center: %s" % str(complexity_field))
 			return false
 	var source_resolve_summary := committer.get_last_scene_voxel_source_resolve_summary()
 	if str(source_resolve_summary.get("mode", "")) != "resolve_resident_source_streams":
@@ -1629,11 +1608,11 @@ func _test_gpu_autoobject_object_ref_update_pass_or_skip() -> bool:
 	return true
 
 
-func _sv_scene_field_is_resident(sv: Dictionary) -> bool:
-	var runtime_read_source := str(sv.get("scene_field_runtime_read_source", "none"))
+func _sv_complexity_field_is_resident(sv: Dictionary) -> bool:
+	var runtime_read_source := str(sv.get("complexity_field_runtime_read_source", "none"))
 	var projection_read_source := str(sv.get("public_scene_voxel_projection_runtime_read_source", "none"))
-	return bool(sv.get("scene_field_buffer_resident", false)) \
-		or bool(sv.get("scene_field_final_source_stream_resident", false)) \
+	return bool(sv.get("complexity_field_buffer_resident", false)) \
+		or bool(sv.get("complexity_field_final_source_stream_resident", false)) \
 		or runtime_read_source == "gpu_resident_blend_output" \
 		or runtime_read_source.begins_with("resident_") \
 		or projection_read_source.begins_with("resident_") \
@@ -1673,21 +1652,21 @@ func _assert_scene_voxel_tile_resident_field_summary(
 	if int(summary.get("resident_field_voxel_count", -1)) != expected_count:
 		push_error("  FAIL: %s resident field voxel count mismatch: %s" % [label, str(summary)])
 		return false
-	if int(summary.get("scene_field_voxel_count", -1)) != expected_count:
-		push_error("  FAIL: %s scene field voxel count mismatch: %s" % [label, str(summary)])
+	if int(summary.get("complexity_field_voxel_count", -1)) != expected_count:
+		push_error("  FAIL: %s complexity field voxel count mismatch: %s" % [label, str(summary)])
 		return false
 	if int(summary.get("collision_field_voxel_count", -1)) != expected_count:
 		push_error("  FAIL: %s collision field voxel count mismatch: %s" % [label, str(summary)])
 		return false
 
 	var buffers: Dictionary = summary.get("buffers", {})
-	var scene_field_buffer: Dictionary = buffers.get(SVC.SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER, {})
+	var complexity_field_buffer: Dictionary = buffers.get(SVC.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER, {})
 	var collision_field_buffer: Dictionary = buffers.get(SVC.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER, {})
-	if not bool(scene_field_buffer.get("rid_valid", false)) or not bool(collision_field_buffer.get("rid_valid", false)):
+	if not bool(complexity_field_buffer.get("rid_valid", false)) or not bool(collision_field_buffer.get("rid_valid", false)):
 		push_error("  FAIL: %s resident scene/collision buffer RIDs should be valid" % label)
 		return false
-	if int(scene_field_buffer.get("record_count", -1)) != expected_count:
-		push_error("  FAIL: %s scene field buffer record count mismatch" % label)
+	if int(complexity_field_buffer.get("record_count", -1)) != expected_count:
+		push_error("  FAIL: %s complexity field buffer record count mismatch" % label)
 		return false
 	if int(collision_field_buffer.get("record_count", -1)) != expected_count:
 		push_error("  FAIL: %s collision field buffer record count mismatch" % label)
@@ -1825,13 +1804,7 @@ func _make_voxel_record(record_id: String, base_pixel: Vector2i) -> Dictionary:
 		"scale": Vector3.ONE,
 		"color": Color(0.55, 0.50, 0.45, 1.0),
 		"complexity": 1.0,
-		"collision": [{
-			"shape": "cylinder",
-			"radius": 1.0,
-			"y_min": 0.0,
-			"y_max": 1.0,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 		"channel": 0,
 		"radius": 2.0,
 	}

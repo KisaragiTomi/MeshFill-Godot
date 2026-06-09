@@ -3,16 +3,16 @@
 
 layout(local_size_x = 64) in;
 
-layout(set = 0, binding = 0, std430) restrict readonly buffer AutoScene {
+layout(set = 0, binding = 0, std430) restrict readonly buffer AutoComplexity {
     float auto_source[];
 };
 
-layout(set = 0, binding = 1, std430) restrict readonly buffer BrushScene {
+layout(set = 0, binding = 1, std430) restrict readonly buffer BrushComplexity {
     float brush_source[];
 };
 
-layout(set = 0, binding = 2, std430) restrict buffer OutputScene {
-    float out_scene[];
+layout(set = 0, binding = 2, std430) restrict buffer OutputComplexity {
+    vec4 out_complexity[];
 };
 
 layout(set = 0, binding = 3, std430) restrict readonly buffer CommittedSceneVoxelPayloads {
@@ -35,6 +35,9 @@ layout(push_constant, std430) uniform Params {
 };
 
 const int SRC_COMPLEXITY = 0;
+const int SRC_COLOR_R = 1;
+const int SRC_COLOR_G = 2;
+const int SRC_COLOR_B = 3;
 const int SRC_HAS_SOURCE = 5;
 const int SRC_AUTO_MIX = 6;
 const int SRC_SLICE_INDEX = 8;
@@ -42,6 +45,9 @@ const int SRC_VOXEL_X = 9;
 const int SRC_VOXEL_Z = 10;
 
 const int OUT_COMPLEXITY = 0;
+const int OUT_COLOR_R = 1;
+const int OUT_COLOR_G = 2;
+const int OUT_COLOR_B = 3;
 const int OUT_SOURCE_SELECTOR = 5;
 const int OUT_VALID = 7;
 
@@ -74,7 +80,13 @@ void scatter_committed_payload_slot(uint idx) {
     }
 
     uint out_idx = uint(voxel_x + xz_res * (voxel_z + xz_res * slice_index));
-    out_scene[out_idx] = clamp(committed_payloads[payload_base + OUT_COMPLEXITY], 0.0, 1.0);
+    vec4 out_color = vec4(
+        clamp(committed_payloads[payload_base + OUT_COLOR_R], 0.0, 1.0),
+        clamp(committed_payloads[payload_base + OUT_COLOR_G], 0.0, 1.0),
+        clamp(committed_payloads[payload_base + OUT_COLOR_B], 0.0, 1.0),
+        clamp(committed_payloads[payload_base + OUT_COMPLEXITY], 0.0, 1.0)
+    );
+    out_complexity[out_idx] = out_color;
 }
 
 void main() {
@@ -124,12 +136,32 @@ void main() {
     float auto_value = has_auto ? clamp(auto_source[auto_base + SRC_COMPLEXITY], 0.0, 1.0) : 0.0;
     float brush_value = has_brush ? clamp(brush_source[brush_base + SRC_COMPLEXITY], 0.0, 1.0) : 0.0;
     float out_value = auto_value;
+
+    vec3 out_rgb = vec3(0.0);
     if (has_brush) {
         out_value = has_auto
             ? mix(brush_value, auto_value, clamp(brush_source[brush_base + SRC_AUTO_MIX], 0.0, 1.0))
             : brush_value;
+        out_rgb = vec3(
+            clamp(brush_source[brush_base + SRC_COLOR_R], 0.0, 1.0),
+            clamp(brush_source[brush_base + SRC_COLOR_G], 0.0, 1.0),
+            clamp(brush_source[brush_base + SRC_COLOR_B], 0.0, 1.0)
+        );
+        if (has_auto) {
+            out_rgb = mix(out_rgb, vec3(
+                clamp(auto_source[auto_base + SRC_COLOR_R], 0.0, 1.0),
+                clamp(auto_source[auto_base + SRC_COLOR_G], 0.0, 1.0),
+                clamp(auto_source[auto_base + SRC_COLOR_B], 0.0, 1.0)
+            ), clamp(brush_source[brush_base + SRC_AUTO_MIX], 0.0, 1.0));
+        }
+    } else if (has_auto) {
+        out_rgb = vec3(
+            clamp(auto_source[auto_base + SRC_COLOR_R], 0.0, 1.0),
+            clamp(auto_source[auto_base + SRC_COLOR_G], 0.0, 1.0),
+            clamp(auto_source[auto_base + SRC_COLOR_B], 0.0, 1.0)
+        );
     }
 
     uint out_idx = uint(voxel_x + xz_res * (voxel_z + xz_res * slice_index));
-    out_scene[out_idx] = out_value;
+    out_complexity[out_idx] = vec4(out_rgb, out_value);
 }

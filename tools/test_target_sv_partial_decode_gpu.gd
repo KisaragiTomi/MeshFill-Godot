@@ -42,7 +42,7 @@ func _test_visual_only_partial_decode() -> bool:
 	)
 	if not _assert_partial_gpu_contract(decoded, voxel_count, "visual_bytes", "zero_filled"):
 		return false
-	var occupancy: PackedFloat32Array = decoded.get("target_occupancy", PackedFloat32Array())
+	var occupancy: PackedFloat32Array = decoded.get("target_field", PackedFloat32Array())
 	var colors: PackedColorArray = decoded.get("target_color", PackedColorArray())
 	if absf(occupancy[5] - 0.35) > 0.001 or absf(occupancy[voxel_count - 1] - 0.6) > 0.001:
 		push_error("  FAIL: visual-only occupancy should come from visual complexity")
@@ -78,7 +78,7 @@ func _test_collision_only_partial_decode() -> bool:
 	)
 	if not _assert_partial_gpu_contract(decoded, voxel_count, "zero_filled", "collision_bytes"):
 		return false
-	var occupancy: PackedFloat32Array = decoded.get("target_occupancy", PackedFloat32Array())
+	var occupancy: PackedFloat32Array = decoded.get("target_field", PackedFloat32Array())
 	var colors: PackedColorArray = decoded.get("target_color", PackedColorArray())
 	if absf(occupancy[0] - 0.2) > 0.001 \
 			or absf(occupancy[17] - 1.0) > 0.001 \
@@ -118,10 +118,10 @@ func _assert_partial_gpu_contract(decoded: Dictionary, voxel_count: int, visual_
 		push_error("  FAIL: partial buffer source metadata mismatch: %s" % str(decoded))
 		return false
 	if int(decoded.get("target_color_stride_bytes", 0)) != 16 \
-			or int(decoded.get("target_occupancy_stride_bytes", 0)) != 4:
+			or int(decoded.get("target_field_stride_bytes", 0)) != 4:
 		push_error("  FAIL: partial decode stride metadata mismatch")
 		return false
-	var occupancy: PackedFloat32Array = decoded.get("target_occupancy", PackedFloat32Array())
+	var occupancy: PackedFloat32Array = decoded.get("target_field", PackedFloat32Array())
 	var colors: PackedColorArray = decoded.get("target_color", PackedColorArray())
 	if occupancy.size() != voxel_count or colors.size() != voxel_count:
 		push_error("  FAIL: partial decode array sizes mismatch")

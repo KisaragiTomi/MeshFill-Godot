@@ -29,6 +29,7 @@ const MESH_DESCRIPTION_FLAG_SOURCE_DIFFERS := 4
 const MESH_DESCRIPTION_FLAG_HAS_SOURCE_PATH := 8
 const TARGET_READ_BUFFER_PREP_SHADER := "res://shaders/prepare_target_read_buffers.glsl"
 const TARGET_READ_BUFFER_PREP_LOCAL_SIZE := 64
+const TARGET_FIELD_STRIDE_BYTES := 16  # vec4 = 16 bytes per voxel
 const RESIDENT_TARGET_READ_BUFFERS_OPT_IN_KEY := "use_resident_target_read_buffer_handoff"
 const TARGET_READ_BUFFERS_DEBUG_READBACK_KEY := "debug_read_target_read_buffer_bytes"
 const RESIDENT_CANDIDATE_ROUTE_OPT_IN_KEY := "use_resident_candidate_route_handoff"
@@ -69,7 +70,6 @@ var _resident_candidate_route_revision := 0
 var _resident_candidate_route_buffers_borrowed := false
 var _last_resident_candidate_route_handoff: Dictionary = {}
 var _resident_target_color_rgba8_buffer: RID
-var _resident_target_occupancy_buffer: RID
 var _resident_target_read_buffer_voxel_count := 0
 var _resident_target_read_buffer_byte_count := 0
 var _resident_target_read_buffer_revision := 0
@@ -531,9 +531,8 @@ static func _is_brush_sv_content_key(key: String) -> bool:
 		or lowered == "payload" \
 		or lowered == "image" \
 		or lowered == "preview_image" \
-		or lowered == "scene_field" \
+		or lowered == "complexity_field" \
 		or lowered == "collision_field" \
-		or lowered == "target_occupancy" \
 		or lowered == "target_color" \
 		or lowered == "scene_voxels" \
 		or lowered == "auto_scene_voxel_sources" \
@@ -592,16 +591,16 @@ func get_profile_table_buffer() -> RID:
 	return _runtime_profile_container.get_profile_table_buffer()
 
 
-func get_collision_records_buffer() -> RID:
-	if not is_gpu_ready():
-		return RID()
-	return _runtime_profile_container.get_collision_buffer()
-
-
 func get_pivot_records_buffer() -> RID:
 	if not is_gpu_ready():
 		return RID()
 	return _runtime_profile_container.get_pivot_buffer()
+
+
+func get_collision_records_buffer() -> RID:
+	if not is_gpu_ready():
+		return RID()
+	return _runtime_profile_container.get_collision_records_buffer()
 
 
 func get_merged_gpu_buffer_summary() -> Dictionary:
@@ -627,7 +626,7 @@ func get_merged_gpu_buffer_summary() -> Dictionary:
 ##
 ## Parameters:
 ##   sv: Dictionary       — SceneVoxel metadata (grid_size, voxel_size,
-##                           scene_field, collision_field, tile_grid_size, ...)
+##                           complexity_field, collision_field, tile_grid_size, ...)
 ##   dirty_tile_ids: Array[int]            — dirty tile indices for this frame
 ##   prefilter_topk: int = 4               — per-anchor top-K
 ##   placement_common: Dictionary = {}     — must include packed TargetSV_B bytes
@@ -659,8 +658,7 @@ func run_placement_pipeline(
 			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
 		}
 		return _last_pipeline_result
-	var target_color_rgba8: PackedByteArray = target_buffers.get("target_color_rgba8_bytes", PackedByteArray())
-	var target_occupancy_bytes: PackedByteArray = target_buffers.get("target_occupancy_bytes", PackedByteArray())
+	var target_field_bytes: PackedFloat32Array = target_buffers.get("target_field_bytes", PackedFloat32Array())
 	var mesh_description_summary := get_mesh_description_gpu_buffer_summary()
 
 	var prefilter := _get_prefilter()
@@ -671,9 +669,9 @@ func run_placement_pipeline(
 		autoobjects,
 		dirty_tile_ids,
 		_runtime_profile_container,  # ← borrowed GPU probes
-		target_color_rgba8,
-		target_occupancy_bytes,
-		target_buffers
+		target_field_bytes,
+		target_buffers,
+		sv.get("scene_voxel_tile_summary_gpu_rid", RID())  # ← GPU-first: resident tile summaries RID
 	)
 
 	if not bool(prefilter_result.get("ok", false)):
@@ -721,22 +719,21 @@ func run_placement_pipeline(
 	# ---- Phase 1: Placement (candidate regions → placed instances) ----
 
 	var placer := _get_placer()
-	var resident_field_handoff := _build_resident_scene_field_handoff(sv)
-	var resident_scene_field_rid: RID = resident_field_handoff.get("scene_field_buffer_rid", RID())
+	var resident_field_handoff := _build_resident_complexity_field_handoff(sv)
+	var resident_complexity_field_rid: RID = resident_field_handoff.get("complexity_field_buffer_rid", RID())
 	var resident_collision_field_rid: RID = resident_field_handoff.get("collision_field_buffer_rid", RID())
 
-	var scene_field := _ensure_float_array(sv.get("scene_field", PackedFloat32Array()),
+	var complexity_field := _ensure_float_array(sv.get("complexity_field", PackedFloat32Array()),
 		sv.get("grid_size", Vector3i.ZERO))
 	var collision_field := _ensure_float_array(sv.get("collision_field", PackedFloat32Array()),
 		sv.get("grid_size", Vector3i.ZERO))
 	if bool(resident_field_handoff.get("ok", false)):
-		scene_field = PackedFloat32Array()
+		complexity_field = PackedFloat32Array()
 		collision_field = PackedFloat32Array()
 
 	var asset_defs := _build_placement_asset_defs()
 
 	var placement_settings := placement_common.duplicate(true)
-	placement_settings.erase("target_occupancy")
 	placement_settings.erase("target_color")
 	for route_key in [
 		"candidate_voxel_regions_by_asset",
@@ -756,8 +753,8 @@ func run_placement_pipeline(
 		placement_settings["candidate_route_readback_source"] = str(prefilter_result.get("candidate_route_readback_source", "none"))
 		placement_settings["candidate_route_runtime_read_source"] = str(prefilter_result.get("candidate_route_runtime_read_source", "none"))
 		placement_settings["candidate_route_input_contract"] = prefilter_result.get("candidate_route_input_contract", {})
-	placement_settings["target_color_rgba8_bytes"] = target_color_rgba8
-	placement_settings["target_occupancy_bytes"] = target_occupancy_bytes
+	placement_settings["target_color_rgba8_bytes"] = placement_common.get("target_color_rgba8_bytes", PackedByteArray())
+	placement_settings["target_field_bytes"] = target_field_bytes
 	placement_settings["target_read_buffers"] = target_buffers
 	placement_settings["auto_voxel_runtime_profile_container"] = _runtime_profile_container
 	if _sv_committer != null:
@@ -765,18 +762,18 @@ func run_placement_pipeline(
 	placement_settings["mesh_description_buffer"] = get_mesh_description_buffer()
 	placement_settings["mesh_description_buffer_summary"] = mesh_description_summary.duplicate(true)
 	placement_settings["scene_voxel_tile_resident_field_handoff"] = resident_field_handoff.duplicate(true)
-	placement_settings["resident_scene_field_handoff"] = resident_field_handoff.duplicate(true)
+	placement_settings["resident_complexity_field_handoff"] = resident_field_handoff.duplicate(true)
 	if bool(resident_field_handoff.get("ok", false)):
-		placement_settings["scene_field_buffer_rid"] = resident_scene_field_rid
+		placement_settings["complexity_field_buffer_rid"] = resident_complexity_field_rid
 		placement_settings["collision_field_buffer_rid"] = resident_collision_field_rid
-		placement_settings["scene_field_buffer_borrowed"] = true
+		placement_settings["complexity_field_buffer_borrowed"] = true
 		placement_settings["collision_field_buffer_borrowed"] = true
-		placement_settings["scene_field_buffer_owner"] = "SceneVoxelCommitter"
+		placement_settings["complexity_field_buffer_owner"] = "SceneVoxelCommitter"
 		placement_settings["collision_field_buffer_owner"] = "SceneVoxelCommitter"
-		placement_settings["scene_field_read_source"] = "scene_voxel_committer_scene_voxel_tile_resident_scene_field"
+		placement_settings["complexity_field_read_source"] = "scene_voxel_committer_scene_voxel_tile_resident_complexity_field"
 		placement_settings["collision_field_read_source"] = "scene_voxel_committer_scene_voxel_tile_resident_collision_field"
 		placement_settings["gpu_state_chain_source"] = str(resident_field_handoff.get("gpu_state_chain_source", "scene_voxel_committer_scene_voxel_tile_resident_fields"))
-		placement_settings["resident_scene_field_rendering_device"] = _rd
+		placement_settings["resident_complexity_field_rendering_device"] = _rd
 	var resident_runtime_dirty_delta_ready := _gpu_runtime != null \
 		and bool(_gpu_runtime_scene_voxel_setup_result.get("resident_gpu_dirty_delta_update_pass_opt_in_ready", false))
 	if resident_runtime_dirty_delta_ready:
@@ -794,7 +791,7 @@ func run_placement_pipeline(
 		previous_resident_accepted_placement_writeback = bool(_gpu_runtime.call("get_use_resident_accepted_placement_writeback"))
 		_gpu_runtime.call("set_use_resident_accepted_placement_writeback", true)
 	var placement_result := placer.run_multi_asset(
-		scene_field,
+		complexity_field,
 		collision_field,
 		asset_defs,
 		sv.get("grid_size", Vector3i.ZERO),
@@ -849,7 +846,7 @@ func run_placement_pipeline(
 		"accepted_placement_writeback_summary": accepted_writeback_summary,
 		"compact_state_chain_summary": compact_state_chain_summary,
 		"resident_candidate_route_handoff": resident_candidate_route_handoff_summary,
-		"resident_scene_field_handoff": resident_field_handoff,
+		"resident_complexity_field_handoff": resident_field_handoff,
 		"scene_voxel_tile_resident_field_handoff": resident_field_handoff,
 		"gpu_runtime_scene_voxel_setup": _gpu_runtime_scene_voxel_setup_result.duplicate(true),
 		"profile_probe_pack": prefilter_result.get("profile_probe_pack", {}),
@@ -883,7 +880,7 @@ static func _compact_state_chain_summary_from_placement(
 		and bool(chain.get("stamp_delta_cpu_state_chaining", full_field.get("stamp_delta_cpu_state_chaining", false)))
 	var avoids_full_field_readback := using_compact \
 		and not bool(chain.get("full_field_readback_required", full_field.get("full_field_readback_required", true))) \
-		and not bool(full_field.get("scene_field_out_gpu_storage_buffer_readback", false)) \
+		and not bool(full_field.get("complexity_field_out_gpu_storage_buffer_readback", false)) \
 		and not bool(full_field.get("collision_field_out_gpu_storage_buffer_readback", false))
 	return {
 		"source": "placement_result.cpu_state_chain" if not chain.is_empty() else "placement_result.full_field_readback" if not full_field.is_empty() else "none",
@@ -895,7 +892,7 @@ static func _compact_state_chain_summary_from_placement(
 		"stamp_delta_cpu_state_chaining": using_compact,
 		"avoids_full_field_readback": avoids_full_field_readback,
 		"full_field_readback_required": not avoids_full_field_readback,
-		"scene_field_out_gpu_storage_buffer_readback": bool(full_field.get("scene_field_out_gpu_storage_buffer_readback", false)),
+		"complexity_field_out_gpu_storage_buffer_readback": bool(full_field.get("complexity_field_out_gpu_storage_buffer_readback", false)),
 		"collision_field_out_gpu_storage_buffer_readback": bool(full_field.get("collision_field_out_gpu_storage_buffer_readback", false)),
 		"stamp_delta_readback_source": str(placement_result.get("stamp_delta_readback_source", chain.get("source", "none"))),
 		"cpu_fallback": false,
@@ -963,108 +960,107 @@ func _get_placer() -> VoxelPlacementGenerator:
 	return _placer
 
 
-func _build_resident_scene_field_handoff(sv: Dictionary) -> Dictionary:
+func _build_resident_complexity_field_handoff(sv: Dictionary) -> Dictionary:
 	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
 	var expected_voxel_count := grid_size.x * grid_size.y * grid_size.z
-	var scene_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER
+	var complexity_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER
 	var collision_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER
 	var stride_bytes := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
 	var summary := {}
-	var scene_rid := RID()
+	var complexity_rid := RID()
 	var collision_rid := RID()
 
 	if expected_voxel_count <= 0:
-		return _resident_scene_field_handoff_summary(false, "invalid_grid_size", expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, "invalid_grid_size", expected_voxel_count, summary, complexity_rid, collision_rid)
 	if _rd == null:
-		return _resident_scene_field_handoff_summary(false, "no_rendering_device", expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, "no_rendering_device", expected_voxel_count, summary, complexity_rid, collision_rid)
 	if _sv_committer == null:
-		return _resident_scene_field_handoff_summary(false, "no_scene_voxel_committer", expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, "no_scene_voxel_committer", expected_voxel_count, summary, complexity_rid, collision_rid)
 	if not _sv_committer.has_method("get_scene_voxel_tile_gpu_buffer"):
-		return _resident_scene_field_handoff_summary(false, "committer_buffer_api_missing", expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, "committer_buffer_api_missing", expected_voxel_count, summary, complexity_rid, collision_rid)
 	if not _sv_committer.has_method("get_scene_voxel_tile_gpu_buffer_summary"):
-		return _resident_scene_field_handoff_summary(false, "committer_buffer_summary_api_missing", expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, "committer_buffer_summary_api_missing", expected_voxel_count, summary, complexity_rid, collision_rid)
 
 	var committer_rd: RenderingDevice = null
 	if _sv_committer.has_method("get_rendering_device"):
 		committer_rd = _sv_committer.call("get_rendering_device")
 	if committer_rd == null:
-		return _resident_scene_field_handoff_summary(false, "committer_rendering_device_missing", expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, "committer_rendering_device_missing", expected_voxel_count, summary, complexity_rid, collision_rid)
 	if committer_rd != _rd:
-		return _resident_scene_field_handoff_summary(false, "committer_rendering_device_mismatch", expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, "committer_rendering_device_mismatch", expected_voxel_count, summary, complexity_rid, collision_rid)
 
 	var raw_summary = _sv_committer.call("get_scene_voxel_tile_gpu_buffer_summary")
 	if not raw_summary is Dictionary:
-		return _resident_scene_field_handoff_summary(false, "committer_buffer_summary_invalid", expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, "committer_buffer_summary_invalid", expected_voxel_count, summary, complexity_rid, collision_rid)
 	summary = raw_summary as Dictionary
-	scene_rid = _sv_committer.call("get_scene_voxel_tile_gpu_buffer", scene_buffer_name)
+	complexity_rid = _sv_committer.call("get_scene_voxel_tile_gpu_buffer", complexity_buffer_name)
 	collision_rid = _sv_committer.call("get_scene_voxel_tile_gpu_buffer", collision_buffer_name)
 
 	var buffers: Dictionary = summary.get("buffers", {})
-	var scene_buffer_summary: Dictionary = buffers.get(scene_buffer_name, {})
+	var complexity_buffer_summary: Dictionary = buffers.get(complexity_buffer_name, {})
 	var collision_buffer_summary: Dictionary = buffers.get(collision_buffer_name, {})
-	var scene_count := int(scene_buffer_summary.get("record_count", summary.get("scene_field_voxel_count", 0)))
+	var complexity_count := int(complexity_buffer_summary.get("record_count", summary.get("complexity_field_voxel_count", 0)))
 	var collision_count := int(collision_buffer_summary.get("record_count", summary.get("collision_field_voxel_count", 0)))
-	var scene_stride := int(scene_buffer_summary.get("stride_bytes", 0))
+	var complexity_stride := int(complexity_buffer_summary.get("stride_bytes", 0))
 	var collision_stride := int(collision_buffer_summary.get("stride_bytes", 0))
 
 	if not bool(summary.get("runtime_ready", false)):
 		var reason := str(summary.get("reason", "committer_resident_fields_not_runtime_ready"))
 		if reason.is_empty():
 			reason = "committer_resident_fields_not_runtime_ready"
-		return _resident_scene_field_handoff_summary(false, reason, expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, reason, expected_voxel_count, summary, complexity_rid, collision_rid)
 	if bool(summary.get("cpu_fallback", false)):
-		return _resident_scene_field_handoff_summary(false, "committer_resident_field_summary_reports_cpu_fallback", expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_summary_reports_cpu_fallback", expected_voxel_count, summary, complexity_rid, collision_rid)
 	if str(summary.get("resident_field_read_source", "none")) != "gpu_storage_buffers":
-		return _resident_scene_field_handoff_summary(false, "committer_resident_field_source_not_gpu_storage_buffers", expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_source_not_gpu_storage_buffers", expected_voxel_count, summary, complexity_rid, collision_rid)
 	if bool(summary.get("buffers_stale", false)):
-		return _resident_scene_field_handoff_summary(false, "committer_resident_field_buffers_stale", expected_voxel_count, summary, scene_rid, collision_rid)
-	if not scene_rid.is_valid() or not collision_rid.is_valid():
-		return _resident_scene_field_handoff_summary(false, "committer_resident_field_rid_invalid", expected_voxel_count, summary, scene_rid, collision_rid)
-	if not bool(scene_buffer_summary.get("rid_valid", false)) or not bool(collision_buffer_summary.get("rid_valid", false)):
-		return _resident_scene_field_handoff_summary(false, "committer_resident_field_summary_rid_invalid", expected_voxel_count, summary, scene_rid, collision_rid)
-	if scene_stride != stride_bytes or collision_stride != stride_bytes:
-		return _resident_scene_field_handoff_summary(false, "committer_resident_field_stride_mismatch", expected_voxel_count, summary, scene_rid, collision_rid)
-	if scene_count != expected_voxel_count or collision_count != expected_voxel_count:
-		return _resident_scene_field_handoff_summary(false, "committer_resident_field_record_count_mismatch", expected_voxel_count, summary, scene_rid, collision_rid)
-	if int(scene_buffer_summary.get("logical_byte_size", expected_voxel_count * stride_bytes)) != expected_voxel_count * stride_bytes \
+		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_buffers_stale", expected_voxel_count, summary, complexity_rid, collision_rid)
+	if not complexity_rid.is_valid() or not collision_rid.is_valid():
+		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_rid_invalid", expected_voxel_count, summary, complexity_rid, collision_rid)
+	if not bool(complexity_buffer_summary.get("rid_valid", false)) or not bool(collision_buffer_summary.get("rid_valid", false)):
+		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_summary_rid_invalid", expected_voxel_count, summary, complexity_rid, collision_rid)
+	if complexity_stride != stride_bytes or collision_stride != stride_bytes:
+		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_stride_mismatch", expected_voxel_count, summary, complexity_rid, collision_rid)
+	if complexity_count != expected_voxel_count or collision_count != expected_voxel_count:
+		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_record_count_mismatch", expected_voxel_count, summary, complexity_rid, collision_rid)
+	if int(complexity_buffer_summary.get("logical_byte_size", expected_voxel_count * stride_bytes)) != expected_voxel_count * stride_bytes \
 			or int(collision_buffer_summary.get("logical_byte_size", expected_voxel_count * stride_bytes)) != expected_voxel_count * stride_bytes:
-		return _resident_scene_field_handoff_summary(false, "committer_resident_field_byte_count_mismatch", expected_voxel_count, summary, scene_rid, collision_rid)
+		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_byte_count_mismatch", expected_voxel_count, summary, complexity_rid, collision_rid)
 
-	return _resident_scene_field_handoff_summary(true, "ok", expected_voxel_count, summary, scene_rid, collision_rid)
+	return _resident_complexity_field_handoff_summary(true, "ok", expected_voxel_count, summary, complexity_rid, collision_rid)
 
 
-func _resident_scene_field_handoff_summary(
+func _resident_complexity_field_handoff_summary(
 	ok: bool,
 	reason: String,
 	expected_voxel_count: int,
 	summary: Dictionary,
-	scene_rid: RID,
+	complexity_rid: RID,
 	collision_rid: RID
 ) -> Dictionary:
-	var scene_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER
+	var complexity_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER
 	var collision_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER
 	var stride_bytes := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
 	var buffers: Dictionary = summary.get("buffers", {})
-	var scene_buffer_summary: Dictionary = buffers.get(scene_buffer_name, {})
+	var complexity_buffer_summary: Dictionary = buffers.get(complexity_buffer_name, {})
 	var collision_buffer_summary: Dictionary = buffers.get(collision_buffer_name, {})
-	var scene_count := int(scene_buffer_summary.get("record_count", summary.get("scene_field_voxel_count", 0)))
+	var complexity_count := int(complexity_buffer_summary.get("record_count", summary.get("complexity_field_voxel_count", 0)))
 	var collision_count := int(collision_buffer_summary.get("record_count", summary.get("collision_field_voxel_count", 0)))
 	return {
 		"ok": ok,
-		"resident_scene_voxel_field_handoff": ok,
-		"resident_scene_field_handoff": ok,
+		"resident_complexity_field_handoff": ok,
 		"reason": reason,
 		"source": "SceneVoxelCommitter.get_scene_voxel_tile_gpu_buffer_summary" if not summary.is_empty() else "none",
-		"source_label": "scene_voxel_tile_resident_scene_collision_fields",
+		"source_label": "scene_voxel_tile_resident_complexity_collision_fields",
 		"producer": "SceneVoxelCommitter",
 		"owner": "SceneVoxelCommitter" if ok else "none",
 		"borrowed_from": "SceneVoxelCommitter" if ok else "none",
 		"buffer_lifetime": "SceneVoxelCommitter owned; VoxelPlacementGenerator borrows for placement dispatch" if ok else "none",
-		"scene_field_buffer_name": scene_buffer_name,
+			"complexity_field_buffer_name": complexity_buffer_name,
 		"collision_field_buffer_name": collision_buffer_name,
-		"scene_field_buffer_rid": scene_rid if ok else RID(),
+		"complexity_field_buffer_rid": complexity_rid if ok else RID(),
 		"collision_field_buffer_rid": collision_rid if ok else RID(),
-		"scene_field_buffer_rid_valid": scene_rid.is_valid(),
+		"complexity_field_buffer_rid_valid": complexity_rid.is_valid(),
 		"collision_field_buffer_rid_valid": collision_rid.is_valid(),
 		"runtime_ready": bool(summary.get("runtime_ready", false)),
 		"resident_field_read_source": str(summary.get("resident_field_read_source", "none")),
@@ -1075,14 +1071,14 @@ func _resident_scene_field_handoff_summary(
 		"same_rendering_device_as_vpg": ok,
 		"rendering_device_matches_vpg": ok,
 		"rendering_device": _rd if ok else null,
-		"scene_field_stride_bytes": int(scene_buffer_summary.get("stride_bytes", 0)),
+		"complexity_field_stride_bytes": int(complexity_buffer_summary.get("stride_bytes", 0)),
 		"collision_field_stride_bytes": int(collision_buffer_summary.get("stride_bytes", 0)),
 		"expected_stride_bytes": stride_bytes,
-		"scene_field_record_count": scene_count,
+		"complexity_field_record_count": complexity_count,
 		"collision_field_record_count": collision_count,
 		"expected_voxel_count": expected_voxel_count,
-		"resident_field_voxel_count": int(summary.get("resident_field_voxel_count", scene_count)),
-		"scene_field_logical_byte_size": int(scene_buffer_summary.get("logical_byte_size", 0)),
+		"resident_field_voxel_count": int(summary.get("resident_field_voxel_count", complexity_count)),
+		"complexity_field_logical_byte_size": int(complexity_buffer_summary.get("logical_byte_size", 0)),
 		"collision_field_logical_byte_size": int(collision_buffer_summary.get("logical_byte_size", 0)),
 		"expected_byte_count": maxi(expected_voxel_count, 0) * stride_bytes,
 		"gpu_state_chain_source": "scene_voxel_committer_scene_voxel_tile_resident_fields" if ok else "none",
@@ -1901,14 +1897,11 @@ static func _target_read_buffer_debug_readback_requested(settings: Dictionary) -
 func _release_resident_target_read_buffer_handoff() -> void:
 	if _resident_target_color_rgba8_buffer.is_valid():
 		release_rid(_resident_target_color_rgba8_buffer)
-	if _resident_target_occupancy_buffer.is_valid():
-		release_rid(_resident_target_occupancy_buffer)
 	_resident_target_color_rgba8_buffer = RID()
-	_resident_target_occupancy_buffer = RID()
 	_resident_target_read_buffer_voxel_count = 0
 	_resident_target_read_buffer_byte_count = 0
 	_resident_target_read_buffer_revision += 1
-	_last_resident_target_read_buffer_handoff = _resident_target_read_buffer_handoff_summary(false, false, "released", 0, 0, "", "", Vector3i.ZERO)
+	_last_resident_target_read_buffer_handoff = _resident_target_read_buffer_handoff_summary(false, false, "released", 0, 0, "", Vector3i.ZERO)
 
 
 func _resident_target_read_buffer_handoff_summary(
@@ -1918,7 +1911,6 @@ func _resident_target_read_buffer_handoff_summary(
 	expected_bytes: int,
 	voxel_count: int,
 	color_source: String,
-	occupancy_source: String,
 	dispatch_groups: Vector3i,
 	debug_readback_requested: bool = false,
 	default_enabled: bool = false
@@ -1935,21 +1927,14 @@ func _resident_target_read_buffer_handoff_summary(
 		"source": "prepare_target_read_buffers_compute" if ok else "none",
 		"rendering_device": _rd if ok else null,
 		"target_color_rgba8_buffer": _resident_target_color_rgba8_buffer if ok else RID(),
-		"target_occupancy_buffer": _resident_target_occupancy_buffer if ok else RID(),
 		"target_color_rgba8_buffer_rid": "valid" if ok and _resident_target_color_rgba8_buffer.is_valid() else "none",
-		"target_occupancy_buffer_rid": "valid" if ok and _resident_target_occupancy_buffer.is_valid() else "none",
 		"target_color_rgba8_buffer_rid_valid": ok and _resident_target_color_rgba8_buffer.is_valid(),
-		"target_occupancy_buffer_rid_valid": ok and _resident_target_occupancy_buffer.is_valid(),
 		"target_color_rgba8_byte_count": expected_bytes if ok else 0,
-		"target_occupancy_byte_count": expected_bytes if ok else 0,
 		"target_color_rgba8_stride_bytes": 4 if ok else 0,
-		"target_occupancy_stride_bytes": 4 if ok else 0,
 		"voxel_count": voxel_count if ok else 0,
 		"expected_byte_count": expected_bytes if ok else expected_bytes,
 		"target_color_source": color_source,
-		"target_occupancy_source": occupancy_source,
 		"target_color_format": "rgba8_u32" if ok else "none",
-		"target_occupancy_format": "r32f_word_copy" if ok else "none",
 		"buffer_lifetime": "ScenePlacementActor owned until next target read-buffer prep, dispose, or explicit release" if ok else "none",
 		"target_read_buffer_lifetime": "ScenePlacementActor owned until next target read-buffer prep, dispose, or explicit release" if ok else "none",
 		"revision": _resident_target_read_buffer_revision,
@@ -1959,23 +1944,31 @@ func _resident_target_read_buffer_handoff_summary(
 	}
 
 
+## Extract a float field from sv, padded to target_length with zeros.
+func _sv_float_field(sv: Dictionary, key: String, target_length: int) -> PackedFloat32Array:
+	var field: PackedFloat32Array = PackedFloat32Array(sv.get(key, PackedFloat32Array()))
+	if field.size() >= target_length:
+		return field.slice(0, target_length)
+	var result := PackedFloat32Array()
+	result.resize(target_length)
+	for i in range(mini(field.size(), target_length)):
+		result[i] = field[i]
+	return result
+
+
 func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dictionary) -> Dictionary:
-	# GPU-specialized variant of target_read_buffers_from_common().
-	# Buffers are one u32 word per voxel: target_color_rgba8 is an RGBA8 word,
-	# target_occupancy preserves the source R32F byte word without float decode.
+	# GPU-specialized: combines target color + max(complexity_field, collision_field) into a single vec4 target_field buffer.
 	log_name = "ScenePlacementActorTargetReadBuffers"
 	_release_resident_target_read_buffer_handoff()
 	var expected_bytes := _expected_target_byte_count(sv)
 	var voxel_count := maxi(int(expected_bytes / 4), 1)
+	var target_field_byte_count := voxel_count * 16  # vec4 = 16 bytes per voxel
 	var resident_handoff_defaulted := not settings.has(RESIDENT_TARGET_READ_BUFFERS_OPT_IN_KEY)
 	var resident_handoff_enabled := bool(settings.get(RESIDENT_TARGET_READ_BUFFERS_OPT_IN_KEY, true))
 	var debug_readback_requested := _target_read_buffer_debug_readback_requested(settings)
 	var source_color := _prepacked_target_bytes(settings, "target_color_rgba8_bytes", expected_bytes)
-	var source_occupancy := _prepacked_target_bytes(settings, "target_occupancy_bytes", expected_bytes)
 	var color_valid := not source_color.is_empty()
-	var occupancy_valid := not source_occupancy.is_empty()
 	var color_source := "target_color_rgba8_bytes" if color_valid else "zero_filled"
-	var occupancy_source := "target_occupancy_bytes" if occupancy_valid else "zero_filled"
 
 	if not ensure_device(true, false):
 		return {
@@ -1994,14 +1987,13 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 				expected_bytes,
 				voxel_count,
 				color_source,
-				occupancy_source,
 				Vector3i.ZERO,
 				debug_readback_requested,
 				resident_handoff_defaulted
 			),
 		}
 
-	var shader := load_compute_shader(TARGET_READ_BUFFER_PREP_SHADER, SCOPE_FRAME, "prepare_target_read_buffers")
+	var shader := load_compute_shader("res://shaders/pack_target_field.glsl", SCOPE_FRAME, "prepare_target_read_buffers")
 	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "prepare_target_read_buffers")
 	if not shader.is_valid() or not pipeline.is_valid():
 		gc_frame()
@@ -2021,7 +2013,6 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 				expected_bytes,
 				voxel_count,
 				color_source,
-				occupancy_source,
 				Vector3i.ZERO,
 				debug_readback_requested,
 				resident_handoff_defaulted
@@ -2035,23 +2026,23 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		SCOPE_FRAME,
 		"target_read_color_input_rgba8_u32"
 	)
-	var occupancy_input_buffer := storage_buffer_from_bytes(
-		source_occupancy if occupancy_valid else zero_bytes,
-		SCOPE_FRAME,
-		"target_read_occupancy_input_r32f_words"
-	)
+
+	# Upload complexity_field (vec4) and collision_field (float) from sv
+	var complexity_field := _sv_float_field(sv, "complexity_field", voxel_count * 4)  # vec4 = 4 floats per voxel
+	var collision_field := _sv_float_field(sv, "collision_field", voxel_count)
+	var complexity_input_buffer := storage_buffer_from_floats(complexity_field, SCOPE_FRAME, "target_read_complexity_input_vec4")
+	var collision_input_buffer := storage_buffer_from_floats(collision_field, SCOPE_FRAME, "target_read_collision_input_float")
+
 	var output_scope := SCOPE_PERSISTENT if resident_handoff_enabled else SCOPE_FRAME
-	var color_output_buffer := storage_buffer_zero(expected_bytes, output_scope, "target_read_color_out_rgba8_u32")
-	var occupancy_output_buffer := storage_buffer_zero(expected_bytes, output_scope, "target_read_occupancy_out_r32f_words")
+	var target_field_output_buffer := storage_buffer_zero(target_field_byte_count, output_scope, "target_field_out_vec4")
 	if (
 		not color_input_buffer.is_valid()
-		or not occupancy_input_buffer.is_valid()
-		or not color_output_buffer.is_valid()
-		or not occupancy_output_buffer.is_valid()
+		or not complexity_input_buffer.is_valid()
+		or not collision_input_buffer.is_valid()
+		or not target_field_output_buffer.is_valid()
 	):
 		if resident_handoff_enabled:
-			release_rid(color_output_buffer)
-			release_rid(occupancy_output_buffer)
+			release_rid(target_field_output_buffer)
 		gc_frame()
 		return {
 			"ok": false,
@@ -2069,7 +2060,6 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 				expected_bytes,
 				voxel_count,
 				color_source,
-				occupancy_source,
 				Vector3i.ZERO,
 				debug_readback_requested,
 				resident_handoff_defaulted
@@ -2078,14 +2068,13 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, color_input_buffer),
-		make_storage_uniform(1, occupancy_input_buffer),
-		make_storage_uniform(2, color_output_buffer),
-		make_storage_uniform(3, occupancy_output_buffer),
+		make_storage_uniform(1, complexity_input_buffer),
+		make_storage_uniform(2, collision_input_buffer),
+		make_storage_uniform(3, target_field_output_buffer),
 	], shader, 0, SCOPE_PASS, "prepare_target_read_buffers")
 	if not set0.is_valid():
 		if resident_handoff_enabled:
-			release_rid(color_output_buffer)
-			release_rid(occupancy_output_buffer)
+			release_rid(target_field_output_buffer)
 		gc_frame()
 		return {
 			"ok": false,
@@ -2103,7 +2092,6 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 				expected_bytes,
 				voxel_count,
 				color_source,
-				occupancy_source,
 				Vector3i.ZERO,
 				debug_readback_requested,
 				resident_handoff_defaulted
@@ -2111,18 +2099,14 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		}
 
 	var push := PackedByteArray()
-	push.resize(16)
+	push.resize(4)
 	push.encode_s32(0, voxel_count)
-	push.encode_s32(4, 1 if color_valid else 0)
-	push.encode_s32(8, 1 if occupancy_valid else 0)
-	push.encode_s32(12, 0)
 
-	var groups := dispatch_groups_1d(voxel_count, TARGET_READ_BUFFER_PREP_LOCAL_SIZE)
+	var groups := dispatch_groups_1d(voxel_count, 64)
 	var cl := begin_compute_list()
 	if cl < 0:
 		if resident_handoff_enabled:
-			release_rid(color_output_buffer)
-			release_rid(occupancy_output_buffer)
+			release_rid(target_field_output_buffer)
 		gc_frame()
 		return {
 			"ok": false,
@@ -2140,7 +2124,6 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 				expected_bytes,
 				voxel_count,
 				color_source,
-				occupancy_source,
 				Vector3i.ZERO,
 				debug_readback_requested,
 				resident_handoff_defaulted
@@ -2153,28 +2136,21 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 	end_compute_list()
 	submit_and_sync()
 
-	# P0 #7: Zero-readback resident handoff — skip CPU buffer_get_data.
-	# When resident handoff is enabled and buffers exist, return only RIDs.
-	# Bytes are read back only when an explicit debug/legacy readback path asks.
 	if resident_handoff_enabled:
-		var rid_ok := color_output_buffer.is_valid() and occupancy_output_buffer.is_valid()
-		var target_color_rgba8 := PackedByteArray()
-		var target_occupancy := PackedByteArray()
+		var rid_ok := target_field_output_buffer.is_valid()
+		var target_field_bytes := PackedFloat32Array()
 		if rid_ok and debug_readback_requested:
-			target_color_rgba8 = _rd.buffer_get_data(color_output_buffer, 0, expected_bytes)
-			target_occupancy = _rd.buffer_get_data(occupancy_output_buffer, 0, expected_bytes)
-			if target_color_rgba8.size() != expected_bytes or target_occupancy.size() != expected_bytes:
-				release_rid(color_output_buffer)
-				release_rid(occupancy_output_buffer)
+			target_field_bytes = _rd.buffer_get_data(target_field_output_buffer, 0, target_field_byte_count).to_float32_array()
+			if target_field_bytes.size() != voxel_count * 4:
+				release_rid(target_field_output_buffer)
 				gc_frame()
 				return {
 					"ok": false,
 					"reason": "target_read_buffer_prep_debug_readback_size_mismatch",
 					"gpu_first": true,
 					"cpu_fallback": false,
-					"expected_byte_count": expected_bytes,
-					"actual_color_byte_count": target_color_rgba8.size(),
-					"actual_occupancy_byte_count": target_occupancy.size(),
+					"expected_target_field_floats": voxel_count * 4,
+					"actual_target_field_floats": target_field_bytes.size(),
 					"voxel_count": voxel_count,
 					"resident_target_read_buffer_handoff": false,
 					"resident_target_read_buffer_handoff_opt_in": resident_handoff_enabled,
@@ -2187,83 +2163,71 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 						expected_bytes,
 						voxel_count,
 						color_source,
-						occupancy_source,
 						groups,
 						debug_readback_requested,
 						resident_handoff_defaulted
 					),
 				}
 
-		_resident_target_color_rgba8_buffer = color_output_buffer
-		_resident_target_occupancy_buffer = occupancy_output_buffer
+		_resident_target_color_rgba8_buffer = target_field_output_buffer
 		_resident_target_read_buffer_voxel_count = voxel_count
-		_resident_target_read_buffer_byte_count = expected_bytes
+		_resident_target_read_buffer_byte_count = target_field_byte_count
 		_resident_target_read_buffer_revision += 1
 		var resident_summary := _resident_target_read_buffer_handoff_summary(
 			resident_handoff_enabled,
-			_resident_target_color_rgba8_buffer.is_valid() and _resident_target_occupancy_buffer.is_valid(),
-			"ok" if _resident_target_color_rgba8_buffer.is_valid() and _resident_target_occupancy_buffer.is_valid() else "resident_target_read_buffer_rid_invalid",
+			_resident_target_color_rgba8_buffer.is_valid(),
+			"ok" if _resident_target_color_rgba8_buffer.is_valid() else "resident_target_read_buffer_rid_invalid",
 			expected_bytes,
 			voxel_count,
 			color_source,
-			occupancy_source,
 			groups,
 			debug_readback_requested,
 			resident_handoff_defaulted
 		)
 		_last_resident_target_read_buffer_handoff = resident_summary
-		rid_ok = _resident_target_color_rgba8_buffer.is_valid() and _resident_target_occupancy_buffer.is_valid()
+		rid_ok = _resident_target_color_rgba8_buffer.is_valid()
 		gc_frame()
 		return {
 			"ok": rid_ok,
 			"reason": "ok" if rid_ok else "resident_target_read_buffer_rid_invalid",
 			"gpu_first": true,
 			"cpu_fallback": false,
-			"target_color_rgba8_bytes": target_color_rgba8,
-			"target_occupancy_bytes": target_occupancy,
+			"target_field_bytes": target_field_bytes,
 			"expected_byte_count": expected_bytes,
 			"voxel_count": voxel_count,
 			"target_color_source": color_source,
-			"target_occupancy_source": occupancy_source,
-			"target_color_format": "rgba8_u32",
-			"target_occupancy_format": "r32f_word_copy",
-			"target_color_stride_bytes": 4,
-			"target_occupancy_stride_bytes": 4,
+			"target_field_format": "vec4",
+			"target_field_stride_bytes": 16,
 			"dispatch_groups": groups,
 			"stats_source": "prepare_target_read_buffers_compute",
 			"target_read_handoff_mode": "resident_debug_readback" if debug_readback_requested else "zero_readback_resident",
 			"debug_read_target_read_buffer_bytes": debug_readback_requested,
-			"target_read_buffer_byte_arrays_empty": target_color_rgba8.is_empty() and target_occupancy.is_empty(),
+			"target_read_buffer_byte_arrays_empty": target_field_bytes.is_empty(),
 			"resident_target_read_buffer_handoff": rid_ok,
 			"resident_target_read_buffer_handoff_opt_in": resident_handoff_enabled,
 			"resident_target_read_buffer_handoff_defaulted": resident_handoff_defaulted,
 			"resident_target_read_buffer_handoff_summary": resident_summary,
 			"rendering_device": _rd if rid_ok else null,
-			"target_color_rgba8_buffer": _resident_target_color_rgba8_buffer,
-			"target_occupancy_buffer": _resident_target_occupancy_buffer,
-			"resident_target_color_rgba8_buffer": _resident_target_color_rgba8_buffer,
-			"resident_target_occupancy_buffer": _resident_target_occupancy_buffer,
-			"resident_target_color_rgba8_buffer_rid": "valid" if _resident_target_color_rgba8_buffer.is_valid() else "none",
-			"resident_target_occupancy_buffer_rid": "valid" if _resident_target_occupancy_buffer.is_valid() else "none",
-			"resident_target_color_rgba8_buffer_rid_valid": _resident_target_color_rgba8_buffer.is_valid(),
-			"resident_target_occupancy_buffer_rid_valid": _resident_target_occupancy_buffer.is_valid(),
+			"target_field_buffer": _resident_target_color_rgba8_buffer,
+			"resident_target_field_buffer": _resident_target_color_rgba8_buffer,
+			"resident_target_field_buffer_rid": "valid" if _resident_target_color_rgba8_buffer.is_valid() else "none",
+			"resident_target_field_buffer_rid_valid": _resident_target_color_rgba8_buffer.is_valid(),
 			"resident_target_read_buffer_owner": "ScenePlacementActor" if rid_ok else "none",
 			"resident_target_read_buffer_lifetime": str(resident_summary.get("target_read_buffer_lifetime", "ScenePlacementActor owned until next target read-buffer prep, dispose, or explicit release")),
 		}
 
 	# Non-resident path: read back bytes for debug/legacy consumers.
-	var target_color_rgba8 := _rd.buffer_get_data(color_output_buffer, 0, expected_bytes)
-	var target_occupancy := _rd.buffer_get_data(occupancy_output_buffer, 0, expected_bytes)
+	var target_field_buf := _rd.buffer_get_data(target_field_output_buffer, 0, target_field_byte_count)
+	var target_field_bytes := target_field_buf.to_float32_array()
 	gc_frame()
-	if target_color_rgba8.size() != expected_bytes or target_occupancy.size() != expected_bytes:
+	if target_field_bytes.size() != voxel_count * 4:
 		return {
 			"ok": false,
 			"reason": "target_read_buffer_prep_readback_size_mismatch",
 			"gpu_first": true,
 			"cpu_fallback": false,
-			"expected_byte_count": expected_bytes,
-			"actual_color_byte_count": target_color_rgba8.size(),
-			"actual_occupancy_byte_count": target_occupancy.size(),
+			"expected_target_field_floats": voxel_count * 4,
+			"actual_target_field_floats": target_field_bytes.size(),
 			"voxel_count": voxel_count,
 			"resident_target_read_buffer_handoff": false,
 			"resident_target_read_buffer_handoff_opt_in": false,
@@ -2274,7 +2238,6 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 				expected_bytes,
 				voxel_count,
 				color_source,
-				occupancy_source,
 				groups,
 				debug_readback_requested,
 				resident_handoff_defaulted
@@ -2288,7 +2251,6 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		expected_bytes,
 		voxel_count,
 		color_source,
-		occupancy_source,
 		groups,
 		debug_readback_requested,
 		resident_handoff_defaulted
@@ -2300,16 +2262,12 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		"reason": "ok",
 		"gpu_first": true,
 		"cpu_fallback": false,
-		"target_color_rgba8_bytes": target_color_rgba8,
-		"target_occupancy_bytes": target_occupancy,
+		"target_field_bytes": target_field_bytes,
 		"expected_byte_count": expected_bytes,
 		"voxel_count": voxel_count,
 		"target_color_source": color_source,
-		"target_occupancy_source": occupancy_source,
-		"target_color_format": "rgba8_u32",
-		"target_occupancy_format": "r32f_word_copy",
-		"target_color_stride_bytes": 4,
-		"target_occupancy_stride_bytes": 4,
+		"target_field_format": "vec4",
+		"target_field_stride_bytes": 16,
 		"dispatch_groups": groups,
 		"stats_source": "prepare_target_read_buffers_compute",
 		"target_read_handoff_mode": "readback",
@@ -2320,45 +2278,14 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		"resident_target_read_buffer_handoff_defaulted": resident_handoff_defaulted,
 		"resident_target_read_buffer_handoff_summary": resident_summary,
 		"rendering_device": null,
-		"target_color_rgba8_buffer": RID(),
-		"target_occupancy_buffer": RID(),
-		"resident_target_color_rgba8_buffer": RID(),
-		"resident_target_occupancy_buffer": RID(),
-		"resident_target_color_rgba8_buffer_rid": "none",
-		"resident_target_occupancy_buffer_rid": "none",
-		"resident_target_color_rgba8_buffer_rid_valid": false,
-		"resident_target_occupancy_buffer_rid_valid": false,
+		"target_field_buffer": RID(),
+		"resident_target_field_buffer": RID(),
+		"resident_target_field_buffer_rid": "none",
+		"resident_target_field_buffer_rid_valid": false,
 		"resident_target_read_buffer_owner": "none",
 		"resident_target_read_buffer_lifetime": "none",
 	}
 
 
-## DEPRECATED: Debug-only / legacy CPU static helper.
-## Use prepare_target_read_buffers_from_common_gpu() for the main pipeline path.
-## This function does not support resident handoff or GPU-first read paths.
-static func target_read_buffers_from_common(settings: Dictionary, sv: Dictionary) -> Dictionary:
-	var expected_bytes := _expected_target_byte_count(sv)
-	var target_color_rgba8 := _prepacked_target_bytes(settings, "target_color_rgba8_bytes", expected_bytes)
-	var target_occupancy := _prepacked_target_bytes(settings, "target_occupancy_bytes", expected_bytes)
-	var color_source := "target_color_rgba8_bytes"
-	var occupancy_source := "target_occupancy_bytes"
-	if target_color_rgba8.is_empty():
-		target_color_rgba8.resize(expected_bytes)
-		color_source = "zero_filled"
-	if target_occupancy.is_empty():
-		target_occupancy.resize(expected_bytes)
-		occupancy_source = "zero_filled"
-	return {
-		"ok": true,
-		"reason": "cpu_debug_readback_only",
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"target_read_handoff_mode": "deprecated_cpu_static",
-		"target_color_rgba8_bytes": target_color_rgba8,
-		"target_occupancy_bytes": target_occupancy,
-		"expected_byte_count": expected_bytes,
-		"target_color_source": color_source,
-		"target_occupancy_source": occupancy_source,
-		"resident_target_read_buffer_handoff": false,
-		"resident_target_read_buffer_handoff_opt_in": false,
-	}
+## Use prepare_target_read_buffers_from_common_gpu() for all target read paths.
+## The deprecated static helper target_read_buffers_from_common() has been removed.

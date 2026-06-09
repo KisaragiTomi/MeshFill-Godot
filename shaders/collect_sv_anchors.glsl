@@ -8,29 +8,25 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 
-layout(set = 0, binding = 0, std430) restrict readonly buffer SceneOcc {
-    float scene_occ[];
+layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityCollision {
+    vec2 complexity_coll[];
 };
 
-layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionOcc {
-    float collision_occ[];
+layout(set = 0, binding = 1, std430) restrict readonly buffer TargetField {
+    vec4 target_field[];  // .rgb = target color, .a = occupancy = max(scene_complexity, collision)
 };
 
-layout(set = 0, binding = 2, std430) restrict readonly buffer TargetOcc {
-    float target_occ[];
-};
-
-layout(set = 0, binding = 3, std430) restrict readonly buffer DirtyTiles {
+layout(set = 0, binding = 2, std430) restrict readonly buffer DirtyTiles {
     uint dirty_tile_ids[];
 };
 
 // Output: packed anchors (x, y, z, reserved) as uvec4
-layout(set = 0, binding = 4, std430) restrict buffer AnchorOut {
+layout(set = 0, binding = 3, std430) restrict buffer AnchorOut {
     uvec4 anchors[];
 };
 
 // Output: atomic counter for number of anchors written
-layout(set = 0, binding = 5, std430) restrict buffer AnchorCount {
+layout(set = 0, binding = 4, std430) restrict buffer AnchorCount {
     uint anchor_count;
 };
 
@@ -62,7 +58,7 @@ float get_support(ivec3 p) {
     ivec3 below = p + ivec3(0, -1, 0);
     if (!in_bounds(below)) return 0.0;
     int bi = voxel_index(below);
-    return max(scene_occ[bi], collision_occ[bi]);
+    return max(complexity_coll[bi].x, complexity_coll[bi].y);
 }
 
 void try_emit_anchor(ivec3 p) {
@@ -105,9 +101,9 @@ void main() {
     // --- Supported candidate position check ---
     if (in_bounds(p)) {
         int idx = voxel_index(p);
-        float sv = scene_occ[idx];
-        float cv = collision_occ[idx];
-        float tv = target_occ[idx];
+        float sv = complexity_coll[idx].x;
+        float cv = complexity_coll[idx].y;
+        float tv = target_field[idx].a;
 
         if (sv <= max_scene && cv <= max_coll && tv >= min_target) {
             float support = get_support(p);

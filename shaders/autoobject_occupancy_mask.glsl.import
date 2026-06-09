@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://r71l6pgu7ipe"
+path="res://.godot/imported/autoobject_occupancy_mask.glsl-03601adb34d3b43d26c877f933bec92e.res"
+
+[deps]
+
+source_file="res://shaders/autoobject_occupancy_mask.glsl"
+dest_files=["res://.godot/imported/autoobject_occupancy_mask.glsl-03601adb34d3b43d26c877f933bec92e.res"]
+
+[params]
+

@@ -80,15 +80,7 @@ godot --headless --path . --script tools/scaffold_auto_asset.gd -- --config res:
   "mesh_size": 4.2,
   "color": [0.55, 0.5, 0.45, 1.0],
   "complexity": 1.0,
-  "collision": [
-    {
-      "shape": "cylinder",
-      "radius": 1.2,
-      "y_min": 0.0,
-      "y_max": 2.0,
-      "collision_strength": 1.0
-    }
-  ],
+  "collision": [],
   "random_rotate": [0.0, 1.0],
   "random_scale": [0.8, 1.2],
   "random_height_offset": [-0.5, 0.5]

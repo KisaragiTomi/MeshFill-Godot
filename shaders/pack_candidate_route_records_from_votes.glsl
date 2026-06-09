@@ -34,11 +34,7 @@ layout(set = 0, binding = 4, std430) restrict buffer CandidateRouteRanges {
     uvec4 candidate_route_ranges[];
 };
 
-layout(set = 0, binding = 5, std430) restrict buffer CandidateRouteCounts {
-    uint candidate_route_counts[];
-};
-
-layout(set = 0, binding = 6, std430) restrict buffer CandidateRouteDebug {
+layout(set = 0, binding = 5, std430) restrict buffer CandidateRouteDebug {
     uint candidate_route_debug[];
 };
 
@@ -75,10 +71,10 @@ void main() {
     uint overflow_records = 0u;
 
     if (asset_count == 0u || tile_count == 0u || record_capacity == 0u) {
-        candidate_route_counts[0] = 0u;
-        candidate_route_counts[1] = 0u;
-        candidate_route_counts[2] = 0u;
-        candidate_route_counts[3] = 0u;
+        candidate_route_debug[0] = 0u;
+        candidate_route_debug[1] = 0u;
+        candidate_route_debug[2] = 0u;
+        candidate_route_debug[3] = 0u;
         return;
     }
 
@@ -127,14 +123,14 @@ void main() {
         candidate_route_ranges[asset_id] = uvec4(range_start, range_count, 0u, 0u);
     }
 
-    candidate_route_counts[0] = written_records;
-    candidate_route_counts[1] = positive_votes;
-    candidate_route_counts[2] = duplicate_marks;
-    candidate_route_counts[3] = overflow_records;
+    candidate_route_debug[0] = written_records;
+    candidate_route_debug[1] = positive_votes;
+    candidate_route_debug[2] = duplicate_marks;
+    candidate_route_debug[3] = overflow_records;
 
-    candidate_route_debug[0] = 0x47505250u; // "GPRP"
-    candidate_route_debug[1] = asset_count;
-    candidate_route_debug[2] = tile_count;
-    candidate_route_debug[3] = record_capacity;
-    candidate_route_debug[4] = written_records;
+    candidate_route_debug[4] = 0x47505250u; // "GPRP"
+    candidate_route_debug[5] = asset_count;
+    candidate_route_debug[6] = tile_count;
+    candidate_route_debug[7] = record_capacity;
+    candidate_route_debug[8] = written_records;
 }

@@ -21,13 +21,7 @@ func _init() -> void:
 
 func _test_vegetation_descriptor_factory_contract() -> bool:
 	print("[AutoAssetScripting] test_vegetation_descriptor_factory_contract...")
-	var collision := [{
-		"shape": "cylinder",
-		"radius": 0.3,
-		"y_min": 0.0,
-		"y_max": 1.0,
-		"collision_strength": 0.6,
-	}]
+	var collision := []
 	var descriptor := AutoAssetFactory.create_voxel_descriptor(
 		Color(0.9, 0.35, 0.5, 0.7),
 		0.7,
@@ -68,11 +62,9 @@ func _test_vegetation_descriptor_factory_contract() -> bool:
 		push_error("  FAIL: make_instance_config did not preserve channel fields")
 		return false
 	var config_collision: Array = config.get("collision", [])
-	if config_collision.size() != 1:
-		push_error("  FAIL: instance config should keep only canonical collision")
-		return false
-	if absf(float(config_collision[0].get("collision_strength", -1.0)) - 0.6) > 0.001:
-		push_error("  FAIL: collision_strength was not normalized")
+	# Non-terrain collision removed; instance config should keep empty collision alongside color/complexity.
+	if not config_collision.is_empty():
+		push_error("  FAIL: instance config should have empty collision for non-terrain")
 		return false
 
 	print("  OK: descriptor carries semantics, mesh factory, scatter, and canonical collision")
@@ -118,12 +110,7 @@ func _test_object_factory_collision_contract() -> bool:
 	var image := Image.create(1, 1, false, Image.FORMAT_RGBA8)
 	image.fill(Color.WHITE)
 	var height_texture := ImageTexture.create_from_image(image)
-	var collision := [{
-		"shape": "cylinder",
-		"radius": 1.2,
-		"y_min": 0.0,
-		"y_max": 2.0,
-	}]
+	var collision := []
 	var obj := AutoAssetFactory.create_or_update_object_asset(
 		AutoRock.new(),
 		BoxMesh.new(),
@@ -144,12 +131,9 @@ func _test_object_factory_collision_contract() -> bool:
 		obj.free()
 		return false
 	var obj_collision: Array = obj.get_collision(obj.mesh_size * 0.5)
-	if obj_collision.size() != 1:
-		push_error("  FAIL: object collision did not persist through descriptor-backed fields")
-		obj.free()
-		return false
-	if not is_equal_approx(float(obj_collision[0].get("radius", 0.0)), 1.2):
-		push_error("  FAIL: object collision radius mismatch")
+	# Non-terrain collision removed; object collision should be empty.
+	if not obj_collision.is_empty():
+		push_error("  FAIL: object collision should be empty for non-terrain")
 		obj.free()
 		return false
 
@@ -166,12 +150,12 @@ func _test_profile_fallback_keeps_descriptor_collision() -> bool:
 
 	var descriptor := AutoVoxelDescriptor.new()
 	descriptor.set_color_and_complexity(Color(0.1, 0.2, 0.3, 0.4), 0.4)
-	descriptor.set_collision([{"voxel": Vector3i(1, 0, 0), "collision_strength": 0.25}])
+	descriptor.set_collision([])
 
 	var profile := AutoVoxelProfile.new()
 	profile.color = Color(0.8, 0.7, 0.6, 0.9)
 	profile.complexity = 0.9
-	profile.collision = [{"voxel": Vector3i(9, 0, 0), "collision_strength": 1.0}]
+	profile.collision = []
 
 	var obj := AutoRock.new()
 	obj.voxel_descriptor = descriptor
@@ -202,11 +186,11 @@ func _test_typed_profile_fallback_keeps_descriptor_shared_fields() -> bool:
 	var profile := AutoVoxelProfile.new()
 	profile.color = Color(0.8, 0.7, 0.6, 0.9)
 	profile.complexity = 0.9
-	profile.collision = [{"voxel": Vector3i(9, 0, 0), "collision_strength": 1.0}]
+	profile.collision = []
 
 	var rock_descriptor := AutoVoxelDescriptor.new()
 	rock_descriptor.set_color_and_complexity(Color(0.1, 0.2, 0.3, 0.4), 0.4)
-	rock_descriptor.set_collision([{"voxel": Vector3i(1, 0, 0), "collision_strength": 0.25}])
+	rock_descriptor.set_collision([])
 
 	var rock := AutoRock.new()
 	rock.voxel_descriptor = rock_descriptor
@@ -320,7 +304,7 @@ func _test_factory_isws_wrapper_aliases() -> bool:
 	var profile := AutoVoxelProfile.new()
 	profile.color = Color(0.25, 0.35, 0.45, 0.55)
 	profile.complexity = 0.55
-	profile.collision = [{"voxel": Vector3i.ZERO, "collision_strength": 0.5}]
+	profile.collision = []
 	var isws := AutoAssetFactory.make_profile_instance_stamp_write_spec(
 		"factory_isws_record",
 		"rock",

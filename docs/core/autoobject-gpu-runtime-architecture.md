@@ -15,7 +15,7 @@
 - [`AutoVoxelDescriptor`](auto-voxel-descriptor.md) 是资产默认语义来源；descriptor 编译为 `AutoVoxelRuntimeProfileContainer` 后，runtime object 只持有 `object_type`、`profile_id` 和实例上下文。descriptor 通过 SPA.register_asset() 注册并即时上传 GPU。
 - `object_type` 只用于粗分组、dispatch/exclusion 和 debug；资产差异、probe、collision、pivot 和默认 source 语义由 `profile_id` 指向的 profile 表达。
 - `AutoObject`、`AutoRock`、generated vegetation scripts 等 façade 只作为 authoring、prototype、import 或 debug 入口；百万级 runtime 不依赖每实例 Godot `Node`。
-- `SV` / `SceneVoxelCommitter` 拥有 grid 参数、坐标转换、committed `SceneVoxel`、`SceneVoxelTile` dirty sidecar 和 SV resident `scene_field` / `collision_field`；GPU AutoObject 只输出 dirty object delta，由 SV owner 映射为 `SceneVoxelTile` dirty 后进入 source range rebuild 和 commit 边界。
+- `SV` / `SceneVoxelCommitter` 拥有 grid 参数、坐标转换、committed `SceneVoxel`、`SceneVoxelTile` dirty sidecar 和 SV resident `complexity_field` / `collision_field`；GPU AutoObject 只输出 dirty object delta，由 SV owner 映射为 `SceneVoxelTile` dirty 后进入 source range rebuild 和 commit 边界。
 - CPU object manager、per-instance Node runtime state、AutoObject direct committed SV write、direct SV resident field upload 和 per-frame full SV flush 都是 deprecated path，不可作为无 RenderingDevice 时的替代通过条件。维护性全量重建必须表达为 mark all `SceneVoxelTile` dirty。
 
 体素与计算术语参见顶层 [`README.md`](../README.md#voxel-and-compute-terminology)。`SPA` 即 `ScenePlacementActor`，详见 [`scene-placement-actor.md`](scene-placement-actor.md)。
@@ -142,7 +142,7 @@ CPU authoring / import
 - GPU AutoObject 是 runtime object pool，不是 committed `SceneVoxel`。
 - Placement / scoring 读取 object buffers、profile buffers、SV resident fields 和 TargetSV_B buffers。
 - 被接受的对象写入 Auto source stream 或 VPG temp duplicate buffers；最终由 `blend_scene_voxels()` 发布 committed `SceneVoxel`。
-- `SV[t - 1].scene_field` / `SV[t - 1].collision_field` 是本 tick 稳定采样输入；`SV[tick].scene_field` / `SV[tick].collision_field` 由 commit 后发布并在下一 tick promoted。
+- `SV[t - 1].complexity_field` / `SV[t - 1].collision_field` 是本 tick 稳定采样输入；`SV[tick].complexity_field` / `SV[tick].collision_field` 由 commit 后发布并在下一 tick promoted。
 - Same-batch temporary write buffers 留在 placement/VPG 内部，不放进 SV 作为正式 working field。
 
 ## Runtime IO Contract

@@ -1,9 +1,9 @@
 #[compute]
 #version 450
 
-// Stamps accepted placement results into scene/collision field buffers.
+// Stamps accepted placement results into complexity/collision field buffers.
 // Output VoxelStampDeltaBuffer uses 2 vec4 records per footprint sample:
-//   0: vec4(voxel.xyz, scene_complexity)
+//   0: vec4(voxel.xyz, complexity)
 //   1: vec4(collision_strength, result_index, footprint_index, wrote)
 // Output VoxelStampBounds uses 2 uvec4 records per accepted placement:
 //   0: uvec4(min_xyz, written_count)
@@ -11,8 +11,8 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, std430) restrict buffer SceneField {
-    uint scene_field[];
+layout(set = 0, binding = 0, std430) restrict buffer ComplexityField {
+    vec4 complexity_field[];
 };
 
 layout(set = 0, binding = 1, std430) restrict buffer CollisionField {
@@ -51,7 +51,8 @@ layout(push_constant, std430) uniform Params {
     ivec4 grid_size_counts;  // grid x, y, z, footprint_count
     ivec4 write_min_pad;     // write min xyz
     ivec4 write_max_pad;     // write max xyz, exclusive
-    vec4 params;             // solid_threshold, scene_write_scale, collision_write_scale, _pad
+    vec4 params;             // solid_threshold, complexity_write_scale, collision_write_scale, _pad
+    vec4 stamp_color;        // RGB = asset color, A = unused
 };
 
 const uint RECORD_STRIDE = 4u;
@@ -71,18 +72,6 @@ bool in_write_bounds(ivec3 p) {
 
 int voxel_index(ivec3 p) {
     return p.x + grid_size_counts.x * (p.z + grid_size_counts.z * p.y);
-}
-
-void atomic_max_float_nonnegative_scene(int index, float value) {
-    uint new_bits = floatBitsToUint(max(value, 0.0));
-    uint old_bits = scene_field[index];
-    while (uintBitsToFloat(old_bits) < value) {
-        uint previous_bits = atomicCompSwap(scene_field[index], old_bits, new_bits);
-        if (previous_bits == old_bits) {
-            return;
-        }
-        old_bits = previous_bits;
-    }
 }
 
 void atomic_max_float_nonnegative_collision(int index, float value) {
@@ -138,18 +127,18 @@ void main() {
 
     float weight = max(wf.x, 0.0);
     float footprint_collision_strength = clamp(float(fp.w) / 255.0, 0.0, 1.0);
-    float scene_complexity = clamp(weight * params.y, 0.0, 1.0);
+    float complexity = clamp(weight * params.y, 0.0, 1.0);
     float collision_strength = footprint_collision_strength >= params.x ? clamp(footprint_collision_strength * params.z, 0.0, 1.0) : 0.0;
 
     int index = voxel_index(p);
-    atomic_max_float_nonnegative_scene(index, scene_complexity);
+    complexity_field[index] = vec4(stamp_color.rgb, complexity);
     if (collision_strength > 0.0) {
         atomic_max_float_nonnegative_collision(index, collision_strength);
     }
 
     uint compact_index = atomicAdd(stamp_delta_count, 1u);
     uint delta_base = compact_index * DELTA_STRIDE;
-    stamp_delta[delta_base + 0u] = vec4(vec3(p), scene_complexity);
+    stamp_delta[delta_base + 0u] = vec4(vec3(p), complexity);
     stamp_delta[delta_base + 1u] = vec4(collision_strength, float(result_index), float(footprint_index), 1.0);
     write_stamp_bounds(result_index, p);
 }

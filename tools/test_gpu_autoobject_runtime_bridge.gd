@@ -386,7 +386,7 @@ func _test_scene_placement_actor_flushes_resident_dirty_delta_after_placement() 
 		"grid_size": grid_size,
 		"voxel_size": Vector3.ONE,
 		"grid_origin": Vector3.ZERO,
-		"scene_field": scene,
+		"complexity_field": scene,
 		"collision_field": collision,
 	}, [], 1, {})
 	if not bool(result.get("ok", false)):
@@ -473,7 +473,7 @@ func _test_scene_placement_actor_scopes_accepted_record_shader_opt_in() -> bool:
 		"grid_size": grid_size,
 		"voxel_size": Vector3.ONE,
 		"grid_origin": Vector3.ZERO,
-		"scene_field": scene,
+		"complexity_field": scene,
 		"collision_field": collision,
 	}, [], 1, {})
 	if not bool(result.get("ok", false)):
@@ -1679,8 +1679,7 @@ class SPADirtyDeltaFakePrefilter:
 		_autoobjects: Array,
 		_dirty_tile_ids: Array[int] = [],
 		_runtime_profile_container: Object = null,
-		_target_color_rgba8_bytes: PackedByteArray = PackedByteArray(),
-		_target_occupancy_bytes: PackedByteArray = PackedByteArray(),
+		_target_field_bytes: PackedFloat32Array = PackedFloat32Array(),
 		_target_read_buffers: Dictionary = {}
 	) -> Dictionary:
 		return {
@@ -1698,7 +1697,7 @@ class SPADirtyDeltaFakePlacer:
 	extends "res://scripts/voxel_placement_generator.gd"
 
 	func run_multi_asset(
-		scene_field: PackedFloat32Array,
+		complexity_field: PackedFloat32Array,
 		collision_field: PackedFloat32Array,
 		asset_defs: Array,
 		grid_size: Vector3i,
@@ -1721,7 +1720,7 @@ class SPADirtyDeltaFakePlacer:
 		return {
 			"ok": object_id >= 0,
 			"reason": "ok" if object_id >= 0 else "fake_runtime_spawn_failed",
-			"scene_field_out": scene_field,
+			"complexity_field_out": complexity_field,
 			"collision_field_out": collision_field,
 			"asset_results": [{
 				"asset_index": 0,
@@ -1753,7 +1752,7 @@ class SPAAcceptedRecordFakePlacer:
 	extends "res://scripts/voxel_placement_generator.gd"
 
 	func run_multi_asset(
-		scene_field: PackedFloat32Array,
+		complexity_field: PackedFloat32Array,
 		collision_field: PackedFloat32Array,
 		asset_defs: Array,
 		grid_size: Vector3i,
@@ -1792,7 +1791,7 @@ class SPAAcceptedRecordFakePlacer:
 		var cpu_state_chain_mode := str(common_settings.get("cpu_state_chain_mode", "none"))
 		var cpu_state_chain := {
 			"mode": cpu_state_chain_mode,
-			"source": "stamp_shader_storage_buffer" if use_compact_state_chain else "scene_collision_storage_buffer_full_field_readback",
+			"source": "stamp_shader_storage_buffer" if use_compact_state_chain else "complexity_collision_storage_buffer_full_field_readback",
 			"cpu_state_chaining": true,
 			"full_field_readback_required": not use_compact_state_chain,
 			"stamp_delta_cpu_state_chaining": use_compact_state_chain,
@@ -1800,11 +1799,11 @@ class SPAAcceptedRecordFakePlacer:
 			"applied_delta_count": 2 if use_compact_state_chain else 0,
 		}
 		var full_field_readback := {
-			"scene_field_out_source": "cpu_state_chain_compact_stamp_deltas" if use_compact_state_chain else "scene_collision_storage_buffer_full_field_readback",
-			"collision_field_out_source": "cpu_state_chain_compact_stamp_deltas" if use_compact_state_chain else "scene_collision_storage_buffer_full_field_readback",
-			"scene_field_out_is_full_field": not use_compact_state_chain,
+			"		complexity_field_out_source": "cpu_state_chain_compact_stamp_deltas" if use_compact_state_chain else "complexity_collision_storage_buffer_full_field_readback",
+			"collision_field_out_source": "cpu_state_chain_compact_stamp_deltas" if use_compact_state_chain else "complexity_collision_storage_buffer_full_field_readback",
+			"complexity_field_out_is_full_field": not use_compact_state_chain,
 			"collision_field_out_is_full_field": not use_compact_state_chain,
-			"scene_field_out_gpu_storage_buffer_readback": false,
+			"complexity_field_out_gpu_storage_buffer_readback": false,
 			"collision_field_out_gpu_storage_buffer_readback": false,
 			"cpu_state_chain_mode": cpu_state_chain_mode,
 			"stamp_delta_cpu_state_chaining": use_compact_state_chain,
@@ -1813,7 +1812,7 @@ class SPAAcceptedRecordFakePlacer:
 		return {
 			"ok": bool(writeback.get("ok", false)),
 			"reason": "ok" if bool(writeback.get("ok", false)) else str(writeback.get("reason", "fake_runtime_flush_failed")),
-			"scene_field_out": scene_field,
+			"complexity_field_out": complexity_field,
 			"collision_field_out": collision_field,
 			"asset_results": [{
 				"asset_index": 0,

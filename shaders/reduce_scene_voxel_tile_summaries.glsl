@@ -3,8 +3,8 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, std430) restrict readonly buffer SceneField {
-    float scene_field[];
+layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityField {
+    vec4 complexity_field[];
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
@@ -66,6 +66,6 @@ void main() {
     int tile_z = clamp(z / max(tile_size.z, 1), 0, max(tile_grid.z - 1, 0));
     int tile_index = tile_x + tile_grid.x * (tile_y + tile_grid.y * tile_z);
 
-    reduce_value(tile_index, 0, 1, 2, scene_field[idx]);
+    reduce_value(tile_index, 0, 1, 2, complexity_field[idx].a);
     reduce_value(tile_index, 3, 4, 5, collision_field[idx]);
 }

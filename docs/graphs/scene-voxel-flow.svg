@@ -103,7 +103,7 @@
     <g id="blendsv[t---1]-/-sv[t---1]">
     <rect class="node" x="85" y="340" width="275" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
     <text class="node-title" x="103" y="368">BlendSV[t - 1] / SV[t - 1]</text>
-    <text class="small"><tspan x="103" y="390">stable previous read input</tspan><tspan x="103" y="407">scene_field + collision_field</tspan><tspan x="103" y="424">used by physical sampling</tspan></text>
+    <text class="small"><tspan x="103" y="390">stable previous read input</tspan><tspan x="103" y="407">complexity_field + collision_field</tspan><tspan x="103" y="424">used by physical sampling</tspan></text>
     </g>
     <g id="instance_stamp_write_spec">
     <rect class="node" x="85" y="530" width="275" height="115" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
@@ -143,7 +143,7 @@
     <g id="scenevoxelcommitter">
     <rect class="node" x="1270" y="170" width="300" height="130" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
     <text class="node-title" x="1288" y="198">SceneVoxelCommitter</text>
-    <text class="small"><tspan x="1288" y="220">owns committed SceneVoxel</tspan><tspan x="1288" y="237">scene_field / collision_field</tspan><tspan x="1288" y="254">grid metadata</tspan></text>
+    <text class="small"><tspan x="1288" y="220">owns committed SceneVoxel</tspan><tspan x="1288" y="237">complexity_field / collision_field</tspan><tspan x="1288" y="254">grid metadata</tspan></text>
     </g>
     <g id="terrain-base-collision">
     <rect class="node" x="1270" y="390" width="300" height="125" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>

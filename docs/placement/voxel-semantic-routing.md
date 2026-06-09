@@ -48,7 +48,7 @@ BlendSV-backed SV[t - 1] resident fields + TargetSV_B + AutoObject registry
 
 `score_voxel_tile.glsl` 是物理和 target fit 精筛 shader。当前它读取：
 
-- `scene_field`
+- `complexity_field`
 - `collision_field`
 - footprint buffers
 - candidate voxel-region ids

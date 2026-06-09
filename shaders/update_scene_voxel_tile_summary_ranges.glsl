@@ -4,20 +4,20 @@
 // Dirty-range SceneVoxelTile resident summary update pass.
 //
 // Binding contract, set 0:
-//   binding 0: readonly float scene_field[]
-//     Dense scene occupancy/complexity volume.
+//   binding 0: readonly vec4 complexity_field[] (.a = complexity, .rgb = color)
+//     Dense complexity occupancy volume.
 //   binding 1: readonly float collision_field[]
 //     Dense collision occupancy volume.
 //   binding 2: writeonly uint tile_summaries[]
 //     Resident 32-byte SceneVoxelTile summary records, matching
 //     scripts/scene_voxel_tile_codec.gd:
-//       [0] scene_min      as float bits
-//       [1] scene_max      as float bits
+//       [0] complexity_min      as float bits
+//       [1] complexity_max      as float bits
 //       [2] collision_min  as float bits
 //       [3] collision_max  as float bits
-//       [4] scene_count
+//       [4] complexity_count
 //       [5] collision_count
-//       [6] non_empty
+//       [6] pad (was non_empty)
 //       [7] pad
 //   binding 3: readonly uint dirty_tile_indices[]
 //     Transient worklist: one resident tile buffer index per dirty SceneVoxelTile
@@ -50,8 +50,8 @@
 //
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, std430) restrict readonly buffer SceneField {
-    float scene_field[];
+layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityField {
+    vec4 complexity_field[];
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
@@ -82,9 +82,9 @@ const uint EMPTY_MIN_SENTINEL = 0x7fffffffu;
 const uint DEFAULT_TILE_RECORD_UINT_STRIDE = 32u;
 const float DEFAULT_QUANT_SCALE = 1000000.0;
 
-shared uint shared_scene_count[64];      // 64 * 4 = 256 bytes
-shared uint shared_scene_min[64];        // 64 * 4 = 256 bytes
-shared uint shared_scene_max[64];        // 64 * 4 = 256 bytes
+shared uint shared_complexity_count[64];      // 64 * 4 = 256 bytes
+shared uint shared_complexity_min[64];        // 64 * 4 = 256 bytes
+shared uint shared_complexity_max[64];        // 64 * 4 = 256 bytes
 shared uint shared_collision_count[64];  // 64 * 4 = 256 bytes
 shared uint shared_collision_min[64];    // 64 * 4 = 256 bytes
 shared uint shared_collision_max[64];    // 64 * 4 = 256 bytes
@@ -164,18 +164,19 @@ void scan_value(float value, inout uint count, inout uint min_q, inout uint max_
     max_q = max(max_q, q);
 }
 
-void write_summary(uint tile_index, uint scene_count, uint scene_min_q, uint scene_max_q, uint collision_count, uint collision_min_q, uint collision_max_q) {
+void write_summary(uint tile_index, uint complexity_count, uint complexity_min_q, uint complexity_max_q, uint collision_count, uint collision_min_q, uint collision_max_q) {
     uint base = tile_index * uint(tile_size.w);
-    bool has_scene = scene_count > 0u;
+    bool has_complexity = complexity_count > 0u;
     bool has_collision = collision_count > 0u;
 
-    tile_summaries[base + 0u] = floatBitsToUint(has_scene ? dequantize_unit(scene_min_q) : 0.0);
-    tile_summaries[base + 1u] = floatBitsToUint(has_scene ? dequantize_unit(scene_max_q) : 0.0);
+    tile_summaries[base + 0u] = floatBitsToUint(has_complexity ? dequantize_unit(complexity_min_q) : 0.0);
+    tile_summaries[base + 1u] = floatBitsToUint(has_complexity ? dequantize_unit(complexity_max_q) : 0.0);
     tile_summaries[base + 2u] = floatBitsToUint(has_collision ? dequantize_unit(collision_min_q) : 0.0);
     tile_summaries[base + 3u] = floatBitsToUint(has_collision ? dequantize_unit(collision_max_q) : 0.0);
-    tile_summaries[base + 4u] = scene_count;
+    tile_summaries[base + 4u] = complexity_count;
     tile_summaries[base + 5u] = collision_count;
-    tile_summaries[base + 6u] = (has_scene || has_collision) ? 1u : 0u;
+    // [6] pad — previously non_empty; use complexity_count > 0 || collision_count > 0 instead
+    tile_summaries[base + 6u] = 0u;
     tile_summaries[base + 7u] = 0u;
 }
 
@@ -208,9 +209,9 @@ void main() {
 
     uint tile_voxel_count = uint(tile_span.x * tile_span.y * tile_span.z);
 
-    uint scene_count = 0u;
-    uint scene_min_q = EMPTY_MIN_SENTINEL;
-    uint scene_max_q = 0u;
+    uint complexity_count = 0u;
+    uint complexity_min_q = EMPTY_MIN_SENTINEL;
+    uint complexity_max_q = 0u;
     uint collision_count = 0u;
     uint collision_min_q = EMPTY_MIN_SENTINEL;
     uint collision_max_q = 0u;
@@ -229,13 +230,13 @@ void main() {
             continue;
         }
 
-        scan_value(scene_field[idx], scene_count, scene_min_q, scene_max_q);
+        scan_value(complexity_field[idx].a, complexity_count, complexity_min_q, complexity_max_q);
         scan_value(collision_field[idx], collision_count, collision_min_q, collision_max_q);
     }
 
-    shared_scene_count[local_index] = scene_count;
-    shared_scene_min[local_index] = scene_min_q;
-    shared_scene_max[local_index] = scene_max_q;
+    shared_complexity_count[local_index] = complexity_count;
+    shared_complexity_min[local_index] = complexity_min_q;
+    shared_complexity_max[local_index] = complexity_max_q;
     shared_collision_count[local_index] = collision_count;
     shared_collision_min[local_index] = collision_min_q;
     shared_collision_max[local_index] = collision_max_q;
@@ -244,9 +245,9 @@ void main() {
     for (uint step = LOCAL_SIZE / 2u; step > 0u; step >>= 1u) {
         if (local_index < step) {
             uint rhs = local_index + step;
-            shared_scene_count[local_index] += shared_scene_count[rhs];
-            shared_scene_min[local_index] = min(shared_scene_min[local_index], shared_scene_min[rhs]);
-            shared_scene_max[local_index] = max(shared_scene_max[local_index], shared_scene_max[rhs]);
+            shared_complexity_count[local_index] += shared_complexity_count[rhs];
+            shared_complexity_min[local_index] = min(shared_complexity_min[local_index], shared_complexity_min[rhs]);
+            shared_complexity_max[local_index] = max(shared_complexity_max[local_index], shared_complexity_max[rhs]);
             shared_collision_count[local_index] += shared_collision_count[rhs];
             shared_collision_min[local_index] = min(shared_collision_min[local_index], shared_collision_min[rhs]);
             shared_collision_max[local_index] = max(shared_collision_max[local_index], shared_collision_max[rhs]);
@@ -257,9 +258,9 @@ void main() {
     if (local_index == 0u) {
         write_summary(
             tile_index,
-            shared_scene_count[0],
-            shared_scene_min[0],
-            shared_scene_max[0],
+            shared_complexity_count[0],
+            shared_complexity_min[0],
+            shared_complexity_max[0],
             shared_collision_count[0],
             shared_collision_min[0],
             shared_collision_max[0]

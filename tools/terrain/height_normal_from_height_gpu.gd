@@ -2,6 +2,7 @@ class_name HeightNormalFromHeightGPU
 extends SceneTree
 
 const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
+const TerrainGPUUtil := preload("res://tools/terrain/terrain_gpu_util.gd")
 
 const SHADER_PATH := "res://shaders/height_normal_from_height.glsl"
 const DEFAULT_WIDTH := 256
@@ -56,9 +57,9 @@ static func convert_height_raw_file_gpu(
 	steep_nz_threshold: float = 0.75
 ) -> Dictionary:
 	var resolved_src := _resolve_path(src_path)
-	var file := FileAccess.open(src_path, FileAccess.READ) if _is_virtual_path(src_path) else FileAccess.open(resolved_src, FileAccess.READ)
+	var file := FileAccess.open(src_path, FileAccess.READ) if TerrainGPUUtil.is_virtual_path(src_path) else FileAccess.open(resolved_src, FileAccess.READ)
 	if file == null:
-		return _blocked("source_open_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("source_open_failed", width, height)
 	var expected_bytes := width * height * FLOATS_PER_HEIGHT_RAW_PIXEL * 4
 	var read_size := file.get_length()
 	if read_size <= 0:
@@ -66,7 +67,7 @@ static func convert_height_raw_file_gpu(
 	var bytes := file.get_buffer(read_size)
 	file = null
 	if bytes.size() != expected_bytes:
-		var size_block := _blocked("source_size_mismatch", width, height)
+		var size_block := TerrainGPUUtil.gpu_blocked("source_size_mismatch", width, height)
 		size_block["actual_bytes"] = bytes.size()
 		size_block["expected_bytes"] = expected_bytes
 		size_block["source_path"] = resolved_src
@@ -77,9 +78,9 @@ static func convert_height_raw_file_gpu(
 		return result
 
 	var resolved_dst := _resolve_path(dst_path)
-	var out_file := FileAccess.open(dst_path, FileAccess.WRITE) if _is_virtual_path(dst_path) else FileAccess.open(resolved_dst, FileAccess.WRITE)
+	var out_file := FileAccess.open(dst_path, FileAccess.WRITE) if TerrainGPUUtil.is_virtual_path(dst_path) else FileAccess.open(resolved_dst, FileAccess.WRITE)
 	if out_file == null:
-		return _blocked("destination_open_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("destination_open_failed", width, height)
 	out_file.store_buffer(result.get("normal_bytes", PackedByteArray()))
 	out_file = null
 	result["source_path"] = resolved_src
@@ -96,7 +97,7 @@ static func make_normals_from_height_raw_rgba_gpu(
 ) -> Dictionary:
 	var pixel_count := width * height
 	if width <= 0 or height <= 0 or height_raw_rgba32f_bytes.size() != pixel_count * FLOATS_PER_HEIGHT_RAW_PIXEL * 4:
-		return _blocked("invalid_height_raw_data", width, height)
+		return TerrainGPUUtil.gpu_blocked("invalid_height_raw_data", width, height)
 
 	return _make_normals_from_height_bytes_gpu(
 		height_raw_rgba32f_bytes,
@@ -119,7 +120,7 @@ static func make_normals_from_heights_gpu(
 ) -> Dictionary:
 	var pixel_count := width * height
 	if width <= 0 or height <= 0 or height_values.size() != pixel_count:
-		return _blocked("invalid_height_data", width, height)
+		return TerrainGPUUtil.gpu_blocked("invalid_height_data", width, height)
 
 	return _make_normals_from_height_bytes_gpu(
 		height_values.to_byte_array(),
@@ -145,28 +146,28 @@ static func _make_normals_from_height_bytes_gpu(
 ) -> Dictionary:
 	var pixel_count := width * height
 	if width <= 0 or height <= 0 or input_stride <= 0 or height_channel < 0 or height_channel >= input_stride:
-		return _blocked("invalid_height_data", width, height)
+		return TerrainGPUUtil.gpu_blocked("invalid_height_data", width, height)
 	if height_bytes.size() != pixel_count * input_stride * 4:
-		return _blocked("invalid_height_data", width, height)
+		return TerrainGPUUtil.gpu_blocked("invalid_height_data", width, height)
 
 	var probe_rd := RenderingServer.create_local_rendering_device()
 	if probe_rd == null:
 		print("[HeightNormalFromHeightGPU] SKIP: no RenderingDevice available for GPU-only normal generation")
-		return _blocked("missing_rendering_device", width, height)
+		return TerrainGPUUtil.gpu_blocked("missing_rendering_device", width, height)
 	probe_rd.free()
 
 	var compute = ComputeShaderBaseScript.new()
 	compute.log_name = "HeightNormalFromHeightGPU"
 	if not compute.ensure_device(true, false):
 		compute.dispose()
-		return _blocked("missing_rendering_device", width, height)
+		return TerrainGPUUtil.gpu_blocked("missing_rendering_device", width, height)
 
 	var rd: RenderingDevice = compute.get_rendering_device()
 	var shader := compute.load_compute_shader(SHADER_PATH)
 	var pipeline := compute.create_compute_pipeline(shader)
 	if not shader.is_valid() or not pipeline.is_valid():
 		compute.dispose()
-		return _blocked("shader_not_ready", width, height)
+		return TerrainGPUUtil.gpu_blocked("shader_not_ready", width, height)
 
 	var height_buf := compute.storage_buffer_from_bytes(height_bytes, ComputeShaderBaseScript.SCOPE_FRAME, "height_normal_input_%s" % height_format)
 	var normal_buf := compute.storage_buffer_zero(pixel_count * FLOATS_PER_NORMAL_PIXEL * 4, ComputeShaderBaseScript.SCOPE_FRAME, "height_normal_output_rgba32f")
@@ -178,7 +179,7 @@ static func _make_normals_from_height_bytes_gpu(
 	var stats_buf := compute.storage_buffer_from_bytes(stats_init, ComputeShaderBaseScript.SCOPE_FRAME, "height_normal_stats_u32")
 	if not height_buf.is_valid() or not normal_buf.is_valid() or not stats_buf.is_valid():
 		compute.dispose()
-		return _blocked("resource_create_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("resource_create_failed", width, height)
 
 	var set0 := compute.create_uniform_set([
 		compute.make_storage_uniform(0, height_buf),
@@ -187,7 +188,7 @@ static func _make_normals_from_height_bytes_gpu(
 	], shader, 0, ComputeShaderBaseScript.SCOPE_PASS, "height_normal_set0")
 	if not set0.is_valid():
 		compute.dispose()
-		return _blocked("uniform_set_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("uniform_set_failed", width, height)
 
 	var push := PackedByteArray()
 	push.resize(32)
@@ -202,7 +203,7 @@ static func _make_normals_from_height_bytes_gpu(
 	var cl := compute.begin_compute_list()
 	if cl < 0:
 		compute.dispose()
-		return _blocked("compute_list_begin_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("compute_list_begin_failed", width, height)
 	rd.compute_list_bind_compute_pipeline(cl, pipeline)
 	rd.compute_list_bind_uniform_set(cl, set0, 0)
 	rd.compute_list_set_push_constant(cl, push, push.size())
@@ -214,7 +215,7 @@ static func _make_normals_from_height_bytes_gpu(
 	var stats_bytes := rd.buffer_get_data(stats_buf, 0, STATS_BUFFER_BYTES)
 	compute.dispose()
 	if normal_bytes.size() != pixel_count * FLOATS_PER_NORMAL_PIXEL * 4 or stats_bytes.size() < STATS_BUFFER_BYTES:
-		return _blocked("readback_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("readback_failed", width, height)
 
 	return {
 		"ok": true,
@@ -238,17 +239,6 @@ static func _make_normals_from_height_bytes_gpu(
 	}
 
 
-static func _blocked(reason: String, width: int = 0, height: int = 0) -> Dictionary:
-	return {
-		"ok": false,
-		"reason": reason,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"width": width,
-		"height": height,
-	}
-
-
 static func _ordered_uint_to_float(key: int) -> float:
 	var bits := 0
 	if (key & 0x80000000) != 0:
@@ -266,6 +256,3 @@ static func _resolve_path(path: String) -> String:
 		return ProjectSettings.globalize_path(path)
 	return path
 
-
-static func _is_virtual_path(path: String) -> bool:
-	return path.begins_with("res://") or path.begins_with("user://")

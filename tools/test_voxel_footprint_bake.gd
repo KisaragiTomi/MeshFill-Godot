@@ -33,11 +33,7 @@ func _init() -> void:
 
 func _test_bake_float_voxels() -> bool:
 	print("[VoxelFootprintBake] test_bake_float_voxels...")
-	var collision: Array = [
-		{"voxel": Vector3i(0, 0, 0), "collision_strength": 0.25},
-		{"voxel": Vector3i(0, 1, 0), "collision_strength": 1.0},
-		{"local_pos": Vector3i(1, 1, 0), "collision_strength": 0.5},
-	]
+	var collision: Array = []
 	var footprint := VPG.bake_footprint_from_collision(
 		collision, Vector3(0.5, 0.5, 0.5), true, 1)
 	var has_support := false
@@ -74,15 +70,7 @@ func _test_bake_float_voxels() -> bool:
 
 func _test_bake_cylinder() -> bool:
 	print("[VoxelFootprintBake] test_bake_cylinder...")
-	var collision: Array = [
-		{
-			"shape": "cylinder",
-			"radius": 0.5,
-			"y_min": 0.0,
-			"y_max": 2.0,
-			"collision_strength": 1.0,
-		}
-	]
+	var collision: Array = []
 	var voxel_size := Vector3(0.5, 0.5, 0.5)
 	var footprint := VPG.bake_footprint_from_collision(
 		collision, voxel_size, true, 1)
@@ -215,14 +203,7 @@ func _test_bake_cylinder_gpu_or_skip() -> bool:
 
 func _test_bake_box() -> bool:
 	print("[VoxelFootprintBake] test_bake_box...")
-	var collision: Array = [
-		{
-			"shape": "box",
-			"offset": Vector3(1.0, 0.0, 0.0),
-			"half_extents": Vector3(0.5, 0.5, 0.5),
-			"collision_strength": 1.0,
-		}
-	]
+	var collision: Array = []
 	var voxel_size := Vector3(0.5, 0.5, 0.5)
 	var footprint := VPG.bake_footprint_from_collision(
 		collision, voxel_size, true, 1)
@@ -472,9 +453,7 @@ func _test_bake_rotation_gpu_or_skip() -> bool:
 
 func _test_bake_rotated_set() -> bool:
 	print("[VoxelFootprintBake] test_bake_rotated_set...")
-	var collision: Array = [
-		{"shape": "cylinder", "radius": 0.3, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}
-	]
+	var collision: Array = []
 	var voxel_size := Vector3(0.5, 0.5, 0.5)
 	var rendering_device := RenderingServer.create_local_rendering_device()
 	if rendering_device == null:
@@ -551,9 +530,7 @@ func _test_full_pipeline() -> bool:
 		for x in range(grid_size.x):
 			scene[generator.voxel_index(Vector3i(x, 0, z), grid_size)] = 1.0
 
-	var collision: Array = [
-		{"shape": "cylinder", "radius": 0.45, "y_min": 0.0, "y_max": 2.0, "collision_strength": 1.0}
-	]
+	var collision: Array = []
 	var footprint := VPG.bake_footprint_from_collision(
 		collision, voxel_size, true, 1)
 
@@ -611,7 +588,7 @@ func _test_full_pipeline() -> bool:
 		return false
 
 	var second := generator.run_minimal(
-		result.get("scene_field_out", PackedFloat32Array()),
+		result.get("complexity_field_out", PackedFloat32Array()),
 		result.get("collision_field_out", PackedFloat32Array()),
 		footprint, grid_size, settings)
 	var second_count := int(second.get("result_count", 0))
@@ -644,7 +621,7 @@ func _test_results_to_world() -> bool:
 			"asset_index": 0,
 			"support_ratio": 1.0,
 			"solid_collision": 0.0,
-			"scene_overlap": 0.0,
+			"complexity_overlap": 0.0,
 			"clearance_overlap": 0.0,
 			"ignored_sample": 0.0,
 		},
@@ -657,7 +634,7 @@ func _test_results_to_world() -> bool:
 			"asset_index": 0,
 			"support_ratio": 0.0,
 			"solid_collision": 5.0,
-			"scene_overlap": 0.0,
+			"complexity_overlap": 0.0,
 			"clearance_overlap": 0.0,
 			"ignored_sample": 0.0,
 		},

@@ -2,6 +2,7 @@ class_name TerrainRawPackGPU
 extends RefCounted
 
 const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
+const TerrainGPUUtil := preload("res://tools/terrain/terrain_gpu_util.gd")
 
 const SHADER_PATH := "res://shaders/pack_rgba_raw_channels.glsl"
 const LOCAL_SIZE := 256
@@ -24,17 +25,17 @@ static func pack_scalar_channels_gpu(
 ) -> Dictionary:
 	var pixel_count := width * height
 	if width <= 0 or height <= 0 or channel_r.size() != pixel_count:
-		return _blocked("invalid_r_channel", width, height)
+		return TerrainGPUUtil.gpu_blocked("invalid_r_channel", width, height)
 
 	var g_valid := channel_g.size() == pixel_count
 	var b_valid := channel_b.size() == pixel_count
 	var a_valid := channel_a.size() == pixel_count
 	if channel_g.size() > 0 and not g_valid:
-		return _blocked("invalid_g_channel", width, height)
+		return TerrainGPUUtil.gpu_blocked("invalid_g_channel", width, height)
 	if channel_b.size() > 0 and not b_valid:
-		return _blocked("invalid_b_channel", width, height)
+		return TerrainGPUUtil.gpu_blocked("invalid_b_channel", width, height)
 	if channel_a.size() > 0 and not a_valid:
-		return _blocked("invalid_a_channel", width, height)
+		return TerrainGPUUtil.gpu_blocked("invalid_a_channel", width, height)
 
 	var zero_channel := PackedFloat32Array()
 	zero_channel.resize(pixel_count)
@@ -43,14 +44,14 @@ static func pack_scalar_channels_gpu(
 	compute.log_name = "TerrainRawPackGPU"
 	if not compute.ensure_device(true, false):
 		compute.dispose()
-		return _blocked("missing_rendering_device", width, height)
+		return TerrainGPUUtil.gpu_blocked("missing_rendering_device", width, height)
 
 	var rd: RenderingDevice = compute.get_rendering_device()
 	var shader := compute.load_compute_shader(SHADER_PATH)
 	var pipeline := compute.create_compute_pipeline(shader)
 	if not shader.is_valid() or not pipeline.is_valid():
 		compute.dispose()
-		return _blocked("shader_not_ready", width, height)
+		return TerrainGPUUtil.gpu_blocked("shader_not_ready", width, height)
 
 	var r_buf := compute.storage_buffer_from_floats(channel_r, ComputeShaderBaseScript.SCOPE_FRAME, "terrain_raw_pack_r32f_r")
 	var g_buf := compute.storage_buffer_from_floats(channel_g if g_valid else zero_channel, ComputeShaderBaseScript.SCOPE_FRAME, "terrain_raw_pack_r32f_g")
@@ -65,7 +66,7 @@ static func pack_scalar_channels_gpu(
 	var stats_buf := compute.storage_buffer_from_bytes(stats_init, ComputeShaderBaseScript.SCOPE_FRAME, "terrain_raw_pack_stats_u32")
 	if not r_buf.is_valid() or not g_buf.is_valid() or not b_buf.is_valid() or not a_buf.is_valid() or not out_buf.is_valid() or not stats_buf.is_valid():
 		compute.dispose()
-		return _blocked("resource_create_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("resource_create_failed", width, height)
 
 	var set0 := compute.create_uniform_set([
 		compute.make_storage_uniform(0, r_buf),
@@ -77,7 +78,7 @@ static func pack_scalar_channels_gpu(
 	], shader, 0, ComputeShaderBaseScript.SCOPE_PASS, "terrain_raw_pack_set0")
 	if not set0.is_valid():
 		compute.dispose()
-		return _blocked("uniform_set_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("uniform_set_failed", width, height)
 
 	var push := PackedByteArray()
 	push.resize(16)
@@ -90,7 +91,7 @@ static func pack_scalar_channels_gpu(
 	var cl := compute.begin_compute_list()
 	if cl < 0:
 		compute.dispose()
-		return _blocked("compute_list_begin_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("compute_list_begin_failed", width, height)
 	rd.compute_list_bind_compute_pipeline(cl, pipeline)
 	rd.compute_list_bind_uniform_set(cl, set0, 0)
 	rd.compute_list_set_push_constant(cl, push, push.size())
@@ -102,7 +103,7 @@ static func pack_scalar_channels_gpu(
 	var stats_bytes := rd.buffer_get_data(stats_buf, 0, STATS_BUFFER_BYTES)
 	compute.dispose()
 	if packed_bytes.size() != pixel_count * FLOATS_PER_RGBA32F_PIXEL * 4 or stats_bytes.size() < STATS_BUFFER_BYTES:
-		return _blocked("readback_failed", width, height)
+		return TerrainGPUUtil.gpu_blocked("readback_failed", width, height)
 
 	var valid_pixel_count := int(stats_bytes.decode_u32(STATS_VALID_PIXEL_COUNT_OFFSET))
 	return {
@@ -126,17 +127,6 @@ static func pack_scalar_channels_gpu(
 		"valid_pixel_count": valid_pixel_count,
 		"min_r": _ordered_uint_to_float(int(stats_bytes.decode_u32(STATS_MIN_R_KEY_OFFSET))) if valid_pixel_count > 0 else 0.0,
 		"max_r": _ordered_uint_to_float(int(stats_bytes.decode_u32(STATS_MAX_R_KEY_OFFSET))) if valid_pixel_count > 0 else 0.0,
-	}
-
-
-static func _blocked(reason: String, width: int = 0, height: int = 0) -> Dictionary:
-	return {
-		"ok": false,
-		"reason": reason,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"width": width,
-		"height": height,
 	}
 
 

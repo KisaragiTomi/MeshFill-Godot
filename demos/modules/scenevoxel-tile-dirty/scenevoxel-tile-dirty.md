@@ -32,4 +32,4 @@
 - runtime resident success 以 GPU buffer summary / valid RIDs / upload revision 为准；CPU staging、debug label 或 snapshot 不能替代 resident metadata。
 - staging revision 前进后，旧 buffers 必须标记 stale；`get_sv()` auto-upload 后，post-publish dirty index 必须为空，padding bytes 不能被解码成 dirty tile。
 - 无 RenderingDevice 时只允许明确 `SKIP`，不能走 runtime 替代路径。
-- `scene_minmax`、`collision_minmax`、`non_empty` 等 summary 不写入 committed `SceneVoxel` payload。
+- `scene_minmax`、`collision_minmax` 等 summary 不写入 committed `SceneVoxel` payload（判断是否有内容使用 `scene_count > 0 || collision_count > 0`）。

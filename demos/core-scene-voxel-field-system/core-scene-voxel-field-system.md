@@ -21,5 +21,5 @@
 
 - 可提交 source record 只来自 `AutoSceneVoxel` / `BrushSceneVoxel`，`TargetSceneVoxel` guidance record 被跳过。
 - committed `SceneVoxel` 公开 payload 只保留最小读取字段，不暴露 source-only sidecar。
-- `scene_field` / `collision_field` 由 committed state 和 terrain collision 重建，不成为第二套权威输入。
+- `complexity_field` / `collision_field` 由 committed state 和 terrain collision 重建，不成为第二套权威输入。
 

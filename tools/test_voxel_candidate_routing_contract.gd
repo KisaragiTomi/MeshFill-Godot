@@ -64,10 +64,7 @@ func _init() -> void:
 		return
 
 	var asset_defs: Array[Dictionary] = [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 		"candidate_voxel_sparses": [],
 	}]
 	var multi := generator.run_multi_asset(scene, collision, asset_defs, grid_size, Vector3.ONE)
@@ -83,10 +80,7 @@ func _init() -> void:
 		return
 
 	var routed_by_int := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
 		"candidate_voxel_sparses_by_asset": {
 			0: [],
@@ -102,10 +96,7 @@ func _init() -> void:
 		return
 
 	var routed_by_string := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
 		"candidate_voxel_sparses_by_asset": {
 			"0": [],
@@ -121,10 +112,7 @@ func _init() -> void:
 		return
 
 	var routed_by_regions_alias := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
 		"candidate_voxel_regions_by_asset": {
 			0: [],
@@ -143,10 +131,7 @@ func _init() -> void:
 		quit(1)
 		return
 	var fake_resident_source := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
 		"candidate_voxel_regions_by_asset": {
 			0: [],
@@ -174,10 +159,7 @@ func _init() -> void:
 		return
 
 	var fake_legacy_resident_source := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
 		"candidate_voxel_sparses_by_asset": {
 			0: [],
@@ -195,10 +177,7 @@ func _init() -> void:
 		return
 
 	var metadata_only_source := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
 		"candidate_route_readback_source": "resident_route_snapshot",
 		"candidate_route_runtime_read_source": "gpu_route_buffers",
@@ -223,10 +202,7 @@ func _init() -> void:
 		return
 
 	var route_profile_metadata_only_source := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
 		"candidate_route_profiles": [{
 			"asset_index": 0,
@@ -263,10 +239,7 @@ func _init() -> void:
 		return
 
 	var malformed_route_source := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
 		"candidate_voxel_regions_by_asset": [],
 		"candidate_route_readback_source": "resident_route_snapshot",
@@ -286,10 +259,7 @@ func _init() -> void:
 		return
 
 	var common_current_priority := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
 		"candidate_voxel_regions_by_asset": {
 			0: [],
@@ -305,10 +275,7 @@ func _init() -> void:
 		return
 
 	var asset_key_priority := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 		"candidate_voxel_sparses": [],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
 		"candidate_voxel_sparses_by_asset": {
@@ -322,10 +289,7 @@ func _init() -> void:
 		return
 
 	var asset_regions_alias_priority := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 		"candidate_voxel_regions": [],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
 		"candidate_voxel_sparses_by_asset": {
@@ -339,10 +303,7 @@ func _init() -> void:
 		return
 
 	var asset_current_priority := generator.run_multi_asset(scene, collision, [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 		"candidate_voxel_regions": [],
 		"candidate_voxel_sparses": [Vector3i.ZERO],
 	}], grid_size, Vector3.ONE, Vector3.ZERO, {
@@ -818,10 +779,7 @@ func _test_contract_blocked_multi_asset_route_source_gate(
 	grid_size: Vector3i
 ) -> bool:
 	var asset_defs: Array[Dictionary] = [{
-		"collision": [{
-			"voxel": Vector3i.ZERO,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 	}]
 	var blocked_cpu_route := generator.run_multi_asset(scene, collision, asset_defs, grid_size, Vector3.ONE, Vector3.ZERO, {
 		"write_accepted_placements_to_gpu_runtime": true,
@@ -905,11 +863,7 @@ func _test_scene_placement_pipeline_reports_normalized_route_source() -> bool:
 
 	var descriptor := AutoVoxelDescriptorScript.new()
 	descriptor.asset_id = "candidate_route_source_boundary"
-	descriptor.set_collision([{
-		"voxel": Vector3i.ZERO,
-		"collision_strength": 1.0,
-		"weight": 1.0,
-	}])
+	descriptor.set_collision([])
 	var profile_id := actor.register_asset(descriptor)
 	if profile_id < 0:
 		actor.dispose(true)
@@ -925,7 +879,7 @@ func _test_scene_placement_pipeline_reports_normalized_route_source() -> bool:
 		"grid_size": grid_size,
 		"voxel_size": Vector3.ONE,
 		"grid_origin": Vector3.ZERO,
-		"scene_field": scene,
+		"complexity_field": scene,
 		"collision_field": collision,
 	}, [], 1, {}).duplicate(true)
 	actor.dispose(true)
@@ -981,11 +935,7 @@ func _test_scene_placement_resident_route_handoff_default() -> bool:
 
 	var descriptor := AutoVoxelDescriptorScript.new()
 	descriptor.asset_id = "candidate_route_resident_handoff"
-	descriptor.set_collision([{
-		"voxel": Vector3i.ZERO,
-		"collision_strength": 1.0,
-		"weight": 1.0,
-	}])
+	descriptor.set_collision([])
 	var profile_id := actor.register_asset(descriptor)
 	if profile_id < 0:
 		runtime.dispose(true)
@@ -1019,7 +969,7 @@ func _test_scene_placement_resident_route_handoff_default() -> bool:
 		"grid_size": Vector3i(1, 1, 1),
 		"voxel_size": Vector3.ONE,
 		"grid_origin": Vector3.ZERO,
-		"scene_field": PackedFloat32Array([0.0]),
+		"complexity_field": PackedFloat32Array([0.0]),
 		"collision_field": PackedFloat32Array([0.0]),
 	}, [], 1, {
 		"read_candidate_route_sparse_adapter_debug": true,
@@ -1100,9 +1050,9 @@ class FakeRouteSourcePrefilter:
 		autoobjects: Array,
 		dirty_tile_ids: Array[int] = [],
 		runtime_profile_container: Object = null,
-		target_color_rgba8_bytes: PackedByteArray = PackedByteArray(),
-		target_occupancy_bytes: PackedByteArray = PackedByteArray(),
-		target_read_buffers: Dictionary = {}
+		target_field_bytes: PackedFloat32Array = PackedFloat32Array(),
+		target_read_buffers: Dictionary = {},
+		tile_summaries_rid: RID = RID()
 	) -> Dictionary:
 		return {
 			"ok": true,
@@ -1136,9 +1086,9 @@ class FakeResidentRoutePrefilter:
 		autoobjects: Array,
 		dirty_tile_ids: Array[int] = [],
 		runtime_profile_container: Object = null,
-		target_color_rgba8_bytes: PackedByteArray = PackedByteArray(),
-		target_occupancy_bytes: PackedByteArray = PackedByteArray(),
-		target_read_buffers: Dictionary = {}
+		target_field_bytes: PackedFloat32Array = PackedFloat32Array(),
+		target_read_buffers: Dictionary = {},
+		tile_summaries_rid: RID = RID()
 	) -> Dictionary:
 		var regions := {
 			0: [Vector3i.ZERO],

@@ -69,16 +69,12 @@ func _test_multi_asset_pipeline() -> bool:
 
 	var asset_defs: Array = [
 		{
-			"collision": [
-				{"shape": "cylinder", "radius": 0.45, "y_min": 0.0, "y_max": 2.0, "collision_strength": 1.0}
-			],
+			"collision": [],
 			"result_capacity": 3,
 			"min_distance_voxels": 3.0,
 		},
 		{
-			"collision": [
-				{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 0.8}
-			],
+			"collision": [],
 			"result_capacity": 4,
 			"min_distance_voxels": 2.0,
 		},
@@ -153,17 +149,13 @@ func _test_run_multi_asset_compact_state_chain_or_skip() -> bool:
 
 	var asset_defs: Array = [
 		{
-			"collision": [
-				{"shape": "cylinder", "radius": 0.45, "y_min": 0.0, "y_max": 2.0, "collision_strength": 1.0}
-			],
+			"collision": [],
 			"result_capacity": 2,
 			"min_distance_voxels": 3.0,
 			"priority": 10,
 		},
 		{
-			"collision": [
-				{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 0.8}
-			],
+			"collision": [],
 			"result_capacity": 3,
 			"min_distance_voxels": 2.0,
 			"priority": 0,
@@ -235,9 +227,9 @@ func _test_run_multi_asset_compact_state_chain_or_skip() -> bool:
 		if int(asset_result.get("result_count", 0)) <= 0:
 			continue
 		var full_field: Dictionary = asset_result.get("full_field_readback", {})
-		if bool(full_field.get("scene_field_out_is_full_field", true)) \
+		if bool(full_field.get("complexity_field_out_is_full_field", true)) \
 				or bool(full_field.get("collision_field_out_is_full_field", true)) \
-				or bool(full_field.get("scene_field_out_gpu_storage_buffer_readback", true)) \
+				or bool(full_field.get("complexity_field_out_gpu_storage_buffer_readback", true)) \
 				or bool(full_field.get("collision_field_out_gpu_storage_buffer_readback", true)) \
 				or bool(full_field.get("full_field_readback_required", true)):
 			push_error("  FAIL: compact asset should not require full scene/collision field readback: %s" % str(full_field))
@@ -255,9 +247,9 @@ func _test_run_multi_asset_compact_state_chain_or_skip() -> bool:
 			push_error("  FAIL: compact asset state-chain report should apply at least one delta: %s" % str(compact_asset_chain))
 			return false
 
-	var compact_scene: PackedFloat32Array = compact_result.get("scene_field_out", PackedFloat32Array())
+	var compact_scene: PackedFloat32Array = compact_result.get("complexity_field_out", PackedFloat32Array())
 	var compact_collision: PackedFloat32Array = compact_result.get("collision_field_out", PackedFloat32Array())
-	var full_scene: PackedFloat32Array = full_result.get("scene_field_out", PackedFloat32Array())
+	var full_scene: PackedFloat32Array = full_result.get("complexity_field_out", PackedFloat32Array())
 	var full_collision: PackedFloat32Array = full_result.get("collision_field_out", PackedFloat32Array())
 	if not _float_arrays_match(compact_scene, full_scene) or not _float_arrays_match(compact_collision, full_collision):
 		push_error("  FAIL: compact stamp-delta state chain should match full-field chained scene/collision state")
@@ -297,9 +289,7 @@ func _test_gpu_runtime_profile_contract_or_skip() -> bool:
 	var profile_id: int = container.register_normalized_profile({
 		"color": Color(0.2, 0.6, 0.3, 0.9),
 		"complexity": 0.9,
-		"collision": [
-			{"voxel": Vector3i.ZERO, "collision_strength": 0.8, "weight": 1.0}
-		],
+		"collision": [],
 		"pivot_variants": [
 			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
 		],
@@ -390,9 +380,7 @@ func _test_score_dispatch_consumes_gpu_runtime_profile_buffers_or_skip() -> bool
 				"source": "test",
 			}
 		],
-		"collision": [
-			{"voxel": Vector3i.ZERO, "collision_strength": 0.4, "weight": 1.0}
-		],
+		"collision": [],
 		"pivot_variants": [
 			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
 		],
@@ -503,12 +491,6 @@ func _test_score_dispatch_consumes_gpu_runtime_profile_buffers_or_skip() -> bool
 		container.dispose()
 		runtime.dispose()
 		return false
-	if int(debug.get("collision_record_reads", 0)) <= 0:
-		push_error("  FAIL: expected score shader to read runtime collision records: %s" % str(debug))
-		generator.dispose()
-		container.dispose()
-		runtime.dispose()
-		return false
 	if int(debug.get("pivot_record_reads", 0)) <= 0:
 		push_error("  FAIL: expected score shader to read runtime pivot records: %s" % str(debug))
 		generator.dispose()
@@ -546,9 +528,7 @@ func _test_same_profile_min_spacing_excludes_runtime_neighbor_or_skip() -> bool:
 	var same_profile := {
 		"color": Color(0.25, 0.65, 0.35, 0.8),
 		"complexity": 0.8,
-		"collision": [
-			{"voxel": Vector3i.ZERO, "collision_strength": 1.0, "weight": 1.0}
-		],
+		"collision": [],
 		"pivot_variants": [
 			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
 		],
@@ -556,9 +536,7 @@ func _test_same_profile_min_spacing_excludes_runtime_neighbor_or_skip() -> bool:
 	var other_profile := {
 		"color": Color(0.65, 0.25, 0.35, 0.6),
 		"complexity": 0.6,
-		"collision": [
-			{"voxel": Vector3i.ZERO, "collision_strength": 1.0, "weight": 1.0}
-		],
+		"collision": [],
 		"pivot_variants": [
 			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
 		],
@@ -789,9 +767,7 @@ func _test_same_profile_min_spacing_uses_scene_voxel_tile_object_refs_or_skip() 
 	var profile := {
 		"color": Color(0.25, 0.65, 0.35, 0.8),
 		"complexity": 0.8,
-		"collision": [
-			{"voxel": Vector3i.ZERO, "collision_strength": 1.0, "weight": 1.0}
-		],
+		"collision": [],
 		"pivot_variants": [
 			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
 		],
@@ -936,9 +912,7 @@ func _test_post_dispatch_contract_failure_blocks_multi_asset_or_skip() -> bool:
 	var profile_id: int = container.register_normalized_profile({
 		"color": Color(0.15, 0.55, 0.25, 0.7),
 		"complexity": 0.7,
-		"collision": [
-			{"voxel": Vector3i.ZERO, "collision_strength": 1.0, "weight": 1.0}
-		],
+		"collision": [],
 		"pivot_variants": [
 			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
 		],
@@ -966,9 +940,7 @@ func _test_post_dispatch_contract_failure_blocks_multi_asset_or_skip() -> bool:
 		collision,
 		[
 			{
-				"collision": [
-					{"shape": "cylinder", "radius": 0.3, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}
-				],
+				"collision": [],
 				"result_capacity": 1,
 				"profile_id": profile_id,
 				"object_type": 39,
@@ -1070,9 +1042,7 @@ func _test_accepted_placement_writeback_to_gpu_runtime_or_blocked() -> bool:
 	var profile_id: int = container.register_normalized_profile({
 		"color": Color(0.15, 0.55, 0.25, 0.7),
 		"complexity": 0.7,
-		"collision": [
-			{"voxel": Vector3i.ZERO, "collision_strength": 1.0, "weight": 1.0}
-		],
+		"collision": [],
 		"pivot_variants": [
 			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
 		],
@@ -1102,9 +1072,7 @@ func _test_accepted_placement_writeback_to_gpu_runtime_or_blocked() -> bool:
 		collision,
 		[
 			{
-				"collision": [
-					{"shape": "cylinder", "radius": 0.3, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}
-				],
+				"collision": [],
 				"result_capacity": 1,
 				"profile_id": profile_id,
 				"object_type": writeback_object_type,
@@ -1509,9 +1477,7 @@ func _test_accepted_placement_writeback_failure_reason_or_skip() -> bool:
 	var profile_id: int = container.register_normalized_profile({
 		"color": Color(0.15, 0.55, 0.25, 0.7),
 		"complexity": 0.7,
-		"collision": [
-			{"voxel": Vector3i.ZERO, "collision_strength": 1.0, "weight": 1.0}
-		],
+		"collision": [],
 		"pivot_variants": [
 			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
 		],
@@ -1544,9 +1510,7 @@ func _test_accepted_placement_writeback_failure_reason_or_skip() -> bool:
 		collision,
 		[
 			{
-				"collision": [
-					{"shape": "cylinder", "radius": 0.3, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}
-				],
+				"collision": [],
 				"result_capacity": 2,
 				"profile_id": profile_id,
 				"object_type": 38,
@@ -1683,7 +1647,7 @@ func _assert_cpu_scene_voxel_source_handoff_contract(report: Dictionary, label: 
 	if str(report.get("source_write_handoff_mode", "")) != "cpu_batch_isws_pending_source_candidate_bridge":
 		push_error("  FAIL: %s should identify CPU batch/pending-source SceneVoxel handoff: %s" % [label, str(report)])
 		return false
-	if str(report.get("source_write_batch_api", "")) != "apply_instance_stamp_write_specs":
+	if str(report.get("source_write_batch_api", "")) != "apply_voxel_write_specs":
 		push_error("  FAIL: %s should use the committer ISWS batch API: %s" % [label, str(report)])
 		return false
 	if not bool(report.get("cpu_pending_source_candidate_bridge", false)):
@@ -1732,9 +1696,7 @@ func _test_run_multi_asset_writes_instance_stamp_specs_to_committer_or_skip() ->
 	var profile_id: int = container.register_normalized_profile({
 		"color": Color(0.2, 0.7, 0.25, 0.8),
 		"complexity": 0.8,
-		"collision": [
-			{"voxel": Vector3i.ZERO, "collision_strength": 1.0, "weight": 1.0}
-		],
+		"collision": [],
 		"pivot_variants": [
 			{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}
 		],
@@ -1768,9 +1730,7 @@ func _test_run_multi_asset_writes_instance_stamp_specs_to_committer_or_skip() ->
 		collision,
 		[
 			{
-				"collision": [
-					{"shape": "cylinder", "radius": 0.3, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}
-				],
+				"collision": [],
 				"result_capacity": 1,
 				"profile_id": profile_id,
 				"object_type": writeback_object_type,
@@ -1866,7 +1826,7 @@ func _test_run_multi_asset_writes_instance_stamp_specs_to_committer_or_skip() ->
 		container.dispose()
 		runtime.dispose()
 		return false
-	if committer.get_instance_stamp_write_specs().size() < accepted_count:
+	if committer.get_voxel_write_specs().size() < accepted_count:
 		push_error("  FAIL: committer should retain ISWS/source records from run_multi_asset")
 		generator.dispose()
 		container.dispose()
@@ -1938,9 +1898,7 @@ func _test_run_multi_asset_stages_source_candidates_to_resident_buffers_or_skip(
 		collision,
 		[
 			{
-				"collision": [
-					{"shape": "cylinder", "radius": 0.3, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}
-				],
+				"collision": [],
 				"result_capacity": 1,
 				"channel": 0,
 				"radius": 1.0,
@@ -1967,7 +1925,7 @@ func _test_run_multi_asset_stages_source_candidates_to_resident_buffers_or_skip(
 		generator.dispose()
 		committer.dispose(true)
 		return false
-	if int(source_writeback.get("applied_count", 0)) < accepted_count or committer.get_instance_stamp_write_specs().size() < accepted_count:
+	if int(source_writeback.get("applied_count", 0)) < accepted_count or committer.get_voxel_write_specs().size() < accepted_count:
 		push_error("  FAIL: accepted placements should write ISWS records before staging: %s" % str(source_writeback))
 		generator.dispose()
 		committer.dispose(true)
@@ -2196,23 +2154,23 @@ func _test_run_multi_asset_stages_source_candidates_to_resident_buffers_or_skip(
 		committer.dispose(true)
 		return false
 	var sv := committer.get_sv()
-	if str(sv.get("scene_field_source", "")) != "resident_committed_scene_voxel_payload_buffers" \
-			or str(sv.get("scene_field_projection_mode", "")) != "committed_payload_dense_scatter" \
-			or str(sv.get("scene_field_runtime_read_source", "")) != "resident_committed_scene_voxel_payload_buffer" \
-			or not bool(sv.get("scene_field_committed_payload_projection", false)):
-		push_error("  FAIL: dense SV scene_field should scatter from resident committed payload/key buffers, not CPU source-key projection: %s" % str(sv))
+	if str(sv.get("complexity_field_source", "")) != "resident_committed_scene_voxel_payload_buffers" \
+			or str(sv.get("complexity_field_projection_mode", "")) != "committed_payload_dense_scatter" \
+			or str(sv.get("complexity_field_runtime_read_source", "")) != "resident_committed_scene_voxel_payload_buffer" \
+			or not bool(sv.get("complexity_field_committed_payload_projection", false)):
+		push_error("  FAIL: dense SV complexity_field should scatter from resident committed payload/key buffers, not CPU source-key projection: %s" % str(sv))
 		generator.dispose()
 		committer.dispose(true)
 		return false
-	if int(sv.get("scene_field_committed_payload_count", -1)) != committed_payload_count \
-			or int(sv.get("scene_field_committed_key_coord_count", -1)) != committed_payload_count:
-		push_error("  FAIL: dense SV scene_field committed payload/key scatter counts should match committed payload count: %s" % str(sv))
+	if int(sv.get("complexity_field_committed_payload_count", -1)) != committed_payload_count \
+			or int(sv.get("complexity_field_committed_key_coord_count", -1)) != committed_payload_count:
+		push_error("  FAIL: dense SV complexity_field committed payload/key scatter counts should match committed payload count: %s" % str(sv))
 		generator.dispose()
 		committer.dispose(true)
 		return false
 	var sv_payload_summary: Dictionary = sv.get("committed_scene_voxel_payload_buffer_summary", {})
 	if not bool(sv_payload_summary.get("committed_scene_voxel_dense_projection_ready", false)) \
-			or str(sv_payload_summary.get("committed_scene_voxel_scene_field_projection_source", "")) != "resident_committed_scene_voxel_payload_buffer":
+			or str(sv_payload_summary.get("committed_scene_voxel_complexity_field_projection_source", "")) != "resident_committed_scene_voxel_payload_buffer":
 		push_error("  FAIL: SV should carry committed-payload dense projection diagnostics: %s" % str(sv_payload_summary))
 		generator.dispose()
 		committer.dispose(true)
@@ -2225,13 +2183,13 @@ func _test_run_multi_asset_stages_source_candidates_to_resident_buffers_or_skip(
 		generator.dispose()
 		committer.dispose(true)
 		return false
-	var scene_field: PackedFloat32Array = sv.get("scene_field", PackedFloat32Array())
-	var nonzero_scene_field_cells := 0
-	for value in scene_field:
+	var complexity_field: PackedFloat32Array = sv.get("complexity_field", PackedFloat32Array())
+	var nonzero_complexity_field_cells := 0
+	for value in complexity_field:
 		if float(value) > 0.001:
-			nonzero_scene_field_cells += 1
-	if nonzero_scene_field_cells <= 0:
-		push_error("  FAIL: dense SV scene_field scatter from committed payloads produced no occupied cells")
+			nonzero_complexity_field_cells += 1
+	if nonzero_complexity_field_cells <= 0:
+		push_error("  FAIL: dense SV complexity_field scatter from committed payloads produced no occupied cells")
 		generator.dispose()
 		committer.dispose(true)
 		return false
@@ -2248,7 +2206,7 @@ func _assert_public_scene_voxel_debug_api_projection(summary: Dictionary, label:
 			or not bool(summary.get("public_scene_voxel_projection_debug_only", false)) \
 			or not bool(summary.get("public_scene_voxel_projection_api_only", false)) \
 			or bool(summary.get("public_scene_voxel_projection_runtime_owner", true)) \
-			or bool(summary.get("public_scene_voxel_projection_scene_field_source", true)) \
+			or bool(summary.get("public_scene_voxel_projection_complexity_field_source", true)) \
 			or str(summary.get("public_scene_voxel_projection_runtime_read_source", "")) != "none" \
 			or str(summary.get("public_scene_voxel_projection_api", "")) != "get_scene_voxels/get_scene_voxel":
 		push_error("  FAIL: %s must label public SceneVoxel dictionaries as debug/API-only readback, not runtime ownership/source: %s" % [label, str(summary)])
@@ -2311,18 +2269,13 @@ func _test_run_multi_asset_preserves_target_read_buffer_diagnostics_or_skip() ->
 
 	var expected_bytes := voxel_count * 4
 	var target_color_rgba8_bytes := PackedByteArray()
-	var target_occupancy_bytes := PackedByteArray()
 	target_color_rgba8_bytes.resize(expected_bytes)
-	target_occupancy_bytes.resize(expected_bytes)
 	for i in range(voxel_count):
 		target_color_rgba8_bytes.encode_u32(i * 4, 0x3366ccff)
-		target_occupancy_bytes.encode_float(i * 4, 0.5)
 
 	var asset_defs := [
 		{
-			"collision": [
-				{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}
-			],
+			"collision": [],
 			"result_capacity": 1,
 		}
 	]
@@ -2332,7 +2285,6 @@ func _test_run_multi_asset_preserves_target_read_buffer_diagnostics_or_skip() ->
 		"min_support_ratio": 1.0,
 		"clearance_limit": 0.0,
 		"target_color_rgba8_bytes": target_color_rgba8_bytes,
-		"target_occupancy_bytes": target_occupancy_bytes,
 	}
 
 	var actor := SPA.new()
@@ -2345,7 +2297,7 @@ func _test_run_multi_asset_preserves_target_read_buffer_diagnostics_or_skip() ->
 	var sv := {
 		"grid_size": grid_size,
 		"voxel_size": Vector3.ONE,
-		"scene_field": scene,
+		"complexity_field": scene,
 		"collision_field": collision,
 	}
 	var target_buffers: Dictionary = actor.prepare_target_read_buffers_from_common_gpu(target_settings, sv)
@@ -2359,19 +2311,19 @@ func _test_run_multi_asset_preserves_target_read_buffer_diagnostics_or_skip() ->
 		push_error("  FAIL: VPG should attach the ScenePlacementActor RenderingDevice")
 		actor.dispose(true)
 		return false
-	var external_scene_field_buffer := actor.storage_buffer_from_floats(scene, "persistent", "test_external_scene_field")
+	var external_complexity_field_buffer := actor.storage_buffer_from_floats(scene, "persistent", "test_external_complexity_field")
 	var external_collision_field_buffer := actor.storage_buffer_from_floats(collision, "persistent", "test_external_collision_field")
-	if not external_scene_field_buffer.is_valid() or not external_collision_field_buffer.is_valid():
+	if not external_complexity_field_buffer.is_valid() or not external_collision_field_buffer.is_valid():
 		push_error("  FAIL: external resident scene/collision test buffers should be valid")
 		actor.dispose(true)
 		return false
 	var borrowed_settings := common_settings.duplicate(true)
 	borrowed_settings["target_read_buffers"] = target_buffers
-	borrowed_settings["scene_field_buffer_rid"] = external_scene_field_buffer
+	borrowed_settings["complexity_field_buffer_rid"] = external_complexity_field_buffer
 	borrowed_settings["collision_field_buffer_rid"] = external_collision_field_buffer
-	borrowed_settings["scene_field_buffer_borrowed"] = true
+	borrowed_settings["complexity_field_buffer_borrowed"] = true
 	borrowed_settings["collision_field_buffer_borrowed"] = true
-	borrowed_settings["scene_field_buffer_owner"] = "test_external_scene_voxel_committer"
+	borrowed_settings["complexity_field_buffer_owner"] = "test_external_scene_voxel_committer"
 	borrowed_settings["collision_field_buffer_owner"] = "test_external_scene_voxel_committer"
 	borrowed_settings["gpu_state_chain_source"] = "test_external_scene_voxel_tile_resident_fields"
 	var borrowed_result := borrowed_generator.run_multi_asset(
@@ -2388,7 +2340,7 @@ func _test_run_multi_asset_preserves_target_read_buffer_diagnostics_or_skip() ->
 		return false
 	if not _assert_external_field_buffer_handoff(
 		borrowed_result,
-		external_scene_field_buffer,
+		external_complexity_field_buffer,
 		external_collision_field_buffer
 	):
 		actor.dispose(true)
@@ -2422,20 +2374,20 @@ func _assert_external_field_buffer_handoff(result: Dictionary, scene_rid: RID, c
 	if not bool(chain.get("gpu_state_chaining", false)) or bool(chain.get("cpu_state_chaining", true)):
 		push_error("  FAIL: borrowed field chain should stay GPU-resident: %s" % str(chain))
 		return false
-	var result_scene_rid: RID = chain.get("scene_field_buffer_rid", RID())
+	var result_complexity_rid: RID = chain.get("complexity_field_buffer_rid", RID())
 	var result_collision_rid: RID = chain.get("collision_field_buffer_rid", RID())
-	if result_scene_rid != scene_rid or result_collision_rid != collision_rid:
+	if result_complexity_rid != scene_rid or result_collision_rid != collision_rid:
 		push_error("  FAIL: VPG overwrote caller-provided field RIDs: %s" % str(chain))
 		return false
-	if not bool(chain.get("scene_field_buffer_borrowed", false)) or not bool(chain.get("collision_field_buffer_borrowed", false)):
+	if not bool(chain.get("complexity_field_buffer_borrowed", false)) or not bool(chain.get("collision_field_buffer_borrowed", false)):
 		push_error("  FAIL: VPG should report caller field RIDs as borrowed: %s" % str(chain))
 		return false
 	if str(chain.get("source", "")) != "test_external_scene_voxel_tile_resident_fields":
 		push_error("  FAIL: VPG should preserve external field source label: %s" % str(chain))
 		return false
-	var scene_out: PackedFloat32Array = result.get("scene_field_out", PackedFloat32Array())
+	var complexity_out: PackedFloat32Array = result.get("complexity_field_out", PackedFloat32Array())
 	var collision_out: PackedFloat32Array = result.get("collision_field_out", PackedFloat32Array())
-	if scene_out.size() > 0 or collision_out.size() > 0:
+	if complexity_out.size() > 0 or collision_out.size() > 0:
 		push_error("  FAIL: resident field chain should not read back full fields by default")
 		return false
 	return true
@@ -2465,7 +2417,7 @@ func _assert_target_read_buffer_summary(result: Dictionary, expect_borrowed: boo
 			push_error("  FAIL: %s target summary must stay GPU-first with cpu_fallback=false: %s" % [label, str(summary)])
 			return false
 		if int(summary.get("target_color_rgba8_byte_count", 0)) != expected_bytes \
-				or int(summary.get("target_occupancy_byte_count", 0)) != expected_bytes:
+				or int(summary.get("target_field_byte_count", 0)) != expected_bytes:
 			push_error("  FAIL: %s target byte counts were not preserved: %s" % [label, str(summary)])
 			return false
 		if bool(summary.get("target_read_buffers_borrowed", false)) != expect_borrowed:
@@ -2502,7 +2454,7 @@ func _test_gpu_runtime_profile_contract_has_no_cpu_fallback() -> bool:
 	collision.resize(voxel_count)
 	var asset_defs := [
 		{
-			"collision": [{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0}],
+			"collision": [],
 			"result_capacity": 1,
 		}
 	]
@@ -2732,7 +2684,7 @@ func _test_instantiate_placement_voxel_write_spec_commit() -> bool:
 		push_error("  FAIL: base_pixel mismatch: %s" % str(record.get("base_pixel", Vector2i(-1, -1))))
 		node.free()
 		return false
-	var committed_record := committer.get_instance_stamp_write_spec("voxel_autoobject_record_0")
+	var committed_record := committer.get_voxel_write_spec("voxel_autoobject_record_0")
 	if str(committed_record.get("id", "")) != "voxel_autoobject_record_0":
 		push_error("  FAIL: committer could not read back canonical ISWS record")
 		node.free()
@@ -2786,16 +2738,12 @@ func _test_multi_asset_collision_avoidance() -> bool:
 			scene[generator.voxel_index(Vector3i(x, 0, z), grid_size)] = 1.0
 
 	var large_cylinder := {
-		"collision": [
-			{"shape": "cylinder", "radius": 1.5, "y_min": 0.0, "y_max": 3.0, "collision_strength": 1.0}
-		],
+		"collision": [],
 		"result_capacity": 2,
 		"min_distance_voxels": 4.0,
 	}
 	var small_cylinder := {
-		"collision": [
-			{"shape": "cylinder", "radius": 0.25, "y_min": 0.0, "y_max": 1.0, "collision_strength": 1.0}
-		],
+		"collision": [],
 		"result_capacity": 4,
 		"min_distance_voxels": 2.0,
 	}

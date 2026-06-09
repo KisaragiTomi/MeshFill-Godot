@@ -143,7 +143,7 @@
     <g id="sv-resident-fields">
     <rect class="node" x="1245" y="165" width="270" height="120" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
     <text class="node-title" x="1263" y="193">SV resident fields</text>
-    <text class="small"><tspan x="1263" y="215">scene_field</tspan><tspan x="1263" y="232">collision_field</tspan><tspan x="1263" y="249">dirty voxel regions</tspan></text>
+    <text class="small"><tspan x="1263" y="215">complexity_field</tspan><tspan x="1263" y="232">collision_field</tspan><tspan x="1263" y="249">dirty voxel regions</tspan></text>
     </g>
     <g id="metadata-/-debug-only">
     <rect class="node" x="1245" y="350" width="270" height="120" rx="8" fill="url(#note-hatch)" stroke="#64748b"/>

@@ -48,7 +48,7 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, and
 | [`graphs/meshfill_compute_shader_3d_placement.svg`](graphs/meshfill_compute_shader_3d_placement.svg) | Heightfield fitting compute pipeline, iterative fill/update passes, CPU `AutoRock` instancing, and `SceneVoxel` integration |
 | [`graphs/autoobject_probe_prefilter_pipeline.svg`](graphs/autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter, dirty-region anchor collection, voxel-region votes, and readback route expansion |
 | [`graphs/autoobject_probe_scoring_logic.svg`](graphs/autoobject_probe_scoring_logic.svg) | Descriptor probe generation, GPU SoA packing, clamped SV/TargetSV_B sampling, weighted fit, and candidate-only top-K boundary |
-| [`graphs/scene-voxel-flow.svg`](graphs/scene-voxel-flow.svg) | `instance_stamp_write_spec` / `ISWS`, auto/brush source streams, `blend_scene_voxels()`, public payload, feedback, and SV resident fields |
+| [`graphs/scene-voxel-flow.svg`](graphs/scene-voxel-flow.svg) | `instance_stamp_write_spec` / `ISWS`, auto/brush source streams, `blend_scene_voxels()`, accepted `SceneVoxel` fields, feedback, and SV resident fields |
 | [`graphs/scenevoxeltile.svg`](graphs/scenevoxeltile.svg) | `SceneVoxelTile` coarse SV cell index, dirty triggers, SV owner boundary, object id ranges, summaries, and consumers |
 | [`graphs/target-scene-voxel-current.svg`](graphs/target-scene-voxel-current.svg) | `TargetSV`, `BrushSV`, `TargetSV_B`, target read buffers, consumer boundaries, and planned guidance sources |
 | [`graphs/voxel-semantic-routing.svg`](graphs/voxel-semantic-routing.svg) | Candidate voxel-region routing, conservative readback expansion, empty-route skip, same-type exclusion, and physical scoring boundary |
@@ -72,6 +72,7 @@ Use these terms consistently in voxel, placement, and compute-shader docs:
 | `voxel` | One element/cell inside a `volume`, addressed by `(x, y, z)` or a flattened index. |
 | `tile` | A fixed-size 2D/3D block used for sparse storage, compaction, dirty rebuilds, or workgroup remapping. It is an implementation/storage term. |
 | `SceneVoxelTile` | An SV-owned coarse cell index/dirty record that stores dirty flags, voxel bounds, object id ranges, and summaries. Default tile size is fixed `4x4x4` voxels and can be overridden by `meshfill/scene_voxel_tile/size_voxels`; it is not committed `SceneVoxel` payload. |
+| `SceneVoxel Source Fusion` / `SVSF` | The formal name for the `AutoSV` + `BrushSV` + `LandscapeSV` (terrain base collision / target guidance) → `BlendSV` / committed `SceneVoxel` multi-source resolve-and-blend flow. Executed by `resolve_scene_voxel_sources.glsl` (per-source winner arbitration + merge) and `blend_scene_voxel_fields.glsl` (compact records → dense field), orchestrated by `blend_scene_voxels()`. |
 | `voxel region` | A high-level candidate or dirty region used by placement/routing. Prefer this term in prose; runtime APIs expose current `candidate_voxel_regions_by_asset` / `candidate_voxel_regions` fields plus legacy/debug `candidate_voxel_sparses*`, `dirty_tiles`, or `tile_id` storage names. |
 
 ## 测试场景

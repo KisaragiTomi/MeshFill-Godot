@@ -43,7 +43,7 @@
 | Physical placement | `VoxelPlacementGenerator` / placement shaders | 只对 routed asset / candidate voxel regions 做 GPU score、reduce、stamp；可在 GPU scoring 前执行同类型 candidate voxel-region 剪枝；如果 asset 没有候选区域，本轮可跳过。SPA 创建 placer worker 并注入共享 RD + profile_container。 |
 | Instance stamp write spec | `instance_stamp_write_spec` / `ISWS` builders | 统一创建或更新本次实例 / stamp 写入 record，保存位置、像素、channel、collision、source 和 debug handle。 |
 | Source voxel | `AutoSceneVoxel` / `BrushSceneVoxel` | auto 和 brush 的当前 tick 写入意图；source stream 与提交规则见 `scene-voxel-field-system.md`。 |
-| Blend / final state | `SceneVoxelCommitter.blend_scene_voxels()` | 将本 tick `AutoSceneVoxel` 与 `BrushSceneVoxel` 合成为 `BlendSV` / committed `SceneVoxel`；`SV[t - 1]` 读取的是上一轮 `BlendSV` resident fields。 |
+| Blend / final state | `SceneVoxelCommitter.blend_scene_voxels()` | **SceneVoxel Source Fusion (SVSF)**：将本 tick `AutoSceneVoxel`、`BrushSceneVoxel` 与 `LandscapeSV`（terrain base collision / target guidance）合成为 `BlendSV` / committed `SceneVoxel`；`SV[t - 1]` 读取的是上一轮 `BlendSV` resident fields。 |
 | Result feedback | `SceneVoxelCommitter.score_blendsv_feedback_against_target()` | post-commit GPU feedback pass；比较 `BlendSV[tick]` / committed `SceneVoxel` 与 `TargetSV_B` / `TargetSV` 的 complexity 和 occupancy overlap。 |
 | SV resident buffers | `SceneVoxelCommitter` | SV 自持 `SV[t - 1]` 和 `SV[tick]` 的 scene/collision GPU resident buffers、grid metadata 和 dirty regions；previous 是本轮稳定读取输入，current 是本轮提交结果。 |
 | Query projection | metadata / `GPUAutoObjectRuntime` / `AutoVoxelRuntimeProfileContainer` / `SceneVoxelTile` | 提供运行时 object id 查询、profile id、调试 lookup、dirty object ranges 和局部 rebuild 索引；`GPUAutoObjectRuntime` 不拥有 SV grid 或 commit，`AutoVoxelRuntimeProfileContainer` 不作为 CPU-side placement 替代路径。通过 SPA 暴露统一访问接口。 |
@@ -71,7 +71,7 @@ SPA (ScenePlacementActor) 编排层
 SceneVoxelCommitter / SV owner [tick]
   -> BlendSV[t - 1] / SceneVoxel[tick - 1]
      previous AutoSceneVoxel + BrushSceneVoxel committed result
-  -> SV[t - 1]: scene_field, collision_field
+  -> SV[t - 1]: complexity_field, collision_field
      physical sampling reads previous BlendSV resident fields
   -> TargetSV + BrushSV -> TargetSV_B brush-composited target input
   -> AutoObject registry + descriptor-backed probe buffers
@@ -98,7 +98,7 @@ SceneVoxelCommitter / SV owner [tick]
   -> BlendSV[tick] / SceneVoxel[tick]
   -> score_blendsv_feedback_against_target(BlendSV[tick], TargetSV_B / TargetSV)
      result feedback score after commit, not candidate score
-  -> SV[tick]: scene_field, collision_field
+  -> SV[tick]: complexity_field, collision_field
   -> next tick: SV[tick] promotes to SV[t - 1]
   -> dirty SceneVoxelTile / voxel-region invalidation
 ```
@@ -172,7 +172,7 @@ placement
 
 ## Dirty Update Rules
 
-普通 scene field 变化：
+普通 complexity field 变化：
 
 ```text
 AutoObject / brush / placement delta

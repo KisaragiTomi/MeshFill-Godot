@@ -22,8 +22,7 @@ func _init() -> void:
 	ok = ok and _test_prefilter_decode_output_contract()
 	ok = ok and _test_scene_voxel_tile_dirty_bounds_feed_shader_tile_ids()
 	ok = ok and _test_probe_expected_rgba8_repacked_for_shader()
-	ok = ok and _test_prefilter_accepts_prepacked_target_color_rgba8()
-	ok = ok and _test_prefilter_accepts_prepacked_target_occupancy()
+	ok = ok and _test_prefilter_accepts_prepacked_target_field()
 	ok = ok and _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_uploads()
 	ok = ok and _test_prefilter_output_reports_gpu_profile_probe_contract()
 	ok = ok and _test_profile_pack_block_reasons_fail_contract()
@@ -47,17 +46,18 @@ func _test_position_only_anchor_layers() -> bool:
 	var sv := _make_sv(grid_size, voxel_size)
 
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
-	var target := PackedFloat32Array()
-	target.resize(voxel_count)
-	var target_color := PackedColorArray()
-	target_color.resize(voxel_count)
+	var target_field := PackedFloat32Array()
+	target_field.resize(voxel_count * 4)
 	for i in range(voxel_count):
-		target_color[i] = Color(0.4, 0.4, 0.4, 1.0)
+		target_field[i * 4 + 0] = 0.4
+		target_field[i * 4 + 1] = 0.4
+		target_field[i * 4 + 2] = 0.4
+		target_field[i * 4 + 3] = 0.0
 
 	for z in range(4, 8):
 		for x in range(4, 8):
-			target[_voxel_index(Vector3i(x, 1, z), grid_size)] = 1.0
-			target[_voxel_index(Vector3i(x, 4, z), grid_size)] = 1.0
+			target_field[_voxel_index(Vector3i(x, 1, z), grid_size) * 4 + 3] = 1.0
+			target_field[_voxel_index(Vector3i(x, 4, z), grid_size) * 4 + 3] = 1.0
 
 	var supported_asset := AutoObject.new()
 	supported_asset.name = "supported_asset"
@@ -79,8 +79,7 @@ func _test_position_only_anchor_layers() -> bool:
 		[supported_asset, upper_asset],
 		_all_tile_ids(sv),
 		null,
-		_pack_target_color_rgba8(target_color),
-		target.to_byte_array(),
+		target_field,
 		{"debug_read_candidate_route_cpu_expansion": true}
 	)
 	var anchors: Array = result.get("anchors", [])
@@ -130,14 +129,6 @@ func _test_position_only_anchor_layers() -> bool:
 		anchors.size(),
 	])
 	return true
-
-
-func _pack_target_color_rgba8(colors: PackedColorArray) -> PackedByteArray:
-	var bytes := PackedByteArray()
-	bytes.resize(colors.size() * 4)
-	for i in range(colors.size()):
-		bytes.encode_u32(i * 4, Prefilter._pack_rgba8(colors[i]))
-	return bytes
 
 
 func _test_candidate_routes_expand_for_probe_footprint_context_guard() -> bool:
@@ -485,73 +476,37 @@ func _test_probe_expected_rgba8_repacked_for_shader() -> bool:
 	return true
 
 
-func _test_prefilter_accepts_prepacked_target_color_rgba8() -> bool:
-	print("[AutoObjectProbePrefilter] test_prefilter_accepts_prepacked_target_color_rgba8...")
+func _test_prefilter_accepts_prepacked_target_field() -> bool:
+	print("[AutoObjectProbePrefilter] test_prefilter_accepts_prepacked_target_field...")
 	var voxel_count := 3
-	var colors := PackedColorArray([
-		Color(1.0, 0.0, 0.0, 0.25),
-		Color(0.0, 1.0, 0.0, 0.50),
-		Color(0.0, 0.0, 1.0, 0.75),
-	])
-	var prepacked := PackedByteArray()
-	prepacked.resize(voxel_count * 4 + 4)
-	for i in range(voxel_count):
-		prepacked.encode_u32(i * 4, Prefilter._pack_rgba8(colors[i]))
-	prepacked.encode_u32(voxel_count * 4, 0x12345678)
+	var field := PackedFloat32Array()
+	field.resize(voxel_count * 4 + 8)
+	# vec4 per voxel: .rgb = color, .a = occupancy
+	field[0] = 1.0; field[1] = 0.0; field[2] = 0.0; field[3] = 0.25
+	field[4] = 0.0; field[5] = 1.0; field[6] = 0.0; field[7] = 0.50
+	field[8] = 0.0; field[9] = 0.0; field[10] = 1.0; field[11] = 0.75
+	field[12] = 9.0; field[13] = 9.0; field[14] = 9.0; field[15] = 9.0
 
 	var prefilter := Prefilter.new()
-	var from_prepacked := prefilter._target_color_rgba8_bytes(prepacked, voxel_count)
+	var from_prepacked := prefilter._target_field_data(field, voxel_count)
 	if from_prepacked.size() != voxel_count * 4:
-		push_error("  FAIL: prepacked target color bytes should trim to voxel_count")
+		push_error("  FAIL: prepacked target field should trim to voxel_count * 4 floats, got %d" % from_prepacked.size())
 		return false
-	if from_prepacked != prepacked.slice(0, voxel_count * 4):
-		push_error("  FAIL: prepacked target color bytes mismatch")
-		return false
+	for i in range(voxel_count * 4):
+		if absf(from_prepacked[i] - field[i]) > 0.001:
+			push_error("  FAIL: prepacked target field mismatch at %d" % i)
+			return false
 
-	var fallback := prefilter._target_color_rgba8_bytes(PackedByteArray(), voxel_count)
+	var fallback := prefilter._target_field_data(PackedFloat32Array(), voxel_count)
 	if fallback.size() != voxel_count * 4:
-		push_error("  FAIL: missing prepacked target color should allocate a zero buffer")
+		push_error("  FAIL: missing prepacked target field should allocate voxel_count * 4")
 		return false
-	var fallback_words := fallback.to_int32_array()
-	for i in range(voxel_count):
-		if fallback_words[i] != 0:
-			push_error("  FAIL: missing prepacked target color should stay zero at %d" % i)
+	for i in range(fallback.size()):
+		if absf(fallback[i]) > 0.001:
+			push_error("  FAIL: missing prepacked target field should stay zero at %d" % i)
 			return false
 
-	print("  OK: prefilter consumes TargetSV prepacked RGBA8 color bytes without array packing fallback")
-	return true
-
-
-func _test_prefilter_accepts_prepacked_target_occupancy() -> bool:
-	print("[AutoObjectProbePrefilter] test_prefilter_accepts_prepacked_target_occupancy...")
-	var voxel_count := 3
-	var occupancy := PackedFloat32Array([0.1, 0.5, 0.9])
-	var prepacked := occupancy.to_byte_array()
-	prepacked.resize(voxel_count * 4 + 4)
-	prepacked.encode_float(voxel_count * 4, 7.0)
-
-	var prefilter := Prefilter.new()
-	var from_prepacked := prefilter._target_occupancy_bytes(prepacked, voxel_count)
-	if from_prepacked.size() != voxel_count * 4:
-		push_error("  FAIL: prepacked target occupancy bytes should trim to voxel_count")
-		return false
-	var occupancy_values := from_prepacked.to_float32_array()
-	for i in range(voxel_count):
-		if absf(occupancy_values[i] - occupancy[i]) > 0.001:
-			push_error("  FAIL: prepacked target occupancy mismatch at %d" % i)
-			return false
-
-	var fallback := prefilter._target_occupancy_bytes(PackedByteArray(), voxel_count)
-	if fallback.size() != voxel_count * 4:
-		push_error("  FAIL: missing prepacked target occupancy should allocate a zero buffer")
-		return false
-	var fallback_values := fallback.to_float32_array()
-	for i in range(voxel_count):
-		if absf(fallback_values[i]) > 0.001:
-			push_error("  FAIL: missing prepacked target occupancy should stay zero at %d" % i)
-			return false
-
-	print("  OK: prefilter consumes TargetSV prepacked occupancy bytes without array packing fallback")
+	print("  OK: prefilter consumes TargetSV prepacked vec4 target field bytes (vec4 stride=16)")
 	return true
 
 
@@ -563,19 +518,14 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_upload
 
 	var grid_size := Vector3i(2, 2, 2)
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
-	var expected_bytes := voxel_count * 4
 	var color_bytes := PackedByteArray()
-	var occupancy_bytes := PackedByteArray()
-	color_bytes.resize(expected_bytes)
-	occupancy_bytes.resize(expected_bytes)
+	color_bytes.resize(voxel_count * 4)
 	for i in range(voxel_count):
 		color_bytes.encode_u32(i * 4, 0xC0002000 | i)
-		occupancy_bytes.encode_float(i * 4, 0.1 + float(i) * 0.05)
 
 	var actor := ScenePlacementActorScript.new()
 	var target_buffers := actor.prepare_target_read_buffers_from_common_gpu({
 		"target_color_rgba8_bytes": color_bytes,
-		"target_occupancy_bytes": occupancy_bytes,
 	}, {"grid_size": grid_size})
 	if not bool(target_buffers.get("ok", false)):
 		actor.dispose(true)
@@ -587,7 +537,7 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_upload
 		actor.dispose(true)
 		push_error("  FAIL: prefilter should attach actor RenderingDevice for same-RD borrow")
 		return false
-	var borrowed: Dictionary = prefilter._target_read_buffer_pack(target_buffers, PackedByteArray(), PackedByteArray(), voxel_count)
+	var borrowed: Dictionary = prefilter._target_read_buffer_pack(target_buffers, PackedFloat32Array(), voxel_count)
 	if not bool(borrowed.get("target_read_buffers_borrowed", false)) \
 			or str(borrowed.get("target_read_buffer_source", "")) != "borrowed_scene_placement_actor_resident" \
 			or str(borrowed.get("target_read_buffer_ownership", "")) != "borrowed_external" \
@@ -598,8 +548,7 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_upload
 		return false
 	var borrowed_summary := prefilter._target_read_buffer_summary(borrowed)
 	if str(borrowed_summary.get("owner", "")) != "ScenePlacementActor" \
-			or str(borrowed_summary.get("target_color_rgba8_buffer_rid", "")) != "valid" \
-			or str(borrowed_summary.get("target_occupancy_buffer_rid", "")) != "valid" \
+			or str(borrowed_summary.get("target_field_buffer_rid", "")) != "valid" \
 			or str(borrowed_summary.get("target_read_buffer_lifetime", "")) == "none":
 		prefilter.dispose()
 		actor.dispose(true)
@@ -607,12 +556,20 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_upload
 		return false
 	prefilter.dispose()
 
+	var upload_field := PackedFloat32Array()
+	upload_field.resize(voxel_count * 4)
+	for i in range(voxel_count):
+		upload_field[i * 4 + 0] = 0.75
+		upload_field[i * 4 + 1] = 0.0
+		upload_field[i * 4 + 2] = 0.125
+		upload_field[i * 4 + 3] = 0.1 + float(i) * 0.05
+
 	var mismatch_prefilter := Prefilter.new()
 	if not mismatch_prefilter.ensure_device(true, false):
 		actor.dispose(true)
 		print("  SKIP: no second local RenderingDevice available for mismatch upload branch")
 		return true
-	var uploaded: Dictionary = mismatch_prefilter._target_read_buffer_pack(target_buffers, color_bytes, occupancy_bytes, voxel_count)
+	var uploaded: Dictionary = mismatch_prefilter._target_read_buffer_pack(target_buffers, upload_field, voxel_count)
 	if bool(uploaded.get("target_read_buffers_borrowed", true)) \
 			or not bool(uploaded.get("target_read_buffers_uploaded", false)) \
 			or str(uploaded.get("target_read_buffer_source", "")) != "uploaded_target_bytes" \
@@ -622,7 +579,7 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_upload
 		actor.dispose(true)
 		push_error("  FAIL: RD mismatch should preserve byte-upload compatibility: %s" % str(uploaded))
 		return false
-	var blocked: Dictionary = mismatch_prefilter._target_read_buffer_pack(target_buffers, PackedByteArray(), PackedByteArray(), voxel_count)
+	var blocked: Dictionary = mismatch_prefilter._target_read_buffer_pack(target_buffers, PackedFloat32Array(), voxel_count)
 	if bool(blocked.get("ready", true)) \
 			or not bool(blocked.get("contract_blocked", false)) \
 			or str(blocked.get("reason", "")) != "resident_target_read_buffer_rendering_device_mismatch_no_debug_or_legacy_bytes" \
@@ -635,7 +592,7 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_upload
 	mismatch_prefilter.dispose()
 	actor.dispose(true)
 
-	print("  OK: same-RD resident TargetSV buffers are borrowed; RD mismatch uploads only with explicit bytes")
+	print("  OK: same-RD resident target_field buffers are borrowed; RD mismatch uploads only with explicit PackedFloat32Array bytes")
 	return true
 
 
@@ -949,13 +906,13 @@ func _test_prefilter_borrows_profile_container_probe_records_or_skip() -> bool:
 
 func _make_sv(grid_size: Vector3i, voxel_size: Vector3) -> Dictionary:
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
-	var scene_field := PackedFloat32Array()
+	var complexity_field := PackedFloat32Array()
 	var collision_field := PackedFloat32Array()
-	scene_field.resize(voxel_count)
+	complexity_field.resize(voxel_count)
 	collision_field.resize(voxel_count)
 	for z in range(grid_size.z):
 		for x in range(grid_size.x):
-			scene_field[_voxel_index(Vector3i(x, 0, z), grid_size)] = 1.0
+			complexity_field[_voxel_index(Vector3i(x, 0, z), grid_size)] = 1.0
 	var tile_grid_size := Vector3i(
 		ceili(float(grid_size.x) / 8.0),
 		ceili(float(grid_size.y) / 8.0),
@@ -966,7 +923,7 @@ func _make_sv(grid_size: Vector3i, voxel_size: Vector3) -> Dictionary:
 		"grid_size": grid_size,
 		"voxel_size": voxel_size,
 		"grid_origin": Vector3.ZERO,
-		"scene_field": scene_field,
+		"complexity_field": complexity_field,
 		"collision_field": collision_field,
 		"tile_grid_size": tile_grid_size,
 		"total_tiles": tile_grid_size.x * tile_grid_size.y * tile_grid_size.z,

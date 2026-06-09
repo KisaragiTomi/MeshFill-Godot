@@ -53,8 +53,8 @@ func _test_resident_source_candidate_buffer_or_skip() -> bool:
 		push_error("  FAIL: public SceneVoxel commit should succeed without CPU fallback: %s" % str(commit_summary))
 		committer.dispose(true)
 		return false
-	if str(commit_summary.get("payload_blend_mode", "")) != "commit_scene_voxel_payloads_compute":
-		push_error("  FAIL: public SceneVoxel payloads should still materialize through compute blend: %s" % str(commit_summary))
+	if str(commit_summary.get("payload_blend_mode", "")) != "merged_resolve_commit_gpu":
+		push_error("  FAIL: accepted ComplexityVoxel fields should still materialize through compute blend: %s" % str(commit_summary))
 		committer.dispose(true)
 		return false
 	if bool(commit_summary.get("source_candidate_cpu_apply_bridge", true)) or not bool(commit_summary.get("final_source_stream_resident", false)):
@@ -188,7 +188,7 @@ func _assert_public_scene_voxels(committer: SceneVoxelCommitter) -> bool:
 
 	var center := committer.get_scene_voxel(0, Vector2i(4, 4))
 	if center.is_empty():
-		push_error("  FAIL: expected public SceneVoxel payload at center")
+		push_error("  FAIL: expected accepted ComplexityVoxel fields at center")
 		return false
 
 	var expected_complexity := 0.35

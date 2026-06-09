@@ -1,4 +1,4 @@
-﻿class_name SceneVoxelCommitter
+class_name SceneVoxelCommitter
 
 extends "res://scripts/godot_compute_shader_base.gd"
 
@@ -14,16 +14,14 @@ const SCENE_VOXEL_TILE_RECORD_BUFFER := "scene_voxel_tile_records"
 const SCENE_VOXEL_TILE_SUMMARY_BUFFER := "scene_voxel_tile_summaries"
 const SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER := "scene_voxel_tile_dirty_indices"
 const SCENE_VOXEL_TILE_OBJECT_REF_BUFFER := "scene_voxel_tile_object_refs"
-const SCENE_VOXEL_TILE_SOURCE_REF_BUFFER := "scene_voxel_tile_source_refs"
-const SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER := "scene_voxel_tile_scene_field"
+const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER := "scene_voxel_tile_complexity_field"
 const SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER := "scene_voxel_tile_collision_field"
 const SCENE_VOXEL_TILE_GPU_BUFFER_NAMES := [
 	SCENE_VOXEL_TILE_RECORD_BUFFER,
 	SCENE_VOXEL_TILE_SUMMARY_BUFFER,
 	SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER,
 	SCENE_VOXEL_TILE_OBJECT_REF_BUFFER,
-	SCENE_VOXEL_TILE_SOURCE_REF_BUFFER,
-	SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER,
+	SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
 	SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER,
 ]
 const SCENE_VOXEL_TILE_RECORD_STRIDE_BYTES := 128
@@ -40,7 +38,7 @@ const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_SCENE_VOXEL_TILE := 0
 const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME := 1
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_LEGACY_HASH := "legacy_stable_hash_debug"
-const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := 4
+const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := 16
 const SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE := 6
 const SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE := 8
 const SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE := 1000000.0
@@ -49,18 +47,18 @@ const SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE := 12
 const SCENE_VOXEL_COMMITTED_PAYLOAD_STRIDE_BYTES := SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE * 4
 const SCENE_VOXEL_COMMITTED_KEY_COORD_STRIDE_BYTES := 16
 const SCENE_VOXEL_COMMITTED_KEY_COORD_FORMAT := "ivec4(slice_index, voxel_x, voxel_z, reserved)"
-const SCENE_VOXEL_FIELD_PROJECTION_SOURCE_STREAMS := 0
-const SCENE_VOXEL_FIELD_PROJECTION_COMMITTED_PAYLOADS := 1
+const SCENE_COMPLEXITY_FIELD_PROJECTION_SOURCE_STREAMS := 0
+const SCENE_COMPLEXITY_FIELD_PROJECTION_COMMITTED_PAYLOADS := 1
 const SCENE_VOXEL_COMMIT_SOURCE_NONE := 0
 const SCENE_VOXEL_COMMIT_SOURCE_AUTO := 1
 const SCENE_VOXEL_COMMIT_SOURCE_BRUSH := 2
 const SCENE_VOXEL_SOURCE_CANDIDATE_STRIDE_BYTES := 16
-const SCENE_VOXEL_SOURCE_CANDIDATE_RANGE_STRIDE_BYTES := 8
+const SCENE_VOXEL_SOURCE_CANDIDATE_RANGE_STRIDE_BYTES := 16
 const SCENE_VOXEL_SOURCE_CANDIDATE_GROUP_INDEX_STRIDE_BYTES := 4
 const SCENE_VOXEL_SOURCE_PAYLOAD_STRIDE_BYTES := SCENE_VOXEL_COMMIT_SOURCE_FLOAT_STRIDE * 4
 const ACCEPTED_PLACEMENT_SOURCE_BUFFER_INCOMPLETE_REASON := "incomplete_source_candidate_handoff_missing_payload_and_group_index_buffers"
 
-const SCENE_VOXEL_TILE_FLAG_SCENE := 1
+const SCENE_VOXEL_TILE_FLAG_COMPLEXITY := 1
 const SCENE_VOXEL_TILE_FLAG_COLLISION := 2
 const SCENE_VOXEL_TILE_FLAG_AUTO := 4
 const SCENE_VOXEL_TILE_FLAG_BRUSH := 8
@@ -76,13 +74,12 @@ const CHANNEL_COUNT := 4
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const SceneVoxelProfileScript := preload("res://scripts/scene_voxel_profile.gd")
 const SceneVoxelSourceRecordScript := preload("res://scripts/scene_voxel_source_record.gd")
-const SceneVoxelPayloadScript := preload("res://scripts/scene_voxel_payload.gd")
+const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 const SceneVoxelCommitPayloadScript := preload("res://scripts/scene_voxel_commit_payload.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const SceneVoxelVolumeChannelsScript := preload("res://scripts/scene_voxel_volume_channels.gd")
 const SceneVoxelBrushScript := preload("res://scripts/scene_voxel_brush.gd")
 const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
-const SceneVoxelFeedbackScript := preload("res://scripts/scene_voxel_feedback.gd")
 
 var _base_res: int  ## Base resolution for world↔pixel coordinate mapping
 
@@ -128,13 +125,9 @@ var _shader_max_collision: RID
 
 var _pipeline_max_collision: RID
 
-var _shader_blend_scene_fields: RID
+var _shader_blend_complexity_fields: RID
 
-var _pipeline_blend_scene_fields: RID
-
-var _shader_commit_scene_voxels: RID
-
-var _pipeline_commit_scene_voxels: RID
+var _pipeline_blend_complexity_fields: RID
 
 var _shader_resolve_scene_sources: RID
 
@@ -247,17 +240,11 @@ func _init_gpu() -> void:
 
 		_pipeline_max_collision = create_compute_pipeline(_shader_max_collision)
 
-	_shader_blend_scene_fields = load_compute_shader("res://shaders/blend_scene_voxel_fields.glsl")
+	_shader_blend_complexity_fields = load_compute_shader("res://shaders/blend_scene_voxel_fields.glsl")
 
-	if _shader_blend_scene_fields.is_valid():
+	if _shader_blend_complexity_fields.is_valid():
 
-		_pipeline_blend_scene_fields = create_compute_pipeline(_shader_blend_scene_fields)
-
-	_shader_commit_scene_voxels = load_compute_shader("res://shaders/commit_scene_voxel_payloads.glsl")
-
-	if _shader_commit_scene_voxels.is_valid():
-
-		_pipeline_commit_scene_voxels = create_compute_pipeline(_shader_commit_scene_voxels)
+		_pipeline_blend_complexity_fields = create_compute_pipeline(_shader_blend_complexity_fields)
 
 	_shader_resolve_scene_sources = load_compute_shader("res://shaders/resolve_scene_voxel_sources.glsl")
 
@@ -363,21 +350,13 @@ func _init_gpu() -> void:
 
 		missing_gpu_rids.append("pipeline_max_collision")
 
-	if not _shader_blend_scene_fields.is_valid():
+	if not _shader_blend_complexity_fields.is_valid():
 
-		missing_gpu_rids.append("shader_blend_scene_fields")
+		missing_gpu_rids.append("shader_blend_complexity_fields")
 
-	if not _pipeline_blend_scene_fields.is_valid():
+	if not _pipeline_blend_complexity_fields.is_valid():
 
-		missing_gpu_rids.append("pipeline_blend_scene_fields")
-
-	if not _shader_commit_scene_voxels.is_valid():
-
-		missing_gpu_rids.append("shader_commit_scene_voxels")
-
-	if not _pipeline_commit_scene_voxels.is_valid():
-
-		missing_gpu_rids.append("pipeline_commit_scene_voxels")
+		missing_gpu_rids.append("pipeline_blend_complexity_fields")
 
 	if not _shader_resolve_scene_sources.is_valid():
 
@@ -504,8 +483,6 @@ func _gpu_dispatch_pipeline(cl: int, pipeline: RID, uniform_set: RID, push: Pack
 
 func _free_gpu() -> void:
 
-	_release_scene_voxel_tile_gpu_buffers()
-
 	dispose()
 
 	_pipeline_import = RID()
@@ -520,13 +497,9 @@ func _free_gpu() -> void:
 
 	_shader_max_collision = RID()
 
-	_pipeline_blend_scene_fields = RID()
+	_pipeline_blend_complexity_fields = RID()
 
-	_shader_blend_scene_fields = RID()
-
-	_pipeline_commit_scene_voxels = RID()
-
-	_shader_commit_scene_voxels = RID()
+	_shader_blend_complexity_fields = RID()
 
 	_pipeline_resolve_scene_sources = RID()
 
@@ -586,8 +559,6 @@ func _free_gpu() -> void:
 func _on_before_dispose() -> void:
 
 	_release_scene_voxel_source_candidate_resident_buffers()
-
-	_release_resolved_scene_voxel_source_stream_buffers()
 
 	_release_committed_scene_voxel_payload_buffer()
 
@@ -698,10 +669,6 @@ func _create_collision_image(resolution: int) -> Image:
 	img.fill(Color(0.0, 0.0, 0.0, 0.0))
 
 	return img
-
-func _max_collision_images(a: Image, b: Image) -> Image:
-
-	return _max_collision_images_gpu(a, b)
 
 func _max_collision_images_gpu(a: Image, b: Image) -> Image:
 
@@ -816,7 +783,7 @@ func _max_collision_images_gpu(a: Image, b: Image) -> Image:
 
 func _refresh_combined_collision_field() -> void:
 
-	_collision_field = _max_collision_images(_terrain_base_collision_field, _source_collision_field)
+	_collision_field = _max_collision_images_gpu(_terrain_base_collision_field, _source_collision_field)
 
 func _slice_voxel_size_y(slice_index: int = 0) -> float:
 
@@ -954,28 +921,6 @@ func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
 	_occupancy = Image.create_from_data(_base_res, _base_res, false, Image.FORMAT_RGBAH, data)
 
 	gc_frame()
-
-static func profile_channel(
-
-	channel: int,
-
-	radius: float = 0.2,
-
-	color: Color = Color.WHITE,
-
-	complexity: float = 1.0,
-
-	y_min: float = 0.0,
-
-	y_max: float = 1.0,
-
-	subdivisions: int = 1
-
-) -> Array[Dictionary]:
-	return SceneVoxelProfileScript.profile_channel(channel, radius, color, complexity, y_min, y_max, subdivisions)
-
-static func profile_custom(entries: Array[Dictionary]) -> Array[Dictionary]:
-	return SceneVoxelProfileScript.profile_custom(entries)
 
 ## ─── Core Operations (GPU only) ───
 
@@ -1640,7 +1585,9 @@ func _stamp_shared_field_layer(base_px: Vector2i, source_layer: Dictionary, rec:
 
 	var layer_base_px := _collision_layer_base_px(base_px, layer)
 
-	_source_collision_field = _stamp_scalar_image_disc(_source_collision_field, layer_base_px, radius_px, collision_strength, 0)
+	# Non-terrain collision stamping disabled; only terrain base collision is preserved.
+	# _source_collision_field remains zero, so _refresh_combined_collision_field() yields terrain-only.
+	# _source_collision_field = _stamp_scalar_image_disc(_source_collision_field, layer_base_px, radius_px, collision_strength, 0)
 
 	var cell_template := {
 		"slice_index": int(layer.get("slice_index", 0)),
@@ -1891,11 +1838,6 @@ func get_voxel_write_specs() -> Array[Dictionary]:
 
 	return records
 
-func get_instance_stamp_write_specs() -> Array[Dictionary]:
-
-	## DEPRECATED: CPU dictionary bridge. Prefer GPU-resident source candidate buffers.
-	return get_voxel_write_specs()
-
 ## Get one placed mesh voxel_write_spec by id.
 
 func get_voxel_write_spec(mesh_id: String) -> Dictionary:
@@ -1909,11 +1851,6 @@ func get_voxel_write_spec(mesh_id: String) -> Dictionary:
 	var record: Dictionary = _voxel_write_specs[idx]
 
 	return record.duplicate(true)
-
-func get_instance_stamp_write_spec(mesh_id: String) -> Dictionary:
-
-	## DEPRECATED: CPU dictionary bridge. Prefer GPU-resident source candidate buffers.
-	return get_voxel_write_spec(mesh_id)
 
 func get_voxel_write_spec_count() -> int:
 
@@ -2042,8 +1979,6 @@ func _default_scene_voxel_tile_record(tile_coord: Vector3i) -> Dictionary:
 
 		"last_commit_tick": _committed_tick,
 
-		"non_empty": false,
-
 		"scene_minmax": Vector2.ZERO,
 
 		"collision_minmax": Vector2.ZERO,
@@ -2056,21 +1991,13 @@ func _default_scene_voxel_tile_record(tile_coord: Vector3i) -> Dictionary:
 
 		"object_debug_range_count": 0,
 
-		"source_range_start": 0,
-
-		"source_range_count": 0,
-
 		"auto_object_ids_debug": [],
-
-		"source_ids_debug": [],
 
 		"scene_voxel_count": 0,
 
 		"collision_cell_count": 0,
 
 		"summary": {
-
-			"non_empty": false,
 
 			"scene_minmax": Vector2.ZERO,
 
@@ -2091,8 +2018,6 @@ func _default_scene_voxel_tile_record(tile_coord: Vector3i) -> Dictionary:
 func _scene_voxel_tile_summary(tile: Dictionary) -> Dictionary:
 
 	return {
-
-		"non_empty": bool(tile.get("non_empty", false)),
 
 		"scene_minmax": tile.get("scene_minmax", Vector2.ZERO),
 
@@ -2284,14 +2209,6 @@ func _append_scene_voxel_tile_record_refs(tile: Dictionary, record: Dictionary, 
 
 	tile["auto_object_ids_debug"] = ids
 
-	var source_id := _scene_voxel_tile_debug_source_id(record)
-
-	var source_ids: Array = tile.get("source_ids_debug", [])
-
-	_append_scene_voxel_tile_debug_value(source_ids, source_id, unique_source)
-
-	tile["source_ids_debug"] = source_ids
-
 	return tile
 
 func _append_scene_voxel_tile_record_refs_for_bounds(
@@ -2319,8 +2236,6 @@ func _append_scene_voxel_tile_record_refs_for_bounds(
 func _rebuild_scene_voxel_tile_compact_ranges() -> void:
 
 	_scene_voxel_tile_object_ids_debug.clear()
-
-	_scene_voxel_tile_source_ids_debug.clear()
 
 	_scene_voxel_tile_object_ref_rebuild_required = false
 
@@ -2351,11 +2266,6 @@ func _rebuild_scene_voxel_tile_compact_ranges() -> void:
 			tile.get("auto_object_ids_debug", [])
 		)
 
-		var source_range := _append_scene_voxel_tile_debug_range(
-			_scene_voxel_tile_source_ids_debug,
-			tile.get("source_ids_debug", [])
-		)
-
 		tile["object_debug_range_start"] = object_debug_range.x
 
 		tile["object_debug_range_count"] = object_debug_range.y
@@ -2376,10 +2286,6 @@ func _rebuild_scene_voxel_tile_compact_ranges() -> void:
 
 			_scene_voxel_tile_object_ref_overflow_tile_ids.append(str(tile_id))
 
-		tile["source_range_start"] = source_range.x
-
-		tile["source_range_count"] = source_range.y
-
 		_scene_voxel_tiles[tile_id] = tile
 
 func _rebuild_scene_voxel_tile_source_refs() -> void:
@@ -2390,8 +2296,6 @@ func _rebuild_scene_voxel_tile_source_refs() -> void:
 
 		tile["auto_object_ids_debug"] = []
 
-		tile["source_ids_debug"] = []
-
 		tile["object_range_start"] = 0
 
 		tile["object_range_count"] = 0
@@ -2400,102 +2304,7 @@ func _rebuild_scene_voxel_tile_source_refs() -> void:
 
 		tile["object_debug_range_count"] = 0
 
-		tile["source_range_start"] = 0
-
-		tile["source_range_count"] = 0
-
 		_scene_voxel_tiles[tile_id] = tile
-
-	for raw_metadata in _scene_source_metadata.values():
-
-		if not raw_metadata is Dictionary:
-
-			continue
-
-		var source_metadata: Dictionary = raw_metadata
-
-		var voxel_xz = source_metadata.get("voxel_xz", Vector2i.ZERO)
-
-		if not voxel_xz is Vector2i:
-
-			continue
-
-		var px: Vector2i = voxel_xz
-
-		var coord := _scene_voxel_tile_coord_from_voxel(Vector3i(
-			px.x,
-			int(source_metadata.get("slice_index", 0)),
-			px.y
-		))
-
-		var tile_id := SceneVoxelTileCodecScript.tile_id(coord)
-
-		var tile: Dictionary = _scene_voxel_tiles.get(tile_id, _default_scene_voxel_tile_record(coord))
-
-		if _scene_voxel_tile_debug_source_id(source_metadata).is_empty():
-
-			source_metadata["source_id"] = str(SceneVoxelSourceRecordScript.scene_voxel_key(int(source_metadata.get("slice_index", 0)), px))
-
-		tile = _append_scene_voxel_tile_record_refs(tile, source_metadata, false)
-
-		_scene_voxel_tiles[tile_id] = tile
-
-	for record in _voxel_write_specs:
-
-		if not record is Dictionary:
-
-			continue
-
-		var rec: Dictionary = record
-
-		if rec.is_empty() or SceneVoxelTargetScript.is_target_type(str(rec.get("source_voxel_type", ""))):
-
-			continue
-
-		var base_px = rec.get("voxel_xz", rec.get("base_pixel", Vector2i.ZERO))
-
-		if not base_px is Vector2i:
-
-			continue
-
-		var ch := _record_channel(rec)
-
-		var slice_indices: Array[int] = []
-
-		if ch >= 0:
-
-			slice_indices = _slice_indices_for_channel_record(rec, ch)
-
-		if slice_indices.is_empty():
-
-			slice_indices.append(clampi(int(rec.get("slice_index", 0)), 0, maxi(grid_size.y - 1, 0)))
-
-		var xz_res := int(_volume.get("xz_res", grid_size.x))
-
-		var center_px := _volume_px_from_base(base_px, xz_res)
-
-		var radius_vol := _volume_radius_from_base_radius(_record_radius_px(rec), xz_res)
-
-		for slice_index in slice_indices:
-
-			var min_voxel := Vector3i(
-				maxi(center_px.x - radius_vol, 0),
-				clampi(int(slice_index), 0, maxi(grid_size.y - 1, 0)),
-				maxi(center_px.y - radius_vol, 0)
-			)
-
-			var max_voxel := Vector3i(
-				mini(center_px.x + radius_vol + 1, grid_size.x),
-				mini(clampi(int(slice_index), 0, maxi(grid_size.y - 1, 0)) + 1, grid_size.y),
-				mini(center_px.y + radius_vol + 1, grid_size.z)
-			)
-
-			_for_each_scene_voxel_tile_in_bounds(min_voxel, max_voxel, func(tile_coord: Vector3i):
-				var tile_id := SceneVoxelTileCodecScript.tile_id(tile_coord)
-				var tile: Dictionary = _scene_voxel_tiles.get(tile_id, _default_scene_voxel_tile_record(tile_coord))
-				tile = _append_scene_voxel_tile_record_refs(tile, rec, true)
-				_scene_voxel_tiles[tile_id] = tile
-			)
 
 	for raw_ref in _scene_voxel_tile_gpu_autoobject_refs.values():
 
@@ -2627,8 +2436,6 @@ func _reset_scene_voxel_tile_summaries() -> void:
 
 		var tile: Dictionary = _scene_voxel_tiles[tile_id]
 
-		tile["non_empty"] = false
-
 		tile["scene_minmax"] = Vector2.ZERO
 
 		tile["collision_minmax"] = Vector2.ZERO
@@ -2667,8 +2474,6 @@ func _update_scene_voxel_tile_scene_summary(slice_index: int, voxel_xz: Vector2i
 
 	tile["scene_minmax"] = minmax
 
-	tile["non_empty"] = true
-
 	tile["summary"] = _scene_voxel_tile_summary(tile)
 
 	_scene_voxel_tiles[tile_id] = tile
@@ -2698,8 +2503,6 @@ func _update_scene_voxel_tile_collision_summary(slice_index: int, voxel_xz: Vect
 	tile["collision_cell_count"] = count + 1
 
 	tile["collision_minmax"] = minmax
-
-	tile["non_empty"] = true
 
 	tile["summary"] = _scene_voxel_tile_summary(tile)
 
@@ -2833,21 +2636,21 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 
 	_scene_voxel_tile_gpu_last_reused_buffers.clear()
 
-	var scene_field := _scene_voxel_tile_scene_field_for_upload()
+	var complexity_field := _scene_voxel_tile_complexity_field_for_upload()
 
 	var collision_field := _scene_voxel_tile_collision_field_for_upload()
 
-	var resident_voxel_count := maxi(scene_field.size(), collision_field.size())
+	var resident_voxel_count := maxi(complexity_field.size(), collision_field.size())
 
-	if scene_field.size() != resident_voxel_count:
+	if complexity_field.size() != resident_voxel_count:
 
-		scene_field.resize(resident_voxel_count)
+		complexity_field.resize(resident_voxel_count)
 
 	if collision_field.size() != resident_voxel_count:
 
 		collision_field.resize(resident_voxel_count)
 
-	var packed_scene_field := _pack_scene_voxel_tile_float_field_bytes(scene_field)
+	var packed_complexity_field := _pack_scene_voxel_tile_float_field_bytes(complexity_field)
 
 	var packed_collision_field := _pack_scene_voxel_tile_float_field_bytes(collision_field)
 
@@ -2869,7 +2672,6 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 	_scene_voxel_tile_object_ref_key_schema = SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC if use_numeric_object_refs else SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_LEGACY_HASH
 	_scene_voxel_tile_object_ref_numeric_schema_confirmed = use_numeric_object_refs
 
-	var packed_source_refs := _pack_scene_voxel_tile_ref_hash_bytes(_scene_voxel_tile_source_ids_debug)
 	var packed_gpu_tile_ids := _scene_voxel_tile_gpu_tile_ids.duplicate()
 	var packed_gpu_dirty_tile_ids := _scene_voxel_tile_gpu_dirty_tile_ids.duplicate()
 
@@ -2879,18 +2681,17 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 		packed_summaries,
 		packed_dirty_indices,
 		packed_object_refs,
-		packed_source_refs,
-		scene_field,
+		complexity_field,
 		collision_field,
-		packed_scene_field,
+		packed_complexity_field,
 		packed_collision_field
 	):
 
 		return true
 
 	var reusable_resident_field_buffers := _scene_voxel_tile_reusable_resident_field_buffers(
-		packed_scene_field,
-		scene_field.size(),
+		packed_complexity_field,
+		complexity_field.size(),
 		packed_collision_field,
 		collision_field.size()
 	)
@@ -2929,25 +2730,18 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 		SCENE_VOXEL_TILE_REF_STRIDE_BYTES
 	) and ok
 
-	ok = _create_scene_voxel_tile_storage_buffer(
-		SCENE_VOXEL_TILE_SOURCE_REF_BUFFER,
-		packed_source_refs,
-		_scene_voxel_tile_source_ids_debug.size(),
-		SCENE_VOXEL_TILE_REF_STRIDE_BYTES
-	) and ok
-
-	if reusable_resident_field_buffers.has(SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER):
+	if reusable_resident_field_buffers.has(SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER):
 		ok = _reuse_scene_voxel_tile_storage_buffer(
-			SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER,
-			packed_scene_field,
-			scene_field.size(),
+			SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
+			packed_complexity_field,
+			complexity_field.size(),
 			SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
 		) and ok
 	else:
 		ok = _create_scene_voxel_tile_storage_buffer(
-			SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER,
-			packed_scene_field,
-			scene_field.size(),
+			SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
+			packed_complexity_field,
+			complexity_field.size(),
 			SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
 		) and ok
 
@@ -3002,6 +2796,10 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 
 	_scene_voxel_tile_last_upload_range_count = 1 if resident_voxel_count > 0 else 0
 
+	_scene_voxel_tile_gpu_last_reused_buffers.clear()
+	for buf_name in reusable_resident_field_buffers:
+		_scene_voxel_tile_gpu_last_reused_buffers.append(buf_name)
+
 	return true
 
 func _update_scene_voxel_tile_dirty_ranges(
@@ -3010,10 +2808,9 @@ func _update_scene_voxel_tile_dirty_ranges(
 	_packed_summaries: PackedByteArray,
 	packed_dirty_indices: PackedByteArray,
 	packed_object_refs: PackedByteArray,
-	packed_source_refs: PackedByteArray,
-	scene_field: PackedFloat32Array,
+	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
-	packed_scene_field: PackedByteArray,
+	packed_complexity_field: PackedByteArray,
 	packed_collision_field: PackedByteArray
 ) -> bool:
 
@@ -3023,7 +2820,7 @@ func _update_scene_voxel_tile_dirty_ranges(
 
 		return false
 
-	if not _scene_voxel_tile_can_update_existing_buffers(tile_ids, scene_field.size(), collision_field.size()):
+	if not _scene_voxel_tile_can_update_existing_buffers(tile_ids, complexity_field.size(), collision_field.size()):
 
 		return false
 
@@ -3031,15 +2828,6 @@ func _update_scene_voxel_tile_dirty_ranges(
 		SCENE_VOXEL_TILE_OBJECT_REF_BUFFER,
 		packed_object_refs,
 		int(packed_object_refs.size() / SCENE_VOXEL_TILE_REF_STRIDE_BYTES),
-		SCENE_VOXEL_TILE_REF_STRIDE_BYTES
-	):
-
-		return false
-
-	if not _scene_voxel_tile_can_prove_buffer_bytes_equal(
-		SCENE_VOXEL_TILE_SOURCE_REF_BUFFER,
-		packed_source_refs,
-		int(packed_source_refs.size() / SCENE_VOXEL_TILE_REF_STRIDE_BYTES),
 		SCENE_VOXEL_TILE_REF_STRIDE_BYTES
 	):
 
@@ -3063,9 +2851,9 @@ func _update_scene_voxel_tile_dirty_ranges(
 	) and ok
 
 	var scene_update := _update_scene_voxel_tile_field_ranges(
-		SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER,
-		scene_field.size(),
-		packed_scene_field,
+		SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
+		complexity_field.size(),
+		packed_complexity_field,
 		scoped_tile_ids
 	)
 
@@ -3093,7 +2881,7 @@ func _update_scene_voxel_tile_dirty_ranges(
 	var summary_update := _update_scene_voxel_tile_summary_dirty_ranges_compute(
 		tile_ids,
 		scoped_tile_ids,
-		scene_field.size(),
+		complexity_field.size(),
 		collision_field.size()
 	)
 
@@ -3135,6 +2923,10 @@ func _update_scene_voxel_tile_dirty_ranges(
 		int(collision_update.get("range_count", 0))
 	)
 
+	_scene_voxel_tile_gpu_last_reused_buffers.clear()
+	_scene_voxel_tile_gpu_last_reused_buffers.append(SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER)
+	_scene_voxel_tile_gpu_last_reused_buffers.append(SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER)
+
 	return true
 
 func _scene_voxel_tile_dirty_upload_ids(tile_ids: Array[String]) -> Array[String]:
@@ -3161,7 +2953,7 @@ func _scene_voxel_tile_dirty_upload_ids(tile_ids: Array[String]) -> Array[String
 
 	return scoped
 
-func _scene_voxel_tile_can_update_existing_buffers(tile_ids: Array[String], scene_field_count: int, collision_field_count: int) -> bool:
+func _scene_voxel_tile_can_update_existing_buffers(tile_ids: Array[String], complexity_field_count: int, collision_field_count: int) -> bool:
 
 	if _rd == null or _scene_voxel_tile_uploaded_revision < 0:
 
@@ -3179,7 +2971,7 @@ func _scene_voxel_tile_can_update_existing_buffers(tile_ids: Array[String], scen
 
 		return false
 
-	if int(_scene_voxel_tile_gpu_record_counts.get(SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER, -1)) != scene_field_count:
+	if int(_scene_voxel_tile_gpu_record_counts.get(SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER, -1)) != complexity_field_count:
 
 		return false
 
@@ -3381,7 +3173,7 @@ func _scene_voxel_tile_scoped_index_bytes(tile_ids: Array[String], scoped_tile_i
 func _update_scene_voxel_tile_summary_dirty_ranges_compute(
 	tile_ids: Array[String],
 	scoped_tile_ids: Array[String],
-	scene_field_count: int,
+	complexity_field_count: int,
 	collision_field_count: int
 ) -> Dictionary:
 
@@ -3397,7 +3189,7 @@ func _update_scene_voxel_tile_summary_dirty_ranges_compute(
 
 		return {"ok": false, "reason": "summary_range_compute_pipeline_not_ready"}
 
-	var scene_buffer: RID = _scene_voxel_tile_gpu_buffers.get(SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER, RID())
+	var complexity_buffer: RID = _scene_voxel_tile_gpu_buffers.get(SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER, RID())
 
 	var collision_buffer: RID = _scene_voxel_tile_gpu_buffers.get(SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER, RID())
 
@@ -3405,7 +3197,7 @@ func _update_scene_voxel_tile_summary_dirty_ranges_compute(
 
 	var record_buffer: RID = _scene_voxel_tile_gpu_buffers.get(SCENE_VOXEL_TILE_RECORD_BUFFER, RID())
 
-	if not scene_buffer.is_valid() or not collision_buffer.is_valid() or not summary_buffer.is_valid() or not record_buffer.is_valid():
+	if not complexity_buffer.is_valid() or not collision_buffer.is_valid() or not summary_buffer.is_valid() or not record_buffer.is_valid():
 
 		return {"ok": false, "reason": "summary_range_missing_resident_buffer"}
 
@@ -3419,7 +3211,7 @@ func _update_scene_voxel_tile_summary_dirty_ranges_compute(
 
 		return {"ok": false, "reason": "summary_range_invalid_volume_dims"}
 
-	if scene_field_count < voxel_count or collision_field_count < voxel_count:
+	if complexity_field_count < voxel_count or collision_field_count < voxel_count:
 
 		return {"ok": false, "reason": "summary_range_field_count_mismatch"}
 
@@ -3444,7 +3236,7 @@ func _update_scene_voxel_tile_summary_dirty_ranges_compute(
 		return {"ok": false, "reason": "summary_range_dirty_index_buffer_create_failed"}
 
 	var set0 := create_uniform_set([
-		make_storage_uniform(0, scene_buffer),
+		make_storage_uniform(0, complexity_buffer),
 		make_storage_uniform(1, collision_buffer),
 		make_storage_uniform(2, summary_buffer),
 		make_storage_uniform(3, transient_dirty_index_buffer),
@@ -3982,6 +3774,12 @@ func get_scene_voxel_tile_gpu_buffer(buffer_name: String) -> RID:
 
 	return _scene_voxel_tile_gpu_buffers.get(buffer_name, RID())
 
+
+## Returns the resident SceneVoxelTile summary storage buffer RID
+## for direct GPU-first prefilter consumption without CPU readback.
+func get_scene_voxel_tile_summary_gpu_buffer() -> RID:
+	return _scene_voxel_tile_gpu_buffers.get(SCENE_VOXEL_TILE_SUMMARY_BUFFER, RID())
+
 func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
 
 	var buffers := {}
@@ -4054,13 +3852,13 @@ func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
 			"reused_last_upload": _scene_voxel_tile_gpu_last_reused_buffers.has(buffer_name),
 		}
 
-	var scene_field_buffer: Dictionary = buffers.get(SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER, {})
+	var complexity_field_buffer: Dictionary = buffers.get(SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER, {})
 
 	var collision_field_buffer: Dictionary = buffers.get(SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER, {})
 
 	var resident_field_ready := (
 		runtime_ready and
-		bool(scene_field_buffer.get("rid_valid", false)) and
+		bool(complexity_field_buffer.get("rid_valid", false)) and
 		bool(collision_field_buffer.get("rid_valid", false))
 	)
 	var object_ref_last_stats := _scene_voxel_tile_object_ref_last_update_stats.duplicate(true)
@@ -4076,7 +3874,7 @@ func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
 		"read_source": "gpu_storage_buffers" if runtime_ready else "none",
 		"runtime_read_source": "gpu_storage_buffers" if runtime_ready else "none",
 		"resident_field_read_source": "gpu_storage_buffers" if resident_field_ready else "none",
-		"scene_field_read_source": "gpu_storage_buffers" if resident_field_ready else "none",
+		"complexity_field_read_source": "gpu_storage_buffers" if resident_field_ready else "none",
 		"collision_field_read_source": "gpu_storage_buffers" if resident_field_ready else "none",
 		"staging_source": "sv_owner_command_staging",
 		"readback_source": "gpu_storage_buffers" if runtime_ready else "none",
@@ -4111,9 +3909,8 @@ func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
 		"object_ref_inserted_slot_count": int(object_ref_last_stats.get("inserted_slots", 0)),
 		"object_ref_invalid_bounds_count": int(object_ref_last_stats.get("invalid_bounds", 0)),
 		"object_ref_skipped_count": int(object_ref_last_stats.get("skipped", 0)),
-		"source_ref_count": _scene_voxel_tile_source_ids_debug.size(),
-		"resident_field_voxel_count": int(scene_field_buffer.get("record_count", 0)),
-		"scene_field_voxel_count": int(scene_field_buffer.get("record_count", 0)),
+		"resident_field_voxel_count": int(complexity_field_buffer.get("record_count", 0)),
+		"complexity_field_voxel_count": int(complexity_field_buffer.get("record_count", 0)),
 		"collision_field_voxel_count": int(collision_field_buffer.get("record_count", 0)),
 		"staging_revision": _scene_voxel_tile_staging_revision,
 		"uploaded_revision": _scene_voxel_tile_uploaded_revision,
@@ -4125,7 +3922,7 @@ func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
 		"auto_upload": _scene_voxel_tile_gpu_auto_upload,
 		"last_reused_buffers": _scene_voxel_tile_gpu_last_reused_buffers.duplicate(),
 		"resident_field_buffers_reused": (
-			_scene_voxel_tile_gpu_last_reused_buffers.has(SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER) and
+			_scene_voxel_tile_gpu_last_reused_buffers.has(SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER) and
 			_scene_voxel_tile_gpu_last_reused_buffers.has(SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER)
 		),
 		"last_upload_mode": _scene_voxel_tile_last_upload_mode,
@@ -4153,13 +3950,11 @@ func readback_scene_voxel_tile_debug_snapshot() -> Dictionary:
 
 		summary["object_ref_bytes"] = PackedByteArray()
 
-		summary["source_ref_bytes"] = PackedByteArray()
-
-		summary["scene_field_bytes"] = PackedByteArray()
+		summary["complexity_field_bytes"] = PackedByteArray()
 
 		summary["collision_field_bytes"] = PackedByteArray()
 
-		summary["scene_field_values"] = PackedFloat32Array()
+		summary["complexity_field_values"] = PackedFloat32Array()
 
 		summary["collision_field_values"] = PackedFloat32Array()
 
@@ -4173,9 +3968,7 @@ func readback_scene_voxel_tile_debug_snapshot() -> Dictionary:
 
 	var object_ref_bytes := _read_scene_voxel_tile_buffer_bytes(SCENE_VOXEL_TILE_OBJECT_REF_BUFFER)
 
-	var source_ref_bytes := _read_scene_voxel_tile_buffer_bytes(SCENE_VOXEL_TILE_SOURCE_REF_BUFFER)
-
-	var scene_field_bytes := _read_scene_voxel_tile_buffer_bytes(SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER)
+	var complexity_field_bytes := _read_scene_voxel_tile_buffer_bytes(SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER)
 
 	var collision_field_bytes := _read_scene_voxel_tile_buffer_bytes(SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER)
 
@@ -4189,13 +3982,11 @@ func readback_scene_voxel_tile_debug_snapshot() -> Dictionary:
 
 	summary["object_ref_bytes"] = object_ref_bytes
 
-	summary["source_ref_bytes"] = source_ref_bytes
-
-	summary["scene_field_bytes"] = scene_field_bytes
+	summary["complexity_field_bytes"] = complexity_field_bytes
 
 	summary["collision_field_bytes"] = collision_field_bytes
 
-	summary["scene_field_values"] = _decode_scene_voxel_tile_float_field_bytes(scene_field_bytes)
+	summary["complexity_field_values"] = _decode_scene_voxel_tile_float_field_bytes(complexity_field_bytes)
 
 	summary["collision_field_values"] = _decode_scene_voxel_tile_float_field_bytes(collision_field_bytes)
 
@@ -4228,6 +4019,8 @@ func _publish_scene_voxel_tile_gpu_summary_to_sv() -> void:
 	_sv["scene_voxel_tile_gpu_uploaded_revision"] = int(summary.get("uploaded_revision", -1))
 
 	_sv["scene_voxel_tile_gpu_staging_revision"] = int(summary.get("staging_revision", 0))
+
+	_sv["scene_voxel_tile_summary_gpu_rid"] = get_scene_voxel_tile_summary_gpu_buffer()
 
 func set_scene_voxel_tile_gpu_auto_upload(enabled: bool, upload_now: bool = false) -> bool:
 
@@ -4393,15 +4186,11 @@ func _reuse_scene_voxel_tile_storage_buffer(buffer_name: String, bytes: PackedBy
 
 	_scene_voxel_tile_gpu_buffer_reuse_counts[buffer_name] = int(_scene_voxel_tile_gpu_buffer_reuse_counts.get(buffer_name, 0)) + 1
 
-	if not _scene_voxel_tile_gpu_last_reused_buffers.has(buffer_name):
-
-		_scene_voxel_tile_gpu_last_reused_buffers.append(buffer_name)
-
 	return true
 
 func _scene_voxel_tile_reusable_resident_field_buffers(
-	packed_scene_field: PackedByteArray,
-	scene_field_count: int,
+	packed_complexity_field: PackedByteArray,
+	complexity_field_count: int,
 	packed_collision_field: PackedByteArray,
 	collision_field_count: int
 ) -> Array[String]:
@@ -4409,13 +4198,13 @@ func _scene_voxel_tile_reusable_resident_field_buffers(
 	var reusable: Array[String] = []
 
 	if _scene_voxel_tile_can_reuse_storage_buffer(
-		SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER,
-		packed_scene_field,
-		scene_field_count,
+		SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
+		packed_complexity_field,
+		complexity_field_count,
 		SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
 	):
 
-		reusable.append(SCENE_VOXEL_TILE_SCENE_FIELD_BUFFER)
+		reusable.append(SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER)
 
 	if _scene_voxel_tile_can_reuse_storage_buffer(
 		SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER,
@@ -4522,15 +4311,15 @@ func _read_scene_voxel_tile_buffer_bytes(buffer_name: String) -> PackedByteArray
 
 	return _rd.buffer_get_data(rid, 0, byte_size)
 
-func _scene_voxel_tile_scene_field_for_upload() -> PackedFloat32Array:
+func _scene_voxel_tile_complexity_field_for_upload() -> PackedFloat32Array:
 
 	if not _sv.is_empty():
 
-		var sv_field := _scene_voxel_tile_packed_float_field(_sv.get("scene_field", PackedFloat32Array()))
+		var sv_field := _scene_voxel_tile_packed_float_field(_sv.get("complexity_field", PackedFloat32Array()))
 
 		if sv_field.size() > 0:
 
-			return sv_field
+			return _expand_complexity_field_to_vec4(sv_field)
 
 	if _volume.is_empty():
 
@@ -4540,7 +4329,21 @@ func _scene_voxel_tile_scene_field_for_upload() -> PackedFloat32Array:
 
 	var total_slices := int(_volume.get("total_slices", grid_size.y))
 
-	return _try_make_sv_scene_field_from_source_streams_gpu(xz_res, total_slices)
+	return _try_make_sv_complexity_field_from_source_streams_gpu(xz_res, total_slices)
+
+func _expand_complexity_field_to_vec4(field: PackedFloat32Array) -> PackedFloat32Array:
+	# Convert legacy float complexity-only field to vec4(rgba) interleaved format.
+	# For backward compatibility, white color is used when no color data exists.
+	var voxel_count := field.size()
+	var result := PackedFloat32Array()
+	result.resize(voxel_count * 4)
+	for i in range(voxel_count):
+		var base := i * 4
+		result[base + 0] = 1.0  # r
+		result[base + 1] = 1.0  # g
+		result[base + 2] = 1.0  # b
+		result[base + 3] = clampf(field[i], 0.0, 1.0)  # complexity as alpha
+	return result
 
 func _scene_voxel_tile_collision_field_for_upload() -> PackedFloat32Array:
 
@@ -4593,9 +4396,6 @@ func _pack_scene_voxel_tile_dirty_index_bytes(tile_ids: Array[String]) -> Packed
 	_scene_voxel_tile_gpu_dirty_tile_ids = dirty_tile_ids
 	var bytes: PackedByteArray = packed.get("bytes", PackedByteArray())
 	return bytes
-
-func _pack_scene_voxel_tile_ref_hash_bytes(values: Array[String]) -> PackedByteArray:
-	return SceneVoxelTileCodecScript.pack_ref_hash_bytes(values)
 
 func _pack_scene_voxel_tile_fixed_object_ref_hash_bytes(
 	tile_ids: Array[String],
@@ -4876,24 +4676,17 @@ func _pack_committed_scene_voxel_key_coord_bytes(source_keys: Array) -> PackedBy
 		bytes.encode_s32(offset + 12, 0)
 	return bytes
 
-## P0 #6 — Refactored to use [method commit_payloads] when resident resolved source
-## streams are available. This eliminates the duplicated dispatch logic and makes
-## the GPU-resident handoff the primary path.
-##
-## When resident resolve buffers match the requested source_keys, delegates to
-## [method commit_payloads] which keeps the committed payload buffer GPU-resident.
-## When no resident buffers exist (cold start, key mismatch), falls back to CPU
-## dictionary packing for backward compatibility.
+## Merged resolve+commit. After [method _flush_pending_scene_voxel_source_candidates] runs
+## the merged resolve shader, reads committed payloads directly from
+## [member _committed_scene_voxel_payload_buffer] without CPU roundtrips.
+## Falls back to CPU dictionary packing when GPU buffer is not available.
 func _try_blend_scene_voxel_commit_payloads_gpu(source_keys: Array, _commit_tick: int) -> Dictionary:
-
-	_release_committed_scene_voxel_payload_buffer()
 
 	if source_keys.is_empty():
 		var empty_result := {
 			"payloads": PackedFloat32Array(),
 			"source_stream_buffer_source": "none",
 			"final_source_stream_resident": false,
-			"final_source_stream_resident_epoch": 0,
 		}
 		empty_result.merge(get_committed_scene_voxel_payload_buffer_summary(), true)
 		return empty_result
@@ -4901,311 +4694,27 @@ func _try_blend_scene_voxel_commit_payloads_gpu(source_keys: Array, _commit_tick
 	if not _gpu_ready or _rd == null:
 		return {}
 
-	if not _pipeline_commit_scene_voxels.is_valid() or not _shader_commit_scene_voxels.is_valid():
-		return {}
+	_flush_pending_scene_voxel_source_candidates()
 
-	var output_float_count := source_keys.size() * SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE
+	var committed_buffer := _committed_scene_voxel_payload_buffer
+	if committed_buffer.is_valid() \
+			and _committed_scene_voxel_payload_buffer_count == source_keys.size() \
+			and _committed_scene_voxel_payload_buffer_byte_count > 0:
 
-	# P0 #6 — Prefer GPU-resident resolved source streams over CPU packing.
-	var resident_source_buffers := _resolved_scene_voxel_source_stream_buffers_for_keys(source_keys)
-	var using_resident_source_streams := not resident_source_buffers.is_empty()
+		var output_float_count := source_keys.size() * SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE
+		var output_byte_count := output_float_count * 4
+		var output_bytes := _rd.buffer_get_data(committed_buffer, 0, mini(output_byte_count, _committed_scene_voxel_payload_buffer_byte_count))
+		var payloads := SceneVoxelCommitPayloadScript.decode_float_buffer(output_bytes, output_float_count)
 
-	var auto_buffer: RID
-	var brush_buffer: RID
-
-	if using_resident_source_streams:
-		# Resident handoff: resolve output is directly consumed by commit without
-		# CPU roundtrip. No winner index readback needed — resolve shader already
-		# writes resolved payloads to _resolved_auto/brush_scene_voxel_sources_buffer.
-		auto_buffer = resident_source_buffers.get("auto_buffer", RID())
-		brush_buffer = resident_source_buffers.get("brush_buffer", RID())
-	else:
-		# Cold-start fallback: CPU dictionary pack → GPU commit.
-		# This path still exists for callers that haven't staged resident
-		# source streams (e.g. initial commit before resolve runs).
-		var auto_values := _pack_scene_voxel_commit_source_values(_auto_scene_voxel_sources, source_keys)
-		var brush_values := _pack_scene_voxel_commit_source_values(_brush_scene_voxel_sources, source_keys)
-		auto_buffer = storage_buffer_from_floats(auto_values, SCOPE_FRAME, "commit_auto_scene_voxels")
-		brush_buffer = storage_buffer_from_floats(brush_values, SCOPE_FRAME, "commit_brush_scene_voxels")
-
-	var key_coord_byte_count := source_keys.size() * SCENE_VOXEL_COMMITTED_KEY_COORD_STRIDE_BYTES
-	var key_coord_bytes := _pack_committed_scene_voxel_key_coord_bytes(source_keys)
-	if key_coord_bytes.size() != key_coord_byte_count:
-		gc_frame()
-		return {}
-
-	if using_resident_source_streams:
-		# P0 #6 — Resident path: delegate to commit_payloads which keeps the
-		# output buffer GPU-resident and avoids duplicated dispatch logic.
-		var commit_result := commit_payloads(
-			auto_buffer,
-			brush_buffer,
-			source_keys.size(),
-			key_coord_bytes
-		)
-		if not bool(commit_result.get("gpu_dispatched", false)):
-			return {}
-		var payloads: PackedFloat32Array = commit_result.get("payloads", PackedFloat32Array())
-		_committed_scene_voxel_payload_buffer_commit_tick = _commit_tick
-		if commit_result.get("key_coord_buffer", RID()).is_valid():
-			_committed_scene_voxel_key_coord_buffer_commit_tick = _commit_tick
 		var result := {
 			"payloads": payloads,
-			"source_stream_buffer_source": "resident_resolved_source_stream_buffers",
+			"source_stream_buffer_source": "merged_resolve_commit_gpu",
 			"final_source_stream_resident": true,
-			"final_source_stream_resident_epoch": _resolved_scene_voxel_source_stream_epoch,
 		}
 		result.merge(get_committed_scene_voxel_payload_buffer_summary(), true)
 		return result
 
-	# ─── CPU fallback path (cold start) ───
-	var output_byte_count := output_float_count * 4
-
-	var output_buffer := storage_buffer_zero(output_byte_count, SCOPE_PERSISTENT, "committed_scene_voxel_payloads")
-	var key_coord_buffer := storage_buffer_from_bytes(
-		key_coord_bytes,
-		SCOPE_PERSISTENT,
-		"committed_scene_voxel_key_coords"
-	)
-
-	if not auto_buffer.is_valid() or not brush_buffer.is_valid() or not output_buffer.is_valid() or not key_coord_buffer.is_valid():
-		if output_buffer.is_valid():
-			release_rid(output_buffer, false)
-		if key_coord_buffer.is_valid():
-			release_rid(key_coord_buffer, false)
-		gc_frame()
-		return {}
-
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, auto_buffer),
-		make_storage_uniform(1, brush_buffer),
-		make_storage_uniform(2, output_buffer),
-	], _shader_commit_scene_voxels, 0, SCOPE_PASS, "commit_scene_voxel_payloads")
-
-	if not set0.is_valid():
-		if output_buffer.is_valid():
-			release_rid(output_buffer, false)
-		if key_coord_buffer.is_valid():
-			release_rid(key_coord_buffer, false)
-		gc_frame()
-		return {}
-
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, source_keys.size())
-	push.encode_s32(4, SCENE_VOXEL_COMMIT_SOURCE_FLOAT_STRIDE)
-	push.encode_s32(8, SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE)
-
-	var groups := dispatch_groups_1d(source_keys.size(), 64)
-
-	if not _gpu_dispatch_and_sync(_pipeline_commit_scene_voxels, [set0], push, groups):
-		if output_buffer.is_valid():
-			release_rid(output_buffer, false)
-		if key_coord_buffer.is_valid():
-			release_rid(key_coord_buffer, false)
-		gc_frame()
-		return {}
-
-	var output_bytes := _rd.buffer_get_data(output_buffer, 0, output_byte_count)
-	var payloads := SceneVoxelCommitPayloadScript.decode_float_buffer(output_bytes, output_float_count)
-
-	_committed_scene_voxel_payload_buffer = output_buffer
-	_committed_scene_voxel_payload_buffer_count = source_keys.size()
-	_committed_scene_voxel_payload_buffer_byte_count = output_byte_count
-	_committed_scene_voxel_payload_buffer_commit_tick = _commit_tick
-	_committed_scene_voxel_payload_buffer_source = "commit_scene_voxel_payloads.glsl"
-	_committed_scene_voxel_key_coord_buffer = key_coord_buffer
-	_committed_scene_voxel_key_coord_buffer_count = source_keys.size()
-	_committed_scene_voxel_key_coord_buffer_byte_count = key_coord_byte_count
-	_committed_scene_voxel_key_coord_buffer_commit_tick = _commit_tick
-	_committed_scene_voxel_key_coord_buffer_source = "committed_scene_voxel_source_key_coord_pack"
-
-	gc_frame()
-
-	var result := {
-		"payloads": payloads,
-		"source_stream_buffer_source": "cpu_source_dictionary_pack",
-		"final_source_stream_resident": false,
-		"final_source_stream_resident_epoch": 0,
-	}
-	result.merge(get_committed_scene_voxel_payload_buffer_summary(), true)
-	return result
-
-## P0 #6 — Source Write / SceneVoxel Commit Resident Handoff
-##
-## Public entry point for GPU-resident commit. Accepts GPU buffer RIDs for
-## resolved auto and brush source streams and dispatches
-## [code]commit_scene_voxel_payloads.glsl[/code] without CPU roundtrips.
-##
-## [param auto_buffer] Resident RID of resolved auto source stream buffer
-##   (stride = SCENE_VOXEL_COMMIT_SOURCE_FLOAT_STRIDE × 4 bytes per slot).
-## [param brush_buffer] Resident RID of resolved brush source stream buffer.
-## [param source_key_count] Number of source keys (one slot per key).
-## [param source_key_coord_bytes] Pre-serialized ivec4(slice_index, x, z, reserved)
-##   key→slot map bytes. When valid, a matching key_coord buffer is staged for
-##   dense projection; otherwise the commit still produces the output payload
-##   buffer but without the slot→key mapping.
-##
-## The returned [code]output_buffer[/code] and [code]key_coord_buffer[/code]
-## are SCOPE_PERSISTENT and ownership transfers to the caller.
-## [code]payloads[/code] is a CPU readback of the committed output for
-## consumers that still need a PackedFloat32Array view.
-##
-## Returns a Dictionary with keys:
-##   output_buffer: RID           — committed payload buffer (PERSISTENT)
-##   key_coord_buffer: RID        — key coord buffer (PERSISTENT, invalid if empty)
-##   payloads: PackedFloat32Array — CPU readback (for backward compat)
-##   gpu_dispatched: bool         — true if shader executed
-##   output_float_count: int      — total floats in output buffer
-##   payload_byte_count: int      — total bytes in output buffer
-func commit_payloads(
-	auto_buffer: RID,
-	brush_buffer: RID,
-	source_key_count: int,
-	source_key_coord_bytes: PackedByteArray = PackedByteArray()
-) -> Dictionary:
-	_release_committed_scene_voxel_payload_buffer()
-
-	if source_key_count <= 0:
-		return {
-			"output_buffer": RID(),
-			"key_coord_buffer": RID(),
-			"payloads": PackedFloat32Array(),
-			"gpu_dispatched": false,
-			"output_float_count": 0,
-			"payload_byte_count": 0,
-		}
-
-	if not _gpu_ready or _rd == null:
-		_init_gpu()
-		if not _gpu_ready or _rd == null:
-			return {
-				"output_buffer": RID(),
-				"key_coord_buffer": RID(),
-				"payloads": PackedFloat32Array(),
-				"gpu_dispatched": false,
-				"output_float_count": 0,
-				"payload_byte_count": 0,
-			}
-
-	if not _pipeline_commit_scene_voxels.is_valid() or not _shader_commit_scene_voxels.is_valid():
-		return {
-			"output_buffer": RID(),
-			"key_coord_buffer": RID(),
-			"payloads": PackedFloat32Array(),
-			"gpu_dispatched": false,
-			"output_float_count": 0,
-			"payload_byte_count": 0,
-		}
-
-	if not auto_buffer.is_valid() or not brush_buffer.is_valid():
-		return {
-			"output_buffer": RID(),
-			"key_coord_buffer": RID(),
-			"payloads": PackedFloat32Array(),
-			"gpu_dispatched": false,
-			"output_float_count": 0,
-			"payload_byte_count": 0,
-		}
-
-	var output_float_count := source_key_count * SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE
-	var output_byte_count := output_float_count * 4
-
-	var output_buffer := storage_buffer_zero(output_byte_count, SCOPE_PERSISTENT, "committed_scene_voxel_payloads")
-	var key_coord_buffer: RID = RID()
-	if not source_key_coord_bytes.is_empty():
-		var key_coord_byte_count := source_key_count * SCENE_VOXEL_COMMITTED_KEY_COORD_STRIDE_BYTES
-		if source_key_coord_bytes.size() == key_coord_byte_count:
-			key_coord_buffer = storage_buffer_from_bytes(
-				source_key_coord_bytes,
-				SCOPE_PERSISTENT,
-				"committed_scene_voxel_key_coords"
-			)
-
-	if not output_buffer.is_valid():
-		if key_coord_buffer.is_valid():
-			release_rid(key_coord_buffer, false)
-		gc_frame()
-		return {
-			"output_buffer": RID(),
-			"key_coord_buffer": RID(),
-			"payloads": PackedFloat32Array(),
-			"gpu_dispatched": false,
-			"output_float_count": output_float_count,
-			"payload_byte_count": output_byte_count,
-		}
-
-	var uniform_set_count := 3
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, auto_buffer),
-		make_storage_uniform(1, brush_buffer),
-		make_storage_uniform(2, output_buffer),
-	], _shader_commit_scene_voxels, 0, SCOPE_PASS, "commit_scene_voxel_payloads")
-
-	if not set0.is_valid():
-		release_rid(output_buffer, false)
-		if key_coord_buffer.is_valid():
-			release_rid(key_coord_buffer, false)
-		gc_frame()
-		return {
-			"output_buffer": RID(),
-			"key_coord_buffer": RID(),
-			"payloads": PackedFloat32Array(),
-			"gpu_dispatched": false,
-			"output_float_count": output_float_count,
-			"payload_byte_count": output_byte_count,
-		}
-
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, source_key_count)
-	push.encode_s32(4, SCENE_VOXEL_COMMIT_SOURCE_FLOAT_STRIDE)
-	push.encode_s32(8, SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE)
-
-	var groups := dispatch_groups_1d(source_key_count, 64)
-
-	if not _gpu_dispatch_and_sync(_pipeline_commit_scene_voxels, [set0], push, groups):
-		release_rid(output_buffer, false)
-		if key_coord_buffer.is_valid():
-			release_rid(key_coord_buffer, false)
-		gc_frame()
-		return {
-			"output_buffer": RID(),
-			"key_coord_buffer": RID(),
-			"payloads": PackedFloat32Array(),
-			"gpu_dispatched": false,
-			"output_float_count": output_float_count,
-			"payload_byte_count": output_byte_count,
-		}
-
-	# GPU resident: keep output_buffer and key_coord_buffer alive (PERSISTENT).
-	# CPU readback is retained for backward compatibility so callers that
-	# still inspect committed payloads on CPU continue to work unchanged.
-	var output_bytes := _rd.buffer_get_data(output_buffer, 0, output_byte_count)
-	var payloads := SceneVoxelCommitPayloadScript.decode_float_buffer(output_bytes, output_float_count)
-
-	_committed_scene_voxel_payload_buffer = output_buffer
-	_committed_scene_voxel_payload_buffer_count = source_key_count
-	_committed_scene_voxel_payload_buffer_byte_count = output_byte_count
-	_committed_scene_voxel_payload_buffer_commit_tick = _committed_tick
-	_committed_scene_voxel_payload_buffer_source = "commit_scene_voxel_payloads.glsl"
-	_committed_scene_voxel_key_coord_buffer = key_coord_buffer
-	_committed_scene_voxel_key_coord_buffer_count = source_key_count if key_coord_buffer.is_valid() else 0
-	_committed_scene_voxel_key_coord_buffer_byte_count = source_key_count * SCENE_VOXEL_COMMITTED_KEY_COORD_STRIDE_BYTES if key_coord_buffer.is_valid() else 0
-	_committed_scene_voxel_key_coord_buffer_commit_tick = _committed_tick if key_coord_buffer.is_valid() else -1
-	_committed_scene_voxel_key_coord_buffer_source = "committed_scene_voxel_source_key_coord_pack" if key_coord_buffer.is_valid() else "none"
-
-	gc_frame()
-
-	return {
-		"output_buffer": output_buffer,
-		"key_coord_buffer": key_coord_buffer,
-		"payloads": payloads,
-		"gpu_dispatched": true,
-		"output_float_count": output_float_count,
-		"payload_byte_count": output_byte_count,
-	}
-
+	return {}
 func get_committed_scene_voxel_payload_buffer() -> RID:
 	return _committed_scene_voxel_payload_buffer
 
@@ -5315,7 +4824,7 @@ func get_committed_scene_voxel_payload_buffer_summary() -> Dictionary:
 		"public_scene_voxel_projection_debug_only": public_projection_ready,
 		"public_scene_voxel_projection_api_only": public_projection_ready,
 		"public_scene_voxel_projection_runtime_owner": false,
-		"public_scene_voxel_projection_scene_field_source": false,
+		"public_scene_voxel_projection_complexity_field_source": false,
 		"public_scene_voxel_projection_runtime_read_source": "none",
 		"public_scene_voxel_projection_api": "get_scene_voxels/get_scene_voxel" if public_projection_ready else "none",
 		"public_scene_voxel_projection_cache_hydrated": public_cache_hydrated,
@@ -5324,7 +4833,7 @@ func get_committed_scene_voxel_payload_buffer_summary() -> Dictionary:
 		"public_scene_voxel_projection_expected_count": public_expected_count if public_projection_ready else 0,
 		"public_scene_voxel_projection_cache_commit_tick": _committed_scene_voxel_payload_buffer_commit_tick if public_cache_hydrated else -1,
 		"committed_scene_voxel_dense_projection_ready": dense_projection_ready,
-		"committed_scene_voxel_scene_field_projection_source": "resident_committed_scene_voxel_payload_buffer" if dense_projection_ready else "none",
+		"committed_scene_voxel_complexity_field_projection_source": "resident_committed_scene_voxel_payload_buffer" if dense_projection_ready else "none",
 		"rendering_device_available": _rd != null,
 		"gpu_first": true,
 		"cpu_fallback": false,
@@ -5362,7 +4871,7 @@ func _stage_scene_voxel_public_debug_cache_from_committed_buffers(commit_tick: i
 	_volume["scene_voxels_debug_api_projection_expected_count"] = expected_count
 	_volume["scene_voxels_debug_api_projection_commit_tick"] = commit_tick
 	_volume["scene_voxels_debug_api_projection_runtime_owner"] = false
-	_volume["scene_voxels_debug_api_projection_scene_field_source"] = false
+	_volume["scene_voxels_debug_api_projection_complexity_field_source"] = false
 	_volume["scene_voxels_debug_api_collision_projection_source"] = "resident_committed_scene_voxel_payload_buffer"
 	_volume["scene_voxels_debug_api_collision_projection_exact_layers"] = false
 
@@ -5376,7 +4885,7 @@ func _mark_scene_voxel_public_debug_cache_from_committed_map(commit_tick: int, e
 	_volume["scene_voxels_debug_api_projection_expected_count"] = expected_count
 	_volume["scene_voxels_debug_api_projection_commit_tick"] = commit_tick
 	_volume["scene_voxels_debug_api_projection_runtime_owner"] = false
-	_volume["scene_voxels_debug_api_projection_scene_field_source"] = false
+	_volume["scene_voxels_debug_api_projection_complexity_field_source"] = false
 	_volume["scene_voxels_debug_api_collision_projection_source"] = "committed_scene_voxel_payload_summary_map"
 	_volume["scene_voxels_debug_api_collision_projection_readback_source"] = "none"
 	_volume["scene_voxels_debug_api_collision_projection_exact_layers"] = false
@@ -5425,7 +4934,7 @@ func _committed_scene_voxel_debug_payload_from_slot(
 			slice_index,
 			voxel_xz
 		)
-	return SceneVoxelPayloadScript.internal_payload(
+	return SceneVoxelScript.accepted_internal(
 		SharedPropertyTypeScript.apply_to_scene_voxel(scene_voxel, source_fields, complexity, include_collision)
 	)
 
@@ -5445,7 +4954,7 @@ func _publish_scene_voxel_public_debug_cache_summary_to_sv() -> void:
 	_sv["public_scene_voxel_projection_debug_only"] = bool(committed_payload_summary.get("public_scene_voxel_projection_debug_only", false))
 	_sv["public_scene_voxel_projection_api_only"] = bool(committed_payload_summary.get("public_scene_voxel_projection_api_only", false))
 	_sv["public_scene_voxel_projection_runtime_owner"] = bool(committed_payload_summary.get("public_scene_voxel_projection_runtime_owner", false))
-	_sv["public_scene_voxel_projection_scene_field_source"] = bool(committed_payload_summary.get("public_scene_voxel_projection_scene_field_source", false))
+	_sv["public_scene_voxel_projection_complexity_field_source"] = bool(committed_payload_summary.get("public_scene_voxel_projection_complexity_field_source", false))
 	_sv["public_scene_voxel_projection_runtime_read_source"] = committed_payload_summary.get("public_scene_voxel_projection_runtime_read_source", "none")
 	_sv["public_scene_voxel_projection_api"] = committed_payload_summary.get("public_scene_voxel_projection_api", "none")
 	_sv["public_scene_voxel_projection_cache_hydrated"] = bool(committed_payload_summary.get("public_scene_voxel_projection_cache_hydrated", false))
@@ -5512,7 +5021,7 @@ func _hydrate_scene_voxel_public_debug_cache_from_committed_buffers() -> bool:
 	_volume["scene_voxels_debug_api_projection_expected_count"] = expected_public_count
 	_volume["scene_voxels_debug_api_projection_commit_tick"] = _committed_scene_voxel_payload_buffer_commit_tick
 	_volume["scene_voxels_debug_api_projection_runtime_owner"] = false
-	_volume["scene_voxels_debug_api_projection_scene_field_source"] = false
+	_volume["scene_voxels_debug_api_projection_complexity_field_source"] = false
 	_volume["scene_voxels_debug_api_collision_projection_source"] = "resident_committed_scene_voxel_payload_buffer"
 	_volume["scene_voxels_debug_api_collision_projection_readback_source"] = "resident_committed_scene_voxel_payload_buffer_debug_api_readback"
 	_volume["scene_voxels_debug_api_collision_projection_exact_layers"] = false
@@ -5537,29 +5046,12 @@ func _commit_scene_voxel_sources_from_gpu_payloads(
 		SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE
 	)
 
-func _resolved_scene_voxel_source_stream_buffers_for_keys(source_keys: Array) -> Dictionary:
-	if source_keys.is_empty():
-		return {}
-	if not _resolved_auto_scene_voxel_sources_buffer.is_valid() or not _resolved_brush_scene_voxel_sources_buffer.is_valid():
-		return {}
-	if _resolved_scene_voxel_source_stream_count != source_keys.size():
-		return {}
-	if _resolved_scene_voxel_source_stream_keys.size() != source_keys.size():
-		return {}
-	for i in range(source_keys.size()):
-		if str(_resolved_scene_voxel_source_stream_keys[i]) != str(source_keys[i]):
-			return {}
-	return {
-		"auto_buffer": _resolved_auto_scene_voxel_sources_buffer,
-		"brush_buffer": _resolved_brush_scene_voxel_sources_buffer,
-	}
-
-func _try_make_sv_scene_field_from_source_streams_gpu(xz_res: int, total_slices: int) -> PackedFloat32Array:
-	var result := _try_make_sv_scene_field_from_source_streams_gpu_result(xz_res, total_slices)
+func _try_make_sv_complexity_field_from_source_streams_gpu(xz_res: int, total_slices: int) -> PackedFloat32Array:
+	var result := _try_make_sv_complexity_field_from_source_streams_gpu_result(xz_res, total_slices)
 	var field: PackedFloat32Array = result.get("field", PackedFloat32Array())
 	return field
 
-func _try_make_sv_scene_field_from_source_streams_gpu_result(
+func _try_make_sv_complexity_field_from_source_streams_gpu_result(
 	xz_res: int,
 	total_slices: int,
 	output_buffer_scope: String = ""
@@ -5593,67 +5085,69 @@ func _try_make_sv_scene_field_from_source_streams_gpu_result(
 
 		var empty_field := PackedFloat32Array()
 
-		empty_field.resize(voxel_count)
+		empty_field.resize(voxel_count * 4)
 
 		var empty_result := {
 			"field": empty_field,
 			"voxel_count": voxel_count,
-			"scene_field_source": "auto_brush_source_stream_compute",
-			"scene_field_runtime_read_source": "none",
-			"scene_field_projection_mode": "empty_source_streams",
-			"scene_field_committed_payload_projection": false,
+			"complexity_field_source": "auto_brush_source_stream_compute",
+			"complexity_field_runtime_read_source": "none",
+			"complexity_field_projection_mode": "empty_source_streams",
+			"complexity_field_committed_payload_projection": false,
 		}
 		if keep_output_buffer and _gpu_ready and _rd != null:
-			var empty_buffer := storage_buffer_zero(voxel_count * 4, output_buffer_scope, "blend_scene_field_out_empty")
+			var empty_buffer := storage_buffer_zero(voxel_count * 16, output_buffer_scope, "blend_complexity_field_out_empty")
 			if empty_buffer.is_valid():
-				empty_result["scene_field_buffer"] = empty_buffer
+				empty_result["complexity_field_buffer"] = empty_buffer
 		return empty_result
 
-	if not _gpu_ready or _rd == null or not _pipeline_blend_scene_fields.is_valid() or not _shader_blend_scene_fields.is_valid():
-		push_error("[SceneVoxelCommitter] SV scene field compute resources are not ready")
+	if not _gpu_ready or _rd == null or not _pipeline_blend_complexity_fields.is_valid() or not _shader_blend_complexity_fields.is_valid():
+		push_error("[SceneVoxelCommitter] SV complexity field compute resources are not ready")
 
 		return {}
 
-	var projection_mode := SCENE_VOXEL_FIELD_PROJECTION_SOURCE_STREAMS
+	var projection_mode := SCENE_COMPLEXITY_FIELD_PROJECTION_SOURCE_STREAMS
 	var projection_count := source_keys.size()
-	var using_resident_source_streams := false
 	var auto_buffer: RID = RID()
 	var brush_buffer: RID = RID()
 	var committed_payload_buffer: RID = RID()
 	var committed_key_coord_buffer: RID = RID()
 
 	if committed_projection_ready:
-		projection_mode = SCENE_VOXEL_FIELD_PROJECTION_COMMITTED_PAYLOADS
+		projection_mode = SCENE_COMPLEXITY_FIELD_PROJECTION_COMMITTED_PAYLOADS
 		projection_count = _committed_scene_voxel_payload_buffer_count
-		auto_buffer = storage_buffer_zero(4, SCOPE_FRAME, "blend_scene_field_dummy_auto_source")
-		brush_buffer = storage_buffer_zero(4, SCOPE_FRAME, "blend_scene_field_dummy_brush_source")
+		auto_buffer = storage_buffer_zero(4, SCOPE_FRAME, "blend_complexity_field_dummy_auto_source")
+		brush_buffer = storage_buffer_zero(4, SCOPE_FRAME, "blend_complexity_field_dummy_brush_source")
 		committed_payload_buffer = _committed_scene_voxel_payload_buffer
 		committed_key_coord_buffer = _committed_scene_voxel_key_coord_buffer
 	else:
-		var resident_source_buffers := _resolved_scene_voxel_source_stream_buffers_for_keys(source_keys)
-		using_resident_source_streams = not resident_source_buffers.is_empty()
-		auto_buffer = resident_source_buffers.get("auto_buffer", RID())
-		brush_buffer = resident_source_buffers.get("brush_buffer", RID())
-	if not committed_projection_ready and not using_resident_source_streams:
-		var auto_values := _pack_scene_voxel_commit_source_values(_auto_scene_voxel_sources, source_keys)
-		var brush_values := _pack_scene_voxel_commit_source_values(_brush_scene_voxel_sources, source_keys)
-		auto_buffer = storage_buffer_from_floats(auto_values, SCOPE_FRAME, "blend_auto_scene_sources")
-		brush_buffer = storage_buffer_from_floats(brush_values, SCOPE_FRAME, "blend_brush_scene_sources")
+		committed_payload_buffer = _committed_scene_voxel_payload_buffer
+		if committed_payload_buffer.is_valid():
+			projection_mode = SCENE_COMPLEXITY_FIELD_PROJECTION_COMMITTED_PAYLOADS
+			projection_count = _committed_scene_voxel_payload_buffer_count
+			auto_buffer = storage_buffer_zero(4, SCOPE_FRAME, "blend_complexity_field_dummy_auto_source")
+			brush_buffer = storage_buffer_zero(4, SCOPE_FRAME, "blend_complexity_field_dummy_brush_source")
+			committed_key_coord_buffer = _committed_scene_voxel_key_coord_buffer
+		else:
+			var auto_values := _pack_scene_voxel_commit_source_values(_auto_scene_voxel_sources, source_keys)
+			var brush_values := _pack_scene_voxel_commit_source_values(_brush_scene_voxel_sources, source_keys)
+			auto_buffer = storage_buffer_from_floats(auto_values, SCOPE_FRAME, "blend_auto_scene_sources")
+			brush_buffer = storage_buffer_from_floats(brush_values, SCOPE_FRAME, "blend_brush_scene_sources")
 	if not committed_projection_ready:
 		committed_payload_buffer = storage_buffer_zero(
 			SCENE_VOXEL_COMMITTED_PAYLOAD_STRIDE_BYTES,
 			SCOPE_FRAME,
-			"blend_scene_field_dummy_committed_payloads"
+			"blend_complexity_field_dummy_committed_payloads"
 		)
 		committed_key_coord_buffer = storage_buffer_zero(
 			SCENE_VOXEL_COMMITTED_KEY_COORD_STRIDE_BYTES,
 			SCOPE_FRAME,
-			"blend_scene_field_dummy_committed_key_coords"
+			"blend_complexity_field_dummy_committed_key_coords"
 		)
 
 	var output_scope := output_buffer_scope if keep_output_buffer else SCOPE_FRAME
 
-	var output_buffer := storage_buffer_zero(voxel_count * 4, output_scope, "blend_scene_field_out")
+	var output_buffer := storage_buffer_zero(voxel_count * 16, output_scope, "blend_complexity_field_out")
 
 	if not auto_buffer.is_valid() \
 			or not brush_buffer.is_valid() \
@@ -5680,7 +5174,7 @@ func _try_make_sv_scene_field_from_source_streams_gpu_result(
 
 		make_storage_uniform(4, committed_key_coord_buffer),
 
-	], _shader_blend_scene_fields, 0, SCOPE_PASS, "blend_scene_fields")
+	], _shader_blend_complexity_fields, 0, SCOPE_PASS, "blend_complexity_fields")
 
 	if not set0.is_valid():
 
@@ -5713,7 +5207,7 @@ func _try_make_sv_scene_field_from_source_streams_gpu_result(
 
 	var groups := dispatch_groups_1d(projection_count, 64)
 
-	if not _gpu_dispatch_and_sync(_pipeline_blend_scene_fields, [set0], push, groups):
+	if not _gpu_dispatch_and_sync(_pipeline_blend_complexity_fields, [set0], push, groups):
 		if keep_output_buffer:
 			gc_scope(output_buffer_scope)
 		gc_frame()
@@ -5726,36 +5220,32 @@ func _try_make_sv_scene_field_from_source_streams_gpu_result(
 	# The output_buffer RID is kept alive for the caller to use as primary state.
 	if not keep_output_buffer:
 		output_bytes = _rd.buffer_get_data(output_buffer, 0, voxel_count * 4)
-		field = SceneVoxelCommitPayloadScript.decode_float_buffer(output_bytes, voxel_count)
+		field = SceneVoxelCommitPayloadScript.decode_float_buffer(output_bytes, voxel_count * 4)
 
 	gc_frame()
 
-	var scene_field_source := "auto_brush_source_stream_compute"
-	var scene_field_runtime_read_source := "gpu_resident_blend_output" if keep_output_buffer else "cpu_readback_debug"
+	var complexity_field_source := "auto_brush_source_stream_compute"
+	var complexity_field_runtime_read_source := "gpu_resident_blend_output" if keep_output_buffer else "cpu_readback_debug"
 	var source_stream_buffer_source := "gpu_resident_blend_output" if keep_output_buffer else "cpu_source_dictionary_pack"
 	if committed_projection_ready:
-		scene_field_source = "resident_committed_scene_voxel_payload_buffers"
-		scene_field_runtime_read_source = "resident_committed_scene_voxel_payload_buffer"
+		complexity_field_source = "resident_committed_scene_voxel_payload_buffers"
+		complexity_field_runtime_read_source = "resident_committed_scene_voxel_payload_buffer"
 		source_stream_buffer_source = "resident_committed_scene_voxel_payload_buffers"
-	elif using_resident_source_streams:
-		scene_field_runtime_read_source = "resident_resolved_source_stream_buffers"
-		source_stream_buffer_source = "resident_resolved_source_stream_buffers"
 
 	var result := {
 		"field": field,
 		"voxel_count": voxel_count,
-		"scene_field_source": scene_field_source,
-		"scene_field_runtime_read_source": scene_field_runtime_read_source,
-		"scene_field_projection_mode": "committed_payload_dense_scatter" if committed_projection_ready else "auto_brush_source_stream_scatter",
-		"scene_field_committed_payload_projection": committed_projection_ready,
-		"scene_field_committed_payload_count": _committed_scene_voxel_payload_buffer_count if committed_projection_ready else 0,
-		"scene_field_committed_key_coord_count": _committed_scene_voxel_key_coord_buffer_count if committed_projection_ready else 0,
+		"complexity_field_source": complexity_field_source,
+		"complexity_field_runtime_read_source": complexity_field_runtime_read_source,
+		"complexity_field_projection_mode": "committed_payload_dense_scatter" if committed_projection_ready else "auto_brush_source_stream_scatter",
+		"complexity_field_committed_payload_projection": committed_projection_ready,
+		"complexity_field_committed_payload_count": _committed_scene_voxel_payload_buffer_count if committed_projection_ready else 0,
+		"complexity_field_committed_key_coord_count": _committed_scene_voxel_key_coord_buffer_count if committed_projection_ready else 0,
 		"source_stream_buffer_source": source_stream_buffer_source,
-		"final_source_stream_resident": using_resident_source_streams,
-		"final_source_stream_resident_epoch": _resolved_scene_voxel_source_stream_epoch if using_resident_source_streams else 0,
+		"final_source_stream_resident": committed_projection_ready,
 	}
 	if keep_output_buffer:
-		result["scene_field_buffer"] = output_buffer
+		result["complexity_field_buffer"] = output_buffer
 	return result
 
 func _make_sv_collision_field(collision: Dictionary, xz_res: int, total_slices: int) -> PackedFloat32Array:
@@ -6123,8 +5613,6 @@ func _clear_scene_voxel_source_streams() -> void:
 
 	_clear_scene_voxel_source_candidate_resident_counts()
 
-	_clear_resolved_scene_voxel_source_stream_counts()
-
 	_release_committed_scene_voxel_payload_buffer()
 
 func _source_stream_current(source_type: String, key: String):
@@ -6236,10 +5724,24 @@ func _source_keys_from_candidate_groups(groups: Array[Dictionary]) -> Array:
 	return source_keys
 
 func _pack_scene_voxel_source_candidate_groups(groups: Array[Dictionary]) -> Dictionary:
-	var source_keys := _source_keys_from_candidate_groups(groups)
-	var source_key_index := {}
-	for i in range(source_keys.size()):
-		source_key_index[str(source_keys[i])] = i
+	# Build per-source-key candidate buckets: {key_str: {"auto": [candidates], "brush": [candidates]}}
+	var key_buckets := {}
+	for group in groups:
+		var key_str := str(group.get("key", ""))
+		var source_type := str(group.get("source_type", ""))
+		var candidates: Array = group.get("candidates", [])
+		if candidates.is_empty():
+			continue
+		if not key_buckets.has(key_str):
+			key_buckets[key_str] = {"auto": [], "brush": []}
+		var bucket: Dictionary = key_buckets[key_str]
+		var target_list: Array = bucket["auto"] if source_type == "AutoSceneVoxel" else bucket["brush"]
+		for c in candidates:
+			if c is Dictionary:
+				target_list.append(c)
+
+	var source_keys := key_buckets.keys()
+	source_keys.sort()
 
 	var candidate_records := PackedFloat32Array()
 	var ranges := PackedInt32Array()
@@ -6248,42 +5750,51 @@ func _pack_scene_voxel_source_candidate_groups(groups: Array[Dictionary]) -> Dic
 	var candidate_source_keys := []
 	var candidate_count := 0
 
-	for group in groups:
+	for key_idx in range(source_keys.size()):
+		var key_str := str(source_keys[key_idx])
+		group_source_key_indices.append(key_idx)
 
-		var candidates: Array = group.get("candidates", [])
-		var range_start := candidate_count
-		var valid_candidate_count := 0
+		var buckets: Dictionary = key_buckets.get(key_str, {"auto": [], "brush": []})
+		var auto_candidates: Array = buckets.get("auto", [])
+		var brush_candidates: Array = buckets.get("brush", [])
 
-		ranges.append(range_start)
-
-		group_source_key_indices.append(int(source_key_index.get(str(group.get("key", "")), 0)))
-
-		for raw_candidate in candidates:
-
+		# Auto range
+		var auto_start := candidate_count
+		var auto_valid := 0
+		for raw_candidate in auto_candidates:
 			if not raw_candidate is Dictionary:
-
 				continue
-
 			var candidate := raw_candidate as Dictionary
-
 			var candidate_key := str(candidate_count)
-
 			candidate_source_stream[candidate_key] = candidate
-
 			candidate_source_keys.append(candidate_key)
-
 			candidate_records.append(float(candidate.get("priority", 0.0)))
-
-			candidate_records.append(SceneVoxelPayloadScript.voxel_complexity(candidate))
-
+			candidate_records.append(SceneVoxelScript.complexity(candidate))
 			candidate_records.append(float(SceneVoxelSourceRecordScript.source_type_code(candidate)))
-
 			candidate_records.append(1.0 if candidate.has("priority") else 0.0)
-
 			candidate_count += 1
-			valid_candidate_count += 1
+			auto_valid += 1
+		ranges.append(auto_start)
+		ranges.append(auto_valid)
 
-		ranges.append(valid_candidate_count)
+		# Brush range
+		var brush_start := candidate_count
+		var brush_valid := 0
+		for raw_candidate in brush_candidates:
+			if not raw_candidate is Dictionary:
+				continue
+			var candidate := raw_candidate as Dictionary
+			var candidate_key := str(candidate_count)
+			candidate_source_stream[candidate_key] = candidate
+			candidate_source_keys.append(candidate_key)
+			candidate_records.append(float(candidate.get("priority", 0.0)))
+			candidate_records.append(SceneVoxelScript.complexity(candidate))
+			candidate_records.append(float(SceneVoxelSourceRecordScript.source_type_code(candidate)))
+			candidate_records.append(1.0 if candidate.has("priority") else 0.0)
+			candidate_count += 1
+			brush_valid += 1
+		ranges.append(brush_start)
+		ranges.append(brush_valid)
 
 	var candidate_payloads := _pack_scene_voxel_commit_source_values(candidate_source_stream, candidate_source_keys)
 
@@ -6292,7 +5803,7 @@ func _pack_scene_voxel_source_candidate_groups(groups: Array[Dictionary]) -> Dic
 		"candidate_count": candidate_count,
 		"candidate_payload_bytes": pack_float_array(candidate_payloads),
 		"range_bytes": pack_u32_array(ranges),
-		"range_count": groups.size(),
+		"range_count": source_keys.size(),
 		"group_source_key_index_bytes": pack_u32_array(group_source_key_indices),
 		"group_source_key_index_count": group_source_key_indices.size(),
 		"source_keys": source_keys,
@@ -6321,25 +5832,11 @@ func _release_scene_voxel_source_candidate_resident_buffers() -> void:
 	_scene_voxel_source_candidate_group_indices_capacity = 0
 	_scene_voxel_source_candidate_group_indices_count = 0
 
-func _release_resolved_scene_voxel_source_stream_buffers() -> void:
-	if _resolved_auto_scene_voxel_sources_buffer.is_valid():
-		release_rid(_resolved_auto_scene_voxel_sources_buffer, false)
-	if _resolved_brush_scene_voxel_sources_buffer.is_valid():
-		release_rid(_resolved_brush_scene_voxel_sources_buffer, false)
-	_resolved_auto_scene_voxel_sources_buffer = RID()
-	_resolved_brush_scene_voxel_sources_buffer = RID()
-	_resolved_scene_voxel_source_stream_capacity = 0
-	_clear_resolved_scene_voxel_source_stream_counts()
-
 func _clear_scene_voxel_source_candidate_resident_counts() -> void:
 	_scene_voxel_source_candidate_records_count = 0
 	_scene_voxel_source_candidate_ranges_count = 0
 	_scene_voxel_source_candidate_payloads_count = 0
 	_scene_voxel_source_candidate_group_indices_count = 0
-
-func _clear_resolved_scene_voxel_source_stream_counts() -> void:
-	_resolved_scene_voxel_source_stream_count = 0
-	_resolved_scene_voxel_source_stream_keys.clear()
 
 func _stage_scene_voxel_source_candidate_records(bytes: PackedByteArray, record_count: int) -> bool:
 	if _rd == null or record_count <= 0:
@@ -6540,52 +6037,6 @@ func _stage_scene_voxel_source_candidate_resident_buffers(
 	_scene_voxel_source_candidate_staging_epoch += 1
 	return true
 
-func _zero_resident_scene_voxel_source_stream_buffer(buffer: RID, byte_count: int) -> bool:
-	if _rd == null or not buffer.is_valid():
-		return false
-	var zero_bytes := PackedByteArray()
-	zero_bytes.resize(maxi(byte_count, 4))
-	return _rd.buffer_update(buffer, 0, zero_bytes.size(), zero_bytes) == OK
-
-func _prepare_resolved_scene_voxel_source_stream_buffers(source_keys: Array) -> bool:
-	if _rd == null or source_keys.is_empty():
-		_clear_resolved_scene_voxel_source_stream_counts()
-		return false
-	var required_capacity := maxi(source_keys.size(), 1)
-	var byte_capacity := maxi(required_capacity * SCENE_VOXEL_SOURCE_PAYLOAD_STRIDE_BYTES, 4)
-	if not _resolved_auto_scene_voxel_sources_buffer.is_valid() \
-			or not _resolved_brush_scene_voxel_sources_buffer.is_valid() \
-			or _resolved_scene_voxel_source_stream_capacity < required_capacity:
-		_release_resolved_scene_voxel_source_stream_buffers()
-		var zero_bytes := PackedByteArray()
-		zero_bytes.resize(byte_capacity)
-		_resolved_auto_scene_voxel_sources_buffer = storage_buffer_from_bytes(
-			zero_bytes,
-			SCOPE_PERSISTENT,
-			"resolved_auto_scene_voxel_sources"
-		)
-		_resolved_brush_scene_voxel_sources_buffer = storage_buffer_from_bytes(
-			zero_bytes,
-			SCOPE_PERSISTENT,
-			"resolved_brush_scene_voxel_sources"
-		)
-		if not _resolved_auto_scene_voxel_sources_buffer.is_valid() or not _resolved_brush_scene_voxel_sources_buffer.is_valid():
-			_release_resolved_scene_voxel_source_stream_buffers()
-			return false
-		_resolved_scene_voxel_source_stream_capacity = required_capacity
-	else:
-		var existing_byte_capacity := maxi(
-			_resolved_scene_voxel_source_stream_capacity * SCENE_VOXEL_SOURCE_PAYLOAD_STRIDE_BYTES,
-			4
-		)
-		if not _zero_resident_scene_voxel_source_stream_buffer(_resolved_auto_scene_voxel_sources_buffer, existing_byte_capacity) \
-				or not _zero_resident_scene_voxel_source_stream_buffer(_resolved_brush_scene_voxel_sources_buffer, existing_byte_capacity):
-			_clear_resolved_scene_voxel_source_stream_counts()
-			return false
-	_resolved_scene_voxel_source_stream_count = source_keys.size()
-	_resolved_scene_voxel_source_stream_keys = source_keys.duplicate()
-	return true
-
 func stage_pending_scene_voxel_source_candidates_to_resident_buffers() -> Dictionary:
 	var groups := _pending_scene_voxel_source_candidate_groups()
 	var report := {
@@ -6723,36 +6174,14 @@ func _scene_voxel_source_candidate_resident_diagnostics(staged: bool) -> Diction
 		"resident_source_candidate_staging_epoch": _scene_voxel_source_candidate_staging_epoch,
 	}
 
-func _resolved_scene_voxel_source_stream_diagnostics(resident: bool) -> Dictionary:
-	var resident_ready := (
-		resident
-		and _resolved_auto_scene_voxel_sources_buffer.is_valid()
-		and _resolved_brush_scene_voxel_sources_buffer.is_valid()
-		and _resolved_scene_voxel_source_stream_count > 0
-		and _resolved_scene_voxel_source_stream_keys.size() == _resolved_scene_voxel_source_stream_count
-	)
-	if not resident_ready:
-		return {
-			"runtime_read_source": "none",
-			"final_source_stream_resident": false,
-			"final_source_stream_resident_source": "none",
-			"final_source_stream_resident_owner": "none",
-			"final_source_stream_resident_epoch": _resolved_scene_voxel_source_stream_epoch,
-			"final_source_stream_resident_count": 0,
-			"final_source_stream_resident_stride_bytes": 0,
-			"resident_auto_source_stream_buffer_rid": "none",
-			"resident_brush_source_stream_buffer_rid": "none",
-		}
+func _resolved_scene_voxel_source_stream_diagnostics(_resident: bool) -> Dictionary:
 	return {
-		"runtime_read_source": "resident_resolved_source_stream_buffers",
-		"final_source_stream_resident": true,
+		"runtime_read_source": "merged_resolve_commit",
+		"final_source_stream_resident": _committed_scene_voxel_payload_buffer.is_valid(),
 		"final_source_stream_resident_source": "resolve_scene_voxel_sources.glsl",
 		"final_source_stream_resident_owner": "SceneVoxelCommitter",
-		"final_source_stream_resident_epoch": _resolved_scene_voxel_source_stream_epoch,
-		"final_source_stream_resident_count": _resolved_scene_voxel_source_stream_count,
-		"final_source_stream_resident_stride_bytes": SCENE_VOXEL_SOURCE_PAYLOAD_STRIDE_BYTES,
-		"resident_auto_source_stream_buffer_rid": str(_resolved_auto_scene_voxel_sources_buffer),
-		"resident_brush_source_stream_buffer_rid": str(_resolved_brush_scene_voxel_sources_buffer),
+		"final_source_stream_resident_count": _committed_scene_voxel_payload_buffer_count,
+		"final_source_stream_resident_stride_bytes": SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE * 4,
 	}
 
 func _scene_voxel_source_candidate_cpu_bridge_diagnostics(
@@ -6801,7 +6230,7 @@ func _source_candidate_beats_projection(candidate: Dictionary, current: Dictiona
 		return true
 	if candidate_priority < current_priority:
 		return false
-	return SceneVoxelPayloadScript.voxel_complexity(candidate) >= SceneVoxelPayloadScript.voxel_complexity(current)
+	return SceneVoxelScript.complexity(candidate) >= SceneVoxelScript.complexity(current)
 
 func _selected_source_candidate_for_public_projection(candidates: Array) -> Dictionary:
 	var selected := {}
@@ -6834,8 +6263,6 @@ func _try_resolve_scene_voxel_source_candidates_gpu(groups: Array[Dictionary]) -
 
 		return {}
 
-	_clear_resolved_scene_voxel_source_stream_counts()
-
 	if not _gpu_ready or _rd == null:
 		_init_gpu()
 
@@ -6849,11 +6276,15 @@ func _try_resolve_scene_voxel_source_candidates_gpu(groups: Array[Dictionary]) -
 
 	var packed := _pack_scene_voxel_source_candidate_groups(groups)
 	var candidate_count := int(packed.get("candidate_count", 0))
-	var range_count := int(packed.get("range_count", groups.size()))
+	var range_count := int(packed.get("range_count", 0))
 	var source_keys: Array = packed.get("source_keys", [])
 	var source_key_count := int(packed.get("source_key_count", source_keys.size()))
 
 	if candidate_count <= 0:
+
+		return {}
+
+	if source_key_count <= 0:
 
 		return {}
 
@@ -6873,9 +6304,25 @@ func _try_resolve_scene_voxel_source_candidates_gpu(groups: Array[Dictionary]) -
 
 		return {}
 
-	if not _prepare_resolved_scene_voxel_source_stream_buffers(source_keys):
+	var output_float_stride := SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE
+	var output_byte_count := source_key_count * output_float_stride * 4
 
-		return {}
+	var committed_payload_buffer: RID
+	var committed_payload_reused := false
+
+	if _committed_scene_voxel_payload_buffer.is_valid() and _committed_scene_voxel_payload_buffer_byte_count == output_byte_count:
+		var zero_bytes := PackedByteArray()
+		zero_bytes.resize(output_byte_count)
+		if _rd.buffer_update(_committed_scene_voxel_payload_buffer, 0, output_byte_count, zero_bytes) == OK:
+			committed_payload_buffer = _committed_scene_voxel_payload_buffer
+			committed_payload_reused = true
+
+	if not committed_payload_reused:
+		_release_committed_scene_voxel_payload_buffer()
+		committed_payload_buffer = storage_buffer_zero(output_byte_count, SCOPE_PERSISTENT, "committed_scene_voxel_payloads")
+		if not committed_payload_buffer.is_valid():
+			gc_frame()
+			return {}
 
 	var candidate_buffer := _scene_voxel_source_candidate_records_buffer
 
@@ -6885,23 +6332,15 @@ func _try_resolve_scene_voxel_source_candidates_gpu(groups: Array[Dictionary]) -
 
 	var group_source_key_index_buffer := _scene_voxel_source_candidate_group_indices_buffer
 
-	var auto_source_output_buffer := _resolved_auto_scene_voxel_sources_buffer
-
-	var brush_source_output_buffer := _resolved_brush_scene_voxel_sources_buffer
-
-	var winners_buffer := storage_buffer_zero(groups.size() * 4, SCOPE_FRAME, "resolve_source_winner_indices")
-
 	if not candidate_buffer.is_valid() \
 			or not ranges_buffer.is_valid() \
 			or not candidate_payload_buffer.is_valid() \
-			or not group_source_key_index_buffer.is_valid() \
-			or not auto_source_output_buffer.is_valid() \
-			or not brush_source_output_buffer.is_valid() \
-			or not winners_buffer.is_valid():
+			or not group_source_key_index_buffer.is_valid():
 
+		if not committed_payload_reused:
+			release_rid(committed_payload_buffer, false)
+		_committed_scene_voxel_payload_buffer = RID()
 		gc_frame()
-
-		_clear_resolved_scene_voxel_source_stream_counts()
 
 		return {}
 
@@ -6911,23 +6350,18 @@ func _try_resolve_scene_voxel_source_candidates_gpu(groups: Array[Dictionary]) -
 
 		make_storage_uniform(1, ranges_buffer),
 
-		make_storage_uniform(2, winners_buffer),
+		make_storage_uniform(2, candidate_payload_buffer),
 
-		make_storage_uniform(3, candidate_payload_buffer),
-
-		make_storage_uniform(4, group_source_key_index_buffer),
-
-		make_storage_uniform(5, auto_source_output_buffer),
-
-		make_storage_uniform(6, brush_source_output_buffer),
+		make_storage_uniform(3, committed_payload_buffer),
 
 	], _shader_resolve_scene_sources, 0, SCOPE_PASS, "resolve_scene_sources")
 
 	if not set0.is_valid():
 
+		if not committed_payload_reused:
+			release_rid(committed_payload_buffer, false)
+		_committed_scene_voxel_payload_buffer = RID()
 		gc_frame()
-
-		_clear_resolved_scene_voxel_source_stream_counts()
 
 		return {}
 
@@ -6935,18 +6369,40 @@ func _try_resolve_scene_voxel_source_candidates_gpu(groups: Array[Dictionary]) -
 
 	push.resize(16)
 
-	push.encode_s32(0, groups.size())
+	push.encode_s32(0, source_key_count)
 	push.encode_s32(4, SCENE_VOXEL_COMMIT_SOURCE_FLOAT_STRIDE)
-	push.encode_s32(8, source_key_count)
+	push.encode_s32(8, output_float_stride)
 
-	var dispatch_groups := dispatch_groups_1d(groups.size(), 64)
+	var dispatch_groups := dispatch_groups_1d(source_key_count, 64)
 
 	if not _gpu_dispatch_and_sync(_pipeline_resolve_scene_sources, [set0], push, dispatch_groups):
+		if not committed_payload_reused:
+			release_rid(committed_payload_buffer, false)
+			_committed_scene_voxel_payload_buffer = RID()
 		gc_frame()
-		_clear_resolved_scene_voxel_source_stream_counts()
 		return {}
 
-	_resolved_scene_voxel_source_stream_epoch += 1
+	_committed_scene_voxel_payload_buffer = committed_payload_buffer
+	_committed_scene_voxel_payload_buffer_count = source_key_count
+	_committed_scene_voxel_payload_buffer_byte_count = output_byte_count
+	_committed_scene_voxel_payload_buffer_source = "resolve_scene_voxel_sources_merged"
+	_committed_scene_voxel_payload_buffer_commit_tick = _committed_tick
+
+	# Stage matching key_coord buffer so blend shader can map slot→voxel.
+	_release_committed_scene_voxel_key_coord_buffer()
+	var key_coord_bytes := _pack_committed_scene_voxel_key_coord_bytes(source_keys)
+	var key_coord_byte_count := source_key_count * SCENE_VOXEL_COMMITTED_KEY_COORD_STRIDE_BYTES
+	var key_coord_buffer := storage_buffer_from_bytes(
+		key_coord_bytes,
+		SCOPE_PERSISTENT,
+		"committed_scene_voxel_key_coords"
+	)
+	if key_coord_buffer.is_valid():
+		_committed_scene_voxel_key_coord_buffer = key_coord_buffer
+		_committed_scene_voxel_key_coord_buffer_count = source_key_count
+		_committed_scene_voxel_key_coord_buffer_byte_count = key_coord_byte_count
+		_committed_scene_voxel_key_coord_buffer_commit_tick = _committed_tick
+		_committed_scene_voxel_key_coord_buffer_source = "resolve_scene_voxel_sources_merged"
 
 	gc_frame()
 
@@ -7187,7 +6643,7 @@ func _gc_frame_preserving_rids(preserved_rids: Array) -> void:
 			entry["scope"] = str(preserved.get("scope", SCOPE_FRAME))
 
 func _reduce_scene_voxel_tile_summaries_gpu(
-	scene_field: PackedFloat32Array,
+	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
 	xz_res: int,
 	total_slices: int,
@@ -7199,11 +6655,11 @@ func _reduce_scene_voxel_tile_summaries_gpu(
 		return {}
 
 	var contract_voxel_count := int(buffer_contract.get("voxel_count", 0))
-	var prebound_scene_buffer: RID = buffer_contract.get("scene_field_buffer", buffer_contract.get("scene_buffer", RID()))
+	var prebound_complexity_buffer: RID = buffer_contract.get("complexity_field_buffer", buffer_contract.get("complexity_buffer", RID()))
 	var prebound_collision_buffer: RID = buffer_contract.get("collision_field_buffer", buffer_contract.get("collision_buffer", RID()))
-	var use_prebound_scene_buffer := prebound_scene_buffer.is_valid() and contract_voxel_count == voxel_count
+	var use_prebound_complexity_buffer := prebound_complexity_buffer.is_valid() and contract_voxel_count == voxel_count
 	var use_prebound_collision_buffer := prebound_collision_buffer.is_valid() and contract_voxel_count == voxel_count
-	if not use_prebound_scene_buffer and scene_field.size() != voxel_count:
+	if not use_prebound_complexity_buffer and complexity_field.size() != voxel_count:
 		return {}
 	if not use_prebound_collision_buffer and collision_field.size() != voxel_count:
 		return {}
@@ -7224,11 +6680,11 @@ func _reduce_scene_voxel_tile_summaries_gpu(
 		return {}
 
 	var preserved_buffers: Array = []
-	var scene_buffer := prebound_scene_buffer
-	if use_prebound_scene_buffer:
-		preserved_buffers.append(scene_buffer)
+	var complexity_buffer := prebound_complexity_buffer
+	if use_prebound_complexity_buffer:
+		preserved_buffers.append(complexity_buffer)
 	else:
-		scene_buffer = storage_buffer_from_floats(scene_field, SCOPE_FRAME, "scene_voxel_tile_summary_scene_field")
+		complexity_buffer = storage_buffer_from_floats(complexity_field, SCOPE_FRAME, "scene_voxel_tile_summary_complexity_field")
 
 	var collision_buffer := prebound_collision_buffer
 	if use_prebound_collision_buffer:
@@ -7239,7 +6695,7 @@ func _reduce_scene_voxel_tile_summaries_gpu(
 	var summary_buffer := storage_buffer_zero(tile_count * SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE * 4, SCOPE_FRAME, "scene_voxel_tile_summary_counts")
 	var compact_buffer := storage_buffer_zero(tile_count * SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE * 4, SCOPE_FRAME, "scene_voxel_tile_summary_compact")
 	var compact_counter_buffer := storage_buffer_zero(4, SCOPE_FRAME, "scene_voxel_tile_summary_compact_counter")
-	if not scene_buffer.is_valid() or not collision_buffer.is_valid() or not summary_buffer.is_valid() or not compact_buffer.is_valid() or not compact_counter_buffer.is_valid():
+	if not complexity_buffer.is_valid() or not collision_buffer.is_valid() or not summary_buffer.is_valid() or not compact_buffer.is_valid() or not compact_counter_buffer.is_valid():
 		_gc_frame_preserving_rids(preserved_buffers)
 		return {}
 
@@ -7251,7 +6707,7 @@ func _reduce_scene_voxel_tile_summaries_gpu(
 		return {}
 
 	var set0 := create_uniform_set([
-		make_storage_uniform(0, scene_buffer),
+		make_storage_uniform(0, complexity_buffer),
 		make_storage_uniform(1, collision_buffer),
 		make_storage_uniform(2, summary_buffer),
 	], _shader_reduce_scene_voxel_tile_summaries, 0, SCOPE_PASS, "reduce_scene_voxel_tile_summaries")
@@ -7353,7 +6809,6 @@ func _apply_scene_voxel_tile_reduce_summaries(reduced: Dictionary) -> void:
 		tile["collision_cell_count"] = collision_count
 		tile["scene_minmax"] = summary.get("scene_minmax", Vector2.ZERO)
 		tile["collision_minmax"] = summary.get("collision_minmax", Vector2.ZERO)
-		tile["non_empty"] = scene_count > 0 or collision_count > 0
 		tile["summary"] = _scene_voxel_tile_summary(tile)
 		_scene_voxel_tiles[tile_id] = tile
 	if not summaries.is_empty():
@@ -7426,40 +6881,40 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 	var collision: Dictionary = _volume.get("collision", {})
 
-	var expected_scene_field_count := xz_res * xz_res * total_slices
+	var expected_complexity_field_count := xz_res * xz_res * total_slices
 
-	var scene_field_buffer_scope := "_rebuild_sv_scene_field_buffer"
+	var complexity_field_buffer_scope := "_rebuild_sv_complexity_field_buffer"
 
-	gc_scope(scene_field_buffer_scope)
+	gc_scope(complexity_field_buffer_scope)
 
-	var scene_field_result := _try_make_sv_scene_field_from_source_streams_gpu_result(xz_res, total_slices, scene_field_buffer_scope)
+	var complexity_field_result := _try_make_sv_complexity_field_from_source_streams_gpu_result(xz_res, total_slices, complexity_field_buffer_scope)
 
-	var scene_field: PackedFloat32Array = scene_field_result.get("field", PackedFloat32Array())
+	var complexity_field: PackedFloat32Array = complexity_field_result.get("field", PackedFloat32Array())
 
-	var scene_field_buffer: RID = scene_field_result.get("scene_field_buffer", RID())
+	var complexity_field_buffer: RID = complexity_field_result.get("complexity_field_buffer", RID())
 
-	var scene_field_source := str(scene_field_result.get("scene_field_source", scene_field_result.get("source_stream_buffer_source", "auto_brush_source_stream_compute")))
-	var scene_field_runtime_read_source := str(scene_field_result.get("scene_field_runtime_read_source", "none"))
-	var scene_field_projection_mode := str(scene_field_result.get("scene_field_projection_mode", "auto_brush_source_stream_scatter"))
-	var scene_field_committed_payload_projection := bool(scene_field_result.get("scene_field_committed_payload_projection", false))
-	var scene_field_committed_payload_count := int(scene_field_result.get("scene_field_committed_payload_count", 0))
-	var scene_field_committed_key_coord_count := int(scene_field_result.get("scene_field_committed_key_coord_count", 0))
-	var scene_field_final_source_stream_resident := bool(scene_field_result.get("final_source_stream_resident", false))
-	var scene_field_final_source_stream_epoch := int(scene_field_result.get("final_source_stream_resident_epoch", 0))
+	var complexity_field_source := str(complexity_field_result.get("complexity_field_source", complexity_field_result.get("source_stream_buffer_source", "auto_brush_source_stream_compute")))
+	var complexity_field_runtime_read_source := str(complexity_field_result.get("complexity_field_runtime_read_source", "none"))
+	var complexity_field_projection_mode := str(complexity_field_result.get("complexity_field_projection_mode", "auto_brush_source_stream_scatter"))
+	var complexity_field_committed_payload_projection := bool(complexity_field_result.get("complexity_field_committed_payload_projection", false))
+	var complexity_field_committed_payload_count := int(complexity_field_result.get("complexity_field_committed_payload_count", 0))
+	var complexity_field_committed_key_coord_count := int(complexity_field_result.get("complexity_field_committed_key_coord_count", 0))
+	var complexity_field_final_source_stream_resident := bool(complexity_field_result.get("final_source_stream_resident", false))
+	var complexity_field_final_source_stream_epoch := int(complexity_field_result.get("final_source_stream_resident_epoch", 0))
 
-	if scene_field.size() != expected_scene_field_count and not scene_field_buffer.is_valid():
-		## Scene field compute failed and no resident buffer RID available as fallback.
-		push_error("[SceneVoxelCommitter] SV scene field compute failed")
-		scene_field = PackedFloat32Array()
-		scene_field_buffer = RID()
-		scene_field_source = "auto_brush_source_stream_compute_failed"
-		scene_field_runtime_read_source = "none"
-		scene_field_projection_mode = "failed"
-		scene_field_committed_payload_projection = false
-		scene_field_committed_payload_count = 0
-		scene_field_committed_key_coord_count = 0
-		scene_field_final_source_stream_resident = false
-		scene_field_final_source_stream_epoch = 0
+	if complexity_field.size() != expected_complexity_field_count and not complexity_field_buffer.is_valid():
+		## Complexity field compute failed and no resident buffer RID available as fallback.
+		push_error("[SceneVoxelCommitter] SV complexity field compute failed")
+		complexity_field = PackedFloat32Array()
+		complexity_field_buffer = RID()
+		complexity_field_source = "auto_brush_source_stream_compute_failed"
+		complexity_field_runtime_read_source = "none"
+		complexity_field_projection_mode = "failed"
+		complexity_field_committed_payload_projection = false
+		complexity_field_committed_payload_count = 0
+		complexity_field_committed_key_coord_count = 0
+		complexity_field_final_source_stream_resident = false
+		complexity_field_final_source_stream_epoch = 0
 
 	var collision_field := _make_sv_collision_field(collision, xz_res, total_slices)
 
@@ -7501,15 +6956,15 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 	_reset_scene_voxel_tile_summaries()
 
 	var summary_buffer_contract := {
-		"voxel_count": expected_scene_field_count,
+		"voxel_count": expected_complexity_field_count,
 	}
-	if scene_field_buffer.is_valid():
-		summary_buffer_contract["scene_field_buffer"] = scene_field_buffer
+	if complexity_field_buffer.is_valid():
+		summary_buffer_contract["complexity_field_buffer"] = complexity_field_buffer
 	if collision_summary_buffer.is_valid():
 		summary_buffer_contract["collision_field_buffer"] = collision_summary_buffer
 
 	var scene_voxel_tile_summary := _reduce_scene_voxel_tile_summaries_gpu(
-		scene_field,
+		complexity_field,
 		collision_summary_field,
 		xz_res,
 		total_slices,
@@ -7523,7 +6978,7 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 		_apply_scene_voxel_tile_reduce_summaries(scene_voxel_tile_summary)
 
 	var legacy_tile_summary := _reduce_scene_voxel_tile_summaries_gpu(
-		scene_field,
+		complexity_field,
 		collision_summary_field,
 		xz_res,
 		total_slices,
@@ -7536,7 +6991,7 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 	else:
 		tiles = _legacy_sv_tiles_from_reduce_summaries(legacy_tile_summary, tile_size, dirty_tiles_snapshot)
 
-	gc_scope(scene_field_buffer_scope)
+	gc_scope(complexity_field_buffer_scope)
 
 	gc_scope(collision_summary_buffer_scope)
 
@@ -7558,28 +7013,28 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 		"runtime_read_source": "none",
 
-		"scene_field_runtime_read_source": scene_field_runtime_read_source,
+		"complexity_field_runtime_read_source": complexity_field_runtime_read_source,
 
-		"scene_field_buffer_resident": scene_field_buffer.is_valid(),
-		"scene_field_buffer_rid": str(scene_field_buffer) if scene_field_buffer.is_valid() else "none",
+		"complexity_field_buffer_resident": complexity_field_buffer.is_valid(),
+		"complexity_field_buffer_rid": str(complexity_field_buffer) if complexity_field_buffer.is_valid() else "none",
 
 		"collision_field_runtime_read_source": "resident_gpu_buffer" if collision_summary_buffer.is_valid() else "cpu_computed",
 
-		"scene_field_staging_source": "sv_owner_control_snapshot",
+		"complexity_field_staging_source": "sv_owner_control_snapshot",
 
-		"scene_field_source": scene_field_source,
+		"complexity_field_source": complexity_field_source,
 
-		"scene_field_projection_mode": scene_field_projection_mode,
+		"complexity_field_projection_mode": complexity_field_projection_mode,
 
-		"scene_field_committed_payload_projection": scene_field_committed_payload_projection,
+		"complexity_field_committed_payload_projection": complexity_field_committed_payload_projection,
 
-		"scene_field_committed_payload_count": scene_field_committed_payload_count,
+		"complexity_field_committed_payload_count": complexity_field_committed_payload_count,
 
-		"scene_field_committed_key_coord_count": scene_field_committed_key_coord_count,
+		"complexity_field_committed_key_coord_count": complexity_field_committed_key_coord_count,
 
-		"scene_field_final_source_stream_resident": scene_field_final_source_stream_resident,
+		"complexity_field_final_source_stream_resident": complexity_field_final_source_stream_resident,
 
-		"scene_field_final_source_stream_resident_epoch": scene_field_final_source_stream_epoch,
+		"complexity_field_final_source_stream_resident_epoch": complexity_field_final_source_stream_epoch,
 
 		"committed_scene_voxel_payload_buffer_summary": committed_payload_summary,
 
@@ -7605,7 +7060,7 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 		"public_scene_voxel_projection_runtime_owner": bool(committed_payload_summary.get("public_scene_voxel_projection_runtime_owner", false)),
 
-		"public_scene_voxel_projection_scene_field_source": bool(committed_payload_summary.get("public_scene_voxel_projection_scene_field_source", false)),
+		"public_scene_voxel_projection_complexity_field_source": bool(committed_payload_summary.get("public_scene_voxel_projection_complexity_field_source", false)),
 
 		"public_scene_voxel_projection_runtime_read_source": committed_payload_summary.get("public_scene_voxel_projection_runtime_read_source", "none"),
 
@@ -7631,7 +7086,7 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 		"grid_origin": grid_origin,  # world-space grid origin
 
-		"scene_field": scene_field,  # lazy CPU debug projection; primary state in scene_field_buffer RID
+		"complexity_field": complexity_field,  # lazy CPU debug projection; primary state in complexity_field_buffer RID
 
 		"collision_field": collision_field,  # lazy CPU debug projection; primary state in collision_summary_buffer RID
 
@@ -7668,8 +7123,6 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 		"scene_voxel_tile_gpu_autoobject_ref_count": _scene_voxel_tile_gpu_autoobject_refs.size(),
 
 		"scene_voxel_tile_object_ids_debug": _scene_voxel_tile_object_ids_debug.duplicate(),
-
-		"scene_voxel_tile_source_ids_debug": _scene_voxel_tile_source_ids_debug.duplicate(),
 
 		"scene_voxel_tiles": _scene_voxel_tiles.duplicate(true),
 
@@ -7854,16 +7307,8 @@ func apply_voxel_write_spec(record: Dictionary, defer_blend: bool = false, gener
 
 	return rec
 
-## DEPRECATED: CPU dictionary bridge. Prefer apply_accepted_placement_source_buffer().
-func apply_instance_stamp_write_spec(record: Dictionary, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
-
-	return apply_voxel_write_spec(record, defer_blend, generation_tick)
-
 func apply_voxel_write_specs(records: Array, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
 	return _apply_voxel_write_spec_batch(records, defer_blend, generation_tick, "apply_voxel_write_specs")
-
-func apply_instance_stamp_write_specs(records: Array, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
-	return _apply_voxel_write_spec_batch(records, defer_blend, generation_tick, "apply_instance_stamp_write_specs")
 
 ## GPU-resident entry point: directly ingest accepted placement source buffer from VPG.
 ## Called by VPG/GPUAutoObjectRuntime to hand off accepted placement buffer
@@ -8014,8 +7459,6 @@ func clear_all() -> void:
 
 	_voxel_write_spec_index.clear()
 
-	_scene_state_by_tick.clear()
-
 	_scene_source_metadata.clear()
 
 	_clear_scene_voxel_source_streams()
@@ -8031,8 +7474,6 @@ func clear_all() -> void:
 	_scene_voxel_tile_gpu_autoobject_refs.clear()
 
 	_scene_voxel_tile_object_ids_debug.clear()
-
-	_scene_voxel_tile_source_ids_debug.clear()
 
 	_scene_voxel_tile_object_ref_last_update_stats.clear()
 
@@ -8078,8 +7519,6 @@ var _voxel_write_specs: Array[Dictionary] = []
 
 var _voxel_write_spec_index: Dictionary = {}
 
-var _scene_state_by_tick: Dictionary = {}
-
 var _scene_source_metadata: Dictionary = {}
 
 var _auto_scene_voxel_sources: Dictionary = {}
@@ -8116,18 +7555,6 @@ var _scene_voxel_source_candidate_group_indices_count := 0
 
 var _scene_voxel_source_candidate_staging_epoch := 0
 
-var _resolved_auto_scene_voxel_sources_buffer: RID
-
-var _resolved_brush_scene_voxel_sources_buffer: RID
-
-var _resolved_scene_voxel_source_stream_capacity := 0
-
-var _resolved_scene_voxel_source_stream_count := 0
-
-var _resolved_scene_voxel_source_stream_epoch := 0
-
-var _resolved_scene_voxel_source_stream_keys: Array = []
-
 var _last_scene_voxel_source_resolve_summary: Dictionary = {}
 
 var _last_blend_scene_voxel_commit_summary: Dictionary = {}
@@ -8163,8 +7590,6 @@ var _scene_voxel_tiles: Dictionary = {}
 var _scene_voxel_tile_gpu_autoobject_refs: Dictionary = {}
 
 var _scene_voxel_tile_object_ids_debug: Array[String] = []
-
-var _scene_voxel_tile_source_ids_debug: Array[String] = []
 
 var _scene_voxel_tile_epoch: int = 0
 
@@ -8380,7 +7805,7 @@ func blend_scene_voxels(tick: int = -1) -> Dictionary:
 
 		var previous_on_resolve_failure := {}
 
-		var raw_previous_on_resolve_failure = _scene_state_by_tick.get(_committed_tick, {})
+		var raw_previous_on_resolve_failure = _volume.get("scene_voxels", {})
 
 		if raw_previous_on_resolve_failure is Dictionary:
 
@@ -8423,11 +7848,11 @@ func blend_scene_voxels(tick: int = -1) -> Dictionary:
 
 		push_error("[SceneVoxelCommitter] GPU SceneVoxel source resolve dispatch failed")
 
-		return SceneVoxelPayloadScript.public_map(previous_on_resolve_failure)
+		return SceneVoxelScript.accepted_map(previous_on_resolve_failure)
 
 	var previous_scene_voxels := {}
 
-	var raw_previous = _scene_state_by_tick.get(_committed_tick, {})
+	var raw_previous = _volume.get("scene_voxels", {})
 
 	if raw_previous is Dictionary:
 
@@ -8449,7 +7874,7 @@ func blend_scene_voxels(tick: int = -1) -> Dictionary:
 
 		_scene_source_metadata.clear()
 
-	var payload_blend_mode := "commit_scene_voxel_payloads_compute"
+	var payload_blend_mode := "merged_resolve_commit_gpu"
 
 	var gpu_payload_result := _try_blend_scene_voxel_commit_payloads_gpu(source_keys, commit_tick)
 	var gpu_payloads: PackedFloat32Array = gpu_payload_result.get("payloads", PackedFloat32Array())
@@ -8473,7 +7898,7 @@ func blend_scene_voxels(tick: int = -1) -> Dictionary:
 
 			"mode": "compute_dispatch_failed",
 
-			"payload_blend_mode": "commit_scene_voxel_payloads_failed",
+			"payload_blend_mode": "merged_resolve_commit_failed",
 
 			"dirty_tile_count": dirty_scene_voxel_tiles.size(),
 
@@ -8505,7 +7930,7 @@ func blend_scene_voxels(tick: int = -1) -> Dictionary:
 
 		push_error("[SceneVoxelCommitter] GPU SceneVoxel payload blend dispatch failed")
 
-		return SceneVoxelPayloadScript.public_map(previous_scene_voxels)
+		return SceneVoxelScript.accepted_map(previous_scene_voxels)
 
 	_last_blend_scene_voxel_commit_summary = {
 		"ok": true,
@@ -8540,7 +7965,6 @@ func blend_scene_voxels(tick: int = -1) -> Dictionary:
 
 	_rebuild_shared_field_cache_from_scene_voxels(final_scene_voxels)
 
-	_scene_state_by_tick[commit_tick] = final_scene_voxels.duplicate(true)
 
 	_committed_tick = max(_committed_tick, commit_tick)
 
@@ -8550,78 +7974,85 @@ func blend_scene_voxels(tick: int = -1) -> Dictionary:
 
 	_rebuild_sv()
 
-	return SceneVoxelPayloadScript.public_map(final_scene_voxels)
+	return SceneVoxelScript.accepted_map(final_scene_voxels)
+
+func _empty_blendsv_feedback_result(target_role: String) -> Dictionary:
+	return {
+		"stage": "post_commit_blendsv_feedback",
+		"target_role": target_role,
+		"score": 0.0,
+		"sample_count": 0,
+		"scene_occupied_count": 0,
+		"target_occupied_count": 0,
+		"overlap_occupied_count": 0,
+	}
+
 
 func score_blendsv_feedback_against_target(
-
-	target_occupancy: PackedFloat32Array,
-
+	target_field: PackedFloat32Array,
 	target_role: String = "TargetSV_B",
-
 	threshold: float = VOXEL_OCCUPIED_EPSILON
-
 ) -> Dictionary:
-	var result := _score_blendsv_feedback_against_target_gpu(target_occupancy, target_role, threshold)
+	var result := _score_blendsv_feedback_against_target_gpu(target_field, target_role, threshold)
 
 	if not result.is_empty():
 		return result
 
 	push_error("[SceneVoxelCommitter] BlendSV feedback score compute failed")
 
-	return SceneVoxelFeedbackScript.empty_result(target_role)
+	return _empty_blendsv_feedback_result(target_role)
 
 func _score_blendsv_feedback_against_target_gpu(
-	target_occupancy: PackedFloat32Array,
+	target_field: PackedFloat32Array,
 	target_role: String,
 	threshold: float = VOXEL_OCCUPIED_EPSILON
 ) -> Dictionary:
-
-	if _volume.is_empty() or target_occupancy.is_empty():
-
-		return SceneVoxelFeedbackScript.empty_result(target_role)
+	if _volume.is_empty() or target_field.is_empty():
+		return _empty_blendsv_feedback_result(target_role)
 
 	var xz_res := int(_volume.get("xz_res", grid_size.x))
-
 	var total_slices := int(_volume.get("total_slices", grid_size.y))
-
 	var voxel_count := xz_res * xz_res * total_slices
-
-	var sample_count := mini(voxel_count, target_occupancy.size())
+	var sample_count := mini(voxel_count, target_field.size())
 
 	if sample_count <= 0:
 
-		return SceneVoxelFeedbackScript.empty_result(target_role)
+		return _empty_blendsv_feedback_result(target_role)
 
 	if not _gpu_ready or _rd == null or not _shader_score_scene_voxel_feedback.is_valid() or not _pipeline_score_scene_voxel_feedback.is_valid():
 
 		return {}
 
-	var scene_field := _scene_voxel_tile_packed_float_field(_sv.get("scene_field", PackedFloat32Array())) if not _sv.is_empty() else PackedFloat32Array()
+	var complexity_field := _scene_voxel_tile_packed_float_field(_sv.get("complexity_field", PackedFloat32Array())) if not _sv.is_empty() else PackedFloat32Array()
+	var collision_field := _scene_voxel_tile_packed_float_field(_sv.get("collision_field", PackedFloat32Array())) if not _sv.is_empty() else PackedFloat32Array()
 
-	if scene_field.size() < sample_count:
+	if complexity_field.size() < sample_count:
 
-		scene_field = _try_make_sv_scene_field_from_source_streams_gpu(xz_res, total_slices)
+		complexity_field = _try_make_sv_complexity_field_from_source_streams_gpu(xz_res, total_slices)
 
-	if scene_field.size() < sample_count:
+	if complexity_field.size() < sample_count:
 
 		return {}
 
-	var scene_buffer := storage_buffer_from_floats(scene_field, SCOPE_FRAME, "feedback_scene_field")
+	if collision_field.size() < sample_count:
+		collision_field.resize(sample_count)
 
-	var target_buffer := storage_buffer_from_floats(target_occupancy, SCOPE_FRAME, "feedback_target_field")
-
+	var complexity_buffer := storage_buffer_from_floats(complexity_field, SCOPE_FRAME, "feedback_complexity_field")
+	var collision_buffer := storage_buffer_from_floats(collision_field, SCOPE_FRAME, "feedback_collision_field")
+	var target_buffer := storage_buffer_from_floats(target_field, SCOPE_FRAME, "feedback_target_field")
 	var stats_buffer := storage_buffer_zero(8 * 4, SCOPE_FRAME, "feedback_stats")
 
-	if not scene_buffer.is_valid() or not target_buffer.is_valid() or not stats_buffer.is_valid():
+	if not complexity_buffer.is_valid() or not collision_buffer.is_valid() or not target_buffer.is_valid() or not stats_buffer.is_valid():
 
 		gc_frame()
 
 		return {}
 
 	var set0 := create_uniform_set([
-		make_storage_uniform(0, scene_buffer),
-		make_storage_uniform(1, target_buffer),
-		make_storage_uniform(2, stats_buffer),
+		make_storage_uniform(0, complexity_buffer),
+		make_storage_uniform(1, collision_buffer),
+		make_storage_uniform(2, target_buffer),
+		make_storage_uniform(3, stats_buffer),
 	], _shader_score_scene_voxel_feedback, 0, SCOPE_PASS, "score_scene_voxel_feedback")
 
 	if not set0.is_valid():
@@ -9006,7 +8437,7 @@ func get_scene_voxels() -> Dictionary:
 
 	var scene_voxels: Dictionary = _volume.get("scene_voxels", {})
 
-	return SceneVoxelPayloadScript.public_map(scene_voxels)
+	return SceneVoxelScript.accepted_map(scene_voxels)
 
 func get_sv() -> Dictionary:
 
@@ -9679,7 +9110,7 @@ func get_scene_voxel(slice_index: int, voxel_xz: Vector2i) -> Dictionary:
 
 	if scene_voxel is Dictionary:
 
-		return SceneVoxelPayloadScript.public_payload(scene_voxel as Dictionary)
+		return SceneVoxelScript.accepted(scene_voxel as Dictionary)
 
 	return {}
 
@@ -9763,28 +9194,28 @@ func _reduce_scene_voxel_stats_gpu(xz_res: int, total_slices: int) -> Dictionary
 		return {}
 
 	var scene_voxels: Dictionary = _volume.get("scene_voxels", {})
-	var use_scene_buffer := false
+	var use_complexity_buffer := false
 	var scene_source := "volume_slice_texture"
-	var scene_field := PackedFloat32Array()
+	var complexity_field := PackedFloat32Array()
 	if not scene_voxels.is_empty():
-		scene_field = _scene_voxel_tile_packed_float_field(_sv.get("scene_field", PackedFloat32Array())) if not _sv.is_empty() else PackedFloat32Array()
-		if scene_field.size() != voxel_count:
-			scene_field = _try_make_sv_scene_field_from_source_streams_gpu(xz_res, total_slices)
-		if scene_field.size() != voxel_count:
+		complexity_field = _scene_voxel_tile_packed_float_field(_sv.get("complexity_field", PackedFloat32Array())) if not _sv.is_empty() else PackedFloat32Array()
+		if complexity_field.size() != voxel_count:
+			complexity_field = _try_make_sv_complexity_field_from_source_streams_gpu(xz_res, total_slices)
+		if complexity_field.size() != voxel_count:
 			return {}
-		use_scene_buffer = true
-		scene_source = "resident_scene_field_buffer"
+		use_complexity_buffer = true
+		scene_source = "resident_complexity_field_buffer"
 
 	var scene_slices := _voxel_reduce_slice_images(xz_res, total_slices)
-	if use_scene_buffer:
+	if use_complexity_buffer:
 		if scene_slices.is_empty():
 			scene_slices = [_empty_rf_image()]
 	else:
 		if scene_slices.is_empty():
 			return {}
-		scene_field.resize(1)
+		complexity_field.resize(1)
 
-	var scene_buffer := storage_buffer_from_floats(scene_field, SCOPE_FRAME, "voxel_stats_scene_field")
+	var complexity_buffer := storage_buffer_from_floats(complexity_field, SCOPE_FRAME, "voxel_stats_complexity_field")
 	var scene_tex := upload_texture_3d_from_images(
 		scene_slices,
 		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
@@ -9804,12 +9235,12 @@ func _reduce_scene_voxel_stats_gpu(xz_res: int, total_slices: int) -> Dictionary
 	)
 	var count_slots := total_slices + 1
 	var counts_buffer := storage_buffer_zero(count_slots * 4, SCOPE_FRAME, "voxel_stats_counts")
-	if not scene_buffer.is_valid() or not scene_tex.is_valid() or not collision_tex.is_valid() or not counts_buffer.is_valid():
+	if not complexity_buffer.is_valid() or not scene_tex.is_valid() or not collision_tex.is_valid() or not counts_buffer.is_valid():
 		gc_frame()
 		return {}
 
 	var set0 := create_uniform_set([
-		make_storage_uniform(0, scene_buffer),
+		make_storage_uniform(0, complexity_buffer),
 		make_sampler_uniform(1, _sampler, scene_tex),
 		make_sampler_uniform(2, _sampler, collision_tex),
 		make_storage_uniform(3, counts_buffer),
@@ -9824,7 +9255,7 @@ func _reduce_scene_voxel_stats_gpu(xz_res: int, total_slices: int) -> Dictionary
 	push.encode_s32(4, total_slices)
 	push.encode_s32(8, voxel_count)
 	push.encode_s32(12, count_slots)
-	push.encode_s32(16, 1 if use_scene_buffer else 0)
+	push.encode_s32(16, 1 if use_complexity_buffer else 0)
 	push.encode_s32(20, collision_img.get_width())
 	push.encode_s32(24, collision_img.get_height())
 	push.encode_s32(28, 0)
@@ -9948,8 +9379,6 @@ func reset_occupancy() -> void:
 
 	_voxel_write_spec_index.clear()
 
-	_scene_state_by_tick.clear()
-
 	_scene_source_metadata.clear()
 
 	_clear_scene_voxel_source_streams()
@@ -9965,8 +9394,6 @@ func reset_occupancy() -> void:
 	_scene_voxel_tile_gpu_autoobject_refs.clear()
 
 	_scene_voxel_tile_object_ids_debug.clear()
-
-	_scene_voxel_tile_source_ids_debug.clear()
 
 	_scene_voxel_tile_object_ref_last_update_stats.clear()
 
@@ -10108,9 +9535,9 @@ func get_voxel_column(px: int, pz: int) -> Array[Dictionary]:
 		var voxel_key := SceneVoxelSourceRecordScript.scene_voxel_key(i, Vector2i(px, pz))
 		var scene_voxel = scene_voxels.get(voxel_key, {})
 		if scene_voxel is Dictionary:
-			var payload: Dictionary = SceneVoxelPayloadScript.public_payload(scene_voxel as Dictionary)
-			if payload.has("collision"):
-				entry["collision"] = payload.get("collision", [])
+			var accepted_fields: Dictionary = SceneVoxelScript.accepted(scene_voxel as Dictionary)
+			if accepted_fields.has("collision"):
+				entry["collision"] = accepted_fields.get("collision", [])
 		column.append(entry)
 
 	return column

@@ -1,6 +1,7 @@
 extends SceneTree
 
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
+const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 
@@ -11,7 +12,7 @@ func _init() -> void:
 	var ok := true
 	ok = _test_descriptor_backed_asset_semantics() and ok
 	ok = _test_shared_field_collision_contract() and ok
-	ok = _test_committed_scene_voxel_minimal_payload() and ok
+	ok = _test_committed_scene_voxel_accepted_fields() and ok
 	ok = _test_terrain_collision_survives_zero_complexity_writes() and ok
 	ok = _test_channel_stays_out_of_shared_semantics() and ok
 	ok = _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() and ok
@@ -36,9 +37,7 @@ func _test_descriptor_backed_asset_semantics() -> bool:
 	var descriptor := AutoVoxelDescriptor.new()
 	var descriptor_color := Color(0.10, 0.20, 0.30, 0.35)
 	descriptor.set_color_and_complexity(descriptor_color, 0.35)
-	descriptor.set_collision([
-		{"voxel": Vector3i(1, 0, 0), "collision_strength": 0.75, "weight": 1.0},
-	])
+	descriptor.set_collision([])
 
 	var obj := AutoObject.new()
 	obj.name = "descriptor_contract_object"
@@ -48,12 +47,10 @@ func _test_descriptor_backed_asset_semantics() -> bool:
 	# semantic reads or record construction.
 	obj.voxel_color = Color(0.90, 0.10, 0.10, 0.90)
 	obj.voxel_complexity = 0.90
-	obj.collision = [
-		{"voxel": Vector3i(3, 0, 0), "collision_strength": 0.20},
-	]
+	obj.collision = []
 
 	var got_color := obj.get_voxel_color()
-	if not _approx_color(got_color, descriptor_color):
+	if not got_color.is_equal_approx(descriptor_color):
 		push_error("  FAIL: descriptor-backed color was not authoritative: %s" % str(got_color))
 		obj.free()
 		return false
@@ -69,7 +66,7 @@ func _test_descriptor_backed_asset_semantics() -> bool:
 
 	var record := obj.make_instance_stamp_write_spec("descriptor_contract_record", Vector2i(4, 4), 8)
 	var record_color: Color = record.get("color", Color.TRANSPARENT)
-	if not _approx_color(record_color, descriptor_color):
+	if not record_color.is_equal_approx(descriptor_color):
 		push_error("  FAIL: voxel_write_spec record did not use descriptor color: %s" % str(record_color))
 		obj.free()
 		return false
@@ -78,8 +75,9 @@ func _test_descriptor_backed_asset_semantics() -> bool:
 		obj.free()
 		return false
 	var record_collision: Array = record.get("collision", [])
-	if record_collision.is_empty() or record_collision[0].get("voxel", Vector3i.ZERO) != Vector3i(1, 0, 0):
-		push_error("  FAIL: voxel_write_spec record did not use descriptor collision: %s" % str(record_collision))
+	# Non-terrain collision removed; record should have empty collision.
+	if not record_collision.is_empty():
+		push_error("  FAIL: voxel_write_spec record should have empty collision for non-terrain: %s" % str(record_collision))
 		obj.free()
 		return false
 
@@ -96,9 +94,7 @@ func _test_shared_field_collision_contract() -> bool:
 			push_error("  FAIL: SHARED_FIELD_KEYS is missing '%s'" % key)
 			ok = false
 
-	var collision := [
-		{"voxel": Vector3i.ZERO, "collision_strength": 0.5},
-	]
+	var collision := []
 	var normalized: Dictionary = SharedPropertyTypeScript.normalize_shared_fields({
 		"color": Color(0.4, 0.5, 0.6, 0.9),
 		"complexity": 0.9,
@@ -123,15 +119,15 @@ func _test_shared_field_collision_contract() -> bool:
 	return ok
 
 
-func _test_committed_scene_voxel_minimal_payload() -> bool:
-	print("[MarkdownContracts] test_committed_scene_voxel_minimal_payload...")
+func _test_committed_scene_voxel_accepted_fields() -> bool:
+	print("[MarkdownContracts] test_committed_scene_voxel_accepted_fields...")
 	if not _has_rendering_device():
-		_record_gpu_skip("no RenderingDevice available for committed SceneVoxel payload")
+		_record_gpu_skip("no RenderingDevice available for committed SceneVoxel contract")
 		return true
 
 	var committer = SceneVoxelCommitterScript.new(16, 16.0, false)
 	var record := {
-		"id": "minimal_payload_rock",
+		"id": "accepted_fields_rock",
 		"type": "rock",
 		"source_voxel_type": "AutoSceneVoxel",
 		"position": Vector3.ZERO,
@@ -145,7 +141,7 @@ func _test_committed_scene_voxel_minimal_payload() -> bool:
 		"radius": 2.0,
 	}
 
-	committer.apply_instance_stamp_write_spec(record)
+	committer.apply_voxel_write_spec(record)
 	committer.build_voxel_volume(8, [
 		{"channel": 0, "color": Color(0.2, 0.6, 0.8, 0.7), "complexity": 0.7, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
 	])
@@ -167,13 +163,12 @@ func _test_committed_scene_voxel_minimal_payload() -> bool:
 		push_error("  FAIL: committed SceneVoxel color.a should match complexity")
 		ok = false
 
-	for forbidden_key in ["occupied", "type", "source_type", "source_voxel_type", "commit_tick", "channel"]:
-		if committed.has(forbidden_key):
-			push_error("  FAIL: committed SceneVoxel still stores non-minimal field '%s'" % forbidden_key)
-			ok = false
+	if not SceneVoxelScript.has_only_accepted_fields(committed):
+		push_error("  FAIL: committed SceneVoxel contains fields outside accepted SV contract: %s" % str(committed))
+		ok = false
 
 	if ok:
-		print("  OK: committed SceneVoxel payload is minimal and occupancy is derived")
+		print("  OK: committed SceneVoxel accepts only SV-owned fields and occupancy is derived")
 	return ok
 
 
@@ -195,17 +190,11 @@ func _test_terrain_collision_survives_zero_complexity_writes() -> bool:
 		"volume_xz_resolution": 8,
 		"color": Color(0.4, 0.4, 0.4, 1.0),
 		"complexity": 1.0,
-		"collision": [{
-			"shape": "cylinder",
-			"radius": 1.0,
-			"y_min": 0.0,
-			"y_max": 1.0,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 		"channel": 0,
 		"radius": 1.0,
 	}
-	committer.apply_instance_stamp_write_spec(record)
+	committer.apply_voxel_write_spec(record)
 	committer.build_voxel_volume(8, [
 		{"channel": 0, "color": Color(0.4, 0.4, 0.4, 1.0), "complexity": 1.0, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
 	])
@@ -278,7 +267,7 @@ func _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() -
 		"routing graph": _read_text("res://docs/graphs/voxel-semantic-routing.svg"),
 	}
 
-	for required in ["sv.get(\"scene_field\"", "sv.get(\"collision_field\"", "get_semantic_probes"]:
+	for required in ["sv.get(\"complexity_field\"", "sv.get(\"collision_field\"", "get_semantic_probes"]:
 		if prefilter_source.find(required) < 0:
 			push_error("  FAIL: probe prefilter source is missing '%s'" % required)
 			ok = false
@@ -530,7 +519,7 @@ func _test_runtime_read_sources_reject_staging_success() -> bool:
 	var ok := true
 	var descriptor := AutoVoxelDescriptor.new()
 	descriptor.set_color_and_complexity(Color(0.15, 0.25, 0.35, 1.0), 0.5)
-	descriptor.set_collision([{"voxel": Vector3i.ZERO, "collision_strength": 0.5}])
+	descriptor.set_collision([])
 
 	var container = RuntimeProfileContainerScript.new()
 	var profile_id: int = container.register_descriptor(descriptor, 1.0)
@@ -622,8 +611,8 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 	for required in [
 		"PROFILE_TABLE_BUFFER := \"profile_table\"",
 		"PROBE_RECORD_BUFFER := \"probe_records\"",
-		"COLLISION_RECORD_BUFFER := \"collision_records\"",
 		"PIVOT_RECORD_BUFFER := \"pivot_records\"",
+		"COLLISION_RECORD_BUFFER := \"collision_records\"",
 		"upload_profiles",
 		"is_runtime_ready",
 		"readback_debug_snapshot",
@@ -758,10 +747,3 @@ func _read_text(path: String) -> String:
 	return file.get_as_text()
 
 
-func _approx_color(actual: Color, expected: Color, eps: float = 0.001) -> bool:
-	return (
-		absf(actual.r - expected.r) <= eps
-		and absf(actual.g - expected.g) <= eps
-		and absf(actual.b - expected.b) <= eps
-		and absf(actual.a - expected.a) <= eps
-	)

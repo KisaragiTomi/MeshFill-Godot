@@ -41,6 +41,7 @@ const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profil
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const SceneVoxelBrushScript := preload("res://scripts/scene_voxel_brush.gd")
 const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
+const TARGET_SV_GENERATOR_PATH := "res://scripts/target_scene_voxel_generator.gd"
 
 var _raw_target_height_image: Image
 var _raw_current_height_image: Image
@@ -1124,7 +1125,7 @@ func _make_autoobject_activity_mask_gpu(occupancy: Image) -> Image:
 		compute.dispose()
 		return null
 	var rd: RenderingDevice = compute.get_rendering_device()
-	var shader := compute.load_compute_shader("res://shaders/vegetation_all_channel_mask.glsl")
+	var shader := compute.load_compute_shader("res://shaders/autoobject_occupancy_mask.glsl")
 	var pipeline := compute.create_compute_pipeline(shader)
 	if not shader.is_valid() or not pipeline.is_valid():
 		compute.dispose()
@@ -1190,103 +1191,6 @@ func _make_autoobject_activity_mask_gpu(occupancy: Image) -> Image:
 	compute.dispose()
 	return result
 
-
-func _make_vegetation_channel_mask(channel: int) -> Image:
-	var mask := Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
-	mask.fill(Color(0.0, 0.0, 0.0, 0.0))
-	if _scene_voxel_committer == null or channel < 0 or channel >= 4:
-		return mask
-	var occupancy: Image = _scene_voxel_committer.get_occupancy()
-	return _make_vegetation_channel_mask_from_occupancy(occupancy, channel)
-
-
-func _make_vegetation_channel_mask_from_occupancy(occupancy: Image, channel: int) -> Image:
-	var gpu_mask := _make_vegetation_channel_mask_gpu(occupancy, channel)
-	if gpu_mask != null and not gpu_mask.is_empty():
-		return gpu_mask
-	var mask := Image.create(TEX_RES, TEX_RES, false, Image.FORMAT_RF)
-	mask.fill(Color(0.0, 0.0, 0.0, 0.0))
-	if occupancy != null and not occupancy.is_empty() and channel >= 0 and channel < 4:
-		push_error("[MeshFill] Vegetation channel mask GPU compute failed")
-	return mask
-
-
-func _make_vegetation_channel_mask_gpu(occupancy: Image, channel: int) -> Image:
-	if occupancy == null or occupancy.is_empty() or channel < 0 or channel >= 4:
-		return null
-	var probe_rd := RenderingServer.create_local_rendering_device()
-	if probe_rd == null:
-		return null
-	probe_rd.free()
-
-	var compute = ComputeShaderBaseScript.new()
-	compute.log_name = "VegetationChannelMask"
-	if not compute.ensure_device(true, false):
-		compute.dispose()
-		return null
-	var rd: RenderingDevice = compute.get_rendering_device()
-	var shader := compute.load_compute_shader("res://shaders/vegetation_channel_mask.glsl")
-	var pipeline := compute.create_compute_pipeline(shader)
-	if not shader.is_valid() or not pipeline.is_valid():
-		compute.dispose()
-		return null
-
-	var sampler := compute.create_linear_sampler()
-	var occupancy_tex := compute.upload_texture_2d(
-		occupancy,
-		RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT,
-		Image.FORMAT_RGBAH,
-		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
-		ComputeShaderBaseScript.SCOPE_FRAME,
-		"vegetation_occupancy_rgba16f"
-	)
-	var out_tex := compute.create_rw_texture_2d(
-		TEX_RES,
-		TEX_RES,
-		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
-		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
-		ComputeShaderBaseScript.SCOPE_FRAME,
-		"vegetation_channel_mask_r32f"
-	)
-	if not sampler.is_valid() or not occupancy_tex.is_valid() or not out_tex.is_valid():
-		compute.dispose()
-		return null
-
-	var set0 := compute.create_uniform_set([
-		compute.make_sampler_uniform(0, sampler, occupancy_tex),
-	], shader, 0)
-	var set1 := compute.create_uniform_set([
-		compute.make_image_uniform(0, out_tex),
-	], shader, 1)
-
-	var push := PackedByteArray()
-	push.resize(32)
-	push.encode_s32(0, TEX_RES)
-	push.encode_s32(4, TEX_RES)
-	push.encode_s32(8, occupancy.get_width())
-	push.encode_s32(12, occupancy.get_height())
-	push.encode_s32(16, channel)
-	push.encode_float(20, 0.01)
-	push.encode_float(24, 0.0)
-	push.encode_float(28, 0.0)
-
-	var groups := ceili(float(TEX_RES) / 32.0)
-	var cl := compute.begin_compute_list()
-	if cl < 0:
-		compute.dispose()
-		return null
-	rd.compute_list_bind_compute_pipeline(cl, pipeline)
-	rd.compute_list_bind_uniform_set(cl, set0, 0)
-	rd.compute_list_bind_uniform_set(cl, set1, 1)
-	rd.compute_list_set_push_constant(cl, push, push.size())
-	rd.compute_list_dispatch(cl, groups, groups, 1)
-	compute.end_compute_list()
-	compute.submit_and_sync()
-
-	var data := rd.texture_get_data(out_tex, 0)
-	var result := Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, data)
-	compute.dispose()
-	return result
 
 
 func _import_object_mask_to_scene_voxel_committer() -> void:
@@ -2583,6 +2487,128 @@ func _load_persisted_target_scene_voxel_variant(target_role: String) -> bool:
 	return true
 
 
+func _safe_load_target_sv_generator() -> Object:
+	if TARGET_SV_GENERATOR_PATH.is_empty():
+		return null
+	if not FileAccess.file_exists(TARGET_SV_GENERATOR_PATH):
+		push_warning("[main] TargetSceneVoxelGenerator script not found at: %s" % TARGET_SV_GENERATOR_PATH)
+		return null
+	var generator_script: Resource = load(TARGET_SV_GENERATOR_PATH)
+	if generator_script == null:
+		push_warning("[main] Failed to load TargetSceneVoxelGenerator script")
+		return null
+	return generator_script.new()
+
+
+func _default_derive_target_packed_buffers(
+	visual_bytes: PackedByteArray,
+	collision_bytes: PackedByteArray,
+	tex_size: int,
+	slice_count: int,
+	use_collision_as_occupancy: bool,
+	_occupancy_bytes: PackedByteArray
+) -> Dictionary:
+	var voxel_count := maxi(tex_size, 1) * maxi(slice_count, 1) * maxi(tex_size, 1)
+	var expected_visual_bytes := voxel_count * 16
+	var expected_scalar_bytes := voxel_count * 4
+	var occupancy_out := PackedByteArray()
+	var color_rgba8_out := PackedByteArray()
+	occupancy_out.resize(expected_scalar_bytes)
+	color_rgba8_out.resize(expected_scalar_bytes)
+	var max_occupancy := 0.0
+	var active_voxel_count := 0
+	for i in range(voxel_count):
+		var complexity := 0.0
+		if visual_bytes.size() >= (i + 1) * 16:
+			complexity = visual_bytes.decode_float(i * 16 + 12)
+		var collision := 0.0
+		if collision_bytes.size() >= (i + 1) * 4:
+			collision = collision_bytes.decode_float(i * 4)
+		var occupancy := maxf(clampf(complexity, 0.0, 1.0), clampf(collision, 0.0, 1.0))
+		occupancy_out.encode_float(i * 4, occupancy)
+		if occupancy > 0.001:
+			active_voxel_count += 1
+			max_occupancy = maxf(max_occupancy, occupancy)
+		var r := 0.0
+		var g := 0.0
+		var b := 0.0
+		if visual_bytes.size() >= (i + 1) * 16:
+			r = clampf(visual_bytes.decode_float(i * 16 + 0), 0.0, 1.0)
+			g = clampf(visual_bytes.decode_float(i * 16 + 4), 0.0, 1.0)
+			b = clampf(visual_bytes.decode_float(i * 16 + 8), 0.0, 1.0)
+		var rgba8_word := (int(r * 255.0) << 24) | (int(g * 255.0) << 16) | (int(b * 255.0) << 8) | int(complexity * 255.0)
+		color_rgba8_out.encode_u32(i * 4, rgba8_word)
+	return {
+		"ok": true,
+		"reason": "ok",
+		"gpu_first": false,
+		"cpu_fallback": true,
+		"voxel_count": voxel_count,
+		"texture_size": tex_size,
+		"slice_count": slice_count,
+		"occupancy_format": "r32f",
+		"target_color_format": "rgba8_u32",
+		"target_occupancy_bytes": occupancy_out,
+		"target_color_rgba8_bytes": color_rgba8_out,
+		"max_occupancy": max_occupancy,
+		"active_voxel_count": active_voxel_count,
+		"target_occupancy_source": "cpu_default_visual_collision",
+	}
+
+
+func _default_generate_target_sv(
+	tex_size: int, slice_count: int, mh: float, cap_size: float, vert_span: float
+) -> Dictionary:
+	var voxel_count := maxi(tex_size, 1) * maxi(slice_count, 1) * maxi(tex_size, 1)
+	var visual_bytes := PackedByteArray()
+	var collision_bytes := PackedByteArray()
+	var occupancy_bytes := PackedByteArray()
+	var color_rgba8_bytes := PackedByteArray()
+	visual_bytes.resize(voxel_count * 16)
+	collision_bytes.resize(voxel_count * 4)
+	occupancy_bytes.resize(voxel_count * 4)
+	color_rgba8_bytes.resize(voxel_count * 4)
+	for i in range(voxel_count):
+		visual_bytes.encode_float(i * 16 + 0, 0.0)
+		visual_bytes.encode_float(i * 16 + 4, 0.0)
+		visual_bytes.encode_float(i * 16 + 8, 0.0)
+		visual_bytes.encode_float(i * 16 + 12, 0.0)
+		collision_bytes.encode_float(i * 4, 0.0)
+		occupancy_bytes.encode_float(i * 4, 0.0)
+		color_rgba8_bytes.encode_u32(i * 4, 0)
+	var preview_img := Image.create(tex_size, tex_size, false, Image.FORMAT_RGBA8)
+	preview_img.fill(Color(0.0, 0.0, 0.0, 0.0))
+	print("[TargetSV] Generated default CPU TargetSV (empty): tex=%d slices=%d" % [tex_size, slice_count])
+	return {
+		"valid": true,
+		"texture_size": tex_size,
+		"slice_count": slice_count,
+		"voxel_count": voxel_count,
+		"max_height": mh,
+		"capture_size": cap_size,
+		"vertical_span": vert_span,
+		"visual_format": "rgba32f",
+		"collision_format": "r32f",
+		"occupancy_format": "r32f",
+		"target_color_format": "rgba8_u32",
+		"visual_bytes": visual_bytes,
+		"collision_bytes": collision_bytes,
+		"target_occupancy_bytes": occupancy_bytes,
+		"target_color_rgba8_bytes": color_rgba8_bytes,
+		"max_occupancy": 0.0,
+		"max_collision": 0.0,
+		"active_voxel_count": 0,
+		"collision_voxel_count": 0,
+		"visual_voxel_count": 0,
+		"min_active_occupancy": 0.0,
+		"max_visual_complexity": 0.0,
+		"target_stats_source": "cpu_default_empty",
+		"preview_image": preview_img,
+		"gpu_generated": false,
+		"cpu_default": true,
+	}
+
+
 func _derive_target_sv_packed_buffers_if_needed(
 	target_role: String,
 	visual_bytes: PackedByteArray,
@@ -2610,15 +2636,26 @@ func _derive_target_sv_packed_buffers_if_needed(
 			"target_color_rgba8_bytes": color_rgba8_bytes,
 		}
 
-	var generator := TargetSceneVoxelGenerator.new()
-	var derived := generator.derive_target_packed_buffers(
-		visual_bytes,
-		collision_bytes,
-		tex_size,
-		slice_count,
-		true,
-		occupancy_bytes
-	)
+	var generator: Object = _safe_load_target_sv_generator()
+	var derived: Dictionary
+	if generator != null:
+		derived = generator.derive_target_packed_buffers(
+			visual_bytes,
+			collision_bytes,
+			tex_size,
+			slice_count,
+			true,
+			occupancy_bytes
+		)
+	else:
+		derived = _default_derive_target_packed_buffers(
+			visual_bytes,
+			collision_bytes,
+			tex_size,
+			slice_count,
+			true,
+			occupancy_bytes
+		)
 	if not bool(derived.get("ok", false)):
 		var reason := str(derived.get("reason", "unknown"))
 		if reason != "missing_rendering_device":
@@ -2680,44 +2717,51 @@ func _recompute_and_save_target_scene_voxel() -> void:
 		object_mask_img.fill(Color(0.0, 0.0, 0.0, 0.0))
 	var has_height_override := _has_mask_pixels(_override_mask)
 	var has_rock_override := _has_mask_pixels(_object_override_mask)
-	var generator := TargetSceneVoxelGenerator.new()
-	generator.texture_size = TEX_RES
-	generator.slice_count = TARGET_SV_SLICE_COUNT
-	generator.max_height = max_height
-	generator.capture_size = capture_size
-	generator.vertical_span = TARGET_SV_VERTICAL_SPAN
-	generator.slope_start = landscape_cliff_slope_start
-	generator.slope_full = landscape_cliff_slope_full
-	print("[TargetSV] Recomputing source TargetSV on GPU...")
-	var t0 := Time.get_ticks_msec()
-	var source_result := generator.generate(
-		scene_depth_tex.get_image(),
-		target_height_base.get_image(),
-		object_mask_img,
-		Rect2i(0, 0, TEX_RES, TEX_RES)
-	)
-	if source_result.is_empty():
-		push_error("[TargetSV] Source GPU recompute failed")
-		return
-	var saved_source := _save_target_scene_voxel(source_result, "TargetSV", false)
-	var target_height_b_tex := _composite_target_height()
-	var object_mask_b_img := _composite_object_mask()
-	var b_result := source_result
-	if has_height_override or has_rock_override:
-		print("[TargetSV_B] Recomputing brush-composited TargetSV_B on GPU...")
-		b_result = generator.generate(
+	var generator: Object = _safe_load_target_sv_generator()
+	if generator != null:
+		generator.texture_size = TEX_RES
+		generator.slice_count = TARGET_SV_SLICE_COUNT
+		generator.max_height = max_height
+		generator.capture_size = capture_size
+		generator.vertical_span = TARGET_SV_VERTICAL_SPAN
+		generator.slope_start = landscape_cliff_slope_start
+		generator.slope_full = landscape_cliff_slope_full
+		print("[TargetSV] Recomputing source TargetSV on GPU...")
+		var t0 := Time.get_ticks_msec()
+		var source_result: Dictionary = generator.generate(
 			scene_depth_tex.get_image(),
-			target_height_b_tex.get_image(),
-			object_mask_b_img,
+			target_height_base.get_image(),
+			object_mask_img,
 			Rect2i(0, 0, TEX_RES, TEX_RES)
 		)
-		if b_result.is_empty():
-			push_error("[TargetSV_B] GPU recompute failed")
+		if source_result.is_empty():
+			push_error("[TargetSV] Source GPU recompute failed")
 			return
-	var saved_b := _save_target_scene_voxel(b_result, "TargetSV_B", has_height_override or has_rock_override)
-	var elapsed := Time.get_ticks_msec() - t0
-	if saved_source and saved_b:
-		print("[TargetSV] Source + TargetSV_B recompute/save complete in %dms" % elapsed)
+		var saved_source := _save_target_scene_voxel(source_result, "TargetSV", false)
+		var target_height_b_tex := _composite_target_height()
+		var object_mask_b_img := _composite_object_mask()
+		var b_result: Dictionary = source_result
+		if has_height_override or has_rock_override:
+			print("[TargetSV_B] Recomputing brush-composited TargetSV_B on GPU...")
+			b_result = generator.generate(
+				scene_depth_tex.get_image(),
+				target_height_b_tex.get_image(),
+				object_mask_b_img,
+				Rect2i(0, 0, TEX_RES, TEX_RES)
+			)
+			if b_result.is_empty():
+				push_error("[TargetSV_B] GPU recompute failed")
+				return
+		var saved_b := _save_target_scene_voxel(b_result, "TargetSV_B", has_height_override or has_rock_override)
+		var elapsed := Time.get_ticks_msec() - t0
+		if saved_source and saved_b:
+			print("[TargetSV] Source + TargetSV_B recompute/save complete in %dms" % elapsed)
+	else:
+		var default_result := _default_generate_target_sv(TEX_RES, TARGET_SV_SLICE_COUNT, max_height, capture_size, TARGET_SV_VERTICAL_SPAN)
+		var saved_source := _save_target_scene_voxel(default_result, "TargetSV", false)
+		var saved_b := _save_target_scene_voxel(default_result, "TargetSV_B", false)
+		if saved_source and saved_b:
+			print("[TargetSV] Default CPU TargetSV saved (GPU generator unavailable)")
 	if _target_sv_debug_showing:
 		_build_target_scene_voxel_overlay()
 		if _target_sv_debug_terrain != null:

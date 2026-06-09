@@ -1,6 +1,7 @@
 extends SceneTree
 
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
+const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 const SceneVoxelCommitPayloadScript := preload("res://scripts/scene_voxel_commit_payload.gd")
 
 
@@ -40,13 +41,7 @@ func _init() -> void:
 		"scale": Vector3.ONE,
 		"color": Color(0.55, 0.50, 0.45, 1.0),
 		"complexity": 1.0,
-		"collision": [{
-			"shape": "cylinder",
-			"radius": 1.0,
-			"y_min": 0.0,
-			"y_max": 1.0,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 		"channel": 0,
 		"radius": 2.0,
 	}
@@ -133,48 +128,16 @@ func _init() -> void:
 		push_error("Voxel validation must not report CPU fallback")
 		quit(1)
 		return
-	var forbidden_public_payload_keys := [
-		"record_id",
-		"mesh_name",
-		"node_path",
-		"auto_source",
-		"auto_id",
-		"auto_instance_id",
-		"instance_id",
-		"instance_mesh_id",
-		"mesh_instance_id",
-		"channel",
-		"object_subtype",
-		"source_voxel_types",
-		"dominant_source_type",
-		"blend_mode",
-		"occupied",
-		"type",
-		"source_type",
-		"source_voxel_type",
-		"source_id",
-		"auto_object_id",
-		"commit_tick",
-		"write_tick",
-		"read_tick",
-		"generation_tick",
-		"value",
-		"debug",
-	]
-	for removed_key in forbidden_public_payload_keys:
-		if committed_center.has(removed_key):
-			push_error("Committed SceneVoxel still contains removed per-voxel field '%s'" % removed_key)
-			quit(1)
-			return
+	if not _assert_scene_voxel_accepted_fields(committed_center):
+		quit(1)
+		return
 	for raw_scene_voxel in scene_voxels.values():
 		if not raw_scene_voxel is Dictionary:
 			continue
-		var public_scene_voxel := raw_scene_voxel as Dictionary
-		for removed_key in forbidden_public_payload_keys:
-			if public_scene_voxel.has(removed_key):
-				push_error("Committed SceneVoxel map still contains removed per-voxel field '%s'" % removed_key)
-				quit(1)
-				return
+		var accepted_scene_voxel := raw_scene_voxel as Dictionary
+		if not _assert_scene_voxel_accepted_fields(accepted_scene_voxel):
+			quit(1)
+			return
 	var committed_collision = committed_center.get("collision", [])
 	if not committed_collision is Array or (committed_collision as Array).is_empty():
 		push_error("Expected committed payload collision summary to propagate to SceneVoxel")
@@ -334,6 +297,13 @@ func _has_rendering_device() -> bool:
 		return false
 	probe_rd.free()
 	return true
+
+
+func _assert_scene_voxel_accepted_fields(scene_voxel: Dictionary) -> bool:
+	if SceneVoxelScript.has_only_accepted_fields(scene_voxel):
+		return true
+	push_error("Committed SceneVoxel contains fields outside accepted SV contract: %s" % str(scene_voxel))
+	return false
 
 
 func _test_resample_collision_field_contract() -> bool:
@@ -523,13 +493,7 @@ func _make_dirty_scope_record(record_id: String, base_pixel: Vector2i, complexit
 		"scale": Vector3.ONE,
 		"color": Color(0.4, 0.4, 0.4, complexity),
 		"complexity": complexity,
-		"collision": [{
-			"shape": "cylinder",
-			"radius": 0.5,
-			"y_min": 0.0,
-			"y_max": 1.0,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 		"channel": 0,
 		"radius": 1.0,
 	}

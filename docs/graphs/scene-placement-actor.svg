@@ -186,7 +186,7 @@
     <g id="sv-resident-fields">
       <rect class="node" x="1270" y="160" width="300" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
       <text class="node-title" x="1288" y="188">SV[t - 1] resident fields</text>
-      <text class="small"><tspan x="1288" y="210">scene_field / collision_field</tspan><tspan x="1288" y="227">grid_size / voxel_size / origin</tspan><tspan x="1288" y="244">stable read input</tspan></text>
+      <text class="small"><tspan x="1288" y="210">complexity_field / collision_field</tspan><tspan x="1288" y="227">grid_size / voxel_size / origin</tspan><tspan x="1288" y="244">stable read input</tspan></text>
     </g>
 
     <g id="target-read-buffers">

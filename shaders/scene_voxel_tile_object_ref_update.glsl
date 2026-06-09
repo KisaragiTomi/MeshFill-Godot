@@ -119,7 +119,7 @@ const int MODE_PARALLEL_BY_DELTA = 1;
 const int DIRTY_FLAG_SCHEMA_SCENE_VOXEL_TILE = 0;
 const int DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME = 1;
 
-const uint SV_FLAG_SCENE = 1u;
+const uint SV_FLAG_COMPLEXITY = 1u;
 const uint SV_FLAG_COLLISION = 2u;
 const uint SV_FLAG_AUTO = 4u;
 const uint SV_FLAG_BRUSH = 8u;
@@ -132,7 +132,7 @@ const uint SV_FLAG_MASK = 512u;
 
 const uint RUNTIME_FLAG_AUTO = 1u;
 const uint RUNTIME_FLAG_OBJECT_REFS = 2u;
-const uint RUNTIME_FLAG_SCENE = 4u;
+const uint RUNTIME_FLAG_COMPLEXITY = 4u;
 const uint RUNTIME_FLAG_COLLISION = 8u;
 const uint RUNTIME_FLAG_TARGET = 16u;
 const uint RUNTIME_FLAG_ROUTING = 32u;
@@ -188,8 +188,8 @@ uint scene_voxel_tile_dirty_flags_from_delta(uint raw_bits) {
     uint flags = 0u;
 
     if (options.w == DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME) {
-        if ((raw_bits & RUNTIME_FLAG_SCENE) != 0u) {
-            flags |= SV_FLAG_SCENE;
+        if ((raw_bits & RUNTIME_FLAG_COMPLEXITY) != 0u) {
+            flags |= SV_FLAG_COMPLEXITY;
         }
         if ((raw_bits & RUNTIME_FLAG_COLLISION) != 0u) {
             flags |= SV_FLAG_COLLISION;
@@ -214,7 +214,7 @@ uint scene_voxel_tile_dirty_flags_from_delta(uint raw_bits) {
         }
     } else {
         flags = raw_bits & (
-            SV_FLAG_SCENE
+            SV_FLAG_COMPLEXITY
             | SV_FLAG_COLLISION
             | SV_FLAG_AUTO
             | SV_FLAG_BRUSH

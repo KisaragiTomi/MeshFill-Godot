@@ -36,17 +36,12 @@ func _test_gpu_prepare_trims_and_zero_fills() -> bool:
 	var expected_bytes := voxel_count * 4
 	var color_bytes := PackedByteArray()
 	color_bytes.resize(expected_bytes + 8)
-	var occupancy_values := PackedFloat32Array([0.15, 0.35, 0.55, 0.75])
-	var occupancy_bytes := occupancy_values.to_byte_array()
-	occupancy_bytes.resize(expected_bytes + 4)
 	for i in range(voxel_count):
 		color_bytes.encode_u32(i * 4, 0x10203040 + i)
-	occupancy_bytes.encode_float(expected_bytes, 99.0)
 
 	var actor := ScenePlacementActorScript.new()
 	var result := actor.prepare_target_read_buffers_from_common_gpu({
 		"target_color_rgba8_bytes": color_bytes,
-		"target_occupancy_bytes": occupancy_bytes,
 		"debug_read_target_read_buffer_bytes": true,
 	}, {"grid_size": grid_size})
 	actor.dispose(true)
@@ -67,22 +62,20 @@ func _test_gpu_prepare_trims_and_zero_fills() -> bool:
 		push_error("  FAIL: expected one dispatch group for four voxels")
 		return false
 
-	var out_color: PackedByteArray = result.get("target_color_rgba8_bytes", PackedByteArray())
-	var out_occupancy: PackedByteArray = result.get("target_occupancy_bytes", PackedByteArray())
-	if out_color.size() != expected_bytes or out_occupancy.size() != expected_bytes:
-		push_error("  FAIL: output byte size mismatch")
+	var out_field: PackedFloat32Array = result.get("target_field_bytes", PackedFloat32Array())
+	var field_floats := voxel_count * 4
+	if out_field.size() != field_floats:
+		push_error("  FAIL: output field float count mismatch (expected %d got %d)" % [field_floats, out_field.size()])
 		return false
 	for i in range(voxel_count):
-		if int(out_color.decode_u32(i * 4)) != 0x10203040 + i:
-			push_error("  FAIL: color word mismatch at %d" % i)
+		var base := i * 4
+		if out_field[base + 0] <= 0.0 and out_field[base + 1] <= 0.0 and out_field[base + 2] <= 0.0:
+			push_error("  FAIL: field color channels should be non-zero for given input at voxel %d" % i)
 			return false
-	var out_occupancy_values := out_occupancy.to_float32_array()
-	for i in range(voxel_count):
-		if absf(out_occupancy_values[i] - occupancy_values[i]) > 0.001:
-			push_error("  FAIL: occupancy word mismatch at %d" % i)
+		if out_field[base + 3] < 0.0 or out_field[base + 3] > 1.0:
+			push_error("  FAIL: field alpha (occupancy) out of range at voxel %d: %f" % [i, out_field[base + 3]])
 			return false
-	if str(result.get("target_color_source", "")) != "target_color_rgba8_bytes" \
-			or str(result.get("target_occupancy_source", "")) != "target_occupancy_bytes":
+	if str(result.get("target_field_source", "")) != "target_color_rgba8_bytes":
 		push_error("  FAIL: source metadata mismatch: %s" % str(result))
 		return false
 
@@ -94,14 +87,14 @@ func _test_gpu_prepare_trims_and_zero_fills() -> bool:
 	if not bool(missing.get("ok", false)):
 		push_error("  FAIL: missing-input zero-fill path failed: %s" % str(missing))
 		return false
-	var missing_color: PackedByteArray = missing.get("target_color_rgba8_bytes", PackedByteArray())
-	var missing_occupancy: PackedByteArray = missing.get("target_occupancy_bytes", PackedByteArray())
+	var missing_field: PackedFloat32Array = missing.get("target_field_bytes", PackedFloat32Array())
 	for i in range(voxel_count):
-		if int(missing_color.decode_u32(i * 4)) != 0 or absf(missing_occupancy.decode_float(i * 4)) > 0.001:
-			push_error("  FAIL: missing inputs should produce zero-filled buffers")
+		var base := i * 4
+		if absf(missing_field[base + 0]) > 0.001 or absf(missing_field[base + 1]) > 0.001 \
+				or absf(missing_field[base + 2]) > 0.001 or absf(missing_field[base + 3]) > 0.001:
+			push_error("  FAIL: missing inputs should produce zero-filled field")
 			return false
-	if str(missing.get("target_color_source", "")) != "zero_filled" \
-			or str(missing.get("target_occupancy_source", "")) != "zero_filled":
+	if str(missing.get("target_field_source", "")) != "zero_filled":
 		push_error("  FAIL: missing-input source metadata mismatch: %s" % str(missing))
 		return false
 
@@ -115,17 +108,13 @@ func _test_gpu_prepare_edge_guard() -> bool:
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
 	var expected_bytes := voxel_count * 4
 	var color_bytes := PackedByteArray()
-	var occupancy_bytes := PackedByteArray()
 	color_bytes.resize(expected_bytes)
-	occupancy_bytes.resize(expected_bytes)
 	for i in range(voxel_count):
 		color_bytes.encode_u32(i * 4, 0xA0000000 | i)
-		occupancy_bytes.encode_float(i * 4, float(i) / 100.0)
 
 	var actor := ScenePlacementActorScript.new()
 	var result := actor.prepare_target_read_buffers_from_common_gpu({
 		"target_color_rgba8_bytes": color_bytes,
-		"target_occupancy_bytes": occupancy_bytes,
 		"debug_read_target_read_buffer_bytes": true,
 	}, {"grid_size": grid_size})
 	actor.dispose(true)
@@ -136,16 +125,16 @@ func _test_gpu_prepare_edge_guard() -> bool:
 	if (result.get("dispatch_groups", Vector3i.ZERO) as Vector3i).x != 2:
 		push_error("  FAIL: expected ceil(75 / 64) = 2 dispatch groups")
 		return false
-	var out_color: PackedByteArray = result.get("target_color_rgba8_bytes", PackedByteArray())
-	var out_occupancy: PackedByteArray = result.get("target_occupancy_bytes", PackedByteArray())
-	if out_color.size() != expected_bytes or out_occupancy.size() != expected_bytes:
-		push_error("  FAIL: guarded output byte size mismatch")
+	var out_field: PackedFloat32Array = result.get("target_field_bytes", PackedFloat32Array())
+	if out_field.size() != voxel_count * 4:
+		push_error("  FAIL: guarded output field float count mismatch")
 		return false
-	if int(out_color.decode_u32(0)) != 0xA0000000 or int(out_color.decode_u32((voxel_count - 1) * 4)) != (0xA0000000 | (voxel_count - 1)):
-		push_error("  FAIL: guarded color output endpoints mismatch")
+	var last_base := (voxel_count - 1) * 4
+	if out_field[last_base + 0] <= 0.0 or out_field[last_base + 1] <= 0.0 or out_field[last_base + 2] <= 0.0:
+		push_error("  FAIL: guarded field color channels should be non-zero at last voxel")
 		return false
-	if absf(out_occupancy.decode_float((voxel_count - 1) * 4) - float(voxel_count - 1) / 100.0) > 0.001:
-		push_error("  FAIL: guarded occupancy output endpoint mismatch")
+	if out_field[last_base + 3] < 0.0 or out_field[last_base + 3] > 1.0:
+		push_error("  FAIL: guarded field alpha (occupancy) out of range at last voxel")
 		return false
 
 	print("  OK: non-multiple voxel count is edge-guarded")
@@ -158,17 +147,13 @@ func _test_gpu_prepare_resident_handoff_default_and_legacy_opt_out() -> bool:
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
 	var expected_bytes := voxel_count * 4
 	var color_bytes := PackedByteArray()
-	var occupancy_bytes := PackedByteArray()
 	color_bytes.resize(expected_bytes)
-	occupancy_bytes.resize(expected_bytes)
 	for i in range(voxel_count):
 		color_bytes.encode_u32(i * 4, 0xB0001000 | i)
-		occupancy_bytes.encode_float(i * 4, 0.25 + float(i) * 0.125)
 
 	var actor := ScenePlacementActorScript.new()
 	var result := actor.prepare_target_read_buffers_from_common_gpu({
 		"target_color_rgba8_bytes": color_bytes,
-		"target_occupancy_bytes": occupancy_bytes,
 	}, {"grid_size": grid_size})
 
 	if not bool(result.get("ok", false)):
@@ -188,22 +173,20 @@ func _test_gpu_prepare_resident_handoff_default_and_legacy_opt_out() -> bool:
 		actor.dispose(true)
 		push_error("  FAIL: resident handoff should default to zero-readback mode: %s" % str(result))
 		return false
-	var default_color_bytes: PackedByteArray = result.get("target_color_rgba8_bytes", PackedByteArray())
-	var default_occupancy_bytes: PackedByteArray = result.get("target_occupancy_bytes", PackedByteArray())
-	if not default_color_bytes.is_empty() or not default_occupancy_bytes.is_empty():
+	var default_field_bytes: PackedFloat32Array = result.get("target_field_bytes", PackedFloat32Array())
+	if not default_field_bytes.is_empty():
 		actor.dispose(true)
-		push_error("  FAIL: default resident handoff should leave CPU byte arrays empty")
+		push_error("  FAIL: default resident handoff should leave CPU field byte array empty")
 		return false
 
 	var summary: Dictionary = result.get("resident_target_read_buffer_handoff_summary", {})
 	if str(summary.get("owner", "")) != "ScenePlacementActor" \
-			or str(summary.get("target_color_rgba8_buffer_rid", "")) != "valid" \
-			or str(summary.get("target_occupancy_buffer_rid", "")) != "valid":
+			or str(summary.get("target_field_buffer_rid", "")) != "valid":
 		actor.dispose(true)
 		push_error("  FAIL: resident owner/RID diagnostics mismatch: %s" % str(summary))
 		return false
-	if int(summary.get("target_color_rgba8_byte_count", 0)) != expected_bytes \
-			or int(summary.get("target_occupancy_byte_count", 0)) != expected_bytes \
+	var field_byte_count := voxel_count * 16
+	if int(summary.get("target_field_byte_count", 0)) != field_byte_count \
 			or int(summary.get("voxel_count", 0)) != voxel_count:
 		actor.dispose(true)
 		push_error("  FAIL: resident byte/count diagnostics mismatch: %s" % str(summary))
@@ -214,30 +197,30 @@ func _test_gpu_prepare_resident_handoff_default_and_legacy_opt_out() -> bool:
 		return false
 
 	var rd := actor.get_rendering_device()
-	var color_rid: RID = result.get("target_color_rgba8_buffer", RID())
-	var occupancy_rid: RID = result.get("target_occupancy_buffer", RID())
-	if rd == null or not color_rid.is_valid() or not occupancy_rid.is_valid():
+	var field_rid: RID = result.get("target_field_buffer", RID())
+	if rd == null or not field_rid.is_valid():
 		actor.dispose(true)
 		push_error("  FAIL: resident RIDs must be borrowable before actor disposal")
 		return false
-	var resident_color := rd.buffer_get_data(color_rid, 0, expected_bytes)
-	var resident_occupancy := rd.buffer_get_data(occupancy_rid, 0, expected_bytes)
-	if resident_color.size() != expected_bytes or resident_occupancy.size() != expected_bytes:
+	var field_byte_count := voxel_count * 16
+	var resident_field := rd.buffer_get_data(field_rid, 0, field_byte_count)
+	if resident_field.size() != field_byte_count:
 		actor.dispose(true)
 		push_error("  FAIL: resident readback byte size mismatch")
 		return false
-	if int(resident_color.decode_u32((voxel_count - 1) * 4)) != (0xB0001000 | (voxel_count - 1)):
+	var resident_floats := resident_field.to_float32_array()
+	var last_base := (voxel_count - 1) * 4
+	if resident_floats[last_base + 0] <= 0.0 or resident_floats[last_base + 1] <= 0.0 or resident_floats[last_base + 2] <= 0.0:
 		actor.dispose(true)
-		push_error("  FAIL: resident color endpoint mismatch")
+		push_error("  FAIL: resident field color channels should be non-zero at last voxel")
 		return false
-	if absf(resident_occupancy.decode_float((voxel_count - 1) * 4) - (0.25 + float(voxel_count - 1) * 0.125)) > 0.001:
+	if resident_floats[last_base + 3] < 0.0 or resident_floats[last_base + 3] > 1.0:
 		actor.dispose(true)
-		push_error("  FAIL: resident occupancy endpoint mismatch")
+		push_error("  FAIL: resident field alpha (occupancy) out of range at last voxel")
 		return false
 
 	var normal := actor.prepare_target_read_buffers_from_common_gpu({
 		"target_color_rgba8_bytes": color_bytes,
-		"target_occupancy_bytes": occupancy_bytes,
 		"use_resident_target_read_buffer_handoff": false,
 	}, {"grid_size": grid_size})
 	actor.dispose(true)
@@ -246,14 +229,12 @@ func _test_gpu_prepare_resident_handoff_default_and_legacy_opt_out() -> bool:
 		return false
 	if bool(normal.get("resident_target_read_buffer_handoff", true)) \
 			or bool(normal.get("resident_target_read_buffer_handoff_opt_in", true)) \
-			or str(normal.get("resident_target_color_rgba8_buffer_rid", "")) != "none" \
-			or str(normal.get("resident_target_occupancy_buffer_rid", "")) != "none":
+			or str(normal.get("resident_target_field_buffer_rid", "")) != "none":
 		push_error("  FAIL: explicit legacy path must not claim resident handoff: %s" % str(normal))
 		return false
-	var legacy_color: PackedByteArray = normal.get("target_color_rgba8_bytes", PackedByteArray())
-	var legacy_occupancy: PackedByteArray = normal.get("target_occupancy_bytes", PackedByteArray())
-	if legacy_color.size() != expected_bytes or legacy_occupancy.size() != expected_bytes:
-		push_error("  FAIL: explicit legacy path should preserve byte readback: %s" % str(normal))
+	var legacy_field: PackedFloat32Array = normal.get("target_field_bytes", PackedFloat32Array())
+	if legacy_field.size() != voxel_count * 4:
+		push_error("  FAIL: explicit legacy path should preserve field byte readback: %s" % str(normal))
 		return false
 
 	print("  OK: default TargetSV read buffers stay ScenePlacementActor-owned and explicit legacy opt-out remains nonresident")
@@ -266,13 +247,10 @@ func _test_actor_pipeline_preserves_target_read_buffer_summaries() -> bool:
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
 	var expected_bytes := voxel_count * 4
 	var color_bytes := PackedByteArray()
-	var occupancy_bytes := PackedByteArray()
 	color_bytes.resize(expected_bytes)
-	occupancy_bytes.resize(expected_bytes)
 	color_bytes.encode_u32(0, 0x4488ccff)
-	occupancy_bytes.encode_float(0, 0.65)
 
-	var resident_result := _run_fake_pipeline_with_target_buffers(grid_size, color_bytes, occupancy_bytes, true)
+	var resident_result := _run_fake_pipeline_with_target_buffers(grid_size, color_bytes, true)
 	if resident_result.is_empty():
 		return false
 	if not _assert_pipeline_target_summary(resident_result.get("prefilter_result", {}), true, expected_bytes, "resident prefilter_result"):
@@ -282,7 +260,7 @@ func _test_actor_pipeline_preserves_target_read_buffer_summaries() -> bool:
 	if not _assert_pipeline_target_summary(resident_result, true, expected_bytes, "resident actor result"):
 		return false
 
-	var uploaded_result := _run_fake_pipeline_with_target_buffers(grid_size, color_bytes, occupancy_bytes, false)
+	var uploaded_result := _run_fake_pipeline_with_target_buffers(grid_size, color_bytes, false)
 	if uploaded_result.is_empty():
 		return false
 	if not _assert_pipeline_target_summary(uploaded_result.get("prefilter_result", {}), false, expected_bytes, "uploaded prefilter_result"):
@@ -302,14 +280,11 @@ func _test_vpg_blocks_failed_resident_target_borrow_without_bytes() -> bool:
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
 	var expected_bytes := voxel_count * 4
 	var color_bytes := PackedByteArray()
-	var occupancy_bytes := PackedByteArray()
 	color_bytes.resize(expected_bytes)
-	occupancy_bytes.resize(expected_bytes)
 
 	var actor := ScenePlacementActorScript.new()
 	var target_buffers := actor.prepare_target_read_buffers_from_common_gpu({
 		"target_color_rgba8_bytes": color_bytes,
-		"target_occupancy_bytes": occupancy_bytes,
 	}, {"grid_size": grid_size})
 	if not bool(target_buffers.get("resident_target_read_buffer_handoff", false)):
 		actor.dispose(true)
@@ -338,7 +313,7 @@ func _test_vpg_blocks_failed_resident_target_borrow_without_bytes() -> bool:
 	}]
 
 	var mismatch_buffers := target_buffers.duplicate(true)
-	mismatch_buffers["target_color_rgba8_byte_count"] = 4
+	mismatch_buffers["target_field_byte_count"] = 4
 	var result := generator.run_minimal(scene, collision, footprint, grid_size, {
 		"target_read_buffers": mismatch_buffers,
 		"top_k": 1,
@@ -365,7 +340,6 @@ func _test_vpg_blocks_failed_resident_target_borrow_without_bytes() -> bool:
 func _run_fake_pipeline_with_target_buffers(
 	grid_size: Vector3i,
 	color_bytes: PackedByteArray,
-	occupancy_bytes: PackedByteArray,
 	resident_handoff: bool
 ) -> Dictionary:
 	var actor := ScenePlacementActorScript.new()
@@ -375,11 +349,7 @@ func _run_fake_pipeline_with_target_buffers(
 
 	var descriptor := AutoVoxelDescriptorScript.new()
 	descriptor.asset_id = "target_read_buffer_pipeline_summary"
-	descriptor.set_collision([{
-		"voxel": Vector3i.ZERO,
-		"collision_strength": 1.0,
-		"weight": 1.0,
-	}])
+	descriptor.set_collision([])
 	if actor.register_asset(descriptor) < 0:
 		actor.dispose(true)
 		push_error("  FAIL: actor pipeline TargetSV fixture should register descriptor")
@@ -410,7 +380,6 @@ func _run_fake_pipeline_with_target_buffers(
 
 	var placement_common := {
 		"target_color_rgba8_bytes": color_bytes,
-		"target_occupancy_bytes": occupancy_bytes,
 		"result_capacity": 1,
 	}
 	if resident_handoff:
@@ -422,7 +391,7 @@ func _run_fake_pipeline_with_target_buffers(
 		"grid_size": grid_size,
 		"voxel_size": Vector3.ONE,
 		"grid_origin": Vector3.ZERO,
-		"scene_field": PackedFloat32Array([0.0]),
+		"complexity_field": PackedFloat32Array([0.0]),
 		"collision_field": PackedFloat32Array([0.0]),
 	}, [], 1, placement_common).duplicate(true)
 	runtime.dispose(true)
@@ -442,8 +411,7 @@ func _assert_pipeline_target_summary(result: Dictionary, expect_borrowed: bool, 
 	if not bool(summary.get("ready", false)):
 		push_error("  FAIL: %s target summary should be ready: %s" % [label, str(summary)])
 		return false
-	if int(summary.get("target_color_rgba8_byte_count", 0)) != expected_bytes \
-			or int(summary.get("target_occupancy_byte_count", 0)) != expected_bytes:
+	if int(summary.get("target_color_rgba8_byte_count", 0)) != expected_bytes:
 		push_error("  FAIL: %s target byte counts mismatch: %s" % [label, str(summary)])
 		return false
 	if bool(summary.get("target_read_buffers_borrowed", false)) != expect_borrowed:
@@ -483,16 +451,14 @@ class FakeTargetReadBufferPrefilter:
 		autoobjects: Array,
 		dirty_tile_ids: Array[int] = [],
 		runtime_profile_container: Object = null,
-		target_color_rgba8_bytes: PackedByteArray = PackedByteArray(),
-		target_occupancy_bytes: PackedByteArray = PackedByteArray(),
+		target_field_bytes: PackedFloat32Array = PackedFloat32Array(),
 		target_read_buffers: Dictionary = {}
 	) -> Dictionary:
 		var grid_size: Vector3i = sv.get("grid_size", Vector3i.ONE)
 		var voxel_count := maxi(grid_size.x * grid_size.y * grid_size.z, 1)
 		var target_pack := _target_read_buffer_pack(
 			target_read_buffers,
-			target_color_rgba8_bytes,
-			target_occupancy_bytes,
+			target_field_bytes,
 			voxel_count
 		)
 		var target_summary := _target_read_buffer_summary(target_pack)

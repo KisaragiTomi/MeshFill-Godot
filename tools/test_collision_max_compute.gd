@@ -26,7 +26,7 @@ func _init() -> void:
 	a.set_pixelv(Vector2i(7, 1), Color(0.9, 0.0, 0.0, 0.0))
 	b.set_pixelv(Vector2i(7, 1), Color(0.1, 0.0, 0.0, 0.0))
 
-	var out: Image = committer._max_collision_images(a, b)
+	var out: Image = committer._max_collision_images_gpu(a, b)
 	var out_values := out.get_data().to_float32_array()
 	var p0 := out_values[2 + 3 * out.get_width()]
 	var p1 := out_values[7 + 1 * out.get_width()]

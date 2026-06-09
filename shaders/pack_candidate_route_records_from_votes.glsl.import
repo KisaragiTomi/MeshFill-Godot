@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://i40eknnpbxdf"
+path="res://.godot/imported/pack_candidate_route_records_from_votes.glsl-0cb5efead673cc090cee32677c84cc24.res"
+
+[deps]
+
+source_file="res://shaders/pack_candidate_route_records_from_votes.glsl"
+dest_files=["res://.godot/imported/pack_candidate_route_records_from_votes.glsl-0cb5efead673cc090cee32677c84cc24.res"]
+
+[params]
+

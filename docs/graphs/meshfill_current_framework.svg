@@ -99,7 +99,7 @@
     <g id="sv[t---1]-resident">
     <rect class="node" x="85" y="155" width="280" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
     <text class="node-title" x="103" y="183">SV[t - 1] resident</text>
-    <text class="small"><tspan x="103" y="205">previous BlendSV result</tspan><tspan x="103" y="222">scene_field + collision_field</tspan><tspan x="103" y="239">stable physical sampling input</tspan></text>
+    <text class="small"><tspan x="103" y="205">previous BlendSV result</tspan><tspan x="103" y="222">complexity_field + collision_field</tspan><tspan x="103" y="239">stable physical sampling input</tspan></text>
     </g>
     <g id="targetsv-+-brushsv">
     <rect class="node" x="85" y="330" width="280" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
@@ -159,7 +159,7 @@
     <g id="sv[tick]-resident">
     <rect class="node" x="1285" y="720" width="315" height="120" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
     <text class="node-title" x="1303" y="748">SV[tick] resident</text>
-    <text class="small"><tspan x="1303" y="770">scene_field + collision_field</tspan><tspan x="1303" y="787">SceneVoxelTile dirty scope</tspan><tspan x="1303" y="804">promotes to SV[t - 1] next tick</tspan></text>
+    <text class="small"><tspan x="1303" y="770">complexity_field + collision_field</tspan><tspan x="1303" y="787">SceneVoxelTile dirty scope</tspan><tspan x="1303" y="804">promotes to SV[t - 1] next tick</tspan></text>
     </g>
   </g>
   <g>

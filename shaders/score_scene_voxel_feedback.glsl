@@ -3,15 +3,19 @@
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, std430) restrict readonly buffer SceneField {
-    float scene_field[];
+layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityField {
+    vec4 complexity_field[];
 };
 
-layout(set = 0, binding = 1, std430) restrict readonly buffer TargetField {
+layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
+    float collision_field[];
+};
+
+layout(set = 0, binding = 2, std430) restrict readonly buffer TargetField {
     float target_field[];
 };
 
-layout(set = 0, binding = 2, std430) restrict buffer FeedbackStats {
+layout(set = 0, binding = 3, std430) restrict buffer FeedbackStats {
     vec4 stats[];
 };
 
@@ -25,28 +29,29 @@ void main() {
     float threshold = max(params.x, 0.0);
 
     float error_sum = 0.0;
-    float scene_occupied_count = 0.0;
+    float complexity_occupied_count = 0.0;
     float target_occupied_count = 0.0;
     float overlap_occupied_count = 0.0;
 
     for (int idx = 0; idx < sample_count; idx++) {
-        float scene_complexity = clamp(scene_field[idx], 0.0, 1.0);
+        float complexity = clamp(complexity_field[idx].a, 0.0, 1.0);
+        float collision_value = clamp(collision_field[idx], 0.0, 1.0);
         float target_complexity = clamp(target_field[idx], 0.0, 1.0);
-        error_sum += abs(scene_complexity - target_complexity);
+        error_sum += abs(complexity - target_complexity);
 
-        bool scene_occupied = scene_complexity > threshold;
+        bool complexity_occupied = max(complexity, collision_value) > threshold;
         bool target_occupied = target_complexity > threshold;
-        if (scene_occupied) {
-            scene_occupied_count += 1.0;
+        if (complexity_occupied) {
+            complexity_occupied_count += 1.0;
         }
         if (target_occupied) {
             target_occupied_count += 1.0;
         }
-        if (scene_occupied && target_occupied) {
+        if (complexity_occupied && target_occupied) {
             overlap_occupied_count += 1.0;
         }
     }
 
-    stats[0] = vec4(error_sum, scene_occupied_count, target_occupied_count, overlap_occupied_count);
+    stats[0] = vec4(error_sum, complexity_occupied_count, target_occupied_count, overlap_occupied_count);
     stats[1] = vec4(float(sample_count), 0.0, 0.0, 1.0);
 }

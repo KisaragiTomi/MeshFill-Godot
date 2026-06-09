@@ -3,11 +3,11 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, std430) restrict readonly buffer SceneField {
-    float scene_field[];
+layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityField {
+    vec4 complexity_field[];
 };
 
-layout(set = 0, binding = 1) uniform sampler3D SceneVolume;
+layout(set = 0, binding = 1) uniform sampler3D ComplexityVolume;
 
 layout(set = 0, binding = 2) uniform sampler2D CollisionField;
 
@@ -45,14 +45,14 @@ void main() {
     int x = in_slice - z * xz_res;
     float threshold = max(params.x, 0.0);
 
-    float scene_value = 0.0;
+    float complexity_value = 0.0;
     if (modes.x != 0) {
-        scene_value = scene_field[idx];
+        complexity_value = complexity_field[idx].a;
     } else {
-        scene_value = texelFetch(SceneVolume, ivec3(x, z, slice_index), 0).r;
+		complexity_value = texelFetch(ComplexityVolume, ivec3(x, z, slice_index), 0).r;
     }
 
-    if (scene_value > threshold && slice_index < dims.w) {
+    if (complexity_value > threshold && slice_index < dims.w) {
         atomicAdd(counts[slice_index], 1u);
     }
 

@@ -45,7 +45,6 @@ func _init() -> void:
 		"collision_limit": 0.0,
 		"min_support_ratio": 1.0,
 		"clearance_limit": 0.0,
-		"target_occupancy_bytes": target.to_byte_array(),
 		"target_color_rgba8_bytes": _pack_target_color_rgba8(target_color),
 		"asset_color": Color(0.3, 0.7, 0.2, 1.0),
 		"read_debug_voxel": true,
@@ -144,7 +143,6 @@ func _init() -> void:
 
 	# --- run without target to ensure debug buffer still works (all target channels ~0) ---
 	var no_target_settings := settings.duplicate(true)
-	no_target_settings.erase("target_occupancy_bytes")
 	no_target_settings.erase("target_color_rgba8_bytes")
 	var out2 := generator.run_minimal(scene, collision, footprint, grid_size, no_target_settings)
 	var debug2: PackedFloat32Array = out2.get("debug_voxel", PackedFloat32Array())

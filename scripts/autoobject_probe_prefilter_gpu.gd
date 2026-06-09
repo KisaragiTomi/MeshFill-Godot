@@ -31,9 +31,11 @@ const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := 16
 const CANDIDATE_ROUTE_CPU_PACK_SOURCE_LABEL := "gpu_vote_buffer_readback_cpu_pack"
 const CANDIDATE_ROUTE_GPU_PACK_SOURCE_LABEL := "gpu_vote_buffer_gpu_pack"
 const CANDIDATE_ROUTE_GPU_PACK_PASS := "pack_candidate_route_records_from_votes"
+const CANDIDATE_ROUTE_GPU_EXPAND_PASS := "expand_scene_voxel_tile_routes"
+const SCENE_VOXEL_TILE_SUMMARY_STRIDE_UINTS := 8  ## 32 bytes per summary / 4 bytes per uint
 
 var anchor_topk: int = 4                    # per-anchor asset top-K target
-var max_scene_field: float = 0.15           # anchor allowed scene occupancy threshold
+var max_complexity_field: float = 0.15           # anchor allowed scene occupancy threshold
 var max_collision_field: float = 0.05       # anchor allowed collision threshold
 var min_support: float = 0.25               # required support below anchor
 var min_target_interest: float = 0.01       # minimum TargetSV_B demand
@@ -47,11 +49,13 @@ var _shader_score: RID
 var _shader_topk: RID
 var _shader_reduce: RID
 var _shader_route_pack: RID
+var _shader_route_expand: RID
 var _pipeline_collect: RID
 var _pipeline_score: RID
 var _pipeline_topk: RID
 var _pipeline_reduce: RID
 var _pipeline_route_pack: RID
+var _pipeline_route_expand: RID
 var _candidate_route_gpu_pack_record_buf: RID
 var _candidate_route_gpu_pack_range_buf: RID
 
@@ -65,9 +69,9 @@ func run_probe_prefilter(
 	autoobjects: Array,
 	dirty_tile_ids: Array[int] = [],
 	runtime_profile_container: Object = null,
-	target_color_rgba8_bytes: PackedByteArray = PackedByteArray(),
-	target_occupancy_bytes: PackedByteArray = PackedByteArray(),
-	target_read_buffers: Dictionary = {}
+	target_field_bytes: PackedFloat32Array = PackedFloat32Array(),
+	target_read_buffers: Dictionary = {},
+	tile_summaries_rid: RID = RID()
 ) -> Dictionary:
 	if sv.is_empty():
 		return _empty_result("empty_sv")
@@ -88,14 +92,15 @@ func run_probe_prefilter(
 		return _empty_result("missing_rendering_device")
 
 	var route_pack_requested := _candidate_route_gpu_pack_requested(target_read_buffers)
-	_load_shaders(route_pack_requested)
-	if not _pipeline_rids_ready(route_pack_requested):
-		var pipeline_status := _pipeline_readiness(route_pack_requested)
+	var use_expand_shader := tile_summaries_rid.is_valid() and route_pack_requested
+	_load_shaders(route_pack_requested, use_expand_shader)
+	if not _pipeline_rids_ready(route_pack_requested, use_expand_shader):
+		var pipeline_status := _pipeline_readiness(route_pack_requested, use_expand_shader)
 		var blocked_result := _empty_result("prefilter_shader_pipeline_not_ready", {}, pipeline_status)
 		_free_gpu()
 		return blocked_result
 
-	var result := _run_gpu_pipeline(sv, autoobjects, voxel_sparse_ids, runtime_profile_container, target_color_rgba8_bytes, target_occupancy_bytes, target_read_buffers)
+	var result := _run_gpu_pipeline(sv, autoobjects, voxel_sparse_ids, runtime_profile_container, target_field_bytes, target_read_buffers, tile_summaries_rid)
 	if _result_has_resident_candidate_route_payload(result):
 		gc_frame()
 	else:
@@ -112,9 +117,9 @@ func _run_gpu_pipeline(
 	autoobjects: Array,
 	tile_ids: Array[int],
 	runtime_profile_container: Object = null,
-	target_color_rgba8_bytes: PackedByteArray = PackedByteArray(),
-	target_occupancy_bytes: PackedByteArray = PackedByteArray(),
-	target_read_buffers: Dictionary = {}
+	target_field_bytes: PackedFloat32Array = PackedFloat32Array(),
+	target_read_buffers: Dictionary = {},
+	tile_summaries_rid: RID = RID()
 ) -> Dictionary:
 	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
 	var voxel_size: Vector3 = sv.get("voxel_size", Vector3.ONE)
@@ -128,13 +133,17 @@ func _run_gpu_pipeline(
 
 	# ---- Normalize GPU buffer inputs ----
 
-	var scene_data := _ensure_float_array(sv.get("scene_field", PackedFloat32Array()), voxel_count)
-	var collision_data := _ensure_float_array(sv.get("collision_field", PackedFloat32Array()), voxel_count)
+	var complexity_collision_bytes := _pack_complexity_collision_float_bytes(
+		_ensure_float_array(sv.get(complexity_field, PackedFloat32Array()), voxel_count),
+		_ensure_float_array(sv.get("collision_field", PackedFloat32Array()), voxel_count),
+		voxel_count
+	)
 	var route_pack_requested := _candidate_route_gpu_pack_requested(target_read_buffers)
-	var target_buffer_pack := _target_read_buffer_pack(target_read_buffers, target_color_rgba8_bytes, target_occupancy_bytes, voxel_count)
+	var use_expand_shader := tile_summaries_rid.is_valid() and route_pack_requested
+	var target_buffer_pack := _target_read_buffer_pack(target_read_buffers, target_field_bytes, voxel_count)
 	if not bool(target_buffer_pack.get("ready", false)):
 		var blocked_reason := str(target_buffer_pack.get("reason", "target_read_buffer_not_ready"))
-		var blocked_result := _empty_result(blocked_reason, {}, _pipeline_readiness(route_pack_requested))
+		var blocked_result := _empty_result(blocked_reason, {}, _pipeline_readiness(route_pack_requested, use_expand_shader))
 		blocked_result["target_read_buffer_source"] = str(target_buffer_pack.get("target_read_buffer_source", "none"))
 		blocked_result["target_read_buffer_summary"] = _target_read_buffer_summary(target_buffer_pack)
 		blocked_result["target_read_buffer_blocked_reason"] = blocked_reason
@@ -148,16 +157,13 @@ func _run_gpu_pipeline(
 
 	# ---- Create GPU buffers ----
 
-	var scene_buf := storage_buffer_from_floats(scene_data)
-	var collision_buf := storage_buffer_from_floats(collision_data)
-	var target_occ_buf: RID = target_buffer_pack.get("target_occupancy_buffer", RID())
-	var target_color_buf: RID = target_buffer_pack.get("target_color_rgba8_buffer", RID())
+	var complexity_collision_buf := storage_buffer_from_bytes(complexity_collision_bytes, SCOPE_FRAME, "complexity_collision_merged")
+	var target_field_buf: RID = target_buffer_pack.get("target_field_buffer", RID())
 	if bool(target_buffer_pack.get("target_read_buffers_borrowed", false)):
-		track_borrowed_rid(target_occ_buf, KIND_BUFFER, SCOPE_FRAME, "scene_placement_actor:target_occupancy")
-		track_borrowed_rid(target_color_buf, KIND_BUFFER, SCOPE_FRAME, "scene_placement_actor:target_color_rgba8")
+		track_borrowed_rid(target_field_buf, KIND_BUFFER, SCOPE_FRAME, "scene_placement_actor:target_field")
 	else:
-		target_occ_buf = storage_buffer_from_bytes(target_buffer_pack.get("target_occupancy_bytes", PackedByteArray()), SCOPE_FRAME, "target_occupancy_uploaded")
-		target_color_buf = storage_buffer_from_bytes(target_buffer_pack.get("target_color_rgba8_bytes", PackedByteArray()), SCOPE_FRAME, "target_color_rgba8_uploaded")
+		var target_field_data: PackedFloat32Array = target_buffer_pack.get("target_field_bytes", PackedFloat32Array())
+		target_field_buf = storage_buffer_from_floats(target_field_data, SCOPE_FRAME, "target_field_uploaded")
 	var dirty_tile_buf := storage_buffer_from_bytes(_pack_u32_array_from_int(tile_ids))
 	var anchor_buf := storage_buffer_zero(ANCHOR_CAPACITY * 16)  # uvec4(x, y, z, reserved) per anchor
 	var anchor_count_buf := storage_buffer_zero(4)
@@ -178,7 +184,7 @@ func _run_gpu_pipeline(
 	# ---- Dispatch 1: Collect anchors ----
 
 	_dispatch_collect(
-		scene_buf, collision_buf, target_occ_buf, dirty_tile_buf,
+		complexity_collision_buf, target_field_buf, dirty_tile_buf,
 		anchor_buf, anchor_count_buf,
 		grid_size, tile_grid, tile_ids.size()
 	)
@@ -188,7 +194,7 @@ func _run_gpu_pipeline(
 	var anchor_count_bytes := _rd.buffer_get_data(anchor_count_buf, 0, 4)
 	var actual_anchor_count := mini(_decode_u32_count(anchor_count_bytes), ANCHOR_CAPACITY)
 	if actual_anchor_count == 0:
-		var pipeline_status := _pipeline_readiness(route_pack_requested)
+		var pipeline_status := _pipeline_readiness(route_pack_requested, use_expand_shader)
 		_free_gpu()
 		return _empty_result("no_anchors_collected", probe_pack, pipeline_status)
 
@@ -196,12 +202,12 @@ func _run_gpu_pipeline(
 
 	if not _dispatch_score_topk_reduce(
 		anchor_buf, probe_range_buf, probe_data_buf,
-		scene_buf, collision_buf, target_occ_buf, target_color_buf,
+		complexity_collision_buf, target_field_buf,
 		asset_scores_buf, topk_buf, voxel_sparse_votes_buf,
 		grid_size, voxel_size,
 		tile_grid, tile_count, actual_anchor_count, asset_count
 	):
-		var pipeline_status := _pipeline_readiness(route_pack_requested)
+		var pipeline_status := _pipeline_readiness(route_pack_requested, use_expand_shader)
 		_free_gpu()
 		return _empty_result("score_topk_reduce_compute_list_begin_failed", probe_pack, pipeline_status)
 
@@ -213,7 +219,8 @@ func _run_gpu_pipeline(
 			tile_grid,
 			tile_count,
 			asset_count,
-			_candidate_route_cpu_debug_readback_requested(target_read_buffers)
+			_candidate_route_cpu_debug_readback_requested(target_read_buffers),
+			tile_summaries_rid
 		)
 	if not bool(gpu_route_pack_payload.get("ok", false)):
 		submit_and_sync(true)
@@ -226,7 +233,7 @@ func _run_gpu_pipeline(
 	var votes_bytes := PackedByteArray()
 	if not resident_route_payload_ready or cpu_route_debug_readback_requested:
 		votes_bytes = _rd.buffer_get_data(voxel_sparse_votes_buf, 0, asset_count * tile_count * 4)
-	var pipeline_status := _pipeline_readiness(route_pack_requested)
+	var pipeline_status := _pipeline_readiness(route_pack_requested, use_expand_shader)
 
 	if resident_route_payload_ready:
 		gc_frame()
@@ -255,17 +262,16 @@ func _run_gpu_pipeline(
 # ---------------------------------------------------------------------------
 
 func _dispatch_collect(
-	scene_buf: RID, collision_buf: RID, target_occ_buf: RID,
+	complexity_collision_buf: RID, target_field_buf: RID,
 	dirty_tile_buf: RID, anchor_buf: RID, anchor_count_buf: RID,
 	grid_size: Vector3i, tile_grid: Vector3i, dirty_count: int
 ) -> void:
 	var set0 := create_uniform_set([
-		make_storage_uniform(0, scene_buf),
-		make_storage_uniform(1, collision_buf),
-		make_storage_uniform(2, target_occ_buf),
-		make_storage_uniform(3, dirty_tile_buf),
-		make_storage_uniform(4, anchor_buf),
-		make_storage_uniform(5, anchor_count_buf),
+		make_storage_uniform(0, complexity_collision_buf),
+		make_storage_uniform(1, target_field_buf),
+		make_storage_uniform(2, dirty_tile_buf),
+		make_storage_uniform(3, anchor_buf),
+		make_storage_uniform(4, anchor_count_buf),
 	], _shader_collect, 0)
 
 	var push := PackedByteArray()
@@ -278,7 +284,7 @@ func _dispatch_collect(
 	push.encode_s32(20, tile_grid.y)
 	push.encode_s32(24, tile_grid.z)
 	push.encode_s32(28, ANCHOR_CAPACITY)
-	push.encode_float(32, max_scene_field)
+	push.encode_float(32, max_complexity_field)
 	push.encode_float(36, max_collision_field)
 	push.encode_float(40, min_support)
 	push.encode_float(44, min_target_interest)
@@ -296,8 +302,8 @@ func _dispatch_collect(
 
 func _dispatch_score_topk_reduce(
 	anchor_buf: RID, probe_range_buf: RID,
-	probe_data_buf: RID, scene_buf: RID, collision_buf: RID,
-	target_occ_buf: RID, target_color_buf: RID, asset_scores_buf: RID,
+	probe_data_buf: RID, complexity_collision_buf: RID,
+	target_field_buf: RID, asset_scores_buf: RID,
 	topk_buf: RID, voxel_sparse_votes_buf: RID,
 	grid_size: Vector3i, voxel_size: Vector3,
 	tile_grid: Vector3i, tile_count: int,
@@ -311,11 +317,9 @@ func _dispatch_score_topk_reduce(
 		make_storage_uniform(0, anchor_buf),
 		make_storage_uniform(1, probe_range_buf),
 		make_storage_uniform(2, probe_data_buf),
-		make_storage_uniform(3, scene_buf),
-		make_storage_uniform(4, collision_buf),
-		make_storage_uniform(5, target_occ_buf),
-		make_storage_uniform(6, target_color_buf),
-		make_storage_uniform(7, asset_scores_buf),
+		make_storage_uniform(3, complexity_collision_buf),
+		make_storage_uniform(4, target_field_buf),
+		make_storage_uniform(5, asset_scores_buf),
 	], _shader_score, 0)
 
 	var topk_set0 := create_uniform_set([
@@ -387,8 +391,8 @@ func _dispatch_score_topk_reduce(
 
 func _dispatch_score(
 	anchor_buf: RID, probe_range_buf: RID,
-	probe_data_buf: RID, scene_buf: RID, collision_buf: RID,
-	target_occ_buf: RID, target_color_buf: RID, asset_scores_buf: RID,
+	probe_data_buf: RID, complexity_collision_buf: RID,
+	target_field_buf: RID, asset_scores_buf: RID,
 	grid_size: Vector3i, voxel_size: Vector3, asset_count: int,
 	anchor_count: int, anchor_grid_x: int, anchor_grid_y: int,
 	asset_blocks: int
@@ -397,11 +401,9 @@ func _dispatch_score(
 		make_storage_uniform(0, anchor_buf),
 		make_storage_uniform(1, probe_range_buf),
 		make_storage_uniform(2, probe_data_buf),
-		make_storage_uniform(3, scene_buf),
-		make_storage_uniform(4, collision_buf),
-		make_storage_uniform(5, target_occ_buf),
-		make_storage_uniform(6, target_color_buf),
-		make_storage_uniform(7, asset_scores_buf),
+		make_storage_uniform(3, complexity_collision_buf),
+		make_storage_uniform(4, target_field_buf),
+		make_storage_uniform(5, asset_scores_buf),
 	], _shader_score, 0)
 
 	var push := PackedByteArray()
@@ -499,10 +501,19 @@ func _run_candidate_route_gpu_pack_pass(
 	tile_grid: Vector3i,
 	tile_count: int,
 	asset_count: int,
-	debug_readback_bytes: bool = false
+	debug_readback_bytes: bool = false,
+	tile_summaries_rid: RID = RID()
 ) -> Dictionary:
-	if not _shader_route_pack.is_valid() or not _pipeline_route_pack.is_valid():
-		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_pack_shader_not_ready", asset_count, tile_grid, tile_count)
+	var use_expand := tile_summaries_rid.is_valid()
+	var shader_rid := _shader_route_expand if use_expand else _shader_route_pack
+	var pipeline_rid := _pipeline_route_expand if use_expand else _pipeline_route_pack
+	var pack_pass_label := CANDIDATE_ROUTE_GPU_EXPAND_PASS if use_expand else CANDIDATE_ROUTE_GPU_PACK_PASS
+
+	if not shader_rid.is_valid() or not pipeline_rid.is_valid():
+		return _candidate_route_gpu_pack_blocked(
+			"candidate_route_gpu_%s_shader_not_ready" % ("expand" if use_expand else "pack"),
+			asset_count, tile_grid, tile_count
+		)
 	if not voxel_sparse_votes_buf.is_valid():
 		return _candidate_route_gpu_pack_blocked("missing_voxel_sparse_votes_buffer", asset_count, tile_grid, tile_count)
 	if asset_count <= 0 or tile_count <= 0 or tile_grid.x <= 0 or tile_grid.y <= 0 or tile_grid.z <= 0:
@@ -512,90 +523,149 @@ func _run_candidate_route_gpu_pack_pass(
 	var record_capacity := maxi(asset_count * tile_count, 0)
 	var route_radius_buf := storage_buffer_from_bytes(_pack_route_profile_radius_bytes(route_profiles, asset_count), SCOPE_FRAME, "candidate_route_profile_radii")
 	var route_mark_buf := storage_buffer_zero(record_capacity * 4, SCOPE_FRAME, "candidate_route_tile_marks")
-	var record_buf := storage_buffer_zero(record_capacity * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES, SCOPE_PERSISTENT, "candidate_route_records_gpu_pack")
-	var range_buf := storage_buffer_zero(asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES, SCOPE_PERSISTENT, "candidate_route_ranges_gpu_pack")
-	var count_buf := storage_buffer_zero(16, SCOPE_FRAME, "candidate_route_gpu_pack_counts")
-	var debug_buf := storage_buffer_zero(64, SCOPE_FRAME, "candidate_route_gpu_pack_debug")
+	var record_buf := storage_buffer_zero(record_capacity * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES, SCOPE_PERSISTENT, "candidate_route_records_gpu_%s" % ("expand" if use_expand else "pack"))
+	var range_buf := storage_buffer_zero(asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES, SCOPE_PERSISTENT, "candidate_route_ranges_gpu_%s" % ("expand" if use_expand else "pack"))
+	var debug_buf := storage_buffer_zero(64, SCOPE_FRAME, "candidate_route_gpu_%s_debug" % ("expand" if use_expand else "pack"))
 	if (
 		not route_radius_buf.is_valid()
 		or not route_mark_buf.is_valid()
 		or not record_buf.is_valid()
 		or not range_buf.is_valid()
-		or not count_buf.is_valid()
 		or not debug_buf.is_valid()
 	):
-		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_pack_storage_buffer_failed", asset_count, tile_grid, tile_count)
+		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_storage_buffer_failed" % ("expand" if use_expand else "pack"), asset_count, tile_grid, tile_count)
 
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, voxel_sparse_votes_buf),
-		make_storage_uniform(1, route_radius_buf),
-		make_storage_uniform(2, route_mark_buf),
-		make_storage_uniform(3, record_buf),
-		make_storage_uniform(4, range_buf),
-		make_storage_uniform(5, count_buf),
-		make_storage_uniform(6, debug_buf),
-	], _shader_route_pack, 0, SCOPE_PASS, "candidate_route_gpu_pack")
+	var bindings := []
+	if use_expand:
+		bindings = [
+			make_storage_uniform(0, tile_summaries_rid),
+			make_storage_uniform(1, voxel_sparse_votes_buf),
+			make_storage_uniform(2, route_radius_buf),
+			make_storage_uniform(3, route_mark_buf),
+			make_storage_uniform(4, record_buf),
+			make_storage_uniform(5, range_buf),
+			make_storage_uniform(6, debug_buf),
+		]
+	else:
+		bindings = [
+			make_storage_uniform(0, voxel_sparse_votes_buf),
+			make_storage_uniform(1, route_radius_buf),
+			make_storage_uniform(2, route_mark_buf),
+			make_storage_uniform(3, record_buf),
+			make_storage_uniform(4, range_buf),
+			make_storage_uniform(5, debug_buf),
+		]
+	var set0 := create_uniform_set(bindings, shader_rid, 0, SCOPE_PASS, "candidate_route_gpu_%s" % ("expand" if use_expand else "pack"))
 	if not set0.is_valid():
-		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_pack_uniform_set_failed", asset_count, tile_grid, tile_count)
+		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_uniform_set_failed" % ("expand" if use_expand else "pack"), asset_count, tile_grid, tile_count)
 
 	var push := PackedByteArray()
-	push.resize(32)
-	push.encode_s32(0, tile_grid.x)
-	push.encode_s32(4, tile_grid.y)
-	push.encode_s32(8, tile_grid.z)
-	push.encode_s32(12, asset_count)
-	push.encode_u32(16, tile_count)
-	push.encode_u32(20, record_capacity)
-	push.encode_float(24, 0.0001)
-	push.encode_u32(28, 0)
+	if use_expand:
+		# Expand shader uses more push constants
+		push.resize(48)
+		push.encode_s32(0, tile_grid.x)
+		push.encode_s32(4, tile_grid.y)
+		push.encode_s32(8, tile_grid.z)
+		push.encode_s32(12, asset_count)
+		push.encode_u32(16, tile_count)
+		push.encode_u32(20, record_capacity)
+		push.encode_u32(24, SCENE_VOXEL_TILE_SUMMARY_STRIDE_UINTS)
+		push.encode_float(28, 0.0001)
+		push.encode_u32(32, 0)
+	else:
+		# Pack shader uses exactly 32 bytes
+		push.resize(32)
+		push.encode_s32(0, tile_grid.x)
+		push.encode_s32(4, tile_grid.y)
+		push.encode_s32(8, tile_grid.z)
+		push.encode_s32(12, asset_count)
+		push.encode_u32(16, tile_count)
+		push.encode_u32(20, record_capacity)
+		push.encode_float(24, 0.0001)
+		push.encode_u32(28, 0)
 
 	var cl := begin_compute_list()
 	if cl < 0:
-		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_pack_compute_list_begin_failed", asset_count, tile_grid, tile_count)
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_route_pack)
+		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_compute_list_begin_failed" % ("expand" if use_expand else "pack"), asset_count, tile_grid, tile_count)
+	_rd.compute_list_bind_compute_pipeline(cl, pipeline_rid)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, 1, 1, 1)
 	end_compute_list()
 	submit_and_sync(true)
 
-	var count_bytes := _rd.buffer_get_data(count_buf, 0, 16)
-	if count_bytes.size() < 16:
-		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_pack_count_readback_failed", asset_count, tile_grid, tile_count)
-	var record_count := clampi(int(count_bytes.decode_u32(0)), 0, record_capacity)
-	var positive_vote_count := int(count_bytes.decode_u32(1))
-	var duplicate_tile_id_count := int(count_bytes.decode_u32(2))
-	var overflow_count := int(count_bytes.decode_u32(3))
+	# ═══════════════════════════════════════════════════════════════════
+	# GPU-First path (expand shader with tile_summaries_rid):
+	#   Count buffer is NOT read back on CPU. Resident record/range
+	#   buffers are handed directly to the VPG adapter chain.
+	#   CPU debug readback is only performed when explicitly requested.
+	# ═══════════════════════════════════════════════════════════════════
+	var record_count := 0
+	var positive_vote_count := 0
+	var duplicate_tile_id_count := 0
+	var overflow_count := 0
+	var skipped_empty_tiles := 0
 	var record_bytes := PackedByteArray()
 	var range_bytes := PackedByteArray()
 	var per_asset_record_counts: Array[int] = []
 	var empty_range_count := -1
-	if debug_readback_bytes and record_count > 0:
-		record_bytes = _rd.buffer_get_data(record_buf, 0, record_count * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES)
-		if record_bytes.size() < record_count * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES:
-			return _candidate_route_gpu_pack_blocked("candidate_route_gpu_pack_record_readback_failed", asset_count, tile_grid, tile_count)
+	var readback_derived := false
+
 	if debug_readback_bytes:
-		range_bytes = _rd.buffer_get_data(range_buf, 0, asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES)
-		if range_bytes.size() < asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES:
-			return _candidate_route_gpu_pack_blocked("candidate_route_gpu_pack_range_readback_failed", asset_count, tile_grid, tile_count)
-		empty_range_count = 0
-		for asset_index in range(asset_count):
-			var range_offset := asset_index * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES
-			var range_count := int(range_bytes.decode_u32(range_offset + 4))
-			per_asset_record_counts.append(range_count)
-			if range_count <= 0:
-				empty_range_count += 1
+		var count_bytes := _rd.buffer_get_data(debug_buf, 0, 16)
+		if count_bytes.size() >= 16:
+			record_count = clampi(int(count_bytes.decode_u32(0)), 0, record_capacity)
+			positive_vote_count = int(count_bytes.decode_u32(4))
+			duplicate_tile_id_count = int(count_bytes.decode_u32(8))
+			overflow_count = int(count_bytes.decode_u32(12))
+		if use_expand and debug_readback_bytes:
+			var debug_count_bytes := _rd.buffer_get_data(debug_buf, 0, 64)
+			if debug_count_bytes.size() >= 40:
+				skipped_empty_tiles = int(debug_count_bytes.decode_u32(36))
+		if debug_readback_bytes and record_count > 0:
+			record_bytes = _rd.buffer_get_data(record_buf, 0, record_count * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES)
+		if debug_readback_bytes:
+			range_bytes = _rd.buffer_get_data(range_buf, 0, asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES)
+			if range_bytes.size() >= asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES:
+				empty_range_count = 0
+				for asset_index in range(asset_count):
+					var range_offset := asset_index * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES
+					var rc := int(range_bytes.decode_u32(range_offset + 4))
+					per_asset_record_counts.append(rc)
+					if rc <= 0:
+						empty_range_count += 1
+		readback_derived = true
+	else:
+		# GPU-First: no CPU count readback (unless expand)
+		if use_expand:
+			# Expand shader doesn't need readback either if no debug requested
+			readback_derived = false
+		else:
+			# Pack shader: still read count for safety, but don't mark readback_derived
+			var count_bytes := _rd.buffer_get_data(debug_buf, 0, 16)
+			if count_bytes.size() >= 16:
+				record_count = clampi(int(count_bytes.decode_u32(0)), 0, record_capacity)
+				positive_vote_count = int(count_bytes.decode_u32(4))
+				duplicate_tile_id_count = int(count_bytes.decode_u32(8))
+				overflow_count = int(count_bytes.decode_u32(12))
+			readback_derived = false
 
 	_candidate_route_gpu_pack_record_buf = record_buf
 	_candidate_route_gpu_pack_range_buf = range_buf
 
+	var source_label := CANDIDATE_ROUTE_GPU_PACK_SOURCE_LABEL
+	var producer_pack_pass := CANDIDATE_ROUTE_GPU_PACK_PASS
+	if use_expand:
+		source_label = "gpu_vote_buffer_gpu_expand"
+		producer_pack_pass = CANDIDATE_ROUTE_GPU_EXPAND_PASS
+
 	return {
 		"ok": true,
 		"reason": "ok",
-		"source": CANDIDATE_ROUTE_GPU_PACK_SOURCE_LABEL,
-		"source_label": CANDIDATE_ROUTE_GPU_PACK_SOURCE_LABEL,
+		"source": source_label,
+		"source_label": source_label,
 		"pack_input_source": "gpu_dense_vote_buffer",
-		"producer_pack_pass": CANDIDATE_ROUTE_GPU_PACK_PASS,
+		"producer_pack_pass": producer_pack_pass,
 		"producer": "AutoObjectProbePrefilterGPU",
 		"record_layout": "uvec4(tile_id, 0, 0, 0)",
 		"range_layout": "uvec4(record_start, record_count, 0, 0)",
@@ -618,7 +688,7 @@ func _run_candidate_route_gpu_pack_pass(
 		"resident_route_buffer_owner": "AutoObjectProbePrefilterGPU",
 		"resident_route_owner": "AutoObjectProbePrefilterGPU",
 		"resident_route_producer": "AutoObjectProbePrefilterGPU",
-		"resident_route_source_label": CANDIDATE_ROUTE_GPU_PACK_SOURCE_LABEL,
+		"resident_route_source_label": source_label,
 		"resident_route_buffer_lifetime": "AutoObjectProbePrefilterGPU owned until next route pack, dispose, or explicit release",
 		"same_rendering_device_as_vpg": true,
 		"rendering_device_matches_vpg": true,
@@ -629,15 +699,16 @@ func _run_candidate_route_gpu_pack_pass(
 		"tile_grid": tile_grid,
 		"record_bytes": record_bytes,
 		"range_bytes": range_bytes,
-		"has_records": record_count > 0,
+		"has_records": record_count > 0 or not readback_derived,
 		"blocked": false,
-		"status": "gpu_pack_resident",
-		"debug_status": "gpu_route_pack_debug_bytes_read_back" if debug_readback_bytes else "gpu_route_pack_resident_no_record_range_readback",
-		"readback_derived": false,
+		"status": "gpu_%s_resident" % ("expand" if use_expand else "pack"),
+		"debug_status": "gpu_route_%s_debug_bytes_read_back" % ("expand" if use_expand else "pack") if debug_readback_bytes else "gpu_route_%s_resident_no_record_range_readback" % ("expand" if use_expand else "pack"),
+		"readback_derived": readback_derived,
 		"debug_readback_derived": debug_readback_bytes,
 		"resident_route_input_ready": true,
 		"resident_candidate_route_handoff": true,
 		"gpu_route_pack": true,
+		"gpu_route_expand": use_expand,
 		"gpu_route_pack_requested": true,
 		"gpu_route_pack_used": true,
 		"gpu_candidate_route_pack": true,
@@ -647,6 +718,7 @@ func _run_candidate_route_gpu_pack_pass(
 		"invalid_tile_id_count": 0,
 		"empty_range_count": empty_range_count,
 		"overflow_count": overflow_count,
+		"skipped_empty_tiles": skipped_empty_tiles,
 		"per_asset_record_counts": per_asset_record_counts,
 		"record_capacity": record_capacity,
 	}
@@ -1237,13 +1309,15 @@ static func _candidate_route_region_to_tile_id(region: Variant, tile_grid: Vecto
 	return -1
 
 
-func _load_shaders(load_route_pack: bool = false) -> void:
+func _load_shaders(load_route_pack: bool = false, load_route_expand: bool = false) -> void:
 	_shader_collect = load_compute_shader("res://shaders/collect_sv_anchors.glsl")
 	_shader_score = load_compute_shader("res://shaders/score_anchor_asset_probes.glsl")
 	_shader_topk = load_compute_shader("res://shaders/select_anchor_topk.glsl")
 	_shader_reduce = load_compute_shader("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl")
 	if load_route_pack:
 		_shader_route_pack = load_compute_shader("res://shaders/pack_candidate_route_records_from_votes.glsl")
+	if load_route_expand:
+		_shader_route_expand = load_compute_shader("res://shaders/expand_scene_voxel_tile_routes.glsl")
 	if _shader_collect.is_valid():
 		_pipeline_collect = create_compute_pipeline(_shader_collect)
 	if _shader_score.is_valid():
@@ -1254,9 +1328,11 @@ func _load_shaders(load_route_pack: bool = false) -> void:
 		_pipeline_reduce = create_compute_pipeline(_shader_reduce)
 	if _shader_route_pack.is_valid():
 		_pipeline_route_pack = create_compute_pipeline(_shader_route_pack)
+	if _shader_route_expand.is_valid():
+		_pipeline_route_expand = create_compute_pipeline(_shader_route_expand)
 
 
-func _pipeline_rids_ready(require_route_pack: bool = false) -> bool:
+func _pipeline_rids_ready(require_route_pack: bool = false, require_route_expand: bool = false) -> bool:
 	var core_ready := (
 		_shader_collect.is_valid() and _pipeline_collect.is_valid()
 		and _shader_score.is_valid() and _pipeline_score.is_valid()
@@ -1265,23 +1341,29 @@ func _pipeline_rids_ready(require_route_pack: bool = false) -> bool:
 	)
 	if not core_ready:
 		return false
+	if require_route_expand:
+		return _shader_route_expand.is_valid() and _pipeline_route_expand.is_valid()
 	if require_route_pack:
 		return _shader_route_pack.is_valid() and _pipeline_route_pack.is_valid()
 	return true
 
 
-func _pipeline_readiness(route_pack_requested: bool = false) -> Dictionary:
+func _pipeline_readiness(route_pack_requested: bool = false, route_expand_requested: bool = false) -> Dictionary:
 	var collect := _pipeline_pass_readiness(_shader_collect, _pipeline_collect)
 	var score := _pipeline_pass_readiness(_shader_score, _pipeline_score)
 	var topk := _pipeline_pass_readiness(_shader_topk, _pipeline_topk)
 	var reduce := _pipeline_pass_readiness(_shader_reduce, _pipeline_reduce)
 	var route_pack := _pipeline_pass_readiness(_shader_route_pack, _pipeline_route_pack)
 	route_pack["requested"] = route_pack_requested
+	var route_expand := _pipeline_pass_readiness(_shader_route_expand, _pipeline_route_expand)
+	route_expand["requested"] = route_expand_requested
 	var all_ready := bool(collect.get("ready", false)) \
 		and bool(score.get("ready", false)) \
 		and bool(topk.get("ready", false)) \
 		and bool(reduce.get("ready", false))
-	if route_pack_requested:
+	if route_expand_requested:
+		all_ready = all_ready and bool(route_expand.get("ready", false))
+	elif route_pack_requested:
 		all_ready = all_ready and bool(route_pack.get("ready", false))
 	return {
 		"collect": collect,
@@ -1289,6 +1371,7 @@ func _pipeline_readiness(route_pack_requested: bool = false) -> Dictionary:
 		"topk": topk,
 		"reduce": reduce,
 		"route_pack": route_pack,
+		"route_expand": route_expand,
 		"all_ready": all_ready,
 	}
 
@@ -1310,11 +1393,13 @@ func _free_gpu() -> void:
 	_pipeline_topk = RID()
 	_pipeline_reduce = RID()
 	_pipeline_route_pack = RID()
+	_pipeline_route_expand = RID()
 	_shader_collect = RID()
 	_shader_score = RID()
 	_shader_topk = RID()
 	_shader_reduce = RID()
 	_shader_route_pack = RID()
+	_shader_route_expand = RID()
 
 
 func _on_after_dispose() -> void:
@@ -1593,6 +1678,17 @@ func _ensure_float_array(arr: PackedFloat32Array, expected: int) -> PackedFloat3
 	return result
 
 
+func _pack_complexity_collision_float_bytes(scene_data: PackedFloat32Array, collision_data: PackedFloat32Array, voxel_count: int) -> PackedByteArray:
+	var bytes := PackedByteArray()
+	bytes.resize(voxel_count * 8)
+	for i in range(voxel_count):
+		var sv := scene_data[i] if i < scene_data.size() else 0.0
+		var cv := collision_data[i] if i < collision_data.size() else 0.0
+		bytes.encode_float(i * 8, sv)
+		bytes.encode_float(i * 8 + 4, cv)
+	return bytes
+
+
 func _decode_u32_count(bytes: PackedByteArray) -> int:
 	if bytes.size() < 4:
 		return 0
@@ -1654,30 +1750,23 @@ func _pack_route_profile_radius_bytes(route_profiles: Array, asset_count: int) -
 
 func _target_read_buffer_pack(
 	target_read_buffers: Dictionary,
-	target_color_rgba8_bytes: PackedByteArray,
-	target_occupancy_bytes: PackedByteArray,
+	target_field_bytes: PackedFloat32Array,
 	voxel_count: int
 ) -> Dictionary:
-	var expected_bytes := maxi(voxel_count, 1) * 4
-	var borrowed := _borrowed_target_read_buffer_pack(target_read_buffers, expected_bytes)
+	var expected_floats := maxi(voxel_count, 1) * 4
+	var borrowed := _borrowed_target_read_buffer_pack(target_read_buffers, expected_floats)
 	if bool(borrowed.get("ready", false)):
 		return borrowed
 
-	var color_input_bytes := target_color_rgba8_bytes
-	var raw_color_from_pack = target_read_buffers.get("target_color_rgba8_bytes", PackedByteArray())
-	if color_input_bytes.is_empty() and raw_color_from_pack is PackedByteArray:
-		color_input_bytes = raw_color_from_pack
-	var occupancy_input_bytes := target_occupancy_bytes
-	var raw_occupancy_from_pack = target_read_buffers.get("target_occupancy_bytes", PackedByteArray())
-	if occupancy_input_bytes.is_empty() and raw_occupancy_from_pack is PackedByteArray:
-		occupancy_input_bytes = raw_occupancy_from_pack
+	var field_input: PackedFloat32Array = target_field_bytes
+	var raw_field_from_pack = target_read_buffers.get("target_field_bytes", PackedFloat32Array())
+	if field_input.is_empty() and raw_field_from_pack is PackedFloat32Array:
+		field_input = raw_field_from_pack
 	var upload_reason := str(borrowed.get("reason", "resident_handoff_absent"))
-	if _target_read_buffers_claim_resident(target_read_buffers) \
-			and (color_input_bytes.size() < expected_bytes or occupancy_input_bytes.size() < expected_bytes):
-		return _blocked_target_read_buffer_pack(upload_reason, expected_bytes, color_input_bytes.size(), occupancy_input_bytes.size())
+	if _target_read_buffers_claim_resident(target_read_buffers) and field_input.size() < expected_floats:
+		return _blocked_target_read_buffer_pack(upload_reason, expected_floats, field_input.size())
 
-	var color_bytes := _target_color_rgba8_bytes(color_input_bytes, voxel_count)
-	var occupancy_bytes := _target_occupancy_bytes(occupancy_input_bytes, voxel_count)
+	var field_data := _target_field_data(field_input, voxel_count)
 	return {
 		"ready": true,
 		"target_read_buffer_source": "uploaded_target_bytes",
@@ -1685,17 +1774,12 @@ func _target_read_buffer_pack(
 		"target_read_buffer_lifetime": "AutoObjectProbePrefilterGPU frame scope",
 		"target_read_buffers_borrowed": false,
 		"target_read_buffers_uploaded": true,
-		"target_color_rgba8_buffer": RID(),
-		"target_occupancy_buffer": RID(),
-		"target_color_rgba8_bytes": color_bytes,
-		"target_occupancy_bytes": occupancy_bytes,
-		"target_color_rgba8_byte_count": color_bytes.size(),
-		"target_occupancy_byte_count": occupancy_bytes.size(),
-		"expected_byte_count": expected_bytes,
-		"target_color_format": "rgba8_u32",
-		"target_occupancy_format": "r32f_word_copy",
-		"target_color_stride_bytes": 4,
-		"target_occupancy_stride_bytes": 4,
+		"target_field_buffer": RID(),
+		"target_field_bytes": field_data,
+		"target_field_byte_count": field_data.size() * 4,
+		"expected_byte_count": expected_floats * 4,
+		"target_field_format": "vec4",
+		"target_field_stride_bytes": 16,
 		"owner": "AutoObjectProbePrefilterGPU",
 		"producer": "AutoObjectProbePrefilterGPU",
 		"borrowed_from": "none",
@@ -1707,22 +1791,17 @@ func _target_read_buffer_pack(
 	}
 
 
-func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected_bytes: int) -> Dictionary:
+func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected_floats: int) -> Dictionary:
 	if target_read_buffers.is_empty():
 		return {"ready": false, "reason": "resident_handoff_absent"}
 
 	var summary: Dictionary = target_read_buffers.get("resident_target_read_buffer_handoff_summary", {})
-	var raw_color = target_read_buffers.get(
-		"target_color_rgba8_buffer",
-		target_read_buffers.get("resident_target_color_rgba8_buffer", summary.get("target_color_rgba8_buffer", RID()))
+	var raw_field = target_read_buffers.get(
+		"target_field_buffer",
+		target_read_buffers.get("resident_target_field_buffer", summary.get("target_field_buffer", RID()))
 	)
-	var raw_occupancy = target_read_buffers.get(
-		"target_occupancy_buffer",
-		target_read_buffers.get("resident_target_occupancy_buffer", summary.get("target_occupancy_buffer", RID()))
-	)
-	var color_buffer: RID = raw_color if raw_color is RID else RID()
-	var occupancy_buffer: RID = raw_occupancy if raw_occupancy is RID else RID()
-	if not color_buffer.is_valid() or not occupancy_buffer.is_valid():
+	var field_buffer: RID = raw_field if raw_field is RID else RID()
+	if not field_buffer.is_valid():
 		return {"ready": false, "reason": "resident_target_read_buffer_rid_invalid"}
 
 	var raw_source_rd = target_read_buffers.get("rendering_device", summary.get("rendering_device", null))
@@ -1730,9 +1809,8 @@ func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected
 	if source_rd == null or _rd == null or source_rd != _rd:
 		return {"ready": false, "reason": "resident_target_read_buffer_rendering_device_mismatch"}
 
-	var color_byte_count := int(target_read_buffers.get("target_color_rgba8_byte_count", summary.get("target_color_rgba8_byte_count", 0)))
-	var occupancy_byte_count := int(target_read_buffers.get("target_occupancy_byte_count", summary.get("target_occupancy_byte_count", 0)))
-	if color_byte_count != expected_bytes or occupancy_byte_count != expected_bytes:
+	var field_byte_count := int(target_read_buffers.get("expected_byte_count", summary.get("expected_byte_count", 0)))
+	if field_byte_count != expected_floats * 4:
 		return {"ready": false, "reason": "resident_target_read_buffer_byte_count_mismatch"}
 
 	return {
@@ -1742,17 +1820,12 @@ func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected
 		"target_read_buffer_lifetime": str(target_read_buffers.get("resident_target_read_buffer_lifetime", summary.get("target_read_buffer_lifetime", "ScenePlacementActor owned"))),
 		"target_read_buffers_borrowed": true,
 		"target_read_buffers_uploaded": false,
-		"target_color_rgba8_buffer": color_buffer,
-		"target_occupancy_buffer": occupancy_buffer,
-		"target_color_rgba8_bytes": PackedByteArray(),
-		"target_occupancy_bytes": PackedByteArray(),
-		"target_color_rgba8_byte_count": color_byte_count,
-		"target_occupancy_byte_count": occupancy_byte_count,
-		"expected_byte_count": expected_bytes,
-		"target_color_format": str(target_read_buffers.get("target_color_format", summary.get("target_color_format", "rgba8_u32"))),
-		"target_occupancy_format": str(target_read_buffers.get("target_occupancy_format", summary.get("target_occupancy_format", "r32f_word_copy"))),
-		"target_color_stride_bytes": int(target_read_buffers.get("target_color_stride_bytes", summary.get("target_color_rgba8_stride_bytes", 4))),
-		"target_occupancy_stride_bytes": int(target_read_buffers.get("target_occupancy_stride_bytes", summary.get("target_occupancy_stride_bytes", 4))),
+		"target_field_buffer": field_buffer,
+		"target_field_bytes": PackedFloat32Array(),
+		"target_field_byte_count": field_byte_count,
+		"expected_byte_count": expected_floats * 4,
+		"target_field_format": str(target_read_buffers.get("target_field_format", summary.get("target_field_format", "vec4"))),
+		"target_field_stride_bytes": int(target_read_buffers.get("target_field_stride_bytes", summary.get("target_field_stride_bytes", 16))),
 		"owner": str(target_read_buffers.get("resident_target_read_buffer_owner", summary.get("owner", "ScenePlacementActor"))),
 		"producer": str(summary.get("producer", "ScenePlacementActorTargetReadBuffers")),
 		"borrowed_from": "ScenePlacementActor",
@@ -1776,9 +1849,8 @@ func _target_read_buffers_claim_resident(target_read_buffers: Dictionary) -> boo
 
 func _blocked_target_read_buffer_pack(
 	borrow_reason: String,
-	expected_bytes: int,
-	actual_color_bytes: int,
-	actual_occupancy_bytes: int
+	expected_floats: int,
+	actual_floats: int
 ) -> Dictionary:
 	var reason := "%s_no_debug_or_legacy_bytes" % borrow_reason
 	return {
@@ -1789,17 +1861,12 @@ func _blocked_target_read_buffer_pack(
 		"target_read_buffer_lifetime": "none",
 		"target_read_buffers_borrowed": false,
 		"target_read_buffers_uploaded": false,
-		"target_color_rgba8_buffer": RID(),
-		"target_occupancy_buffer": RID(),
-		"target_color_rgba8_bytes": PackedByteArray(),
-		"target_occupancy_bytes": PackedByteArray(),
-		"target_color_rgba8_byte_count": actual_color_bytes,
-		"target_occupancy_byte_count": actual_occupancy_bytes,
-		"expected_byte_count": expected_bytes,
-		"target_color_format": "rgba8_u32",
-		"target_occupancy_format": "r32f_word_copy",
-		"target_color_stride_bytes": 4,
-		"target_occupancy_stride_bytes": 4,
+		"target_field_buffer": RID(),
+		"target_field_bytes": PackedFloat32Array(),
+		"target_field_byte_count": actual_floats * 4,
+		"expected_byte_count": expected_floats * 4,
+		"target_field_format": "vec4",
+		"target_field_stride_bytes": 16,
 		"owner": "none",
 		"producer": "ScenePlacementActorTargetReadBuffers",
 		"borrowed_from": "ScenePlacementActor",
@@ -1813,10 +1880,8 @@ func _blocked_target_read_buffer_pack(
 
 
 func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
-	var raw_color = pack.get("target_color_rgba8_buffer", RID())
-	var raw_occupancy = pack.get("target_occupancy_buffer", RID())
-	var color_buffer: RID = raw_color if raw_color is RID else RID()
-	var occupancy_buffer: RID = raw_occupancy if raw_occupancy is RID else RID()
+	var raw_field = pack.get("target_field_buffer", RID())
+	var field_buffer: RID = raw_field if raw_field is RID else RID()
 	return {
 		"ready": bool(pack.get("ready", false)),
 		"target_read_buffer_source": str(pack.get("target_read_buffer_source", "none")),
@@ -1824,17 +1889,12 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 		"target_read_buffer_lifetime": str(pack.get("target_read_buffer_lifetime", "none")),
 		"target_read_buffers_borrowed": bool(pack.get("target_read_buffers_borrowed", false)),
 		"target_read_buffers_uploaded": bool(pack.get("target_read_buffers_uploaded", false)),
-		"target_color_rgba8_buffer_rid": "valid" if color_buffer.is_valid() else "none",
-		"target_occupancy_buffer_rid": "valid" if occupancy_buffer.is_valid() else "none",
-		"target_color_rgba8_buffer_rid_valid": color_buffer.is_valid(),
-		"target_occupancy_buffer_rid_valid": occupancy_buffer.is_valid(),
-		"target_color_rgba8_byte_count": int(pack.get("target_color_rgba8_byte_count", 0)),
-		"target_occupancy_byte_count": int(pack.get("target_occupancy_byte_count", 0)),
+		"target_field_buffer_rid": "valid" if field_buffer.is_valid() else "none",
+		"target_field_buffer_rid_valid": field_buffer.is_valid(),
+		"target_field_byte_count": int(pack.get("target_field_byte_count", 0)),
 		"expected_byte_count": int(pack.get("expected_byte_count", 0)),
-		"target_color_format": str(pack.get("target_color_format", "none")),
-		"target_occupancy_format": str(pack.get("target_occupancy_format", "none")),
-		"target_color_stride_bytes": int(pack.get("target_color_stride_bytes", 0)),
-		"target_occupancy_stride_bytes": int(pack.get("target_occupancy_stride_bytes", 0)),
+		"target_field_format": str(pack.get("target_field_format", "none")),
+		"target_field_stride_bytes": int(pack.get("target_field_stride_bytes", 0)),
 		"owner": str(pack.get("owner", "none")),
 		"producer": str(pack.get("producer", "none")),
 		"borrowed_from": str(pack.get("borrowed_from", "none")),
@@ -1846,26 +1906,15 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 	}
 
 
-func _target_color_rgba8_bytes(prepacked: PackedByteArray, voxel_count: int) -> PackedByteArray:
-	var expected_bytes := maxi(voxel_count, 1) * 4
-	if prepacked.size() >= expected_bytes:
-		if prepacked.size() == expected_bytes:
+func _target_field_data(prepacked: PackedFloat32Array, voxel_count: int) -> PackedFloat32Array:
+	var expected_floats := maxi(voxel_count, 1) * 4
+	if prepacked.size() >= expected_floats:
+		if prepacked.size() == expected_floats:
 			return prepacked
-		return prepacked.slice(0, expected_bytes)
-	var bytes := PackedByteArray()
-	bytes.resize(expected_bytes)
-	return bytes
-
-
-func _target_occupancy_bytes(prepacked: PackedByteArray, voxel_count: int) -> PackedByteArray:
-	var expected_bytes := maxi(voxel_count, 1) * 4
-	if prepacked.size() >= expected_bytes:
-		if prepacked.size() == expected_bytes:
-			return prepacked
-		return prepacked.slice(0, expected_bytes)
-	var bytes := PackedByteArray()
-	bytes.resize(expected_bytes)
-	return bytes
+		return prepacked.slice(0, expected_floats)
+	var result := PackedFloat32Array()
+	result.resize(expected_floats)
+	return result
 
 
 static func _pack_rgba8(c: Color) -> int:

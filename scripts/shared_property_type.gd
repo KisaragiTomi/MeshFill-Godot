@@ -139,7 +139,12 @@ static func collision_from_fields(fields: Dictionary, fallback: Dictionary = {})
 
 
 static func has_collision_fields(fields: Dictionary) -> bool:
-	return fields.has(COLLISION_KEY)
+	if not fields.has(COLLISION_KEY):
+		return false
+	var collision_value = fields[COLLISION_KEY]
+	if collision_value is Array:
+		return not (collision_value as Array).is_empty()
+	return true
 
 
 static func _duplicate_collision_value(raw_collision):

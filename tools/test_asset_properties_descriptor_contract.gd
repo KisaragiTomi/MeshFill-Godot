@@ -32,7 +32,7 @@ func _test_shared_field_contract() -> bool:
 		return false
 	var fields: Dictionary = SharedPropertyTypeScript.normalize_shared_fields({
 		"color": Color(0.2, 0.3, 0.4, 0.8),
-		"collision": [{"shape": "cylinder", "radius": 0.5, "collision_strength": 0.25}],
+		"collision": [],
 	})
 	var color: Color = fields.color
 	if not _approx(color.a, 0.8, 0.001) or not _approx(float(fields.complexity), 0.8, 0.001):
@@ -42,18 +42,19 @@ func _test_shared_field_contract() -> bool:
 		push_error("Expected only canonical collision in shared fields")
 		return false
 	var collision: Array = fields.collision
-	if collision.is_empty() or not _approx(float((collision[0] as Dictionary).get("collision_strength", 0.0)), 0.25, 0.001):
-		push_error("Expected collision_strength to normalize from canonical collision")
+	# Non-terrain collision removed; collision field preserved as empty array alongside color/complexity.
+	if not collision.is_empty():
+		push_error("Expected empty collision array for non-terrain shared fields")
 		return false
 	var collision_only_record := SharedPropertyTypeScript.apply_to_record({}, {
-		"collision": [{"shape": "cylinder", "radius": 0.5, "collision_strength": 0.5}],
+		"collision": [],
 	})
 	if not collision_only_record.has("collision"):
 		push_error("Expected collision-only shared fields to propagate through apply_to_record")
 		return false
 	var collision_only: Array = collision_only_record.collision
-	if collision_only.is_empty() or not _approx(float((collision_only[0] as Dictionary).get("collision_strength", 0.0)), 0.5, 0.001):
-		push_error("Expected collision-only apply_to_record to normalize collision")
+	if not collision_only.is_empty():
+		push_error("Expected empty collision array after apply_to_record for non-terrain")
 		return false
 	return true
 
@@ -61,23 +62,15 @@ func _test_shared_field_contract() -> bool:
 func _test_descriptor_collision_canonical() -> bool:
 	var descriptor: AutoVoxelDescriptor = AutoVoxelDescriptorScript.new()
 	descriptor.set_color_and_complexity(Color(0.7, 0.1, 0.2, 1.0), 0.6)
-	descriptor.set_collision([{
-		"shape": "cylinder",
-		"radius": 0.3,
-		"y_min": 0.0,
-		"y_max": 1.5,
-		"collision_strength": 0.4,
-	}])
+	descriptor.set_collision([])
 	var collisions := descriptor.get_collision(0.2)
-	if collisions.size() != 1:
-		push_error("Expected descriptor canonical collision to be readable")
-		return false
-	if not _approx(float(collisions[0].get("collision_strength", 0.0)), 0.4, 0.001):
-		push_error("Expected descriptor collision_strength to survive normalization")
+	# Non-terrain collision removed; descriptor should keep empty collision alongside color/complexity.
+	if not collisions.is_empty():
+		push_error("Expected descriptor collision to be empty for non-terrain")
 		return false
 	var record_fields := descriptor.to_record_fields(0.2)
 	if not record_fields.has("collision"):
-		push_error("Expected descriptor record fields to include only canonical collision")
+		push_error("Expected descriptor record fields to include collision key")
 		return false
 	return true
 
@@ -85,21 +78,22 @@ func _test_descriptor_collision_canonical() -> bool:
 func _test_auto_object_descriptor_getters() -> bool:
 	var descriptor: AutoVoxelDescriptor = AutoVoxelDescriptorScript.new()
 	descriptor.set_color_and_complexity(Color(0.1, 0.9, 0.2, 1.0), 0.35)
-	descriptor.set_collision([{"voxel": Vector3i(1, 2, 3), "collision_strength": 0.7}])
+	descriptor.set_collision([])
 
 	var obj: AutoObject = AutoObjectScript.new()
 	obj.voxel_descriptor = descriptor
 	obj.voxel_color = Color(1.0, 0.0, 0.0, 1.0)
 	obj.voxel_complexity = 1.0
-	obj.collision = [{"voxel": Vector3i(9, 9, 9), "collision_strength": 1.0}]
+	obj.collision = []
 	var got_color := obj.get_voxel_color()
 	if not _color_close(got_color, Color(0.1, 0.9, 0.2, 0.35), 0.001):
 		push_error("Expected AutoObject getter to read descriptor color")
 		obj.free()
 		return false
 	var got_collision := obj.get_collision()
-	if got_collision.is_empty() or (got_collision[0] as Dictionary).get("voxel", Vector3i.ZERO) != Vector3i(1, 2, 3):
-		push_error("Expected AutoObject getter to read descriptor collision")
+	# Non-terrain collision removed; getter should return empty array.
+	if not got_collision.is_empty():
+		push_error("Expected AutoObject getter to return empty collision for non-terrain")
 		obj.free()
 		return false
 	obj.free()
@@ -109,13 +103,13 @@ func _test_auto_object_descriptor_getters() -> bool:
 func _test_auto_object_config_preserves_existing_descriptor() -> bool:
 	var descriptor: AutoVoxelDescriptor = AutoVoxelDescriptorScript.new()
 	descriptor.set_color_and_complexity(Color(0.2, 0.3, 0.8, 1.0), 0.4)
-	descriptor.set_collision([{"voxel": Vector3i(2, 0, 0), "collision_strength": 0.3}])
+	descriptor.set_collision([])
 
 	var obj: AutoObject = AutoObjectScript.new()
 	obj.voxel_descriptor = descriptor
 	obj.voxel_color = Color(1.0, 0.0, 0.0, 1.0)
 	obj.voxel_complexity = 1.0
-	obj.collision = [{"voxel": Vector3i(9, 9, 9), "collision_strength": 1.0}]
+	obj.collision = []
 	obj.configure_auto_object({"name": "stale_mirror_contract"})
 
 	var got_color := obj.get_voxel_color()
@@ -124,8 +118,9 @@ func _test_auto_object_config_preserves_existing_descriptor() -> bool:
 		obj.free()
 		return false
 	var got_collision := obj.get_collision()
-	if got_collision.is_empty() or (got_collision[0] as Dictionary).get("voxel", Vector3i.ZERO) != Vector3i(2, 0, 0):
-		push_error("Expected config without shared fields to preserve descriptor collision over stale mirror")
+	# Non-terrain collision removed; stale mirror should keep collision empty.
+	if not got_collision.is_empty():
+		push_error("Expected config without shared fields to preserve empty collision over stale mirror")
 		obj.free()
 		return false
 
@@ -173,23 +168,24 @@ func _test_factory_and_subclass_canonical_collision() -> bool:
 		Color(0.3, 0.4, 0.5, 1.0),
 		0.45,
 		0.25,
-		[{"shape": "cylinder", "radius": 0.2, "collision_strength": 0.5}]
+		[]
 	) as AutoVoxelDescriptor
 	if descriptor == null:
 		push_error("Expected factory to create AutoVoxelDescriptor")
 		return false
-	if descriptor.get_collision(0.25).is_empty():
-		push_error("Expected factory-created descriptor to keep collision")
+	# Non-terrain collision removed; factory-created descriptor should have empty collision.
+	if not descriptor.get_collision(0.25).is_empty():
+		push_error("Expected factory-created descriptor to have empty collision for non-terrain")
 		return false
 
 	var obj: AutoRock = AutoRockScript.new()
 	obj.configure_object({
 		"color": Color(0.5, 0.5, 0.5, 1.0),
 		"complexity": 0.5,
-		"collision": [{"shape": "cylinder", "radius": 0.4, "collision_strength": 0.6}],
+		"collision": [],
 	})
-	if obj.get_collision(0.4).is_empty():
-		push_error("Expected AutoRock to accept canonical collision")
+	if not obj.get_collision(0.4).is_empty():
+		push_error("Expected AutoRock to have empty collision for non-terrain")
 		obj.free()
 		return false
 	obj.free()

@@ -27,4 +27,4 @@
 - dirty flags、object/source debug range、summary 都属于 SV owner staging / debug sidecar。
 - 有 `RenderingDevice` 时，tile record、summary、dirty index、object ref 和 source ref 必须上传到 GPU storage buffers，并通过 readback 验收。
 - runtime resident success 以 GPU buffer summary / valid RIDs / upload revision 为准；CPU staging、debug label 或 snapshot 不能替代 resident metadata。
-- `scene_minmax`、`collision_minmax`、`non_empty` 不写回 committed per-voxel payload。
+- `scene_minmax`、`collision_minmax` 不写回 committed per-voxel payload。判断是否有内容使用 `scene_count > 0 || collision_count > 0`。

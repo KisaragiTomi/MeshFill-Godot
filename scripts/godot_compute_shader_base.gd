@@ -45,7 +45,8 @@ var _next_resource_id := 1
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
-		pass
+		if not _disposed:
+			dispose()
 
 
 func ensure_device(prefer_local_device: bool = true, allow_global_fallback: bool = true) -> bool:

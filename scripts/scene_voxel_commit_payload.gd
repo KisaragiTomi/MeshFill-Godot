@@ -13,7 +13,7 @@ const OUT_COLLISION_LAYER_COUNT := 9
 const OUT_HAS_COLLISION := 10
 
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
-const SceneVoxelPayloadScript := preload("res://scripts/scene_voxel_payload.gd")
+const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 
 static func decode_float_buffer(bytes: PackedByteArray, expected_size: int) -> PackedFloat32Array:
 	var expected_count := maxi(expected_size, 0)
@@ -48,7 +48,7 @@ static func pack_source_values(source_stream: Dictionary, source_keys: Array, so
 			continue
 
 		var base := i * source_float_stride
-		var complexity := SceneVoxelPayloadScript.voxel_complexity(voxel)
+		var complexity := SceneVoxelScript.complexity(voxel)
 		var color := SharedPropertyTypeScript.color_from_value(voxel.get("color", Color.WHITE), Color.WHITE)
 		color.a = complexity
 
@@ -60,7 +60,7 @@ static func pack_source_values(source_stream: Dictionary, source_keys: Array, so
 		values[base + 5] = 1.0
 		values[base + 6] = clampf(float(voxel.get("auto_mix", 0.0)), 0.0, 1.0)
 		var collision_summary := collision_summary_from_source(voxel)
-		values[base + SRC_HAS_COLLISION] = 1.0 if bool(collision_summary.get("has_collision", false)) else 0.0
+		values[base + SRC_HAS_COLLISION] = 0.0
 		values[base + 8] = float(int(voxel.get("slice_index", -1)))
 
 		var voxel_xz = voxel.get("voxel_xz", Vector2i(-1, -1))
@@ -240,7 +240,7 @@ static func committed_scene_voxel_from_payload(
 				scene_voxel.get("voxel_xz", Vector2i(-1, -1))
 			)
 
-	return SceneVoxelPayloadScript.internal_payload(
+	return SceneVoxelScript.accepted_internal(
 		SharedPropertyTypeScript.apply_to_scene_voxel(
 			scene_voxel,
 			source_fields,

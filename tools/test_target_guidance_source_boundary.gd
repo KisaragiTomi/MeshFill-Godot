@@ -21,13 +21,7 @@ func _init() -> void:
 		"scale": Vector3.ONE,
 		"color": Color(1.0, 0.0, 1.0, 1.0),
 		"complexity": 1.0,
-		"collision": [{
-			"shape": "cylinder",
-			"radius": 1.0,
-			"y_min": 0.0,
-			"y_max": 1.0,
-			"collision_strength": 1.0,
-		}],
+		"collision": [],
 		"channel": 0,
 		"radius": 2.0,
 	}
@@ -77,23 +71,10 @@ func _init() -> void:
 			quit(1)
 			return
 	var sv_after_target := committer.get_sv()
-	var source_ids: Array = sv_after_target.get("scene_voxel_tile_source_ids_debug", [])
-	if source_ids.has("target_guidance_0"):
-		push_error("[TargetGuidanceBoundary] TargetSceneVoxel guidance should not produce source debug ranges")
-		quit(1)
-		return
 	if not committer.get_dirty_scene_voxel_tiles().is_empty():
 		push_error("[TargetGuidanceBoundary] TargetSceneVoxel named dirty flags should clear after SV snapshot")
 		quit(1)
 		return
-	for raw_tile in (sv_after_target.get("scene_voxel_tiles", {}) as Dictionary).values():
-		if not raw_tile is Dictionary:
-			continue
-		var tile: Dictionary = raw_tile
-		if int(tile.get("source_range_count", 0)) > 0:
-			push_error("[TargetGuidanceBoundary] Target-only SceneVoxelTile should not publish source ranges")
-			quit(1)
-			return
 
 	var target_sv_b := target_record.duplicate(true)
 	target_sv_b["id"] = "target_sv_b_0"

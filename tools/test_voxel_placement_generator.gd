@@ -73,15 +73,15 @@ func _init() -> void:
 	# P0 #1 (Compact State Chain): compact_stamp_deltas is now the default.
 	# Full-field readback is opt-in via force_full_field_readback=true.
 	var first_full_field: Dictionary = first.get("full_field_readback", {})
-	if str(first_full_field.get("scene_field_out_source", "")) != "cpu_state_chain_compact_stamp_deltas":
-		push_error("[VoxelPlacementTest] Scene field output should report compact-stamp-delta state chain (P0 #1 default)")
+	if str(first_full_field.get("complexity_field_out_source", "")) != "cpu_state_chain_compact_stamp_deltas":
+		push_error("[VoxelPlacementTest] Complexity field output should report compact-stamp-delta state chain (P0 #1 default)")
 		quit(1)
 		return
 	if str(first_full_field.get("collision_field_out_source", "")) != "cpu_state_chain_compact_stamp_deltas":
 		push_error("[VoxelPlacementTest] Collision field output should report compact-stamp-delta state chain (P0 #1 default)")
 		quit(1)
 		return
-	if bool(first_full_field.get("scene_field_out_is_full_field", true)):
+	if bool(first_full_field.get("complexity_field_out_is_full_field", true)):
 		push_error("[VoxelPlacementTest] Compact state chain should not be marked as full-field scene output")
 		quit(1)
 		return
@@ -89,7 +89,7 @@ func _init() -> void:
 		push_error("[VoxelPlacementTest] Compact state chain should not be marked as full-field collision output")
 		quit(1)
 		return
-	if bool(first_full_field.get("scene_field_out_gpu_storage_buffer_readback", true)):
+	if bool(first_full_field.get("complexity_field_out_gpu_storage_buffer_readback", true)):
 		push_error("[VoxelPlacementTest] Compact state chain should skip GPU full-field scene storage-buffer readback")
 		quit(1)
 		return
@@ -97,7 +97,7 @@ func _init() -> void:
 		push_error("[VoxelPlacementTest] Compact state chain should skip GPU full-field collision storage-buffer readback")
 		quit(1)
 		return
-	if int(first_full_field.get("scene_field_out_byte_count", -1)) != 0 or int(first_full_field.get("collision_field_out_byte_count", -1)) != 0:
+	if int(first_full_field.get("complexity_field_out_byte_count", -1)) != 0 or int(first_full_field.get("collision_field_out_byte_count", -1)) != 0:
 		push_error("[VoxelPlacementTest] Compact stamp-delta readback should have zero full-field byte count")
 		quit(1)
 		return
@@ -143,14 +143,9 @@ func _init() -> void:
 		return
 	var target_color_rgba8 := PackedByteArray()
 	target_color_rgba8.resize(voxel_count * 4)
-	var target_occupancy := PackedByteArray()
-	target_occupancy.resize(voxel_count * 4)
-	for i in range(voxel_count):
-		target_occupancy.encode_float(i * 4, 1.0)
 	var target_buffers: Dictionary = actor.prepare_target_read_buffers_from_common_gpu(
 		{
 			"target_color_rgba8_bytes": target_color_rgba8,
-			"target_occupancy_bytes": target_occupancy,
 		},
 		{"grid_size": grid_size}
 	)
@@ -163,7 +158,6 @@ func _init() -> void:
 	var borrowed_settings := settings.duplicate(true)
 	borrowed_settings["target_read_buffers"] = target_buffers
 	borrowed_settings["target_color_rgba8_bytes"] = target_color_rgba8
-	borrowed_settings["target_occupancy_bytes"] = target_occupancy
 	var borrowed := generator.run_minimal(scene, collision, footprint, grid_size, borrowed_settings)
 	var borrowed_summary: Dictionary = borrowed.get("target_read_buffer_summary", {})
 	if str(borrowed_summary.get("target_read_buffer_source", "")) != "borrowed_scene_placement_actor_resident":
@@ -181,7 +175,7 @@ func _init() -> void:
 		push_error("[VoxelPlacementTest] Borrowed TargetSV summary should report external ownership")
 		quit(1)
 		return
-	if not bool(borrowed_summary.get("rendering_device_match", false)) or not bool(borrowed_summary.get("target_color_rgba8_buffer_rid_valid", false)) or not bool(borrowed_summary.get("target_occupancy_buffer_rid_valid", false)):
+	if not bool(borrowed_summary.get("rendering_device_match", false)) or not bool(borrowed_summary.get("target_color_rgba8_buffer_rid_valid", false)):
 		actor.dispose()
 		push_error("[VoxelPlacementTest] Borrowed TargetSV summary should report valid same-RD RIDs")
 		quit(1)
@@ -282,7 +276,7 @@ func _init() -> void:
 	var overlap_result: Dictionary = (overlap.get("results", []) as Array)[0]
 	var overlap_origin: Vector3i = overlap_result.get("voxel_origin", Vector3i.ZERO)
 	var overlap_idx := generator.voxel_index(overlap_origin, grid_size)
-	var overlap_scene: PackedFloat32Array = overlap.get("scene_field_out", PackedFloat32Array())
+	var overlap_scene: PackedFloat32Array = overlap.get("complexity_field_out", PackedFloat32Array())
 	var overlap_collision: PackedFloat32Array = overlap.get("collision_field_out", PackedFloat32Array())
 	if overlap_scene[overlap_idx] < 0.84:
 		push_error("[VoxelPlacementTest] Overlapping stamp should keep max scene value, got %.3f" % overlap_scene[overlap_idx])
@@ -294,7 +288,7 @@ func _init() -> void:
 		return
 
 	var second := generator.run_minimal(
-		first.get("scene_field_out", PackedFloat32Array()),
+		first.get("complexity_field_out", PackedFloat32Array()),
 		first.get("collision_field_out", PackedFloat32Array()),
 		footprint,
 		grid_size,
@@ -392,11 +386,11 @@ func _init() -> void:
 		quit(1)
 		return
 	var empty_full_field: Dictionary = empty_candidates.get("full_field_readback", {})
-	if bool(empty_full_field.get("scene_field_out_gpu_storage_buffer_readback", true)) or bool(empty_full_field.get("collision_field_out_gpu_storage_buffer_readback", true)):
+	if bool(empty_full_field.get("complexity_field_out_gpu_storage_buffer_readback", true)) or bool(empty_full_field.get("collision_field_out_gpu_storage_buffer_readback", true)):
 		push_error("[VoxelPlacementTest] Empty candidate skip should not report GPU full-field readback")
 		quit(1)
 		return
-	if str(empty_full_field.get("scene_field_out_source", "")) != "input_cpu_state_prefilter_skip":
+	if str(empty_full_field.get("complexity_field_out_source", "")) != "input_cpu_state_prefilter_skip":
 		push_error("[VoxelPlacementTest] Empty candidate skip should report input CPU scene state source")
 		quit(1)
 		return

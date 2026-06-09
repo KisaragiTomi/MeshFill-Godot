@@ -14,7 +14,7 @@
 
 | 数据 | 来源 | 用途 |
 | --- | --- | --- |
-| `SV[t - 1].scene_field` | BlendSV-backed resident scene query channel | anchor 可放置性、占用、支撑、probe 场景采样。 |
+| `SV[t - 1].complexity_field` | BlendSV-backed resident scene query channel | anchor 可放置性、占用、支撑、probe 场景采样。 |
 | `SV[t - 1].collision_field` | BlendSV-backed resident collision query channel | anchor / probe collision sampling。 |
 | `target_occupancy` | `TargetSV_B` complexity / collision read buffer | target demand 与 probe collision fit。 |
 | `target_color` | `TargetSV_B` packed RGBA8 color / complexity | probe color / complexity fit。 |
@@ -81,7 +81,7 @@ Probe packed 字段：
 
 Probe packed 字段含义维护在 `scripts/semantic_probe_profile.gd` 的 probe record 构造和 `scripts/autoobject_probe_prefilter_gpu.gd` 的 probe packing 代码旁。
 
-采样越界时，`score_anchor_asset_probes.glsl` 会把 sample position clamp 到 grid 内，再读取 `scene_field`、`collision_field`、`target_occupancy` 与 `target_color`。这同样适用于 `TargetSV_B` 边界：边界外不会直接视为空白。
+采样越界时，`score_anchor_asset_probes.glsl` 会把 sample position clamp 到 grid 内，再读取 `complexity_field`、`collision_field`、`target_occupancy` 与 `target_color`。这同样适用于 `TargetSV_B` 边界：边界外不会直接视为空白。
 
 ## Context Sensing
 

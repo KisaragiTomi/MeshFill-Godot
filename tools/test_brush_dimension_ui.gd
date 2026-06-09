@@ -13,7 +13,6 @@ func _run() -> void:
 	var ok := true
 	ok = _test_brush_dimensions_drive_footprint_and_slices() and ok
 	ok = _test_landscape_cliff_mask_contract() and ok
-	ok = _test_vegetation_channel_mask_contract() and ok
 	ok = _test_has_mask_pixels_contract() and ok
 	ok = _test_target_height_override_composite_contract() and ok
 	ok = _test_rock_mask_override_composite_contract() and ok
@@ -115,32 +114,6 @@ func _test_landscape_cliff_mask_contract() -> bool:
 	print("  OK: flat mask stays empty and sloped mask activates")
 	return true
 
-
-func _test_vegetation_channel_mask_contract() -> bool:
-	print("[BrushDimensionUI] test_vegetation_channel_mask_contract...")
-	var main = MainScript.new()
-	var occupancy := Image.create(4, 4, false, Image.FORMAT_RGBAH)
-	occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
-	occupancy.set_pixelv(Vector2i(1, 2), Color(0.1, 0.2, 0.75, 0.4))
-	occupancy.set_pixelv(Vector2i(2, 1), Color(0.1, 0.2, 0.005, 0.4))
-
-	var mask: Image = main._make_vegetation_channel_mask_from_occupancy(occupancy, 2)
-	if mask.get_pixelv(Vector2i(1, 2)).r <= 0.7:
-		push_error("  FAIL: vegetation channel mask should copy selected channel")
-		main.free()
-		return false
-	if mask.get_pixelv(Vector2i(2, 1)).r > 0.001:
-		push_error("  FAIL: vegetation channel mask should zero values below threshold")
-		main.free()
-		return false
-	if mask.get_pixelv(Vector2i(8, 8)).r > 0.001:
-		push_error("  FAIL: vegetation channel mask should keep pixels outside source bounds empty")
-		main.free()
-		return false
-
-	main.free()
-	print("  OK: selected channel copied, thresholded, and bounded")
-	return true
 
 
 func _test_has_mask_pixels_contract() -> bool:

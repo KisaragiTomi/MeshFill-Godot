@@ -15,7 +15,7 @@
 | [`meshfill_compute_shader_3d_placement.svg`](meshfill_compute_shader_3d_placement.svg) | heightfield fitting compute pass、迭代 fill/find/update、CPU `AutoRock` 实例化和 `SceneVoxel` 集成 | `docs/placement/meshfill-rock-placement-flow.md` |
 | [`autoobject_probe_prefilter_pipeline.svg`](autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter、dirty voxel-region anchor collection、voxel-region votes、readback expansion 和 placement contract | `docs/placement/autoobject-probe-prefilter.md` |
 | [`autoobject_probe_scoring_logic.svg`](autoobject_probe_scoring_logic.svg) | descriptor probe 生成、SoA buffer、clamped `SV` / `TargetSV_B` 采样、weighted fit、anchor top-K 与 candidate-only 边界 | `docs/core/asset-semantic-probes.md`, `docs/placement/autoobject-probe-prefilter.md` |
-| [`scene-voxel-flow.svg`](scene-voxel-flow.svg) | `instance_stamp_write_spec` (`ISWS`)、`AutoSceneVoxel` / `BrushSceneVoxel` source streams、`blend_scene_voxels()`、public payload、feedback 和 SV resident fields | `docs/core/scene-voxel-field-system.md` |
+| [`scene-voxel-flow.svg`](scene-voxel-flow.svg) | `instance_stamp_write_spec` (`ISWS`)、**SceneVoxel Source Fusion (SVSF)**：`AutoSceneVoxel` / `BrushSceneVoxel` / `LandscapeSV` source streams → `blend_scene_voxels()` → accepted `SceneVoxel` fields → feedback → SV resident fields | `docs/core/scene-voxel-field-system.md` |
 | [`scenevoxeltile.svg`](scenevoxeltile.svg) | `SceneVoxelTile` 粗粒度 SV cell index / dirty record、dirty triggers、voxel bounds、object id ranges、summary 与 partial rebuild 消费者 | `docs/core/scenevoxeltile.md` |
 | [`target-scene-voxel-current.svg`](target-scene-voxel-current.svg) | `TargetSV`、`BrushSV`、`TargetSV_B`、target read buffers、prefilter/scoring/feedback consumers 与非 source-write 边界 | `docs/placement/target-scene-voxel-projection.md` |
 | [`voxel-semantic-routing.svg`](voxel-semantic-routing.svg) | candidate voxel-region routing、conservative readback expansion、empty-route skip、same-type exclusion、physical scoring 与 future rerank 边界 | `docs/placement/voxel-semantic-routing.md`, `docs/placement/voxel-semantic-routing-todo.md` |
@@ -26,7 +26,7 @@
 - 命名的粗粒度 SV 管理记录写作 `SceneVoxelTile`；它是 SV coarse index / dirty record，不是 committed `SceneVoxel` payload，默认固定 `4x4x4` voxels，可由 `meshfill/scene_voxel_tile/size_voxels` 调整。
 - `candidate_voxel_regions_by_asset` 是当前 docs-facing route/debug view；`candidate_voxel_sparses_by_asset` 仅作为 legacy alias，语义上仍是 candidate voxel regions，空候选直接 skip。
 - 统一使用 canonical `collision`；`collision` 只作为 placement runtime footprint record/API 名称出现。
-- committed `SceneVoxel` public payload 统一写作 `complexity/color/collision`，可选 `auto_mix`；`channel` 只作为 source/write context 或 scatter profile。
+- committed `SceneVoxel` accepted fields 统一写作 `complexity/color/collision`，可选 `auto_mix`；`channel` 只作为 source/write context 或 scatter profile。
 - `occupied`、`type`、`source_type`、`commit_tick` 属于派生视图、索引或 metadata，不画成 per-voxel payload。
 - `TargetSV` / `BrushSV` / `TargetSV_B` 是 guidance / target canvas，不进入 committed `SceneVoxel` source write。
 - `BlendSV` / `SceneVoxel` 是 committed read model；SV resident state 持有 scene/collision 查询通道，runtime sampling、dirty 和坐标职责归 SV。

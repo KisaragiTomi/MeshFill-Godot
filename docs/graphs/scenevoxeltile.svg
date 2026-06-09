@@ -133,12 +133,11 @@
     <rect class="node" x="455" y="486" width="290" height="126" rx="8" fill="#dbeafe" stroke="#93c5fd"/>
     <text class="node-title" x="480" y="514">Compacted Ranges</text>
     <text class="mono" x="480" y="539">object_range_start/count</text>
-    <text class="mono" x="480" y="560">source_range_start/count</text>
     <text class="small" x="480" y="584">debug ids are optional</text>
 
     <rect class="node" x="455" y="638" width="290" height="78" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
     <text class="node-title" x="480" y="666">Tile Summary</text>
-    <text class="mono" x="480" y="691">non_empty + min/max fields</text>
+    <text class="mono" x="480" y="691">scene/collision counts + min/max</text>
   </g>
 
   <g>
@@ -149,7 +148,7 @@
 
     <rect class="node" x="875" y="318" width="255" height="112" rx="8" fill="#dcfce7" stroke="#86efac"/>
     <text class="node-title" x="896" y="346">SV Resident Fields</text>
-    <text class="mono" x="896" y="371">scene_field</text>
+    <text class="mono" x="896" y="371">complexity_field</text>
     <text class="mono" x="896" y="392">collision_field</text>
     <text class="small" x="896" y="412">partial upload target</text>
 

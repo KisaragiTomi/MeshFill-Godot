@@ -43,27 +43,27 @@ func _test_summary_layout_worklist_and_edge_tile() -> bool:
 	var tile_count := tile_grid.x * tile_grid.y * tile_grid.z
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
 
-	var scene_field := PackedFloat32Array()
+	var complexity_field := PackedFloat32Array()
 	var collision_field := PackedFloat32Array()
-	scene_field.resize(voxel_count)
+	complexity_field.resize(voxel_count)
 	collision_field.resize(voxel_count)
 
-	_set_field_value(scene_field, grid_size.x, 2, 0, 2, 0.25)
-	_set_field_value(scene_field, grid_size.x, 3, 0, 2, 0.50)
-	_set_field_value(scene_field, grid_size.x, 3, 1, 3, 0.75)
-	_set_field_value(scene_field, grid_size.x, 2, 1, 2, OCCUPIED_THRESHOLD)
+	_set_field_value(complexity_field, grid_size.x, 2, 0, 2, 0.25)
+	_set_field_value(complexity_field, grid_size.x, 3, 0, 2, 0.50)
+	_set_field_value(complexity_field, grid_size.x, 3, 1, 3, 0.75)
+	_set_field_value(complexity_field, grid_size.x, 2, 1, 2, OCCUPIED_THRESHOLD)
 	_set_field_value(collision_field, grid_size.x, 2, 0, 3, 0.125)
 	_set_field_value(collision_field, grid_size.x, 3, 1, 2, 0.625)
 
-	_set_field_value(scene_field, grid_size.x, 4, 2, 4, 0.875)
+	_set_field_value(complexity_field, grid_size.x, 4, 2, 4, 0.875)
 	_set_field_value(collision_field, grid_size.x, 4, 2, 4, 0.375)
 
-	_set_field_value(scene_field, grid_size.x, 4, 0, 0, 1.0)
+	_set_field_value(complexity_field, grid_size.x, 4, 0, 0, 1.0)
 	_set_field_value(collision_field, grid_size.x, 4, 1, 0, 1.0)
 
 	var dirty_tile_indices := PackedInt32Array([EMPTY_TILE_INDEX, INTERIOR_TILE_INDEX, EDGE_TILE_INDEX])
 	var result := _dispatch_summary_ranges(
-		scene_field,
+		complexity_field,
 		collision_field,
 		_make_summary_sentinel_bytes(tile_count),
 		_pack_u32_words(dirty_tile_indices),
@@ -91,11 +91,11 @@ func _test_summary_layout_worklist_and_edge_tile() -> bool:
 		push_error("  FAIL: summary byte count mismatch: got %d expected %d" % [summary_bytes.size(), tile_count * SUMMARY_STRIDE_BYTES])
 		return false
 
-	if not _expect_summary(summary_bytes, EMPTY_TILE_INDEX, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, "empty dirty tile"):
+	if not _expect_summary(summary_bytes, EMPTY_TILE_INDEX, 0.0, 0.0, 0.0, 0.0, 0, 0, "empty dirty tile"):
 		return false
-	if not _expect_summary(summary_bytes, INTERIOR_TILE_INDEX, 0.25, 0.75, 0.125, 0.625, 3, 2, 1, "interior dirty tile"):
+	if not _expect_summary(summary_bytes, INTERIOR_TILE_INDEX, 0.25, 0.75, 0.125, 0.625, 3, 2, "interior dirty tile"):
 		return false
-	if not _expect_summary(summary_bytes, EDGE_TILE_INDEX, 0.875, 0.875, 0.375, 0.375, 1, 1, 1, "edge dirty tile"):
+	if not _expect_summary(summary_bytes, EDGE_TILE_INDEX, 0.875, 0.875, 0.375, 0.375, 1, 1, "edge dirty tile"):
 		return false
 	if not _expect_untouched_summaries(summary_bytes, tile_count, dirty_tile_indices):
 		return false
@@ -105,7 +105,7 @@ func _test_summary_layout_worklist_and_edge_tile() -> bool:
 
 
 func _dispatch_summary_ranges(
-	scene_field: PackedFloat32Array,
+	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
 	initial_summary_bytes: PackedByteArray,
 	dirty_index_bytes: PackedByteArray,
@@ -136,7 +136,7 @@ func _dispatch_summary_ranges(
 			"cpu_fallback": false,
 		}
 
-	var scene_buf: RID = compute.storage_buffer_from_floats(scene_field, ComputeShaderBaseScript.SCOPE_FRAME, "scene_field")
+	var scene_buf: RID = compute.storage_buffer_from_floats(complexity_field, ComputeShaderBaseScript.SCOPE_FRAME, "complexity_field")
 	var collision_buf: RID = compute.storage_buffer_from_floats(collision_field, ComputeShaderBaseScript.SCOPE_FRAME, "collision_field")
 	var summary_buf: RID = compute.storage_buffer_from_bytes(initial_summary_bytes, ComputeShaderBaseScript.SCOPE_FRAME, "tile_summaries")
 	var dirty_buf: RID = compute.storage_buffer_from_bytes(dirty_index_bytes, ComputeShaderBaseScript.SCOPE_FRAME, "dirty_tile_indices")
@@ -281,7 +281,6 @@ func _expect_summary(
 	collision_max: float,
 	scene_count: int,
 	collision_count: int,
-	non_empty: int,
 	label: String
 ) -> bool:
 	var base := tile_index * SUMMARY_STRIDE_BYTES
@@ -296,8 +295,6 @@ func _expect_summary(
 	if not _expect_u32(bytes, base + 16, scene_count, "%s scene_count" % label):
 		return false
 	if not _expect_u32(bytes, base + 20, collision_count, "%s collision_count" % label):
-		return false
-	if not _expect_u32(bytes, base + 24, non_empty, "%s non_empty" % label):
 		return false
 	if not _expect_u32(bytes, base + 28, 0, "%s pad" % label):
 		return false

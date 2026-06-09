@@ -34,7 +34,7 @@
 | Asset identity / grouping | `asset_id`、`object_type`、`object_subtype` | asset/debug/profile lookup 和粗分组；不表达新的资产语义层级。 |
 | Profile fallback | `voxel_profile`、`from_profile()` | 导入或旧 preset 的 shared-field fallback；不覆盖显式 descriptor 字段。 |
 | Mesh / import | `mesh`、`source_mesh`、`source_mesh_path`、`mesh_create_method`、`get_mesh()`、`get_source_mesh()` | 资产显示、probe 生成、导入重建和轻量 wrapper 输入。 |
-| Scatter / visual helper | `scatter_min_distance`、`scatter_max_count`、`scatter_max_scale`、`visual_layer`、`group`、`material` | 当前多用于 vegetation façade / 实例化辅助；不进入 committed `SceneVoxel` public payload。 |
+| Scatter / visual helper | `scatter_min_distance`、`scatter_max_count`、`scatter_max_scale`、`visual_layer`、`group`、`material` | 当前多用于 vegetation façade / 实例化辅助；不进入 committed `SceneVoxel` accepted fields。 |
 
 `SharedPropertyType.SHARED_FIELD_KEYS` 当前只包含 `color`、`complexity` 和 `collision`。`channel`、scatter radius、source type、pixel、slice、transform、runtime object id 等字段属于写入上下文、placement context、debug 或 runtime state，不属于 descriptor 的 shared semantic fields。
 

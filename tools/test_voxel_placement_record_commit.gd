@@ -55,7 +55,7 @@ func _init() -> void:
 		node.free()
 		quit(1)
 		return
-	var committed_record := committer.get_instance_stamp_write_spec("voxel_autoobject_record_0")
+	var committed_record := committer.get_voxel_write_spec("voxel_autoobject_record_0")
 	if str(committed_record.get("id", "")) != "voxel_autoobject_record_0":
 		push_error("Expected committer ISWS record readback")
 		node.free()
@@ -92,16 +92,16 @@ func _init() -> void:
 		node.free()
 		quit(1)
 		return
-	var scene_field: PackedFloat32Array = sv.get("scene_field", PackedFloat32Array())
+	var complexity_field: PackedFloat32Array = sv.get("complexity_field", PackedFloat32Array())
 	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
 	var found_committed_scene := false
 	for y in range(grid_size.y):
 		var committed_index := committed_voxel.x + grid_size.x * (committed_voxel.z + grid_size.z * y)
-		if committed_index >= 0 and committed_index < scene_field.size() and scene_field[committed_index] > 0.01:
+		if committed_index >= 0 and committed_index < complexity_field.size() and complexity_field[committed_index] > 0.01:
 			found_committed_scene = true
 			break
 	if not found_committed_scene:
-		push_error("Expected SV scene_field to preserve committed world center voxel")
+		push_error("Expected SV complexity_field to preserve committed world center voxel")
 		node.free()
 		quit(1)
 		return

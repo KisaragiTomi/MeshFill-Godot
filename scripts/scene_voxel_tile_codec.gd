@@ -4,7 +4,7 @@ const RECORD_STRIDE_BYTES := 128
 const SUMMARY_STRIDE_BYTES := 32
 const INDEX_STRIDE_BYTES := 4
 const REF_STRIDE_BYTES := 4
-const FIELD_STRIDE_BYTES := 4
+const FIELD_STRIDE_BYTES := 16
 
 const FLAG_SCENE := 1
 const FLAG_COLLISION := 2
@@ -234,11 +234,11 @@ static func pack_record_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictio
 		bytes.encode_s32(base + 76, base_rect.size.y)
 		bytes.encode_s32(base + 80, int(tile.get("object_range_start", 0)))
 		bytes.encode_s32(base + 84, int(tile.get("object_range_count", 0)))
-		bytes.encode_s32(base + 88, int(tile.get("source_range_start", 0)))
-		bytes.encode_s32(base + 92, int(tile.get("source_range_count", 0)))
+		bytes.encode_s32(base + 88, 0)
+		bytes.encode_s32(base + 92, 0)
 		bytes.encode_s32(base + 96, int(tile.get("scene_voxel_count", 0)))
 		bytes.encode_s32(base + 100, int(tile.get("collision_cell_count", 0)))
-		bytes.encode_s32(base + 104, 1 if bool(tile.get("non_empty", false)) else 0)
+		bytes.encode_s32(base + 104, 0)  # was non_empty
 		bytes.encode_s32(base + 108, 1 if bool(tile.get("updated_this_commit", false)) else 0)
 		bytes.encode_u32(base + 112, stable_hash(tile_id))
 		bytes.encode_s32(base + 116, 1 if bool(tile.get("dirty", false)) else 0)
@@ -263,7 +263,7 @@ static func pack_summary_bytes(tile_ids: Array[String], scene_voxel_tiles: Dicti
 		bytes.encode_float(base + 12, collision_minmax.y)
 		bytes.encode_s32(base + 16, int(tile.get("scene_voxel_count", 0)))
 		bytes.encode_s32(base + 20, int(tile.get("collision_cell_count", 0)))
-		bytes.encode_s32(base + 24, 1 if bool(tile.get("non_empty", false)) else 0)
+		bytes.encode_s32(base + 24, 0)  # was non_empty
 		bytes.encode_s32(base + 28, 0)
 
 	return bytes
@@ -325,11 +325,8 @@ static func decode_records(bytes: PackedByteArray, tile_ids: Array[String]) -> A
 			),
 			"object_range_start": bytes.decode_s32(base + 80),
 			"object_range_count": bytes.decode_s32(base + 84),
-			"source_range_start": bytes.decode_s32(base + 88),
-			"source_range_count": bytes.decode_s32(base + 92),
 			"scene_voxel_count": bytes.decode_s32(base + 96),
 			"collision_cell_count": bytes.decode_s32(base + 100),
-			"non_empty": bytes.decode_s32(base + 104) != 0,
 			"updated_this_commit": bytes.decode_s32(base + 108) != 0,
 			"tile_hash": int(bytes.decode_u32(base + 112)),
 			"dirty": bytes.decode_s32(base + 116) != 0,
@@ -351,7 +348,6 @@ static func decode_summaries(bytes: PackedByteArray, tile_ids: Array[String]) ->
 			"collision_minmax": Vector2(bytes.decode_float(base + 8), bytes.decode_float(base + 12)),
 			"scene_voxel_count": bytes.decode_s32(base + 16),
 			"collision_cell_count": bytes.decode_s32(base + 20),
-			"non_empty": bytes.decode_s32(base + 24) != 0,
 		})
 
 	return summaries

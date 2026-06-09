@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://ba874xjmtah81"
+path="res://.godot/imported/pack_target_field.glsl-c67b53547166ab9e718d4a50cdccba9d.res"
+
+[deps]
+
+source_file="res://shaders/pack_target_field.glsl"
+dest_files=["res://.godot/imported/pack_target_field.glsl-c67b53547166ab9e718d4a50cdccba9d.res"]
+
+[params]
+

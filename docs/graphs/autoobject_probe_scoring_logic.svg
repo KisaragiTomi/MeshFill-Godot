@@ -124,7 +124,7 @@
     <g id="sample-sources">
     <rect class="node" x="890" y="350" width="280" height="140" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
     <text class="node-title" x="908" y="378">Sample sources</text>
-    <text class="small"><tspan x="908" y="400">scene_field</tspan><tspan x="908" y="417">collision_field</tspan><tspan x="908" y="434">target_occupancy</tspan><tspan x="908" y="451">target_color from TargetSV_B</tspan></text>
+    <text class="small"><tspan x="908" y="400">complexity_field</tspan><tspan x="908" y="417">collision_field</tspan><tspan x="908" y="434">target_occupancy</tspan><tspan x="908" y="451">target_color from TargetSV_B</tspan></text>
     </g>
     <g id="fit-components">
     <rect class="node" x="890" y="585" width="280" height="140" rx="8" fill="#ffedd5" stroke="#ea580c"/>

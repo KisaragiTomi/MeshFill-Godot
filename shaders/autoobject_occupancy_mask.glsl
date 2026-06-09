@@ -1,23 +1,17 @@
 #[compute]
 #version 450
 
-// Split RGBA occupancy into four R32F object-channel masks in one dispatch.
+// Extract all AutoObject occupancy channels into one RGBA16F mask texture.
 // Input:
 //   set0/binding0: RGBA16F occupancy texture.
-// Outputs:
-//   set1/binding0: R32F channel_0 mask.
-//   set1/binding1: R32F channel_1 mask.
-//   set1/binding2: R32F channel_2 mask.
-//   set1/binding3: R32F channel_3 mask.
+// Output:
+//   set1/binding0: RGBA16F channel mask, zeroed below threshold and outside source bounds.
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D t_occupancy;
 
-layout(r32f, set = 1, binding = 0) uniform writeonly image2D rw_channel_r;
-layout(r32f, set = 1, binding = 1) uniform writeonly image2D rw_channel_g;
-layout(r32f, set = 1, binding = 2) uniform writeonly image2D rw_channel_b;
-layout(r32f, set = 1, binding = 3) uniform writeonly image2D rw_channel_a;
+layout(rgba16f, set = 1, binding = 0) uniform writeonly image2D rw_all_channel_mask;
 
 layout(push_constant, std430) uniform Params {
 	int out_width;
@@ -47,8 +41,5 @@ void main() {
 		);
 	}
 
-	imageStore(rw_channel_r, p, vec4(value.r, 0.0, 0.0, 0.0));
-	imageStore(rw_channel_g, p, vec4(value.g, 0.0, 0.0, 0.0));
-	imageStore(rw_channel_b, p, vec4(value.b, 0.0, 0.0, 0.0));
-	imageStore(rw_channel_a, p, vec4(value.a, 0.0, 0.0, 0.0));
+	imageStore(rw_all_channel_mask, p, value);
 }

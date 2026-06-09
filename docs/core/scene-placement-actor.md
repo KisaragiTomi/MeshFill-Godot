@@ -77,12 +77,12 @@ SPA 的完整生命周期定义 MeshFill 运行时从初始化到释放的所有
 3. run_placement_pipeline(sv, dirty_tile_ids, prefilter_topk, placement_common)  [每帧]
   ├── Phase 0: Prefilter     (SV to candidate voxel regions)
   │     _build_autoobject_array_for_pipeline()
-  │     target_read_buffers_from_common(placement_common, sv)
+  │     prepare_target_read_buffers_from_common_gpu(placement_common, sv)
   │     prefilter.run_probe_prefilter(borrowed probe_records + transient probe_range_buf)
   │     readback candidate_voxel_regions_by_asset
   ├── Phase 1: Placement     (candidates to accepted instances)
   │     _build_placement_asset_defs(candidate_regions)
-  │     placer.run_multi_asset(scene_field, collision_field, asset_defs, ...)
+  │     placer.run_multi_asset(complexity_field, collision_field, asset_defs, ...)
   │     可选: GPUAutoObjectRuntime writeback
   └── Phase 2: Commit        (accepted to SceneVoxel)
         _commit_accepted_placements() → sv_committer.apply_voxel_write_spec()
@@ -260,7 +260,7 @@ spa.dispose()
 | `initialize(prefer_local_device, allow_global_fallback, sv_committer, gpu_runtime)` | 获取 `RenderingDevice`，创建 profile container，并可选绑定外部引用。 |
 | `register_asset(descriptor, mesh_ref, autoobject_ref)` | 注册 descriptor，立即调用 `upload_profiles()`，并写入 asset registry。 |
 | `run_placement_pipeline(sv, dirty_tile_ids, prefilter_topk, placement_common)` | 执行 prefilter → placement → commit。 |
-| `target_read_buffers_from_common(settings, sv)` | 从 `placement_common` 读取预打包 `TargetSV_B` bytes；缺失时 zero-fill。 |
+| `prepare_target_read_buffers_from_common_gpu(settings, sv)` | 从 `placement_common` 读取预打包 `TargetSV_B` bytes 或从 GPU resident buffers 读取；缺失时 zero-fill。支持 resident handoff。 |
 | `get_merged_gpu_buffer_summary()` | 合并 profile container、gpu runtime、sv committer 和 BrushSV 控制面状态。 |
 
 ## 相关文档

@@ -6,7 +6,7 @@
 // Output is TileTopKBuffer, encoded as 4 vec4 records per candidate:
 //   0: vec4(voxel_origin.xyz, score)
 //   1: vec4(tile_id, asset_index, rotation_index, scale_index)
-//   2: vec4(support_ratio, solid_collision, scene_overlap, clearance_overlap)
+//   2: vec4(support_ratio, solid_collision, complexity_overlap, clearance_overlap)
 //   3: vec4(ignored_sample, valid, support_hit, support_total)
 //
 // DebugVoxelOutput: NUM_DEBUG_CHANNELS floats per voxel for visualization.
@@ -22,8 +22,8 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 
-layout(set = 0, binding = 0, std430) restrict readonly buffer SceneField {
-    float scene_field[];
+layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityField {
+    vec4 complexity_field[];
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
@@ -46,15 +46,11 @@ layout(set = 0, binding = 5, std430) restrict readonly buffer CandidateVoxelRegi
     uint candidate_voxel_sparse_ids[];
 };
 
-layout(set = 0, binding = 6, std430) restrict readonly buffer TargetOccupancy {
-    float target_occupancy[];
+layout(set = 0, binding = 6, std430) restrict readonly buffer TargetField {
+    vec4 target_field[];
 };
 
-layout(set = 0, binding = 7, std430) restrict readonly buffer TargetColor {
-    uint target_color[];
-};
-
-layout(set = 0, binding = 8, std430) restrict buffer DebugVoxelOutput {
+layout(set = 0, binding = 7, std430) restrict buffer DebugVoxelOutput {
     float debug_voxel[];
 };
 
@@ -94,13 +90,6 @@ struct RuntimeProbeRecord {
     uvec4 expected_flags_kind;
 };
 
-struct RuntimeCollisionRecord {
-    uvec4 meta;
-    vec4 center_radius;
-    vec4 size_y_min;
-    vec4 y_max_erosion_dilation_strength;
-};
-
 struct RuntimePivotRecord {
     vec4 offset_bias;
     uvec4 ids_pad;
@@ -113,7 +102,7 @@ layout(set = 1, binding = 6, std430) restrict readonly buffer RuntimeProfileTabl
 layout(set = 1, binding = 7, std430) restrict readonly buffer ScoreRuntimeProfileParams {
     ivec4 contract_counts; // enabled, runtime object capacity, profile count, asset profile id
     ivec4 contract_modes;  // runtime avoidance, profile complexity debug, object-ref spacing, debug full-scan spacing
-    ivec4 profile_side_counts; // probe records, collision records, pivot records, reserved
+    ivec4 profile_side_counts; // probe records, reserved, pivot records, reserved
     vec4 runtime_spacing_params; // min_distance_voxels, reserved, reserved, reserved
     ivec4 object_ref_counts; // enabled, tile_count, refs_per_tile, object_ref_capacity
     ivec4 object_ref_tile_grid; // tile_grid x/y/z, tile_size
@@ -126,10 +115,6 @@ layout(set = 1, binding = 8, std430) restrict buffer ScoreRuntimeProfileDebug {
 
 layout(set = 1, binding = 9, std430) restrict readonly buffer RuntimeProbeRecords {
     RuntimeProbeRecord runtime_probe_records[];
-};
-
-layout(set = 1, binding = 10, std430) restrict readonly buffer RuntimeCollisionRecords {
-    RuntimeCollisionRecord runtime_collision_records[];
 };
 
 layout(set = 1, binding = 11, std430) restrict readonly buffer RuntimePivotRecords {
@@ -194,13 +179,10 @@ const uint SCORE_DEBUG_PROFILE_COMPLEXITY_Q1000 = 11u;
 const uint SCORE_DEBUG_RUNTIME_PROFILE_READS = 12u;
 const uint SCORE_DEBUG_RUNTIME_PROFILE_MATCHES = 13u;
 const uint SCORE_DEBUG_PROBE_RECORD_READS = 14u;
-const uint SCORE_DEBUG_COLLISION_RECORD_READS = 15u;
 const uint SCORE_DEBUG_PIVOT_RECORD_READS = 16u;
 const uint SCORE_DEBUG_PROBE_WEIGHT_Q1000 = 17u;
-const uint SCORE_DEBUG_COLLISION_STRENGTH_Q1000 = 18u;
 const uint SCORE_DEBUG_PIVOT_BIAS_Q1000 = 19u;
 const uint SCORE_DEBUG_PROFILE_PROBE_COUNT = 20u;
-const uint SCORE_DEBUG_PROFILE_COLLISION_COUNT = 21u;
 const uint SCORE_DEBUG_PROFILE_PIVOT_COUNT = 22u;
 const uint SCORE_DEBUG_DEBUG_MAX_BASE = 23u;
 const uint SCORE_DEBUG_RUNTIME_SPACING_TESTS = 31u;
@@ -221,7 +203,7 @@ shared float s_scores[512];
 shared ivec4 s_candidate_origins[512];
 
 struct VoxelSample {
-    float scene;
+    float complexity;
     float collision;
     bool ignored;
 };
@@ -230,7 +212,7 @@ struct EvalResult {
     float score;
     float support_ratio;
     float solid_collision;
-    float scene_overlap;
+    float complexity_overlap;
     float clearance_overlap;
     float ignored_sample;
     float support_hit;
@@ -320,13 +302,10 @@ int scene_voxel_tile_object_ref_tile_index(ivec3 tile_coord) {
 void touch_profile_side_buffers(RuntimeProfileTableRecord record) {
     uint probe_start = record.ids.z;
     uint probe_count = record.ids.w;
-    uint collision_start = record.ranges.x;
-    uint collision_count = record.ranges.y;
     uint pivot_start = record.ranges.z;
     uint pivot_count = record.ranges.w;
 
     atomicMax(score_contract_debug[SCORE_DEBUG_PROFILE_PROBE_COUNT], probe_count);
-    atomicMax(score_contract_debug[SCORE_DEBUG_PROFILE_COLLISION_COUNT], collision_count);
     atomicMax(score_contract_debug[SCORE_DEBUG_PROFILE_PIVOT_COUNT], pivot_count);
 
     if (probe_count > 0u && profile_side_counts.x > 0) {
@@ -334,13 +313,6 @@ void touch_profile_side_buffers(RuntimeProfileTableRecord record) {
         RuntimeProbeRecord probe = runtime_probe_records[probe_index];
         atomicAdd(score_contract_debug[SCORE_DEBUG_PROBE_RECORD_READS], 1u);
         atomicMax(score_contract_debug[SCORE_DEBUG_PROBE_WEIGHT_Q1000], q1000(probe.offset_weight.w));
-    }
-
-    if (collision_count > 0u && profile_side_counts.y > 0) {
-        uint collision_index = min(collision_start, uint(profile_side_counts.y - 1));
-        RuntimeCollisionRecord collision = runtime_collision_records[collision_index];
-        atomicAdd(score_contract_debug[SCORE_DEBUG_COLLISION_RECORD_READS], 1u);
-        atomicMax(score_contract_debug[SCORE_DEBUG_COLLISION_STRENGTH_Q1000], q1000(collision.y_max_erosion_dilation_strength.w));
     }
 
     if (pivot_count > 0u && profile_side_counts.z > 0) {
@@ -600,7 +572,7 @@ int voxel_index(ivec3 p) {
 
 VoxelSample sample_voxel(ivec3 p) {
     VoxelSample s;
-    s.scene = 0.0;
+    s.complexity = 0.0;
     s.collision = 0.0;
     s.ignored = false;
 
@@ -610,7 +582,7 @@ VoxelSample sample_voxel(ivec3 p) {
     }
 
     int i = voxel_index(p);
-    s.scene = scene_field[i];
+    s.complexity = complexity_field[i].a;
     s.collision = collision_field[i];
     return s;
 }
@@ -620,7 +592,7 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
     r.score = -1.0;
     r.support_ratio = 0.0;
     r.solid_collision = 0.0;
-    r.scene_overlap = 0.0;
+    r.complexity_overlap = 0.0;
     r.clearance_overlap = 0.0;
     r.ignored_sample = 0.0;
     r.support_hit = 0.0;
@@ -652,7 +624,7 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
         if (!in_sample_bounds(candidate_origin)) {
             return r;
         }
-        if (target_occupancy[voxel_index(candidate_origin)] <= 0.01) {
+        if (target_field[voxel_index(candidate_origin)].a <= 0.01) {
             return r;
         }
     }
@@ -676,18 +648,18 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
         if (footprint_collision_strength >= thresholds.x) {
             r.solid_collision += voxel_sample.collision * weight;
         } else {
-            r.scene_overlap += voxel_sample.scene * footprint_collision_strength * weight;
+            r.complexity_overlap += voxel_sample.complexity * footprint_collision_strength * weight;
         }
 
         if ((flags & FLAG_CLEARANCE) != 0u) {
-            r.clearance_overlap += max(voxel_sample.scene, voxel_sample.collision) * weight;
+            r.clearance_overlap += max(voxel_sample.complexity, voxel_sample.collision) * weight;
         }
 
         if ((flags & FLAG_SUPPORT) != 0u) {
             VoxelSample below = sample_voxel(p + ivec3(0, -1, 0));
             if (!below.ignored) {
                 r.support_total += weight;
-                r.support_hit += step(0.01, max(below.scene, below.collision)) * weight;
+                r.support_hit += step(0.01, max(below.complexity, below.collision)) * weight;
             } else {
                 r.ignored_sample += weight;
             }
@@ -695,14 +667,14 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
 
         if (has_target != 0 && in_grid_bounds(p) && in_sample_bounds(p)) {
             int idx = voxel_index(p);
-            float target_complexity = target_occupancy[idx];
+            vec4 target = target_field[idx];
+            float target_complexity = target.a;
             r.target_total_weight += weight;
             r.target_density += target_complexity * weight;
             if (target_complexity > 0.01) {
                 r.target_coverage += weight;
                 r.target_complexity_fit += abs(target_complexity - footprint_collision_strength) * weight;
-                vec4 tc = unpack_rgba8(target_color[idx]);
-                r.target_color_dist += distance(tc.rgb, asset_col.rgb) * weight;
+                r.target_color_dist += distance(target.rgb, asset_col.rgb) * weight;
             }
         }
     }
@@ -717,7 +689,7 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
         r.score =
             r.support_ratio * score_weights.x
             - r.solid_collision * score_weights.y
-            - r.scene_overlap * score_weights.z
+            - r.complexity_overlap * score_weights.z
             - r.clearance_overlap * score_weights.w;
     }
 
@@ -742,7 +714,7 @@ EvalResult evaluate_best_near(ivec3 base_candidate, out ivec3 best_origin) {
     best_result.score = -1.0;
     best_result.support_ratio = 0.0;
     best_result.solid_collision = 0.0;
-    best_result.scene_overlap = 0.0;
+    best_result.complexity_overlap = 0.0;
     best_result.clearance_overlap = 0.0;
     best_result.ignored_sample = 0.0;
     best_result.support_hit = 0.0;
@@ -778,7 +750,7 @@ void write_record(uint slot, ivec3 origin, EvalResult r, uint tile_id) {
     uint base = slot * RECORD_STRIDE;
     tile_topk[base + 0u] = vec4(vec3(origin), r.score);
     tile_topk[base + 1u] = vec4(float(tile_id), float(ids_counts.y), float(ids_counts.z), float(ids_counts.w));
-    tile_topk[base + 2u] = vec4(r.support_ratio, r.solid_collision, r.scene_overlap, r.clearance_overlap);
+    tile_topk[base + 2u] = vec4(r.support_ratio, r.solid_collision, r.complexity_overlap, r.clearance_overlap);
     tile_topk[base + 3u] = vec4(r.ignored_sample, r.valid ? 1.0 : 0.0, r.support_hit, r.support_total);
 }
 
@@ -892,7 +864,7 @@ void main() {
             empty_result.score = -1.0;
             empty_result.support_ratio = 0.0;
             empty_result.solid_collision = 0.0;
-            empty_result.scene_overlap = 0.0;
+            empty_result.complexity_overlap = 0.0;
             empty_result.clearance_overlap = 0.0;
             empty_result.ignored_sample = 0.0;
             empty_result.support_hit = 0.0;
