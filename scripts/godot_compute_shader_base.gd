@@ -401,6 +401,16 @@ func storage_buffer_zero(byte_count: int, scope: String = SCOPE_FRAME, label: St
 	return storage_buffer_from_bytes(bytes, scope, label)
 
 
+func buffer_zero(rid: RID, byte_count: int) -> bool:
+	if _rd == null or not _is_valid_rid(rid):
+		return false
+	if byte_count <= 0:
+		return false
+	var zero_bytes := PackedByteArray()
+	zero_bytes.resize(byte_count)
+	return _rd.buffer_update(rid, 0, byte_count, zero_bytes) == OK
+
+
 func dispatch_indirect_args_buffer_zero(scope: String = SCOPE_FRAME, label: String = "dispatch_indirect_args") -> RID:
 	if _rd == null:
 		return RID()

@@ -6311,9 +6311,7 @@ func _try_resolve_scene_voxel_source_candidates_gpu(groups: Array[Dictionary]) -
 	var committed_payload_reused := false
 
 	if _committed_scene_voxel_payload_buffer.is_valid() and _committed_scene_voxel_payload_buffer_byte_count == output_byte_count:
-		var zero_bytes := PackedByteArray()
-		zero_bytes.resize(output_byte_count)
-		if _rd.buffer_update(_committed_scene_voxel_payload_buffer, 0, output_byte_count, zero_bytes) == OK:
+		if buffer_zero(_committed_scene_voxel_payload_buffer, output_byte_count):
 			committed_payload_buffer = _committed_scene_voxel_payload_buffer
 			committed_payload_reused = true
 
