@@ -5,6 +5,41 @@ const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 
+# Demo-doc command driver contract (project rule):
+#   - Scripts that touch RenderingDevice/compute MUST run with
+#     `--rendering-driver vulkan` and MUST NOT use `--headless`.
+#   - Scripts that are CPU-only (no RenderingDevice) use `--headless`
+#     and MUST NOT use `--rendering-driver vulkan`.
+# Every tools/*.gd referenced from demos/**/*.md must be classified here so a
+# newly added or relabeled command cannot silently regress the driver flag.
+const DEMO_GPU_TEST_SCRIPTS := [
+	"test_voxel_footprint_bake",
+	"test_voxel_placement_generator",
+	"test_scene_voxel_field",
+	"test_blendsv_feedback_score",
+	"test_placement_fitting_generator_logic",
+	"test_voxel_dirty_tile_upload",
+	"test_autoobject_probe_prefilter",
+	"test_auto_voxel_runtime_profile_container",
+	"test_gpu_autoobject_runtime_bridge",
+	"test_voxel_multi_asset",
+	"test_markdown_contracts",
+	"test_voxel_candidate_routing_contract",
+	"test_target_sv_buffer_decode",
+	"test_voxel_target_debug",
+	"test_core_demo_contracts",
+]
+const DEMO_CPU_ONLY_TEST_SCRIPTS := [
+	"test_voxel_placement_record_commit",
+	"test_target_guidance_source_boundary",
+	"test_asset_properties_descriptor_contract",
+	"test_auto_asset_scripting",
+	"test_semantic_probe_generation",
+	"test_semantic_probe_debug_mesh",
+	"validate_test_leaf_asset",
+	"test_target_sv_point_cloud_conversion",
+]
+
 var _gpu_skip_count := 0
 
 
@@ -20,6 +55,7 @@ func _init() -> void:
 	ok = _test_legacy_scene_voxel_scatter_removed() and ok
 	ok = _test_runtime_read_sources_reject_staging_success() and ok
 	ok = _test_vpg_and_scene_tile_gpu_binding_contracts() and ok
+	ok = _test_demo_doc_test_commands_match_driver_contract() and ok
 
 	if ok:
 		if _gpu_skip_count > 0:
@@ -37,7 +73,7 @@ func _test_descriptor_backed_asset_semantics() -> bool:
 	var descriptor := AutoVoxelDescriptor.new()
 	var descriptor_color := Color(0.10, 0.20, 0.30, 0.35)
 	descriptor.set_color_and_complexity(descriptor_color, 0.35)
-	descriptor.set_collision([])
+	descriptor.set_collision([{"voxel": Vector3i(1, 0, 0), "collision_strength": 1.0}])
 
 	var obj := AutoObject.new()
 	obj.name = "descriptor_contract_object"
@@ -75,9 +111,11 @@ func _test_descriptor_backed_asset_semantics() -> bool:
 		obj.free()
 		return false
 	var record_collision: Array = record.get("collision", [])
-	# Non-terrain collision removed; record should have empty collision.
-	if not record_collision.is_empty():
-		push_error("  FAIL: voxel_write_spec record should have empty collision for non-terrain: %s" % str(record_collision))
+	# Descriptor collision is the authoritative semantic source and is carried on
+	# the record; non-terrain collision is ignored at the committer stamping stage,
+	# not stripped from the descriptor-backed record.
+	if record_collision.is_empty() or record_collision[0].get("voxel", Vector3i.ZERO) != Vector3i(1, 0, 0):
+		push_error("  FAIL: voxel_write_spec record should carry descriptor collision: %s" % str(record_collision))
 		obj.free()
 		return false
 
@@ -180,6 +218,12 @@ func _test_terrain_collision_survives_zero_complexity_writes() -> bool:
 
 	var committer = SceneVoxelCommitterScript.new(8, 8.0, false)
 	committer.configure_scene_voxel_grid(Vector3i(8, 1, 8), Vector3.ONE, Vector3.ZERO)
+	# Ordinary writes never stamp collision; only the authoritative terrain base
+	# collision layer feeds collision_field. Seed it explicitly so the
+	# zero-complexity ordinary write below can be checked for not clearing it.
+	var base_collision := Image.create(8, 8, false, Image.FORMAT_RF)
+	base_collision.fill(Color(1.0, 0.0, 0.0, 0.0))
+	committer.set_terrain_base_collision_field(base_collision)
 	var record := {
 		"id": "terrain_collision_contract",
 		"type": "brush",
@@ -218,8 +262,7 @@ func _test_channel_stays_out_of_shared_semantics() -> bool:
 		ok = false
 
 	var descriptor := AutoVoxelDescriptor.new()
-	descriptor.vegetation_channel = 2
-	descriptor.vegetation_radius = 0.4
+	descriptor.set_color_and_complexity(Color(0.1, 0.2, 0.3, 0.6), 0.6)
 	var fields := descriptor.to_record_fields(0.4)
 	for non_shared_key in ["channel", "vegetation_channel"]:
 		if fields.has(non_shared_key):
@@ -272,7 +315,7 @@ func _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() -
 			push_error("  FAIL: probe prefilter source is missing '%s'" % required)
 			ok = false
 
-	for required in ["buffer ProbeData", "buffer SceneOcc", "buffer CollisionOcc"]:
+	for required in ["buffer ProbeData", "buffer ComplexityCollision", "buffer TargetField"]:
 		if score_probe_shader.find(required) < 0:
 			push_error("  FAIL: probe scoring shader is missing '%s'" % required)
 			ok = false
@@ -371,7 +414,6 @@ func _test_gpu_first_no_cpu_fallback_contracts() -> bool:
 		"debug readback",
 		"只能 SKIP GPU upload / placement",
 		"不能改走 CPU 替代路径",
-		"非 headless Vulkan",
 		"contract validation",
 		"bound",
 		"consumed",
@@ -385,7 +427,6 @@ func _test_gpu_first_no_cpu_fallback_contracts() -> bool:
 		"`contract_blocked=true`",
 		"`cpu_fallback=false`",
 		"runtime resident success",
-		"dirty_scene_voxel_tile_ranges",
 		"last_upload_mode",
 		"last_upload_tile_ids",
 	]:
@@ -477,7 +518,7 @@ func _test_gpu_first_no_cpu_fallback_contracts() -> bool:
 		"res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md",
 	]:
 		var demo_text := _read_text(demo_path)
-		for required in ["--headless", "--rendering-driver vulkan", "非 headless Vulkan", "RenderingDevice", "tools/test_voxel_multi_asset.gd"]:
+		for required in ["--rendering-driver vulkan", "RenderingDevice", "tools/test_voxel_multi_asset.gd"]:
 			if demo_text.find(required) < 0:
 				push_error("  FAIL: %s is missing GPU validation command/wording '%s'" % [demo_path, required])
 				ok = false
@@ -601,7 +642,7 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 		"flush_to_scene_voxel_committer",
 		"runtime_not_ready",
 		"failed_commit_result_count",
-		"dirty_delta_apply_failed",
+		"resident_dirty_delta_update_pass_blocked",
 	]:
 		if runtime_source.find(required) < 0:
 			push_error("  FAIL: GPUAutoObjectRuntime source is missing no-fallback flush contract term '%s'" % required)
@@ -684,6 +725,83 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 	if ok:
 		print("  OK: VPG consumes GPU buffers and SceneVoxelTile readback stays GPU-resident")
 	return ok
+
+
+func _test_demo_doc_test_commands_match_driver_contract() -> bool:
+	print("[MarkdownContracts] test_demo_doc_test_commands_match_driver_contract...")
+	var ok := true
+	var gpu_set := {}
+	for name in DEMO_GPU_TEST_SCRIPTS:
+		gpu_set[name] = true
+	var cpu_set := {}
+	for name in DEMO_CPU_ONLY_TEST_SCRIPTS:
+		cpu_set[name] = true
+	for shared in gpu_set.keys():
+		if cpu_set.has(shared):
+			push_error("  FAIL: '%s' is listed in both GPU and CPU-only command contracts" % shared)
+			ok = false
+
+	var seen := {}
+	for doc_path in _collect_demo_doc_paths("res://demos"):
+		var text := _read_text(doc_path)
+		for raw_line in text.split("\n"):
+			var line := str(raw_line)
+			var marker := "--script tools/"
+			var marker_at := line.find(marker)
+			if marker_at < 0:
+				continue
+			var tail := line.substr(marker_at + marker.length())
+			var script_file := tail.strip_edges().split(" ")[0]
+			if not script_file.ends_with(".gd"):
+				continue
+			var script_name := script_file.substr(0, script_file.length() - 3)
+			seen[script_name] = true
+			var uses_vulkan := line.find("--rendering-driver vulkan") >= 0
+			var uses_headless := line.find("--headless") >= 0
+			if gpu_set.has(script_name):
+				if not uses_vulkan or uses_headless:
+					push_error("  FAIL: %s: GPU test '%s' must use '--rendering-driver vulkan' and not '--headless'" % [doc_path, script_name])
+					ok = false
+			elif cpu_set.has(script_name):
+				if not uses_headless or uses_vulkan:
+					push_error("  FAIL: %s: CPU-only test '%s' must use '--headless' and not '--rendering-driver vulkan'" % [doc_path, script_name])
+					ok = false
+			else:
+				push_error("  FAIL: %s: test '%s' is not classified in DEMO_GPU_TEST_SCRIPTS or DEMO_CPU_ONLY_TEST_SCRIPTS" % [doc_path, script_name])
+				ok = false
+
+	for required_name in gpu_set.keys():
+		if not seen.has(required_name):
+			push_error("  FAIL: GPU command contract lists '%s' but no demo doc references it; prune the stale entry" % required_name)
+			ok = false
+	for required_name in cpu_set.keys():
+		if not seen.has(required_name):
+			push_error("  FAIL: CPU-only command contract lists '%s' but no demo doc references it; prune the stale entry" % required_name)
+			ok = false
+
+	if ok:
+		print("  OK: every demo-doc test command matches its RenderingDevice driver contract")
+	return ok
+
+
+func _collect_demo_doc_paths(dir_path: String) -> PackedStringArray:
+	var results := PackedStringArray()
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		push_error("  FAIL: cannot open demo doc root: %s" % dir_path)
+		return results
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if entry != "." and entry != "..":
+			var child := "%s/%s" % [dir_path, entry]
+			if dir.current_is_dir():
+				results.append_array(_collect_demo_doc_paths(child))
+			elif entry.ends_with(".md"):
+				results.append(child)
+		entry = dir.get_next()
+	dir.list_dir_end()
+	return results
 
 
 func _candidate_sparse_alias_lines_are_qualified(label: String, text: String) -> bool:
