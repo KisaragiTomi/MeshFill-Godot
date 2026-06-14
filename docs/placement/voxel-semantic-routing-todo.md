@@ -44,7 +44,7 @@
 
 - [ ] 明确 `SemanticProbe` flags 的稳定 bit layout。
 - [ ] 为 `context` probe 增加可视化 / inspect 输出。
-- [ ] 验证统一 position-only anchor 的 supported / column-top 候选来源对 probe offset 的覆盖。
+- [ ] 验证统一 position-only anchor 的 supported 候选来源对 probe offset 的覆盖。
 - [ ] 添加测试：probe 生成确定性、context probe 数量、TargetSV_B clamp 采样。
 
 ## P5：MLP / Learned Matcher
@@ -60,7 +60,7 @@ MLP 只能影响候选集内部 validation，不能恢复全资产查找。
 ## P6：SV Tiled Sampling
 
 - [ ] 让 shader-side sampling 直接消费 `SceneVoxelTile` metadata / summary buffers。
-- [ ] 增加 coarse occupancy / collision mip；先实现每个 `8x8x8` tile 一个 summary cell。
+- [ ] 增加 coarse complexity / collision mip；先实现每个 `8x8x8` tile 一个 summary cell。
 - [ ] 为跨 tile probe / footprint 采样保留 tile border / guard cells。
 - [ ] 评估 SV epoch publish：本轮读 `SV[t - 1]`，commit 后发布 `SV[tick]`。
 - [ ] 大世界需求明确前，不做 streaming eviction、虚拟页表或 sparse active tile atlas。

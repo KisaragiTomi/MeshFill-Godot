@@ -1,4 +1,4 @@
-# SceneVoxel Commit 模块测试场景
+﻿# SceneVoxel Commit 模块测试场景
 
 模块：source write / committed `SceneVoxel` / SV resident fields  
 场景：`res://demos/modules/scene-voxel-commit/scene-voxel-commit.tscn`
@@ -15,10 +15,14 @@
 2. 运行 SceneVoxel commit 测试：
 
 ```bash
-<godot> --headless --path . --script tools/test_scene_voxel_field.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_scene_voxel_field.gd
 <godot> --headless --path . --script tools/test_voxel_placement_record_commit.gd
-<godot> --headless --path . --script tools/test_blendsv_feedback_score.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_blendsv_feedback_score.gd
 ```
+
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
 
 3. 对照 `scripts/scene_voxel_committer.gd`，检查 source-only sidecar 没有进入 public payload。
 

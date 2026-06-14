@@ -111,7 +111,7 @@
     <g id="authoring-prototypes">
       <rect class="node" x="85" y="165" width="280" height="110" rx="8" fill="url(#note-hatch)" stroke="#64748b"/>
       <text class="node-title" x="103" y="193">Authoring prototypes</text>
-      <text class="small"><tspan x="103" y="215">AutoObject / AutoRock / AutoVegetation</tspan><tspan x="103" y="232">editor + import + debug only</tspan><tspan x="103" y="249">not per-instance runtime nodes</tspan></text>
+      <text class="small"><tspan x="103" y="215">AutoObject / AssetDescriptor</tspan><tspan x="103" y="232">editor + import + debug only</tspan><tspan x="103" y="249">not per-instance runtime nodes</tspan></text>
     </g>
 
     <g id="command-queue">
@@ -128,7 +128,7 @@
 
     <g id="descriptor-source">
       <rect class="node" x="485" y="165" width="280" height="110" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>
-      <text class="node-title" x="503" y="193">AutoVoxelDescriptor</text>
+      <text class="node-title" x="503" y="193">AssetDescriptor</text>
       <text class="small"><tspan x="503" y="215">asset semantic source</tspan><tspan x="503" y="232">probes / collision / pivots</tspan><tspan x="503" y="249">compile input, not runtime container</tspan></text>
     </g>
 

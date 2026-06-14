@@ -5,11 +5,11 @@
 // Inputs:
 //   binding 0: rgba32f visual buffer, vec4(color.rgb, complexity)
 //   binding 1: r32f collision buffer
-//   binding 2: optional r32f occupancy input buffer
+//   binding 2: optional r32f completely input buffer (completely = max(complexity, collision) 表示体素完全度)
 // Outputs:
-//   binding 3: r32f occupancy buffer
+//   binding 3: r32f completely buffer
 //   binding 4: rgba8 packed as uint, high-to-low bytes RGBA
-//   binding 5: u32 stats buffer: max occupancy, max collision, active/collision/visual voxel counts, min active occupancy, max visual complexity
+//   binding 5: u32 stats buffer: max completely, max collision, active/collision/visual voxel counts, min active completely, max visual complexity
 //   binding 6: rgba32f color decode buffer, vec4(color.rgb, complexity), stride 16 bytes
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
@@ -54,8 +54,8 @@ const float TARGET_STATS_ACTIVE_THRESHOLD = 0.001;
 
 layout(push_constant, std430) uniform Params {
     int voxel_count;                 // byte 0: total voxels to scan
-    int use_collision_as_occupancy;  // byte 4: max(complexity, collision) when no occupancy input exists
-    int occupancy_input_valid;       // byte 8: binding 2 has one r32f per voxel
+    int use_collision_as_completely;  // byte 4: use max(complexity, collision) as completely when no completely input exists
+    int completely_input_valid;       // byte 8: binding 2 has one r32f per voxel
     int write_packed_buffers;        // byte 12: write bindings 3/4, disabled for stats-only dispatch
 };
 
@@ -79,23 +79,23 @@ void main() {
     float complexity = clamp(visual.a, 0.0, 1.0);
     float collision = clamp(target_collision[idx], 0.0, 1.0);
 
-    float occupancy = complexity;
-    if (occupancy_input_valid != 0) {
-        occupancy = clamp(target_occupancy_input[idx], 0.0, 1.0);
-    } else if (use_collision_as_occupancy != 0) {
-        occupancy = max(complexity, collision);
+    float completely = complexity;
+    if (completely_input_valid != 0) {
+        completely = clamp(target_occupancy_input[idx], 0.0, 1.0);
+    } else if (use_collision_as_completely != 0) {
+        completely = max(complexity, collision);
     }
 
     if (write_packed_buffers != 0) {
-        target_occupancy_out[idx] = occupancy;
+        target_occupancy_out[idx] = completely;
         target_color_rgba8_out[idx] = pack_rgba8(vec4(color, complexity));
         target_color_rgba32f_out[idx] = vec4(color, complexity);
     }
-    atomicMax(target_stats_out[TARGET_STATS_MAX_OCCUPANCY], quantize_unit(occupancy));
+    atomicMax(target_stats_out[TARGET_STATS_MAX_OCCUPANCY], quantize_unit(completely));
     atomicMax(target_stats_out[TARGET_STATS_MAX_COLLISION], quantize_unit(collision));
-    if (occupancy > TARGET_STATS_ACTIVE_THRESHOLD) {
+    if (completely > TARGET_STATS_ACTIVE_THRESHOLD) {
         atomicAdd(target_stats_out[TARGET_STATS_ACTIVE_COUNT], 1u);
-        atomicMax(target_stats_out[TARGET_STATS_MIN_ACTIVE_PACKED], TARGET_STATS_MIN_PACK_BASE - quantize_unit(occupancy));
+        atomicMax(target_stats_out[TARGET_STATS_MIN_ACTIVE_PACKED], TARGET_STATS_MIN_PACK_BASE - quantize_unit(completely));
     }
     if (collision > TARGET_STATS_ACTIVE_THRESHOLD) {
         atomicAdd(target_stats_out[TARGET_STATS_COLLISION_COUNT], 1u);

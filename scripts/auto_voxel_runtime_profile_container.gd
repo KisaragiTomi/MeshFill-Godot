@@ -1,7 +1,7 @@
 class_name AutoVoxelRuntimeProfileContainer
 extends RefCounted
 
-const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 
@@ -78,9 +78,7 @@ func clear() -> void:
 
 
 func dispose(sync_before_free: bool = false) -> void:
-	if _rd != null and sync_before_free:
-		_rd.submit()
-		_rd.sync()
+	_submit_and_sync_before_dispose(sync_before_free)
 	_release_gpu_buffers()
 	if _rd != null and _owns_rendering_device:
 		_rd.free()
@@ -127,6 +125,17 @@ func get_rendering_device() -> RenderingDevice:
 
 func owns_rendering_device() -> bool:
 	return _owns_rendering_device
+
+
+func _should_sync_before_dispose(sync_before_free: bool) -> bool:
+	return sync_before_free and _rd != null and _owns_rendering_device
+
+
+func _submit_and_sync_before_dispose(sync_before_free: bool) -> void:
+	if not _should_sync_before_dispose(sync_before_free):
+		return
+	_rd.submit()
+	_rd.sync()
 
 
 func upload_profiles(force: bool = false) -> bool:
@@ -880,8 +889,8 @@ static func _normalize_profile_record(raw_profile: Dictionary) -> Dictionary:
 	var complexity := clampf(float(raw_profile.get("complexity", color.a)), 0.0, 1.0)
 	color.a = complexity
 
-	var collision := AutoVoxelDescriptorScript.normalize_collision(_array_from_value(raw_profile.get("collision", [])), 0.0)
-	var pivots := AutoVoxelDescriptorScript.normalize_pivot_variants(_array_from_value(raw_profile.get("pivot_variants", [])))
+	var collision := AssetDescriptorScript.normalize_collision(_array_from_value(raw_profile.get("collision", [])), 0.0)
+	var pivots := AssetDescriptorScript.normalize_pivot_variants(_array_from_value(raw_profile.get("pivot_variants", [])))
 	var probes := SemanticProbeProfileScript.duplicate_probe_array(_array_from_value(raw_profile.get("semantic_probes", [])))
 
 	var normalized := {

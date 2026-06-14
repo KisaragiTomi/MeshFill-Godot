@@ -1,4 +1,4 @@
-# docs/history/voxel-3d-migration-plan.md 测试场景
+﻿# docs/history/voxel-3d-migration-plan.md 测试场景
 
 源文档：`res://docs/history/voxel-3d-migration-plan.md`  
 测试场景：`res://demos/history-voxel-3d-migration-plan/history-voxel-3d-migration-plan.tscn`
@@ -9,10 +9,14 @@
 2. 运行当前 3D voxel placement 的回归测试：
 
 ```bash
-<godot> --headless --path . --script tools/test_voxel_footprint_bake.gd
-<godot> --headless --path . --script tools/test_voxel_placement_generator.gd
-<godot> --headless --path . --script tools/test_scene_voxel_field.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_footprint_bake.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_placement_generator.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_scene_voxel_field.gd
 ```
+
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
 
 3. 人工检查该历史文档的状态说明，确认 active ownership 已指向 `core/meshfill-framework.md` 和 `core/scene-voxel-field-system.md`。
 

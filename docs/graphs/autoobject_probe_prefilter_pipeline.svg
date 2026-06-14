@@ -114,7 +114,7 @@
     <g id="collect_sv_anchors.glsl">
     <rect class="node" x="470" y="150" width="310" height="90" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
     <text class="node-title" x="488" y="178">collect_sv_anchors.glsl</text>
-    <text class="small"><tspan x="488" y="200">supported candidates</tspan><tspan x="488" y="217">column-top candidates</tspan></text>
+    <text class="small"><tspan x="488" y="200">supported candidates</tspan></text>
     </g>
     <g id="score_anchor_asset_probes.glsl">
     <rect class="node" x="470" y="285" width="310" height="105" rx="8" fill="#ede9fe" stroke="#7c3aed"/>

@@ -26,6 +26,7 @@ func _init() -> void:
 	var args := OS.get_cmdline_user_args()
 	if args.size() < 2:
 		print("Usage: godot --path . --rendering-driver vulkan --script tools/terrain/height_normal_from_height_gpu.gd -- <height_rgba32f.raw> <normal_rgba32f.raw> [width] [height] [cell_size]")
+		print("  GPU tool: --headless is prohibited; requires --rendering-driver vulkan.")
 		quit(OK)
 		return
 

@@ -38,6 +38,10 @@ vec2 scale_uv(vec2 uv, vec2 s) {
 
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 work_size = imageSize(rw_current_scene_depth_a);
+    if (pos.x >= work_size.x || pos.y >= work_size.y) {
+        return;
+    }
     uvec3 local_id = gl_LocalInvocationID;
 
     ivec2 max_result = imageSize(rw_result_a);
@@ -47,10 +51,8 @@ void main() {
 
     imageStore(rw_result_b, pos, imageLoad(rw_result_a, pos));
 
-    float max_cell = float(imageSize(rw_current_scene_depth_a).x);
+    float max_cell = float(work_size.x);
     ivec2 mesh_max_cell = textureSize(t_mesh_depth, 0);
-
-    barrier();
 
     vec4 current_depth_color = imageLoad(rw_current_scene_depth_a, pos);
     float current_height = current_depth_color.x;

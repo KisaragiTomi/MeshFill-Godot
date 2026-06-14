@@ -84,6 +84,7 @@ bool tile_in_bounds(ivec3 p) {
 
 // Returns true if the tile has scene or collision content,
 // using max(scene_count, collision_count) > 0 as the criterion.
+// max(scene_count, collision_count) == 0 means the tile is empty (nothing there).
 bool tile_has_content(uint tile_id) {
     uint base = tile_id * summary_stride_uints;
     return tile_summaries[base + SUMMARY_SCENE_COUNT_OFFSET] > 0u

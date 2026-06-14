@@ -10,7 +10,7 @@
 
 ## 测试方法
 
-1. 打开场景，确认该模块覆盖 rock scene asset、vegetation descriptor resource 和 runtime config handoff。
+1. 打开场景，确认该模块覆盖 object scene asset、vegetation descriptor resource 和 runtime config handoff。
 2. 运行脚手架测试：
 
 ```bash
@@ -22,7 +22,7 @@
 
 ## 验收标准
 
-- rock scaffold 输出 `AutoRock` scene，并保留 mesh、height texture、随机参数和 descriptor-backed shared fields。
-- vegetation scaffold 输出 `AutoVoxelDescriptor` `.tres`，实例化时能创建对应 `AutoVegetation` 子类。
+- object scaffold 输出 descriptor-backed `AutoObject` scene，并保留 mesh、`mesh_height_texture`、随机参数和 descriptor-backed shared fields。
+- vegetation scaffold 输出 `AssetDescriptor` `.tres`，实例化时使用 descriptor-backed 默认语义。
 - `make_instance_config()` 和 runtime metadata 不把资产语义复制成第二套权威字段。
 

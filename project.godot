@@ -15,8 +15,12 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 [application]
 
 config/name="MeshFill-Godot"
-run/main_scene="res://main.tscn"
+run/main_scene="res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
+
+[autoload]
+
+CommonTerrain="*res://scripts/common_terrain.gd"
 
 [dotnet]
 

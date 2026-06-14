@@ -2,7 +2,7 @@ extends SceneTree
 
 const VPG := preload("res://scripts/voxel_placement_generator.gd")
 const SPA := preload("res://scripts/scene_placement_actor.gd")
-const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const Runtime := preload("res://scripts/gpu_autoobject_runtime.gd")
 
 
@@ -828,7 +828,7 @@ func _test_contract_blocked_multi_asset_route_source_gate(
 
 func _test_scene_placement_asset_defs_keep_route_in_common_settings() -> bool:
 	var actor := SPA.new()
-	var descriptor := AutoVoxelDescriptorScript.new()
+	var descriptor := AssetDescriptorScript.new()
 	actor._registered_descriptors = [descriptor]
 	actor._registered_profile_ids = [42]
 
@@ -861,7 +861,7 @@ func _test_scene_placement_pipeline_reports_normalized_route_source() -> bool:
 		print("[VoxelCandidateRouting] SKIP: no RenderingDevice for ScenePlacementActor route source boundary")
 		return true
 
-	var descriptor := AutoVoxelDescriptorScript.new()
+	var descriptor := AssetDescriptorScript.new()
 	descriptor.asset_id = "candidate_route_source_boundary"
 	descriptor.set_collision([])
 	var profile_id := actor.register_asset(descriptor)
@@ -933,7 +933,7 @@ func _test_scene_placement_resident_route_handoff_default() -> bool:
 		return false
 	actor.attach_gpu_runtime(runtime)
 
-	var descriptor := AutoVoxelDescriptorScript.new()
+	var descriptor := AssetDescriptorScript.new()
 	descriptor.asset_id = "candidate_route_resident_handoff"
 	descriptor.set_collision([])
 	var profile_id := actor.register_asset(descriptor)

@@ -58,19 +58,19 @@ static func create_voxel_descriptor(
 	)
 
 
-static func load_or_new_object_asset(asset_path: String) -> AutoRock:
+static func load_or_new_object_asset(asset_path: String) -> AutoObject:
 	var existing = load(asset_path) if not asset_path.is_empty() else null
 	if existing is PackedScene:
 		var instance := (existing as PackedScene).instantiate()
-		if instance is AutoRock:
-			return instance as AutoRock
+		if instance is AutoObject:
+			return instance as AutoObject
 		if instance != null:
 			instance.free()
-	return AutoRock.new()
+	return AutoObject.new()
 
 
 static func create_or_update_object_asset(
-	asset: AutoRock,
+	asset: AutoObject,
 	mesh: Mesh,
 	mesh_height_texture: Texture2D,
 	mesh_size: float,
@@ -85,8 +85,8 @@ static func create_or_update_object_asset(
 	source_mesh: Mesh = null,
 	source_mesh_path: String = "",
 	preserve_descriptor_shared_fields: bool = true
-) -> AutoRock:
-	var result := asset if asset != null else AutoRock.new()
+) -> AutoObject:
+	var result := asset if asset != null else AutoObject.new()
 	var direct_color := entry_color
 	var direct_complexity := clampf(entry_complexity, 0.0, 1.0)
 	var direct_collision: Array[Dictionary] = []
@@ -103,7 +103,7 @@ static func create_or_update_object_asset(
 		direct_collision = duplicate_dictionary_array(collision)
 	direct_color.a = direct_complexity
 	if not direct_collision.is_empty():
-		direct_collision = AutoVoxelDescriptor.normalize_collision(direct_collision, 0.0)
+		direct_collision = SharedPropertyTypeScript.collision_from_fields({SharedPropertyTypeScript.COLLISION_KEY: direct_collision})
 	var cfg := {
 		"mesh": mesh,
 		"source_mesh": source_mesh if source_mesh != null else mesh,
@@ -129,13 +129,13 @@ static func create_or_update_object_asset(
 	return result
 
 
-static func configure_object_instance(obj: AutoRock, asset: AutoRock, config: Dictionary = {}) -> void:
+static func configure_object_instance(obj: AutoObject, asset: AutoObject, config: Dictionary = {}) -> void:
 	if obj == null or asset == null:
 		return
 	obj.configure_from_asset(asset, config)
 
 
-static func save_object_asset(obj: AutoRock, resource_path: String) -> int:
+static func save_object_asset(obj: AutoObject, resource_path: String) -> int:
 	if obj == null or resource_path.is_empty():
 		return ERR_INVALID_PARAMETER
 	var err := _ensure_parent_dir(resource_path)
@@ -232,7 +232,7 @@ static func make_object_voxel_write_spec(
 	record_id: String,
 	obj: MeshInstance3D,
 	mesh_index: int,
-	asset: AutoRock,
+	asset: AutoObject,
 	base_pixel: Vector2i,
 	volume_xz_resolution: int,
 	extra_fields: Dictionary = {}
@@ -241,16 +241,16 @@ static func make_object_voxel_write_spec(
 		return {}
 	var fields := extra_fields.duplicate(true)
 	fields["mesh_index"] = mesh_index
-	if obj is AutoRock:
-		return (obj as AutoRock).make_voxel_write_spec(record_id, base_pixel, volume_xz_resolution, fields)
-	var record_obj: AutoRock = null
+	if obj is AutoObject:
+		return (obj as AutoObject).make_voxel_write_spec(record_id, base_pixel, volume_xz_resolution, fields)
+	var record_obj: AutoObject = null
 	var duplicate_node = asset.duplicate()
-	if duplicate_node is AutoRock:
-		record_obj = duplicate_node as AutoRock
+	if duplicate_node is AutoObject:
+		record_obj = duplicate_node as AutoObject
 	elif duplicate_node != null:
 		duplicate_node.free()
 	if record_obj == null:
-		record_obj = AutoRock.new()
+		record_obj = AutoObject.new()
 	record_obj.configure_from_asset(asset, {
 		"mesh": obj.mesh,
 		"position": obj.position,
@@ -268,7 +268,7 @@ static func make_object_instance_stamp_write_spec(
 	record_id: String,
 	obj: MeshInstance3D,
 	mesh_index: int,
-	asset: AutoRock,
+	asset: AutoObject,
 	base_pixel: Vector2i,
 	volume_xz_resolution: int,
 	extra_fields: Dictionary = {}
@@ -478,59 +478,6 @@ static func save_resource(resource: Resource, resource_path: String) -> int:
 	if err != OK:
 		return err
 	return ResourceSaver.save(resource, resource_path)
-
-
-static func write_vegetation_subclass(
-	class_name_value: String,
-	object_subtype: String,
-	channel: int,
-	radius: float,
-	group_name: String,
-	script_path: String
-) -> int:
-	var method_name := "configure_%s" % _to_snake_case(object_subtype)
-	var content := (
-		"class_name %s\n"
-		+ "extends AutoObject\n\n"
-		+ "const DEFAULT_SUBTYPE := \"%s\"\n"
-		+ "const DEFAULT_CHANNEL := %d\n"
-		+ "const DEFAULT_RADIUS := %.6f\n"
-		+ "const DEFAULT_GROUP := \"%s\"\n\n\n"
-		+ "func %s(config: Dictionary) -> void:\n"
-		+ "\tconfigure_asset(config)\n\n\n"
-		+ "func configure_asset(config: Dictionary) -> void:\n"
-		+ "\tvar cfg := config.duplicate(true)\n"
-		+ "\tcfg[\"object_subtype\"] = DEFAULT_SUBTYPE\n"
-		+ "\tcfg[\"object_type\"] = \"vegetation\"\n"
-		+ "\tif not cfg.has(\"group\") and not DEFAULT_GROUP.is_empty():\n"
-		+ "\t\tcfg[\"group\"] = DEFAULT_GROUP\n"
-		+ "\tconfigure_auto_object(cfg)\n"
-	) % [class_name_value, object_subtype, channel, radius, group_name, method_name]
-	return write_text_file(script_path, content)
-
-
-static func write_object_subclass(
-	class_name_value: String,
-	object_subtype: String,
-	group_name: String,
-	script_path: String
-) -> int:
-	var method_name := "configure_%s" % _to_snake_case(object_subtype)
-	var content := (
-		"class_name %s\n"
-		+ "extends AutoRock\n\n"
-		+ "const DEFAULT_SUBTYPE := \"%s\"\n"
-		+ "const DEFAULT_GROUP := \"%s\"\n\n\n"
-		+ "func %s(config: Dictionary) -> void:\n"
-		+ "\tconfigure_asset(config)\n\n\n"
-		+ "func configure_asset(config: Dictionary) -> void:\n"
-		+ "\tvar cfg := config.duplicate(true)\n"
-		+ "\tcfg[\"object_subtype\"] = DEFAULT_SUBTYPE\n"
-		+ "\tif not cfg.has(\"group\") and not DEFAULT_GROUP.is_empty():\n"
-		+ "\t\tcfg[\"group\"] = DEFAULT_GROUP\n"
-		+ "\tconfigure_object(cfg)\n"
-	) % [class_name_value, object_subtype, group_name, method_name]
-	return write_text_file(script_path, content)
 
 
 static func write_text_file(path: String, content: String) -> int:

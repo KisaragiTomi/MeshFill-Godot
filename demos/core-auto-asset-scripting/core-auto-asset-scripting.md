@@ -5,7 +5,7 @@
 
 ## 测试方法
 
-1. 打开 `core-auto-asset-scripting.tscn`，确认场景覆盖 rock / vegetation 脚手架，而不是运行时 placement。
+1. 打开 `core-auto-asset-scripting.tscn`，确认场景覆盖 object / vegetation 脚手架，而不是运行时 placement。
 2. 运行资产脚手架和 test leaf 验证：
 
 ```bash
@@ -17,7 +17,7 @@
 
 ## 验收标准
 
-- rock 输出为 `AutoRock` scene，vegetation 输出为 descriptor-backed resource。
+- object 输出为 descriptor-backed `AutoObject` scene，vegetation 输出为 descriptor-backed resource。
 - 共享字段只通过 descriptor / `AutoVoxelProfile` 归一化，不由 metadata 重新定义。
 - `instance_stamp_write_spec` / legacy `voxel_write_spec` 的兼容关系与测试一致。
 

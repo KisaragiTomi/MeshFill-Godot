@@ -91,9 +91,9 @@
     <text class="mono" x="390" y="594">excluded</text>
   </g>
   <g>
-    <g id="autovoxeldescriptor">
+    <g id="AssetDescriptor">
     <rect class="node" x="90" y="155" width="280" height="125" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>
-    <text class="node-title" x="108" y="183">AutoVoxelDescriptor</text>
+    <text class="node-title" x="108" y="183">AssetDescriptor</text>
     <text class="small"><tspan x="108" y="205">semantic_probe_profile</tspan><tspan x="108" y="222">collision</tspan><tspan x="108" y="239">context_sensing_radius</tspan><tspan x="108" y="256">generated probes</tspan></text>
     </g>
     <g id="generation-priority">
@@ -104,7 +104,7 @@
     <g id="not-semantic-inputs">
     <rect class="node" x="90" y="585" width="280" height="105" rx="8" fill="url(#note-hatch)" stroke="#64748b"/>
     <text class="node-title" x="108" y="613">Not semantic inputs</text>
-    <text class="small"><tspan x="108" y="635">channel</tspan><tspan x="108" y="652">vegetation_channel</tspan><tspan x="108" y="669">object_type metadata</tspan></text>
+    <text class="small"><tspan x="108" y="635">channel</tspan><tspan x="108" y="652">object_type metadata</tspan></text>
     </g>
     <g id="probe-soa-buffers">
     <rect class="node" x="490" y="155" width="280" height="120" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>

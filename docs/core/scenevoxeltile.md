@@ -1,4 +1,4 @@
-# SceneVoxelTile 粗粒度 SV Cell 管理系统
+﻿# SceneVoxelTile 粗粒度 SV Cell 管理系统
 
 本文定义 `SceneVoxelTile`：由 `SceneVoxelCommitter` / SV owner 持有的粗粒度 cell index / dirty record，用来统一管理 dirty、局部 voxel 范围、AutoObject 引用和增量更新边界。点选 voxel 时，所属 `SceneVoxelTile` 由 voxel 坐标和 `scene_voxel_tile_size` 直接推导，不从 provenance 或公开 sidecar 查询。`SceneVoxel` / SV committed payload 见 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)；资产默认语义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)，字段归属边界见 [`asset-properties.md`](asset-properties.md)；GPU-first AutoObject 方向见 [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)；placement route 术语见 [`voxel-semantic-routing.md`](../placement/voxel-semantic-routing.md)。SPA（`ScenePlacementActor`）借用 `SceneVoxelCommitter` 引用编排 commit，不直接管理 tile dirty sidecar；详见 [`scene-placement-actor.md`](scene-placement-actor.md)。
 
@@ -197,7 +197,7 @@ AutoObject / brush / profile / placement dirty producer
 
 ## 与 AutoObject Runtime 的关系
 
-`SceneVoxelTile` 管理 AutoObject 在 SV 两级（voxel + tile） 生命周期中的参与关系：object id 属于哪些 voxel 和 tile、对象变化 dirty 哪些 voxel/tile、以及 tile compact object range 如何发布。它不能回答“对象的完整运行时状态是什么”；完整 runtime object state 由 `GPUAutoObjectRuntime` 的 GPU object buffers 承担，资产默认语义由 [`AutoVoxelDescriptor`](auto-voxel-descriptor.md) 承担。
+`SceneVoxelTile` 管理 AutoObject 在 SV 两级（voxel + tile） 生命周期中的参与关系：object id 属于哪些 voxel 和 tile、对象变化 dirty 哪些 voxel/tile、以及 tile compact object range 如何发布。它不能回答“对象的完整运行时状态是什么”；完整 runtime object state 由 `GPUAutoObjectRuntime` 的 GPU object buffers 承担，资产默认语义由 [`AssetDescriptor`](auto-voxel-descriptor.md) 承担。
 
 ```text
 per-voxel object refs  (SV object-ref index / GPU resident buffer)
@@ -252,6 +252,9 @@ placement/exclusion 的邻域查询走 per-voxel object refs（直接通过 voxe
 Heightfield rock fitting 是独立 producer，输出 placement results 后由 `main.gd` 实例化并派生 `ISWS`；详见 [`meshfill-rock-placement-flow.md`](../placement/meshfill-rock-placement-flow.md)。Target-driven voxel region route 见 [`voxel-semantic-routing.md`](../placement/voxel-semantic-routing.md)。
 
 以下功能均已实现并通过测试验证，详见各测试文件入口。
+
+
+> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，CPU fallback 不得作为通过条件。
 
 ## 测试场景
 

@@ -6,7 +6,7 @@ const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime
 const SPA := preload("res://scripts/scene_placement_actor.gd")
 const PrefilterScript := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
 const VPGScript := preload("res://scripts/voxel_placement_generator.gd")
-const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 
 
 class FailingCommitter:
@@ -365,7 +365,7 @@ func _test_scene_placement_actor_flushes_resident_dirty_delta_after_placement() 
 		runtime.dispose()
 		return true
 
-	var descriptor := AutoVoxelDescriptorScript.new()
+	var descriptor := AssetDescriptorScript.new()
 	descriptor.asset_id = "spa_runtime_dirty_delta_flush"
 	var profile_id := actor.register_asset(descriptor)
 	if profile_id < 0:
@@ -448,7 +448,7 @@ func _test_scene_placement_actor_scopes_accepted_record_shader_opt_in() -> bool:
 		runtime.dispose()
 		return true
 
-	var descriptor := AutoVoxelDescriptorScript.new()
+	var descriptor := AssetDescriptorScript.new()
 	descriptor.asset_id = "spa_accepted_record_writeback"
 	var profile_id := actor.register_asset(descriptor)
 	if profile_id < 0:

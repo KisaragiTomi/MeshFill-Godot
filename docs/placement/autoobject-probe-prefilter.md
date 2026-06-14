@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | `SV[t - 1].complexity_field` | BlendSV-backed resident scene query channel | anchor 可放置性、占用、支撑、probe 场景采样。 |
 | `SV[t - 1].collision_field` | BlendSV-backed resident collision query channel | anchor / probe collision sampling。 |
-| `target_occupancy` | `TargetSV_B` complexity / collision read buffer | target demand 与 probe collision fit。 |
+| `target_completely` | `TargetSV_B` complexity / collision read buffer | target demand 与 probe collision fit。 |
 | `target_color` | `TargetSV_B` packed RGBA8 color / complexity | probe color / complexity fit。 |
 | `autoobjects` | 当前可用 asset registry | 提供 semantic probes、collision samples、context radius。 |
 | `voxel_sparse_ids` | dirty voxel regions / dirty tiles | 限定 anchor collection 的更新范围。 |
@@ -48,7 +48,7 @@ Shader 职责：
 
 | Shader | 职责 |
 | --- | --- |
-| `collect_sv_anchors.glsl` | 从 dirty tile / voxel regions 中收集统一 position-only anchors；来源包括 supported candidates 和 column-top candidates。 |
+| `collect_sv_anchors.glsl` | 从 dirty tile / voxel regions 中收集统一 position-only anchors；只收 supported candidates（自身满足阈值且下方 support 足够）。 |
 | `score_anchor_asset_probes.glsl` | 每个 anchor / asset 组合按 probes 采样 `SV` 与 `TargetSV_B` buffer，输出 asset score。 |
 | `select_anchor_topk.glsl` | 为每个 anchor 选择 top-K assets。 |
 | `reduce_anchor_topk_to_voxel_regions.glsl` | 把 anchor top-K 聚合成 `voxel_sparse_votes[asset_id * tile_count + tile_id]`。 |
@@ -66,22 +66,21 @@ Opt-in route payload branch 使用同一份 `candidate_route_profiles.tile_radiu
 anchor_buffer[i] = uvec4(voxel_x, voxel_y, voxel_z, 0)
 ```
 
-来源都是统一的 position-only anchor，不再写入或区分 `ground` / `target_top` kind：
+来源是统一的 position-only anchor，不再写入或区分 `ground` / `target_top` kind：
 
 - Supported candidate position：当前 voxel 满足 target 阈值、scene/collision 阈值，并且下方 support 足够。
-- Column-top candidate position：dirty tile 覆盖的局部 XZ column 中最高 target-occupied voxel；不强制 support，因为它只是 probe 匹配用的候选位置来源。
 
 最终物理支撑仍由 placement footprint scoring 确认；`ground` / `target_top` 名称只作为配置输入同义词归一到 `anchor`。
 
 ## Probe 规则
 
-Probe 通过 `AutoObject.get_semantic_probes(density)` 获取，通常来自 `AutoVoxelDescriptor.semantic_probe_profile`。当前 prefilter 不从 `object_type` 推导语义，也不使用 `object_subtype`。
+Probe 通过 `AutoObject.get_semantic_probes(density)` 获取，通常来自 `AssetDescriptor.semantic_probe_profile`。当前 prefilter 不从 `object_type` 推导语义，也不使用 `object_subtype`。
 
 Probe packed 字段：
 
 Probe packed 字段含义维护在 `scripts/semantic_probe_profile.gd` 的 probe record 构造和 `scripts/autoobject_probe_prefilter_gpu.gd` 的 probe packing 代码旁。
 
-采样越界时，`score_anchor_asset_probes.glsl` 会把 sample position clamp 到 grid 内，再读取 `complexity_field`、`collision_field`、`target_occupancy` 与 `target_color`。这同样适用于 `TargetSV_B` 边界：边界外不会直接视为空白。
+采样越界时，`score_anchor_asset_probes.glsl` 会把 sample position clamp 到 grid 内，再读取 `complexity_field`、`collision_field`、`target_completely` 与 `target_color`。这同样适用于 `TargetSV_B` 边界：边界外不会直接视为空白。
 
 ## Context Sensing
 
@@ -144,7 +143,7 @@ prefilter candidate_voxel_regions_by_asset / legacy candidate_voxel_sparses_by_a
 
 `TargetSV_B` 是 guidance / target 输入，不是 committed source voxel stream：
 
-- `target_occupancy` 和 `target_color` 从 `TargetSV_B` 映射而来。
+- `target_completely` 和 `target_color` 从 `TargetSV_B` 映射而来。
 - `TargetSceneVoxel` guidance record 会跳过 source buffers。
 - committed `SceneVoxel` 由 `AutoSceneVoxel` / `BrushSceneVoxel` source write 和 `blend_scene_voxels()` 发布。
 

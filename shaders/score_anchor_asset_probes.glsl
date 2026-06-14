@@ -38,7 +38,7 @@ layout(set = 0, binding = 3, std430) restrict readonly buffer ComplexityCollisio
 };
 
 layout(set = 0, binding = 4, std430) restrict readonly buffer TargetField {
-    vec4 target_field[];  // .rgb = target color, .a = occupancy = max(scene_complexity, collision)
+    vec4 target_field[];  // .rgb = target color, .a = completely = max(scene_complexity, collision)，表示体素完全度
 };
 
 layout(set = 0, binding = 5, std430) restrict writeonly buffer ScoresOut {

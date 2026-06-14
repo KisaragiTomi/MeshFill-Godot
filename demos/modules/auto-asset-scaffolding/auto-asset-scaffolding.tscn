@@ -1,13 +1,17 @@
-[gd_scene load_steps=2 format=3]
+﻿[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
 
+[ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
+
 [node name="ModuleAutoAssetScaffolding" type="Node3D"]
 script = ExtResource("1_contract")
+
+[node name="DemoSetup" parent="." instance=ExtResource("99_setup")]
 metadata/module_id = "auto-asset-scaffolding"
 metadata/source_docs = "res://docs/core/auto-asset-scripting.md; res://docs/core/asset-properties.md"
 metadata/test_doc = "res://demos/modules/auto-asset-scaffolding/auto-asset-scaffolding.md"
-metadata/focus = "Scripted AutoRock and AutoVegetation asset creation through headless tools"
+metadata/focus = "Scripted object and vegetation asset creation through headless tools"
 
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 9)
@@ -27,14 +31,14 @@ outline_size = 6
 
 [node name="Method" type="Label3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, 0)
-text = "Method\n- run scaffold contract tests\n- validate test leaf descriptor\n- inspect generated rock/vegetation outputs"
+text = "Method\n- run scaffold contract tests\n- validate test leaf descriptor\n- inspect generated object/vegetation outputs"
 font_size = 27
 pixel_size = 0.01
 outline_size = 4
 
 [node name="Acceptance" type="Label3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -1.15, 0)
-text = "Acceptance\n- rock saves scene asset\n- vegetation saves descriptor resource\n- runtime config keeps descriptor authority"
+text = "Acceptance\n- object saves scene asset\n- vegetation saves descriptor resource\n- runtime config keeps descriptor authority"
 font_size = 27
 pixel_size = 0.01
 outline_size = 4

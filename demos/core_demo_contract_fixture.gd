@@ -31,7 +31,8 @@ const CPU_FALLBACK_FORBIDDEN_TERMS := [
 
 
 func _ready() -> void:
-	ensure_test_terrain_initialized()
+	if initialize_test_terrain:
+		ensure_test_terrain_initialized.call_deferred()
 
 
 func run_demo_contract_checks(expectations := {}) -> Dictionary:
@@ -92,12 +93,9 @@ func run_demo_contract_checks(expectations := {}) -> Dictionary:
 func ensure_test_terrain_initialized() -> Dictionary:
 	if not initialize_test_terrain:
 		return {"ok": true, "skipped": true, "reason": "disabled"}
-	return TerrainInitializerScript.ensure_terrain_initialized(self, {
-		"terrain_name": "Terrain",
-		"capture_size": 120.0,
-		"max_height": 120.0,
-		"visible": false,
-	})
+	if not is_inside_tree():
+		return {"ok": true, "skipped": true, "reason": "not_in_tree"}
+	return TerrainInitializerScript.ensure_shared_terrain(get_tree().root)
 
 
 func get_contract_source_docs() -> Array:

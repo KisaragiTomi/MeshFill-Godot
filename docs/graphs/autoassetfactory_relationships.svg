@@ -67,7 +67,7 @@
   <rect class="bg" x="0" y="0" width="1580" height="920"/>
   <g opacity="0.65"><line class="grid" x1="40" y1="86" x2="40" y2="884"/><line class="grid" x1="120" y1="86" x2="120" y2="884"/><line class="grid" x1="200" y1="86" x2="200" y2="884"/><line class="grid" x1="280" y1="86" x2="280" y2="884"/><line class="grid" x1="360" y1="86" x2="360" y2="884"/><line class="grid" x1="440" y1="86" x2="440" y2="884"/><line class="grid" x1="520" y1="86" x2="520" y2="884"/><line class="grid" x1="600" y1="86" x2="600" y2="884"/><line class="grid" x1="680" y1="86" x2="680" y2="884"/><line class="grid" x1="760" y1="86" x2="760" y2="884"/><line class="grid" x1="840" y1="86" x2="840" y2="884"/><line class="grid" x1="920" y1="86" x2="920" y2="884"/><line class="grid" x1="1000" y1="86" x2="1000" y2="884"/><line class="grid" x1="1080" y1="86" x2="1080" y2="884"/><line class="grid" x1="1160" y1="86" x2="1160" y2="884"/><line class="grid" x1="1240" y1="86" x2="1240" y2="884"/><line class="grid" x1="1320" y1="86" x2="1320" y2="884"/><line class="grid" x1="1400" y1="86" x2="1400" y2="884"/><line class="grid" x1="1480" y1="86" x2="1480" y2="884"/><line class="grid" x1="1560" y1="86" x2="1560" y2="884"/><line class="grid" x1="30" y1="120" x2="1550" y2="120"/><line class="grid" x1="30" y1="200" x2="1550" y2="200"/><line class="grid" x1="30" y1="280" x2="1550" y2="280"/><line class="grid" x1="30" y1="360" x2="1550" y2="360"/><line class="grid" x1="30" y1="440" x2="1550" y2="440"/><line class="grid" x1="30" y1="520" x2="1550" y2="520"/><line class="grid" x1="30" y1="600" x2="1550" y2="600"/><line class="grid" x1="30" y1="680" x2="1550" y2="680"/><line class="grid" x1="30" y1="760" x2="1550" y2="760"/><line class="grid" x1="30" y1="840" x2="1550" y2="840"/></g>
   <text class="title" x="48" y="54">AutoAssetFactory Relationships</text>
-  <text class="subtitle" x="48" y="82">Scaffold JSON becomes typed assets or descriptors while preserving canonical shared fields.</text>
+  <text class="subtitle" x="48" y="82">Scaffold JSON becomes object assets or descriptors while preserving canonical shared fields.</text>
   <g>
     <rect class="lane" x="50" y="115" width="335" height="675" rx="8"/>
     <text class="lane-title" x="68" y="141">CONFIG ENTRY</text>
@@ -82,7 +82,7 @@
     <path class="edge" d="M 350 220 L 465 218"/>
     <path class="edge" d="M 598 275 L 598 335"/>
     <path class="edge-orange" d="M 730 395 L 845 212"/>
-    <text class="mono" x="760" y="280">rock</text>
+    <text class="mono" x="760" y="280">object</text>
     <path class="edge-green" d="M 730 395 L 845 405"/>
     <text class="mono" x="752" y="390">vegetation</text>
     <path class="edge-dash" d="M 978 275 L 978 335"/>
@@ -97,7 +97,7 @@
     <g id="json-config">
     <rect class="node" x="85" y="160" width="265" height="120" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
     <text class="node-title" x="103" y="188">JSON config</text>
-    <text class="small"><tspan x="103" y="210">type: rock / vegetation</tspan><tspan x="103" y="227">asset_path / mesh</tspan><tspan x="103" y="244">color, complexity, collision</tspan></text>
+    <text class="small"><tspan x="103" y="210">type: object / vegetation</tspan><tspan x="103" y="227">asset_path / mesh</tspan><tspan x="103" y="244">color, complexity, collision</tspan></text>
     </g>
     <g id="removed-names-avoided">
     <rect class="node" x="85" y="350" width="265" height="115" rx="8" fill="url(#note-hatch)" stroke="#64748b"/>
@@ -114,20 +114,20 @@
     <text class="node-title" x="483" y="363">AutoAssetFactory</text>
     <text class="small"><tspan x="483" y="385">normalize shared fields</tspan><tspan x="483" y="402">write canonical collision</tspan><tspan x="483" y="419">canonical write helpers</tspan></text>
     </g>
-    <g id="rock-branch">
+    <g id="object-branch">
     <rect class="node" x="845" y="150" width="265" height="125" rx="8" fill="#ffedd5" stroke="#ea580c"/>
-    <text class="node-title" x="863" y="178">Rock branch</text>
-    <text class="small"><tspan x="863" y="200">AutoRock scene</tspan><tspan x="863" y="217">mesh_height_texture</tspan><tspan x="863" y="234">optional AutoVoxelProfile</tspan></text>
+    <text class="node-title" x="863" y="178">Object branch</text>
+    <text class="small"><tspan x="863" y="200">descriptor-backed AutoObject</tspan><tspan x="863" y="217">mesh_height_texture</tspan><tspan x="863" y="234">profile fallback only</tspan></text>
     </g>
     <g id="vegetation-branch">
     <rect class="node" x="845" y="335" width="265" height="135" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>
     <text class="node-title" x="863" y="363">Vegetation branch</text>
-    <text class="small"><tspan x="863" y="385">AutoVoxelDescriptor .tres</tspan><tspan x="863" y="402">optional AutoVegetation subclass</tspan><tspan x="863" y="419">scatter_min_distance/count/scale</tspan></text>
+    <text class="small"><tspan x="863" y="385">AssetDescriptor .tres</tspan><tspan x="863" y="402">descriptor-backed defaults</tspan><tspan x="863" y="419">scatter_min_distance/count/scale</tspan></text>
     </g>
     <g id="descriptor-semantics">
     <rect class="node" x="845" y="545" width="265" height="110" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>
     <text class="node-title" x="863" y="573">Descriptor semantics</text>
-    <text class="small"><tspan x="863" y="595">color / complexity / collision</tspan><tspan x="863" y="612">mesh / scatter / visual layer</tspan><tspan x="863" y="629">vegetation_script if needed</tspan></text>
+    <text class="small"><tspan x="863" y="595">color / complexity / collision</tspan><tspan x="863" y="612">mesh / scatter / visual layer</tspan><tspan x="863" y="629">descriptor-backed defaults</tspan></text>
     </g>
     <g id="prototype-/-instance">
     <rect class="node" x="1225" y="170" width="265" height="120" rx="8" fill="url(#autoobject-dot-bg)" stroke="#0891b2"/>
@@ -149,7 +149,7 @@
     <g>
     <rect x="460" y="735" width="660" height="80" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a" stroke-width="1.3"/>
     <text class="note-text" x="474" y="759">Generation contract</text>
-    <text class="small"><tspan x="474" y="780">The factory can create resources and helper scripts, but semantic defaults still land in descriptors or typed descriptor-backed fields.</tspan></text>
+    <text class="small"><tspan x="474" y="780">The factory creates or updates resources, while semantic defaults still land in descriptors or descriptor-backed AutoObject fields.</tspan></text>
   </g>
   </g>
 </svg>

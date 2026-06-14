@@ -1,7 +1,7 @@
 extends SceneTree
 
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
-const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const RuntimeScript := preload("res://scripts/gpu_autoobject_runtime.gd")
 const VPGScript := preload("res://scripts/voxel_placement_generator.gd")
 
@@ -347,7 +347,7 @@ func _run_fake_pipeline_with_target_buffers(
 		print("  SKIP: no RenderingDevice for actor pipeline TargetSV summary fixture")
 		return {}
 
-	var descriptor := AutoVoxelDescriptorScript.new()
+	var descriptor := AssetDescriptorScript.new()
 	descriptor.asset_id = "target_read_buffer_pipeline_summary"
 	descriptor.set_collision([])
 	if actor.register_asset(descriptor) < 0:

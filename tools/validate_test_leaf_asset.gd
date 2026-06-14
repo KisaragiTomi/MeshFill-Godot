@@ -7,9 +7,9 @@ const EXPECTED_MESH_PATH := "res://geo/SM_TestLeaf_Test2.FBX"
 
 
 func _init() -> void:
-	var asset := load("res://assets/vegetation/sm_test_leaf_test2_asset.tres") as AutoVoxelDescriptor
+	var asset := load("res://assets/vegetation/sm_test_leaf_test2_asset.tres") as AssetDescriptor
 	if asset == null:
-		push_error("Failed to load sm_test_leaf_test2 AutoVoxelDescriptor")
+		push_error("Failed to load sm_test_leaf_test2 AssetDescriptor")
 		quit(ERR_FILE_CANT_OPEN)
 		return
 	if not _validate_asset(asset):
@@ -30,7 +30,7 @@ func _init() -> void:
 	var probes := asset.get_semantic_probes()
 	var aabb := mesh.get_aabb()
 	var source_aabb := source_mesh.get_aabb()
-	print("asset_id=%s subtype=%s channel=%d" % [asset.asset_id, asset.object_subtype, asset.vegetation_channel])
+	print("asset_id=%s subtype=%s" % [asset.asset_id, asset.object_subtype])
 	print("mesh_surfaces=%d aabb_pos=%s aabb_size=%s" % [mesh.get_surface_count(), aabb.position, aabb.size])
 	print("source_mesh_surfaces=%d source_aabb_pos=%s source_aabb_size=%s explicit_source=%s" % [
 		source_mesh.get_surface_count(),
@@ -78,7 +78,7 @@ func _init() -> void:
 	quit(OK)
 
 
-func _validate_asset(asset: AutoVoxelDescriptor) -> bool:
+func _validate_asset(asset: AssetDescriptor) -> bool:
 	if asset.asset_id != EXPECTED_ASSET_ID:
 		push_error("Unexpected asset_id: %s" % asset.asset_id)
 		return false
@@ -87,12 +87,6 @@ func _validate_asset(asset: AutoVoxelDescriptor) -> bool:
 		return false
 	if asset.object_subtype != EXPECTED_SUBTYPE:
 		push_error("Unexpected subtype: %s" % asset.object_subtype)
-		return false
-	if asset.vegetation_channel != EXPECTED_CHANNEL:
-		push_error("Unexpected vegetation_channel: %d" % asset.vegetation_channel)
-		return false
-	if not is_equal_approx(asset.vegetation_radius, EXPECTED_RADIUS):
-		push_error("Unexpected vegetation_radius: %.3f" % asset.vegetation_radius)
 		return false
 	if asset.group != EXPECTED_GROUP:
 		push_error("Unexpected group: %s" % asset.group)
@@ -106,7 +100,7 @@ func _validate_asset(asset: AutoVoxelDescriptor) -> bool:
 	return true
 
 
-func _validate_instance_config(config: Dictionary, asset: AutoVoxelDescriptor) -> bool:
+func _validate_instance_config(config: Dictionary, asset: AssetDescriptor) -> bool:
 	if config.get("voxel_descriptor", null) != asset:
 		push_error("make_instance_config must include the descriptor as voxel_descriptor")
 		return false
@@ -128,7 +122,7 @@ func _validate_instance_config(config: Dictionary, asset: AutoVoxelDescriptor) -
 	return true
 
 
-func _validate_instance(instance: AutoObject, asset: AutoVoxelDescriptor) -> bool:
+func _validate_instance(instance: AutoObject, asset: AssetDescriptor) -> bool:
 	if not instance is AutoObject:
 		push_error("Expected AutoObject instance")
 		return false

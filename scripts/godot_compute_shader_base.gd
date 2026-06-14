@@ -16,6 +16,7 @@ const KIND_OTHER := "other"
 
 const OWNED := true
 const BORROWED := false
+const _BUFFER_ZERO_UPDATE_CHUNK_BYTES := 1048576
 
 const _DEFAULT_GC_ORDER := {
 	KIND_UNIFORM_SET: 10,
@@ -34,6 +35,7 @@ var _rd: RenderingDevice
 var _owns_rendering_device := false
 var _disposed := false
 var _compute_list_active := false
+var _buffer_zero_scratch := PackedByteArray()
 
 var _resources: Array[Dictionary] = []
 var _scope_stack: Array[String] = [SCOPE_PERSISTENT]
@@ -62,7 +64,10 @@ func ensure_device(prefer_local_device: bool = true, allow_global_fallback: bool
 		_owns_rendering_device = false
 
 	if _rd == null:
-		push_error("%s: no RenderingDevice available" % log_name)
+		if DisplayServer.get_name() == "headless":
+			push_error("%s: no RenderingDevice — 当前以 --headless 启动，GPU 路径不可用。请改用 --rendering-driver vulkan 运行（参见 tools/run_test.ps1）。" % log_name)
+		else:
+			push_error("%s: no RenderingDevice available" % log_name)
 		return false
 
 	_disposed = false
@@ -404,11 +409,29 @@ func storage_buffer_zero(byte_count: int, scope: String = SCOPE_FRAME, label: St
 func buffer_zero(rid: RID, byte_count: int) -> bool:
 	if _rd == null or not _is_valid_rid(rid):
 		return false
-	if byte_count <= 0:
+	if byte_count < 0:
 		return false
-	var zero_bytes := PackedByteArray()
-	zero_bytes.resize(byte_count)
-	return _rd.buffer_update(rid, 0, byte_count, zero_bytes) == OK
+	if byte_count == 0:
+		return true
+	if _compute_list_active:
+		push_error("%s: buffer_zero called while compute list is active" % log_name)
+		return false
+
+	var remaining := byte_count
+	var offset := 0
+	while remaining > 0:
+		var chunk_size := mini(remaining, _BUFFER_ZERO_UPDATE_CHUNK_BYTES)
+		if _rd.buffer_update(rid, offset, chunk_size, _buffer_zero_bytes(chunk_size)) != OK:
+			return false
+		offset += chunk_size
+		remaining -= chunk_size
+	return true
+
+
+func _buffer_zero_bytes(byte_count: int) -> PackedByteArray:
+	if _buffer_zero_scratch.size() != byte_count:
+		_buffer_zero_scratch.resize(byte_count)
+	return _buffer_zero_scratch
 
 
 func dispatch_indirect_args_buffer_zero(scope: String = SCOPE_FRAME, label: String = "dispatch_indirect_args") -> RID:

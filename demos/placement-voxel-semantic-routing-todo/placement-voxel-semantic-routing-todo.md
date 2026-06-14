@@ -1,4 +1,4 @@
-# docs/placement/voxel-semantic-routing-todo.md 测试场景
+﻿# docs/placement/voxel-semantic-routing-todo.md 测试场景
 
 源文档：`res://docs/placement/voxel-semantic-routing-todo.md`  
 测试场景：`res://demos/placement-voxel-semantic-routing-todo/placement-voxel-semantic-routing-todo.tscn`
@@ -9,11 +9,15 @@
 2. 运行当前已落地基线测试：
 
 ```bash
-<godot> --headless --path . --script tools/test_voxel_candidate_routing_contract.gd
-<godot> --headless --path . --script tools/test_autoobject_probe_prefilter.gd
-<godot> --headless --path . --script tools/test_target_sv_buffer_decode.gd
-<godot> --headless --path . --script tools/test_voxel_dirty_tile_upload.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_candidate_routing_contract.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_target_sv_buffer_decode.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_dirty_tile_upload.gd
 ```
+
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
 
 3. 人工检查 `[x]` 项是否有对应源码或测试入口，`[ ]` 项是否仍以 TODO / plan 形式描述。
 

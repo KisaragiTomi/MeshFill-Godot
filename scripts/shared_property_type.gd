@@ -52,7 +52,7 @@ static func normalize_shared_fields(source: Dictionary, fallback: Dictionary = {
 	}
 	var raw_collision = source.get(COLLISION_KEY, fallback.get(COLLISION_KEY, []))
 	if raw_collision is Array:
-		result[COLLISION_KEY] = AutoVoxelDescriptor.normalize_collision(raw_collision, 0.0)
+		result[COLLISION_KEY] = _normalize_collision(raw_collision, 0.0)
 	elif raw_collision is float or raw_collision is int:
 		result[COLLISION_KEY] = clampf(float(raw_collision), 0.0, 1.0)
 	return result
@@ -81,7 +81,7 @@ static func from_descriptor(descriptor: Resource, default_radius: float = 0.0) -
 	else:
 		var raw_collision = descriptor.get(COLLISION_KEY)
 		if raw_collision is Array:
-			collision = AutoVoxelDescriptor.normalize_collision(raw_collision, default_radius)
+			collision = _normalize_collision(raw_collision, default_radius)
 	return normalize_shared_fields({
 		COLOR_KEY: color,
 		COMPLEXITY_KEY: complexity,
@@ -94,7 +94,7 @@ static func from_profile(profile: AutoVoxelProfile, default_radius: float = 0.0,
 		return normalize_shared_fields({})
 	var collision := profile.get_collision(default_radius)
 	if not collision_override.is_empty():
-		collision = AutoVoxelDescriptor.normalize_collision(collision_override, default_radius)
+		collision = _normalize_collision(collision_override, default_radius)
 	return normalize_shared_fields({
 		COLOR_KEY: profile.get_color(),
 		COMPLEXITY_KEY: profile.get_complexity(),
@@ -134,7 +134,7 @@ static func apply_to_scene_voxel(scene_voxel: Dictionary, source_fields: Diction
 static func collision_from_fields(fields: Dictionary, fallback: Dictionary = {}) -> Array[Dictionary]:
 	var raw_collision = fields.get(COLLISION_KEY, fallback.get(COLLISION_KEY, []))
 	if raw_collision is Array:
-		return AutoVoxelDescriptor.normalize_collision(raw_collision, 0.0)
+		return _normalize_collision(raw_collision, 0.0)
 	return []
 
 
@@ -145,6 +145,63 @@ static func has_collision_fields(fields: Dictionary) -> bool:
 	if collision_value is Array:
 		return not (collision_value as Array).is_empty()
 	return true
+
+
+static func _normalize_collision(source: Array, default_radius: float = 0.0) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for raw_collision in source:
+		if not raw_collision is Dictionary:
+			continue
+		var collision := (raw_collision as Dictionary).duplicate(true)
+		if _is_point_collision_sample(collision):
+			var voxel := _vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
+			collision["voxel"] = voxel
+			collision["collision_strength"] = clampf(float(collision.get("collision_strength", 1.0)), 0.0, 1.0)
+			if not collision.has("weight"):
+				collision["weight"] = 1.0
+			result.append(collision)
+			continue
+		if not collision.has("shape"):
+			collision["shape"] = "cylinder"
+		if not collision.has("radius") or float(collision.radius) <= 0.0:
+			collision["radius"] = default_radius
+		if not collision.has("y_min"):
+			collision["y_min"] = 0.0
+		if not collision.has("y_max"):
+			collision["y_max"] = 2.0
+		if not collision.has("erosion_radius"):
+			collision["erosion_radius"] = 0.0
+		if not collision.has("dilation_radius"):
+			collision["dilation_radius"] = 0.0
+		if not collision.has("collision_strength"):
+			collision["collision_strength"] = 1.0
+		collision["collision_strength"] = clampf(float(collision.get("collision_strength", 1.0)), 0.0, 1.0)
+		result.append(collision)
+	return result
+
+
+static func _is_point_collision_sample(collision: Dictionary) -> bool:
+	return collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset")
+
+
+static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
+	if value is Vector3i:
+		return value as Vector3i
+	if value is Vector3:
+		var v := value as Vector3
+		return Vector3i(roundi(v.x), roundi(v.y), roundi(v.z))
+	if value is Array:
+		var arr := value as Array
+		if arr.size() >= 3:
+			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
+	if value is Dictionary:
+		var dict := value as Dictionary
+		return Vector3i(
+			int(dict.get("x", fallback.x)),
+			int(dict.get("y", fallback.y)),
+			int(dict.get("z", fallback.z))
+		)
+	return fallback
 
 
 static func _duplicate_collision_value(raw_collision):

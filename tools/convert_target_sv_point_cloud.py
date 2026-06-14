@@ -78,6 +78,8 @@ class HoudiniBjsonParser:
             return False
         if token == 0x31:
             return True
+        if token == 0x00:
+            return None
         if token == 0x10:
             return 0
         if token == 0x11:
@@ -326,7 +328,9 @@ def build_target_sv(
     z_norm = (positions[:, 2] - min_z) / max(max_z - min_z, 0.0001)
     px = np.rint(x_norm * float(texture_size - 1)).astype(np.int32)
     pz = np.rint(z_norm * float(texture_size - 1)).astype(np.int32)
-    if args.flip_z:
+    # Houdini +Z runs opposite to the height texture row order; flip Z so the
+    # rasterized grid lines up with scene_height_0_1.png (verified corr ~0.95+).
+    if not args.no_flip_z:
         pz = texture_size - 1 - pz
 
     complexity = np.clip(complexity_values[:, 0], 0.0, 1.0)
@@ -441,9 +445,9 @@ def write_outputs(result: dict[str, Any], output_dir: Path) -> None:
     collision_path.write_bytes(collision.tobytes(order="C"))
     Image.fromarray(preview, "RGBA").save(preview_path)
 
-    metadata["visual_path"] = "res://demos/target-sv-point-cloud-conversion/target_sv_point_cloud_visual.rgba32f"
-    metadata["collision_path"] = "res://demos/target-sv-point-cloud-conversion/target_sv_point_cloud_collision.r32f"
-    metadata["preview_path"] = "res://demos/target-sv-point-cloud-conversion/target_sv_point_cloud_preview.png"
+    metadata["visual_path"] = "res://" + str(output_dir.as_posix()) + "/target_sv_point_cloud_visual.rgba32f"
+    metadata["collision_path"] = "res://" + str(output_dir.as_posix()) + "/target_sv_point_cloud_collision.r32f"
+    metadata["preview_path"] = "res://" + str(output_dir.as_posix()) + "/target_sv_point_cloud_preview.png"
     metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     print("Wrote %s" % metadata_path)
@@ -457,13 +461,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert TargetSV_PT.bgeo.sc point attributes into TargetSceneVoxel raw buffers.")
     parser.add_argument("--bgeo", default="landscape/TargetSV_PT.bgeo.sc")
     parser.add_argument("--height", default="textures/scene_height_0_1.png")
-    parser.add_argument("--output-dir", default="demos/target-sv-point-cloud-conversion")
+    parser.add_argument("--output-dir", default="assets/target_sv")
     parser.add_argument("--slice-count", type=int, default=16)
     parser.add_argument("--vertical-span", type=float, default=0.0, help="<= 0 picks a span large enough for the source relative heights.")
     parser.add_argument("--height-scale", type=float, default=120.0)
     parser.add_argument("--capture-size", type=float, default=0.0)
     parser.add_argument("--occupancy-epsilon", type=float, default=0.001)
-    parser.add_argument("--flip-z", action="store_true")
+    parser.add_argument("--no-flip-z", action="store_true", help="Disable the default Houdini->texture Z flip (debug only).")
     return parser.parse_args()
 
 

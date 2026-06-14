@@ -1,13 +1,17 @@
-[gd_scene load_steps=2 format=3]
+﻿[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
 
+[ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
+
 [node name="ModuleHeightfieldRockPlacement" type="Node3D"]
 script = ExtResource("1_contract")
+
+[node name="DemoSetup" parent="." instance=ExtResource("99_setup")]
 metadata/module_id = "heightfield-rock-placement"
 metadata/source_docs = "res://docs/placement/meshfill-rock-placement-flow.md; res://docs/core/meshfill-framework.md"
 metadata/test_doc = "res://demos/modules/heightfield-rock-placement/heightfield-rock-placement.md"
-metadata/focus = "Heightfield fitting passes, accepted placement results, AutoRock instancing, and ISWS handoff"
+metadata/focus = "Heightfield fitting passes, accepted placement results, descriptor-backed instancing, and ISWS handoff"
 
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 9)
@@ -27,14 +31,14 @@ outline_size = 6
 
 [node name="Method" type="Label3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, 0)
-text = "Method\n- run placement fitting tests\n- run voxel placement tests\n- verify AutoRock consumer records"
+text = "Method\n- run placement fitting tests\n- run voxel placement tests\n- verify descriptor-backed consumer records"
 font_size = 27
 pixel_size = 0.01
 outline_size = 4
 
 [node name="Acceptance" type="Label3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -1.15, 0)
-text = "Acceptance\n- current height moves toward target\n- results keep mesh_index and scale\n- accepted rocks become ISWS records"
+text = "Acceptance\n- current height moves toward target\n- results keep mesh_index and scale\n- accepted objects become ISWS records"
 font_size = 27
 pixel_size = 0.01
 outline_size = 4

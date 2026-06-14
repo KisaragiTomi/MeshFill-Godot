@@ -1,0 +1,18 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
+
+[ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
+
+[ext_resource type="Script" path="res://demos/target-sv-point-cloud-conversion-c/target_sv_point_cloud_demo.gd" id="2_demo"]
+
+[node name="TargetSVPointCloudConversionDemo" type="Node3D"]
+script = ExtResource("1_contract")
+metadata/source_doc = "res://docs/placement/target-scene-voxel-projection.md"
+metadata/test_doc = "res://demos/target-sv-point-cloud-conversion/target-sv-point-cloud-conversion.md"
+metadata/focus = "TargetSV point-cloud conversion fixture: read BGEO point color/complex/collision attributes, sample terrain height, and visualize guidance-only TargetSceneVoxel buffers"
+
+[node name="DemoSetup" parent="." instance=ExtResource("99_setup")]
+
+[node name="TargetSVVisualization" type="Node3D" parent="."]
+script = ExtResource("2_demo")

@@ -27,12 +27,10 @@ func _test_vegetation_descriptor_factory_contract() -> bool:
 		0.7,
 		0.25,
 		collision
-	) as AutoVoxelDescriptor
+	) as AssetDescriptor
 	descriptor.asset_id = "auto_asset_contract_flower"
 	descriptor.object_type = "vegetation"
 	descriptor.object_subtype = "flower"
-	descriptor.vegetation_channel = 2
-	descriptor.vegetation_radius = 0.25
 	descriptor.scatter_min_distance = 0.35
 	descriptor.scatter_max_count = 800
 	descriptor.scatter_max_scale = 0.7
@@ -58,9 +56,6 @@ func _test_vegetation_descriptor_factory_contract() -> bool:
 	if config.get("voxel_descriptor", null) != descriptor:
 		push_error("  FAIL: make_instance_config did not include descriptor")
 		return false
-	if int(config.get("channel", -1)) != 2 or int(config.get("vegetation_channel", -1)) != 2:
-		push_error("  FAIL: make_instance_config did not preserve channel fields")
-		return false
 	var config_collision: Array = config.get("collision", [])
 	# Non-terrain collision removed; instance config should keep empty collision alongside color/complexity.
 	if not config_collision.is_empty():
@@ -78,7 +73,7 @@ func _test_vegetation_instance_configuration() -> bool:
 		0.5,
 		0.4,
 		[]
-	) as AutoVoxelDescriptor
+	) as AssetDescriptor
 	descriptor.object_type = "vegetation"
 	descriptor.object_subtype = "flower"
 	descriptor.mesh_create_method = "create_sample_autoobject_mesh"
@@ -109,20 +104,20 @@ func _test_object_factory_collision_contract() -> bool:
 	print("[AutoAssetScripting] test_object_factory_collision_contract...")
 	var image := Image.create(1, 1, false, Image.FORMAT_RGBA8)
 	image.fill(Color.WHITE)
-	var height_texture := ImageTexture.create_from_image(image)
+	var object_height_texture := ImageTexture.create_from_image(image)
 	var collision := []
 	var obj := AutoAssetFactory.create_or_update_object_asset(
-		AutoRock.new(),
+		AutoObject.new(),
 		BoxMesh.new(),
-		height_texture,
+		object_height_texture,
 		4.2,
 		null,
 		Color(0.55, 0.5, 0.45, 1.0),
 		1.0,
 		collision
 	)
-	if not obj is AutoRock:
-		push_error("  FAIL: expected AutoRock asset")
+	if not obj is AutoObject:
+		push_error("  FAIL: expected AutoObject asset")
 		obj.free()
 		return false
 	var config := obj.make_instance_config()
@@ -146,9 +141,9 @@ func _test_profile_fallback_keeps_descriptor_collision() -> bool:
 	print("[AutoAssetScripting] test_profile_fallback_keeps_descriptor_collision...")
 	var image := Image.create(1, 1, false, Image.FORMAT_RGBA8)
 	image.fill(Color.WHITE)
-	var height_texture := ImageTexture.create_from_image(image)
+	var object_height_texture := ImageTexture.create_from_image(image)
 
-	var descriptor := AutoVoxelDescriptor.new()
+	var descriptor := AssetDescriptor.new()
 	descriptor.set_color_and_complexity(Color(0.1, 0.2, 0.3, 0.4), 0.4)
 	descriptor.set_collision([])
 
@@ -157,12 +152,12 @@ func _test_profile_fallback_keeps_descriptor_collision() -> bool:
 	profile.complexity = 0.9
 	profile.collision = []
 
-	var obj := AutoRock.new()
+	var obj := AutoObject.new()
 	obj.voxel_descriptor = descriptor
 	obj = AutoAssetFactory.create_or_update_object_asset(
 		obj,
 		BoxMesh.new(),
-		height_texture,
+		object_height_texture,
 		2.0,
 		profile
 	)
@@ -188,11 +183,11 @@ func _test_typed_profile_fallback_keeps_descriptor_shared_fields() -> bool:
 	profile.complexity = 0.9
 	profile.collision = []
 
-	var rock_descriptor := AutoVoxelDescriptor.new()
+	var rock_descriptor := AssetDescriptor.new()
 	rock_descriptor.set_color_and_complexity(Color(0.1, 0.2, 0.3, 0.4), 0.4)
 	rock_descriptor.set_collision([])
 
-	var rock := AutoRock.new()
+	var rock := AutoObject.new()
 	rock.voxel_descriptor = rock_descriptor
 	obj.configure_object({"voxel_profile": profile})
 	if not _color_close(rock.get_voxel_color(), Color(0.1, 0.2, 0.3, 0.4), 0.001):
@@ -206,7 +201,7 @@ func _test_typed_profile_fallback_keeps_descriptor_shared_fields() -> bool:
 		return false
 	rock.free()
 
-	var vegetation_descriptor := AutoVoxelDescriptor.new()
+	var vegetation_descriptor := AssetDescriptor.new()
 	vegetation_descriptor.set_color_and_complexity(Color(0.25, 0.5, 0.2, 0.35), 0.35)
 	vegetation_descriptor.object_type = "vegetation"
 	vegetation_descriptor.object_subtype = "soft_leaf"
@@ -239,7 +234,7 @@ func _test_isws_metadata_alias_contract() -> bool:
 	print("[AutoAssetScripting] test_isws_metadata_alias_contract...")
 	var obj := AutoObject.new()
 	obj.name = "ISWSAliasObject"
-	var descriptor := AutoVoxelDescriptor.new()
+	var descriptor := AssetDescriptor.new()
 	descriptor.set_color_and_complexity(Color(0.3, 0.4, 0.5, 0.6), 0.6)
 	obj.voxel_descriptor = descriptor
 	var record := obj.make_instance_stamp_write_spec("isws_alias_record", Vector2i(4, 5), 16)

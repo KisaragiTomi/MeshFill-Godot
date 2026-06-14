@@ -1,4 +1,4 @@
-# Candidate Routing Contract 模块测试场景
+﻿# Candidate Routing Contract 模块测试场景
 
 模块：candidate voxel-region routing  
 场景：`res://demos/modules/candidate-routing-contract/candidate-routing-contract.tscn`
@@ -15,10 +15,14 @@
 2. 运行 routing contract 测试：
 
 ```bash
-<godot> --headless --path . --script tools/test_voxel_candidate_routing_contract.gd
-<godot> --headless --path . --script tools/test_voxel_placement_generator.gd
-<godot> --headless --path . --script tools/test_markdown_contracts.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_candidate_routing_contract.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_placement_generator.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
 ```
+
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
 
 3. 检查 `shaders/score_voxel_tile.glsl` 不包含全资产语义检索、`semantic_score` 或 `route_score` 主路径。
 

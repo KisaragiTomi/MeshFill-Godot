@@ -21,7 +21,7 @@ GPU probe prefilter、CPU readback debug view、Candidate region expansion、`ca
 
 | 层 | 状态 | 契约 |
 | --- | --- | --- |
-| 同类型 AutoObject 互斥 | 规划中 | 复用 per-voxel object refs、`SceneVoxelTile` 粗过滤和 `GPUAutoObjectRuntime` object/profile buffers。 |
+
 | Semantic rerank / context pooling | TODO | `semantic_score`、`route_score`、`voxel_context_buffer`、`target_scene_context_rgba8_buffer` 只保留为候选内验证计划。 |
 
 ## 数据流
@@ -52,7 +52,7 @@ BlendSV-backed SV[t - 1] resident fields + TargetSV_B + AutoObject registry
 - `collision_field`
 - footprint buffers
 - candidate voxel-region ids
-- `target_occupancy`
+- `target_completely`
 - packed `RGBA8` `target_color`
 
 这是候选级 placement score，不是 placement 结束后的 result feedback score。结果级 feedback 在 `BlendSV[tick]` 发布后，由 `SceneVoxelCommitter.score_blendsv_feedback_against_target()` 拿 committed result 与 `TargetSV_B` / `TargetSV` 对比。
@@ -119,7 +119,7 @@ Routing 阶段偏向召回，footprint、support、collision、clearance 和 tar
 
 `TargetSV_B` 是 `TargetSV + BrushSV` 合成后的 target / guidance 输入：
 
-- prefilter probe scoring 默认读取 `TargetSV_B` 映射出的 `target_occupancy` 与 `target_color`。
+- prefilter probe scoring 默认读取 `TargetSV_B` 映射出的 `target_completely` 与 `target_color`。
 - result feedback 阶段以 `TargetSV_B` / `TargetSV` 作为目标侧对比输入，不把 target 写进 committed `SceneVoxel`。
 - probe 采样坐标越界时 clamp 到 SV / TargetSV_B 有效范围内，不把边界外直接当作空白。
 - `TargetSV_B` 不进入 committed `SceneVoxel`。
@@ -136,7 +136,7 @@ Routing 阶段偏向召回，footprint、support、collision、clearance 和 tar
 - per-voxel object refs + `SceneVoxelTile` ranges：按 voxel / tile range 查找邻居 object ids。
 - placement / exclusion shader：用 candidate 与邻居的 `min_spacing` 做中心距约束。
 
-该阶段只剪 candidate voxel regions，不替代 footprint / support / collision / clearance 精筛。`object_type` 不是资产默认语义来源，也不替代 `AutoVoxelDescriptor`。不要新增 `object_subtype`；更细的资产差异由 descriptor profile / `profile_id` 表达。
+该阶段只剪 candidate voxel regions，不替代 footprint / support / collision / clearance 精筛。`object_type` 不是资产默认语义来源，也不替代 `AssetDescriptor`。不要新增 `object_subtype`；更细的资产差异由 descriptor profile / `profile_id` 表达。
 
 ## Route Key 命名
 

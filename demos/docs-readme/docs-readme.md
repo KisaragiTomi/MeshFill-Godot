@@ -1,4 +1,4 @@
-# docs/README.md 测试场景
+﻿# docs/README.md 测试场景
 
 源文档：`res://docs/README.md`  
 测试场景：`res://demos/docs-readme/docs-readme.tscn`
@@ -10,8 +10,12 @@
 3. 运行文档契约测试：
 
 ```bash
-<godot> --headless --path . --script tools/test_markdown_contracts.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
 ```
+
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
 
 ## 验收标准
 

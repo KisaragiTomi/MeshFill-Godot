@@ -2,7 +2,7 @@ extends SceneTree
 
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
-const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 
 
@@ -83,7 +83,7 @@ func _test_scene_placement_actor_exposes_mesh_descriptions() -> bool:
 	var source_mesh := SphereMesh.new()
 	source_mesh.radius = 0.5
 	source_mesh.height = 1.0
-	var descriptor: AutoVoxelDescriptor = AutoVoxelDescriptorScript.new()
+	var descriptor: AssetDescriptor = AssetDescriptorScript.new()
 	descriptor.asset_id = "mesh_description_test"
 	descriptor.object_type = "vegetation"
 	descriptor.object_subtype = "leaf"

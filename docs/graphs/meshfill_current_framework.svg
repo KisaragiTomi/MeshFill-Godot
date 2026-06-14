@@ -124,7 +124,7 @@
     <g id="collect-anchors">
     <rect class="node" x="885" y="150" width="280" height="110" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
     <text class="node-title" x="903" y="178">Collect anchors</text>
-    <text class="small"><tspan x="903" y="200">dirty SceneVoxelTiles</tspan><tspan x="903" y="217">supported candidates</tspan><tspan x="903" y="234">column-top candidates</tspan></text>
+    <text class="small"><tspan x="903" y="200">dirty SceneVoxelTiles</tspan><tspan x="903" y="217">supported candidates</tspan></text>
     </g>
     <g id="probe-prefilter">
     <rect class="node" x="885" y="315" width="280" height="120" rx="8" fill="#ede9fe" stroke="#7c3aed"/>

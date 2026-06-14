@@ -39,6 +39,8 @@ void main() {
         float target_complexity = clamp(target_field[idx], 0.0, 1.0);
         error_sum += abs(complexity - target_complexity);
 
+        // completely = max(complexity, collision_value) 表示体素完全度
+        // completely == 0 表示体素为空（nothing there）
         bool complexity_occupied = max(complexity, collision_value) > threshold;
         bool target_occupied = target_complexity > threshold;
         if (complexity_occupied) {

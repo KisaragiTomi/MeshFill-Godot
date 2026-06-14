@@ -1,10 +1,11 @@
 class_name TerrainInitializer
 extends RefCounted
 
-const DEFAULT_TEXTURE_SIZE := 256
-const DEFAULT_CAPTURE_SIZE := 120.0
-const DEFAULT_MAX_HEIGHT := 120.0
-const DEFAULT_TERRAIN_NAME := "Terrain"
+const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
+const DEFAULT_TEXTURE_SIZE := TerrainConfigScript.TEXTURE_SIZE
+const DEFAULT_CAPTURE_SIZE := TerrainConfigScript.CAPTURE_SIZE
+const DEFAULT_MAX_HEIGHT := TerrainConfigScript.MAX_HEIGHT
+const DEFAULT_TERRAIN_NAME := TerrainConfigScript.TERRAIN_NAME
 const TERRAIN_GROUP := "meshfill_common_terrain"
 const TERRAIN_VOXEL_COLOR := Color(0.45, 0.42, 0.35, 1.0)
 const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
@@ -24,6 +25,12 @@ const TEXTURE_NAMES := [
 	"height_normal",
 	"target_height",
 ]
+
+
+static func ensure_shared_terrain(host: Node, overrides := {}) -> Dictionary:
+	if host == null:
+		return {"ok": false, "reason": "missing_host"}
+	return ensure_terrain_initialized(host, TerrainConfigScript.terrain_options(overrides))
 
 
 static func ensure_terrain_initialized(root: Node, options := {}) -> Dictionary:
@@ -49,15 +56,15 @@ static func ensure_terrain_initialized(root: Node, options := {}) -> Dictionary:
 			existing_parent.remove_child(existing)
 		existing.free()
 
-	var height_texture := _target_height_texture_from_options(options)
-	if height_texture == null:
+	var target_height_texture := _target_height_texture_from_options(options)
+	if target_height_texture == null:
 		return {
 			"ok": false,
 			"reason": "missing_target_height_texture",
 			"terrain_name": terrain_name,
 		}
 
-	var terrain := create_terrain_mesh_instance(height_texture, options)
+	var terrain := create_terrain_mesh_instance(target_height_texture, options)
 	if terrain == null:
 		return {
 			"ok": false,
@@ -70,11 +77,11 @@ static func ensure_terrain_initialized(root: Node, options := {}) -> Dictionary:
 	return _terrain_result(terrain, true, terrain_name)
 
 
-static func create_terrain_mesh_instance(height_texture: Texture2D, options := {}) -> MeshInstance3D:
-	if height_texture == null:
+static func create_terrain_mesh_instance(target_height_texture: Texture2D, options := {}) -> MeshInstance3D:
+	if target_height_texture == null:
 		return null
 
-	var img := height_texture.get_image()
+	var img := target_height_texture.get_image()
 	if img == null or img.is_empty():
 		return null
 

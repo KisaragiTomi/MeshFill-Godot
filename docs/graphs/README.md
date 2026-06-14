@@ -7,12 +7,12 @@
 | File | Purpose | Owning Docs |
 | --- | --- | --- |
 | [`autoobject_asset_properties.svg`](autoobject_asset_properties.svg) | descriptor 权威语义、descriptor-owned fields、shared fields、`instance_stamp_write_spec` (`ISWS`)、public `SceneVoxel` payload 与 metadata/debug 边界 | `docs/core/asset-properties.md`, `docs/core/auto-asset-scripting.md` |
-| [`autoobject_descriptor_relationship.svg`](autoobject_descriptor_relationship.svg) | `AutoObject` runtime identity、`AutoVoxelDescriptor` 语义权威、descriptor-backed getters、record export 与 metadata projection 的关系 | `docs/core/asset-properties.md` |
+| [`autoobject_descriptor_relationship.svg`](autoobject_descriptor_relationship.svg) | `AutoObject` runtime identity、`AssetDescriptor` 语义权威、descriptor-backed getters、record export 与 metadata projection 的关系 | `docs/core/asset-properties.md` |
 | [`autoobject_gpu_runtime_architecture.svg`](autoobject_gpu_runtime_architecture.svg) | 百万级 `AutoObject` GPU runtime、CPU command/debug control plane、runtime profile container、per-voxel object refs 与 SV commit 边界 | `docs/core/autoobject-gpu-runtime-architecture.md` |
-| [`autoassetfactory_relationships.svg`](autoassetfactory_relationships.svg) | JSON scaffold、`AutoAssetFactory` shared-field 归一化、rock/vegetation 资源生成与 runtime `instance_stamp_write_spec` (`ISWS`) 写入路径 | `docs/core/asset-properties.md`, `docs/core/auto-asset-scripting.md` |
+| [`autoassetfactory_relationships.svg`](autoassetfactory_relationships.svg) | JSON scaffold、`AutoAssetFactory` shared-field 归一化、object/vegetation 资源生成与 runtime `instance_stamp_write_spec` (`ISWS`) 写入路径 | `docs/core/asset-properties.md`, `docs/core/auto-asset-scripting.md` |
 | [`meshfill_current_framework.svg`](meshfill_current_framework.svg) | 当前 tick 内从 `TargetSV_B` / `SV[t - 1]` 到 prefilter、candidate voxel regions、physical placement、commit、feedback 和 `SV[tick]` 的主流程 | `docs/core/meshfill-framework.md` |
 | [`scene-placement-actor.svg`](scene-placement-actor.svg) | `ScenePlacementActor` 的 asset registry、owned runtime profile container、prefilter/placement/commit 编排和借用的 SV/runtime 边界 | `docs/core/scene-placement-actor.md` |
-| [`meshfill_compute_shader_3d_placement.svg`](meshfill_compute_shader_3d_placement.svg) | heightfield fitting compute pass、迭代 fill/find/update、CPU `AutoRock` 实例化和 `SceneVoxel` 集成 | `docs/placement/meshfill-rock-placement-flow.md` |
+| [`meshfill_compute_shader_3d_placement.svg`](meshfill_compute_shader_3d_placement.svg) | heightfield fitting compute pass、迭代 fill/find/update、descriptor-backed object 实例化和 `SceneVoxel` 集成 | `docs/placement/meshfill-rock-placement-flow.md` |
 | [`autoobject_probe_prefilter_pipeline.svg`](autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter、dirty voxel-region anchor collection、voxel-region votes、readback expansion 和 placement contract | `docs/placement/autoobject-probe-prefilter.md` |
 | [`autoobject_probe_scoring_logic.svg`](autoobject_probe_scoring_logic.svg) | descriptor probe 生成、SoA buffer、clamped `SV` / `TargetSV_B` 采样、weighted fit、anchor top-K 与 candidate-only 边界 | `docs/core/asset-semantic-probes.md`, `docs/placement/autoobject-probe-prefilter.md` |
 | [`scene-voxel-flow.svg`](scene-voxel-flow.svg) | `instance_stamp_write_spec` (`ISWS`)、**SceneVoxel Source Fusion (SVSF)**：`AutoSceneVoxel` / `BrushSceneVoxel` / `LandscapeSV` source streams → `blend_scene_voxels()` → accepted `SceneVoxel` fields → feedback → SV resident fields | `docs/core/scene-voxel-field-system.md` |
@@ -30,7 +30,7 @@
 - `occupied`、`type`、`source_type`、`commit_tick` 属于派生视图、索引或 metadata，不画成 per-voxel payload。
 - `TargetSV` / `BrushSV` / `TargetSV_B` 是 guidance / target canvas，不进入 committed `SceneVoxel` source write。
 - `BlendSV` / `SceneVoxel` 是 committed read model；SV resident state 持有 scene/collision 查询通道，runtime sampling、dirty 和坐标职责归 SV。
-- `AutoVoxelDescriptor` 是资产默认语义权威来源；`AutoObject` 同名字段只表示 Inspector / 配置入口。
+- `AssetDescriptor` 是资产默认语义权威来源；`AutoObject` 同名字段只表示 Inspector / 配置入口。
 - 修改 SVG 后，同步检查对应 Markdown 引用、图索引和 UTF-8 中文显示。
 
 ## 测试场景

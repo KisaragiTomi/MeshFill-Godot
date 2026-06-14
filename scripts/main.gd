@@ -1,8 +1,10 @@
 extends Node3D
 
+const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
+
 @export var num_iterations: int = 10
-@export var capture_size: float = 120.0
-@export var max_height: float = 120.0
+@export var capture_size: float = TerrainConfigScript.CAPTURE_SIZE
+@export var max_height: float = TerrainConfigScript.MAX_HEIGHT
 @export var generate_threshold: float = 0.5
 @export var un_generate_threshold: float = 0.3
 @export var fbx_unit_scale: float = 1.0
@@ -24,7 +26,7 @@ extends Node3D
 @export var enable_test_generation_tools: bool = true
 @export var run_startup_generation_tests: bool = false
 
-const TEX_RES := 256
+const TEX_RES := TerrainConfigScript.TEXTURE_SIZE
 const OBJECT_VISUAL_LAYER := 10
 const OBJECT_VOXEL_COLOR := Color(0.55, 0.50, 0.45, 1.0)
 const TERRAIN_VOXEL_COLOR := Color(0.45, 0.42, 0.35, 1.0)
@@ -38,6 +40,7 @@ const TARGET_SV_SLICE_COUNT := 8
 const TARGET_SV_VERTICAL_SPAN := 16.0
 const TARGET_SV_DIR_NAME := "target_scene_voxel"
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const SceneVoxelBrushScript := preload("res://scripts/scene_voxel_brush.gd")
 const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
@@ -58,7 +61,7 @@ var _batch_results: Array[Dictionary] = []
 var _step_count: int = 0
 var _cached_textures: Dictionary = {}
 var _cached_cliff_meshes: Array[Mesh] = []
-var _cached_assets: Array[AutoRock] = []
+var _cached_assets: Array[AutoObject] = []
 
 var _override_delta: Image
 var _override_mask: Image
@@ -94,7 +97,7 @@ var _brush_width_spin: SpinBox
 var _brush_length_spin: SpinBox
 var _brush_height_spin: SpinBox
 
-var _vegetation_assets: Array[AutoVoxelDescriptor] = []
+var _vegetation_assets: Array[Resource] = []
 var _autoobject_mask_image: Image
 var _vegetation_generated: bool = false
 var _debug_mask_terrain: MeshInstance3D
@@ -104,13 +107,13 @@ var _voxel_write_specs: Dictionary = {}
 var _target_sv_preview_image: Image
 var _target_sv_visual_bytes: PackedByteArray
 var _target_sv_collision_bytes: PackedByteArray
-var _target_sv_target_occupancy_bytes: PackedByteArray
+var _target_sv_target_completely_bytes: PackedByteArray
 var _target_sv_target_color_rgba8_bytes: PackedByteArray
 var _target_sv_metadata: Dictionary = {}
 var _target_sv_b_preview_image: Image
 var _target_sv_b_visual_bytes: PackedByteArray
 var _target_sv_b_collision_bytes: PackedByteArray
-var _target_sv_b_target_occupancy_bytes: PackedByteArray
+var _target_sv_b_target_completely_bytes: PackedByteArray
 var _target_sv_b_target_color_rgba8_bytes: PackedByteArray
 var _target_sv_b_metadata: Dictionary = {}
 var _target_sv_debug_terrain: MeshInstance3D
@@ -334,7 +337,7 @@ func _run_batch_test() -> void:
 		return
 
 	var cliff_meshes: Array[Mesh] = []
-	var assets: Array[AutoRock] = []
+	var assets: Array[AutoObject] = []
 	_load_cliff_data(cliff_meshes, assets)
 	if assets.is_empty():
 		push_error("[MeshFill] Fatal: no cliff assets available")
@@ -635,12 +638,12 @@ func _mark_test_only_generated(node: Node, kind: String) -> void:
 		node.add_to_group(TEST_ONLY_VEGETATION_GROUP)
 
 
-func _instantiate_object_asset(asset: AutoRock) -> AutoRock:
+func _instantiate_object_asset(asset: AutoObject) -> AutoObject:
 	if asset == null:
-		return AutoRock.new()
+		return AutoObject.new()
 	var duplicate_node := asset.duplicate()
-	if duplicate_node is AutoRock:
-		var duplicated_rock := duplicate_node as AutoRock
+	if duplicate_node is AutoObject:
+		var duplicated_rock := duplicate_node as AutoObject
 		duplicated_rock.name = ""
 		duplicated_rock.auto_id = ""
 		duplicated_rock.voxel_write_spec = {}
@@ -652,9 +655,9 @@ func _instantiate_object_asset(asset: AutoRock) -> AutoRock:
 	var script = asset.get_script()
 	if script != null:
 		var scripted = script.new()
-		if scripted is AutoRock:
-			return scripted as AutoRock
-	return AutoRock.new()
+		if scripted is AutoObject:
+			return scripted as AutoObject
+	return AutoObject.new()
 
 
 func _mesh_bound_min_length(mi: MeshInstance3D) -> float:
@@ -809,7 +812,7 @@ func _make_cliff_voxel_write_spec(
 	r: Dictionary,
 	mi: MeshInstance3D,
 	mesh_aabb: AABB,
-	asset: AutoRock = null
+	asset: AutoObject = null
 ) -> Dictionary:
 	var color: Color = asset.get_voxel_color() if asset != null else r.get("color", OBJECT_VOXEL_COLOR)
 	var complexity := asset.get_voxel_complexity() if asset != null else clampf(float(r.get("complexity", color.a)), 0.0, 1.0)
@@ -916,8 +919,8 @@ func register_brush_autoobject(mi: AutoObject, placement_data: Dictionary = {}) 
 		return
 	var data := placement_data.duplicate(true)
 	var raw_profile = data.get("voxel_profile", null)
-	if raw_profile is AutoVoxelProfile and mi.voxel_descriptor is AutoVoxelDescriptor:
-		(mi.voxel_descriptor as AutoVoxelDescriptor).voxel_profile = raw_profile as AutoVoxelProfile
+	if raw_profile is AutoVoxelProfile and mi.voxel_descriptor != null:
+		mi.voxel_descriptor.set("voxel_profile", raw_profile)
 	if not data.has("id"):
 		data["id"] = mi.name
 	if not data.has("type"):
@@ -1477,13 +1480,56 @@ func _setup_slider_ui() -> void:
 	var separator := HSeparator.new()
 	vbox.add_child(separator)
 
-	var test_label := Label.new()
-	test_label.text = "TEST ONLY generation shortcuts"
-	vbox.add_child(test_label)
+	# ── Shortcuts Panel ──
+	var shortcuts_panel := PanelContainer.new()
+	shortcuts_panel.custom_minimum_size = Vector2(320, 0)
+	var shortcuts_vbox := VBoxContainer.new()
+	shortcuts_vbox.add_theme_constant_override("separation", 0)
+	shortcuts_panel.add_child(shortcuts_vbox)
 
-	var shortcut_label := Label.new()
-	shortcut_label.text = "C: object step    P: AutoObject GPU status"
-	vbox.add_child(shortcut_label)
+	# Helper to add a shortcut line (key, desc, target_vbox)
+	var _sh := func add_shortcut(target_vbox: VBoxContainer, key: String, desc: String):
+		var line := HBoxContainer.new()
+		var key_label := Label.new()
+		key_label.text = "  " + key
+		key_label.custom_minimum_size = Vector2(110, 0)
+		key_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+		key_label.add_theme_font_size_override("font_size", 12)
+		line.add_child(key_label)
+		var desc_label := Label.new()
+		desc_label.text = desc
+		desc_label.add_theme_font_size_override("font_size", 12)
+		line.add_child(desc_label)
+		target_vbox.add_child(line)
+
+	var section_header := Label.new()
+	section_header.text = "-- Overlays --"
+	section_header.add_theme_color_override("font_color", Color(0.7, 0.7, 0.9))
+	section_header.add_theme_font_size_override("font_size", 13)
+	shortcuts_vbox.add_child(section_header)
+	_sh.call(shortcuts_vbox, "J", "TargetSV overlay")
+	_sh.call(shortcuts_vbox, "M", "Mask overlay")
+
+	section_header = Label.new()
+	section_header.text = "-- Editing --"
+	section_header.add_theme_color_override("font_color", Color(0.7, 0.7, 0.9))
+	section_header.add_theme_font_size_override("font_size", 13)
+	shortcuts_vbox.add_child(section_header)
+	_sh.call(shortcuts_vbox, "B", "Toggle brush mode")
+	_sh.call(shortcuts_vbox, "N", "Cycle brush target")
+	_sh.call(shortcuts_vbox, "T", "Toggle tile refresh")
+	_sh.call(shortcuts_vbox, "Ctrl+Z", "Undo override")
+	_sh.call(shortcuts_vbox, "I", "Probe inspect mode")
+
+	section_header = Label.new()
+	section_header.text = "-- Generation [TEST] --"
+	section_header.add_theme_color_override("font_color", Color(0.7, 0.7, 0.9))
+	section_header.add_theme_font_size_override("font_size", 13)
+	shortcuts_vbox.add_child(section_header)
+	_sh.call(shortcuts_vbox, "C", "Object step")
+	_sh.call(shortcuts_vbox, "P", "AutoObject GPU status")
+
+	vbox.add_child(shortcuts_panel)
 
 	var rock_button := Button.new()
 	rock_button.text = "C  Generate Object Step"
@@ -1619,20 +1665,21 @@ func _collect_semantic_probe_debug_assets(max_assets: int) -> Array[Dictionary]:
 		var asset := _vegetation_assets[i]
 		if asset == null:
 			continue
-		var probes := asset.get_semantic_probes(semantic_probe_density)
-		var mesh := asset.get_mesh()
-		var source_mesh := asset.get_source_mesh()
+		var probes: Array = asset.call("get_semantic_probes", semantic_probe_density)
+		var mesh = asset.call("get_mesh")
+		var source_mesh = asset.call("get_source_mesh")
 		var max_axis := _semantic_probe_debug_mesh_max_axis(mesh)
-		var target_size := maxf(asset.scatter_max_scale * max_axis, 1.0)
+		var target_size := maxf(float(asset.get("scatter_max_scale")) * max_axis, 1.0)
 		var mesh_scale := Vector3.ONE * _semantic_probe_debug_mesh_scale(mesh, target_size)
 		var source_mesh_scale := Vector3.ONE * _semantic_probe_debug_mesh_scale(source_mesh, target_size)
+		var asset_id := str(asset.get("asset_id"))
 		result.append({
-			"name": asset.asset_id if not asset.asset_id.is_empty() else "vegetation_%d" % i,
+			"name": asset_id if not asset_id.is_empty() else "vegetation_%d" % i,
 			"mesh": mesh,
 			"source_mesh": source_mesh,
 			"mesh_scale": mesh_scale,
 			"source_mesh_scale": source_mesh_scale,
-			"color": asset.get_color(),
+			"color": asset.call("get_color"),
 			"probes": probes,
 		})
 	return result
@@ -1927,7 +1974,7 @@ func _generate() -> void:
 		return
 
 	var cliff_meshes: Array[Mesh] = []
-	var assets: Array[AutoRock] = []
+	var assets: Array[AutoObject] = []
 	_load_cliff_data(cliff_meshes, assets)
 	if assets.is_empty():
 		push_error("[MeshFill] Fatal: no cliff assets available")
@@ -2342,7 +2389,7 @@ func _save_target_scene_voxel(result: Dictionary, target_role: String = "TargetS
 	var meta_path := _target_sv_b_meta_path() if is_target_b else _target_sv_meta_path()
 	var visual_bytes: PackedByteArray = result.get("visual_bytes", PackedByteArray())
 	var collision_bytes: PackedByteArray = result.get("collision_bytes", PackedByteArray())
-	var occupancy_bytes: PackedByteArray = result.get("target_occupancy_bytes", PackedByteArray())
+	var occupancy_bytes: PackedByteArray = result.get("target_completely_bytes", PackedByteArray())
 	var color_rgba8_bytes: PackedByteArray = result.get("target_color_rgba8_bytes", PackedByteArray())
 	var preview_img: Image = result.get("preview_image", null)
 	if preview_img == null or visual_bytes.is_empty() or collision_bytes.is_empty():
@@ -2359,12 +2406,12 @@ func _save_target_scene_voxel(result: Dictionary, target_role: String = "TargetS
 	if is_target_b:
 		_target_sv_b_visual_bytes = visual_bytes
 		_target_sv_b_collision_bytes = collision_bytes
-		_target_sv_b_target_occupancy_bytes = occupancy_bytes
+		_target_sv_b_target_completely_bytes = occupancy_bytes
 		_target_sv_b_target_color_rgba8_bytes = color_rgba8_bytes
 	else:
 		_target_sv_visual_bytes = visual_bytes
 		_target_sv_collision_bytes = collision_bytes
-		_target_sv_target_occupancy_bytes = occupancy_bytes
+		_target_sv_target_completely_bytes = occupancy_bytes
 		_target_sv_target_color_rgba8_bytes = color_rgba8_bytes
 	var preview_png := preview_img.duplicate()
 	if preview_png.get_format() != Image.FORMAT_RGBA8:
@@ -2383,11 +2430,11 @@ func _save_target_scene_voxel(result: Dictionary, target_role: String = "TargetS
 		"vertical_span": float(result.get("vertical_span", TARGET_SV_VERTICAL_SPAN)),
 		"visual_format": str(result.get("visual_format", "rgba32f")),
 		"collision_format": str(result.get("collision_format", "r32f")),
-		"occupancy_format": str(result.get("occupancy_format", "r32f")),
+		"completely_format": str(result.get("completely_format", "r32f")),
 		"target_color_format": str(result.get("target_color_format", "rgba8_u32")),
 		"visual_path": visual_path,
 		"collision_path": collision_path,
-		"target_occupancy_path": occupancy_path,
+		"target_completely_path": occupancy_path,
 		"target_color_rgba8_path": color_rgba8_path,
 		"preview_path": preview_path,
 		"generator": "TargetSceneVoxelGenerator",
@@ -2428,7 +2475,7 @@ func _load_persisted_target_scene_voxel_variant(target_role: String) -> bool:
 	var visual_path := _target_sv_b_visual_path() if is_target_b else _target_sv_visual_path()
 	var collision_path := _target_sv_b_collision_path() if is_target_b else _target_sv_collision_path()
 	var occupancy_path := str(metadata.get(
-		"target_occupancy_path",
+		"target_completely_path",
 		_target_sv_b_occupancy_path() if is_target_b else _target_sv_occupancy_path()
 	))
 	var color_rgba8_path := str(metadata.get(
@@ -2467,7 +2514,7 @@ func _load_persisted_target_scene_voxel_variant(target_role: String) -> bool:
 		occupancy_path,
 		color_rgba8_path
 	)
-	occupancy_bytes = packed_buffers.get("target_occupancy_bytes", occupancy_bytes)
+	occupancy_bytes = packed_buffers.get("target_completely_bytes", occupancy_bytes)
 	color_rgba8_bytes = packed_buffers.get("target_color_rgba8_bytes", color_rgba8_bytes)
 	if is_target_b:
 		_target_sv_b_preview_image = preview_img
@@ -2475,13 +2522,13 @@ func _load_persisted_target_scene_voxel_variant(target_role: String) -> bool:
 		_target_sv_b_visual_bytes = visual_bytes
 		_target_sv_b_collision_bytes = collision_bytes
 		_target_sv_b_target_color_rgba8_bytes = color_rgba8_bytes
-		_target_sv_b_target_occupancy_bytes = occupancy_bytes
+		_target_sv_b_target_completely_bytes = occupancy_bytes
 	else:
 		_target_sv_preview_image = preview_img
 		_target_sv_metadata = metadata
 		_target_sv_visual_bytes = visual_bytes
 		_target_sv_collision_bytes = collision_bytes
-		_target_sv_target_occupancy_bytes = occupancy_bytes
+		_target_sv_target_completely_bytes = occupancy_bytes
 		_target_sv_target_color_rgba8_bytes = color_rgba8_bytes
 	print("[%s] Loaded persistent target: %s" % [target_role, preview_path])
 	return true
@@ -2505,7 +2552,7 @@ func _default_derive_target_packed_buffers(
 	collision_bytes: PackedByteArray,
 	tex_size: int,
 	slice_count: int,
-	use_collision_as_occupancy: bool,
+	use_collision_as_completely: bool,
 	_occupancy_bytes: PackedByteArray
 ) -> Dictionary:
 	var voxel_count := maxi(tex_size, 1) * maxi(slice_count, 1) * maxi(tex_size, 1)
@@ -2515,7 +2562,7 @@ func _default_derive_target_packed_buffers(
 	var color_rgba8_out := PackedByteArray()
 	occupancy_out.resize(expected_scalar_bytes)
 	color_rgba8_out.resize(expected_scalar_bytes)
-	var max_occupancy := 0.0
+	var max_completely := 0.0
 	var active_voxel_count := 0
 	for i in range(voxel_count):
 		var complexity := 0.0
@@ -2528,7 +2575,7 @@ func _default_derive_target_packed_buffers(
 		occupancy_out.encode_float(i * 4, occupancy)
 		if occupancy > 0.001:
 			active_voxel_count += 1
-			max_occupancy = maxf(max_occupancy, occupancy)
+			max_completely = maxf(max_completely, occupancy)
 		var r := 0.0
 		var g := 0.0
 		var b := 0.0
@@ -2546,13 +2593,13 @@ func _default_derive_target_packed_buffers(
 		"voxel_count": voxel_count,
 		"texture_size": tex_size,
 		"slice_count": slice_count,
-		"occupancy_format": "r32f",
+		"completely_format": "r32f",
 		"target_color_format": "rgba8_u32",
-		"target_occupancy_bytes": occupancy_out,
+		"target_completely_bytes": occupancy_out,
 		"target_color_rgba8_bytes": color_rgba8_out,
-		"max_occupancy": max_occupancy,
+		"max_completely": max_completely,
 		"active_voxel_count": active_voxel_count,
-		"target_occupancy_source": "cpu_default_visual_collision",
+		"target_completely_source": "cpu_default_visual_collision",
 	}
 
 
@@ -2589,18 +2636,18 @@ func _default_generate_target_sv(
 		"vertical_span": vert_span,
 		"visual_format": "rgba32f",
 		"collision_format": "r32f",
-		"occupancy_format": "r32f",
+		"completely_format": "r32f",
 		"target_color_format": "rgba8_u32",
 		"visual_bytes": visual_bytes,
 		"collision_bytes": collision_bytes,
-		"target_occupancy_bytes": occupancy_bytes,
+		"target_completely_bytes": occupancy_bytes,
 		"target_color_rgba8_bytes": color_rgba8_bytes,
-		"max_occupancy": 0.0,
+		"max_completely": 0.0,
 		"max_collision": 0.0,
 		"active_voxel_count": 0,
 		"collision_voxel_count": 0,
 		"visual_voxel_count": 0,
-		"min_active_occupancy": 0.0,
+		"min_active_completely": 0.0,
 		"max_visual_complexity": 0.0,
 		"target_stats_source": "cpu_default_empty",
 		"preview_image": preview_img,
@@ -2627,12 +2674,12 @@ func _derive_target_sv_packed_buffers_if_needed(
 	var needs_color := color_rgba8_bytes.size() != expected_scalar_bytes
 	if not needs_occupancy and not needs_color:
 		return {
-			"target_occupancy_bytes": occupancy_bytes,
+			"target_completely_bytes": occupancy_bytes,
 			"target_color_rgba8_bytes": color_rgba8_bytes,
 		}
 	if visual_bytes.size() < expected_visual_bytes or collision_bytes.size() < expected_scalar_bytes:
 		return {
-			"target_occupancy_bytes": occupancy_bytes,
+			"target_completely_bytes": occupancy_bytes,
 			"target_color_rgba8_bytes": color_rgba8_bytes,
 		}
 
@@ -2661,12 +2708,12 @@ func _derive_target_sv_packed_buffers_if_needed(
 		if reason != "missing_rendering_device":
 			push_warning("[%s] GPU derivation of missing TargetSV packed buffers failed: %s" % [target_role, reason])
 		return {
-			"target_occupancy_bytes": occupancy_bytes,
+			"target_completely_bytes": occupancy_bytes,
 			"target_color_rgba8_bytes": color_rgba8_bytes,
 		}
 
 	if needs_occupancy:
-		var derived_occupancy: PackedByteArray = derived.get("target_occupancy_bytes", PackedByteArray())
+		var derived_occupancy: PackedByteArray = derived.get("target_completely_bytes", PackedByteArray())
 		if derived_occupancy.size() == expected_scalar_bytes:
 			occupancy_bytes = derived_occupancy
 			_write_target_sv_buffer(occupancy_path, occupancy_bytes)
@@ -2682,7 +2729,7 @@ func _derive_target_sv_packed_buffers_if_needed(
 			str(color_rgba8_bytes.size() == expected_scalar_bytes),
 		])
 	return {
-		"target_occupancy_bytes": occupancy_bytes,
+		"target_completely_bytes": occupancy_bytes,
 		"target_color_rgba8_bytes": color_rgba8_bytes,
 	}
 
@@ -2695,7 +2742,7 @@ func _load_persisted_target_scene_voxel() -> bool:
 		_target_sv_b_metadata = _target_sv_metadata.duplicate(true)
 		_target_sv_b_visual_bytes = _target_sv_visual_bytes
 		_target_sv_b_collision_bytes = _target_sv_collision_bytes
-		_target_sv_b_target_occupancy_bytes = _target_sv_target_occupancy_bytes
+		_target_sv_b_target_completely_bytes = _target_sv_target_completely_bytes
 		_target_sv_b_target_color_rgba8_bytes = _target_sv_target_color_rgba8_bytes
 		_target_sv_b_metadata["target_role"] = "TargetSV_B"
 		_target_sv_b_metadata["fallback_from_source_target"] = true
@@ -5014,7 +5061,7 @@ func _collect_resource_paths(dir_path: String, out_paths: Array[String]) -> void
 	dir.list_dir_end()
 
 
-func _load_scripted_rock_assets(out_meshes: Array[Mesh], out_assets: Array[AutoRock]) -> int:
+func _load_scripted_rock_assets(out_meshes: Array[Mesh], out_assets: Array[AutoObject]) -> int:
 	var paths: Array[String] = []
 	for path in object_asset_paths:
 		if not path.is_empty() and not paths.has(path):
@@ -5024,11 +5071,11 @@ func _load_scripted_rock_assets(out_meshes: Array[Mesh], out_assets: Array[AutoR
 	var loaded := 0
 	for path in paths:
 		var resource = load(path)
-		var asset: AutoRock = null
+		var asset: AutoObject = null
 		if resource is PackedScene:
 			var instance := (resource as PackedScene).instantiate()
-			if instance is AutoRock:
-				asset = instance as AutoRock
+			if instance is AutoObject:
+				asset = instance as AutoObject
 			elif instance != null:
 				instance.free()
 		if asset == null:
@@ -5046,36 +5093,37 @@ func _load_scripted_rock_assets(out_meshes: Array[Mesh], out_assets: Array[AutoR
 	return loaded
 
 
-func _load_vegetation_assets() -> Array[AutoVoxelDescriptor]:
+func _load_vegetation_assets() -> Array[Resource]:
 	var paths: Array[String] = []
 	for path in vegetation_asset_paths:
 		if not path.is_empty() and not paths.has(path):
 			paths.append(path)
 	_collect_resource_paths(vegetation_asset_dir, paths)
 
-	var assets: Array[AutoVoxelDescriptor] = []
+	var assets: Array[Resource] = []
 	for path in paths:
 		var resource = load(path)
-		if not resource is AutoVoxelDescriptor:
+		if resource == null or resource.get_script() != AssetDescriptorScript:
 			continue
-		var asset := resource as AutoVoxelDescriptor
-		if asset.get_scatter_profile().is_empty():
+		var asset: Resource = resource
+		var scatter_profile: Array = asset.call("get_scatter_profile")
+		if scatter_profile.is_empty():
 			push_warning("[MeshFill] Skipping vegetation asset without scatter profile: %s" % path)
 			continue
-		if asset.get_mesh() == null:
+		if asset.call("get_mesh") == null:
 			push_warning("[MeshFill] Skipping vegetation asset without mesh source: %s" % path)
 			continue
-		if asset.scatter_max_count <= 0:
+		if int(asset.get("scatter_max_count")) <= 0:
 			continue
 		assets.append(asset)
 		print("  Scripted vegetation asset: %s (%s)" % [
-			path, asset.object_subtype])
+			path, str(asset.get("object_subtype"))])
 	if not assets.is_empty():
 		print("[MeshFill] Loaded %d scripted vegetation assets" % assets.size())
 	return assets
 
 
-func _load_cliff_data(out_meshes: Array[Mesh], out_assets: Array[AutoRock]) -> void:
+func _load_cliff_data(out_meshes: Array[Mesh], out_assets: Array[AutoObject]) -> void:
 	print("[MeshFill] Loading cliff meshes...")
 	var scripted_count := _load_scripted_rock_assets(out_meshes, out_assets)
 	var fbx_configs := [
@@ -5085,7 +5133,7 @@ func _load_cliff_data(out_meshes: Array[Mesh], out_assets: Array[AutoRock]) -> v
 
 	var loaded_all := true
 	var fbx_meshes: Array[Mesh] = []
-	var fbx_assets: Array[AutoRock] = []
+	var fbx_assets: Array[AutoObject] = []
 	for cfg in fbx_configs:
 		var mesh := _load_mesh_from_fbx(cfg.fbx)
 		var raw_source_mesh := AutoAssetFactory.load_source_mesh(cfg.fbx)
@@ -5105,7 +5153,7 @@ func _load_cliff_data(out_meshes: Array[Mesh], out_assets: Array[AutoRock]) -> v
 
 		var h_stats := _get_height_stats(htex.get_image())
 		fbx_meshes.append(mesh)
-		var asset := AutoRock.new()
+		var asset := AutoObject.new()
 		asset.configure_object({
 			"asset_id": str(cfg.fbx).get_file().get_basename(),
 			"name": str(cfg.fbx).get_file().get_basename(),
@@ -5135,7 +5183,7 @@ func _load_cliff_data(out_meshes: Array[Mesh], out_assets: Array[AutoRock]) -> v
 		print("[MeshFill] Cliff FBX/height not found; using %d scripted rock assets" % scripted_count)
 
 
-func _generate_procedural_cliffs(out_meshes: Array[Mesh], out_assets: Array[AutoRock]) -> void:
+func _generate_procedural_cliffs(out_meshes: Array[Mesh], out_assets: Array[AutoObject]) -> void:
 	var configs := [
 		{"name": "small_cliff", "size": 2.3, "box_size": Vector3(2.0, 4.0, 1.0)},
 		{"name": "large_cliff", "size": 5.3, "box_size": Vector3(4.0, 8.0, 2.0)},
@@ -5153,7 +5201,7 @@ func _generate_procedural_cliffs(out_meshes: Array[Mesh], out_assets: Array[Auto
 		out_meshes.append(box)
 
 		var htex_img := _create_cliff_height_image(cfg.box_size)
-		var asset := AutoRock.new()
+		var asset := AutoObject.new()
 		asset.configure_object({
 			"asset_id": cfg.name,
 			"name": cfg.name,
@@ -5248,8 +5296,7 @@ func _create_terrain_mesh(height_tex: ImageTexture) -> void:
 	if existing != null:
 		_remove_voxel_write_spec(existing)
 
-	var result := TerrainInitializerScript.ensure_terrain_initialized(_get_level_root(), {
-		"terrain_name": "Terrain",
+	var result := TerrainInitializerScript.ensure_shared_terrain(_get_level_root(), {
 		"target_height": height_tex,
 		"capture_size": capture_size,
 		"replace_existing": true,
@@ -5811,7 +5858,7 @@ func _probe_inspect_at_screen(screen_pos: Vector2) -> void:
 	var color_sum := Vector3.ZERO
 	var weight_sum := 0.0
 	var collision_values := _target_sv_b_float_values(_target_sv_b_collision_bytes, voxel_count)
-	var target_occupancy_values := _target_sv_b_float_values(_target_sv_b_target_occupancy_bytes, voxel_count)
+	var target_completely_values := _target_sv_b_float_values(_target_sv_b_target_completely_bytes, voxel_count)
 	var target_color_words := _target_sv_b_int_words(_target_sv_b_target_color_rgba8_bytes, voxel_count)
 
 	for s in range(slice_count):
@@ -5824,7 +5871,7 @@ func _probe_inspect_at_screen(screen_pos: Vector2) -> void:
 		var value := target.a
 		var y_mid := (float(s) + 0.5) / float(slice_count) * vertical_span
 		lines.append("  %d   | %5.1f | %.2f %.2f %.2f | %.3f | %.3f" % [s, y_mid, r, g, b, value, collision])
-		peak_value = maxf(peak_value, clampf(target_occupancy_values[idx], 0.0, 1.0))
+		peak_value = maxf(peak_value, clampf(target_completely_values[idx], 0.0, 1.0))
 		peak_collision = maxf(peak_collision, collision)
 		var w := value * value
 		color_sum += Vector3(r, g, b) * w
@@ -5840,7 +5887,7 @@ func _probe_inspect_at_screen(screen_pos: Vector2) -> void:
 		tex_size,
 		slice_count,
 		vertical_span,
-		target_occupancy_values,
+		target_completely_values,
 		target_color_words
 	)
 	if not candidate_lines.is_empty():
@@ -5854,7 +5901,7 @@ func _probe_inspect_at_screen(screen_pos: Vector2) -> void:
 
 func _target_sv_b_packed_target_buffers_valid(voxel_count: int) -> bool:
 	var expected_bytes := maxi(voxel_count, 1) * 4
-	return _target_sv_b_target_occupancy_bytes.size() >= expected_bytes \
+	return _target_sv_b_target_completely_bytes.size() >= expected_bytes \
 		and _target_sv_b_target_color_rgba8_bytes.size() >= expected_bytes
 
 
@@ -5899,18 +5946,18 @@ func _score_candidates_at_pixel(
 	tex_size: int,
 	slice_count: int,
 	vertical_span: float,
-	target_occupancy_values: PackedFloat32Array = PackedFloat32Array(),
+	target_completely_values: PackedFloat32Array = PackedFloat32Array(),
 	target_color_words: PackedInt32Array = PackedInt32Array()
 ) -> PackedStringArray:
 	var result: PackedStringArray = PackedStringArray()
 	var voxel_count := tex_size * tex_size * slice_count
-	var has_decoded_buffers := target_occupancy_values.size() >= voxel_count and target_color_words.size() >= voxel_count
+	var has_decoded_buffers := target_completely_values.size() >= voxel_count and target_color_words.size() >= voxel_count
 	if not has_decoded_buffers and not _target_sv_b_packed_target_buffers_valid(voxel_count):
 		return result
 	var pixel_size := capture_size / float(tex_size)
 	var slice_height := vertical_span / float(slice_count)
 	if not has_decoded_buffers:
-		target_occupancy_values = _target_sv_b_float_values(_target_sv_b_target_occupancy_bytes, voxel_count)
+		target_completely_values = _target_sv_b_float_values(_target_sv_b_target_completely_bytes, voxel_count)
 		target_color_words = _target_sv_b_int_words(_target_sv_b_target_color_rgba8_bytes, voxel_count)
 	var asset_entries: Array[Dictionary] = []
 	for asset in _cached_assets:
@@ -5942,7 +5989,7 @@ func _score_candidates_at_pixel(
 			var sv_g := sv_color.g
 			var sv_b := sv_color.b
 			var sv_value := sv_color.a
-			var sv_collision := clampf(target_occupancy_values[idx], 0.0, 1.0)
+			var sv_collision := clampf(target_completely_values[idx], 0.0, 1.0)
 			var weight := maxf(float(probe.get("weight", 1.0)), 0.000001)
 			var flags := int(probe.get("flags", SemanticProbeProfileScript.FLAG_COLOR | SemanticProbeProfileScript.FLAG_COMPLEXITY))
 			var kind := str(probe.get("kind", "positive"))

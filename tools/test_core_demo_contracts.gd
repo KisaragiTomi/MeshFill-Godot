@@ -170,12 +170,6 @@ func _test_core_fixture_boundaries() -> bool:
 	print("[CoreDemoContracts] test_core_fixture_boundaries...")
 	var ok := true
 	ok = _assert_fixture_acceptance(
-		"asset properties",
-		"res://demos/core-asset-properties/core-asset-properties.md",
-		"res://demos/core-asset-properties/core-asset-properties.tscn",
-		["AutoVoxelDescriptor", "descriptor", "metadata", "collision"]
-	) and ok
-	ok = _assert_fixture_acceptance(
 		"SceneVoxelTile",
 		"res://demos/core-scenevoxeltile/core-scenevoxeltile.md",
 		"res://demos/core-scenevoxeltile/core-scenevoxeltile.tscn",

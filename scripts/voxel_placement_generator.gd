@@ -2187,7 +2187,7 @@ static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> V
 # ---------------------------------------------------------------------------
 # Instantiation - create AutoObject nodes from GPU placement results
 # ---------------------------------------------------------------------------
-# node_class: all classes create AutoObject (AutoRock for heightfield objects, AutoObject for generic objects).
+# node_class: all classes create AutoObject (AutoObject for heightfield objects, AutoObject for generic objects).
 
 static func instantiate_placement(
 	world_result: Dictionary,
@@ -2209,8 +2209,8 @@ static func instantiate_placement(
 		cfg["name"] = "%s_%d" % [node_class, int(world_result.get("asset_index", 0))]
 
 	var asset = cfg.get("asset", null)
-	if node is AutoRock and asset is AutoRock:
-		(node as AutoRock).configure_from_asset(asset as AutoRock, cfg)
+	if node is AutoObject and asset is AutoObject:
+		(node as AutoObject).configure_from_asset(asset as AutoObject, cfg)
 	else:
 		_configure_node(node, node_class, cfg)
 
@@ -2418,15 +2418,15 @@ static func _placement_record_extra_fields(
 	]:
 		if world_result.has(debug_key):
 			fields[debug_key] = world_result[debug_key]
-	if node is AutoRock:
-		fields["mesh_index"] = int((node as AutoRock).mesh_index)
+	if node is AutoObject:
+		fields["mesh_index"] = int((node as AutoObject).mesh_index)
 	return fields
 
 
 static func _create_node_for_class(node_class: String) -> AutoObject:
 	match node_class:
 		"rock", "cliff":
-			return AutoRock.new()
+			return AutoObject.new()
 		_:
 			return AutoObject.new()
 
@@ -2435,7 +2435,7 @@ static func _configure_node(node: AutoObject, node_class: String, cfg: Dictionar
 	match node_class:
 		"rock", "cliff":
 			cfg["object_subtype"] = node_class
-			(node as AutoRock).configure_object(cfg)
+			(node as AutoObject).configure_object(cfg)
 		_:
 			node.configure_auto_object(cfg)
 
@@ -4802,7 +4802,7 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 
 func _ensure_combined_target_field_buffer(complexity_buffer: RID, collision_buffer: RID, target_color_buffer: RID, voxel_count: int) -> RID:
 	# Combines target_color_rgba8 (u32 RGBA8) with scene/collision fields into a single vec4 target_field buffer.
-	# target_field.a = max(scene_complexity, collision) — no separate occupancy buffer.
+	# target_field.a = completely = max(scene_complexity, collision) — 表示体素完全度，max(complexity, collision) == 0 时体素为空。
 	if not target_color_buffer.is_valid() or not complexity_buffer.is_valid() or not collision_buffer.is_valid():
 		return _create_zero_target_field_buffer(voxel_count)
 

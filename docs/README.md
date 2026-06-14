@@ -28,7 +28,8 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, and
 
 | File | Purpose |
 | --- | --- |
-| [`placement/meshfill-rock-placement-flow.md`](placement/meshfill-rock-placement-flow.md) | Rock placement compute pipeline walkthrough |
+| [`placement/meshfill-object-volume-score-3d.md`](placement/meshfill-object-volume-score-3d.md) | Planned 3D per-object `50^3` volume score: subtile workgroups, 12 rotation slots, shared-memory sampling, and reduce aggregation |
+| [`placement/meshfill-rock-placement-flow2.5d(暂停开发).md`](placement/meshfill-rock-placement-flow2.5d(暂停开发).md) | Paused 2.5D heightfield rock placement compute pipeline walkthrough (legacy/migration reference) |
 | [`placement/target-scene-voxel-projection.md`](placement/target-scene-voxel-projection.md) | `TargetSceneVoxel` canvas, stamp model, planned VDB import, projection cache, and current GPU persistence |
 | [`placement/autoobject-probe-prefilter.md`](placement/autoobject-probe-prefilter.md) | AutoObject semantic probe prefilter, CPU/GPU responsibilities, anchor collection, and candidate voxel-region output |
 | [`placement/voxel-semantic-routing.md`](placement/voxel-semantic-routing.md) | Candidate asset routing and voxel-region routing after upstream prefilter |
@@ -40,12 +41,12 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, and
 | --- | --- |
 | [`graphs/README.md`](graphs/README.md) | Graph inventory and editing notes |
 | [`graphs/autoobject_asset_properties.svg`](graphs/autoobject_asset_properties.svg) | Descriptor-owned semantics, descriptor-owned fields, shared fields, `instance_stamp_write_spec` / `ISWS`, and public `SceneVoxel` payload boundaries |
-| [`graphs/autoobject_descriptor_relationship.svg`](graphs/autoobject_descriptor_relationship.svg) | Focused `AutoObject` runtime and `AutoVoxelDescriptor` authority relationship |
+| [`graphs/autoobject_descriptor_relationship.svg`](graphs/autoobject_descriptor_relationship.svg) | Focused `AutoObject` runtime and `AssetDescriptor` authority relationship |
 | [`graphs/autoobject_gpu_runtime_architecture.svg`](graphs/autoobject_gpu_runtime_architecture.svg) | GPU-owned million-scale `AutoObject` runtime, CPU command/debug control plane, profile container, per-voxel object refs, and SV commit boundary |
-| [`graphs/autoassetfactory_relationships.svg`](graphs/autoassetfactory_relationships.svg) | Scaffold JSON, `AutoAssetFactory` normalization, saved rock/vegetation assets, and runtime write path |
+| [`graphs/autoassetfactory_relationships.svg`](graphs/autoassetfactory_relationships.svg) | Scaffold JSON, `AutoAssetFactory` normalization, saved object/vegetation assets, and runtime write path |
 | [`graphs/meshfill_current_framework.svg`](graphs/meshfill_current_framework.svg) | Current tick-level framework flow from target guidance and previous SV through routing, placement, commit, feedback, and next SV |
 | [`graphs/scene-placement-actor.svg`](graphs/scene-placement-actor.svg) | SPA-owned asset registry and runtime profile container with borrowed SV/runtime owners and the placement pipeline |
-| [`graphs/meshfill_compute_shader_3d_placement.svg`](graphs/meshfill_compute_shader_3d_placement.svg) | Heightfield fitting compute pipeline, iterative fill/update passes, CPU `AutoRock` instancing, and `SceneVoxel` integration |
+| [`graphs/meshfill_compute_shader_3d_placement.svg`](graphs/meshfill_compute_shader_3d_placement.svg) | Heightfield fitting compute pipeline, iterative fill/update passes, descriptor-backed object instancing, and `SceneVoxel` integration |
 | [`graphs/autoobject_probe_prefilter_pipeline.svg`](graphs/autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter, dirty-region anchor collection, voxel-region votes, and readback route expansion |
 | [`graphs/autoobject_probe_scoring_logic.svg`](graphs/autoobject_probe_scoring_logic.svg) | Descriptor probe generation, GPU SoA packing, clamped SV/TargetSV_B sampling, weighted fit, and candidate-only top-K boundary |
 | [`graphs/scene-voxel-flow.svg`](graphs/scene-voxel-flow.svg) | `instance_stamp_write_spec` / `ISWS`, auto/brush source streams, `blend_scene_voxels()`, accepted `SceneVoxel` fields, feedback, and SV resident fields |

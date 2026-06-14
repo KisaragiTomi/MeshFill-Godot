@@ -1,4 +1,4 @@
-# SceneVoxelTile Dirty 模块测试场景
+﻿# SceneVoxelTile Dirty 模块测试场景
 
 模块：`SceneVoxelTile` dirty sidecar
 场景：`res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn`
@@ -12,17 +12,19 @@
 ## 测试方法
 
 1. 打开场景，确认该模块覆盖 dirty API、tile size、summary、object/source range、GPU dirty delta handoff 和 get_sv/clear 后的 GPU lifecycle。
-2. 运行 dirty tile 测试：
+2. 运行 Vulkan GPU 验收：
 
 ```bash
-<godot> --headless --path . --script tools/test_voxel_dirty_tile_upload.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_voxel_dirty_tile_upload.gd
-<godot> --headless --path . --script tools/test_scene_voxel_field.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_scene_voxel_field.gd
 ```
 
-3. 检查 headless 日志中 GPU 子项只能 `SKIP`；无 RenderingDevice 时不要启动 runtime 替代路径。
-4. 检查非 headless Vulkan 日志中 `SceneVoxelTile` metadata 通过 GPU storage buffer upload/readback：`ensure_scene_voxel_tile_buffers_uploaded()` 成功，`get_scene_voxel_tile_gpu_buffer_summary()` 的 required buffer RID 有效，stale revision 不会继续作为 runtime read source，`readback_scene_voxel_tile_debug_snapshot()` 只作为 debug view。
-5. 检查 `project.godot` 中 `meshfill/scene_voxel_tile/size_voxels` 的配置与文档中的默认/覆盖规则。
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
+
+3. 检查 Vulkan 日志中 `SceneVoxelTile` metadata 通过 GPU storage buffer upload/readback：`ensure_scene_voxel_tile_buffers_uploaded()` 成功，`get_scene_voxel_tile_gpu_buffer_summary()` 的 required buffer RID 有效，stale revision 不会继续作为 runtime read source，`readback_scene_voxel_tile_debug_snapshot()` 只作为 debug view；无 RenderingDevice 时只能明确 `SKIP`，不能启动 runtime 替代路径。
+4. 检查 `project.godot` 中 `meshfill/scene_voxel_tile/size_voxels` 的配置与文档中的默认/覆盖规则。
 
 ## 验收标准
 

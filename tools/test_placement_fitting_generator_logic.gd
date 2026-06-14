@@ -35,7 +35,7 @@ func _run() -> int:
 		return FAILED
 
 	var fitting_meshes: Array[Mesh] = []
-	var assets: Array[AutoRock] = []
+	var assets: Array[AutoObject] = []
 	main._load_cliff_data(fitting_meshes, assets)
 	if assets.is_empty():
 		push_error("[PlacementFittingTest] No fitting assets loaded")

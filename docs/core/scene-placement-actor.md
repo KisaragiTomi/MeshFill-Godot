@@ -1,16 +1,16 @@
-# ScenePlacementActor (SPA)
+﻿# ScenePlacementActor (SPA)
 
 本文维护 `ScenePlacementActor`（简称 `SPA`）的运行时编排契约。SPA 拥有 descriptor → GPU profile buffer 的完整生命周期，并把 asset registry、profile GPU buffers、prefilter、placement 和 commit 收敛到同一个入口；`SceneVoxelCommitter`、`GPUAutoObjectRuntime` 和 `TargetSV_B` 仍由外部 owner 提供。
 
 ![ScenePlacementActor runtime orchestration](../graphs/scene-placement-actor.svg)
 
-SPA 使 [`AutoVoxelDescriptor`](auto-voxel-descriptor.md) 的 probes、collision 和 pivots 在注册后立即 GPU 可读；SV（`SceneVoxel`）和 `AutoObject` 数据流经单条编排流水线：
+SPA 使 [`AssetDescriptor`](auto-voxel-descriptor.md) 的 probes、collision 和 pivots 在注册后立即 GPU 可读；SV（`SceneVoxel`）和 `AutoObject` 数据流经单条编排流水线：
 
 ```text
 register assets → prefilter（SV→candidates）→ placement（candidates→instances）→ commit
 ```
 
-跨模块总览见 [`meshfill-framework.md`](meshfill-framework.md)；`AutoVoxelDescriptor` 定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)；GPU runtime/profile 契约见 [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)；资产 probe schema 见 [`asset-semantic-probes.md`](asset-semantic-probes.md)；SV commit / resident state 见 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)。
+跨模块总览见 [`meshfill-framework.md`](meshfill-framework.md)；`AssetDescriptor` 定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)；GPU runtime/profile 契约见 [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)；资产 probe schema 见 [`asset-semantic-probes.md`](asset-semantic-probes.md)；SV commit / resident state 见 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)。
 
 ## 本文范围
 
@@ -21,7 +21,7 @@ register assets → prefilter（SV→candidates）→ placement（candidates→i
 
 ## 核心契约
 
-- **SPA** 是 MeshFill 运行时数据的统一编排容器：所有 `AutoVoxelDescriptor` 注册后立刻上传到 GPU 并保持 resident；同一个 `RenderingDevice` 被 profile container、prefilter 和 placer 共享，确保 borrowed probe buffer 路径零拷贝。
+- **SPA** 是 MeshFill 运行时数据的统一编排容器：所有 `AssetDescriptor` 注册后立刻上传到 GPU 并保持 resident；同一个 `RenderingDevice` 被 profile container、prefilter 和 placer 共享，确保 borrowed probe buffer 路径零拷贝。
 - SPA **拥有** `AutoVoxelRuntimeProfileContainer`（创建、管理、释放）；**借用** `SceneVoxelCommitter` 和 `GPUAutoObjectRuntime`（外部注入，SPA 不控制其生命周期）。
 - `register_asset()` 立即调用 `register_descriptor()` + `upload_profiles()`：descriptor 的 probes/collision/pivots 注册后即时在 GPU 上，无需等待 frame end 或手动刷写。
 - `run_placement_pipeline()` 是按帧流水线入口：prefilter → placement → commit 三阶段串行执行，profile container 的 resident GPU buffers 被 prefilter 和 placer 直接借用。
@@ -46,7 +46,7 @@ register assets → prefilter（SV→candidates）→ placement（candidates→i
 
 | 数据 | 权威来源 / 持有者 | SPA 的角色 | 说明 |
 | --- | --- | --- | --- |
-| 资产默认语义 | `AutoVoxelDescriptor` / `AutoVoxelProfile` | asset registry 保存 descriptor 引用 | descriptor 是资产语义主来源；字段定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。SPA 不复制资产数据。 |
+| 资产默认语义 | `AssetDescriptor` / `AutoVoxelProfile` | asset registry 保存 descriptor 引用 | descriptor 是资产语义主来源；字段定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。SPA 不复制资产数据。 |
 | Runtime profile GPU buffers | `AutoVoxelRuntimeProfileContainer`（SPA 拥有） | 创建、管理、暴露、释放 | `profile_table`、`probe_records`、`collision_records`、`pivot_records` 全部 GPU resident；`register_asset()` 即时上传。 |
 | SPA 状态 | `ScenePlacementActor` | 拥有 `_initialized`、`_last_pipeline_result`、wrapper 缓存 | 暴露 `is_gpu_ready()` / `get_gpu_readiness_report()` 查询当前就绪状态。 |
 | BrushSV persistence | `ScenePlacementActor` | 保存 brush delta / override 的持久化和序列化入口 | `BrushSV` 内容常驻于 SPA 生命周期；debug 通过稳定 buffer / readback 观察，CPU 只保留控制面元数据。 |
@@ -136,7 +136,7 @@ SPA 的「随时可读」合约通过以下接口暴露，其它模块不应绕�
 SPA 内部以并行数组维护 asset registry：
 
 ```text
-_registered_descriptors[i]     → AutoVoxelDescriptor   (资产语义来源)
+_registered_descriptors[i]     → AssetDescriptor   (资产语义来源)
 _registered_profile_ids[i]     → int                   (GPU profile_id)
 _registered_mesh[i]            → Mesh                  (渲染/采样网格，可为 null)
 _registered_autoobject_refs[i] → AutoObject            (场景节点引用，可为 null)
@@ -196,7 +196,7 @@ _build_placement_asset_defs(candidate_regions)
 
 | 模块 | 与 SPA 的关系 | 数据流方向 |
 | --- | --- | --- |
-| `AutoVoxelDescriptor` | SPA 的 asset registry 保存引用 | 注册时读 descriptor 语义；首帧生成 probes 上传到 GPU |
+| `AssetDescriptor` | SPA 的 asset registry 保存引用 | 注册时读 descriptor 语义；首帧生成 probes 上传到 GPU |
 | `AutoVoxelRuntimeProfileContainer` | SPA 拥有并管理 | SPA → container: `register_descriptor()`, `upload_profiles()`；container → prefilter/placer: borrowed GPU buffers |
 | `AutoObjectProbePrefilterGPU` | SPA 懒创建、注入 RD | SPA → prefilter: SV fields + autoobjects + profile_container；prefilter → SPA: candidate regions |
 | `VoxelPlacementGenerator` | SPA 懒创建、注入 RD | SPA → placer: scene/collision fields + asset_defs + profile_container；placer → SPA: accepted placements |
@@ -232,7 +232,7 @@ var result := spa.run_placement_pipeline(
     4,                    # prefilter_topk
     {                     # placement_common settings
         "global_quota": 500,
-        "target_occupancy_bytes": target_occupancy_bytes,
+        "target_completely_bytes": target_completely_bytes,
         "target_color_rgba8_bytes": target_color_rgba8_bytes,
         "write_accepted_placements_to_gpu_runtime": true,
     }
@@ -266,12 +266,15 @@ spa.dispose()
 ## 相关文档
 
 - [`meshfill-framework.md`](meshfill-framework.md)：总框架 ownership、routing、placement、commit 和 feedback 流程。
-- [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)：`AutoVoxelDescriptor` 统一定义和 authoring 边界。
+- [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)：`AssetDescriptor` 统一定义和 authoring 边界。
 - [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)：`GPUAutoObjectRuntime`、profile container 和 VPG runtime/profile contract。
 - [`asset-semantic-probes.md`](asset-semantic-probes.md)：descriptor-backed semantic probes 与 borrowed probe buffer。
 - [`scene-voxel-field-system.md`](scene-voxel-field-system.md)：`SceneVoxelCommitter`、source write、commit 和 SV resident state。
 - [`scenevoxeltile.md`](scenevoxeltile.md)：SV owner 的 dirty tile / object-ref sidecar。
 - [`../placement/target-scene-voxel-projection.md`](../placement/target-scene-voxel-projection.md)：`TargetSV_B` read buffer 生成和 guidance-only 边界。
+
+
+> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，CPU fallback 不得作为通过条件。
 
 ## 测试场景
 

@@ -1,9 +1,13 @@
-[gd_scene load_steps=2 format=3]
+﻿[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
 
+[ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
+
 [node name="CoreMeshfillFrameworkDemo" type="Node3D"]
 script = ExtResource("1_contract")
+
+[node name="DemoSetup" parent="." instance=ExtResource("99_setup")]
 metadata/source_doc = "res://docs/core/meshfill-framework.md"
 metadata/test_doc = "res://demos/core-meshfill-framework/core-meshfill-framework.md"
 metadata/focus = "End-to-end MeshFill ownership, routing, placement, commit, and feedback flow"

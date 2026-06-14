@@ -2,7 +2,7 @@
 
 > **SceneVoxel Source Fusion (SVSF)** 是 `AutoSV` + `BrushSV` + `LandscapeSV` → `BlendSV` / committed `SceneVoxel` 的正式流程名，本文档中 resolve + commit 合并即为其 GPU 侧实现。
 >
-> 审计日期: 2026-06-07 (更新)
+> 审计日期: 2026-06-10 (更新)
 > 范围: 所有 `.gd` / `.glsl` 代码文件
 > 基类 Buffer 工厂: `godot_compute_shader_base.gd`
 
@@ -32,9 +32,9 @@
 | Collision Field | `SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER` | 4 | `resident_voxel_count` | 密集 3D 碰撞体素场，每体素存储碰撞/实体占用值。评分 shader 用它计算 solid_collision（实体碰撞惩罚项）和 support 检测（支撑面检测） | **条件必要** — 若所有对象均为纯装饰性放置无碰撞需求，可省略。但当前评分公式中 solid_collision 和 support_ratio 均为核心评分因子，省略会显著改变放置质量 |
 
 **更新策略**:
-- 完全上传: `ensure_scene_voxel_tile_buffers_uploaded()` → 重建所有 7 个 buffer
-- 增量更新: `_update_scene_voxel_tile_dirty_ranges()` → 仅更新 Summary/Record/DirtyIndex 的脏范围
-- Field buffer 支持复用 (reuse) 而非重建
+- 完全上传: `ensure_scene_voxel_tile_buffers_uploaded()` (L2618) → 重建 `SCENE_VOXEL_TILE_GPU_BUFFER_NAMES` 中的全部 6 个 buffer
+- 增量更新: `_update_scene_voxel_tile_dirty_ranges()` (L2806) → 仅更新 Summary/Record/DirtyIndex 的脏范围
+- Field buffer (Complexity/Collision) 支持复用 (reuse) 而非重建
 
 **生命周期流程**:
 ```
@@ -63,8 +63,8 @@ Object Refs ←── scene_voxel_tile_object_ref_update.glsl ←── score_vo
 
 | Buffer | 变量名 | 创建 | 释放 | 作用 | 必要性 |
 |--------|--------|------|------|------|--------|
-| Payload Output | `_committed_scene_voxel_payload_buffer` | `_try_resolve_scene_voxel_source_candidates_gpu()` | `_release_committed_scene_voxel_payload_buffer()` L5336 | **合并的 resolve+commit 输出**。`resolve_scene_voxel_sources.glsl` 在 per-source-key 级别选出 auto/brush winner 并完成混合，直接输出 committed payload 格式（12 floats per key, SCOPE_PERSISTENT）。CPU 端读回后生成最终 voxel 放置 | **必要** — commit 管线的最终输出 |
-| Key Coord | `_committed_scene_voxel_key_coord_buffer` | 同上 | `_release_committed_scene_voxel_key_coord_buffer()` L5346 | 存储每个 commit key 对应的 3D 体素坐标，配套 Payload Output 使用，CPU 端据此将 payload 值写入正确的空间位置 | **条件必要** — 如果 key→coord 映射可在 CPU 端通过 `_scene_voxel_source_key_coord()` 独立计算且无歧义，可省略。但当前 commit 管线依赖 GPU 侧 key index 对齐 |
+| Payload Output | `_committed_scene_voxel_payload_buffer` | `_try_resolve_scene_voxel_source_candidates_gpu()` (L6261) | `_release_committed_scene_voxel_payload_buffer()` L4845 | **合并的 resolve+commit 输出**。`resolve_scene_voxel_sources.glsl` 在 per-source-key 级别选出 auto/brush winner 并完成混合，直接输出 committed payload 格式（12 floats per key, SCOPE_PERSISTENT）。CPU 端读回后生成最终 voxel 放置 | **必要** — commit 管线的最终输出 |
+| Key Coord | `_committed_scene_voxel_key_coord_buffer` | 同上 | `_release_committed_scene_voxel_key_coord_buffer()` L4855 | 存储每个 commit key 对应的 3D 体素坐标，配套 Payload Output 使用，CPU 端据此将 payload 值写入正确的空间位置 | **条件必要** — 如果 key→coord 映射可在 CPU 端通过 `_scene_voxel_source_key_coord()` 独立计算且无歧义，可省略。但当前 commit 管线依赖 GPU 侧 key index 对齐 |
 
 **生命周期**: 每次 commit 重建，旧 buffer 先释放再分配。保持最新一次 commit 的结果。
 
@@ -85,7 +85,7 @@ Candidate Records/Ranges → resolve_scene_voxel_sources.glsl (resolve + auto/br
 
 | Buffer | 创建 | 释放 | 作用 | 必要性 |
 |--------|------|------|------|--------|
-| Candidate Records | `_flush_pending_scene_voxel_source_candidates` → storage buffer | `_release_scene_voxel_source_candidate_resident_buffers()` L6303 | 存储待处理 source candidate 的记录数据（priority, complexity, source type）。`resolve_scene_voxel_sources.glsl` (binding 0) 读取这些记录进行 winner 选择 | **必要** — source 解析管线的输入，候选者数据的 GPU 侧表示 |
+| Candidate Records | `_flush_pending_scene_voxel_source_candidates` → storage buffer | `_release_scene_voxel_source_candidate_resident_buffers()` L5814 | 存储待处理 source candidate 的记录数据（priority, complexity, source type）。`resolve_scene_voxel_sources.glsl` (binding 0) 读取这些记录进行 winner 选择 | **必要** — source 解析管线的输入，候选者数据的 GPU 侧表示 |
 | Candidate Ranges | 同上 | 同上 | 存储每个 source key 的 auto/brush 候选者范围（uvec4: auto_start, auto_count, brush_start, brush_count）。`resolve_scene_voxel_sources.glsl` (binding 1) 读取合并后的 per-source-key 范围 | **必要** — 与 Candidate Records 配套，定义 per-source-key 的 auto+brush 候选边界 |
 
 ---
@@ -126,8 +126,8 @@ CPU 写入 _dirty_delta_buffer ───→ scene_voxel_tile_object_ref_update.g
 
 | Buffer | 变量名 | 创建 | 释放 | 作用 | 必要性 |
 |--------|--------|------|------|------|--------|
-| GPUPack Record | `_candidate_route_gpu_pack_record_buf` | `_run_candidate_route_gpu_pack_pass()` L527, `SCOPE_PERSISTENT` | `_release_candidate_route_gpu_pack_payload_buffers()` L713 或 `_on_after_dispose()` | 存储打包后的候选路由记录（`uvec4: tile_id,0,0,0`），输出给 `voxel_placement_generator.gd` 的 resident route 适配链。`score_voxel_tile.glsl` (set 2 binding 0) 读取，决定每个 tile group 可选哪些 asset | **条件必要** — 如果 asset 选择逻辑完全由 CPU 控制（不走 GPU route），可省略 |
-| GPUPack Range | `_candidate_route_gpu_pack_range_buf` | `_run_candidate_route_gpu_pack_pass()` L528, `SCOPE_PERSISTENT` | 同上 | 存储每个 asset 的路由范围（record_start, record_count 布局）。与 GPUPack Record 配套，通过 `resident_route_range_rid` 移交给 VPG | **条件必要** — 同上 |
+| GPUPack Record | `_candidate_route_gpu_pack_record_buf` | `_run_candidate_route_gpu_pack_pass()` L498, `SCOPE_PERSISTENT` | `_release_candidate_route_gpu_pack_payload_buffers()` L727 或 `_on_after_dispose()` L1405 | 存储打包后的候选路由记录（`uvec4: tile_id,0,0,0`），输出给 `voxel_placement_generator.gd` 的 resident route 适配链。`score_voxel_tile.glsl` (set 2 binding 0) 读取，决定每个 tile group 可选哪些 asset | **条件必要** — 如果 asset 选择逻辑完全由 CPU 控制（不走 GPU route），可省略 |
+| GPUPack Range | `_candidate_route_gpu_pack_range_buf` | `_run_candidate_route_gpu_pack_pass()` L498, `SCOPE_PERSISTENT` | 同上 | 存储每个 asset 的路由范围（record_start, record_count 布局）。与 GPUPack Record 配套，通过 `resident_route_range_rid` 移交给 VPG | **条件必要** — 同上 |
 
 **数据流**: GPUPack Record/Range 由 `_run_candidate_route_gpu_pack_pass()` 创建，payload 通过 `resident_route_record_rid` / `resident_route_range_rid` 传递给 `scene_placement_actor.gd`（由 `track_rid()` 持久化管理），最终供 `voxel_placement_generator.gd` 读取。
 
@@ -139,8 +139,8 @@ CPU 写入 _dirty_delta_buffer ───→ scene_voxel_tile_object_ref_update.g
 
 | Buffer | 用途 | 创建位置 | 作用 | 必要性 |
 |--------|------|----------|------|--------|
-| `auto_buffer` (冷启动) | CPU pack → GPU commit auto source | L4929 `storage_buffer_from_floats` | 当没有 resident resolved source 时的 CPU 回退路径：将 CPU 侧 packed source 数据上传为临时 GPU buffer 供 commit shader 使用 | **条件必要** — 仅在首次 commit 或 resolved source 失效时使用。正常热路径不经过此 buffer |
-| `brush_buffer` (冷启动) | CPU pack → GPU commit brush source | L4930 `storage_buffer_from_floats` | 同上，brush 版本 | **条件必要** — 同上 |
+| `auto_buffer` (冷启动) | CPU pack → GPU commit auto source | L5135 `storage_buffer_from_floats` | 当没有 resident resolved source 时的 CPU 回退路径：将 CPU 侧 packed source 数据上传为临时 GPU buffer 供 commit shader 使用 | **条件必要** — 仅在首次 commit 或 resolved source 失效时使用。正常热路径不经过此 buffer |
+| `brush_buffer` (冷启动) | CPU pack → GPU commit brush source | L5136 `storage_buffer_from_floats` | 同上，brush 版本 | **条件必要** — 同上 |
 | GPU stamp output buffers | 磁盘 stamp 结果 | `_stamp_scalar_image_disc_gpu()` 等 | 将 scalar image 数据 stamp 到 disc（RGBA32F 纹理）的临时输出 | **条件必要** — 仅在需要从标量场生成 disc 纹理时使用 |
 | Pixel collect buffers | `collect_disc_pixels.glsl` 输出 | `_collect_disc_pixels_gpu()` | 从 disc 纹理中收集有效像素（密度>阈值），输出为紧凑 pixel 列表 | **条件必要** — 仅在需要从 disc 中提取像素时使用 |
 | Sample pixel buffers | `_sample_scalar_image_pixel_gpu()` 输出 | `storage_buffer_zero(4, SCOPE_FRAME)` | 从 R32 格式纹理中采样单个像素值（output_buffer，标签 "sample_r32_pixel_out"） | **条件必要** — 仅在需要从 R32 纹理中读取单个像素时使用 |
@@ -149,23 +149,23 @@ CPU 写入 _dirty_delta_buffer ───→ scene_voxel_tile_object_ref_update.g
 
 | Buffer | 用途 | Stride | 创建位置 | 作用 | 必要性 |
 |--------|------|--------|----------|------|--------|
-| `stats_buf` | Height diff stats | `group_count × 64` | L2126 | 高度差异统计输出（每个 workgroup 的聚合结果），GPU reduce 后 CPU 读回用于调试/可视化 | **条件必要** — 仅在需要 terrain height 差异分析时使用 |
-| `minmax_buf` | Grayscale minmax | 特定 | L2759 | 灰度图 min/max 值归约输出 | **条件必要** — 仅在需要灰度图范围分析时使用 |
-| `avg_buffer` | Terrain avg sum/count | 8 | L3160 | 地形平均高度计算（sum 和 count 两个 float） | **条件必要** — 仅在需要 terrain 统计时使用 |
-| `minmax_buf` (delta) | Delta stats | 8 | L3461 | 高度变化量统计 | **条件必要** — 仅在 delta 分析时使用 |
-| `absmax_buf` | Delta heatmap absmax | 特定 | L3577 | Delta 热力图绝对值最大值 | **条件必要** — 仅在热力图分析时使用 |
-| `counter_buf` | Clear override tile counter | 4 | L4113 | 清除覆盖 tile 的原子计数器 | **条件必要** — 仅在覆盖清除操作时使用 |
-| `counter_buf` | Override invalidation counter | 4 | L4311 | 覆盖失效计数器 | **条件必要** — 仅在覆盖失效操作时使用 |
-| `counter_buf` | Mask has pixels counter | 4 | L4420 | Mask 像素存在性计数器 | **条件必要** — 仅在 mask 检测时使用 |
-| `counter_buf` | Capture rock mask counter | 4 | L4794 | 岩石 mask 捕获计数器 | **条件必要** — 仅在岩石 mask 捕获时使用 |
-| `stats_buf` | Height stats minmax | 12 | L5262 | 高度统计 min/max 输出 | **条件必要** — 仅在高度分析时使用 |
+| `stats_buf` | Height diff stats | `group_count × 64` | L2127 | 高度差异统计输出（每个 workgroup 的聚合结果），GPU reduce 后 CPU 读回用于调试/可视化 | **条件必要** — 仅在需要 terrain height 差异分析时使用 |
+| `minmax_buf` | Grayscale minmax | 特定 | L2900 | 灰度图 min/max 值归约输出 | **条件必要** — 仅在需要灰度图范围分析时使用 |
+| `avg_buffer` | Terrain avg sum/count | 8 | L3301 | 地形平均高度计算（sum 和 count 两个 float） | **条件必要** — 仅在需要 terrain 统计时使用 |
+| `minmax_buf` (delta) | Delta stats | 8 | L3602 | 高度变化量统计 | **条件必要** — 仅在 delta 分析时使用 |
+| `absmax_buf` | Delta heatmap absmax | 特定 | L3718 | Delta 热力图绝对值最大值 | **条件必要** — 仅在热力图分析时使用 |
+| `counter_buf` | Clear override tile counter | 4 | L4254 | 清除覆盖 tile 的原子计数器 | **条件必要** — 仅在覆盖清除操作时使用 |
+| `counter_buf` | Override invalidation counter | 4 | L4452 | 覆盖失效计数器 | **条件必要** — 仅在覆盖失效操作时使用 |
+| `counter_buf` | Mask has pixels counter | 4 | L4561 | Mask 像素存在性计数器 | **条件必要** — 仅在 mask 检测时使用 |
+| `counter_buf` | Capture rock mask counter | 4 | L4935 | 岩石 mask 捕获计数器 | **条件必要** — 仅在岩石 mask 捕获时使用 |
+| `stats_buf` | Height stats minmax | 12 | L5403 | 高度统计 min/max 输出 | **条件必要** — 仅在高度分析时使用 |
 
 ### 2.3 `autoobject_probe_prefilter_gpu.gd`
 
 | Buffer | 用途 | Scope | 作用 | 必要性 |
 |--------|------|-------|------|--------|
 | `scene_collision_buf` | Scene+Collision merged field upload | FRAME | 将 complexity field 和 collision field 合并为 interleaved vec2 buffer（`.x` = scene, `.y` = collision），单次上传。被 `collect_sv_anchors.glsl` (binding 0) 和 `score_anchor_asset_probes.glsl` (binding 3) 读取 | **必要** — prefilter 管线的核心输入 |
-| `target_field_buf` | Target SV requirement field upload | FRAME | 目标体素需求场（每体素 vec4：color RGBA + occupancy）上传。支持借入（borrowed RID）或从 `target_field_bytes` 上传 | **条件必要** — 如果 prefilter 无 target guidance 可省略 |
+| `target_field_buf` | Target SV requirement field upload | FRAME | 目标体素需求场（每体素 vec4：color RGBA + completely，即 `max(complexity, collision)` 表示体素完全度）。支持借入（borrowed RID）或从 `target_field_bytes` 上传 | **条件必要** — 如果 prefilter 无 target guidance 可省略 |
 | `dirty_tile_buf` | Dirty tile worklist | FRAME | 需要处理的脏 tile 工作清单（PackedInt32Array） | **必要** — 增量 prefilter 的调度输入 |
 | `anchor_buf` | Anchor collection output | FRAME | prefilter 选出的锚点候选者输出（uvec4: x,y,z,reserved），容量 `ANCHOR_CAPACITY=65536` | **必要** — prefilter 的核心输出 |
 | `anchor_count_buf` | Anchor counter | FRAME | 锚点数量原子计数器（单 u32），通过 `buffer_get_data` 读回 | **必要** — GPU 并行输出数量统计 |
@@ -205,7 +205,7 @@ CPU 写入 _dirty_delta_buffer ───→ scene_voxel_tile_object_ref_update.g
 |--------|------|------|------|--------|
 | `record_rid` / `range_rid` | `test_voxel_candidate_routing_contract.gd` | 测试路由缓冲区 | 单元测试中验证 candidate routing 的 contract 正确性 | **条件必要** — 仅测试用途 |
 | `dirty_delta_buf` 等 5 个 | `test_scene_voxel_tile_object_ref_update.gd` | Object ref update 测试 | 测试 object ref update shader 的正确性 | **条件必要** — 仅测试用途 |
-| `resident_color/occupancy` | `test_scene_placement_target_read_buffers_gpu.gd` | 测试读回 | 验证 GPU buffer 读回功能的测试 | **条件必要** — 仅测试用途 |
+| `resident_color/occupancy` | `test_scene_placement_target_read_buffers_gpu.gd` | 测试读回 | 验证 GPU buffer 读回功能的测试（occupancy 即 completely 值） | **条件必要** — 仅测试用途 |
 
 ---
 
@@ -418,7 +418,7 @@ CPU 上传                              GPU Compute                            �
 ────────                              ──────────                             ────
 Complexity Field ──────────────────────┐
 Collision Field ──────────────────┤
-Target Occupancy ─────────────────┤
+Target Completely ─────────────────┤
 Target Color ─────────────────────┤  (可选)
 Dirty Tile ───────────────────────┤
 Probe Data ───────────────────────┤
@@ -444,7 +444,7 @@ Route Radius / Mark ──────────────┤  (可选)
 | 流程阶段 | 参与 Buffer | 角色 |
 |---------|------------|------|
 | 输入 | SceneCollision Field (merged vec2) | 场景+碰撞数据输入（单 buffer，`.x`=scene `.y`=collision） |
-| 输入 | Target Occupancy / Color | 目标引导数据（可选） |
+| 输入 | Target Completely / Color | 目标引导数据（可选，completely = `max(complexity, collision)` 表示体素完全度） |
 | 输入 | Dirty Tile | 增量处理工作清单 |
 | 输入 | Probe Data / Probe Range | Asset probe 特征数据 |
 | 输入 | Route Radius / Route Mark | 路由配置（可选） |
@@ -577,8 +577,3 @@ Height Image ───────────────────┐
 
 ---
 
-### 潜在风险
-
-1. **Conditionally Necessary Buffers 缺少 null-guard**: 部分条件必要的 buffer 在未分配时可能被 shader 绑定，需要确保 `create_uniform_set` 在 buffer 无效时提供安全的零填充 dummy buffer。
-
----

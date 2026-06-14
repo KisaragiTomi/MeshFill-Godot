@@ -2,7 +2,7 @@ class_name AutoObject
 extends MeshInstance3D
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
-const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const ANCHOR_KIND := "anchor"
 const INSTANCE_STAMP_WRITE_SPEC_META_KEY := "instance_stamp_write_spec"
@@ -27,6 +27,13 @@ const VOXEL_WRITE_SPEC_META_KEY := "voxel_write_spec"
 @export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0 # context probes 半径；0 禁用
 @export var allowed_anchor_kinds: PackedStringArray = PackedStringArray()
 @export var voxel_profile: AutoVoxelProfile                  # profile fallback，共享体素语义
+@export var asset_id: String = ""                            # 资产 id，随实例配置传递
+@export var mesh_height_texture: Texture2D                   # 高度图，顶视每像素高度（rock）
+@export var mesh_size: float = 1.0                           # 纹理空间中尺寸（rock）
+@export var random_rotate: Vector2 = Vector2(0.0, 0.0)       # 随机旋转范围（rock）
+@export var random_scale: Vector2 = Vector2(1.0, 1.0)        # 随机缩放范围（rock）
+@export var random_height_offset: Vector2 = Vector2(0.0, 0.0) # 随机高度偏移范围（rock）
+@export var mesh_index: int = -1                             # placement result 资产索引
 var voxel_write_spec: Dictionary = {}                         # 当前实例写入场景体素系统的 record handle
 var min_spacing_auto: bool = true                             # 是否按 bound_min_length 自动 spacing
 
@@ -83,7 +90,7 @@ static func create_voxel_profile(
 	var profile := AutoVoxelProfile.new()
 	profile.color = entry_color
 	profile.complexity = clampf(entry_complexity, 0.0, 1.0)
-	profile.collision = AutoVoxelDescriptorScript.normalize_collision(collision, default_radius)
+	profile.collision = AssetDescriptorScript.normalize_collision(collision, default_radius)
 	return profile
 
 
@@ -98,7 +105,7 @@ static func create_voxel_descriptor(
 	context_sensing_radius: float = 0.0
 ) -> Resource:
 	var profile := create_voxel_profile(entry_color, entry_complexity, default_radius, collision)
-	var descriptor = AutoVoxelDescriptorScript.from_profile(profile, default_radius)
+	var descriptor = AssetDescriptorScript.from_profile(profile, default_radius)
 	if not pivot_variants.is_empty():
 		descriptor.set_pivot_variants(pivot_variants)
 	descriptor.semantic_probe_profile = semantic_probe_profile
@@ -215,6 +222,45 @@ func _apply_config_rotation(config: Dictionary) -> void:
 		if config.has("rotation_degrees"):
 			y_rotation = _vector3_from_config_value(config.rotation_degrees, rotation_degrees).y
 		rotation_degrees = Vector3(0.0, y_rotation, 0.0)
+
+
+func configure_object(config: Dictionary) -> void:
+	var cfg := config.duplicate(true)
+	cfg["object_type"] = "object"
+	if not cfg.has("group"):
+		cfg["group"] = "placed_objects"
+
+	if cfg.has("asset_id"):
+		asset_id = str(cfg.asset_id)
+	var configured_height_texture = cfg.get("mesh_height_texture", null)
+	if configured_height_texture is Texture2D:
+		mesh_height_texture = configured_height_texture as Texture2D
+	if cfg.has("mesh_size"):
+		mesh_size = maxf(float(cfg.mesh_size), 0.0)
+	if cfg.has("random_rotate"):
+		random_rotate = AutoObject.vector2_from_value(cfg.random_rotate, random_rotate)
+	if cfg.has("random_scale"):
+		random_scale = AutoObject.vector2_from_value(cfg.random_scale, random_scale)
+	if cfg.has("random_height_offset"):
+		random_height_offset = AutoObject.vector2_from_value(cfg.random_height_offset, random_height_offset)
+
+	if not cfg.has("auto_generate_vertical_pivots") and not cfg.has("pivot_variants"):
+		cfg["auto_generate_vertical_pivots"] = true
+
+	var radius := mesh_size * 0.5
+	_apply_voxel_profile_fallback(cfg, radius)
+	_fill_config_shared_defaults(cfg, radius)
+
+	configure_auto_object(cfg)
+
+	if cfg.has("mesh_index"):
+		mesh_index = int(cfg.mesh_index)
+
+
+func configure_from_asset(asset: AutoObject, config: Dictionary = {}) -> void:
+	if asset == null:
+		return
+	configure_object(asset.make_instance_config(config))
 
 
 func configure_auto_object(config: Dictionary) -> void:
@@ -357,7 +403,16 @@ func _fill_config_shared_defaults(config: Dictionary, default_radius: float = 0.
 
 
 func _clear_subclass_state_mirror_metadata() -> void:
-	pass
+	for key in [
+		"object_mesh_index",
+		"object_asset_id",
+		"object_mesh_size",
+		"object_random_rotate",
+		"object_random_scale",
+		"object_random_height_offset",
+	]:
+		if has_meta(key):
+			remove_meta(key)
 
 
 func make_instance_config(config: Dictionary = {}) -> Dictionary:
@@ -370,6 +425,20 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 		cfg["source_mesh_path"] = source_mesh_path
 	if not cfg.has("voxel_profile") and voxel_profile != null:
 		cfg["voxel_profile"] = voxel_profile
+	if not cfg.has("asset_id") and not asset_id.is_empty():
+		cfg["asset_id"] = asset_id
+	if not cfg.has("object_subtype") and not get_record_object_subtype().is_empty():
+		cfg["object_subtype"] = get_record_object_subtype()
+	if not cfg.has("mesh_height_texture") and mesh_height_texture != null:
+		cfg["mesh_height_texture"] = mesh_height_texture
+	if not cfg.has("mesh_size"):
+		cfg["mesh_size"] = mesh_size
+	if not cfg.has("random_rotate"):
+		cfg["random_rotate"] = random_rotate
+	if not cfg.has("random_scale"):
+		cfg["random_scale"] = random_scale
+	if not cfg.has("random_height_offset"):
+		cfg["random_height_offset"] = random_height_offset
 	return _fill_config_shared_defaults(cfg, get_record_radius())
 
 
@@ -437,7 +506,10 @@ func get_voxel_complexity() -> float:
 
 
 func get_collision(default_radius: float = 0.0) -> Array[Dictionary]:
-	return _ensure_voxel_descriptor().get_collision(default_radius)
+	var radius := default_radius
+	if radius <= 0.0 and mesh_size > 0.0:
+		radius = mesh_size * 0.5
+	return _ensure_voxel_descriptor().get_collision(radius)
 
 
 func get_record_object_type() -> String:
@@ -458,7 +530,7 @@ func get_record_radius() -> float:
 	var mesh_radius := get_xz_radius()
 	if min_spacing > 0.0:
 		return maxf(min_spacing, mesh_radius)
-	return mesh_radius
+	return maxf(mesh_radius, mesh_size * 0.5)
 
 
 func get_xz_radius() -> float:
@@ -491,7 +563,14 @@ func make_voxel_profile(default_radius: float = -1.0) -> AutoVoxelProfile:
 
 
 func get_voxel_write_spec_extra_fields(extra_fields: Dictionary = {}) -> Dictionary:
-	return extra_fields.duplicate(true)
+	var fields := extra_fields.duplicate(true)
+	if not fields.has("mesh_index"):
+		fields["mesh_index"] = mesh_index
+	return fields
+
+
+func is_valid_asset() -> bool:
+	return mesh != null and mesh_height_texture != null and mesh_size > 0.0
 
 
 func make_voxel_write_spec(
@@ -593,7 +672,7 @@ func get_anchor_relative_footprint_aabb(anchor_kind: String = ANCHOR_KIND) -> AA
 
 
 func set_collision(voxels: Array) -> void:
-	collision = AutoVoxelDescriptorScript.normalize_collision(voxels)
+	collision = AssetDescriptorScript.normalize_collision(voxels)
 	var descriptor = _ensure_voxel_descriptor()
 	descriptor.set_collision(collision)
 	_sync_auto_metadata()

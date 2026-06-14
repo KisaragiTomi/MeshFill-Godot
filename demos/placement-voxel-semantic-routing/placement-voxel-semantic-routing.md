@@ -1,4 +1,4 @@
-# docs/placement/voxel-semantic-routing.md 测试场景
+﻿# docs/placement/voxel-semantic-routing.md 测试场景
 
 源文档：`res://docs/placement/voxel-semantic-routing.md`  
 测试场景：`res://demos/placement-voxel-semantic-routing/placement-voxel-semantic-routing.tscn`
@@ -9,11 +9,15 @@
 2. 运行路由契约和 placement skip 测试：
 
 ```bash
-<godot> --headless --path . --script tools/test_voxel_candidate_routing_contract.gd
-<godot> --headless --path . --script tools/test_autoobject_probe_prefilter.gd
-<godot> --headless --path . --script tools/test_voxel_placement_generator.gd
-<godot> --headless --path . --script tools/test_markdown_contracts.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_candidate_routing_contract.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_placement_generator.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
 ```
+
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
 
 3. 检查 `shaders/score_voxel_tile.glsl`，确认 physical score 不包含 `semantic_score`、`route_score` 或全资产 embedding 查找。
 

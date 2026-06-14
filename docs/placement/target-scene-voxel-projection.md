@@ -20,7 +20,7 @@
 | `placement_role` | role 应由 probe、projection 或 matcher 推断。 |
 | committed source metadata | `TargetSV_B` 不进入 `blend_scene_voxels()`。 |
 
-当前实现通过 `target_scene_voxel.glsl` 生成 `TargetSV` / `TargetSV_B` raw buffers，支持持久化和 `target_occupancy` / `target_color` 解码。
+当前实现通过 `target_scene_voxel.glsl` 生成 `TargetSV` / `TargetSV_B` raw buffers，支持持久化和 `target_completely` / `target_color` 解码。
 
 | 项 | 状态 |
 | --- | --- |
@@ -33,10 +33,10 @@
 | `TargetSV` | 源目标画布 | 重建、持久化、debug / import 回查。 |
 | `BrushSV` | 目标画布笔刷 delta / override | 与源 `TargetSV` 重新合成 `TargetSV_B`。 |
 | `TargetSV_B` | brush-composited target read buffer | prefilter、routing、physical target fit、result feedback、debug。 |
-| `target_occupancy` | 从 `TargetSV_B` 读取的 target complexity / collision intent | `score_anchor_asset_probes.glsl`、`score_voxel_tile.glsl`。 |
+| `target_completely` | 从 `TargetSV_B` 读取的 target complexity / collision intent | `score_anchor_asset_probes.glsl`、`score_voxel_tile.glsl`。 |
 | `target_color` | 从 `TargetSV_B` 读取的 packed RGBA8 color / complexity | `score_anchor_asset_probes.glsl`、`score_voxel_tile.glsl`。 |
 
-当前源码提供 `TargetSceneVoxelGenerator.decode_target_read_buffers()`，用于把 `target_scene_voxel_b_visual.rgba32f` / `target_scene_voxel_b_collision.r32f` 解码为 `target_occupancy` 和 `target_color`。`target_occupancy` 默认取 `max(visual.a, collision)`，使 prefilter、physical target fit 和 result feedback 能同时看到 complexity 与 collision intent；`target_color.a` 保留 visual complexity。
+当前源码提供 `TargetSceneVoxelGenerator.decode_target_read_buffers()`，用于把 `target_scene_voxel_b_visual.rgba8` / `target_scene_voxel_b_collision.r8` 解码为 `target_completely` 和 `target_color`。`target_completely` 默认取 `max(visual.a, collision)`，使 prefilter、physical target fit 和 result feedback 能同时看到 complexity 与 collision intent；`target_color.a` 保留 visual complexity。
 
 硬边界：
 
@@ -53,14 +53,14 @@
 ```text
 TargetSV + BrushSV
   -> TargetSV_B
-  -> target_occupancy + target_color
+  -> target_completely + target_color
   -> AutoObject probe prefilter
   -> candidate_voxel_regions_by_asset
   -> score_voxel_tile.glsl
   -> BlendSV[tick] result feedback comparison
 ```
 
-当前 prefilter 和 physical score 只读取 `target_occupancy` 与 `target_color`。`score_voxel_tile.glsl` 不读取 projection cache，也不做 semantic rerank / MLP。结果级 feedback 是 placement / commit 之后的独立阶段：`SceneVoxelCommitter.score_blendsv_feedback_against_target()` 比较 `BlendSV[tick]` 与 `TargetSV_B` / `TargetSV`，不能写成 `score_voxel_tile.glsl` 的现行能力。
+当前 prefilter 和 physical score 只读取 `target_completely` 与 `target_color`。`score_voxel_tile.glsl` 不读取 projection cache，也不做 semantic rerank / MLP。结果级 feedback 是 placement / commit 之后的独立阶段：`SceneVoxelCommitter.score_blendsv_feedback_against_target()` 比较 `BlendSV[tick]` 与 `TargetSV_B` / `TargetSV`，不能写成 `score_voxel_tile.glsl` 的现行能力。
 
 ## Anchor 语义
 
@@ -69,9 +69,8 @@ GPU prefilter 从多个位置来源提取 anchors，但写入同一个 position-
 | 位置来源 | 当前定义 |
 | --- | --- |
 | Supported candidate position | 当前 voxel 满足 target 阈值、scene/collision 阈值，并且下方 support 足够。 |
-| Column-top candidate position | dirty tile 覆盖的局部 XZ column 中最高的 target-occupied voxel；不强制 support。 |
 
-Column-top position 不是资产类型，也不是最终 placement 点，只是 probe 匹配用的候选位置来源。`ground` / `target_top` 配置名会归一到单一 `anchor`。
+`ground` / `target_top` 配置名会归一到单一 `anchor`。
 
 ## Candidate Voxel Region 边界
 
@@ -135,7 +134,7 @@ target_anchor_projection_rgba8[anchor]
 - 只用于候选 route 内部验证、rerank 或 pruning。
 - 不绕过 upstream prefilter。
 - 不从全资产库生成新候选。
-- 未启用 projection 时，routing 保持当前 `target_occupancy` / `target_color` 路径。
+- 未启用 projection 时，routing 保持当前 `target_completely` / `target_color` 路径。
 
 ## 外部 VDB 导入计划
 
@@ -157,8 +156,8 @@ Houdini / DCC
 
 - Stamp rasterizer、外部 VDB importer、projection cache 都仍是计划项。
 - Projection score 如实现，只能进入候选 route 内部 rerank / validation。
-- 需要继续验证统一 position-only anchors 的 supported / column-top 候选来源对不同 asset probe offset 的覆盖。
-- `TargetSV_B` cache 可以持久化，并可解码为当前 placement/readback 使用的 `target_occupancy` / `target_color`；权威来源仍是 `TargetSV` 与 `BrushSV`。
+- 需要继续验证统一 position-only anchors 的 supported 候选来源对不同 asset probe offset 的覆盖。
+- `TargetSV_B` cache 可以持久化，并可解码为当前 placement/readback 使用的 `target_completely` / `target_color`；权威来源仍是 `TargetSV` 与 `BrushSV`。
 
 ## 测试场景
 

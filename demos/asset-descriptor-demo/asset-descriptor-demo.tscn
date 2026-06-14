@@ -1,0 +1,64 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" uid="uid://rtypuoy51fui" path="res://demos/asset-descriptor-demo/asset_descriptor_demo.gd" id="1_contract"]
+
+[ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
+
+[sub_resource type="PlaneMesh" id="ground_mesh"]
+size = Vector2(14, 10)
+
+[sub_resource type="StandardMaterial3D" id="ground_mat"]
+albedo_color = Color(0.15, 0.16, 0.18, 1)
+shading_mode = 0
+roughness = 0.95
+
+[node name="AssetDescriptorDemo" type="Node3D"]
+script = ExtResource("1_contract")
+initialize_test_terrain = false
+metadata/source_docs = "res://docs/core/asset-properties.md; res://docs/core/auto-asset-scripting.md; res://docs/core/asset-semantic-probes.md"
+metadata/test_doc = "res://demos/asset-descriptor-demo/asset-descriptor-demo.md"
+metadata/focus = "AssetDescriptor authority, shared fields, AutoObject mirrors, metadata boundary, ISWS handoff, semantic probes + collision debug + buffer info display"
+
+[node name="DemoSetup" parent="." instance=ExtResource("99_setup")]
+
+[node name="FlyCamera" parent="DemoSetup" index="0"]
+transform = Transform3D(1, 0, 0, 0, 0.868, -0.496, 0, 0.496, 0.868, 0.5, 5, 9)
+fov = 55.0
+
+[node name="RimLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(-0.5, 0.1, -0.866, 0, 0.995, -0.1, -0.866, -0.06, 0.5, 0, 40, 0)
+light_color = Color(0.75, 0.7, 0.95, 1)
+light_energy = 0.35
+shadow_enabled = false
+
+[node name="Title" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 5.5, -2.0)
+text = "Asset Descriptor Demo
+Rocks + Trees / Probes + Collision + Buffer Info"
+font_size = 32
+pixel_size = 0.01
+outline_size = 5
+
+[node name="TestMethod" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.3, -2.0)
+text = "Shortcuts
+1: Tree probes    2: Rock probes    3: All probes
+C: Clear debug    V: Collision volumes    B: Buffer info"
+font_size = 24
+pixel_size = 0.01
+outline_size = 4
+
+[node name="Acceptance" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3.1, -2.0)
+text = "Acceptance
+- AssetDescriptor is semantic authority
+- color/complexity/collision are shared fields
+- probes & buffers display correctly"
+font_size = 28
+pixel_size = 0.01
+outline_size = 4
+
+[node name="GroundReference" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.05, 0)
+mesh = SubResource("ground_mesh")
+material_override = SubResource("ground_mat")

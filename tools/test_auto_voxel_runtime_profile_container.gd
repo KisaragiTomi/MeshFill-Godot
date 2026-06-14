@@ -1,7 +1,7 @@
 extends SceneTree
 
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
-const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const AutoVoxelProfileScript := preload("res://scripts/auto_voxel_profile.gd")
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 
@@ -10,6 +10,7 @@ func _init() -> void:
 	var ok := true
 	ok = ok and _test_descriptor_registration_stages_profile_data()
 	ok = ok and _test_gpu_upload_readback_or_skip()
+	ok = ok and _test_dispose_sync_guard_respects_borrowed_device_or_skip()
 	ok = ok and _test_readback_byte_count_validation_contract()
 	ok = ok and _test_equivalent_descriptors_reuse_profile_id()
 	ok = ok and _test_profile_registration_is_stable()
@@ -101,18 +102,22 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 
 	if not container.ensure_device():
 		if container.upload_profiles():
+			container.dispose()
 			push_error("  FAIL: upload_profiles must not succeed without RenderingDevice")
 			return false
 		if container.is_runtime_ready():
+			container.dispose()
 			push_error("  FAIL: runtime must not be ready without RenderingDevice")
 			return false
 		print("  SKIP: no RenderingDevice available for GPU-only profile upload")
 		return true
 
 	if not container.upload_profiles():
+		container.dispose(true)
 		push_error("  FAIL: upload_profiles should create storage buffers when RenderingDevice exists")
 		return false
 	if not container.is_runtime_ready():
+		container.dispose(true)
 		push_error("  FAIL: container should be runtime ready after successful GPU upload")
 		return false
 
@@ -127,9 +132,11 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 	for buffer_name in expected_counts.keys():
 		var buffer_summary: Dictionary = buffers.get(buffer_name, {})
 		if not bool(buffer_summary.get("rid_valid", false)):
+			container.dispose(true)
 			push_error("  FAIL: expected valid RID for %s" % buffer_name)
 			return false
 		if int(buffer_summary.get("record_count", -1)) != int(expected_counts[buffer_name]):
+			container.dispose(true)
 			push_error("  FAIL: expected %s record_count=%d, got %d" % [
 				buffer_name,
 				int(expected_counts[buffer_name]),
@@ -139,16 +146,20 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 
 	var snapshot: Dictionary = container.readback_debug_snapshot()
 	if not bool(snapshot.get("runtime_ready", false)):
+		container.dispose(true)
 		push_error("  FAIL: readback snapshot should report GPU runtime ready")
 		return false
 	if not bool(snapshot.get("readback_snapshot", false)):
+		container.dispose(true)
 		push_error("  FAIL: readback snapshot should report GPU readback after upload")
 		return false
 	if bool(snapshot.get("cpu_fallback", true)):
+		container.dispose(true)
 		push_error("  FAIL: uploaded profile snapshot must report cpu_fallback=false")
 		return false
 	var readback_validation: Dictionary = snapshot.get("readback_validation", {})
 	if not bool(readback_validation.get("ok", false)):
+		container.dispose(true)
 		push_error("  FAIL: readback validation should confirm byte counts: %s" % str(readback_validation))
 		return false
 	var profile_bytes: PackedByteArray = snapshot.get("profile_table_bytes", PackedByteArray())
@@ -156,18 +167,23 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 	var pivot_bytes: PackedByteArray = snapshot.get("pivot_record_bytes", PackedByteArray())
 	var collision_bytes: PackedByteArray = snapshot.get("collision_record_bytes", PackedByteArray())
 	if profile_bytes.size() != RuntimeProfileContainerScript.PROFILE_TABLE_STRIDE_BYTES:
+		container.dispose(true)
 		push_error("  FAIL: profile table byte size mismatch")
 		return false
 	if probe_bytes.size() != RuntimeProfileContainerScript.PROBE_RECORD_STRIDE_BYTES:
+		container.dispose(true)
 		push_error("  FAIL: probe byte size mismatch")
 		return false
 	if not snapshot.has("collision_record_bytes"):
+		container.dispose(true)
 		push_error("  FAIL: snapshot must include collision_record_bytes for GPU-resident collision buffer")
 		return false
 	if collision_bytes.size() != 0:
+		container.dispose(true)
 		push_error("  FAIL: GPU collision record byte size mismatch (expected 0-byte empty buffer, got %d)" % collision_bytes.size())
 		return false
 	if pivot_bytes.size() != RuntimeProfileContainerScript.PIVOT_RECORD_STRIDE_BYTES:
+		container.dispose(true)
 		push_error("  FAIL: pivot byte size mismatch")
 		return false
 
@@ -177,21 +193,27 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 	var pivot_values := pivot_bytes.to_float32_array()
 	var read_profile_id := profile_words[0] if profile_words[0] >= 0 else profile_words[0] + 4294967296
 	if int(read_profile_id) != profile_id:
+		container.dispose(true)
 		push_error("  FAIL: GPU profile table profile_id readback mismatch")
 		return false
 	if int(profile_words[2]) != 0 or int(profile_words[3]) != 1:
+		container.dispose(true)
 		push_error("  FAIL: GPU profile table probe range readback mismatch")
 		return false
 	if int(profile_words[4]) != 0 or int(profile_words[5]) != 0:
+		container.dispose(true)
 		push_error("  FAIL: GPU profile table collision range should be 0/0 for empty collision")
 		return false
 	if not _approx(profile_values[8], 0.2, 0.001) or not _approx(profile_values[11], 0.5, 0.001):
+		container.dispose(true)
 		push_error("  FAIL: GPU profile table color/complexity readback mismatch")
 		return false
 	if not _approx(probe_values[0], 0.25, 0.001) or not _approx(probe_values[5], 0.3, 0.001):
+		container.dispose(true)
 		push_error("  FAIL: GPU probe record readback mismatch")
 		return false
 	if not _approx(pivot_values[1], -0.25, 0.001) or not _approx(pivot_values[3], 0.1, 0.001):
+		container.dispose(true)
 		push_error("  FAIL: GPU pivot record readback mismatch")
 		return false
 
@@ -202,6 +224,37 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 		pivot_bytes.size(),
 	])
 	container.dispose(true)
+	return true
+
+
+func _test_dispose_sync_guard_respects_borrowed_device_or_skip() -> bool:
+	print("[AutoVoxelRuntimeProfileContainer] test_dispose_sync_guard_respects_borrowed_device_or_skip...")
+	var rd := RenderingServer.create_local_rendering_device()
+	if rd == null:
+		print("  SKIP: no RenderingDevice available for borrowed dispose sync guard")
+		return true
+	var container = RuntimeProfileContainerScript.new()
+	if not container.attach_rendering_device(rd, false):
+		rd.free()
+		push_error("  FAIL: container should attach borrowed RenderingDevice")
+		return false
+	if container._should_sync_before_dispose(true):
+		container.dispose(false)
+		rd.free()
+		push_error("  FAIL: borrowed RenderingDevice must not be submitted/synced by profile container dispose")
+		return false
+	container.dispose(true)
+	var bytes := PackedByteArray()
+	bytes.resize(4)
+	var rid := rd.storage_buffer_create(bytes.size(), bytes)
+	var rd_still_usable := rid.is_valid()
+	if rid.is_valid():
+		rd.free_rid(rid)
+	rd.free()
+	if not rd_still_usable:
+		push_error("  FAIL: borrowed RenderingDevice should remain owned and usable after container dispose")
+		return false
+	print("  OK: borrowed RenderingDevice sync is guarded by owner state")
 	return true
 
 
@@ -437,8 +490,8 @@ func _approx(a: float, b: float, eps: float) -> bool:
 	return absf(a - b) <= eps
 
 
-func _make_descriptor() -> AutoVoxelDescriptor:
-	var descriptor: AutoVoxelDescriptor = AutoVoxelDescriptorScript.new()
+func _make_descriptor() -> AssetDescriptor:
+	var descriptor: AssetDescriptor = AssetDescriptorScript.new()
 	descriptor.set_color_and_complexity(Color(0.2, 0.4, 0.6, 1.0), 0.5)
 	descriptor.set_collision([])
 	descriptor.set_pivot_variants([{

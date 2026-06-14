@@ -1,4 +1,4 @@
-# Probe Prefilter Routing 模块测试场景
+﻿# Probe Prefilter Routing 模块测试场景
 
 模块：AutoObject probe prefilter / route vote expansion  
 场景：`res://demos/modules/probe-prefilter-routing/probe-prefilter-routing.tscn`
@@ -15,9 +15,13 @@
 2. 运行 prefilter / route expansion 测试：
 
 ```bash
-<godot> --headless --path . --script tools/test_autoobject_probe_prefilter.gd
-<godot> --headless --path . --script tools/test_markdown_contracts.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
 ```
+
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
 
 3. 检查 `scripts/autoobject_probe_prefilter_gpu.gd`、`shaders/collect_sv_anchors.glsl`、`shaders/score_anchor_asset_probes.glsl` 的字段名与文档一致。
 

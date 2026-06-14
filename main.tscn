@@ -1,46 +1,15 @@
 [gd_scene load_steps=4 format=3 uid="uid://bm8ybcftpwjfm"]
 
-[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
-[ext_resource type="Script" path="res://scripts/fly_camera.gd" id="2_cam"]
-
-[sub_resource type="Environment" id="Environment_env"]
-background_mode = 1
-background_color = Color(0.45, 0.55, 0.72, 1)
-ambient_light_source = 2
-ambient_light_color = Color(0.7, 0.75, 0.85, 1)
-ambient_light_energy = 0.6
-tonemap_mode = 2
-ssao_enabled = true
-ssil_enabled = true
-fog_enabled = true
-fog_light_color = Color(0.7, 0.75, 0.85, 1)
-fog_density = 0.002
+[ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
+[ext_resource type="Script" path="res://scripts/main.gd" id="2_main"]
+[ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
 
 [node name="Level" type="Node3D"]
+script = ExtResource("1_contract")
 
 [node name="GameLogic" type="Node3D" parent="."]
-script = ExtResource("1_main")
+script = ExtResource("2_main")
 generate_threshold = 0.1
 un_generate_threshold = 0.5
 
-[node name="Camera3D" type="Camera3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 0.5, 0.866, 0, -0.866, 0.5, 0, 40, 45)
-fov = 60.0
-far = 300.0
-script = ExtResource("2_cam")
-
-[node name="SunLight" type="DirectionalLight3D" parent="."]
-transform = Transform3D(0.866, -0.25, 0.433, 0, 0.866, 0.5, -0.5, -0.433, 0.75, 0, 50, 0)
-light_color = Color(1, 0.95, 0.85, 1)
-light_energy = 1.4
-shadow_enabled = true
-shadow_bias = 0.03
-directional_shadow_max_distance = 200.0
-
-[node name="FillLight" type="DirectionalLight3D" parent="."]
-transform = Transform3D(0.866, 0.25, -0.433, 0, 0.866, 0.5, 0.5, -0.433, 0.75, 0, 50, 0)
-light_color = Color(0.6, 0.7, 0.9, 1)
-light_energy = 0.4
-
-[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
-environment = SubResource("Environment_env")
+[node name="DemoSetup" parent="." instance=ExtResource("99_setup")]

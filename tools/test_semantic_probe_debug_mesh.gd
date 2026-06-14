@@ -1,6 +1,7 @@
 extends SceneTree
 
 const MainScript := preload("res://scripts/main.gd")
+const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 
 const TEST_LEAF_ASSET_PATH := "res://assets/vegetation/sm_test_leaf_test2_asset.tres"
 
@@ -19,14 +20,14 @@ func _init() -> void:
 
 func _test_debug_anchor_includes_source_mesh() -> bool:
 	print("[SemanticProbeDebugMesh] test_debug_anchor_includes_source_mesh...")
-	var asset := load(TEST_LEAF_ASSET_PATH) as AutoVoxelDescriptor
-	if asset == null:
+	var asset := load(TEST_LEAF_ASSET_PATH)
+	if asset == null or asset.get_script() != AssetDescriptorScript:
 		push_error("  FAIL: could not load test leaf asset")
 		return false
 
 	var main := MainScript.new()
 	main.semantic_probe_density = 1.0
-	var vegetation_assets: Array[AutoVoxelDescriptor] = []
+	var vegetation_assets: Array[Resource] = []
 	vegetation_assets.append(asset)
 	main.set("_vegetation_assets", vegetation_assets)
 

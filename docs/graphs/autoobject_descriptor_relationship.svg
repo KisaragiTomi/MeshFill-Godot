@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="880" viewBox="0 0 1500 880" role="img" aria-labelledby="title desc">
-  <title id="title">AutoObject and AutoVoxelDescriptor Relationship</title>
-  <desc id="desc">Focused ownership diagram for AutoObject and AutoVoxelDescriptor.</desc>
+  <title id="title">AutoObject and AssetDescriptor Relationship</title>
+  <desc id="desc">Focused ownership diagram for AutoObject and AssetDescriptor.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
@@ -66,7 +66,7 @@
 
   <rect class="bg" x="0" y="0" width="1500" height="880"/>
   <g opacity="0.65"><line class="grid" x1="40" y1="86" x2="40" y2="844"/><line class="grid" x1="120" y1="86" x2="120" y2="844"/><line class="grid" x1="200" y1="86" x2="200" y2="844"/><line class="grid" x1="280" y1="86" x2="280" y2="844"/><line class="grid" x1="360" y1="86" x2="360" y2="844"/><line class="grid" x1="440" y1="86" x2="440" y2="844"/><line class="grid" x1="520" y1="86" x2="520" y2="844"/><line class="grid" x1="600" y1="86" x2="600" y2="844"/><line class="grid" x1="680" y1="86" x2="680" y2="844"/><line class="grid" x1="760" y1="86" x2="760" y2="844"/><line class="grid" x1="840" y1="86" x2="840" y2="844"/><line class="grid" x1="920" y1="86" x2="920" y2="844"/><line class="grid" x1="1000" y1="86" x2="1000" y2="844"/><line class="grid" x1="1080" y1="86" x2="1080" y2="844"/><line class="grid" x1="1160" y1="86" x2="1160" y2="844"/><line class="grid" x1="1240" y1="86" x2="1240" y2="844"/><line class="grid" x1="1320" y1="86" x2="1320" y2="844"/><line class="grid" x1="1400" y1="86" x2="1400" y2="844"/><line class="grid" x1="1480" y1="86" x2="1480" y2="844"/><line class="grid" x1="30" y1="120" x2="1470" y2="120"/><line class="grid" x1="30" y1="200" x2="1470" y2="200"/><line class="grid" x1="30" y1="280" x2="1470" y2="280"/><line class="grid" x1="30" y1="360" x2="1470" y2="360"/><line class="grid" x1="30" y1="440" x2="1470" y2="440"/><line class="grid" x1="30" y1="520" x2="1470" y2="520"/><line class="grid" x1="30" y1="600" x2="1470" y2="600"/><line class="grid" x1="30" y1="680" x2="1470" y2="680"/><line class="grid" x1="30" y1="760" x2="1470" y2="760"/><line class="grid" x1="30" y1="840" x2="1470" y2="840"/></g>
-  <text class="title" x="48" y="54">AutoObject and AutoVoxelDescriptor Relationship</text>
+  <text class="title" x="48" y="54">AutoObject and AssetDescriptor Relationship</text>
   <text class="subtitle" x="48" y="82">Runtime nodes keep identity and placement helpers; descriptors own asset defaults and semantic probes.</text>
   <g>
     <rect class="lane" x="55" y="120" width="400" height="640" rx="8"/>
@@ -91,9 +91,9 @@
     <text class="mono" x="270" y="545">future only</text>
   </g>
   <g>
-    <g id="autovoxeldescriptor">
+    <g id="AssetDescriptor">
     <rect class="node" x="95" y="170" width="320" height="145" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>
-    <text class="node-title" x="113" y="198">AutoVoxelDescriptor</text>
+    <text class="node-title" x="113" y="198">AssetDescriptor</text>
     <text class="small"><tspan x="113" y="220">asset defaults</tspan><tspan x="113" y="237">color / complexity / collision</tspan><tspan x="113" y="254">semantic probes / pivots</tspan><tspan x="113" y="271">mesh and vegetation settings</tspan></text>
     </g>
     <g id="descriptor-record-fields">
@@ -141,7 +141,7 @@
     <g>
     <rect x="470" y="720" width="560" height="90" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.3"/>
     <text class="note-text" x="484" y="744">Boundary sentence</text>
-    <text class="small"><tspan x="484" y="765">AutoObject answers where an instance is and how it writes this tick.</tspan><tspan x="484" y="781">AutoVoxelDescriptor answers what the asset means by default.</tspan></text>
+    <text class="small"><tspan x="484" y="765">AutoObject answers where an instance is and how it writes this tick.</tspan><tspan x="484" y="781">AssetDescriptor answers what the asset means by default.</tspan></text>
   </g>
   </g>
 </svg>

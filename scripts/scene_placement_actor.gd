@@ -3,7 +3,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 
 ## Central orchestrator for the MeshFill placement pipeline.
 ##
-## Owns the descriptor → GPU profile buffer lifecycle so that AutoVoxelDescriptor
+## Owns the descriptor → GPU profile buffer lifecycle so that AssetDescriptor
 ## data (probes, collision, pivots) is always GPU-readable.  SV (SceneVoxel)
 ## and AutoObject data flow through a single orchestrated pipeline:
 ##
@@ -51,7 +51,7 @@ var _sv_committer: SceneVoxelCommitter
 var _gpu_runtime: GPUAutoObjectRuntime
 
 ## Asset registry — parallel arrays mapping asset_id → descriptor + profile_id.
-var _registered_descriptors: Array[AutoVoxelDescriptor] = []
+var _registered_descriptors: Array[AssetDescriptor] = []
 var _registered_profile_ids: Array[int] = []
 var _registered_mesh: Array[Mesh] = []
 var _registered_autoobject_refs: Array[AutoObject] = []
@@ -212,10 +212,10 @@ func get_resident_target_read_buffer_handoff_summary() -> Dictionary:
 # Asset registration — descriptors go GPU-resident immediately
 # ---------------------------------------------------------------------------
 
-## Register a single AutoVoxelDescriptor.  Returns its profile_id (>=0) or -1
+## Register a single AssetDescriptor.  Returns its profile_id (>=0) or -1
 ## on failure.  The descriptor's probes, collision, and pivots are immediately
 ## uploaded to GPU via the owned profile container.
-func register_asset(descriptor: AutoVoxelDescriptor, mesh_ref: Mesh = null, autoobject_ref: AutoObject = null) -> int:
+func register_asset(descriptor: AssetDescriptor, mesh_ref: Mesh = null, autoobject_ref: AutoObject = null) -> int:
 	if not is_initialized():
 		push_error("ScenePlacementActor: not initialized.")
 		return -1
@@ -250,7 +250,7 @@ func register_asset(descriptor: AutoVoxelDescriptor, mesh_ref: Mesh = null, auto
 
 ## Register multiple descriptors at once.  Returns an Array of profile_ids
 ## (parallel to the input array).  -1 means registration failed for that entry.
-func register_assets(descriptors: Array[AutoVoxelDescriptor]) -> Array[int]:
+func register_assets(descriptors: Array[AssetDescriptor]) -> Array[int]:
 	var result: Array[int] = []
 	for d in descriptors:
 		result.append(register_asset(d))
@@ -260,14 +260,14 @@ func register_assets(descriptors: Array[AutoVoxelDescriptor]) -> Array[int]:
 ## Replace the entire asset registry with a new list.  Old GPU data is
 ## invalidated and re-uploaded.
 func replace_all_assets(
-	descriptors: Array[AutoVoxelDescriptor],
+	descriptors: Array[AssetDescriptor],
 	meshes: Array = [],
 	autoobjects: Array = []
 ) -> bool:
 	clear_assets()
 
 	for i in range(descriptors.size()):
-		var d := descriptors[i] as AutoVoxelDescriptor
+		var d := descriptors[i] as AssetDescriptor
 		var m: Mesh = meshes[i] as Mesh if i < meshes.size() else null
 		var ao: AutoObject = autoobjects[i] as AutoObject if i < autoobjects.size() else null
 		if register_asset(d, m, ao) < 0:
@@ -298,7 +298,7 @@ func is_asset_registry_empty() -> bool:
 	return _registered_descriptors.is_empty()
 
 
-func get_registered_descriptors() -> Array[AutoVoxelDescriptor]:
+func get_registered_descriptors() -> Array[AssetDescriptor]:
 	return _registered_descriptors.duplicate()
 
 
@@ -319,7 +319,7 @@ func get_registered_meshes() -> Array[Mesh]:
 func get_mesh_description_for_asset(asset_id: int) -> Dictionary:
 	if asset_id < 0 or asset_id >= _registered_descriptors.size():
 		return {}
-	var descriptor := _registered_descriptors[asset_id] as AutoVoxelDescriptor
+	var descriptor := _registered_descriptors[asset_id] as AssetDescriptor
 	var mesh_ref: Mesh = _registered_mesh[asset_id] if asset_id < _registered_mesh.size() else null
 	var autoobject_ref: AutoObject = _registered_autoobject_refs[asset_id] if asset_id < _registered_autoobject_refs.size() else null
 	if mesh_ref == null and descriptor != null:
@@ -1704,7 +1704,7 @@ func _build_autoobject_array_for_pipeline() -> Array:
 		# Use or create a lightweight wrapper.
 		var wrapper: AutoObject = _cached_lightweight_wrappers.get(i, null)
 		if wrapper == null:
-			var d: AutoVoxelDescriptor = _registered_descriptors[i]
+			var d: AssetDescriptor = _registered_descriptors[i]
 			if d != null:
 				var mesh_ref: Mesh = _registered_mesh[i]
 				var profile_id := _registered_profile_ids[i]
@@ -1719,7 +1719,7 @@ func _build_autoobject_array_for_pipeline() -> Array:
 func _build_placement_asset_defs() -> Array:
 	var asset_defs: Array = []
 	for asset_id in range(_registered_descriptors.size()):
-		var d := _registered_descriptors[asset_id] as AutoVoxelDescriptor
+		var d := _registered_descriptors[asset_id] as AssetDescriptor
 		var entry: Dictionary = {
 			"descriptor": d,
 			"asset_index": asset_id,
@@ -1831,7 +1831,7 @@ func _commit_accepted_placements(placement_result: Dictionary, sv: Dictionary) -
 	}
 
 
-static func _make_lightweight_autoobject(descriptor: AutoVoxelDescriptor, mesh_ref: Mesh, asset_index: int, profile_id: int) -> AutoObject:
+static func _make_lightweight_autoobject(descriptor: AssetDescriptor, mesh_ref: Mesh, asset_index: int, profile_id: int) -> AutoObject:
 	## Minimal AutoObject wrapper for pipeline consumption.
 	## Only exposes get_semantic_probes() and get_collision() — enough for prefilter.
 	## profile_id is the actual GPU profile ID from the actor's registry.
@@ -1913,8 +1913,12 @@ func _resident_target_read_buffer_handoff_summary(
 	color_source: String,
 	dispatch_groups: Vector3i,
 	debug_readback_requested: bool = false,
-	default_enabled: bool = false
+	default_enabled: bool = false,
+	target_field_byte_count: int = -1
 ) -> Dictionary:
+	var safe_target_field_byte_count := target_field_byte_count
+	if safe_target_field_byte_count < 0:
+		safe_target_field_byte_count = maxi(voxel_count, 0) * 16
 	return {
 		"ok": ok,
 		"resident_target_read_buffer_handoff": ok,
@@ -1931,6 +1935,9 @@ func _resident_target_read_buffer_handoff_summary(
 		"target_color_rgba8_buffer_rid_valid": ok and _resident_target_color_rgba8_buffer.is_valid(),
 		"target_color_rgba8_byte_count": expected_bytes if ok else 0,
 		"target_color_rgba8_stride_bytes": 4 if ok else 0,
+		"target_field_byte_count": safe_target_field_byte_count if ok else 0,
+		"target_field_stride_bytes": 16 if ok else 0,
+		"target_field_format": "vec4" if ok else "none",
 		"voxel_count": voxel_count if ok else 0,
 		"expected_byte_count": expected_bytes if ok else expected_bytes,
 		"target_color_source": color_source,
@@ -1957,7 +1964,8 @@ func _sv_float_field(sv: Dictionary, key: String, target_length: int) -> PackedF
 
 
 func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dictionary) -> Dictionary:
-	# GPU-specialized: combines target color + max(complexity_field, collision_field) into a single vec4 target_field buffer.
+	# GPU-specialized: combines target color + completely (max(complexity_field, collision_field)) into a single vec4 target_field buffer.
+	# completely == 0 means the voxel is empty (nothing there).
 	log_name = "ScenePlacementActorTargetReadBuffers"
 	_release_resident_target_read_buffer_handoff()
 	var expected_bytes := _expected_target_byte_count(sv)
@@ -2099,8 +2107,11 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		}
 
 	var push := PackedByteArray()
-	push.resize(4)
+	push.resize(16)
 	push.encode_s32(0, voxel_count)
+	push.encode_s32(4, 0)
+	push.encode_s32(8, 0)
+	push.encode_s32(12, 0)
 
 	var groups := dispatch_groups_1d(voxel_count, 64)
 	var cl := begin_compute_list()
@@ -2182,7 +2193,8 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 			color_source,
 			groups,
 			debug_readback_requested,
-			resident_handoff_defaulted
+			resident_handoff_defaulted,
+			target_field_byte_count
 		)
 		_last_resident_target_read_buffer_handoff = resident_summary
 		rid_ok = _resident_target_color_rgba8_buffer.is_valid()
@@ -2194,6 +2206,7 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 			"cpu_fallback": false,
 			"target_field_bytes": target_field_bytes,
 			"expected_byte_count": expected_bytes,
+			"target_field_byte_count": target_field_byte_count,
 			"voxel_count": voxel_count,
 			"target_color_source": color_source,
 			"target_field_format": "vec4",
@@ -2264,6 +2277,7 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		"cpu_fallback": false,
 		"target_field_bytes": target_field_bytes,
 		"expected_byte_count": expected_bytes,
+		"target_field_byte_count": target_field_byte_count,
 		"voxel_count": voxel_count,
 		"target_color_source": color_source,
 		"target_field_format": "vec4",

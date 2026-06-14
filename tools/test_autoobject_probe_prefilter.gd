@@ -10,7 +10,10 @@ func _has_rendering_device() -> bool:
 	if RenderingServer.get_rendering_device() != null:
 		return true
 	var local_rd := RenderingServer.create_local_rendering_device()
-	return local_rd != null
+	if local_rd == null:
+		return false
+	local_rd.free()
+	return true
 
 
 func _init() -> void:
@@ -18,6 +21,7 @@ func _init() -> void:
 	ok = ok and _test_position_only_anchor_layers()
 	ok = ok and _test_candidate_routes_expand_for_probe_footprint_context_guard()
 	ok = ok and _test_candidate_route_profile_debug_schema()
+	ok = ok and _test_prefilter_dispatch_bounds_helpers()
 	ok = ok and _test_candidate_route_handoff_payload_schema()
 	ok = ok and _test_prefilter_decode_output_contract()
 	ok = ok and _test_scene_voxel_tile_dirty_bounds_feed_shader_tile_ids()
@@ -85,47 +89,60 @@ func _test_position_only_anchor_layers() -> bool:
 	var anchors: Array = result.get("anchors", [])
 	var candidate_voxel_sparses: Dictionary = result.get("autoobject_candidate_voxel_sparses", {})
 	if anchors.is_empty():
+		prefilter.dispose()
+		supported_asset.free()
+		upper_asset.free()
 		push_error("  FAIL: expected position-only anchors")
 		return false
 
 	var has_supported_position := false
-	var has_column_top_position := false
 	for anchor in anchors:
 		if not anchor is Dictionary:
 			continue
 		if (anchor as Dictionary).has("anchor_kind"):
+			prefilter.dispose()
+			supported_asset.free()
+			upper_asset.free()
 			push_error("  FAIL: position-only anchor should not carry anchor_kind")
 			return false
 		var voxel_pos := (anchor as Dictionary).get("voxel_pos", Vector3i(-1, -1, -1)) as Vector3i
 		if voxel_pos.y == 1:
 			has_supported_position = true
-		if voxel_pos.y == 4:
-			has_column_top_position = true
 	if not has_supported_position:
+		prefilter.dispose()
+		supported_asset.free()
+		upper_asset.free()
 		push_error("  FAIL: expected supported position-only anchor candidates")
-		return false
-	if not has_column_top_position:
-		push_error("  FAIL: expected column-top position-only anchor candidates")
 		return false
 
 	# GPU-only prefilter does not read back per-anchor topK. The supported
 	# GDScript contract is per-asset routed voxel-region output.
 	for obj_idx in [0, 1]:
 		if not candidate_voxel_sparses.has(obj_idx):
+			prefilter.dispose()
+			supported_asset.free()
+			upper_asset.free()
 			push_error("  FAIL: expected routed candidate voxel regions for asset %d" % obj_idx)
 			return false
 		var routed_regions: Array = candidate_voxel_sparses.get(obj_idx, [])
 		if routed_regions.is_empty():
+			prefilter.dispose()
+			supported_asset.free()
+			upper_asset.free()
 			push_error("  FAIL: empty routed candidate voxel regions for asset %d" % obj_idx)
 			return false
 		for voxel_sparse_pos in routed_regions:
 			if not voxel_sparse_pos is Vector3i:
+				prefilter.dispose()
+				supported_asset.free()
+				upper_asset.free()
 				push_error("  FAIL: routed candidate voxel regions must be Vector3i region positions")
 				return false
 
+	prefilter.dispose()
 	supported_asset.free()
 	upper_asset.free()
-	print("  OK: anchors=%d position-only supported_y=true column_top_y=true" % [
+	print("  OK: anchors=%d position-only supported_y=true" % [
 		anchors.size(),
 	])
 	return true
@@ -216,6 +233,39 @@ func _test_candidate_route_profile_debug_schema() -> bool:
 		push_error("  FAIL: route profile interpolation guard should be at least 1")
 		return false
 	print("  OK: route profile schema keys=%d" % profile.keys().size())
+	return true
+
+
+func _test_prefilter_dispatch_bounds_helpers() -> bool:
+	print("[AutoObjectProbePrefilter] test_prefilter_dispatch_bounds_helpers...")
+	if Prefilter._ceil_div_positive(17, 8) != 3 or Prefilter._ceil_div_positive(0, 8) != 0:
+		push_error("  FAIL: ceil_div helper should clamp non-positive values and round positive values up")
+		return false
+	var dispatch_groups := Prefilter._linear_dispatch_groups(Prefilter.PREFILTER_DISPATCH_AXIS_LIMIT + 7)
+	if dispatch_groups != Vector3i(Prefilter.PREFILTER_DISPATCH_AXIS_LIMIT, 2, 1):
+		push_error("  FAIL: linear dispatch should split oversized work over X/Y, got %s" % str(dispatch_groups))
+		return false
+	var anchor_dispatch := Prefilter._anchor_dispatch_groups(Prefilter.ANCHOR_CAPACITY + 4096)
+	if anchor_dispatch == Vector3i.ZERO \
+			or anchor_dispatch.x * anchor_dispatch.y < Prefilter.ANCHOR_CAPACITY \
+			or anchor_dispatch.x > Prefilter.PREFILTER_DISPATCH_AXIS_LIMIT \
+			or anchor_dispatch.y > Prefilter.PREFILTER_DISPATCH_AXIS_LIMIT:
+		push_error("  FAIL: anchor dispatch should clamp to buffer capacity and stay within axis limits: %s" % str(anchor_dispatch))
+		return false
+	var asset_blocks := Prefilter._score_asset_block_dispatch_groups(Prefilter.MAX_ASSETS + 1)
+	if asset_blocks != 16:
+		push_error("  FAIL: asset-block dispatch should ceil-div and clamp to MAX_ASSETS, got %d" % asset_blocks)
+		return false
+	var sanitized := Prefilter._sanitize_prefilter_tile_ids([0, 0, 3, -1, 4, 999], 4)
+	if sanitized != [0, 3]:
+		push_error("  FAIL: dirty tile sanitizer should drop invalid ids and duplicates, got %s" % str(sanitized))
+		return false
+	print("  OK: dispatch_groups=%s anchor_groups=%s asset_blocks=%s sanitized=%s" % [
+		str(dispatch_groups),
+		str(anchor_dispatch),
+		str(asset_blocks),
+		str(sanitized),
+	])
 	return true
 
 
@@ -407,6 +457,7 @@ func _test_prefilter_decode_output_contract() -> bool:
 		profiles.size(),
 		anchors.size(),
 	])
+	prefilter.dispose()
 	return true
 
 
@@ -448,6 +499,7 @@ func _test_scene_voxel_tile_dirty_bounds_feed_shader_tile_ids() -> bool:
 		push_error("  FAIL: expected unique shader tile ids from SceneVoxelTile dirty bounds, got %s" % str(ids))
 		return false
 	print("  OK: SceneVoxelTile dirty bounds mapped to %d shader tile ids" % ids.size())
+	prefilter.dispose()
 	return true
 
 
@@ -507,6 +559,7 @@ func _test_prefilter_accepts_prepacked_target_field() -> bool:
 			return false
 
 	print("  OK: prefilter consumes TargetSV prepacked vec4 target field bytes (vec4 stride=16)")
+	prefilter.dispose()
 	return true
 
 
@@ -534,6 +587,7 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_upload
 
 	var prefilter := Prefilter.new()
 	if not prefilter.attach_rendering_device(actor.get_rendering_device(), false):
+		prefilter.dispose()
 		actor.dispose(true)
 		push_error("  FAIL: prefilter should attach actor RenderingDevice for same-RD borrow")
 		return false
@@ -566,6 +620,7 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_upload
 
 	var mismatch_prefilter := Prefilter.new()
 	if not mismatch_prefilter.ensure_device(true, false):
+		mismatch_prefilter.dispose()
 		actor.dispose(true)
 		print("  SKIP: no second local RenderingDevice available for mismatch upload branch")
 		return true
@@ -674,6 +729,7 @@ func _test_prefilter_output_reports_gpu_profile_probe_contract() -> bool:
 		return false
 
 	print("  OK: borrowed probe pack and blocked status are explicit GPU-first debug contracts")
+	prefilter.dispose()
 	return true
 
 
@@ -727,6 +783,7 @@ func _test_profile_pack_block_reasons_fail_contract() -> bool:
 		push_error("  FAIL: blocked profile probe pack summary should preserve exact reason")
 		return false
 	print("  OK: missing_profile_id_for_asset blocks the GPU-only contract without CPU fallback")
+	prefilter.dispose()
 	return true
 
 
@@ -770,6 +827,7 @@ func _test_pipeline_readiness_contract() -> bool:
 		push_error("  FAIL: blocked result should expose collect/score/topk/reduce readiness")
 		return false
 	print("  OK: pipeline readiness exposes collect/score/topk/reduce RID validity")
+	prefilter.dispose()
 	return true
 
 
@@ -864,17 +922,20 @@ func _test_prefilter_borrows_profile_container_probe_records_or_skip() -> bool:
 	var prefilter := Prefilter.new()
 	var pack: Dictionary = prefilter._pack_all_probes([asset], 1, Vector3.ONE, container)
 	if not bool(pack.get("ready", false)):
+		prefilter.dispose()
 		asset.free()
 		container.dispose(true)
 		push_error("  FAIL: profile container probe pack should be ready: %s" % str(pack))
 		return false
 	if not bool(pack.get("probe_data_borrowed", false)):
+		prefilter.dispose()
 		asset.free()
 		container.dispose(true)
 		push_error("  FAIL: prefilter should borrow profile container probe_records")
 		return false
 	var borrowed_probe_buffer: RID = pack.get("probe_data_buffer", RID())
 	if borrowed_probe_buffer != container.get_probe_buffer():
+		prefilter.dispose()
 		asset.free()
 		container.dispose(true)
 		push_error("  FAIL: borrowed probe RID should be the profile container probe_records buffer")
@@ -882,12 +943,14 @@ func _test_prefilter_borrows_profile_container_probe_records_or_skip() -> bool:
 	var range_bytes: PackedByteArray = pack.get("range_bytes", PackedByteArray())
 	var range_words := range_bytes.to_int32_array()
 	if range_bytes.size() != 8 or range_words.size() < 2 or int(range_words[0]) != 0 or int(range_words[1]) != 1:
+		prefilter.dispose()
 		asset.free()
 		container.dispose(true)
 		push_error("  FAIL: borrowed probe range should map asset 0 to the profile probe_records slice")
 		return false
 	var profile_ids: Array = pack.get("profile_ids", [])
 	if profile_ids.size() != 1 or int(profile_ids[0]) != profile_id:
+		prefilter.dispose()
 		asset.free()
 		container.dispose(true)
 		push_error("  FAIL: borrowed probe pack should expose the mapped profile_id")

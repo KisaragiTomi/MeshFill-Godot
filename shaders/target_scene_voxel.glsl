@@ -164,7 +164,7 @@ void main() {
     int idx = voxel_index(p, id.y);
     target_visual[idx] = vec4(voxel.color, voxel.value);
     target_collision[idx] = voxel.collision;
-    target_occupancy[idx] = max(voxel.value, voxel.collision);
+    target_occupancy[idx] = max(voxel.value, voxel.collision);  // completely 表示体素完全度
     target_color_rgba8[idx] = pack_rgba8(vec4(voxel.color, voxel.value));
     atomicMax(target_stats[TARGET_STATS_MAX_OCCUPANCY], quantize_unit(target_occupancy[idx]));
     atomicMax(target_stats[TARGET_STATS_MAX_COLLISION], quantize_unit(voxel.collision));

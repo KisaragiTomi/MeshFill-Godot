@@ -21,7 +21,10 @@ func _has_rendering_device() -> bool:
 	if RenderingServer.get_rendering_device() != null:
 		return true
 	var local_rd := RenderingServer.create_local_rendering_device()
-	return local_rd != null
+	if local_rd == null:
+		return false
+	local_rd.free()
+	return true
 
 
 func _test_vote_entries_pack_resident_schema_bytes() -> bool:
@@ -92,25 +95,31 @@ func _test_decode_payload_uses_vote_tile_layout_not_debug_region_repack() -> boo
 	var debug_regions: Dictionary = result.get("candidate_voxel_regions_by_asset", {})
 	var asset_regions: Array = debug_regions.get(0, [])
 	if asset_regions.size() != 1 or asset_regions[0] != Vector3i(1, 1, 2):
+		prefilter.dispose()
 		push_error("  FAIL: CPU debug region dictionary should remain expanded Vector3i data: %s" % str(debug_regions))
 		return false
 
 	var payload: Dictionary = result.get("candidate_route_handoff_payload", {})
 	if not _assert_payload_contract(payload, 1, 1, tile_count, "gpu_vote_buffer_readback_vote_entries"):
+		prefilter.dispose()
 		return false
 	var record_bytes: PackedByteArray = payload.get("record_bytes", PackedByteArray())
 	if record_bytes.size() != 16 or int(record_bytes.decode_u32(0)) != 13:
+		prefilter.dispose()
 		push_error("  FAIL: route payload should preserve reducer/VPG tile id 13, not repack debug Vector3i as another layout")
 		return false
 	if str(result.get("candidate_route_runtime_read_source", "")) != "cpu_debug_bridge":
+		prefilter.dispose()
 		push_error("  FAIL: prefilter runtime source should stay cpu_debug_bridge")
 		return false
 	var route_contract: Dictionary = result.get("candidate_route_input_contract", {})
 	if bool(route_contract.get("resident_route_input_ready", true)):
+		prefilter.dispose()
 		push_error("  FAIL: producer payload bytes must not mark resident route input ready")
 		return false
 
 	print("  OK: decode payload sourced from GPU vote entries")
+	prefilter.dispose()
 	return true
 
 
@@ -131,6 +140,7 @@ func _test_gpu_route_pack_pass_opt_in_keeps_candidate_set_with_explicit_order() 
 	var prefilter := Prefilter.new()
 	prefilter.use_gpu_candidate_route_pack = true
 	if not prefilter.ensure_device(true, true):
+		prefilter.dispose()
 		print("  SKIP: no RenderingDevice available after ensure_device for GPU route pack pass")
 		return true
 	prefilter._load_shaders(true)
@@ -204,18 +214,21 @@ func _test_gpu_route_pack_pass_opt_in_keeps_candidate_set_with_explicit_order() 
 	var selected_payload: Dictionary = result.get("candidate_route_handoff_payload", {})
 	if str(selected_payload.get("source_label", "")) != "gpu_vote_buffer_gpu_pack" \
 			or not bool(selected_payload.get("gpu_route_pack_used", false)):
+		decode_prefilter.dispose()
 		prefilter.dispose()
 		push_error("  FAIL: decode should select successful opt-in GPU route payload: %s" % str(selected_payload))
 		return false
 	if bool(selected_payload.get("cpu_expanded_route_input", true)) \
 			or bool(selected_payload.get("readback_derived", true)) \
 			or str(result.get("candidate_route_runtime_read_source", "")) != "resident":
+		decode_prefilter.dispose()
 		prefilter.dispose()
 		push_error("  FAIL: selected GPU payload should stay resident and non-CPU-expanded: %s" % str(result))
 		return false
 	var route_contract: Dictionary = result.get("candidate_route_input_contract", {})
 	if str(route_contract.get("route_input", "")) == "common_cpu_dictionary" \
 			or bool(route_contract.get("cpu_expanded_route_input", true)):
+		decode_prefilter.dispose()
 		prefilter.dispose()
 		push_error("  FAIL: route contract should not describe the GPU handoff as CPU-expanded: %s" % str(route_contract))
 		return false
@@ -223,6 +236,7 @@ func _test_gpu_route_pack_pass_opt_in_keeps_candidate_set_with_explicit_order() 
 	if not debug_regions.is_empty() \
 			or not (result.get("candidate_route_cpu_handoff_payload", {}) as Dictionary).is_empty() \
 			or bool(result.get("candidate_route_cpu_debug_readback_performed", true)):
+		decode_prefilter.dispose()
 		prefilter.dispose()
 		push_error("  FAIL: resident GPU route handoff should not CPU-expand dense vote debug by default: %s" % str(result))
 		return false
@@ -248,11 +262,13 @@ func _test_gpu_route_pack_pass_opt_in_keeps_candidate_set_with_explicit_order() 
 			or not debug_regions_explicit.has(0) \
 			or debug_cpu_payload.is_empty() \
 			or not bool(debug_decode_result.get("candidate_route_cpu_debug_readback_performed", false)):
+		decode_prefilter.dispose()
 		prefilter.dispose()
 		push_error("  FAIL: explicit CPU route debug readback should still expand route dictionaries: %s" % str(debug_decode_result))
 		return false
 	if str(debug_decode_result.get("candidate_route_runtime_read_source", "")) != "resident" \
 			or bool((debug_decode_result.get("candidate_route_handoff_payload", {}) as Dictionary).get("cpu_expanded_route_input", true)):
+		decode_prefilter.dispose()
 		prefilter.dispose()
 		push_error("  FAIL: explicit CPU debug expansion must not replace resident GPU runtime handoff: %s" % str(debug_decode_result))
 		return false
@@ -266,15 +282,18 @@ func _test_gpu_route_pack_pass_opt_in_keeps_candidate_set_with_explicit_order() 
 		true
 	)
 	if not bool(debug_payload.get("ok", false)):
+		decode_prefilter.dispose()
 		prefilter.dispose()
 		push_error("  FAIL: GPU route pack debug payload should be ready: %s" % str(debug_payload))
 		return false
 	var gpu_record_bytes: PackedByteArray = debug_payload.get("record_bytes", PackedByteArray())
 	if gpu_record_bytes.size() != 32 or int(gpu_record_bytes.decode_u32(0)) != 0 or int(gpu_record_bytes.decode_u32(16)) != 2:
+		decode_prefilter.dispose()
 		prefilter.dispose()
 		push_error("  FAIL: GPU route pack debug readback should emit deterministic tile-id order [0, 2], got bytes=%s" % str(gpu_record_bytes))
 		return false
 
+	decode_prefilter.dispose()
 	prefilter.dispose()
 	print("  OK: GPU payload candidate set matches while ordering metadata stays explicit")
 	return true

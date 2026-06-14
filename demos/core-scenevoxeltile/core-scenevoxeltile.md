@@ -1,4 +1,4 @@
-# docs/core/scenevoxeltile.md 测试场景
+﻿# docs/core/scenevoxeltile.md 测试场景
 
 源文档：`res://docs/core/scenevoxeltile.md`
 测试场景：`res://demos/core-scenevoxeltile/core-scenevoxeltile.tscn`
@@ -6,20 +6,18 @@
 ## 测试方法
 
 1. 打开 `core-scenevoxeltile.tscn`，确认 focus 指向 dirty sidecar 而不是 committed payload。
-2. 先运行 headless smoke；无 `RenderingDevice` 时 GPU upload/readback 子项只能 SKIP：
-
-```bash
-<godot> --headless --path . --script tools/test_voxel_dirty_tile_upload.gd
-<godot> --headless --path . --script tools/test_scene_voxel_field.gd
-```
-
-3. 再运行非 headless Vulkan 验收，确认真实 `RenderingDevice`、GPU storage buffers 和 readback 路径：
+2. 运行 Vulkan GPU 验收，确认真实 `RenderingDevice`、GPU storage buffers 和 readback 路径：
 
 ```bash
 <godot> --path . --rendering-driver vulkan --script tools/test_voxel_dirty_tile_upload.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_scene_voxel_field.gd
 ```
 
-4. 检查 `project.godot` 中 `meshfill/scene_voxel_tile/size_voxels` 的覆盖值是否与文档说明一致。
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
+
+3. 检查 `project.godot` 中 `meshfill/scene_voxel_tile/size_voxels` 的覆盖值是否与文档说明一致。
 
 ## 验收标准
 

@@ -43,7 +43,7 @@ TargetSceneVoxel（目标画布）            Placement Pipeline（生成管线�
 | --- | --- | --- |
 | **SPA**（ScenePlacementActor） | `scripts/scene_placement_actor.gd` | 运行时统一编排器，管理资产注册、GPU buffer 生命周期、prefilter→placement→commit 三阶段流水线 |
 | **TargetSV** | `scripts/target_scene_voxel_generator.gd` | 目标体素画布，GPU 生成/持久化/解码，对外提供 `target_occupancy` + `target_color` |
-| **AutoVoxelDescriptor** | `scripts/auto_voxel_descriptor.gd` | 资产语义描述符，定义每个可放置物体的默认 color/complexity/collision/探针 |
+| **AssetDescriptor** | `scripts/auto_voxel_descriptor.gd` | 资产语义描述符，定义每个可放置物体的默认 color/complexity/collision/探针 |
 | **Probe Prefilter** | `scripts/autoobject_probe_prefilter_gpu.gd` | GPU 语义探针粗筛，从 TargetSV 和 SV[t-1] 中提取 anchor，匹配候选资产 |
 | **VoxelPlacementGenerator** | `scripts/voxel_placement_generator.gd` | GPU 物理评分与放置，footprint/support/collision/clearance 精筛 |
 | **SceneVoxelCommitter** | `scripts/scene_voxel_committer.gd` | 体素提交与合成，管理 SceneVoxel 常驻显存状态和源体素 blend |
@@ -111,7 +111,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 
 - [`docs/core/meshfill-framework.md`](docs/core/meshfill-framework.md) — 框架总览，模块归属与运行时流程
 - [`docs/core/scene-voxel-field-system.md`](docs/core/scene-voxel-field-system.md) — SceneVoxel 字段契约与 source/commit 边界
-- [`docs/core/auto-voxel-descriptor.md`](docs/core/auto-voxel-descriptor.md) — AutoVoxelDescriptor 资产语义定义
+- [`docs/core/auto-voxel-descriptor.md`](docs/core/auto-voxel-descriptor.md) — AssetDescriptor 资产语义定义
 - [`docs/core/scene-placement-actor.md`](docs/core/scene-placement-actor.md) — SPA 运行时编排器契约
 - [`docs/core/autoobject-gpu-runtime-architecture.md`](docs/core/autoobject-gpu-runtime-architecture.md) — GPU 端百万级运行时架构
 - [`docs/placement/target-scene-voxel-projection.md`](docs/placement/target-scene-voxel-projection.md) — TargetSV 目标画布边界

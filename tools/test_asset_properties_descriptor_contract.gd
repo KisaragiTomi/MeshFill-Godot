@@ -1,10 +1,9 @@
 extends SceneTree
 
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
-const AutoVoxelDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const AutoAssetFactoryScript := preload("res://scripts/auto_asset_factory.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
-const AutoRockScript := preload("res://scripts/auto_rock.gd")
 
 
 func _init() -> void:
@@ -60,7 +59,7 @@ func _test_shared_field_contract() -> bool:
 
 
 func _test_descriptor_collision_canonical() -> bool:
-	var descriptor: AutoVoxelDescriptor = AutoVoxelDescriptorScript.new()
+	var descriptor: AssetDescriptor = AssetDescriptorScript.new()
 	descriptor.set_color_and_complexity(Color(0.7, 0.1, 0.2, 1.0), 0.6)
 	descriptor.set_collision([])
 	var collisions := descriptor.get_collision(0.2)
@@ -76,7 +75,7 @@ func _test_descriptor_collision_canonical() -> bool:
 
 
 func _test_auto_object_descriptor_getters() -> bool:
-	var descriptor: AutoVoxelDescriptor = AutoVoxelDescriptorScript.new()
+	var descriptor: AssetDescriptor = AssetDescriptorScript.new()
 	descriptor.set_color_and_complexity(Color(0.1, 0.9, 0.2, 1.0), 0.35)
 	descriptor.set_collision([])
 
@@ -101,7 +100,7 @@ func _test_auto_object_descriptor_getters() -> bool:
 
 
 func _test_auto_object_config_preserves_existing_descriptor() -> bool:
-	var descriptor: AutoVoxelDescriptor = AutoVoxelDescriptorScript.new()
+	var descriptor: AssetDescriptor = AssetDescriptorScript.new()
 	descriptor.set_color_and_complexity(Color(0.2, 0.3, 0.8, 1.0), 0.4)
 	descriptor.set_collision([])
 
@@ -144,21 +143,10 @@ func _test_channel_and_scatter_fields_are_not_shared() -> bool:
 		"color": Color(0.1, 0.2, 0.3, 0.6),
 		"complexity": 0.6,
 		"channel": 2,
-		"vegetation_channel": 3,
-		"vegetation_radius": 0.7,
 	})
-	for non_shared_key in ["channel", "vegetation_channel", "vegetation_radius"]:
+	for non_shared_key in ["channel"]:
 		if normalized.has(non_shared_key):
 			push_error("Expected %s to stay out of normalized shared fields" % non_shared_key)
-			return false
-
-	var descriptor: AutoVoxelDescriptor = AutoVoxelDescriptorScript.new()
-	descriptor.vegetation_channel = 2
-	descriptor.vegetation_radius = 0.45
-	var fields := descriptor.to_record_fields(0.45)
-	for non_shared_key in ["channel", "vegetation_channel", "vegetation_radius"]:
-		if fields.has(non_shared_key):
-			push_error("Expected descriptor record fields to keep %s out of shared fields" % non_shared_key)
 			return false
 	return true
 
@@ -169,23 +157,23 @@ func _test_factory_and_subclass_canonical_collision() -> bool:
 		0.45,
 		0.25,
 		[]
-	) as AutoVoxelDescriptor
+	) as AssetDescriptor
 	if descriptor == null:
-		push_error("Expected factory to create AutoVoxelDescriptor")
+		push_error("Expected factory to create AssetDescriptor")
 		return false
 	# Non-terrain collision removed; factory-created descriptor should have empty collision.
 	if not descriptor.get_collision(0.25).is_empty():
 		push_error("Expected factory-created descriptor to have empty collision for non-terrain")
 		return false
 
-	var obj: AutoRock = AutoRockScript.new()
+	var obj: AutoObject = AutoObjectScript.new()
 	obj.configure_object({
 		"color": Color(0.5, 0.5, 0.5, 1.0),
 		"complexity": 0.5,
 		"collision": [],
 	})
 	if not obj.get_collision(0.4).is_empty():
-		push_error("Expected AutoRock to have empty collision for non-terrain")
+		push_error("Expected AutoObject to have empty collision for non-terrain")
 		obj.free()
 		return false
 	obj.free()

@@ -1,9 +1,13 @@
-[gd_scene load_steps=2 format=3]
+﻿[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
 
+[ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
+
 [node name="ModuleDocsIndexAndGraphs" type="Node3D"]
 script = ExtResource("1_contract")
+
+[node name="DemoSetup" parent="." instance=ExtResource("99_setup")]
 metadata/module_id = "docs-index-and-graphs"
 metadata/source_docs = "res://docs/README.md; res://docs/graphs/README.md"
 metadata/test_doc = "res://demos/modules/docs-index-and-graphs/docs-index-and-graphs.md"

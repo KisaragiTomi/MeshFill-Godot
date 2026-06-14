@@ -24,6 +24,8 @@ const TILE_SIZE := 8
 const MAX_ASSETS := 256
 const TOPK := 4
 const ANCHOR_CAPACITY := 65536
+const SCORE_ASSET_LANES := 16
+const PREFILTER_DISPATCH_AXIS_LIMIT := 65535
 const EMPTY_ASSET_ID := 0xffffffff
 const CANDIDATE_ROUTE_SCHEMA_VERSION := 1
 const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := 16
@@ -125,16 +127,23 @@ func _run_gpu_pipeline(
 	var voxel_size: Vector3 = sv.get("voxel_size", Vector3.ONE)
 	var voxel_count: int = grid_size.x * grid_size.y * grid_size.z
 	var tile_grid := Vector3i(
-		ceili(float(grid_size.x) / float(TILE_SIZE)),
-		ceili(float(grid_size.y) / float(TILE_SIZE)),
-		ceili(float(grid_size.z) / float(TILE_SIZE))
+		_ceil_div_positive(grid_size.x, TILE_SIZE),
+		_ceil_div_positive(grid_size.y, TILE_SIZE),
+		_ceil_div_positive(grid_size.z, TILE_SIZE)
 	)
 	var tile_count := tile_grid.x * tile_grid.y * tile_grid.z
+	var safe_tile_ids := _sanitize_prefilter_tile_ids(tile_ids, tile_count)
+	if safe_tile_ids.is_empty():
+		var pipeline_status := _pipeline_readiness(
+			_candidate_route_gpu_pack_requested(target_read_buffers),
+			tile_summaries_rid.is_valid() and _candidate_route_gpu_pack_requested(target_read_buffers)
+		)
+		return _empty_result("no_valid_voxel_regions", {}, pipeline_status)
 
 	# ---- Normalize GPU buffer inputs ----
 
 	var complexity_collision_bytes := _pack_complexity_collision_float_bytes(
-		_ensure_float_array(sv.get(complexity_field, PackedFloat32Array()), voxel_count),
+		_ensure_float_array(sv.get("complexity_field", PackedFloat32Array()), voxel_count),
 		_ensure_float_array(sv.get("collision_field", PackedFloat32Array()), voxel_count),
 		voxel_count
 	)
@@ -164,7 +173,7 @@ func _run_gpu_pipeline(
 	else:
 		var target_field_data: PackedFloat32Array = target_buffer_pack.get("target_field_bytes", PackedFloat32Array())
 		target_field_buf = storage_buffer_from_floats(target_field_data, SCOPE_FRAME, "target_field_uploaded")
-	var dirty_tile_buf := storage_buffer_from_bytes(_pack_u32_array_from_int(tile_ids))
+	var dirty_tile_buf := storage_buffer_from_bytes(_pack_u32_array_from_int(safe_tile_ids))
 	var anchor_buf := storage_buffer_zero(ANCHOR_CAPACITY * 16)  # uvec4(x, y, z, reserved) per anchor
 	var anchor_count_buf := storage_buffer_zero(4)
 
@@ -183,11 +192,14 @@ func _run_gpu_pipeline(
 
 	# ---- Dispatch 1: Collect anchors ----
 
-	_dispatch_collect(
+	if not _dispatch_collect(
 		complexity_collision_buf, target_field_buf, dirty_tile_buf,
 		anchor_buf, anchor_count_buf,
-		grid_size, tile_grid, tile_ids.size()
-	)
+		grid_size, tile_grid, safe_tile_ids.size()
+	):
+		var pipeline_status := _pipeline_readiness(route_pack_requested, use_expand_shader)
+		_free_gpu()
+		return _empty_result("collect_anchor_dispatch_bounds_exceeded", probe_pack, pipeline_status)
 	submit_and_sync(true)
 
 	# Read anchor count
@@ -265,7 +277,11 @@ func _dispatch_collect(
 	complexity_collision_buf: RID, target_field_buf: RID,
 	dirty_tile_buf: RID, anchor_buf: RID, anchor_count_buf: RID,
 	grid_size: Vector3i, tile_grid: Vector3i, dirty_count: int
-) -> void:
+) -> bool:
+	var collect_groups := _linear_dispatch_groups(dirty_count)
+	if collect_groups == Vector3i.ZERO:
+		push_error("[AutoObjectProbePrefilterGPU] Collect anchors dispatch count is out of bounds")
+		return false
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, complexity_collision_buf),
 		make_storage_uniform(1, target_field_buf),
@@ -275,7 +291,7 @@ func _dispatch_collect(
 	], _shader_collect, 0)
 
 	var push := PackedByteArray()
-	push.resize(48)
+	push.resize(64)
 	push.encode_s32(0, grid_size.x)
 	push.encode_s32(4, grid_size.y)
 	push.encode_s32(8, grid_size.z)
@@ -288,16 +304,21 @@ func _dispatch_collect(
 	push.encode_float(36, max_collision_field)
 	push.encode_float(40, min_support)
 	push.encode_float(44, min_target_interest)
+	push.encode_s32(48, collect_groups.x)
+	push.encode_s32(52, collect_groups.y)
+	push.encode_s32(56, 0)
+	push.encode_s32(60, 0)
 
 	var cl := begin_compute_list()
 	if cl < 0:
 		push_error("[AutoObjectProbePrefilterGPU] Collect anchors compute list begin failed")
-		return
+		return false
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_collect)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, dirty_count, 1, 1)
+	_rd.compute_list_dispatch(cl, collect_groups.x, collect_groups.y, collect_groups.z)
 	end_compute_list()
+	return true
 
 
 func _dispatch_score_topk_reduce(
@@ -309,9 +330,15 @@ func _dispatch_score_topk_reduce(
 	tile_grid: Vector3i, tile_count: int,
 	anchor_count: int, asset_count: int
 ) -> bool:
-	var anchor_grid_x := ceili(sqrt(float(anchor_count)))
-	var anchor_grid_y := ceili(float(anchor_count) / float(anchor_grid_x))
-	var asset_blocks := ceili(float(asset_count) / 16.0)
+	var safe_anchor_count := clampi(anchor_count, 0, ANCHOR_CAPACITY)
+	var safe_asset_count := clampi(asset_count, 0, MAX_ASSETS)
+	var anchor_dispatch := _anchor_dispatch_groups(safe_anchor_count)
+	var asset_blocks := _score_asset_block_dispatch_groups(safe_asset_count)
+	if anchor_dispatch == Vector3i.ZERO or asset_blocks <= 0:
+		push_error("[AutoObjectProbePrefilterGPU] Score/Top-K dispatch count is out of bounds")
+		return false
+	var anchor_grid_x := anchor_dispatch.x
+	var anchor_grid_y := anchor_dispatch.y
 
 	var score_set0 := create_uniform_set([
 		make_storage_uniform(0, anchor_buf),
@@ -338,20 +365,20 @@ func _dispatch_score_topk_reduce(
 	score_push.encode_s32(0, grid_size.x)
 	score_push.encode_s32(4, grid_size.y)
 	score_push.encode_s32(8, grid_size.z)
-	score_push.encode_s32(12, asset_count)
+	score_push.encode_s32(12, safe_asset_count)
 	score_push.encode_float(16, 1.0 / maxf(voxel_size.x, 0.0001))
 	score_push.encode_float(20, 1.0 / maxf(voxel_size.y, 0.0001))
 	score_push.encode_float(24, 1.0 / maxf(voxel_size.z, 0.0001))
 	score_push.encode_float(28, 0.0)
-	score_push.encode_u32(32, anchor_count)
+	score_push.encode_u32(32, safe_anchor_count)
 	score_push.encode_u32(36, anchor_grid_x)
 	score_push.encode_float(40, min_prefilter_score)
 	score_push.encode_float(44, 0.0)
 
 	var topk_push := PackedByteArray()
 	topk_push.resize(16)
-	topk_push.encode_u32(0, anchor_count)
-	topk_push.encode_u32(4, asset_count)
+	topk_push.encode_u32(0, safe_anchor_count)
+	topk_push.encode_u32(4, safe_asset_count)
 	topk_push.encode_u32(8, anchor_grid_x)
 	topk_push.encode_float(12, min_prefilter_score)
 
@@ -361,8 +388,8 @@ func _dispatch_score_topk_reduce(
 	reduce_push.encode_s32(4, tile_grid.y)
 	reduce_push.encode_s32(8, tile_grid.z)
 	reduce_push.encode_s32(12, tile_count)
-	reduce_push.encode_u32(16, anchor_count)
-	reduce_push.encode_u32(20, asset_count)
+	reduce_push.encode_u32(16, safe_anchor_count)
+	reduce_push.encode_u32(20, safe_asset_count)
 	reduce_push.encode_u32(24, TOPK)
 	reduce_push.encode_u32(28, 0)
 
@@ -1587,6 +1614,57 @@ func _all_tile_ids(sv: Dictionary) -> Array[int]:
 	return result
 
 
+static func _ceil_div_positive(value: int, divisor: int) -> int:
+	if value <= 0 or divisor <= 0:
+		return 0
+	return int((value + divisor - 1) / divisor)
+
+
+static func _linear_dispatch_groups(work_count: int) -> Vector3i:
+	if work_count <= 0:
+		return Vector3i.ZERO
+	var groups_x := mini(work_count, PREFILTER_DISPATCH_AXIS_LIMIT)
+	var groups_y := _ceil_div_positive(work_count, groups_x)
+	if groups_y <= 0 or groups_y > PREFILTER_DISPATCH_AXIS_LIMIT:
+		return Vector3i.ZERO
+	return Vector3i(groups_x, groups_y, 1)
+
+
+static func _anchor_dispatch_groups(anchor_count: int) -> Vector3i:
+	var safe_anchor_count := clampi(anchor_count, 0, ANCHOR_CAPACITY)
+	if safe_anchor_count <= 0:
+		return Vector3i.ZERO
+	var groups_x := clampi(ceili(sqrt(float(safe_anchor_count))), 1, PREFILTER_DISPATCH_AXIS_LIMIT)
+	var groups_y := _ceil_div_positive(safe_anchor_count, groups_x)
+	if groups_y <= 0 or groups_y > PREFILTER_DISPATCH_AXIS_LIMIT:
+		return Vector3i.ZERO
+	return Vector3i(groups_x, groups_y, 1)
+
+
+static func _score_asset_block_dispatch_groups(asset_count: int) -> int:
+	var safe_asset_count := clampi(asset_count, 0, MAX_ASSETS)
+	var groups_z := _ceil_div_positive(safe_asset_count, SCORE_ASSET_LANES)
+	if groups_z <= 0 or groups_z > PREFILTER_DISPATCH_AXIS_LIMIT:
+		return 0
+	return groups_z
+
+
+static func _sanitize_prefilter_tile_ids(values: Array[int], tile_count: int) -> Array[int]:
+	var result: Array[int] = []
+	if tile_count <= 0:
+		return result
+	var seen := {}
+	for raw_id in values:
+		var tile_id := int(raw_id)
+		if tile_id < 0 or tile_id >= tile_count:
+			continue
+		if seen.has(tile_id):
+			continue
+		seen[tile_id] = true
+		result.append(tile_id)
+	return result
+
+
 func _attach_runtime_profile_container_device(runtime_profile_container: Object) -> bool:
 	if not _profile_container_ready_to_borrow(runtime_profile_container):
 		return false
@@ -1809,7 +1887,13 @@ func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected
 	if source_rd == null or _rd == null or source_rd != _rd:
 		return {"ready": false, "reason": "resident_target_read_buffer_rendering_device_mismatch"}
 
-	var field_byte_count := int(target_read_buffers.get("expected_byte_count", summary.get("expected_byte_count", 0)))
+	var field_byte_count := int(target_read_buffers.get(
+		"target_field_byte_count",
+		summary.get(
+			"target_field_byte_count",
+			target_read_buffers.get("expected_byte_count", summary.get("expected_byte_count", 0))
+		)
+	))
 	if field_byte_count != expected_floats * 4:
 		return {"ready": false, "reason": "resident_target_read_buffer_byte_count_mismatch"}
 

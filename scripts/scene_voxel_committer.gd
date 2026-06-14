@@ -91,7 +91,8 @@ var voxel_size: Vector3  ## World-space size of one voxel
 
 var grid_origin: Vector3  ## World-space origin for voxel index conversion
 
-## Packed RGBA occupancy: one value per explicit channel.
+## Packed RGBA completely field: one value per explicit channel, representing how completely each voxel is filled.
+## When max(complexity, collision) == 0, the voxel is empty (nothing there).
 
 var _occupancy: Image
 
@@ -1272,7 +1273,7 @@ func _normalize_shared_field_layers(field_layers: Array, base_px: Vector2i = Vec
 
 	var result: Array[Dictionary] = []
 
-	var canonical_layers := AutoVoxelDescriptor.normalize_collision(field_layers, 0.0)
+	var canonical_layers: Array[Dictionary] = SharedPropertyTypeScript.collision_from_fields({SharedPropertyTypeScript.COLLISION_KEY: field_layers})
 
 	for raw_layer in canonical_layers:
 

@@ -108,11 +108,11 @@
     <g id="non-shared-scatter-fields">
     <rect class="node" x="80" y="480" width="280" height="120" rx="8" fill="url(#note-hatch)" stroke="#64748b"/>
     <text class="node-title" x="98" y="508">Non-shared scatter fields</text>
-    <text class="small"><tspan x="98" y="530">channel</tspan><tspan x="98" y="547">vegetation_channel / radius</tspan><tspan x="98" y="564">scatter-only, not semantic</tspan></text>
+    <text class="small"><tspan x="98" y="530">channel</tspan><tspan x="98" y="547">scatter-only, not semantic</tspan></text>
     </g>
-    <g id="autovoxeldescriptor">
+    <g id="AssetDescriptor">
     <rect class="node" x="465" y="160" width="290" height="135" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>
-    <text class="node-title" x="483" y="188">AutoVoxelDescriptor</text>
+    <text class="node-title" x="483" y="188">AssetDescriptor</text>
     <text class="small"><tspan x="483" y="210">canonical color</tspan><tspan x="483" y="227">canonical complexity</tspan><tspan x="483" y="244">canonical collision</tspan><tspan x="483" y="261">probes, pivots, mesh defaults</tspan></text>
     </g>
     <g id="autoobject-runtime-node">
@@ -160,7 +160,7 @@
     <g>
     <rect x="80" y="720" width="670" height="120" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a" stroke-width="1.3"/>
     <text class="note-text" x="94" y="744">Canonical field rule</text>
-    <text class="small"><tspan x="94" y="765">New semantic asset fields belong in AutoVoxelDescriptor first.</tspan><tspan x="94" y="781">collision is the placement footprint field.</tspan></text>
+    <text class="small"><tspan x="94" y="765">New semantic asset fields belong in AssetDescriptor first.</tspan><tspan x="94" y="781">collision is the placement footprint field.</tspan></text>
   </g>
     <g>
     <rect x="855" y="720" width="660" height="120" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7" stroke-width="1.3"/>

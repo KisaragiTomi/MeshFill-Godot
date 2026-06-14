@@ -1,4 +1,4 @@
-# docs/core/asset-semantic-probes.md 测试场景
+﻿# docs/core/asset-semantic-probes.md 测试场景
 
 源文档：`res://docs/core/asset-semantic-probes.md`  
 测试场景：`res://demos/core-asset-semantic-probes/core-asset-semantic-probes.tscn`
@@ -11,8 +11,12 @@
 ```bash
 <godot> --headless --path . --script tools/test_semantic_probe_generation.gd
 <godot> --headless --path . --script tools/test_semantic_probe_debug_mesh.gd
-<godot> --headless --path . --script tools/test_autoobject_probe_prefilter.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
 ```
+
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
 
 3. 对照文档中的 probe 数据结构，检查 `scripts/semantic_probe_profile.gd` 和 `scripts/auto_voxel_descriptor.gd` 的字段来源。
 

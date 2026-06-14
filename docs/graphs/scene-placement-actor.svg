@@ -110,7 +110,7 @@
   <g>
     <g id="descriptor-source">
       <rect class="node" x="85" y="165" width="275" height="115" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>
-      <text class="node-title" x="103" y="193">AutoVoxelDescriptor</text>
+      <text class="node-title" x="103" y="193">AssetDescriptor</text>
       <text class="small"><tspan x="103" y="215">asset semantic source</tspan><tspan x="103" y="232">probes / collision / pivots</tspan><tspan x="103" y="249">descriptor-backed defaults</tspan></text>
     </g>
 

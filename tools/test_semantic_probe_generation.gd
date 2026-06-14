@@ -1,6 +1,7 @@
 extends SceneTree
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 
 const TEST_LEAF_ASSET_PATH := "res://assets/vegetation/sm_test_leaf_test2_asset.tres"
 const TEST_LEAF_COLOR := Color(0.35, 0.58, 0.24, 0.45)
@@ -26,11 +27,11 @@ func _init() -> void:
 
 func _test_leaf_asset_probe_generation() -> bool:
 	print("[SemanticProbeGeneration] test_leaf_asset_probe_generation...")
-	var asset := _load_test_leaf_asset()
+	var asset = _load_test_leaf_asset()
 	if asset == null:
 		return false
 
-	var probes := asset.get_semantic_probes(1.0)
+	var probes: Array = asset.call("get_semantic_probes", 1.0)
 	if probes.size() < 8:
 		push_error("  FAIL: expected mesh probes at density 1.0, got only %d" % probes.size())
 		return false
@@ -45,13 +46,13 @@ func _test_leaf_asset_probe_generation() -> bool:
 
 func _test_probe_density_scaling() -> bool:
 	print("[SemanticProbeGeneration] test_probe_density_scaling...")
-	var asset := _load_test_leaf_asset()
+	var asset = _load_test_leaf_asset()
 	if asset == null:
 		return false
 
-	var low := asset.get_semantic_probes(0.5)
-	var base := asset.get_semantic_probes(1.0)
-	var high := asset.get_semantic_probes(2.0)
+	var low: Array = asset.call("get_semantic_probes", 0.5)
+	var base: Array = asset.call("get_semantic_probes", 1.0)
+	var high: Array = asset.call("get_semantic_probes", 2.0)
 
 	if low.size() < 4:
 		push_error("  FAIL: expected at least 4 probes at density 0.5, got %d" % low.size())
@@ -159,12 +160,12 @@ func _test_world_min_distance_constant() -> bool:
 
 func _test_asset_instance_probe_transfer() -> bool:
 	print("[SemanticProbeGeneration] test_asset_instance_probe_transfer...")
-	var asset := _load_test_leaf_asset()
+	var asset = _load_test_leaf_asset()
 	if asset == null:
 		return false
 
-	asset.semantic_probe_density = 2.0
-	var config := asset.make_instance_config()
+	asset.set("semantic_probe_density", 2.0)
+	var config: Dictionary = asset.call("make_instance_config")
 	if not config.has("semantic_probes"):
 		push_error("  FAIL: make_instance_config did not include semantic_probes")
 		return false
@@ -173,23 +174,19 @@ func _test_asset_instance_probe_transfer() -> bool:
 		push_error("  FAIL: expected mesh-derived config probes at asset density 2.0, got %d" % config_probes.size())
 		return false
 
-	var instance := asset.instantiate_vegetation({
+	var instance = asset.call("instantiate_vegetation", {
 		"name": "SemanticProbeTestLeaf",
-		"scale": Vector3.ONE * asset.scatter_max_scale,
+		"scale": Vector3.ONE * float(asset.get("scatter_max_scale")),
 	})
 	if instance == null:
 		push_error("  FAIL: instantiate_vegetation returned null")
 		return false
-	if instance.get_record_object_subtype() != "test_leaf":
-		push_error("  FAIL: instance subtype should be test_leaf, got %s" % instance.get_record_object_subtype())
-		instance.free()
-		return false
-	if instance.vegetation_channel != 1:
-		push_error("  FAIL: instance channel should be 1, got %d" % instance.vegetation_channel)
+	if instance.call("get_record_object_subtype") != "test_leaf":
+		push_error("  FAIL: instance subtype should be test_leaf, got %s" % instance.call("get_record_object_subtype"))
 		instance.free()
 		return false
 
-	var instance_probes := instance.get_semantic_probes(instance.semantic_probe_density)
+	var instance_probes: Array = instance.call("get_semantic_probes", instance.get("semantic_probe_density"))
 	if instance_probes.size() != config_probes.size():
 		push_error("  FAIL: instance probes %d != config probes %d" % [instance_probes.size(), config_probes.size()])
 		instance.free()
@@ -199,44 +196,42 @@ func _test_asset_instance_probe_transfer() -> bool:
 		instance.free()
 		return false
 
-	print("  OK: transferred %d probes to AutoVegetation instance" % instance_probes.size())
+	print("  OK: transferred %d probes to descriptor-backed vegetation instance" % instance_probes.size())
 	instance.free()
 	return true
 
 
-func _load_test_leaf_asset() -> AutoVoxelDescriptor:
+func _load_test_leaf_asset() -> Resource:
 	var resource := load(TEST_LEAF_ASSET_PATH)
-	if not resource is AutoVoxelDescriptor:
-		push_error("  FAIL: could not load AutoVoxelDescriptor at %s" % TEST_LEAF_ASSET_PATH)
+	if resource == null or resource.get_script() != AssetDescriptorScript:
+		push_error("  FAIL: could not load AssetDescriptor at %s" % TEST_LEAF_ASSET_PATH)
 		return null
-	var asset := resource as AutoVoxelDescriptor
-	if asset.asset_id != "sm_test_leaf_test2":
-		push_error("  FAIL: unexpected asset_id %s" % asset.asset_id)
+	var asset := resource
+	if asset.get("asset_id") != "sm_test_leaf_test2":
+		push_error("  FAIL: unexpected asset_id %s" % asset.get("asset_id"))
 		return null
-	if asset.object_subtype != "test_leaf":
-		push_error("  FAIL: unexpected subtype %s" % asset.object_subtype)
+	if asset.get("object_subtype") != "test_leaf":
+		push_error("  FAIL: unexpected subtype %s" % asset.get("object_subtype"))
 		return null
-	if asset.vegetation_channel != 1:
-		push_error("  FAIL: unexpected channel %d" % asset.vegetation_channel)
-		return null
-	if asset.get_mesh() == null:
+	if asset.call("get_mesh") == null:
 		push_error("  FAIL: asset has no mesh")
 		return null
-	if asset.get_collision().size() != 0:
+	var collision: Array = asset.call("get_collision")
+	if collision.size() != 0:
 		push_error("  FAIL: test leaf should not generate collision samples")
 		return null
 	return asset
 
 
-func _validate_leaf_probe(asset: AutoVoxelDescriptor, probe: Dictionary, index: int) -> bool:
+func _validate_leaf_probe(asset: Resource, probe: Dictionary, index: int) -> bool:
 	for key in ["offset", "expected_color", "expected_complexity", "expected_rgba8", "expected_collision", "weight", "flags", "kind", "source"]:
 		if not probe.has(key):
 			push_error("  FAIL: probe %d missing key %s" % [index, key])
 			return false
 
 	var offset := SemanticProbeProfileScript.vector3_from_value(probe.offset, Vector3.ZERO)
-	var mesh := asset.get_mesh()
-	var aabb := mesh.get_aabb() if mesh != null else AABB()
+	var mesh = asset.call("get_mesh")
+	var aabb: AABB = mesh.get_aabb() if mesh is Mesh else AABB()
 	if not _aabb_has_point(aabb, offset, 0.001):
 		push_error("  FAIL: probe %d offset %s outside mesh aabb %s" % [index, str(offset), str(aabb)])
 		return false

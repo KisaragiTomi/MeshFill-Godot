@@ -659,6 +659,7 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
             VoxelSample below = sample_voxel(p + ivec3(0, -1, 0));
             if (!below.ignored) {
                 r.support_total += weight;
+                // 支撑面检测：max(complexity, collision) == 0 表示下方无实体，无支撑
                 r.support_hit += step(0.01, max(below.complexity, below.collision)) * weight;
             } else {
                 r.ignored_sample += weight;

@@ -119,7 +119,7 @@ func _vector2_from_value(value, fallback: Vector2) -> Vector2:
 func _get_asset_height_texture(asset) -> Texture2D:
 	if asset == null:
 		return null
-	for key in ["fitting_height_texture", "height_texture", "mesh_height_texture"]:  # mesh_height_texture: 俯视资产高度图
+	for key in ["fitting_height_texture", "mesh_height_texture"]:  # mesh_height_texture: 俯视资产高度图
 		var texture := _texture_from_value(_asset_value(asset, key))
 		if texture != null:
 			return texture

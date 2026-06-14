@@ -1,4 +1,4 @@
-class_name AutoVoxelDescriptor
+class_name AssetDescriptor
 extends Resource
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
@@ -146,7 +146,7 @@ func get_mesh() -> Mesh:
 		return mesh
 	match mesh_create_method.strip_edges():
 		"create_sample_autoobject_mesh":
-			return AutoVoxelDescriptor.create_sample_autoobject_mesh()
+			return create_sample_autoobject_mesh()
 		_:
 			return null
 

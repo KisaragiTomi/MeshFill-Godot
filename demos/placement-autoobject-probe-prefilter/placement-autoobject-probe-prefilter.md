@@ -1,4 +1,4 @@
-# docs/placement/autoobject-probe-prefilter.md 测试场景
+﻿# docs/placement/autoobject-probe-prefilter.md 测试场景
 
 源文档：`res://docs/placement/autoobject-probe-prefilter.md`  
 测试场景：`res://demos/placement-autoobject-probe-prefilter/placement-autoobject-probe-prefilter.tscn`
@@ -9,9 +9,13 @@
 2. 运行 prefilter 与 candidate routing 测试：
 
 ```bash
-<godot> --headless --path . --script tools/test_autoobject_probe_prefilter.gd
-<godot> --headless --path . --script tools/test_voxel_candidate_routing_contract.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_candidate_routing_contract.gd
 ```
+
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
 
 3. 对照 `scripts/autoobject_probe_prefilter_gpu.gd` 和 `shaders/score_anchor_asset_probes.glsl`，检查输入输出字段与文档表格一致。
 

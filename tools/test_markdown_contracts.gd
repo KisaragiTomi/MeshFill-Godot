@@ -70,7 +70,7 @@ func _init() -> void:
 
 func _test_descriptor_backed_asset_semantics() -> bool:
 	print("[MarkdownContracts] test_descriptor_backed_asset_semantics...")
-	var descriptor := AutoVoxelDescriptor.new()
+	var descriptor := AssetDescriptor.new()
 	var descriptor_color := Color(0.10, 0.20, 0.30, 0.35)
 	descriptor.set_color_and_complexity(descriptor_color, 0.35)
 	descriptor.set_collision([{"voxel": Vector3i(1, 0, 0), "collision_strength": 1.0}])
@@ -261,10 +261,10 @@ func _test_channel_stays_out_of_shared_semantics() -> bool:
 		push_error("  FAIL: channel routing should not be a shared semantic field")
 		ok = false
 
-	var descriptor := AutoVoxelDescriptor.new()
+	var descriptor := AssetDescriptor.new()
 	descriptor.set_color_and_complexity(Color(0.1, 0.2, 0.3, 0.6), 0.6)
 	var fields := descriptor.to_record_fields(0.4)
-	for non_shared_key in ["channel", "vegetation_channel"]:
+	for non_shared_key in ["channel"]:
 		if fields.has(non_shared_key):
 			push_error("  FAIL: descriptor shared record fields promoted non-shared '%s'" % non_shared_key)
 			ok = false
@@ -374,8 +374,8 @@ func _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() -
 			push_error("  FAIL: target projection doc is missing TargetSV point-cloud demo link '%s'" % required)
 			ok = false
 	var target_point_cloud_contract := "\n".join([
-		_read_text("res://demos/target-sv-point-cloud-conversion/target-sv-point-cloud-conversion.md"),
-		_read_text("res://demos/target-sv-point-cloud-conversion/target-sv-point-cloud-conversion.tscn"),
+		_read_text("res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.md"),
+		_read_text("res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.tscn"),
 		_read_text("res://tools/test_target_sv_point_cloud_conversion.gd"),
 	])
 	for required in [
@@ -558,7 +558,7 @@ func _test_legacy_scene_voxel_scatter_removed() -> bool:
 func _test_runtime_read_sources_reject_staging_success() -> bool:
 	print("[MarkdownContracts] test_runtime_read_sources_reject_staging_success...")
 	var ok := true
-	var descriptor := AutoVoxelDescriptor.new()
+	var descriptor := AssetDescriptor.new()
 	descriptor.set_color_and_complexity(Color(0.15, 0.25, 0.35, 1.0), 0.5)
 	descriptor.set_collision([])
 

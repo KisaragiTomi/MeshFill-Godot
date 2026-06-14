@@ -112,7 +112,7 @@
     <g id="position-only-anchors">
     <rect class="node" x="480" y="150" width="275" height="105" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
     <text class="node-title" x="498" y="178">Position-only anchors</text>
-    <text class="small"><tspan x="498" y="200">supported candidates</tspan><tspan x="498" y="217">column-top candidates</tspan><tspan x="498" y="234">no anchor_kind field</tspan></text>
+    <text class="small"><tspan x="498" y="200">supported candidates</tspan><tspan x="498" y="217">no anchor_kind field</tspan></text>
     </g>
     <g id="score-semantic-probes">
     <rect class="node" x="480" y="310" width="275" height="115" rx="8" fill="#ede9fe" stroke="#7c3aed"/>

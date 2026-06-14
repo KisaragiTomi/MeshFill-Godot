@@ -1,4 +1,4 @@
-# docs/core/meshfill-framework.md 测试场景
+﻿# docs/core/meshfill-framework.md 测试场景
 
 源文档：`res://docs/core/meshfill-framework.md`  
 测试场景：`res://demos/core-meshfill-framework/core-meshfill-framework.tscn`
@@ -9,13 +9,17 @@
 2. 运行框架主路径测试：
 
 ```bash
-<godot> --headless --path . --script tools/test_markdown_contracts.gd
-<godot> --headless --path . --script tools/test_autoobject_probe_prefilter.gd
-<godot> --headless --path . --script tools/test_voxel_candidate_routing_contract.gd
-<godot> --headless --path . --script tools/test_voxel_placement_generator.gd
-<godot> --headless --path . --script tools/test_scene_voxel_field.gd
-<godot> --headless --path . --script tools/test_blendsv_feedback_score.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_candidate_routing_contract.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_placement_generator.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_scene_voxel_field.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_blendsv_feedback_score.gd
 ```
+
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
 
 3. 对照 `docs/graphs/meshfill_current_framework.svg`，检查文档中的模块边界和当前源码入口一致。
 

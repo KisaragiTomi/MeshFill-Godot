@@ -2,7 +2,8 @@
 #version 450
 
 // Collect placeable anchor positions from dirty tiles.
-// One workgroup = one dirty tile (8×8×8 = 512 threads).
+// One logical workgroup = one dirty tile (8x8x8 = 512 threads).
+// Host dispatch may be split over X/Y to stay inside per-axis group limits.
 // Atomic-appends valid positions into AnchorOut buffer.  The anchor position
 // itself carries the placement meaning; no separate anchor_kind is stored.
 
@@ -13,7 +14,7 @@ layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityCollisio
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer TargetField {
-    vec4 target_field[];  // .rgb = target color, .a = occupancy = max(scene_complexity, collision)
+    vec4 target_field[];  // .rgb = target color, .a = completeness = max(scene_complexity, collision)
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer DirtyTiles {
@@ -35,6 +36,7 @@ layout(push_constant, std430) uniform Params {
     ivec4 tile_grid_size_pad;     // xyz = tile grid dims, w = anchor_capacity
     vec4  thresholds;             // x = max_scene_occ, y = max_collision_occ,
                                   // z = min_support, w = min_target_interest
+    ivec4 dispatch_shape_pad;     // x = dirty dispatch groups_x
 };
 
 const uint TILE_SIZE = 8u;
@@ -69,13 +71,9 @@ void try_emit_anchor(ivec3 p) {
     }
 }
 
-// Shared: highest target-occupied candidate per XZ column.
-// Anchors are position-only; this tracks one additional candidate position per
-// column without assigning any typed anchor kind.
-shared int s_top_y[8][8];
-
 void main() {
-    uint group_idx = gl_WorkGroupID.x;
+    uint dispatch_groups_x = uint(max(dispatch_shape_pad.x, 1));
+    uint group_idx = gl_WorkGroupID.y * dispatch_groups_x + gl_WorkGroupID.x;
     uint dirty_count = uint(max(grid_size_pad.w, 0));
     if (group_idx >= dirty_count) return;
 
@@ -88,16 +86,6 @@ void main() {
     float min_support = thresholds.z;
     float min_target  = thresholds.w;
 
-    uint lx = gl_LocalInvocationID.x;
-    uint ly = gl_LocalInvocationID.y;
-    uint lz = gl_LocalInvocationID.z;
-
-    // Init shared for column-top candidate tracking.
-    if (ly == 0u) {
-        s_top_y[lx][lz] = -1;
-    }
-    barrier();
-
     // --- Supported candidate position check ---
     if (in_bounds(p)) {
         int idx = voxel_index(p);
@@ -109,34 +97,6 @@ void main() {
             float support = get_support(p);
             if (support >= min_support) {
                 try_emit_anchor(p);
-            }
-        }
-
-        // Track the highest target-occupied candidate voxel per column.
-        if (tv >= min_target && sv <= max_scene && cv <= max_coll) {
-            atomicMax(s_top_y[lx][lz], int(ly));
-        }
-    }
-    barrier();
-
-    // --- Column-top candidate emit (one thread per column) ---
-    if (ly == 0u && lz == 0u) {
-        // Not needed — we emit per-column below
-    }
-    // Each column (lx, lz): thread with ly==0 checks the result
-    if (ly == 0u) {
-        int best_local_y = s_top_y[lx][lz];
-        if (best_local_y >= 0) {
-            ivec3 top_p = tile_origin + ivec3(int(lx), best_local_y, int(lz));
-            if (in_bounds(top_p)) {
-                float support = get_support(top_p);
-                // If support is enough, the supported-position check already
-                // emitted this same voxel.  Otherwise add the column-top
-                // candidate as another untyped anchor; downstream uses the
-                // position directly.
-                if (support < min_support) {
-                    try_emit_anchor(top_p);
-                }
             }
         }
     }
