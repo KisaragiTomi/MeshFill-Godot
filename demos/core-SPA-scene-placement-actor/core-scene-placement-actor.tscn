@@ -1,0 +1,32 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://demos/core-SPA-scene-placement-actor/spa_interactive_demo.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
+
+[node name="CoreSPADemo" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="DemoSetup" parent="." instance=ExtResource("99_setup")]
+metadata/source_doc = "res://demos/core-SPA-scene-placement-actor/scene-placement-actor.md"
+metadata/test_doc = "res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md"
+metadata/focus = "SPA lifecycle + AutoObject interactive: register_asset → GPU profile → wireframe AABB → click-select/drag-move"
+metadata/gpu_required = true
+
+[node name="Title" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 130, -200)
+text = "ScenePlacementActor (SPA) — Unified Demo
+SPA lifecycle + AutoObject interactive placement + wireframe bounds"
+font_size = 48
+pixel_size = 0.04
+outline_size = 10
+
+[node name="Acceptance" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 110, -200)
+text = "Acceptance
+- SPA owns RuntimeProfileContainer, register_asset → immediate GPU upload
+- AutoObject click-select, drag-move, delete, duplicate, spawn
+- wireframe AABB bounds per asset with profile_id labels
+- G: GPU readiness report   Space: re-register all"
+font_size = 36
+pixel_size = 0.04
+outline_size = 8

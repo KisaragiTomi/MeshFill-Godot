@@ -1,7 +1,14 @@
 ﻿# docs/core/autoobject-gpu-runtime-architecture.md 测试场景
 
-源文档：`res://docs/core/autoobject-gpu-runtime-architecture.md`  
+源文档：`res://demos/core-autoobject-gpu-runtime-architecture/autoobject-gpu-runtime-architecture.md`  
 测试场景：`res://demos/core-autoobject-gpu-runtime-architecture/core-autoobject-gpu-runtime-architecture.tscn`
+
+## 运行方式
+
+> **@tool 编辑器模式，禁止 F6。**
+>
+> 在 Godot 编辑器中双击打开 `.tscn` 场景文件即可。脚本在编辑器视口中实时运行。
+> F6（Run Current Scene）和 F5（Run Project）被 `core_demo_contract_fixture.gd` 守卫代码禁止。
 
 ## 测试方法
 

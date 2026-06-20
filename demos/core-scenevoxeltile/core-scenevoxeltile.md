@@ -1,7 +1,14 @@
 ﻿# docs/core/scenevoxeltile.md 测试场景
 
-源文档：`res://docs/core/scenevoxeltile.md`
+源文档：`res://demos/core-scenevoxeltile/scenevoxeltile.md`
 测试场景：`res://demos/core-scenevoxeltile/core-scenevoxeltile.tscn`
+
+## 运行方式
+
+> **@tool 编辑器模式，禁止 F6。**
+>
+> 在 Godot 编辑器中双击打开 `.tscn` 场景文件即可。脚本在编辑器视口中实时运行，Tile 选择和快捷键均在视口内操作。
+> F6（Run Current Scene）和 F5（Run Project）被 `core_demo_contract_fixture.gd` 守卫代码禁止。
 
 ## 测试方法
 

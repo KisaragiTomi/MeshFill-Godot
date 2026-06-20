@@ -1,0 +1,32 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://demos/placement-meshfill-object-volume-score-3d/volume_score_stress_test.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
+
+[node name="VolumeScoreStressTest" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="DemoSetup" parent="." instance=ExtResource("99_setup")]
+metadata/source_doc = "res://demos/placement-meshfill-object-volume-score-3d/meshfill-object-volume-score-3d.md"
+metadata/test_doc = "res://demos/placement-meshfill-object-volume-score-3d/meshfill-object-volume-score-3d.md"
+metadata/focus = "3D object volume score stress test: all assets scored at every anchor with 12 rotations via GPU compute"
+
+[node name="TestMethod" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 130, -200)
+text = "STRESS TEST: 3D Volume Score
+All assets × all anchors × 12 rotations
+R: re-run   [/]: anchor spacing"
+font_size = 48
+pixel_size = 0.04
+outline_size = 10
+
+[node name="Acceptance" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 110, -200)
+text = "Acceptance
+- GPU compute pipeline dispatches Pass A + Pass B
+- All geo meshes voxelized and scored
+- Winner color-coded per anchor
+- HUD reports timing and score statistics"
+font_size = 36
+pixel_size = 0.04
+outline_size = 8

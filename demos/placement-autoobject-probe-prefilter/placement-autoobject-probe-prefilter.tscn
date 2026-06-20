@@ -1,43 +1,12 @@
-﻿[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=3 format=3]
 
-[ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
-
+[ext_resource type="Script" path="res://demos/placement-autoobject-probe-prefilter/probe_prefilter_demo.gd" id="1_script"]
 [ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
 
-[node name="PlacementAutoObjectProbePrefilterDemo" type="Node3D"]
-script = ExtResource("1_contract")
+[node name="ProbePrefilterDemo" type="Node3D"]
+script = ExtResource("1_script")
 
 [node name="DemoSetup" parent="." instance=ExtResource("99_setup")]
-metadata/source_doc = "res://docs/placement/autoobject-probe-prefilter.md"
-metadata/test_doc = "res://demos/placement-autoobject-probe-prefilter/placement-autoobject-probe-prefilter.md"
-metadata/focus = "AutoObject probe prefilter inputs, GPU scoring, anchor rules, and route expansion"
-
-[node name="Camera3D" type="Camera3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 9)
-current = true
-fov = 45.0
-
-[node name="KeyLight" type="DirectionalLight3D" parent="."]
-transform = Transform3D(0.707, -0.354, 0.612, 0, 0.866, 0.5, -0.707, -0.354, 0.612, 0, 4, 4)
-light_energy = 1.2
-
-[node name="Title" type="Label3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.6, 0)
-text = "placement/autoobject-probe-prefilter.md\nProbe Prefilter Fixture"
-font_size = 38
-pixel_size = 0.01
-outline_size = 6
-
-[node name="TestMethod" type="Label3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
-text = "Method\n- run prefilter GPU/route expansion tests\n- verify route debug schema"
-font_size = 28
-pixel_size = 0.01
-outline_size = 4
-
-[node name="Acceptance" type="Label3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.8, 0)
-text = "Acceptance\n- prefilter only reduces candidates\n- candidate regions expand conservatively"
-font_size = 28
-pixel_size = 0.01
-outline_size = 4
+metadata/source_doc = "res://demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md"
+metadata/test_doc = "res://demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md"
+metadata/focus = "AutoObject probe generation, weight visualization, geo mesh browser"

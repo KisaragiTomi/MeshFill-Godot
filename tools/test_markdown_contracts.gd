@@ -289,25 +289,25 @@ func _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() -
 	var prefilter_source := _read_text("res://scripts/autoobject_probe_prefilter_gpu.gd")
 	var score_probe_shader := _read_text("res://shaders/score_anchor_asset_probes.glsl")
 	var physical_score_shader := _read_text("res://shaders/score_voxel_tile.glsl")
-	var routing_doc := _read_text("res://docs/placement/voxel-semantic-routing.md")
+	var routing_doc := _read_text("res://demos/placement-voxel-semantic-routing/voxel-semantic-routing.md")
 	var routing_contract_test := _read_text("res://tools/test_voxel_candidate_routing_contract.gd")
 	var candidate_docs := {
-		"docs index": _read_text("res://docs/README.md"),
-		"graph index": _read_text("res://docs/graphs/README.md"),
-		"asset semantic probes": _read_text("res://docs/core/asset-semantic-probes.md"),
-		"autoobject probe prefilter": _read_text("res://docs/placement/autoobject-probe-prefilter.md"),
-		"target projection": _read_text("res://docs/placement/target-scene-voxel-projection.md"),
+		"docs index": _read_text("res://demos/README.md"),
+		"graph index": _read_text("res://demos/graphs/README.md"),
+		"asset semantic probes": _read_text("res://demos/asset-descriptor-demo/asset-semantic-probes.md"),
+		"autoobject probe prefilter": _read_text("res://demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md"),
+		"target projection": _read_text("res://demos/target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md"),
 		"voxel semantic routing": routing_doc,
-		"meshfill framework": _read_text("res://docs/core/meshfill-framework.md"),
+		"meshfill framework": _read_text("res://demos/core-meshfill-framework/meshfill-framework.md"),
 		"candidate routing demo doc": _read_text("res://demos/modules/candidate-routing-contract/candidate-routing-contract.md"),
 		"candidate routing demo scene": _read_text("res://demos/modules/candidate-routing-contract/candidate-routing-contract.tscn"),
 		"placement routing demo doc": _read_text("res://demos/placement-voxel-semantic-routing/placement-voxel-semantic-routing.md"),
 	}
 	var candidate_graphs := {
-		"runtime architecture graph": _read_text("res://docs/graphs/autoobject_gpu_runtime_architecture.svg"),
-		"prefilter graph": _read_text("res://docs/graphs/autoobject_probe_prefilter_pipeline.svg"),
-		"framework graph": _read_text("res://docs/graphs/meshfill_current_framework.svg"),
-		"routing graph": _read_text("res://docs/graphs/voxel-semantic-routing.svg"),
+		"runtime architecture graph": _read_text("res://demos/graphs/autoobject_gpu_runtime_architecture.svg"),
+		"prefilter graph": _read_text("res://demos/graphs/autoobject_probe_prefilter_pipeline.svg"),
+		"framework graph": _read_text("res://demos/graphs/meshfill_current_framework.svg"),
+		"routing graph": _read_text("res://demos/graphs/voxel-semantic-routing.svg"),
 	}
 
 	for required in ["sv.get(\"complexity_field\"", "sv.get(\"collision_field\"", "get_semantic_probes"]:
@@ -398,12 +398,12 @@ func _test_gpu_first_no_cpu_fallback_contracts() -> bool:
 	print("[MarkdownContracts] test_gpu_first_no_cpu_fallback_contracts...")
 	var ok := true
 	var docs_combined := "\n".join([
-		_read_text("res://docs/core/asset-properties.md"),
-		_read_text("res://docs/core/asset-semantic-probes.md"),
-		_read_text("res://docs/core/meshfill-framework.md"),
-		_read_text("res://docs/core/autoobject-gpu-runtime-architecture.md"),
-		_read_text("res://docs/core/scenevoxeltile.md"),
-		_read_text("res://demos/core-autoobject-gpu-runtime-architecture/core-autoobject-gpu-runtime-architecture.md"),
+		_read_text("res://demos/asset-descriptor-demo/asset-properties.md"),
+		_read_text("res://demos/asset-descriptor-demo/asset-semantic-probes.md"),
+		_read_text("res://demos/core-meshfill-framework/meshfill-framework.md"),
+		_read_text("res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"),
+		_read_text("res://demos/core-scenevoxeltile/scenevoxeltile.md"),
+		_read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md"),
 		_read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md"),
 		_read_text("res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md"),
 	])
@@ -514,7 +514,7 @@ func _test_gpu_first_no_cpu_fallback_contracts() -> bool:
 			ok = false
 
 	for demo_path in [
-		"res://demos/core-autoobject-gpu-runtime-architecture/core-autoobject-gpu-runtime-architecture.md",
+		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md",
 		"res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md",
 	]:
 		var demo_text := _read_text(demo_path)

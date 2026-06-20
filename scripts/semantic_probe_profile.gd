@@ -1,11 +1,6 @@
 class_name SemanticProbeProfile
 extends Resource
 
-const FLAG_COLOR := 1
-const FLAG_COMPLEXITY := 2
-const FLAG_COLLISION := 4
-const FLAG_EMPTY := 8
-const FLAG_SUPPORT := 16
 const PROBE_LAYER_COUNT := 5
 const PROBE_WORLD_MIN_DISTANCE := 0.35
 
@@ -52,11 +47,11 @@ static func generate_from_mesh(
 	context_sensing_radius: float = 0.0
 ) -> Array[Dictionary]:
 	if mesh == null:
-		return [make_probe(Vector3.ZERO, fallback_color, 0.0, 1.0, FLAG_COLOR | FLAG_COMPLEXITY, "positive", "fallback")]
+		return [make_probe(Vector3.ZERO, fallback_color, 0.0, 1.0, 1.0, 1.0, "fallback")]
 
 	var aabb := mesh.get_aabb()
 	if aabb.size.length_squared() < 0.0001:
-		return [make_probe(Vector3.ZERO, fallback_color, 0.0, 1.0, FLAG_COLOR | FLAG_COMPLEXITY, "positive", "fallback")]
+		return [make_probe(Vector3.ZERO, fallback_color, 0.0, 1.0, 1.0, 1.0, "fallback")]
 
 	var fallback := fallback_color
 	fallback.a = clampf(fallback_complexity, 0.0, 1.0)
@@ -73,25 +68,28 @@ static func generate_from_mesh(
 	if not convex_points.is_empty():
 		candidates.append_array(_make_convex_candidates(convex_points, fallback, fallback.a))
 
-	# Priority 2: AutoObject collision sample interior
+	# Priority 2: per-voxel interior samples from the generic voxel field
 	if not collision.is_empty():
-		candidates.append_array(_make_voxel_interior_candidates(collision, fallback, fallback.a, density_value, world_scale))
+		candidates.append_array(_make_voxel_interior_candidates(collision, fallback, fallback.a))
 
 	# Priority 3: Poisson disk surface sampling
 	if not triangles.is_empty():
 		candidates.append_array(_make_poisson_surface_candidates(triangles, fallback, fallback.a, density_value))
 
-	# Priority 4 (lowest): Context sensing probes beyond mesh AABB
+	# Priority 4: Context sensing probes beyond mesh AABB
 	if context_sensing_radius > 0.0:
 		candidates.append_array(_make_context_sensing_candidates(aabb, context_sensing_radius, fallback, fallback.a, density_value))
 
+	# Priority 5 (lowest): Exclusion zone — negative collision probes around AABB boundary
+	candidates.append_array(_make_exclusion_zone_candidates(aabb, density_value))
+
 	if candidates.is_empty():
-		return [make_probe(aabb.get_center(), fallback, 0.0, 1.0, FLAG_COLOR | FLAG_COMPLEXITY, "positive", "fallback")]
+		return [make_probe(aabb.get_center(), fallback, 0.0, 1.0, 1.0, 1.0, "fallback")]
 
 	_apply_candidate_world_offsets(candidates, world_scale)
 	var selected := select_layered_topk(candidates, target_count, max_count, density_value, PROBE_WORLD_MIN_DISTANCE)
 	if selected.is_empty():
-		return [make_probe(aabb.get_center(), fallback, 0.0, 1.0, FLAG_COLOR | FLAG_COMPLEXITY, "positive", "fallback")]
+		return [make_probe(aabb.get_center(), fallback, 0.0, 1.0, 1.0, 1.0, "fallback")]
 	return selected
 
 
@@ -173,145 +171,58 @@ static func _make_convex_candidates(
 		var color := fallback_color
 		var complexity := clampf(fallback_complexity, 0.0, 1.0)
 		color.a = complexity
-		var weight := maxf(0.05, complexity)
 		result.append(make_probe_candidate(
-			pos, color, 0.0, weight, FLAG_COLOR | FLAG_COMPLEXITY,
-			"positive", "mesh", weight * 1.6, "convex"
+			pos, color, 0.0, 1.0, 1.0, 1.0, "mesh", 1.6, "convex"
 		))
 	return result
 
 
-# --- Priority 2: AutoObject collision interior ---
+# --- Priority 2: per-voxel interior samples ---
+#
+# `collision` is a flat list of per-voxel samples taken from the generic GPU
+# voxel field. Each entry carries its own local position plus the same-level
+# per-voxel channels color / complexity / collision, so the interior probe
+# layer sources collision and complexity at the same level. There is no longer
+# any cylinder / box shape rasterization here.
 
 static func _make_voxel_interior_candidates(
 	collision: Array,
 	fallback_color: Color,
-	fallback_complexity: float,
-	density_value: float,
-	world_scale: Vector3
+	fallback_complexity: float
 ) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	if collision.is_empty():
 		return result
 
-	var world_spacing := maxf(PROBE_WORLD_MIN_DISTANCE / sqrt(maxf(density_value, 0.1)), 0.08)
-	var local_sample_spacing := maxf(world_spacing / _world_scale_max_axis(world_scale), 0.02)
-	for raw_collision in collision:
-		if not raw_collision is Dictionary:
+	var min_y := INF
+	for raw_voxel in collision:
+		if raw_voxel is Dictionary:
+			var pos := vector3_from_value((raw_voxel as Dictionary).get("local_pos", (raw_voxel as Dictionary).get("voxel", (raw_voxel as Dictionary).get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
+			min_y = minf(min_y, pos.y)
+
+	for raw_voxel in collision:
+		if not raw_voxel is Dictionary:
 			continue
-		var collision_entry := raw_collision as Dictionary
-		if not bool(collision_entry.get("enabled", true)):
+		var voxel_entry := raw_voxel as Dictionary
+		if not bool(voxel_entry.get("enabled", true)):
 			continue
-		var positions := _sample_collision_points(collision_entry, local_sample_spacing)
-		if positions.is_empty():
-			continue
-		var collision_strength := clampf(float(collision_entry.get("collision_strength", 1.0)), 0.0, 1.0)
-		for point in positions:
-			var color := fallback_color
-			var complexity := clampf(fallback_complexity, 0.0, 1.0)
-			color.a = complexity
-			var weight := maxf(0.05, complexity)
-			var importance := weight * lerpf(1.1, 1.4, collision_strength)
-			result.append(make_probe_candidate(
-				point, color, collision_strength, weight, FLAG_COLOR | FLAG_COMPLEXITY | FLAG_COLLISION,
-				"positive", "mesh", importance, "voxel_interior"
-			))
+		var point := vector3_from_value(voxel_entry.get("local_pos", voxel_entry.get("voxel", voxel_entry.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
+		var color := color_from_value(voxel_entry.get("color", fallback_color), fallback_color) if voxel_entry.has("color") else fallback_color
+		var complexity := clampf(float(voxel_entry.get("complexity", fallback_complexity)), 0.0, 1.0)
+		color.a = complexity
+		var collision_strength := clampf(float(voxel_entry.get("collision", 1.0)), 0.0, 1.0)
+		var is_support := absf(point.y - min_y) < 0.01
+		var wc := 1.0
+		var wcx := 1.0
+		var wcl := 1.0
+		if is_support:
+			wc = 0.05
+			wcx = 0.05
+		var importance := lerpf(1.1, 1.4, collision_strength)
+		result.append(make_probe_candidate(
+			point, color, collision_strength, wc, wcx, wcl, "mesh", importance, "voxel_interior"
+		))
 	return result
-
-
-static func _sample_collision_points(collision: Dictionary, sample_spacing: float) -> PackedVector3Array:
-	if collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset"):
-		var point := vector3_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
-		return PackedVector3Array([point])
-	var shape := str(collision.get("shape", collision.get("collision_shape", "cylinder"))).to_lower()
-	if shape == "box" or shape == "cube":
-		return _sample_box_collision_points(collision, sample_spacing)
-	return _sample_cylinder_collision_points(collision, sample_spacing)
-
-
-static func _sample_cylinder_collision_points(collision: Dictionary, sample_spacing: float) -> PackedVector3Array:
-	var result := PackedVector3Array()
-	var radius := _collision_effective_radius(collision)
-	if radius <= 0.0001:
-		return result
-	var center := _collision_center(collision)
-	var y_min := float(collision.get("y_min", 0.0))
-	var y_max := float(collision.get("y_max", 2.0))
-	if y_max < y_min:
-		var swap := y_min
-		y_min = y_max
-		y_max = swap
-	var height := maxf(y_max - y_min, 0.0)
-	var y_steps := clampi(ceili(maxf(height, sample_spacing) / sample_spacing), 1, 8)
-	var r_steps := clampi(ceili(radius / sample_spacing), 1, 6)
-	for yi in range(y_steps + 1):
-		var y_t := float(yi) / float(y_steps)
-		var y := lerpf(y_min, y_max, y_t)
-		for xi in range(-r_steps, r_steps + 1):
-			for zi in range(-r_steps, r_steps + 1):
-				var x := float(xi) / float(r_steps) * radius
-				var z := float(zi) / float(r_steps) * radius
-				if Vector2(x, z).length() > radius + 0.0001:
-					continue
-				result.append(Vector3(center.x + x, y + center.y, center.z + z))
-	return result
-
-
-static func _sample_box_collision_points(collision: Dictionary, sample_spacing: float) -> PackedVector3Array:
-	var result := PackedVector3Array()
-	var center := _collision_center(collision)
-	var half_extents := vector3_from_value(collision.get("half_extents", Vector3.ZERO), Vector3.ZERO)
-	if half_extents.length_squared() <= 0.0001:
-		var size := vector3_from_value(collision.get("size", Vector3.ZERO), Vector3.ZERO)
-		if size.length_squared() > 0.0001:
-			half_extents = size * 0.5
-	if half_extents.length_squared() <= 0.0001:
-		var radius := _collision_effective_radius(collision)
-		var y_min := float(collision.get("y_min", 0.0))
-		var y_max := float(collision.get("y_max", 2.0))
-		half_extents = Vector3(radius, maxf(y_max - y_min, sample_spacing) * 0.5, radius)
-	var min_p := center - half_extents
-	var max_p := center + half_extents
-	if collision.has("y_min") or collision.has("y_max"):
-		min_p.y = center.y + float(collision.get("y_min", min_p.y - center.y))
-		max_p.y = center.y + float(collision.get("y_max", max_p.y - center.y))
-	var x_steps := clampi(ceili(maxf(max_p.x - min_p.x, sample_spacing) / sample_spacing), 1, 6)
-	var y_steps := clampi(ceili(maxf(max_p.y - min_p.y, sample_spacing) / sample_spacing), 1, 8)
-	var z_steps := clampi(ceili(maxf(max_p.z - min_p.z, sample_spacing) / sample_spacing), 1, 6)
-	for xi in range(x_steps + 1):
-		var x := lerpf(min_p.x, max_p.x, float(xi) / float(x_steps))
-		for yi in range(y_steps + 1):
-			var y := lerpf(min_p.y, max_p.y, float(yi) / float(y_steps))
-			for zi in range(z_steps + 1):
-				var z := lerpf(min_p.z, max_p.z, float(zi) / float(z_steps))
-				result.append(Vector3(x, y, z))
-	return result
-
-
-static func _collision_effective_radius(collision: Dictionary) -> float:
-	var radius := maxf(float(collision.get("effective_radius", collision.get("radius", collision.get("collision_radius", 0.0)))), 0.0)
-	var erosion := maxf(float(collision.get("erosion_radius", 0.0)), 0.0)
-	var dilation := maxf(float(collision.get("dilation_radius", 0.0)), 0.0)
-	if collision.has("effective_radius"):
-		return radius
-	if erosion > 0.0 and radius <= erosion:
-		return 0.0
-	return maxf(radius - erosion, 0.0) + dilation
-
-
-static func _collision_center(collision: Dictionary) -> Vector3:
-	var center := vector3_from_value(collision.get("offset", collision.get("center", collision.get("position", Vector3.ZERO))), Vector3.ZERO)
-	if collision.has("x"):
-		center.x = float(collision.get("x", center.x))
-	if collision.has("y"):
-		center.y = float(collision.get("y", center.y))
-	if collision.has("z"):
-		center.z = float(collision.get("z", center.z))
-	return center
-
-
-static func _world_scale_max_axis(world_scale: Vector3) -> float:
-	return maxf(maxf(absf(world_scale.x), absf(world_scale.y)), maxf(absf(world_scale.z), 0.0001))
 
 
 # --- Priority 4: Context sensing probes beyond mesh AABB ---
@@ -354,14 +265,48 @@ static func _make_context_sensing_candidates(
 				var x := center.x + cos(angle) * r
 				var z := center.z + sin(angle) * r
 				var pos := Vector3(x, y, z)
-				var w := maxf(0.02, r_decay * y_decay * 0.35)
+				var importance := maxf(0.02, r_decay * y_decay * 0.35) * 0.5
 				result.append(make_probe_candidate(
-					pos, fallback_color, 0.0, w,
-					FLAG_COLLISION | FLAG_COLOR,
-					"positive", "context",
-					w * 0.5, "context"
+					pos, fallback_color, 0.0, 1.0, 1.0, 1.0, "context",
+					importance, "context"
 				))
 
+	return result
+
+
+# --- Priority 5: Exclusion zone probes (negative collision weight) ---
+#
+# Placed just outside the mesh AABB boundary. Penalizes placement when existing
+# scene collision is already present nearby, preventing asset clustering.
+
+static func _make_exclusion_zone_candidates(
+	mesh_aabb: AABB,
+	density_value: float
+) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var half := mesh_aabb.size * 0.5
+	var center := mesh_aabb.get_center()
+	var margin := maxf(maxf(half.x, half.z) * 0.15, 0.1)
+	var y_base := mesh_aabb.position.y
+	var y_top := y_base + mesh_aabb.size.y * 0.5
+	var y_levels: PackedFloat32Array = [y_base, y_top]
+
+	var ring_r := maxf(half.x, half.z) + margin
+	var steps := clampi(ceili(density_value * 6.0), 4, 12)
+	var empty_color := Color(0.0, 0.0, 0.0, 0.0)
+
+	for y in y_levels:
+		for i in range(steps):
+			var angle := TAU * float(i) / float(steps)
+			var pos := Vector3(
+				center.x + cos(angle) * ring_r,
+				y,
+				center.z + sin(angle) * ring_r
+			)
+			result.append(make_probe_candidate(
+				pos, empty_color, 1.0, 0.0, 0.0, -0.5, "exclusion",
+				0.3, "exclusion"
+			))
 	return result
 
 
@@ -424,10 +369,8 @@ static func _make_poisson_surface_candidates(
 		var color := fallback_color
 		var complexity := clampf(fallback_complexity, 0.0, 1.0)
 		color.a = complexity
-		var weight := maxf(0.05, complexity)
 		result.append(make_probe_candidate(
-			pos, color, 0.0, weight, FLAG_COLOR | FLAG_COMPLEXITY,
-			"positive", "mesh", weight * 0.95, "surface"
+			pos, color, 0.0, 1.0, 1.0, 1.0, "mesh", 0.95, "surface"
 		))
 	return result
 
@@ -623,8 +566,8 @@ static func probe_candidate_key(candidate: Dictionary) -> String:
 	return "%d,%d,%d" % [roundi(offset.x * 1000.0), roundi(offset.y * 1000.0), roundi(offset.z * 1000.0)]
 
 
-static func make_probe_candidate(offset: Vector3, color: Color, collision: float, weight: float, flags: int, kind: String, source: String, importance: float, shape_source: String = "") -> Dictionary:
-	var probe := make_probe(offset, color, collision, weight, flags, kind, source)
+static func make_probe_candidate(offset: Vector3, color: Color, collision: float, w_color: float, w_complexity: float, w_collision: float, source: String, importance: float, shape_source: String = "") -> Dictionary:
+	var probe := make_probe(offset, color, collision, w_color, w_complexity, w_collision, source)
 	probe["_importance"] = maxf(importance, 0.0)
 	if not shape_source.is_empty():
 		probe["shape_source"] = shape_source
@@ -646,30 +589,31 @@ static func normalize_probe(raw_probe: Dictionary) -> Dictionary:
 	var complexity := clampf(float(probe.get("expected_complexity", probe.get("complexity", color.a))), 0.0, 1.0)
 	color.a = complexity
 	probe["offset"] = offset
-	probe["expected_color"] = color                         # expected visual color
-	probe["expected_complexity"] = complexity               # expected occupancy/complexity
-	probe["expected_rgba8"] = int(probe.get("expected_rgba8", pack_rgba8(color))) # packed expected RGBA
-	probe["expected_collision"] = clampf(float(probe.get("expected_collision", probe.get("collision", 0.0))), 0.0, 1.0) # expected solid strength
-	probe["weight"] = maxf(float(probe.get("weight", 1.0)), 0.0) # contribution weight
-	probe["flags"] = int(probe.get("flags", FLAG_COLOR | FLAG_COMPLEXITY)) # enabled score terms
-	probe["kind"] = str(probe.get("kind", "positive"))      # positive / negative / support
-	probe["source"] = str(probe.get("source", "manual"))    # convex / voxel_interior / surface / context
+	probe["expected_color"] = color
+	probe["expected_complexity"] = complexity
+	probe["expected_rgba8"] = int(probe.get("expected_rgba8", pack_rgba8(color)))
+	probe["expected_collision"] = clampf(float(probe.get("expected_collision", probe.get("collision", 0.0))), 0.0, 1.0)
+	probe["source"] = str(probe.get("source", "manual"))
+
+	probe["w_color"] = float(probe.get("w_color", 1.0))
+	probe["w_complexity"] = float(probe.get("w_complexity", 1.0))
+	probe["w_collision"] = float(probe.get("w_collision", 1.0))
 	return probe
 
 
-static func make_probe(offset: Vector3, color: Color, collision: float, weight: float, flags: int, kind: String, source: String) -> Dictionary:
+static func make_probe(offset: Vector3, color: Color, collision: float, w_color: float, w_complexity: float, w_collision: float, source: String) -> Dictionary:
 	var c := color
 	c.a = clampf(c.a, 0.0, 1.0)
 	return {
-		"offset": offset,                              # relative sample position from asset anchor
-		"expected_color": c,                           # expected visual color
-		"expected_complexity": c.a,                    # expected complexity / alpha
-		"expected_rgba8": pack_rgba8(c),               # packed expected color + complexity
-		"expected_collision": clampf(collision, 0.0, 1.0), # expected collision / solid strength
-		"weight": maxf(weight, 0.0),                   # contribution weight
-		"flags": flags,                                # score-term bit flags
-		"kind": kind,                                  # positive / negative / support
-		"source": source,                              # generation source
+		"offset": offset,
+		"expected_color": c,
+		"expected_complexity": c.a,
+		"expected_rgba8": pack_rgba8(c),
+		"expected_collision": clampf(collision, 0.0, 1.0),
+		"w_color": w_color,
+		"w_complexity": w_complexity,
+		"w_collision": w_collision,
+		"source": source,
 	}
 
 

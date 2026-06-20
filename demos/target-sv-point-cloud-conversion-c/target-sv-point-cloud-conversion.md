@@ -3,6 +3,13 @@
 源场景：`res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.tscn`  
 源数据：`res://landscape/TargetSV_PT.bgeo.sc`、`res://textures/scene_height_0_1.png`
 
+## 运行方式
+
+> **@tool 编辑器模式，禁止 F6。**
+>
+> 在 Godot 编辑器中双击打开 `.tscn` 场景文件即可。脚本在编辑器视口中实时运行，Shift+R/T/Y 视图切换在视口内操作。
+> F6（Run Current Scene）和 F5（Run Project）被守卫代码禁止。
+
 ## 用途
 
 该 demo 验证外部 Houdini 点云到 `TargetSceneVoxel` 的转换路径。转换工具读取点云中的 `Cd`、`complex`、`collision` 和 `P`，把 `P.y` 作为相对地形高度，采样 `scene_height_0_1.png` 生成可视化位置，同时输出 TargetSV 的 `rgba32f` visual buffer 与 `r32f` collision buffer。

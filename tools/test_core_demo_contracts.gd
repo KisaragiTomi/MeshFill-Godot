@@ -1,6 +1,6 @@
 extends SceneTree
 
-const CORE_DOC_DIR := "res://docs/core"
+const CORE_DOC_DIR := "res://demos"  # archive: docs migrated into demos/ subdirs
 const DEMO_ROOTS := [
 	"res://demos/core-",
 	"res://demos/modules/",
@@ -209,8 +209,8 @@ func _test_gpu_fixture_vulkan_validation() -> bool:
 	var ok := true
 	ok = _assert_gpu_validation_fixture(
 		"core GPU runtime",
-		"res://demos/core-autoobject-gpu-runtime-architecture/core-autoobject-gpu-runtime-architecture.md",
-		"res://demos/core-autoobject-gpu-runtime-architecture/core-autoobject-gpu-runtime-architecture.tscn"
+		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md",
+		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn"
 	) and ok
 	ok = _assert_gpu_validation_fixture(
 		"module GPU runtime",
@@ -226,9 +226,9 @@ func _test_gpu_runtime_and_tile_deep_contracts() -> bool:
 	print("[CoreDemoContracts] test_gpu_runtime_and_tile_deep_contracts...")
 	var ok := true
 	var runtime_contract := "\n".join([
-		_read_text("res://docs/core/autoobject-gpu-runtime-architecture.md"),
-		_read_text("res://demos/core-autoobject-gpu-runtime-architecture/core-autoobject-gpu-runtime-architecture.md"),
-		_read_text("res://demos/core-autoobject-gpu-runtime-architecture/core-autoobject-gpu-runtime-architecture.tscn"),
+		_read_text("res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"),
+		_read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md"),
+		_read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn"),
 		_read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md"),
 		_read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn"),
 	])
@@ -250,7 +250,7 @@ func _test_gpu_runtime_and_tile_deep_contracts() -> bool:
 			ok = false
 
 	var tile_contract := "\n".join([
-		_read_text("res://docs/core/scenevoxeltile.md"),
+		_read_text("res://demos/core-scenevoxeltile/scenevoxeltile.md"),
 		_read_text("res://demos/core-scenevoxeltile/core-scenevoxeltile.md"),
 		_read_text("res://demos/core-scenevoxeltile/core-scenevoxeltile.tscn"),
 		_read_text("res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md"),
@@ -272,14 +272,14 @@ func _test_gpu_runtime_and_tile_deep_contracts() -> bool:
 			ok = false
 
 	for source in [
-		"res://docs/core/autoobject-gpu-runtime-architecture.md",
-		"res://docs/core/asset-semantic-probes.md",
-		"res://docs/core/meshfill-framework.md",
-		"res://docs/core/scenevoxeltile.md",
+		"res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md",
+		"res://demos/asset-descriptor-demo/asset-semantic-probes.md",
+		"res://demos/core-meshfill-framework/meshfill-framework.md",
+		"res://demos/core-scenevoxeltile/scenevoxeltile.md",
 		"res://demos/core-scenevoxeltile/core-scenevoxeltile.md",
 		"res://demos/core-scenevoxeltile/core-scenevoxeltile.tscn",
-		"res://demos/core-autoobject-gpu-runtime-architecture/core-autoobject-gpu-runtime-architecture.md",
-		"res://demos/core-autoobject-gpu-runtime-architecture/core-autoobject-gpu-runtime-architecture.tscn",
+		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md",
+		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn",
 		"res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md",
 		"res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn",
 		"res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md",
@@ -416,7 +416,7 @@ func _mentions_no_rd_cpu_success(lower_text: String) -> bool:
 func _assert_runtime_plan_gpu_first_boundaries() -> bool:
 	var ok := true
 	var combined := "\n".join([
-		_read_text("res://docs/core/autoobject-gpu-runtime-architecture.md"),
+		_read_text("res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"),
 		_read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md"),
 		_read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn"),
 	])
@@ -460,17 +460,20 @@ func _assert_runtime_plan_gpu_first_boundaries() -> bool:
 
 
 func _list_core_docs() -> Array:
-	var docs := []
-	var dir := DirAccess.open(CORE_DOC_DIR)
-	if dir == null:
-		return docs
-	dir.list_dir_begin()
-	var file_name := dir.get_next()
-	while not file_name.is_empty():
-		if not dir.current_is_dir() and file_name.ends_with(".md"):
-			docs.append(CORE_DOC_DIR.path_join(file_name))
-		file_name = dir.get_next()
-	dir.list_dir_end()
+	# Core docs were migrated from res://docs/core/ into individual demos/ subdirectories.
+	# Listed explicitly so the contract test can discover them without a flat docs directory.
+	var docs := [
+		"res://demos/asset-descriptor-demo/asset-descriptor.md",
+		"res://demos/asset-descriptor-demo/asset-properties.md",
+		"res://demos/asset-descriptor-demo/asset-semantic-probes.md",
+		"res://demos/asset-descriptor-demo/auto-asset-scripting.md",
+		"res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md",
+		"res://demos/core-meshfill-framework/meshfill-framework.md",
+		"res://demos/core-SPA-scene-placement-actor/scene-placement-actor.md",
+		"res://demos/core-scene-voxel-field-system/scene-voxel-field-system.md",
+		"res://demos/core-scenevoxeltile/scenevoxeltile.md",
+		"res://demos/core-voxel-display/voxel-display.md",
+	]
 	docs.sort()
 	return docs
 

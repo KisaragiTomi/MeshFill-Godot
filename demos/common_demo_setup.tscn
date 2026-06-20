@@ -1,6 +1,10 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://scripts/fly_camera.gd" id="1_flycam"]
+[ext_resource type="Script" path="res://scripts/non_headless_scene_guard.gd" id="2_guard"]
+[ext_resource type="Mesh" path="res://assets/terrain/common_terrain_mesh.res" id="3_terrain"]
+[ext_resource type="Material" path="res://assets/terrain/common_terrain_material.tres" id="4_terrain_mat"]
+[ext_resource type="Script" path="res://scripts/common_targetsv_setup.gd" id="5_tsv"]
 
 [sub_resource type="Environment" id="env"]
 background_mode = 1
@@ -10,16 +14,19 @@ ambient_light_color = Color(0.42, 0.45, 0.48, 1)
 ambient_light_energy = 0.65
 tonemap_mode = 2
 ssao_enabled = true
-fog_enabled = true
-fog_density = 0.002
+fog_enabled = false
 
 [node name="DemoSetup" type="Node3D"]
 
+[node name="NonHeadlessSceneGuard" type="Node" parent="."]
+script = ExtResource("2_guard")
+
 [node name="FlyCamera" type="Camera3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 0.766044, -0.642788, 0, 0.642788, 0.766044, 16, 18, 25)
+transform = Transform3D(1, 0, 0, 0, 0.8, -0.6, 0, 0.6, 0.8, 0, 300, 400)
 script = ExtResource("1_flycam")
 current = true
 fov = 55.0
+far = 3000.0
 
 [node name="SunLight" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.707107, -0.353553, 0.612372, 0, 0.866025, 0.5, -0.707107, -0.353553, 0.612372, 0, 40, 0)
@@ -35,3 +42,16 @@ shadow_enabled = false
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("env")
+
+[node name="TargetSVSetup" type="Node" parent="."]
+script = ExtResource("5_tsv")
+
+[node name="Terrain" type="MeshInstance3D" parent="." groups=["meshfill_camera_ignore"]]
+mesh = ExtResource("3_terrain")
+material_override = ExtResource("4_terrain_mat")
+cast_shadow = 0
+metadata/_edit_lock_ = true
+metadata/meshfill_common_terrain_initialized = true
+metadata/terrain_capture_size = 1024.0
+metadata/terrain_resolution = 256
+metadata/terrain_height_stats = Vector2(0, 120)

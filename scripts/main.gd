@@ -1,6 +1,7 @@
 extends Node3D
 
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
+const NonHeadlessSceneGuardScript := preload("res://scripts/non_headless_scene_guard.gd")
 
 @export var num_iterations: int = 10
 @export var capture_size: float = TerrainConfigScript.CAPTURE_SIZE
@@ -11,11 +12,8 @@ const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 @export var mesh_height_scale: float = 0.5
 @export var cliff_base_rotation: Vector3 = Vector3(-90.0, 0.0, 0.0)
 @export var object_mask_path: String = ""
-@export var target_height_extension: float = 2.0
 @export var object_overlap: float = 0.0
 @export var use_surface_3d_cliff_placement: bool = false
-@export var batch_test_mode: bool = false
-@export var batch_test_values: Array[float] = [0.5, 1.0, 2.0, 4.0, 8.0, 12.0, 16.0, 20.0]
 @export var object_asset_dir: String = "res://assets/rocks"
 @export var object_asset_paths: Array[String] = []
 @export var vegetation_asset_dir: String = "res://assets/vegetation"
@@ -40,7 +38,6 @@ const TARGET_SV_SLICE_COUNT := 8
 const TARGET_SV_VERTICAL_SPAN := 16.0
 const TARGET_SV_DIR_NAME := "target_scene_voxel"
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
-const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const SceneVoxelBrushScript := preload("res://scripts/scene_voxel_brush.gd")
 const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
@@ -52,12 +49,10 @@ var _debug_terrain: MeshInstance3D
 var _debug_diff_terrain: MeshInstance3D
 var _debug_showing: bool = false
 var _debug_diff_showing: bool = false
-var _slider_label: Label
 var _overlap_label: Label
 var _probe_density_label: Label
 var _probe_debug_label: Label
 var _debounce_timer: Timer
-var _batch_results: Array[Dictionary] = []
 var _step_count: int = 0
 var _cached_textures: Dictionary = {}
 var _cached_cliff_meshes: Array[Mesh] = []
@@ -97,7 +92,6 @@ var _brush_width_spin: SpinBox
 var _brush_length_spin: SpinBox
 var _brush_height_spin: SpinBox
 
-var _vegetation_assets: Array[Resource] = []
 var _autoobject_mask_image: Image
 var _vegetation_generated: bool = false
 var _debug_mask_terrain: MeshInstance3D
@@ -142,14 +136,12 @@ func _get_level_children() -> Array[Node]:
 
 
 func _ready() -> void:
+	if NonHeadlessSceneGuardScript.reject_scene_launch_if_headless(get_tree()):
+		return
 	call_deferred("_initialize_scene")
 
 
 func _initialize_scene() -> void:
-	if batch_test_mode:
-		_run_batch_test()
-		return
-
 	_cached_textures = _load_terrain_textures()
 	if _cached_textures.is_empty():
 		push_error("[MeshFill] Fatal: failed to obtain terrain textures")
@@ -158,7 +150,6 @@ func _initialize_scene() -> void:
 	if _cached_assets.is_empty():
 		push_error("[MeshFill] Fatal: no cliff assets available")
 		return
-	_vegetation_assets = _load_vegetation_assets()
 	_apply_semantic_probe_density_to_assets()
 
 	_terrain_hit_y = _compute_terrain_avg_height(_cached_textures["target_height"])
@@ -166,93 +157,10 @@ func _initialize_scene() -> void:
 	_setup_delta_overlay_ui()
 
 	_clear_object_mask()
-	_create_terrain_mesh(_cached_textures["target_height"])
+	_reuse_or_create_terrain_mesh(_cached_textures["target_height"])
 	_load_persisted_target_scene_voxel()
-	_setup_slider_ui()
-	print("[MeshFill] Ready. Test tools: C=object step P=AutoObject GPU status. G/H=debug J=TargetSV_B Ctrl+J=recompute TargetSV/TargetSV_B V=delta B=brush N=target T=tile M=mask Ctrl+Z=undo")
-	if run_startup_generation_tests:
-		call_deferred("_test_target_height_logic")
+	print("[MeshFill] Ready. Test tools: C=object step G/H=debug J=TargetSV_B Ctrl+J=recompute TargetSV/TargetSV_B V=delta B=brush N=target T=tile M=mask Ctrl+Z=undo")
 
-
-func _test_target_height_logic() -> void:
-	var test_values := [0.5, 2.0, 4.0, 8.0, 12.0]
-	var out_dir := OS.get_user_data_dir() + "/target_height_analysis"
-	DirAccess.make_dir_recursive_absolute(out_dir)
-
-	for ext_val in test_values:
-		target_height_extension = ext_val
-
-		for child in _get_level_children():
-			if child.name == "DebugTargetHeight" or child.name == "DebugDiffHeight":
-				child.queue_free()
-		_debug_terrain = null
-		_debug_diff_terrain = null
-
-		var generator := PlacementFittingGeneratorScript.new()
-		generator.texture_size = TEX_RES
-		generator.capture_size = capture_size
-		generator.max_height = max_height
-		generator.generate_threshold = generate_threshold
-		generator.un_generate_threshold = un_generate_threshold
-		generator.scene_depth_texture = _cached_textures["scene_depth"]
-		generator.scene_normal_texture = _cached_textures["scene_normal"]
-		generator.object_depth_texture = _cached_textures["object_depth"]
-		generator.object_normal_texture = _cached_textures["object_normal"]
-		generator.height_normal_texture = _cached_textures["height_normal"]
-		generator.target_height_texture = _cached_textures["target_height"]
-		generator.placed_mask_texture = null
-		generator.target_height_extension = ext_val
-		generator.stamp_overlap = object_overlap
-		generator.fitting_assets = _cached_assets
-		add_child(generator)
-
-		var _results := _generate_cliff_placements(generator, 0)
-		_raw_target_height_image = generator._debug_target_height_image
-		_raw_current_height_image = generator._debug_current_height_image
-		generator.queue_free()
-
-		var gen_count := 0
-		var h_min := 9999.0
-		var h_max := -9999.0
-		if _raw_current_height_image != null and _raw_target_height_image != null and _cached_textures.has("scene_depth"):
-			var scene_depth_img: Image = (_cached_textures["scene_depth"] as ImageTexture).get_image()
-			var stats := _compute_height_difference_stats_gpu(_raw_target_height_image, _raw_current_height_image, scene_depth_img)
-			if bool(stats.get("valid", false)):
-				gen_count = int(stats.get("total_gen", 0))
-				h_min = float(stats.get("target_h_min", h_min))
-				h_max = float(stats.get("target_h_max", h_max))
-			else:
-				push_error("[TargetH] GPU analysis stats failed")
-
-		print("[TargetH] ext=%.1fm ->mask=%d/%d (%.1f%%) target_h=[%.1f, %.1f]" % [
-			ext_val, gen_count, TEX_RES * TEX_RES,
-			float(gen_count) / float(TEX_RES * TEX_RES) * 100.0, h_min, h_max])
-
-		if _raw_target_height_image != null:
-			var vis := _height_to_grayscale(_raw_target_height_image, 0)
-			vis.save_png("%s/target_h_ext%.1f.png" % [out_dir, ext_val])
-		if _raw_current_height_image != null:
-			var mask_vis := _current_height_mask_to_color(_raw_current_height_image)
-			if mask_vis != null and not mask_vis.is_empty():
-				mask_vis.save_png("%s/mask_ext%.1f.png" % [out_dir, ext_val])
-
-		await get_tree().process_frame
-		_setup_debug_terrain()
-		if _debug_terrain != null:
-			_debug_terrain.visible = true
-		await get_tree().create_timer(0.3).timeout
-		RenderingServer.force_draw(true)
-		await get_tree().process_frame
-		await get_tree().process_frame
-		var img := get_viewport().get_texture().get_image()
-		img.save_png("%s/scene_ext%.1f.png" % [out_dir, ext_val])
-
-	print("[TargetH] Analysis complete. Files at: %s" % out_dir)
-
-	print("[MeshFill] Checking AutoObject GPU generation status...")
-	_step_generate()
-	await get_tree().process_frame
-	_generate_vegetation()
 
 	print("[MeshFill] Brush override test")
 	_test_brush_override()
@@ -320,159 +228,8 @@ func _test_brush_override() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 
-	_generate_vegetation()
 	print("[MeshFill] Brush override test complete")
 
-
-func _run_batch_test() -> void:
-	print("[MeshFill] 鈺斺晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晽")
-	print("[MeshFill] BATCH TEST: target_height_extension")
-	print("[MeshFill] 鈺氣晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨暆")
-	print("[MeshFill] Testing %d values: %s" % [batch_test_values.size(), str(batch_test_values)])
-	print("")
-
-	var textures := _load_terrain_textures()
-	if textures.is_empty():
-		push_error("[MeshFill] Fatal: failed to obtain terrain textures")
-		return
-
-	var cliff_meshes: Array[Mesh] = []
-	var assets: Array[AutoObject] = []
-	_load_cliff_data(cliff_meshes, assets)
-	if assets.is_empty():
-		push_error("[MeshFill] Fatal: no cliff assets available")
-		return
-
-	_batch_results.clear()
-
-	for ext_val in batch_test_values:
-		print("[MeshFill] -------------------------------------------")
-		print("[MeshFill] Testing extension = %.1fm" % ext_val)
-		print("[MeshFill] -------------------------------------------")
-
-		var generator := PlacementFittingGeneratorScript.new()
-		generator.texture_size = TEX_RES
-		generator.capture_size = capture_size
-		generator.max_height = max_height
-		generator.generate_threshold = generate_threshold
-		generator.un_generate_threshold = un_generate_threshold
-		generator.scene_depth_texture = textures["scene_depth"]
-		generator.scene_normal_texture = textures["scene_normal"]
-		generator.object_depth_texture = textures["object_depth"]
-		generator.object_normal_texture = textures["object_normal"]
-		generator.height_normal_texture = textures["height_normal"]
-		generator.target_height_texture = textures["target_height"]
-		generator.placed_mask_texture = null
-		generator.target_height_extension = ext_val
-		generator.stamp_overlap = object_overlap
-		generator.fitting_assets = assets
-		add_child(generator)
-
-		var t0 := Time.get_ticks_msec()
-		var results := _generate_cliff_placements(generator, num_iterations)
-		var elapsed := Time.get_ticks_msec() - t0
-
-		_raw_target_height_image = generator._debug_target_height_image
-		_raw_current_height_image = generator._debug_current_height_image
-
-		var pixel_size := capture_size / float(TEX_RES)
-		var flood_iters := maxi(1, ceili(ext_val / pixel_size))
-
-		var stats := _collect_batch_stats(textures["scene_depth"], ext_val, results.size(), elapsed, flood_iters)
-		_batch_results.append(stats)
-
-		var out_dir := OS.get_user_data_dir() + "/batch_test"
-		DirAccess.make_dir_recursive_absolute(out_dir)
-		if _raw_target_height_image != null:
-			var vis := _height_to_grayscale(_raw_target_height_image, 0)
-			vis.save_png(out_dir + "/target_height_ext%.1f.png" % ext_val)
-		if _raw_current_height_image != null:
-			var vis := _height_to_grayscale(_raw_current_height_image, 0)
-			vis.save_png(out_dir + "/current_height_ext%.1f.png" % ext_val)
-		if _raw_target_height_image != null and _raw_current_height_image != null:
-			var diff_vis := _height_diff_to_color(_raw_target_height_image, _raw_current_height_image)
-			diff_vis.save_png(out_dir + "/height_diff_ext%.1f.png" % ext_val)
-
-		generator.queue_free()
-
-	_print_batch_summary()
-
-	target_height_extension = batch_test_values[-1]
-	_generate()
-	_setup_debug_terrain()
-	_setup_slider_ui()
-	_auto_screenshot()
-	print("[MeshFill] Batch test complete. Slider available for interactive testing.")
-
-
-func _collect_batch_stats(scene_depth_tex: ImageTexture, ext_val: float, placement_count: int, elapsed_ms: int, flood_iters: int) -> Dictionary:
-	var stats := {
-		"extension": ext_val,
-		"placements": placement_count,
-		"elapsed_ms": elapsed_ms,
-		"flood_iterations": flood_iters,
-		"rmse": 0.0,
-		"mae": 0.0,
-		"max_err": 0.0,
-		"total_gen": 0,
-		"filled_ok_pct": 0.0,
-		"under_filled_pct": 0.0,
-		"overshoot_pct": 0.0,
-		"target_h_min": 0.0,
-		"target_h_max": 0.0,
-		"fillable_rmse": 0.0,
-		"fillable_mae": 0.0,
-		"avg_object_height": 0.0,
-	}
-
-	if _raw_target_height_image == null or _raw_current_height_image == null:
-		return stats
-
-	var scene_depth_img := scene_depth_tex.get_image()
-	var gpu_stats := _compute_height_difference_stats_gpu(_raw_target_height_image, _raw_current_height_image, scene_depth_img)
-	if not bool(gpu_stats.get("valid", false)):
-		push_error("[MeshFill] Batch height stats GPU compute failed")
-		return stats
-
-	for key in stats.keys():
-		if gpu_stats.has(key):
-			stats[key] = gpu_stats[key]
-
-	print("[MeshFill]   Placements: %d | Time: %dms | Flood iters: %d" % [placement_count, elapsed_ms, flood_iters])
-	print("[MeshFill]   Target H range: %.1f - %.1f" % [stats.target_h_min, stats.target_h_max])
-	print("[MeshFill]   RMSE: %.3f | MAE: %.3f | MaxErr: %.3f" % [stats.rmse, stats.mae, stats.max_err])
-	print("[MeshFill]   Filled OK: %.1f%% | Under: %.1f%% | Over: %.1f%%" % [stats.filled_ok_pct, stats.under_filled_pct, stats.overshoot_pct])
-	return stats
-
-
-func _print_batch_summary() -> void:
-	print("")
-	print("[MeshFill] 鈺斺晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晽")
-	print("[MeshFill] BATCH TEST SUMMARY")
-	print("[MeshFill] 鈺犫晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨暎")
-	print("[MeshFill] Extension | FloodItr | Placements | Time(ms) | RMSE | MAE | MaxErr | Filled%% | Under%% | Over%% | TgtRange")
-	print("[MeshFill] 鈺犫晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨暎")
-	for s in _batch_results:
-		print("[MeshFill] %7.1fm | %4d | %4d | %5d | %6.3f | %6.3f | %6.3f | %5.1f | %5.1f | %5.1f | %.1f-%.1f" % [
-			s.extension, s.flood_iterations, s.placements, s.elapsed_ms,
-			s.rmse, s.mae, s.max_err,
-			s.filled_ok_pct, s.under_filled_pct, s.overshoot_pct,
-			s.target_h_min, s.target_h_max])
-	print("[MeshFill] 鈺氣晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨暆")
-	print("")
-
-	var best_rmse_idx := 0
-	var best_filled_idx := 0
-	for i in range(_batch_results.size()):
-		if _batch_results[i].rmse < _batch_results[best_rmse_idx].rmse and _batch_results[i].rmse > 0.0:
-			best_rmse_idx = i
-		if _batch_results[i].filled_ok_pct > _batch_results[best_filled_idx].filled_ok_pct:
-			best_filled_idx = i
-
-	print("[MeshFill] KEY FINDINGS")
-	print("[MeshFill]   Best RMSE:    extension=%.1fm (RMSE=%.3f)" % [_batch_results[best_rmse_idx].extension, _batch_results[best_rmse_idx].rmse])
-	print("[MeshFill]   Best Fill%%:   extension=%.1fm (%.1f%% filled OK)" % [_batch_results[best_filled_idx].extension, _batch_results[best_filled_idx].filled_ok_pct])
-	print("[MeshFill]   Images saved to: %s/batch_test/" % OS.get_user_data_dir())
 
 
 func _input(event: InputEvent) -> void:
@@ -566,8 +323,6 @@ func _unhandled_input(event: InputEvent) -> void:
 			_cycle_brush_target()
 		elif ke.pressed and ke.keycode == KEY_Z and ke.ctrl_pressed:
 			_undo_override()
-		elif ke.pressed and enable_test_generation_tools and ke.keycode == KEY_P:
-			_generate_vegetation()
 		elif ke.pressed and ke.keycode == KEY_M:
 			_toggle_mask_overlay()
 		elif ke.pressed and ke.keycode == KEY_F12:
@@ -1294,7 +1049,6 @@ func _step_generate() -> void:
 		generator.placement_override_mask_texture = ImageTexture.create_from_image(_object_override_mask)
 	if _object_override_delta != null:
 		generator.placement_override_delta_texture = ImageTexture.create_from_image(_object_override_delta)
-	generator.target_height_extension = target_height_extension
 	generator.stamp_overlap = object_overlap
 	generator.fitting_assets = _cached_assets
 	add_child(generator)
@@ -1429,19 +1183,6 @@ func _setup_slider_ui() -> void:
 	var vbox := VBoxContainer.new()
 	panel.add_child(vbox)
 
-	_slider_label = Label.new()
-	_slider_label.text = "Target Height Extension: %.1fm" % target_height_extension
-	vbox.add_child(_slider_label)
-
-	var slider := HSlider.new()
-	slider.min_value = 0.5
-	slider.max_value = 20.0
-	slider.step = 0.5
-	slider.value = target_height_extension
-	slider.custom_minimum_size = Vector2(300, 20)
-	slider.value_changed.connect(_on_extension_changed)
-	vbox.add_child(slider)
-
 	_overlap_label = Label.new()
 	_overlap_label.text = "Object Overlap: %.0f%%" % (object_overlap * 100.0)
 	vbox.add_child(_overlap_label)
@@ -1527,7 +1268,6 @@ func _setup_slider_ui() -> void:
 	section_header.add_theme_font_size_override("font_size", 13)
 	shortcuts_vbox.add_child(section_header)
 	_sh.call(shortcuts_vbox, "C", "Object step")
-	_sh.call(shortcuts_vbox, "P", "AutoObject GPU status")
 
 	vbox.add_child(shortcuts_panel)
 
@@ -1536,28 +1276,12 @@ func _setup_slider_ui() -> void:
 	rock_button.pressed.connect(_run_test_object_generation)
 	vbox.add_child(rock_button)
 
-	var vegetation_button := Button.new()
-	vegetation_button.text = "P  AutoObject GPU Status"
-	vegetation_button.pressed.connect(_run_test_vegetation_generation)
-	vbox.add_child(vegetation_button)
-
 
 func _run_test_object_generation() -> void:
 	if not enable_test_generation_tools:
 		return
 	_step_generate()
 
-
-func _run_test_vegetation_generation() -> void:
-	if not enable_test_generation_tools:
-		return
-	_generate_vegetation()
-
-
-func _on_extension_changed(new_val: float) -> void:
-	target_height_extension = new_val
-	_slider_label.text = "Target Height Extension: %.1fm" % new_val
-	_start_debounce_regen()
 
 
 func _on_overlap_changed(new_val: float) -> void:
@@ -1581,11 +1305,6 @@ func _apply_semantic_probe_density_to_assets() -> void:
 			continue
 		asset.semantic_probe_density = semantic_probe_density
 		asset.rebuild_semantic_probes(semantic_probe_density)
-	for asset in _vegetation_assets:
-		if asset == null:
-			continue
-		asset.semantic_probe_density = semantic_probe_density
-		asset.get_semantic_probes(semantic_probe_density)
 	_update_probe_debug_label()
 
 
@@ -1657,29 +1376,6 @@ func _collect_semantic_probe_debug_assets(max_assets: int) -> Array[Dictionary]:
 			"mesh_scale": Vector3.ONE * debug_scale,
 			"source_mesh_scale": Vector3.ONE * source_mesh_scale,
 			"color": asset.get_voxel_color(),
-			"probes": probes,
-		})
-	for i in range(_vegetation_assets.size()):
-		if result.size() >= max_assets:
-			break
-		var asset := _vegetation_assets[i]
-		if asset == null:
-			continue
-		var probes: Array = asset.call("get_semantic_probes", semantic_probe_density)
-		var mesh = asset.call("get_mesh")
-		var source_mesh = asset.call("get_source_mesh")
-		var max_axis := _semantic_probe_debug_mesh_max_axis(mesh)
-		var target_size := maxf(float(asset.get("scatter_max_scale")) * max_axis, 1.0)
-		var mesh_scale := Vector3.ONE * _semantic_probe_debug_mesh_scale(mesh, target_size)
-		var source_mesh_scale := Vector3.ONE * _semantic_probe_debug_mesh_scale(source_mesh, target_size)
-		var asset_id := str(asset.get("asset_id"))
-		result.append({
-			"name": asset_id if not asset_id.is_empty() else "vegetation_%d" % i,
-			"mesh": mesh,
-			"source_mesh": source_mesh,
-			"mesh_scale": mesh_scale,
-			"source_mesh_scale": source_mesh_scale,
-			"color": asset.call("get_color"),
 			"probes": probes,
 		})
 	return result
@@ -1813,12 +1509,11 @@ func _add_edge(edges: Dictionary, a: Vector3, b: Vector3) -> void:
 
 func _make_probe_debug_marker(probe: Dictionary, offset_scale: Vector3 = Vector3.ONE) -> MeshInstance3D:
 	var color: Color = probe.get("expected_color", Color.WHITE)
-	var flags := int(probe.get("flags", 0))
 	var shape_source := str(probe.get("shape_source", ""))
-	if (flags & SemanticProbeProfileScript.FLAG_COLLISION) != 0:
+	var wc := float(probe.get("w_collision", 0.0))
+	var wcol := float(probe.get("w_color", 0.0))
+	if wc > wcol and wc > float(probe.get("w_complexity", 0.0)):
 		color = Color(1.0, 0.35, 0.2, 1.0)
-	elif (flags & SemanticProbeProfileScript.FLAG_EMPTY) != 0:
-		color = Color(0.2, 0.4, 1.0, 1.0)
 	color.a = 0.95
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
@@ -1886,12 +1581,9 @@ func _update_probe_debug_label() -> void:
 	for asset in _cached_assets:
 		if asset != null:
 			total += asset.get_semantic_probes(semantic_probe_density).size()
-	for asset in _vegetation_assets:
-		if asset != null:
-			total += asset.get_semantic_probes(semantic_probe_density).size()
 	_probe_debug_label.text = "Semantic Probes: %.1fx, %d assets, %d probes" % [
 		semantic_probe_density,
-		_cached_assets.size() + _vegetation_assets.size(),
+		_cached_assets.size(),
 		total,
 	]
 
@@ -1911,8 +1603,18 @@ func _regenerate() -> void:
 		if child.name.begins_with("Cliff_") or child.name == "DebugTargetHeight" or child.name == "DebugDiffHeight" or child.name == "DebugCombinedMask" or child.name == "DebugSemanticProbes" or child.name == "DebugTargetSceneVoxel" or child.name == "Terrain":
 			_remove_voxel_write_spec(child)
 			child.queue_free()
+	for node in _get_level_children():
+		if node is AutoObject and not node.is_queued_for_deletion():
+			if node.get_record_auto_source("") == "scatter":
+				_remove_voxel_write_spec(node)
+				node.queue_free()
+	if _scene_voxel_committer != null:
+		_scene_voxel_committer._free_gpu()
+		_scene_voxel_committer = null
 	_debug_terrain = null
 	_debug_diff_terrain = null
+	if _debug_mask_terrain != null:
+		_debug_mask_terrain.queue_free()
 	_debug_mask_terrain = null
 	_debug_probe_root = null
 	_target_sv_debug_terrain = null
@@ -1922,12 +1624,14 @@ func _regenerate() -> void:
 	_step_count = 0
 	_raw_target_height_image = null
 	_raw_current_height_image = null
+	_autoobject_mask_image = null
+	_vegetation_generated = false
 	_clear_object_mask()
 	_invalidate_overrides()
 	var final_terrain_tex := _composite_target_height()
 	_terrain_hit_y = _compute_terrain_avg_height(final_terrain_tex)
 	_create_terrain_mesh(final_terrain_tex)
-	print("[MeshFill] Regenerating with extension=%.1fm overlap=%.0f%%..." % [target_height_extension, object_overlap * 100.0])
+	print("[MeshFill] Regenerating with overlap=%.0f%%..." % [object_overlap * 100.0])
 	_step_generate()
 
 
@@ -2002,7 +1706,6 @@ func _generate() -> void:
 	generator.height_normal_texture = textures["height_normal"]
 	generator.target_height_texture = textures["target_height"]
 	generator.placed_mask_texture = prev_object_mask
-	generator.target_height_extension = target_height_extension
 	generator.stamp_overlap = object_overlap
 	generator.fitting_assets = assets
 	add_child(generator)
@@ -3899,7 +3602,7 @@ func _dirty_rect_with_margin(dirty_rect: Rect2i) -> Rect2i:
 		return Rect2i(0, 0, TEX_RES, TEX_RES)
 	var pixel_size := capture_size / float(TEX_RES)
 	var footprint_margin := ceili(float(maxi(_brush_width, _brush_length)) * 0.5)
-	var margin := ceili(target_height_extension / pixel_size) + footprint_margin + 2
+	var margin := footprint_margin + 2
 	return dirty_rect.grow(margin).intersection(Rect2i(0, 0, TEX_RES, TEX_RES))
 
 
@@ -3974,7 +3677,6 @@ func _mark_brush_scene_voxel_bounds_dirty(base_rect: Rect2i) -> void:
 
 func _commit_brush_edit(dirty_rect: Rect2i, update_generated_layers: bool = true, update_voxels: bool = true) -> void:
 	var commit_rect := _dirty_rect_with_margin(dirty_rect)
-	var had_vegetation := _vegetation_generated
 	print("[MeshFill] Brush commit: dirty=%s target=%s size=%dx%dx%d" % [
 		str(commit_rect),
 		"Height" if _brush_target == BRUSH_TARGET_HEIGHT else "Object",
@@ -3988,9 +3690,7 @@ func _commit_brush_edit(dirty_rect: Rect2i, update_generated_layers: bool = true
 
 	_mark_brush_scene_voxel_bounds_dirty(commit_rect)
 
-	if update_generated_layers and had_vegetation:
-		_generate_vegetation()
-	elif update_voxels:
+	if update_voxels:
 		var applied := _rebuild_scene_voxel_committer_from_scene_records(commit_rect)
 		if applied > 0:
 			print("[MeshFill] Brush commit: refreshed %d scene voxel_write_spec entries" % applied)
@@ -5093,36 +4793,6 @@ func _load_scripted_rock_assets(out_meshes: Array[Mesh], out_assets: Array[AutoO
 	return loaded
 
 
-func _load_vegetation_assets() -> Array[Resource]:
-	var paths: Array[String] = []
-	for path in vegetation_asset_paths:
-		if not path.is_empty() and not paths.has(path):
-			paths.append(path)
-	_collect_resource_paths(vegetation_asset_dir, paths)
-
-	var assets: Array[Resource] = []
-	for path in paths:
-		var resource = load(path)
-		if resource == null or resource.get_script() != AssetDescriptorScript:
-			continue
-		var asset: Resource = resource
-		var scatter_profile: Array = asset.call("get_scatter_profile")
-		if scatter_profile.is_empty():
-			push_warning("[MeshFill] Skipping vegetation asset without scatter profile: %s" % path)
-			continue
-		if asset.call("get_mesh") == null:
-			push_warning("[MeshFill] Skipping vegetation asset without mesh source: %s" % path)
-			continue
-		if int(asset.get("scatter_max_count")) <= 0:
-			continue
-		assets.append(asset)
-		print("  Scripted vegetation asset: %s (%s)" % [
-			path, str(asset.get("object_subtype"))])
-	if not assets.is_empty():
-		print("[MeshFill] Loaded %d scripted vegetation assets" % assets.size())
-	return assets
-
-
 func _load_cliff_data(out_meshes: Array[Mesh], out_assets: Array[AutoObject]) -> void:
 	print("[MeshFill] Loading cliff meshes...")
 	var scripted_count := _load_scripted_rock_assets(out_meshes, out_assets)
@@ -5291,32 +4961,21 @@ func _create_cliff_height_image_gpu(box_size: Vector3) -> Image:
 
 # --- Terrain mesh creation ---
 
-func _create_terrain_mesh(height_tex: ImageTexture) -> void:
+func _reuse_or_create_terrain_mesh(height_tex: ImageTexture) -> void:
+	# 启动时只复用编辑时 Terrain；运行时不再生成或替换地形网格。
 	var existing := _get_level_child("Terrain")
-	if existing != null:
-		_remove_voxel_write_spec(existing)
-
-	var result := TerrainInitializerScript.ensure_shared_terrain(_get_level_root(), {
-		"target_height": height_tex,
-		"capture_size": capture_size,
-		"replace_existing": true,
-		"visible": true,
-	})
-	if not bool(result.get("ok", false)):
-		push_error("[MeshFill] Terrain initialization failed: %s" % str(result.get("reason", "unknown")))
+	if existing is MeshInstance3D and (existing as MeshInstance3D).mesh != null:
+		var mi := existing as MeshInstance3D
+		var res := int(mi.get_meta("terrain_resolution", height_tex.get_width()))
+		_attach_voxel_write_spec(mi, _make_terrain_voxel_write_spec(mi, res))
+		print("[MeshFill] Reusing baked terrain (%dx%d)" % [res, res])
 		return
+	push_error("[MeshFill] Missing edit-time Terrain; runtime creation is disabled")
 
-	var mi := result.get("terrain") as MeshInstance3D
-	if mi == null:
-		push_error("[MeshFill] Terrain initialization returned no MeshInstance3D")
-		return
 
-	var res := int(result.get("resolution", height_tex.get_width()))
-	var height_stats: Vector2 = result.get("height_stats", Vector2.ZERO)
-	_attach_voxel_write_spec(mi, _make_terrain_voxel_write_spec(mi, res))
 
-	print("[MeshFill] Terrain mesh created (%dx%d, %.0fm x %.0fm, h=%.2f..%.2f)" % [
-		res, res, capture_size, capture_size, height_stats.x, height_stats.y])
+func _create_terrain_mesh(_height_tex: ImageTexture) -> void:
+	push_error("[MeshFill] Runtime Terrain creation is disabled; edit-time Terrain is required")
 
 
 func _scale_height_image(img: Image, scale: float) -> void:
@@ -5591,32 +5250,6 @@ func _ensure_scene_voxel_committer() -> void:
 	_scene_voxel_committer = SceneVoxelCommitterScript.new(TEX_RES, capture_size)
 
 
-func _generate_vegetation() -> void:
-	if _cached_textures.is_empty():
-		push_error("[MeshFill] Cannot inspect AutoObject generation: no textures loaded")
-		return
-
-	_clear_vegetation()
-	push_warning("[MeshFill] AutoObject generation skipped: legacy CPU scatter was removed.")
-	print("[MeshFill] Runtime placement is GPU-only now; route placement through AutoObjectProbePrefilterGPU + VoxelPlacementGenerator.")
-	print("[MeshFill] No CPU placements, voxel_write_spec entries, or per-object scatter nodes were created.")
-
-
-func _clear_vegetation() -> void:
-	for node in _get_level_children():
-		if node is AutoObject and not node.is_queued_for_deletion():
-			if node.get_record_auto_source("") == "scatter":
-				_remove_voxel_write_spec(node)
-				node.queue_free()
-	if _scene_voxel_committer != null:
-		_scene_voxel_committer._free_gpu()
-		_scene_voxel_committer = null
-	if _debug_mask_terrain != null:
-		_debug_mask_terrain.queue_free()
-		_debug_mask_terrain = null
-	_autoobject_mask_image = null
-	_vegetation_generated = false
-
 
 func _save_combined_mask_debug() -> void:
 	var out_dir := OS.get_user_data_dir()
@@ -5882,18 +5515,8 @@ func _probe_inspect_at_screen(screen_pos: Vector2) -> void:
 	lines.append("Peak: value=%.3f collision=%.3f  Weighted color=(%.2f,%.2f,%.2f)" % [
 		peak_value, peak_collision, avg_color.x, avg_color.y, avg_color.z])
 
-	var candidate_lines := _score_candidates_at_pixel(
-		pixel,
-		tex_size,
-		slice_count,
-		vertical_span,
-		target_completely_values,
-		target_color_words
-	)
-	if not candidate_lines.is_empty():
-		lines.append("")
-		lines.append("--- Candidate Assets (top 5) ---")
-		lines.append_array(candidate_lines)
+	lines.append("")
+	lines.append("--- Candidate scoring: GPU-only (see prefilter top-K readback) ---")
 
 	_show_probe_inspect("\n".join(lines))
 	print("[ProbeInspect] %s" % lines[0])
@@ -5941,87 +5564,6 @@ func _target_sv_b_color_rgba8_from_word(word: int) -> Color:
 	)
 
 
-func _score_candidates_at_pixel(
-	pixel: Vector2i,
-	tex_size: int,
-	slice_count: int,
-	vertical_span: float,
-	target_completely_values: PackedFloat32Array = PackedFloat32Array(),
-	target_color_words: PackedInt32Array = PackedInt32Array()
-) -> PackedStringArray:
-	var result: PackedStringArray = PackedStringArray()
-	var voxel_count := tex_size * tex_size * slice_count
-	var has_decoded_buffers := target_completely_values.size() >= voxel_count and target_color_words.size() >= voxel_count
-	if not has_decoded_buffers and not _target_sv_b_packed_target_buffers_valid(voxel_count):
-		return result
-	var pixel_size := capture_size / float(tex_size)
-	var slice_height := vertical_span / float(slice_count)
-	if not has_decoded_buffers:
-		target_completely_values = _target_sv_b_float_values(_target_sv_b_target_completely_bytes, voxel_count)
-		target_color_words = _target_sv_b_int_words(_target_sv_b_target_color_rgba8_bytes, voxel_count)
-	var asset_entries: Array[Dictionary] = []
-	for asset in _cached_assets:
-		if asset != null:
-			asset_entries.append({"name": asset.name, "probes": asset.get_semantic_probes(semantic_probe_density)})
-	for veg_res in _vegetation_assets:
-		if veg_res != null:
-			asset_entries.append({"name": veg_res.asset_id, "probes": veg_res.get_semantic_probes(semantic_probe_density)})
-
-	var scored: Array[Dictionary] = []
-	for entry in asset_entries:
-		var probes: Array = entry.probes
-		if probes.is_empty():
-			continue
-		var total_score := 0.0
-		for raw_probe in probes:
-			if not raw_probe is Dictionary:
-				continue
-			var probe := raw_probe as Dictionary
-			var offset: Vector3 = SemanticProbeProfileScript.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
-			var probe_px := clampi(pixel.x + roundi(offset.x / pixel_size), 0, tex_size - 1)
-			var probe_py := clampi(pixel.y + roundi(offset.z / pixel_size), 0, tex_size - 1)
-			var probe_slice := clampi(floori(offset.y / slice_height), 0, slice_count - 1)
-			var idx := probe_px + tex_size * (probe_py + tex_size * probe_slice)
-			if idx < 0 or idx >= voxel_count:
-				continue
-			var sv_color := _target_sv_b_color_rgba8_from_word(target_color_words[idx])
-			var sv_r := sv_color.r
-			var sv_g := sv_color.g
-			var sv_b := sv_color.b
-			var sv_value := sv_color.a
-			var sv_collision := clampf(target_completely_values[idx], 0.0, 1.0)
-			var weight := maxf(float(probe.get("weight", 1.0)), 0.000001)
-			var flags := int(probe.get("flags", SemanticProbeProfileScript.FLAG_COLOR | SemanticProbeProfileScript.FLAG_COMPLEXITY))
-			var kind := str(probe.get("kind", "positive"))
-			var score := 0.0
-			var w_sum := 0.0
-			if kind == "negative" or (flags & SemanticProbeProfileScript.FLAG_EMPTY) != 0:
-				score = clampf(1.0 - maxf(sv_value, sv_collision), 0.0, 1.0)
-				w_sum = 1.0
-			else:
-				if (flags & SemanticProbeProfileScript.FLAG_COLOR) != 0:
-					var expected_color: Color = probe.get("expected_color", Color.WHITE)
-					var dist := Vector3(sv_r, sv_g, sv_b).distance_to(Vector3(expected_color.r, expected_color.g, expected_color.b))
-					score += clampf(1.0 - dist / sqrt(3.0), 0.0, 1.0)
-					w_sum += 1.0
-				if (flags & SemanticProbeProfileScript.FLAG_COMPLEXITY) != 0:
-					var expected_c := clampf(float(probe.get("expected_complexity", 1.0)), 0.0, 1.0)
-					score += clampf(1.0 - absf(sv_value - expected_c), 0.0, 1.0)
-					w_sum += 1.0
-				if (flags & SemanticProbeProfileScript.FLAG_COLLISION) != 0:
-					var expected_col := clampf(float(probe.get("expected_collision", 0.0)), 0.0, 1.0)
-					score += clampf(1.0 - absf(sv_collision - expected_col), 0.0, 1.0)
-					w_sum += 1.0
-			var probe_score := score / maxf(w_sum, 0.000001)
-			total_score += probe_score * weight
-		var final_score := total_score
-		scored.append({"name": entry.name, "score": final_score, "probe_count": probes.size()})
-
-	scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.score) > float(b.score))
-	for i in range(mini(scored.size(), 5)):
-		var s: Dictionary = scored[i]
-		result.append("  %d. %s  score=%.3f  (%d probes)" % [i + 1, s.name, s.score, s.probe_count])
-	return result
 
 
 func _show_probe_inspect(text: String) -> void:

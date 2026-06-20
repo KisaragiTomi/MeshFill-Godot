@@ -20,11 +20,15 @@ config/features=PackedStringArray("4.6", "Forward Plus")
 
 [autoload]
 
-CommonTerrain="*res://scripts/common_terrain.gd"
+McpInteractionServer="*res://scripts/mcp_interaction_server.gd"
 
 [dotnet]
 
 project/assembly_name="MeshFill-Godot"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/meshfill_editor/plugin.cfg")
 
 [meshfill]
 

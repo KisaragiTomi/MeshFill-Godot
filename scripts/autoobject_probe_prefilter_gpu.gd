@@ -245,6 +245,9 @@ func _run_gpu_pipeline(
 	var votes_bytes := PackedByteArray()
 	if not resident_route_payload_ready or cpu_route_debug_readback_requested:
 		votes_bytes = _rd.buffer_get_data(voxel_sparse_votes_buf, 0, asset_count * tile_count * 4)
+	var topk_bytes := PackedByteArray()
+	if _debug_readback_topk_requested(target_read_buffers):
+		topk_bytes = _rd.buffer_get_data(topk_buf, 0, actual_anchor_count * TOPK * 8)
 	var pipeline_status := _pipeline_readiness(route_pack_requested, use_expand_shader)
 
 	if resident_route_payload_ready:
@@ -265,7 +268,8 @@ func _run_gpu_pipeline(
 		pipeline_status,
 		_target_read_buffer_summary(target_buffer_pack),
 		gpu_route_pack_payload,
-		cpu_route_debug_readback_requested
+		cpu_route_debug_readback_requested,
+		topk_bytes
 	)
 
 
@@ -835,27 +839,26 @@ func _pack_all_probes(
 		range_entries[obj_idx] = Vector2i(start, all_probes.size() - start)
 
 	# Pack probe data: 2 vec4 per probe = 32 bytes
+	# d0 = (offset.xyz, w_collision)
+	# d1 = (rgba8_bits, expected_collision, w_color, w_complexity)
 	var probe_bytes := PackedByteArray()
 	probe_bytes.resize(maxi(all_probes.size(), 1) * 32)
 	for i in range(all_probes.size()):
 		var p: Dictionary = all_probes[i]
 		var offset := _vec3_from(p.get("offset", Vector3.ZERO))
-		var weight := maxf(float(p.get("weight", 1.0)), 0.0)
 		var rgba8 := _shader_rgba8_from_probe(p)
 		var e_coll := clampf(float(p.get("expected_collision", 0.0)), 0.0, 1.0)
-		var flags := int(p.get("flags", SemanticProbeProfileScript.FLAG_COLOR | SemanticProbeProfileScript.FLAG_COMPLEXITY))
-		var kind := _kind_to_uint(str(p.get("kind", "positive")))
+		var wc := _probe_metric_weights(p)
 
 		var base := i * 32
 		probe_bytes.encode_float(base + 0, offset.x)
 		probe_bytes.encode_float(base + 4, offset.y)
 		probe_bytes.encode_float(base + 8, offset.z)
-		probe_bytes.encode_float(base + 12, weight)
-		# Second vec4: pack as float-bits
-		probe_bytes.encode_u32(base + 16, rgba8)       # floatBitsToUint on GPU side
+		probe_bytes.encode_float(base + 12, wc.z)      # w_collision
+		probe_bytes.encode_u32(base + 16, rgba8)        # floatBitsToUint on GPU side
 		probe_bytes.encode_float(base + 20, e_coll)
-		probe_bytes.encode_u32(base + 24, flags)
-		probe_bytes.encode_u32(base + 28, kind)
+		probe_bytes.encode_float(base + 24, wc.x)      # w_color
+		probe_bytes.encode_float(base + 28, wc.y)      # w_complexity
 
 	# Pack range: uvec2 per entry = 8 bytes
 	var range_bytes := PackedByteArray()
@@ -957,7 +960,8 @@ func _decode_results(
 	pipeline_status: Dictionary = {},
 	target_read_buffer_summary: Dictionary = {},
 	gpu_route_pack_payload: Dictionary = {},
-	cpu_route_debug_readback_requested: bool = false
+	cpu_route_debug_readback_requested: bool = false,
+	topk_bytes: PackedByteArray = PackedByteArray()
 ) -> Dictionary:
 	# Decode anchors
 	var anchors: Array[Dictionary] = []
@@ -1024,6 +1028,8 @@ func _decode_results(
 		gpu_route_pack_payload,
 		cpu_route_handoff_payload
 	)
+	var anchor_topk_readback := _decode_topk_readback(topk_bytes, anchor_count, asset_count)
+
 	var route_has_resident_rids := _candidate_route_payload_has_resident_rids(route_handoff_payload)
 	var route_contract := VoxelPlacementGeneratorScript._candidate_route_input_contract_from_settings({
 		"candidate_route_input_contract": route_handoff_payload,
@@ -1037,7 +1043,7 @@ func _decode_results(
 	return {
 		"ok": true,
 		"anchors": anchors,                                           # position-only anchor readback
-		"anchor_autoobject_topk": {},                                  # GPU internal, not read back
+		"anchor_autoobject_topk": anchor_topk_readback,                  # per-anchor top-K readback (empty if not requested)
 		"autoobject_candidate_voxel_sparses": autoobject_candidate_voxel_sparses, # per-asset regions
 		"candidate_voxel_regions_by_asset": autoobject_candidate_voxel_sparses,
 		"candidate_voxel_sparses_by_asset": autoobject_candidate_voxel_sparses,
@@ -1795,6 +1801,37 @@ func _candidate_route_gpu_pack_requested(options: Dictionary = {}) -> bool:
 	return use_gpu_candidate_route_pack
 
 
+func _debug_readback_topk_requested(options: Dictionary = {}) -> bool:
+	for key in ["debug_readback_topk", "readback_topk", "read_topk"]:
+		if options.has(key):
+			return bool(options.get(key, false))
+	return false
+
+
+static func _decode_topk_readback(topk_bytes: PackedByteArray, anchor_count: int, asset_count: int) -> Dictionary:
+	if topk_bytes.is_empty():
+		return {}
+	var result := {}
+	var stride := TOPK * 8
+	var available := mini(topk_bytes.size(), anchor_count * stride)
+	for anchor_id in range(mini(anchor_count, int(available / stride))):
+		var entries: Array[Dictionary] = []
+		for k in range(TOPK):
+			var offset := anchor_id * stride + k * 8
+			if offset + 8 > topk_bytes.size():
+				break
+			var aid := int(topk_bytes.decode_u32(offset))
+			var score_bits := topk_bytes.decode_u32(offset + 4)
+			var score_bytes := PackedByteArray()
+			score_bytes.resize(4)
+			score_bytes.encode_u32(0, score_bits)
+			var score := score_bytes.decode_float(0)
+			if aid != EMPTY_ASSET_ID and score >= 0.0:
+				entries.append({"asset_id": int(aid), "score": score, "rank": k})
+		result[anchor_id] = entries
+	return result
+
+
 ## CPU debug readback of vote buffer bytes — only needed when GPU route pack is
 ## explicitly disabled or debug inspection of raw vote bytes is requested.
 func _candidate_route_cpu_debug_readback_requested(options: Dictionary = {}) -> bool:
@@ -2034,11 +2071,12 @@ func _vec3_from(value) -> Vector3:
 	return Vector3.ZERO
 
 
-func _kind_to_uint(kind: String) -> int:
-	match kind:
-		"negative": return 1
-		"support":  return 2
-		_:          return 0  # positive
+static func _probe_metric_weights(p: Dictionary) -> Vector3:
+	return Vector3(
+		float(p.get("w_color", 1.0)),
+		float(p.get("w_complexity", 1.0)),
+		float(p.get("w_collision", 1.0)),
+	)
 
 
 static func _build_route_profiles(autoobjects: Array, asset_count: int, voxel_size: Vector3) -> Array[Dictionary]:

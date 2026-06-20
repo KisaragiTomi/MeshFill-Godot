@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://uxy5idfw4s8q"
+path="res://.godot/imported/reduce_object_rotation_scores.glsl-9129041a5557e8c4b916f42af1f3a73c.res"
+
+[deps]
+
+source_file="res://shaders/reduce_object_rotation_scores.glsl"
+dest_files=["res://.godot/imported/reduce_object_rotation_scores.glsl-9129041a5557e8c4b916f42af1f3a73c.res"]
+
+[params]
+

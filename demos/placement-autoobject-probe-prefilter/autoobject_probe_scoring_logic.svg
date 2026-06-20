@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820" role="img" aria-labelledby="title desc">
+  <title id="title">AutoObject Probe Scoring Logic (Simplified)</title>
+  <desc id="desc">Unified weighted probe scoring — no flag/kind branches. score = w_color × color_fit + w_complexity × complexity_fit + w_collision × collision_fit.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#7c3aed"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#ea580c"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <pattern id="sv-stripe-blue" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#dbeafe"/>
+      <rect y="1" width="10" height="2" fill="#0284c7" opacity="0.22"/>
+      <rect y="6" width="10" height="1.5" fill="#0284c7" opacity="0.22"/>
+    </pattern>
+    <pattern id="sv-stripe-amber" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#fef3c7"/>
+      <rect y="1" width="10" height="2" fill="#d97706" opacity="0.25"/>
+      <rect y="6" width="10" height="1.5" fill="#d97706" opacity="0.25"/>
+    </pattern>
+    <pattern id="descriptor-grid" patternUnits="userSpaceOnUse" width="9" height="9">
+      <rect width="9" height="9" fill="#dcfce7"/>
+      <path d="M4.5 0H0V4.5" stroke="#16a34a" stroke-width="0.3" opacity="0.25"/>
+    </pattern>
+    <pattern id="note-hatch" patternUnits="userSpaceOnUse" width="10" height="10" patternTransform="rotate(45)">
+      <rect width="10" height="10" fill="#f1f5f9"/>
+      <rect x="0" y="0" width="10" height="2" fill="#64748b" opacity="0.35"/>
+    </pattern>
+  </defs>
+  <style>
+    .bg { fill: #f8fafc; }
+    .title { fill: #0f172a; font: 700 28px "Segoe UI", "Microsoft YaHei", sans-serif; }
+    .subtitle { fill: #475569; font: 500 13px "Segoe UI", "Microsoft YaHei", sans-serif; }
+    .lane-title { fill: #334155; font: 700 13px "Segoe UI", "Microsoft YaHei", sans-serif; }
+    .node-title { fill: #0f172a; font: 700 14px "Segoe UI", "Microsoft YaHei", sans-serif; }
+    .small { fill: #475569; font: 500 11.5px "Segoe UI", "Microsoft YaHei", sans-serif; }
+    .mono { fill: #334155; font: 600 11px Consolas, "Cascadia Mono", monospace; }
+    .note-text { fill: #0f172a; font: 600 12px "Segoe UI", "Microsoft YaHei", sans-serif; }
+    .label { fill: #64748b; font: 600 11px "Segoe UI", "Microsoft YaHei", sans-serif; }
+    .lane { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; filter: url(#shadow); }
+    .node { stroke-width: 1.5; filter: url(#shadow); }
+    .edge { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .edge-blue { stroke: #2563eb; stroke-width: 2; fill: none; marker-end: url(#arrow-blue); }
+    .edge-purple { stroke: #7c3aed; stroke-width: 2; fill: none; marker-end: url(#arrow-purple); }
+    .edge-orange { stroke: #ea580c; stroke-width: 2; fill: none; marker-end: url(#arrow-orange); }
+    .edge-dash { stroke: #64748b; stroke-width: 1.8; fill: none; stroke-dasharray: 6 6; marker-end: url(#arrow); }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="1400" height="820"/>
+
+  <!-- Title -->
+  <text class="title" x="40" y="38">Probe Scoring — Unified Weighted Formula</text>
+  <text class="subtitle" x="40" y="58">score = w_color × color_fit + w_complexity × complexity_fit + w_collision × collision_fit   (no flag/kind branches)</text>
+
+  <!-- LANE 1: Inputs -->
+  <rect class="lane" x="30" y="78" width="270" height="700" rx="8"/>
+  <text class="lane-title" x="48" y="102">INPUTS</text>
+
+  <!-- Probe record (new format) -->
+  <rect class="node" x="48" y="120" width="234" height="140" rx="7" fill="url(#descriptor-grid)" stroke="#16a34a"/>
+  <text class="node-title" x="66" y="144">Probe record</text>
+  <text class="mono"><tspan x="66" y="168">d0: offset.xyz, w_collision</tspan><tspan x="66" y="186">d1: rgba8, e_coll, w_color,</tspan><tspan x="66" y="204">    w_complexity</tspan></text>
+  <text class="small"><tspan x="66" y="226">expected_color.a = complexity</tspan><tspan x="66" y="242">weights control metric influence</tspan></text>
+
+  <!-- TargetSV_B -->
+  <rect class="node" x="48" y="285" width="234" height="80" rx="7" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
+  <text class="node-title" x="66" y="310">TargetSV_B fields</text>
+  <text class="small"><tspan x="66" y="330">target_field[sp].rgb = color</tspan><tspan x="66" y="346">target_field[sp].a = completely</tspan></text>
+
+  <!-- Anchor -->
+  <rect class="node" x="48" y="390" width="234" height="60" rx="7" fill="#ede9fe" stroke="#7c3aed"/>
+  <text class="node-title" x="66" y="414">Anchor position</text>
+  <text class="small" x="66" y="434">uvec4(x, y, z, 0)</text>
+
+  <!-- sample_pos -->
+  <rect class="node" x="48" y="476" width="234" height="60" rx="7" fill="#e0e7ff" stroke="#4f46e5"/>
+  <text class="node-title" x="66" y="500">sample_pos</text>
+  <text class="mono" x="66" y="520">sp = anchor + round(off * inv_vs)</text>
+
+  <!-- Weight presets -->
+  <rect class="node" x="48" y="562" width="234" height="200" rx="7" fill="url(#note-hatch)" stroke="#64748b"/>
+  <text class="node-title" x="66" y="586">Weight presets</text>
+  <text class="small"><tspan x="66" y="608" font-weight="600">通用:</tspan><tspan x="66" y="624">  w_color=1  w_complexity=1  w_collision=1</tspan></text>
+  <text class="small"><tspan x="66" y="648" font-weight="600">纯碰撞 (支撑/地面):</tspan><tspan x="66" y="664">  w_color=0  w_complexity=0  w_collision=1</tspan></text>
+  <text class="small"><tspan x="66" y="688" font-weight="600">纯视觉:</tspan><tspan x="66" y="704">  w_color=1  w_complexity=0.5  w_collision=0</tspan></text>
+  <text class="small"><tspan x="66" y="728" font-weight="600">空旷区域:</tspan><tspan x="66" y="744">  w_color=0  w_complexity=0.1  w_collision=0</tspan></text>
+
+  <!-- LANE 2: Scoring (unified) -->
+  <rect class="lane" x="325" y="78" width="440" height="700" rx="8"/>
+  <text class="lane-title" x="343" y="102">eval_probe — UNIFIED SCORING</text>
+
+  <!-- Three fit components -->
+  <rect class="node" x="345" y="130" width="400" height="100" rx="7" fill="#dbeafe" stroke="#2563eb"/>
+  <text class="node-title" x="363" y="155">color_fit</text>
+  <text class="mono" x="363" y="178">1 - dist(target.rgb, expected.rgb) / √3</text>
+  <text class="small" x="363" y="200">weighted by w_color</text>
+  <text class="label" x="660" y="220">× w_color</text>
+
+  <rect class="node" x="345" y="255" width="400" height="100" rx="7" fill="#dcfce7" stroke="#16a34a"/>
+  <text class="node-title" x="363" y="280">complexity_fit</text>
+  <text class="mono" x="363" y="303">1 - |target.a - expected_complexity|</text>
+  <text class="small" x="363" y="325">weighted by w_complexity</text>
+  <text class="label" x="660" y="345">× w_complexity</text>
+
+  <rect class="node" x="345" y="380" width="400" height="100" rx="7" fill="#ffedd5" stroke="#ea580c"/>
+  <text class="node-title" x="363" y="405">collision_fit</text>
+  <text class="mono" x="363" y="428">1 - |target.a - expected_collision|</text>
+  <text class="small" x="363" y="450">weighted by w_collision</text>
+  <text class="label" x="660" y="470">× w_collision</text>
+
+  <!-- Sum box -->
+  <rect class="node" x="395" y="520" width="300" height="80" rx="7" fill="#e0e7ff" stroke="#4f46e5"/>
+  <text class="node-title" text-anchor="middle" x="545" y="548">probe_score = Σ (w × fit)</text>
+  <text class="mono" text-anchor="middle" x="545" y="572">w_color*cf + w_complexity*cpf + w_collision*clf</text>
+  <text class="small" text-anchor="middle" x="545" y="590">weight=0 → metric ignored</text>
+
+  <!-- Edges: fit boxes to sum -->
+  <path class="edge-blue" d="M 545 230 L 545 255"/>
+  <path class="edge" d="M 545 355 L 545 380"/>
+  <path class="edge-blue" d="M 545 480 L 545 520"/>
+
+  <!-- Aggregation box -->
+  <rect class="node" x="395" y="640" width="300" height="80" rx="7" fill="#ede9fe" stroke="#7c3aed"/>
+  <text class="node-title" text-anchor="middle" x="545" y="666">Per-anchor aggregation</text>
+  <text class="mono" text-anchor="middle" x="545" y="690">asset_score = Σ probe_score_i</text>
+  <text class="small" text-anchor="middle" x="545" y="710">16 lanes → shared mem reduce</text>
+
+  <path class="edge-purple" d="M 545 600 L 545 640"/>
+
+  <!-- Edge from inputs to scoring -->
+  <path class="edge" d="M 282 190 L 345 180"/>
+  <path class="edge-orange" d="M 282 325 L 345 305"/>
+  <path class="edge-purple" d="M 282 420 L 345 430"/>
+
+  <!-- LANE 3: Top-K + Reduce -->
+  <rect class="lane" x="790" y="78" width="580" height="700" rx="8"/>
+  <text class="lane-title" x="808" y="102">TOP-K + REDUCE</text>
+
+  <!-- Asset scores output -->
+  <rect class="node" x="820" y="130" width="250" height="90" rx="7" fill="#e0e7ff" stroke="#4f46e5"/>
+  <text class="node-title" x="838" y="155">asset_scores buffer</text>
+  <text class="mono"><tspan x="838" y="178">scores[anchor*256 + asset]</tspan><tspan x="838" y="196">float per anchor × asset pair</tspan><tspan x="838" y="212">higher = better match</tspan></text>
+
+  <!-- Top-K selection -->
+  <rect class="node" x="820" y="260" width="250" height="110" rx="7" fill="#ede9fe" stroke="#7c3aed"/>
+  <text class="node-title" x="838" y="285">select_anchor_topk.glsl</text>
+  <text class="small"><tspan x="838" y="308">TOPK = 4</tspan><tspan x="838" y="324">per anchor: pick top-4 by score</tspan><tspan x="838" y="340">thread 0 serial selection</tspan><tspan x="838" y="356">out: uvec2(asset_id, score_bits)</tspan></text>
+
+  <!-- Reduce -->
+  <rect class="node" x="820" y="410" width="250" height="90" rx="7" fill="#ede9fe" stroke="#7c3aed"/>
+  <text class="node-title" x="838" y="435">reduce_to_voxel_regions</text>
+  <text class="small"><tspan x="838" y="458">tile_id = anchor_pos / TILE_SIZE</tspan><tspan x="838" y="474">votes[asset*tiles+tile] += score</tspan><tspan x="838" y="490">dense vote buffer</tspan></text>
+
+  <!-- Readback -->
+  <rect class="node" x="820" y="540" width="250" height="80" rx="7" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
+  <text class="node-title" x="838" y="565">Readback + expand</text>
+  <text class="small"><tspan x="838" y="588">candidate_voxel_regions</tspan><tspan x="838" y="604">opt-in top-K debug readback</tspan></text>
+
+  <path class="edge" d="M 945 220 L 945 260"/>
+  <path class="edge-purple" d="M 945 370 L 945 410"/>
+  <path class="edge-orange" d="M 945 500 L 945 540"/>
+
+  <!-- Top-K format detail -->
+  <rect class="node" x="1110" y="130" width="240" height="160" rx="7" fill="#faf5ff" stroke="#7c3aed"/>
+  <text class="node-title" x="1128" y="155">Top-K output</text>
+  <text class="mono"><tspan x="1128" y="180">topk[anchor*4 + k] =</tspan><tspan x="1128" y="198">  uvec2(asset_id,</tspan><tspan x="1128" y="216">    floatBitsToUint(score))</tspan></text>
+  <text class="small"><tspan x="1128" y="242">0xFFFFFFFF = empty slot</tspan><tspan x="1128" y="258">score &lt; 0 = rejected</tspan><tspan x="1128" y="274">higher = better fit</tspan></text>
+  <path class="edge-dash" d="M 1070 315 L 1110 280"/>
+
+  <!-- Constants -->
+  <rect class="node" x="1110" y="330" width="240" height="90" rx="7" fill="url(#note-hatch)" stroke="#64748b"/>
+  <text class="node-title" x="1128" y="355">Constants</text>
+  <text class="mono"><tspan x="1128" y="378">MAX_ASSETS = 256</tspan><tspan x="1128" y="394">TOPK = 4</tspan><tspan x="1128" y="410">ANCHOR_CAPACITY = 65536</tspan></text>
+
+  <!-- Cross-lane edge: aggregation to scores -->
+  <path class="edge-blue" d="M 695 680 L 820 175"/>
+
+  <!-- Bottom summary -->
+  <rect x="325" y="748" width="820" height="24" rx="5" fill="#dbeafe" stroke="#2563eb" stroke-width="1"/>
+  <text class="note-text" text-anchor="middle" x="735" y="765">probe 行为完全由 w_color / w_complexity / w_collision 三个权重控制，不再需要 flag 或 kind 分支</text>
+</svg>

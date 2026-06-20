@@ -1,38 +1,42 @@
+@tool
 extends "res://demos/core_demo_contract_fixture.gd"
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const AutoAssetFactory := preload("res://scripts/auto_asset_factory.gd")
+const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
+
+const VOXEL_DEBUG_NODE := "VoxelDebugGroup"
+
+# Voxel channel display modes (one shortcut each).
+const VOXEL_CHANNEL_NONE := ""
+const VOXEL_CHANNEL_COLOR := "color"
+const VOXEL_CHANNEL_COMPLEXITY := "complexity"
+const VOXEL_CHANNEL_COLLISION := "collision"
 
 const LEAF_FBX_PATH := "res://geo/SM_TestLeaf_Test2.FBX"
 const CLIFF1_FBX_PATH := "res://geo/cliff_01.FBX"
 const CLIFF2_FBX_PATH := "res://geo/cliff_02.FBX"
 
 const PROBE_DEBUG_NODE := "ProbeDebugGroup"
-const COLLISION_DEBUG_NODE := "CollisionDebugGroup"
 const BUFFER_INFO_NODE := "BufferInfoOverlay"
 
 const TREE_COLOR := Color(0.35, 0.58, 0.24, 0.55)
 const TREE_COMPLEXITY := 0.45
-const TREE_COLLISION := [{
-	"shape": "cylinder",
-	"radius": 0.35,
-	"y_min": -0.5,
-	"y_max": 1.2,
-	"collision_strength": 0.7,
-}]
 
 const ROCK_COLOR := Color(0.48, 0.42, 0.35, 0.7)
 const ROCK_COMPLEXITY := 0.75
-const ROCK_COLLISION := [{
-	"shape": "cylinder",
-	"radius": 0.55,
-	"y_min": -0.4,
-	"y_max": 0.8,
-	"collision_strength": 0.9,
-}]
 
 @export_range(0.1, 8.0, 0.1) var probe_density: float = 1.0
 @export var max_probe_markers: int = 96
+@export_range(8, 96, 1) var voxel_grid_count: int = 28
+@export_range(0.0, 1.0, 0.05) var voxel_collision_strength: float = 0.9
+# Collision erosion strictness per asset class. Rocks are bulky solids, so the
+# strict full 6-neighbour erosion (rock core only) is correct. Trees have a thin,
+# often 1-voxel trunk that strict erosion deletes entirely, so they use a looser
+# threshold: a solid voxel earns collision when enough neighbours are solid to
+# show it belongs to a connected structure rather than a drifting single leaf.
+@export_range(1, 6, 1) var tree_collision_min_neighbors: int = 2
+@export_range(1, 6, 1) var rock_collision_min_neighbors: int = 6
 
 var _tree_nodes: Array[Node3D] = []
 var _rock_nodes: Array[Node3D] = []
@@ -40,17 +44,25 @@ var _tree_probes: Array[Dictionary] = []
 var _rock_probes: Array[Dictionary] = []
 var _tree_probes_visible := false
 var _rock_probes_visible := false
-var _collision_visible := false
 var _buffer_info_visible := false
+
+# Voxelization cache: per asset node, the structured result from MeshVoxelizerGpu.
+var _voxel_results: Array[Dictionary] = []
+var _voxel_baked := false
+var _voxel_channel := VOXEL_CHANNEL_NONE
 
 
 func _ready() -> void:
 	super._ready()
+	if is_scene_startup_blocked():
+		return
 	_place_assets()
 	_update_instruction_labels()
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if not Engine.is_editor_hint():
+		return
 	if not event is InputEventKey:
 		return
 	var ke := event as InputEventKey
@@ -67,11 +79,17 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_3:
 			_toggle_all_probes()
 			_mark_handled()
+		KEY_4:
+			_show_voxel_channel(VOXEL_CHANNEL_COLOR)
+			_mark_handled()
+		KEY_5:
+			_show_voxel_channel(VOXEL_CHANNEL_COMPLEXITY)
+			_mark_handled()
+		KEY_6:
+			_show_voxel_channel(VOXEL_CHANNEL_COLLISION)
+			_mark_handled()
 		KEY_C:
 			_clear_all_debug()
-			_mark_handled()
-		KEY_V:
-			_toggle_collision_volumes()
 			_mark_handled()
 		KEY_B:
 			_toggle_buffer_info()
@@ -207,7 +225,7 @@ func _toggle_tree_probes() -> void:
 		_tree_probes.clear()
 		_tree_probes_visible = false
 	else:
-		_build_probes(_tree_nodes, "TreeProbes", TREE_COLOR, TREE_COMPLEXITY, TREE_COLLISION, _tree_probes)
+		_build_probes(_tree_nodes, "TreeProbes", TREE_COLOR, TREE_COMPLEXITY, _tree_probes)
 		_tree_probes_visible = true
 
 
@@ -217,7 +235,7 @@ func _toggle_rock_probes() -> void:
 		_rock_probes.clear()
 		_rock_probes_visible = false
 	else:
-		_build_probes(_rock_nodes, "RockProbes", ROCK_COLOR, ROCK_COMPLEXITY, ROCK_COLLISION, _rock_probes)
+		_build_probes(_rock_nodes, "RockProbes", ROCK_COLOR, ROCK_COMPLEXITY, _rock_probes)
 		_rock_probes_visible = true
 
 
@@ -225,13 +243,17 @@ func _toggle_all_probes() -> void:
 	if _tree_probes_visible or _rock_probes_visible:
 		_clear_all_debug()
 	else:
-		_build_probes(_tree_nodes, "TreeProbes", TREE_COLOR, TREE_COMPLEXITY, TREE_COLLISION, _tree_probes)
-		_build_probes(_rock_nodes, "RockProbes", ROCK_COLOR, ROCK_COMPLEXITY, ROCK_COLLISION, _rock_probes)
+		_build_probes(_tree_nodes, "TreeProbes", TREE_COLOR, TREE_COMPLEXITY, _tree_probes)
+		_build_probes(_rock_nodes, "RockProbes", ROCK_COLOR, ROCK_COMPLEXITY, _rock_probes)
 		_tree_probes_visible = true
 		_rock_probes_visible = true
 
 
-func _build_probes(nodes: Array[Node3D], group_name: String, color: Color, complexity: float, collision: Array, out_probes: Array) -> void:
+func _build_probes(nodes: Array[Node3D], group_name: String, color: Color, complexity: float, out_probes: Array) -> void:
+	# Probe interior sampling reads the generic GPU voxel field so each probe's
+	# collision sits at the same per-voxel level as color / complexity, instead of
+	# a separate hand-authored cylinder strength.
+	_ensure_voxels_baked()
 	var debug_root := _get_or_create_debug_root()
 
 	var group := Node3D.new()
@@ -244,8 +266,9 @@ func _build_probes(nodes: Array[Node3D], group_name: String, color: Color, compl
 		if mi == null or mi.mesh == null:
 			continue
 
+		var voxel_samples := _voxel_field_samples(node)
 		var probes := SemanticProbeProfileScript.generate_from_mesh(
-			mi.mesh, collision, color, complexity, probe_density, max_probe_markers
+			mi.mesh, voxel_samples, color, complexity, probe_density, max_probe_markers
 		)
 		out_probes.append_array(probes)
 
@@ -274,31 +297,135 @@ func _build_probes(nodes: Array[Node3D], group_name: String, color: Color, compl
 		asset_debug.add_child(sum_label)
 
 
-# ─── Collision Volumes ────────────────────────────────────────
+# ─── Voxelization (GPU solid voxelize + per-channel display) ──
 
-func _toggle_collision_volumes() -> void:
-	if _collision_visible:
-		_clear_node(COLLISION_DEBUG_NODE)
-		_collision_visible = false
-	else:
-		_build_collision_volumes()
-		_collision_visible = true
+func _show_voxel_channel(channel: String) -> void:
+	# Re-pressing the active channel key toggles it off.
+	if _voxel_channel == channel:
+		_clear_node(VOXEL_DEBUG_NODE)
+		_voxel_channel = VOXEL_CHANNEL_NONE
+		return
+	_ensure_voxels_baked()
+	_clear_node(VOXEL_DEBUG_NODE)
+	_voxel_channel = channel
+	_build_voxel_channel_display(channel)
 
 
-func _build_collision_volumes() -> void:
+func _ensure_voxels_baked() -> void:
+	if _voxel_baked:
+		return
+	_voxel_baked = true
+	_voxel_results.clear()
+	var voxelizer = MeshVoxelizerGpuScript.new()
+	for entry in _voxel_bake_targets():
+		var node: Node3D = entry["node"]
+		var mi := node.get_node_or_null("Mesh") as MeshInstance3D
+		if mi == null or mi.mesh == null:
+			continue
+		var result := voxelizer.voxelize(mi.mesh, voxel_grid_count, entry["color"], voxel_collision_strength, int(entry["min_neighbors"]))
+		if not bool(result.get("ok", false)):
+			push_warning("[AssetDescriptorDemo] voxelize failed for %s: %s" % [node.name, str(result.get("reason", "unknown"))])
+			continue
+		result["node"] = node
+		_voxel_results.append(result)
+
+
+func _voxel_bake_targets() -> Array:
+	var targets := []
+	for node in _tree_nodes:
+		targets.append({"node": node, "color": TREE_COLOR, "min_neighbors": tree_collision_min_neighbors})
+	for node in _rock_nodes:
+		targets.append({"node": node, "color": ROCK_COLOR, "min_neighbors": rock_collision_min_neighbors})
+	return targets
+
+
+# Turn this asset's baked voxel field into per-voxel collision samples for the
+# probe pipeline. Each solid-core voxel (collision > 0) becomes one sample entry
+# carrying its own color / complexity / collision read from the same voxel, so
+# the probe interior layer sources collision and complexity at the same level.
+func _voxel_field_samples(node: Node3D) -> Array:
+	var samples := []
+	for result in _voxel_results:
+		if result.get("node") != node:
+			continue
+		for v in result["voxels"]:
+			if float(v["collision"]) <= 0.0:
+				continue
+			samples.append({
+				"local_pos": v["local_center"],
+				"color": v["color"],
+				"complexity": v["complexity"],
+				"collision": v["collision"],
+			})
+		break
+	return samples
+
+
+func _build_voxel_channel_display(channel: String) -> void:
 	var root := Node3D.new()
-	root.name = COLLISION_DEBUG_NODE
+	root.name = VOXEL_DEBUG_NODE
 	add_child(root)
 
-	for node in _tree_nodes:
-		var cyl := _make_collision_cylinder(TREE_COLLISION[0], Color(0.1, 0.65, 1.0, 0.25))
-		cyl.position = node.position
-		root.add_child(cyl)
+	var total_voxels := 0
+	var shown_voxels := 0
+	for result in _voxel_results:
+		var node: Node3D = result["node"]
+		var cell_size: float = result["cell_size"]
+		var voxels: Array = result["voxels"]
+		total_voxels += voxels.size()
 
-	for node in _rock_nodes:
-		var cyl := _make_collision_cylinder(ROCK_COLLISION[0], Color(1.0, 0.4, 0.1, 0.25))
-		cyl.position = node.position
-		root.add_child(cyl)
+		var centers := PackedVector3Array()
+		var colors := PackedColorArray()
+		for v in voxels:
+			var channel_color := _voxel_channel_color(v, channel)
+			if channel_color.a <= 0.0:
+				continue
+			# Mesh-local center -> world via the asset container transform.
+			centers.append(node.to_global(v["local_center"]))
+			colors.append(channel_color)
+		shown_voxels += centers.size()
+
+		# Cell size is in mesh-local units; the container scale maps it to world.
+		var world_cell := cell_size * node.scale.x
+		var cell := Vector3(world_cell, world_cell, world_cell)
+		var display := VoxelDisplay.build_colored(centers, cell, colors, {
+			"name": "%s_%s" % [node.name, channel],
+			"unshaded": true,
+		})
+		if display != null:
+			root.add_child(display)
+
+	var label := Label3D.new()
+	label.name = "VoxelChannelLabel"
+	label.text = "Voxel channel: %s\nvoxels shown=%d / solid=%d  grid_count=%d" % [
+		channel, shown_voxels, total_voxels, voxel_grid_count
+	]
+	label.position = Vector3(0.0, 3.2, 2.0)
+	label.font_size = 28
+	label.pixel_size = 0.01
+	label.outline_size = 5
+	root.add_child(label)
+
+
+# Map a voxel's stored channels to a display color for the requested channel.
+#  - color:      raw RGBA8 color, alpha forced opaque so the cell is visible.
+#  - complexity: grayscale ramp of the visual-strength channel.
+#  - collision:  red ramp of the rigid-occupancy channel; empty where 0.
+func _voxel_channel_color(voxel: Dictionary, channel: String) -> Color:
+	match channel:
+		VOXEL_CHANNEL_COLOR:
+			var c: Color = voxel["color"]
+			return Color(c.r, c.g, c.b, 0.92)
+		VOXEL_CHANNEL_COMPLEXITY:
+			var x := clampf(float(voxel["complexity"]), 0.0, 1.0)
+			return Color(x, x, x, 0.92)
+		VOXEL_CHANNEL_COLLISION:
+			var s := clampf(float(voxel["collision"]), 0.0, 1.0)
+			if s <= 0.0:
+				return Color(0, 0, 0, 0.0)
+			return Color(1.0, 1.0 - s * 0.7, 0.15, 0.92)
+		_:
+			return Color(0, 0, 0, 0.0)
 
 
 # ─── Buffer Info Overlay ──────────────────────────────────────
@@ -358,14 +485,14 @@ func _format_buffer_info() -> String:
 func _clear_all_debug() -> void:
 	_clear_probe_group("TreeProbes")
 	_clear_probe_group("RockProbes")
-	_clear_node(COLLISION_DEBUG_NODE)
 	_clear_node(BUFFER_INFO_NODE)
+	_clear_node(VOXEL_DEBUG_NODE)
 	_tree_probes.clear()
 	_rock_probes.clear()
 	_tree_probes_visible = false
 	_rock_probes_visible = false
-	_collision_visible = false
 	_buffer_info_visible = false
+	_voxel_channel = VOXEL_CHANNEL_NONE
 
 
 func _clear_probe_group(group_name: String) -> void:
@@ -447,32 +574,13 @@ func _make_probe_marker(probe: Dictionary, index: int) -> MeshInstance3D:
 	return marker
 
 
-func _make_collision_cylinder(cfg: Dictionary, color: Color) -> MeshInstance3D:
-	var mesh := CylinderMesh.new()
-	mesh.top_radius = float(cfg.get("radius", 0.4))
-	mesh.bottom_radius = float(cfg.get("radius", 0.4))
-	mesh.height = float(cfg.get("y_max", 1.0)) - float(cfg.get("y_min", -0.5))
-
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-
-	var node := MeshInstance3D.new()
-	node.name = "CollisionVolume"
-	node.mesh = mesh
-	node.position.y = (float(cfg.get("y_min", -0.5)) + float(cfg.get("y_max", 1.0))) * 0.5
-	node.material_override = mat
-	return node
-
-
 func _update_instruction_labels() -> void:
 	var method_label := get_node_or_null("TestMethod") as Label3D
 	if method_label != null:
 		method_label.text = ("Shortcuts\n" +
 			"1: Tree probes    2: Rock probes    3: All probes\n" +
-			"C: Clear debug    V: Collision volumes    B: Buffer info")
+			"4: Voxel color    5: Voxel complexity    6: Voxel collision\n" +
+			"C: Clear debug    B: Buffer info")
 	var acceptance_label := get_node_or_null("Acceptance") as Label3D
 	if acceptance_label != null:
 		acceptance_label.text = ("Acceptance\n" +

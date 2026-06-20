@@ -29,33 +29,42 @@ func _test_scene_loads() -> bool:
 	if instance == null:
 		push_error("  FAIL: scene does not instantiate")
 		return false
-	instance.call("_ready")
-	if instance.get_node_or_null("HeightTextureTerrain") == null:
-		push_error("  FAIL: scene did not build height terrain")
+	var visualization: Node = instance.get_node_or_null("TargetSVVisualization")
+	if visualization == null:
+		push_error("  FAIL: scene does not contain TargetSVVisualization")
 		instance.free()
 		return false
-	var project_boxes := instance.get_node_or_null("ProjectVoxelBoxes") as MultiMeshInstance3D
-	if project_boxes == null or project_boxes.multimesh == null or project_boxes.multimesh.instance_count <= 0:
-		push_error("  FAIL: scene did not build project SceneVoxel box preview")
+	var terrain := instance.find_child("Terrain", true, false) as MeshInstance3D
+	if terrain == null or terrain.mesh == null:
+		push_error("  FAIL: scene does not use edit-time common Terrain")
 		instance.free()
 		return false
-	if not instance.has_method("get_project_scene_voxel_snapshot"):
-		push_error("  FAIL: scene does not expose project SceneVoxel snapshot")
+	var can_build_gpu_preview := _main_rendering_device_available()
+	visualization.set("build_project_voxels_on_ready", can_build_gpu_preview)
+	visualization.call("_rebuild_visualization")
+	if can_build_gpu_preview:
+		var project_boxes := visualization.get_node_or_null("ProjectVoxelBoxes") as MultiMeshInstance3D
+		if project_boxes == null or project_boxes.multimesh == null or project_boxes.multimesh.instance_count <= 0:
+			push_error("  FAIL: scene did not build project SceneVoxel box preview")
+			instance.free()
+			return false
+		if not _assert_box_view_mode(visualization, "color"):
+			instance.free()
+			return false
+		if not _assert_box_view_hotkey(visualization, KEY_T, "complexity"):
+			instance.free()
+			return false
+		if not _assert_box_view_hotkey(visualization, KEY_Y, "collision"):
+			instance.free()
+			return false
+		if not _assert_box_view_hotkey(visualization, KEY_R, "color"):
+			instance.free()
+			return false
+	if not visualization.has_method("get_project_scene_voxel_snapshot"):
+		push_error("  FAIL: TargetSVVisualization does not expose project SceneVoxel snapshot")
 		instance.free()
 		return false
-	if not _assert_box_view_mode(instance, "color"):
-		instance.free()
-		return false
-	if not _assert_box_view_hotkey(instance, KEY_T, "complexity"):
-		instance.free()
-		return false
-	if not _assert_box_view_hotkey(instance, KEY_Y, "collision"):
-		instance.free()
-		return false
-	if not _assert_box_view_hotkey(instance, KEY_R, "color"):
-		instance.free()
-		return false
-	var project_sv: Dictionary = instance.call("get_project_scene_voxel_snapshot")
+	var project_sv: Dictionary = visualization.call("get_project_scene_voxel_snapshot")
 	if not _assert_project_scene_voxel_snapshot(project_sv):
 		instance.free()
 		return false
@@ -64,24 +73,28 @@ func _test_scene_loads() -> bool:
 	return true
 
 
-func _assert_box_view_hotkey(instance: Node, keycode: Key, expected_mode: String) -> bool:
+func _main_rendering_device_available() -> bool:
+	return RenderingServer.get_rendering_device() != null
+
+
+func _assert_box_view_hotkey(visualization: Node, keycode: Key, expected_mode: String) -> bool:
 	var event := InputEventKey.new()
 	event.keycode = keycode
 	event.pressed = true
 	event.shift_pressed = true
-	instance.call("_unhandled_input", event)
-	return _assert_box_view_mode(instance, expected_mode)
+	visualization.call("_unhandled_input", event)
+	return _assert_box_view_mode(visualization, expected_mode)
 
 
-func _assert_box_view_mode(instance: Node, expected_mode: String) -> bool:
-	if not instance.has_method("get_project_voxel_box_view"):
-		push_error("  FAIL: scene does not expose project voxel box view")
+func _assert_box_view_mode(visualization: Node, expected_mode: String) -> bool:
+	if not visualization.has_method("get_project_voxel_box_view"):
+		push_error("  FAIL: TargetSVVisualization does not expose project voxel box view")
 		return false
-	var actual_mode := str(instance.call("get_project_voxel_box_view"))
+	var actual_mode := str(visualization.call("get_project_voxel_box_view"))
 	if actual_mode != expected_mode:
 		push_error("  FAIL: box view mode mismatch, expected %s got %s" % [expected_mode, actual_mode])
 		return false
-	var project_boxes := instance.get_node_or_null("ProjectVoxelBoxes") as MultiMeshInstance3D
+	var project_boxes := visualization.get_node_or_null("ProjectVoxelBoxes") as MultiMeshInstance3D
 	if project_boxes == null or project_boxes.multimesh == null or project_boxes.multimesh.instance_count <= 0:
 		push_error("  FAIL: project boxes missing after box view mode switch: %s" % expected_mode)
 		return false
@@ -170,7 +183,7 @@ func _test_fixture_buffers_decode() -> bool:
 	if not bool(decoded.get("valid", false)):
 		push_error("  FAIL: decode_target_read_buffers rejected fixture: %s" % str(decoded))
 		ok = false
-	if float(decoded.get("max_occupancy", 0.0)) <= 0.0:
+	if float(decoded.get("max_completely", 0.0)) <= 0.0:
 		push_error("  FAIL: decoded target occupancy is empty")
 		ok = false
 	if float(decoded.get("max_collision", 0.0)) <= 0.0:
@@ -192,7 +205,7 @@ func _test_fixture_buffers_decode() -> bool:
 	if ok:
 		print("  OK: %d voxels decode with max occupancy %.3f and max collision %.3f" % [
 			voxel_count,
-			float(decoded.get("max_occupancy", 0.0)),
+			float(decoded.get("max_completely", 0.0)),
 			float(decoded.get("max_collision", 0.0)),
 		])
 	return ok

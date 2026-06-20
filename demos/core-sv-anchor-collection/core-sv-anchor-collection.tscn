@@ -1,0 +1,30 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://demos/core-sv-anchor-collection/sv_anchor_collection_demo.gd" id="1_anchor"]
+[ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
+
+[node name="SVAnchorCollectionDemo" type="Node3D" unique_id=308417662]
+script = ExtResource("1_anchor")
+metadata/source_doc = "res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"
+metadata/test_doc = "res://demos/core-sv-anchor-collection/core-sv-anchor-collection.md"
+metadata/focus = "collect_sv_anchors GPU dispatch: position-only anchor rules (self complexity/collision gates, target demand, support below) validated via real RenderingDevice storage buffers and readback; missing RD skips GPU anchor collection"
+metadata/gpu_required = true
+
+[node name="DemoSetup" type="Node3D" parent="." unique_id=1402882551 instance=ExtResource("99_setup")]
+
+[node name="Title" type="Label3D" parent="." unique_id=1641991233]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 6, -8)
+pixel_size = 0.01
+text = "SV Anchor Collection
+terrain + TargetSV driven anchor placement"
+outline_size = 5
+
+[node name="Acceptance" type="Label3D" parent="." unique_id=1844291844]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4.6, -8)
+pixel_size = 0.01
+text = "Acceptance
+- anchors generated from real terrain height + TargetSV 3D voxel field
+- collect_sv_anchors.glsl gates: self complexity/collision, target demand, support below
+- terrain provides ground-level support; TargetSV provides placement demand above terrain"
+font_size = 24
+outline_size = 4

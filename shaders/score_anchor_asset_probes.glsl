@@ -27,8 +27,8 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer ProbeRange {
 };
 
 // Flat probe data: 2 vec4 per probe
-//   [2*i+0] = (offset.x, offset.y, offset.z, weight)
-//   [2*i+1] = (rgba8_as_float, expected_collision, flags_as_float, kind_as_float)
+//   [2*i+0] = (offset.x, offset.y, offset.z, w_collision)
+//   [2*i+1] = (rgba8_as_float, expected_collision, w_color, w_complexity)
 layout(set = 0, binding = 2, std430) restrict readonly buffer ProbeData {
     vec4 probe_data[];
 };
@@ -60,13 +60,7 @@ const uint MAX_ASSETS       = 256u;
 const uint ASSET_LANES      = 16u;
 const uint PROBE_LANES      = 16u;
 
-const uint FLAG_COLOR      = 1u;
-const uint FLAG_COMPLEXITY = 2u;
-const uint FLAG_COLLISION  = 4u;
-const uint FLAG_EMPTY      = 8u;
-const uint FLAG_SUPPORT    = 16u;
-
-const float UNDERGROUND_OCC_THRESHOLD = 0.5;
+const float SQRT3 = 1.732;
 
 // --- Shared memory ---
 
@@ -92,50 +86,26 @@ vec4 unpack_rgba8(uint packed) {
 }
 
 // --- Probe evaluation ---
+//
+// Unified scoring: each probe carries per-metric weights (w_color, w_complexity,
+// w_collision).  No flag/kind branches — behavior is controlled entirely by weights.
+// Negative weights act as penalties: w_collision < 0 penalizes collision presence.
+//
+// Samples both target_field (TargetSV_B) and complexity_coll (SV scene state).
+// target_field drives "what we want"; complexity_coll drives "what's already there".
+// The fit values blend both sources so probes can reason about existing scene content.
 
-float eval_probe(ivec3 sp, uint flags, uint kind, vec4 e_col, float e_coll) {
+float eval_probe(ivec3 sp, vec4 e_col, float e_coll,
+                 float w_color, float w_complexity, float w_collision) {
     int idx = voxel_index(sp);
-    float s_complexity = complexity_coll[idx].x;
-
-    // Underground: only collision scoring contributes
-    if (s_complexity >= UNDERGROUND_OCC_THRESHOLD) {
-        if ((flags & FLAG_COLLISION) == 0u) return 0.0;
-        if ((flags & FLAG_EMPTY) != 0u || kind == 1u) return 0.0;  // negative
-        if ((flags & FLAG_SUPPORT) != 0u || kind == 2u) return 0.0; // support
-        return clamp(1.0 - abs(target_field[idx].a - e_coll), 0.0, 1.0);
-    }
-
-    // Empty / negative
-    if ((flags & FLAG_EMPTY) != 0u || kind == 1u) {
-        return 1.0 - max(target_field[idx].a, s_complexity);
-    }
-
-    // Support
-    if ((flags & FLAG_SUPPORT) != 0u || kind == 2u) {
-        ivec3 below = sp + ivec3(0, -1, 0);
-        if (!in_bounds(below)) return 0.0;
-        int bi = voxel_index(below);
-        return clamp(max(complexity_coll[bi].x, complexity_coll[bi].y), 0.0, 1.0);
-    }
-
-    // Positive: weighted color + complexity + collision
     vec4 tf = target_field[idx];
-    float s_coll = tf.a;
-    float score = 0.0;
-    float wsum = 0.0;
-    if ((flags & FLAG_COLOR) != 0u) {
-        score += 1.0 - distance(tf.rgb, e_col.rgb) / 1.732;
-        wsum += 1.0;
-    }
-    if ((flags & FLAG_COMPLEXITY) != 0u) {
-        score += 1.0 - abs(tf.a - e_col.a);
-        wsum += 1.0;
-    }
-    if ((flags & FLAG_COLLISION) != 0u) {
-        score += 1.0 - abs(s_coll - e_coll);
-        wsum += 1.0;
-    }
-    return score / max(wsum, 1e-6);
+    vec2 sv = complexity_coll[idx];   // .x = scene_complexity, .y = scene_collision
+
+    float color_fit      = 1.0 - distance(tf.rgb, e_col.rgb) / SQRT3;
+    float complexity_fit = 1.0 - abs(tf.a - e_col.a);
+    float collision_fit  = 1.0 - abs(max(tf.a, sv.y) - e_coll);
+
+    return w_color * color_fit + w_complexity * complexity_fit + w_collision * collision_fit;
 }
 
 // --- Main ---
@@ -158,30 +128,24 @@ void main() {
         uint probe_start = range.x;
         uint probe_count = range.y;
 
-        // Stride through probes: this lane handles probe indices
-        // probe_lane, probe_lane + 16, probe_lane + 32, ...
         for (uint i = probe_lane; i < probe_count; i += PROBE_LANES) {
             uint pi = (probe_start + i) * 2u;
             vec4 d0 = probe_data[pi];
             vec4 d1 = probe_data[pi + 1u];
 
-            vec3  offset = d0.xyz;
-            float weight = max(d0.w, 0.0);
-            uint  rgba8  = floatBitsToUint(d1.x);
-            float e_coll = d1.y;
-            uint  flags  = floatBitsToUint(d1.z);
-            uint  kind   = floatBitsToUint(d1.w);
+            vec3  offset       = d0.xyz;
+            float w_collision  = d0.w;
+            uint  rgba8        = floatBitsToUint(d1.x);
+            float e_coll       = d1.y;
+            float w_color      = d1.z;
+            float w_complexity = d1.w;
 
             ivec3 sp = anchor_pos + ivec3(round(offset * voxel_size_inv.xyz));
             sp = clamp(sp, ivec3(0), grid_size_asset_count.xyz - ivec3(1));
-            // Underground early-skip for non-collision probes
-            float s_complexity = complexity_coll[voxel_index(sp)].x;
-            if (s_complexity >= UNDERGROUND_OCC_THRESHOLD && (flags & FLAG_COLLISION) == 0u) {
-                continue;
-            }
+
             vec4 e_col = unpack_rgba8(rgba8);
-            float ps = eval_probe(sp, flags, kind, e_col, e_coll);
-            lane_score  += ps * weight;
+            float ps = eval_probe(sp, e_col, e_coll, w_color, w_complexity, w_collision);
+            lane_score += ps;
         }
     }
 

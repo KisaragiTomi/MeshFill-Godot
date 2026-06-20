@@ -1,0 +1,79 @@
+extends SceneTree
+
+const SETUP_PATH := "res://demos/common_demo_setup.tscn"
+const SHOT_DIR := "res://_shots"
+
+func _initialize() -> void:
+	_run()
+
+func _run() -> void:
+	var packed: PackedScene = load(SETUP_PATH)
+	if packed == null:
+		print("[SHOT] FAIL load common_demo_setup")
+		quit(1)
+		return
+	var inst := packed.instantiate()
+	root.add_child(inst)
+	print("[SHOT] DemoSetup instanced: ", inst.name)
+
+	var terrain := inst.find_child("Terrain", true, false)
+	print("[SHOT] terrain found: ", terrain != null)
+	if terrain is MeshInstance3D:
+		var mi := terrain as MeshInstance3D
+		print("[SHOT] terrain aabb=", mi.get_aabb(), " mesh=", mi.mesh != null)
+
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SHOT_DIR))
+	var cam := inst.find_child("FlyCamera", true, false) as Camera3D
+
+	for i in range(60):
+		await process_frame
+
+	if cam != null:
+		cam.current = true
+		cam.global_position = Vector3(0.0, 300.0, 400.0)
+		cam.look_at(Vector3.ZERO, Vector3.UP)
+		cam.fov = 55.0
+		cam.far = 3000.0
+	for i in range(10):
+		await process_frame
+	RenderingServer.force_draw(true)
+	await process_frame
+	await process_frame
+
+	var img1 := root.get_texture().get_image()
+	if img1 != null and not img1.is_empty():
+		img1.save_png(ProjectSettings.globalize_path(SHOT_DIR + "/spa_cam_default.png"))
+		print("[SHOT] saved default view: cam=", cam.global_position if cam else "null")
+
+	if cam != null:
+		var half := 512.0
+		cam.global_position = Vector3(-half * 0.3, half * 0.6, half * 0.8)
+		cam.look_at(Vector3(0.0, 20.0, 0.0), Vector3.UP)
+		cam.fov = 60.0
+	for i in range(10):
+		await process_frame
+	RenderingServer.force_draw(true)
+	await process_frame
+	await process_frame
+
+	var img2 := root.get_texture().get_image()
+	if img2 != null and not img2.is_empty():
+		img2.save_png(ProjectSettings.globalize_path(SHOT_DIR + "/spa_cam_spa.png"))
+		print("[SHOT] saved SPA view: cam=", cam.global_position if cam else "null")
+
+	if cam != null:
+		cam.global_position = Vector3(0.0, 600.0, 10.0)
+		cam.look_at(Vector3.ZERO, Vector3.UP)
+		cam.fov = 55.0
+	for i in range(10):
+		await process_frame
+	RenderingServer.force_draw(true)
+	await process_frame
+	await process_frame
+
+	var img3 := root.get_texture().get_image()
+	if img3 != null and not img3.is_empty():
+		img3.save_png(ProjectSettings.globalize_path(SHOT_DIR + "/spa_cam_topdown.png"))
+		print("[SHOT] saved top-down view")
+
+	quit(0)

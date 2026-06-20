@@ -48,8 +48,7 @@ func _capture_and_check(inst: Node) -> bool:
 		var t := cam.global_transform
 		print("[SHOT] cam pos=", t.origin, " fwd=", -t.basis.z, " up=", t.basis.y)
 
-	# Hide the autoloaded terrain so it doesn't occlude the demo assets
-	var terrain_node := root.get_node_or_null("Terrain")
+	var terrain_node := inst.find_child("Terrain", true, false) as Node3D
 	if terrain_node != null:
 		terrain_node.visible = false
 		print("[SHOT] terrain hidden for framing")
@@ -70,8 +69,7 @@ func _capture_and_check(inst: Node) -> bool:
 				and not ch.name.begins_with("Collision"):
 			print("[SHOT] asset pos: ", ch.name, " -> ", (ch as Node3D).global_position)
 
-	# 功能点: 地形存在/可见 (note: hidden for framing but still present)
-	var terrain := root.get_node_or_null("Terrain")
+	var terrain := inst.find_child("Terrain", true, false)
 	if terrain is MeshInstance3D:
 		var mi := terrain as MeshInstance3D
 		print("[SHOT] terrain present aabb=", mi.get_aabb())
@@ -100,27 +98,22 @@ func _capture_and_check(inst: Node) -> bool:
 		print("[SHOT] FAIL no run_demo_contract_checks")
 		ok = false
 
-	# 截图 2: 契约执行后（重新隐藏地形）
-	var terrain2 := root.get_node_or_null("Terrain")
+	var terrain2 := inst.find_child("Terrain", true, false) as Node3D
 	if terrain2 != null:
 		terrain2.visible = false
 	RenderingServer.force_draw(true)
 	await process_frame
 	ok = _shot("02_after_contract") and ok
 
-	# 激活全部 mesh debug 显示：探针 + 碰撞体 + buffer info
+	# 激活全部 mesh debug 显示：探针 + buffer info
 	if inst.has_method("_toggle_all_probes"):
 		inst._toggle_all_probes()
 		print("[SHOT] activated all probes")
-	if inst.has_method("_toggle_collision_volumes"):
-		inst._toggle_collision_volumes()
-		print("[SHOT] activated collision volumes")
 	if inst.has_method("_toggle_buffer_info"):
 		inst._toggle_buffer_info()
 		print("[SHOT] activated buffer info")
 
-	# 等待调试节点渲染，保持地形隐藏
-	var terrain3 := root.get_node_or_null("Terrain")
+	var terrain3 := inst.find_child("Terrain", true, false) as Node3D
 	if terrain3 != null:
 		terrain3.visible = false
 	for i in range(10):

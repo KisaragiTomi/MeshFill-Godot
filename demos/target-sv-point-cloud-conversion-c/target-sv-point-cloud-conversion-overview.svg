@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820">
+  <defs>
+    <style><![CDATA[
+      .bg { fill: #0b1020; }
+      .panel { fill: #121a2e; stroke: #2b3a5f; stroke-width: 1.2; }
+      .title { fill: #f4f7ff; font: 700 28px 'Segoe UI', Arial, sans-serif; }
+      .subtitle { fill: #aeb9d7; font: 15px 'Segoe UI', Arial, sans-serif; }
+      .label { fill: #e8eeff; font: 600 14px 'Segoe UI', Arial, sans-serif; }
+      .small { fill: #aeb9d7; font: 12px 'Segoe UI', Arial, sans-serif; }
+      .tiny { fill: #8895b8; font: 11px 'Segoe UI', Arial, sans-serif; }
+      .metric { fill: #d7e1ff; font: 13px 'Segoe UI', Arial, sans-serif; }
+      .warn { fill: #ffd37a; font: 12px 'Segoe UI', Arial, sans-serif; }
+      .ok { fill: #8dffca; font: 12px 'Segoe UI', Arial, sans-serif; }
+      .axis { stroke: #58678d; stroke-width: 1; stroke-dasharray: 4 6; }
+      .hiddenTerrain { fill: #1d2a42; stroke: #6f7ea7; stroke-width: 2; stroke-dasharray: 8 7; opacity: 0.55; }
+      .visibleArea { fill: #234e3b; stroke: #8dffca; stroke-width: 3; opacity: 0.82; }
+      .voxelArea { fill: #315a96; stroke: #95c5ff; stroke-width: 2.5; opacity: 0.72; }
+      .cameraCone { fill: #ffd37a; stroke: #ffb84d; stroke-width: 2; opacity: 0.28; }
+      .cameraBody { fill: #ffcf6f; stroke: #ffe5a8; stroke-width: 2; }
+      .flow { stroke: #7fa6ff; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .flow2 { stroke: #8dffca; stroke-width: 2; fill: none; marker-end: url(#arrowGreen); }
+      .node { fill: #17213a; stroke: #40527d; stroke-width: 1.5; }
+      .nodeHot { fill: #1d3140; stroke: #8dffca; stroke-width: 1.8; }
+    ]]></style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7fa6ff" />
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8dffca" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="820" />
+
+  <text class="title" x="40" y="52">TargetSV Point Cloud Conversion - Level Overview</text>
+  <text class="subtitle" x="40" y="78">Default camera frames the visible result area. The full-size baked Terrain is hidden in this demo and kept only as shared contract terrain.</text>
+
+  <rect class="panel" x="34" y="105" width="760" height="665" rx="16" />
+  <text class="label" x="62" y="136">Top-down layout, XZ plane, schematic scale</text>
+  <text class="tiny" x="62" y="157">Center = (0, 0). Visible result is about 30.7 x 30.7. Hidden shared Terrain is about 1024 x 1024.</text>
+
+  <rect x="82" y="190" width="640" height="500" fill="#0d1426" stroke="#263657" stroke-width="1.2" rx="12" />
+  <line class="axis" x1="402" y1="210" x2="402" y2="670" />
+  <line class="axis" x1="110" y1="440" x2="694" y2="440" />
+  <text class="tiny" x="408" y="224">+Z</text>
+  <text class="tiny" x="674" y="435">+X</text>
+  <text class="tiny" x="412" y="456">origin</text>
+
+  <rect class="hiddenTerrain" x="126" y="178" width="552" height="552" rx="10" />
+  <text class="small" x="140" y="203">Hidden baked Terrain</text>
+  <text class="tiny" x="140" y="221">1024 x 1024, Y 0..120, visible=false</text>
+
+  <rect class="visibleArea" x="302" y="340" width="200" height="200" rx="8" />
+  <rect class="voxelArea" x="297" y="335" width="210" height="210" rx="8" />
+  <text class="label" x="310" y="365">Visible result area</text>
+  <text class="small" x="310" y="386">HeightTextureTerrain</text>
+  <text class="small" x="310" y="404">ProjectVoxelBoxes</text>
+  <text class="tiny" x="310" y="424">about 30.7 x 30.7</text>
+
+  <path class="cameraCone" d="M 402 238 L 270 548 L 534 548 Z" />
+  <circle class="cameraBody" cx="402" cy="238" r="12" />
+  <path d="M 402 238 L 402 440" stroke="#ffe5a8" stroke-width="2" stroke-dasharray="5 6" />
+  <text class="label" x="420" y="235">Default camera</text>
+  <text class="small" x="420" y="254">position = (0, 23, 30)</text>
+  <text class="small" x="420" y="272">look_at = (0, 2, 0)</text>
+  <text class="ok" x="420" y="292">visible result bounds fit in view</text>
+
+  <rect x="92" y="704" width="18" height="18" class="hiddenTerrain" />
+  <text class="small" x="118" y="718">hidden shared Terrain</text>
+  <rect x="282" y="704" width="18" height="18" class="visibleArea" />
+  <text class="small" x="308" y="718">scaled result terrain</text>
+  <rect x="488" y="704" width="18" height="18" class="voxelArea" />
+  <text class="small" x="514" y="718">TargetSV and Project SV voxel boxes</text>
+
+  <rect class="panel" x="824" y="105" width="420" height="260" rx="16" />
+  <text class="label" x="852" y="137">Key sizes</text>
+  <text class="metric" x="852" y="168">TargetLandscape standard: 1024 x 1024, Y 0..120</text>
+  <text class="metric" x="852" y="194">baked Terrain: capture_size=1024, visible=false</text>
+  <text class="metric" x="852" y="220">TargetSV fixture: capture_size=1020, vertical_span=32</text>
+  <text class="metric" x="852" y="246">demo display_scale=0.03, visible width about 30.6</text>
+  <text class="metric" x="852" y="272">ProjectVoxelBoxes: about 30.7 x 4.7 x 30.7</text>
+  <text class="warn" x="852" y="305">Note: capture_size=1020 belongs to this TargetSV fixture.</text>
+  <text class="warn" x="852" y="323">It is a 4-unit edge delta from the project Terrain standard 1024.</text>
+
+  <rect class="panel" x="824" y="390" width="420" height="380" rx="16" />
+  <text class="label" x="852" y="422">Data and node relationship</text>
+
+  <rect class="node" x="852" y="450" width="160" height="58" rx="12" />
+  <text class="small" x="870" y="475">TargetSV_PT.bgeo.sc</text>
+  <text class="tiny" x="870" y="493">286,469 points</text>
+
+  <rect class="node" x="1050" y="450" width="160" height="58" rx="12" />
+  <text class="small" x="1068" y="475">scene_height_0_1.png</text>
+  <text class="tiny" x="1068" y="493">height field</text>
+
+  <path class="flow" d="M 1012 479 C 1028 479 1034 479 1050 479" />
+
+  <rect class="nodeHot" x="902" y="545" width="260" height="72" rx="12" />
+  <text class="small" x="925" y="573">TargetSVVisualization</text>
+  <text class="tiny" x="925" y="592">script: target_sv_point_cloud_demo.gd</text>
+  <text class="tiny" x="925" y="609">builds terrain, voxel boxes, labels, camera framing</text>
+
+  <path class="flow" d="M 932 508 C 932 525 952 532 984 545" />
+  <path class="flow" d="M 1130 508 C 1130 525 1110 532 1080 545" />
+
+  <rect class="nodeHot" x="858" y="660" width="150" height="58" rx="12" />
+  <text class="small" x="877" y="685">HeightTextureTerrain</text>
+  <text class="tiny" x="877" y="703">scaled result terrain</text>
+
+  <rect class="nodeHot" x="1045" y="660" width="150" height="58" rx="12" />
+  <text class="small" x="1068" y="685">ProjectVoxelBoxes</text>
+  <text class="tiny" x="1068" y="703">136,632 voxels</text>
+
+  <path class="flow2" d="M 982 617 C 960 632 942 642 933 660" />
+  <path class="flow2" d="M 1082 617 C 1104 632 1122 642 1120 660" />
+
+  <text class="tiny" x="852" y="748">Hotkeys: Shift+R color, Shift+T complexity, Shift+Y collision.</text>
+</svg>

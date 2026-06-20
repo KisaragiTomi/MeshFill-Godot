@@ -1,13 +1,12 @@
-[gd_scene load_steps=3 format=3 uid="uid://cs8djwmxqb3vk"]
+[gd_scene load_steps=3 format=3]
 
-[ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
-
+[ext_resource type="Script" path="res://demos/core-scenevoxeltile/scene_voxel_tile_debug.gd" id="1_contract"]
 [ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
 
-[node name="SceneVoxelTile3DDemo" type="Node3D"]
+[node name="SceneVoxelTile3DDemo" type="Node3D" unique_id=258346124]
 script = ExtResource("1_contract")
-metadata/source_doc = "res://docs/core/scenevoxeltile.md"
+metadata/source_doc = "res://demos/core-scenevoxeltile/scenevoxeltile.md"
 metadata/test_doc = "res://demos/core-scenevoxeltile/core-scenevoxeltile.md"
 metadata/focus = "SceneVoxelTile dirty sidecar visualization: 3D tile grid, color-coded dirty flags, committed payload boundary check, GPU readback status"
 
-[node name="DemoSetup" parent="." instance=ExtResource("99_setup")]
+[node name="DemoSetup" type="Node3D" parent="." unique_id=1174812617 instance=ExtResource("99_setup")]

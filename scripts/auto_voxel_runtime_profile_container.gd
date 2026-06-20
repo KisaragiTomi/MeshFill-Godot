@@ -21,10 +21,6 @@ const PROBE_RECORD_STRIDE_BYTES := 32
 const PIVOT_RECORD_STRIDE_BYTES := 32
 const COLLISION_RECORD_STRIDE_BYTES := 32
 
-const PROBE_KIND_POSITIVE := 0
-const PROBE_KIND_NEGATIVE := 1
-const PROBE_KIND_SUPPORT := 2
-
 var descriptor_hash_to_profile_id: Dictionary = {}
 var dirty_profile_ids: Array[int] = []
 
@@ -638,18 +634,17 @@ func _pack_probe_record_bytes() -> PackedByteArray:
 		var weight := maxf(float(probe.get("weight", 1.0)), 0.0)
 		var rgba8 := _shader_rgba8_from_probe(probe)
 		var expected_collision := clampf(float(probe.get("expected_collision", 0.0)), 0.0, 1.0)
-		var flags := int(probe.get("flags", SemanticProbeProfileScript.FLAG_COLOR | SemanticProbeProfileScript.FLAG_COMPLEXITY))
-		var kind := _probe_kind_code(str(probe.get("kind", "positive")))
+		var wc := _probe_metric_weights(probe)
 
 		var base := i * PROBE_RECORD_STRIDE_BYTES
 		bytes.encode_float(base + 0, offset.x)
 		bytes.encode_float(base + 4, offset.y)
 		bytes.encode_float(base + 8, offset.z)
-		bytes.encode_float(base + 12, weight)
+		bytes.encode_float(base + 12, wc.z)       # w_collision
 		bytes.encode_u32(base + 16, rgba8)
 		bytes.encode_float(base + 20, expected_collision)
-		bytes.encode_u32(base + 24, flags)
-		bytes.encode_u32(base + 28, kind)
+		bytes.encode_float(base + 24, wc.x)       # w_color
+		bytes.encode_float(base + 28, wc.y)       # w_complexity
 	return bytes
 
 
@@ -790,14 +785,12 @@ static func _color_from_semantic_rgba8(packed: int) -> Color:
 	)
 
 
-static func _probe_kind_code(kind: String) -> int:
-	match kind:
-		"negative":
-			return PROBE_KIND_NEGATIVE
-		"support":
-			return PROBE_KIND_SUPPORT
-		_:
-			return PROBE_KIND_POSITIVE
+static func _probe_metric_weights(p: Dictionary) -> Vector3:
+	return Vector3(
+		float(p.get("w_color", 1.0)),
+		float(p.get("w_complexity", 1.0)),
+		float(p.get("w_collision", 1.0)),
+	)
 
 
 static func _hex_to_u32(hex_value: String) -> int:

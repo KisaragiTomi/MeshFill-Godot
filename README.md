@@ -109,14 +109,14 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 
 ## 文档导航
 
-- [`docs/core/meshfill-framework.md`](docs/core/meshfill-framework.md) — 框架总览，模块归属与运行时流程
-- [`docs/core/scene-voxel-field-system.md`](docs/core/scene-voxel-field-system.md) — SceneVoxel 字段契约与 source/commit 边界
-- [`docs/core/auto-voxel-descriptor.md`](docs/core/auto-voxel-descriptor.md) — AssetDescriptor 资产语义定义
-- [`docs/core/scene-placement-actor.md`](docs/core/scene-placement-actor.md) — SPA 运行时编排器契约
-- [`docs/core/autoobject-gpu-runtime-architecture.md`](docs/core/autoobject-gpu-runtime-architecture.md) — GPU 端百万级运行时架构
-- [`docs/placement/target-scene-voxel-projection.md`](docs/placement/target-scene-voxel-projection.md) — TargetSV 目标画布边界
-- [`docs/placement/autoobject-probe-prefilter.md`](docs/placement/autoobject-probe-prefilter.md) — 语义探针粗筛流程
-- [`docs/placement/voxel-semantic-routing.md`](docs/placement/voxel-semantic-routing.md) — 候选资产路由契约
+- [`demos/core-meshfill-framework/meshfill-framework.md`](demos/core-meshfill-framework/meshfill-framework.md) — 框架总览，模块归属与运行时流程
+- [`demos/core-scene-voxel-field-system/scene-voxel-field-system.md`](demos/core-scene-voxel-field-system/scene-voxel-field-system.md) — SceneVoxel 字段契约与 source/commit 边界
+- [`demos/asset-descriptor-demo/asset-descriptor.md`](demos/asset-descriptor-demo/asset-descriptor.md) — AssetDescriptor 资产语义定义
+- [`demos/core-scene-placement-actor/scene-placement-actor.md`](demos/core-scene-placement-actor/scene-placement-actor.md) — SPA 运行时编排器契约
+- [`demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md`](demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md) — GPU 端百万级运行时架构
+- [`demos/target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md`](demos/target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md) — TargetSV 目标画布边界
+- [`demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md`](demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md) — 语义探针粗筛流程
+- [`demos/placement-voxel-semantic-routing/voxel-semantic-routing.md`](demos/placement-voxel-semantic-routing/voxel-semantic-routing.md) — 候选资产路由契约
 
 ## 技术栈
 

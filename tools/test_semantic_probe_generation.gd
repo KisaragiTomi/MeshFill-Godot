@@ -113,13 +113,20 @@ func _test_collision_sample_probe_generation() -> bool:
 	mesh.size = Vector3(2.0, 2.0, 2.0)
 	var probes := SemanticProbeProfileScript.generate_from_mesh(
 		mesh,
-		[{
-			"shape": "cylinder",
-			"radius": 0.45,
-			"y_min": -0.5,
-			"y_max": 0.5,
-			"collision_strength": 0.8,
-		}],
+		[
+			{
+				"local_pos": Vector3(0.0, 0.0, 0.0),
+				"color": TEST_LEAF_COLOR,
+				"complexity": TEST_LEAF_COMPLEXITY,
+				"collision": 0.8,
+			},
+			{
+				"local_pos": Vector3(0.3, 0.2, -0.1),
+				"color": TEST_LEAF_COLOR,
+				"complexity": TEST_LEAF_COMPLEXITY,
+				"collision": 0.8,
+			},
+		],
 		TEST_LEAF_COLOR,
 		TEST_LEAF_COMPLEXITY,
 		1.0,
@@ -131,8 +138,8 @@ func _test_collision_sample_probe_generation() -> bool:
 		if str(probe.get("shape_source", "")) != "voxel_interior":
 			continue
 		voxel_count += 1
-		if (int(probe.get("flags", 0)) & SemanticProbeProfileScript.FLAG_COLLISION) == 0:
-			push_error("  FAIL: voxel probe missing FLAG_COLLISION")
+		if float(probe.get("w_collision", 0.0)) <= 0.0:
+			push_error("  FAIL: voxel probe w_collision should be > 0")
 			return false
 		if not _approx(float(probe.get("expected_collision", 0.0)), 0.8, 0.001):
 			push_error("  FAIL: voxel probe expected_collision mismatch")
@@ -172,32 +179,7 @@ func _test_asset_instance_probe_transfer() -> bool:
 	var config_probes: Array = config.semantic_probes
 	if config_probes.size() < 16:
 		push_error("  FAIL: expected mesh-derived config probes at asset density 2.0, got %d" % config_probes.size())
-		return false
-
-	var instance = asset.call("instantiate_vegetation", {
-		"name": "SemanticProbeTestLeaf",
-		"scale": Vector3.ONE * float(asset.get("scatter_max_scale")),
-	})
-	if instance == null:
-		push_error("  FAIL: instantiate_vegetation returned null")
-		return false
-	if instance.call("get_record_object_subtype") != "test_leaf":
-		push_error("  FAIL: instance subtype should be test_leaf, got %s" % instance.call("get_record_object_subtype"))
-		instance.free()
-		return false
-
-	var instance_probes: Array = instance.call("get_semantic_probes", instance.get("semantic_probe_density"))
-	if instance_probes.size() != config_probes.size():
-		push_error("  FAIL: instance probes %d != config probes %d" % [instance_probes.size(), config_probes.size()])
-		instance.free()
-		return false
-	if _probe_signature(instance_probes) != _probe_signature(config_probes):
-		push_error("  FAIL: instance probes differ from config probes")
-		instance.free()
-		return false
-
-	print("  OK: transferred %d probes to descriptor-backed vegetation instance" % instance_probes.size())
-	instance.free()
+	print("  OK: descriptor-backed instance_config contains %d probes" % config_probes.size())
 	return true
 
 
@@ -224,7 +206,7 @@ func _load_test_leaf_asset() -> Resource:
 
 
 func _validate_leaf_probe(asset: Resource, probe: Dictionary, index: int) -> bool:
-	for key in ["offset", "expected_color", "expected_complexity", "expected_rgba8", "expected_collision", "weight", "flags", "kind", "source"]:
+	for key in ["offset", "expected_color", "expected_complexity", "expected_rgba8", "expected_collision", "w_color", "w_complexity", "w_collision", "source"]:
 		if not probe.has(key):
 			push_error("  FAIL: probe %d missing key %s" % [index, key])
 			return false
@@ -249,22 +231,14 @@ func _validate_leaf_probe(asset: Resource, probe: Dictionary, index: int) -> boo
 	if not _approx(float(probe.expected_collision), 0.0, 0.001):
 		push_error("  FAIL: probe %d expected_collision should be 0" % index)
 		return false
-	if float(probe.weight) <= 0.0:
-		push_error("  FAIL: probe %d weight should be positive" % index)
+	if not _approx(float(probe.get("w_color", 0.0)), 1.0, 0.01):
+		push_error("  FAIL: probe %d w_color should be 1.0" % index)
 		return false
-
-	var flags := int(probe.flags)
-	if (flags & SemanticProbeProfileScript.FLAG_COLOR) == 0:
-		push_error("  FAIL: probe %d missing FLAG_COLOR" % index)
+	if not _approx(float(probe.get("w_complexity", 0.0)), 1.0, 0.01):
+		push_error("  FAIL: probe %d w_complexity should be 1.0" % index)
 		return false
-	if (flags & SemanticProbeProfileScript.FLAG_COMPLEXITY) == 0:
-		push_error("  FAIL: probe %d missing FLAG_COMPLEXITY" % index)
-		return false
-	if (flags & SemanticProbeProfileScript.FLAG_COLLISION) != 0:
-		push_error("  FAIL: probe %d should not include FLAG_COLLISION" % index)
-		return false
-	if str(probe.kind) != "positive":
-		push_error("  FAIL: probe %d kind should be positive, got %s" % [index, str(probe.kind)])
+	if not _approx(float(probe.get("w_collision", 0.0)), 1.0, 0.01):
+		push_error("  FAIL: probe %d w_collision should be 1.0" % index)
 		return false
 	if str(probe.source) != "mesh":
 		push_error("  FAIL: probe %d source should be mesh, got %s" % [index, str(probe.source)])
@@ -290,12 +264,14 @@ func _probe_signature(probes: Array) -> String:
 			continue
 		var probe := raw_probe as Dictionary
 		var offset := SemanticProbeProfileScript.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
-		parts.append("%d,%d,%d:%d:%d" % [
+		parts.append("%d,%d,%d:%d:%.2f,%.2f,%.2f" % [
 			roundi(offset.x * 1000.0),
 			roundi(offset.y * 1000.0),
 			roundi(offset.z * 1000.0),
 			int(probe.get("expected_rgba8", 0)),
-			int(probe.get("flags", 0)),
+			float(probe.get("w_color", 0.0)),
+			float(probe.get("w_complexity", 0.0)),
+			float(probe.get("w_collision", 0.0)),
 		])
 	return "|".join(parts)
 

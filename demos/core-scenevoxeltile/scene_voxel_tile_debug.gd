@@ -1,3 +1,4 @@
+@tool
 extends "res://demos/core_demo_contract_fixture.gd"
 
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
@@ -48,6 +49,9 @@ var _selected_tile_id: String = ""
 
 
 func _ready() -> void:
+	super._ready()
+	if is_scene_startup_blocked():
+		return
 	ensure_test_terrain_initialized()
 	_setup_committer()
 	_setup_visualization()
@@ -254,6 +258,11 @@ func _make_metric_row(parent: VBoxContainer, label_text: String, color: Color, f
 	return label
 
 
+# NOTE: This intentionally does not route through VoxelDisplay. Each tile needs
+# an independent MeshInstance3D plus a StaticBody3D/CollisionShape3D for per-tile
+# ray picking, and its color/wireframe toggles per tile at runtime. VoxelDisplay
+# emits one merged MultiMesh that cannot be ray-picked or restyled per cell, so
+# the unified path does not fit this interactive picker.
 func _build_tile_meshes() -> void:
 	var tile_size: Vector3 = Vector3(_committer._scene_voxel_tile_size()) * _committer.voxel_size
 	var half_size := tile_size * 0.5
@@ -409,6 +418,8 @@ func _flag_name_to_bit(flag_name: String) -> int:
 
 
 func _input(event: InputEvent) -> void:
+	if not Engine.is_editor_hint():
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_T:
@@ -538,4 +549,6 @@ func _apply_demo_update() -> void:
 
 
 func _process(_delta: float) -> void:
+	if not Engine.is_editor_hint():
+		return
 	pass

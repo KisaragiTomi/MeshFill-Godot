@@ -22,9 +22,6 @@ const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd
 @export var source_mesh: Mesh                                   # source mesh，用于导入/重建
 @export var source_mesh_path: String = ""                       # source mesh 资源路径
 @export var mesh_create_method: String = ""                     # 程序化 mesh 创建方法名
-@export var scatter_min_distance: float = 1.0                   # 植被散布最小距离
-@export var scatter_max_count: int = 500                        # 植被散布最大数量
-@export var scatter_max_scale: float = 1.0                      # 植被散布最大缩放
 @export var visual_layer: int = 0                               # 实例化时启用的显示层
 @export var group: String = ""                                  # 实例化时加入的分组
 @export var material: Material                                  # 实例化时应用的材质
@@ -105,10 +102,10 @@ func get_semantic_probes(
 	elif mesh_or_density is float or mesh_or_density is int:
 		resolved_mesh = get_mesh()
 		resolved_density = float(mesh_or_density)
-		resolved_world_scale = Vector3.ONE * scatter_max_scale
+		resolved_world_scale = Vector3.ONE
 	else:
 		resolved_mesh = get_mesh()
-		resolved_world_scale = Vector3.ONE * scatter_max_scale
+		resolved_world_scale = Vector3.ONE
 	if resolved_fallback_collisions.is_empty():
 		resolved_fallback_collisions = get_collision()
 	var d := semantic_probe_density if resolved_density <= 0.0 else resolved_density
@@ -172,16 +169,6 @@ func get_source_mesh() -> Mesh:
 	return get_mesh()
 
 
-func get_scatter_profile() -> Array[Dictionary]:
-	var result_color := get_color()
-	var result_complexity := get_complexity()
-	result_color.a = result_complexity
-	return [{
-		"color": result_color,
-		"complexity": result_complexity,
-	}]
-
-
 func make_instance_config(config: Dictionary = {}) -> Dictionary:
 	var cfg := config.duplicate(true)
 	if not cfg.has("mesh"):
@@ -227,13 +214,6 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 	if not cfg.has("material") and material != null:
 		cfg["material"] = material
 	return cfg
-
-
-func instantiate_vegetation(config: Dictionary = {}) -> AutoObject:
-	var node := AutoObject.new()
-	var cfg := make_instance_config(config)
-	node.configure_auto_object(cfg)
-	return node
 
 
 func _should_read_profile_average() -> bool:

@@ -66,14 +66,14 @@ func _test_position_only_anchor_layers() -> bool:
 	var supported_asset := AutoObject.new()
 	supported_asset.name = "supported_asset"
 	supported_asset.set_semantic_probes([
-		ProbeProfile.make_probe(Vector3.ZERO, Color.WHITE, 1.0, 1.0, ProbeProfile.FLAG_COLLISION, "positive", "test")
+		ProbeProfile.make_probe(Vector3.ZERO, Color.WHITE, 1.0, 0.0, 0.0, 1.0, "test")
 	])
 
 	var upper_asset := AutoObject.new()
 	upper_asset.name = "upper_asset"
 	upper_asset.set_pivot_variants([{"name": "middle", "offset": Vector3(0.0, 3.0, 0.0), "score_bias": 0.0}])
 	upper_asset.set_semantic_probes([
-		ProbeProfile.make_probe(Vector3(0.0, 3.0, 0.0), Color.WHITE, 1.0, 1.0, ProbeProfile.FLAG_COLLISION, "positive", "test")
+		ProbeProfile.make_probe(Vector3(0.0, 3.0, 0.0), Color.WHITE, 1.0, 0.0, 0.0, 1.0, "test")
 	])
 
 	var prefilter := Prefilter.new()
@@ -152,7 +152,7 @@ func _test_candidate_routes_expand_for_probe_footprint_context_guard() -> bool:
 	print("[AutoObjectProbePrefilter] test_candidate_routes_expand_for_probe_footprint_context_guard...")
 	var profile := Prefilter._build_route_profile_from_arrays(
 		[
-			ProbeProfile.make_probe(Vector3(9.0, 0.0, 0.0), Color.WHITE, 0.0, 1.0, ProbeProfile.FLAG_COLOR, "positive", "test"),
+			ProbeProfile.make_probe(Vector3(9.0, 0.0, 0.0), Color.WHITE, 0.0, 1.0, 0.0, 0.0, "test"),
 		],
 		[
 			{"shape": "box", "size": Vector3(1.0, 1.0, 1.0), "collision_strength": 1.0},
@@ -195,7 +195,7 @@ func _test_candidate_route_profile_debug_schema() -> bool:
 	print("[AutoObjectProbePrefilter] test_candidate_route_profile_debug_schema...")
 	var profile := Prefilter._build_route_profile_from_arrays(
 		[
-			ProbeProfile.make_probe(Vector3(0.0, 2.0, -3.0), Color.WHITE, 0.0, 1.0, ProbeProfile.FLAG_COLOR, "positive", "schema"),
+			ProbeProfile.make_probe(Vector3(0.0, 2.0, -3.0), Color.WHITE, 0.0, 1.0, 0.0, 0.0, "schema"),
 		],
 		[
 			{"shape": "box", "size": Vector3(2.0, 1.0, 2.0), "collision_strength": 1.0},
@@ -898,7 +898,7 @@ func _test_prefilter_borrows_profile_container_probe_records_or_skip() -> bool:
 	asset.name = "borrowed_profile_probe_asset"
 	asset.semantic_probe_density = 1.0
 	asset.set_semantic_probes([
-		ProbeProfile.make_probe(Vector3(1.0, 0.0, 0.0), Color(0.2, 0.3, 0.4, 0.5), 0.25, 2.0, ProbeProfile.FLAG_COLOR, "positive", "borrow"),
+		ProbeProfile.make_probe(Vector3(1.0, 0.0, 0.0), Color(0.2, 0.3, 0.4, 0.5), 0.25, 2.0, 0.0, 0.0, "borrow"),
 	])
 
 	var container = RuntimeProfileContainerScript.new()

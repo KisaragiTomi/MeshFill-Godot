@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://blxyu241vrckc"
+path="res://.godot/imported/voxel_field_instances.glsl-8ded75f40a56049f3da19cedff3d98c2.res"
+
+[deps]
+
+source_file="res://shaders/voxel_field_instances.glsl"
+dest_files=["res://.godot/imported/voxel_field_instances.glsl-8ded75f40a56049f3da19cedff3d98c2.res"]
+
+[params]
+

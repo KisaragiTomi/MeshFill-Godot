@@ -31,10 +31,12 @@ const TARGET_GENERATE_PUSH_DIRTY_W_OFFSET := 36
 const TARGET_GENERATE_PUSH_DIRTY_H_OFFSET := 40
 const TARGET_GENERATE_PUSH_PAD0_OFFSET := 44
 
+const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
+
 var texture_size: int = 256      # TargetSV XZ 分辨率
 var slice_count: int = 8         # TargetSV 纵向切片数
-var max_height: float = 120.0    # 目标高度解码上限
-var capture_size: float = 120.0  # 俯视捕获场景范围
+var max_height: float = TerrainConfigScript.MAX_HEIGHT    # 目标高度解码上限 (规范真值源)
+var capture_size: float = TerrainConfigScript.CAPTURE_SIZE  # 俯视捕获场景范围 (规范真值源)
 var vertical_span: float = 16.0  # 写入 3D flat buffer 的高度跨度
 var slope_start: float = 0.35
 var slope_full: float = 0.8

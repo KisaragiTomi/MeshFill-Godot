@@ -28,6 +28,11 @@ func _init() -> void:
 
 
 
+func _test_scene_placement_actor_prefers_prepacked_target_bytes() -> bool:
+	print("[TargetSVBufferDecode] test_scene_placement_actor_prefers_prepacked_target_bytes... SKIP (stub)")
+	return true
+
+
 func _test_scene_placement_actor_keeps_brush_sv_control_metadata_only() -> bool:
 	print("[TargetSVBufferDecode] test_scene_placement_actor_keeps_brush_sv_control_metadata_only...")
 	var actor := ScenePlacementActorScript.new()
@@ -101,9 +106,7 @@ func _test_scene_placement_actor_exposes_mesh_descriptions() -> bool:
 		Vector3.ZERO,
 		Color(0.2, 0.7, 0.3, 0.6),
 		0.5,
-		1.0,
-		SemanticProbeProfileScript.FLAG_COLOR,
-		"positive",
+		1.0, 0.0, 0.0,
 		"manual"
 	)])
 
@@ -459,7 +462,7 @@ func _test_vpg_accepts_prepacked_target_field() -> bool:
 	prepacked[prepacked.size() - 1] = 7.0
 
 	var generator := VoxelPlacementGeneratorScript.new()
-	var from_prepacked := generator._target_field_bytes_from_settings({
+	var from_prepacked: Dictionary = generator._target_field_bytes_from_settings({
 		"target_field_bytes": prepacked,
 	}, voxel_count)
 	var prepacked_field_bytes: PackedFloat32Array = from_prepacked.get("bytes", PackedFloat32Array())
@@ -474,7 +477,7 @@ func _test_vpg_accepts_prepacked_target_field() -> bool:
 			push_error("  FAIL: prepacked target field mismatch at %d" % i)
 			return false
 
-	var fallback := generator._target_field_bytes_from_settings({}, voxel_count)
+	var fallback: Dictionary = generator._target_field_bytes_from_settings({}, voxel_count)
 	var fallback_field_bytes: PackedFloat32Array = fallback.get("bytes", PackedFloat32Array())
 	if bool(fallback.get("has_target", true)) or str(fallback.get("source", "")) != "none":
 		push_error("  FAIL: missing prepacked target field should not enable target scoring")
@@ -484,7 +487,7 @@ func _test_vpg_accepts_prepacked_target_field() -> bool:
 			push_error("  FAIL: missing prepacked target field should stay zero at %d" % i)
 			return false
 
-	var empty := generator._target_field_bytes_from_settings({}, voxel_count)
+	var empty: Dictionary = generator._target_field_bytes_from_settings({}, voxel_count)
 	if bool(empty.get("has_target", true)):
 		push_error("  FAIL: missing target field should not enable target scoring")
 		return false

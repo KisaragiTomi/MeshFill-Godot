@@ -1,0 +1,13 @@
+{
+  "name": "godot-mcp-bridge",
+  "version": "1.0.0",
+  "description": "MCP server bridging Cursor AI to Godot editor via TCP",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest"
+  }
+}

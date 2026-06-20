@@ -8,7 +8,6 @@ const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_bas
 @export var max_height: float = 10000.0                     # 场景高度上限
 @export var generate_threshold: float = 0.5                 # generate_mask 最低覆盖比例
 @export var un_generate_threshold: float = 0.3              # un_generate_mask 最高遮挡比例
-@export var target_height_extension: float = 2.0            # 目标高度传播 / mask 扩展范围
 @export var stamp_overlap: float = 0.0                      # 高度印章与当前高度混合比例
 
 @export var scene_depth_texture: Texture2D                  # 场景俯视深度
@@ -34,17 +33,11 @@ var _active_fitting_assets: Array = []
 var _dispatch_failed: bool = false
 
 var _shader_init: RID
-var _shader_target_height: RID
-var _shader_blur: RID
-var _shader_extent: RID
 var _shader_fill: RID
 var _shader_find: RID
 var _shader_update: RID
 
 var _pipeline_init: RID
-var _pipeline_target_height: RID
-var _pipeline_blur: RID
-var _pipeline_extent: RID
 var _pipeline_fill: RID
 var _pipeline_find: RID
 var _pipeline_update: RID
@@ -265,58 +258,6 @@ func generate_heightfield_fit(num_iteration: int, spawn_size: float = 1.0, dirty
 		_cleanup(input_textures, working, mesh_tex_rids)
 		return []
 
-	# === Pass 1.5: Generate Target Height (flood-fill propagation) ===
-	var target_height_read := _create_image_texture(texture_size, texture_size)
-	var pixel_size := capture_size / float(texture_size)
-	var flood_iterations := maxi(1, ceili(target_height_extension / pixel_size))
-	for i in range(flood_iterations):
-		rd.texture_copy(
-			working.target_height, target_height_read,
-			Vector3.ZERO, Vector3.ZERO, Vector3(texture_size, texture_size, 1),
-			0, 0, 0, 0
-		)
-		_submit_and_sync()
-		_dispatch_target_height(target_height_read, working, dr)
-		if _dispatch_failed:
-			_cleanup(input_textures, working, mesh_tex_rids)
-			return []
-
-	# === Pass 1.6: Blur target height ===
-	rd.texture_copy(
-		working.target_height, target_height_read,
-		Vector3.ZERO, Vector3.ZERO, Vector3(texture_size, texture_size, 1),
-		0, 0, 0, 0
-	)
-	_submit_and_sync()
-	_dispatch_blur(target_height_read, working, dr)
-	if _dispatch_failed:
-		_cleanup(input_textures, working, mesh_tex_rids)
-		return []
-
-	rd.texture_copy(
-		working.current_scene_depth, working.current_scene_depth_read,
-		Vector3.ZERO, Vector3.ZERO, Vector3(texture_size, texture_size, 1),
-		0, 0, 0, 0
-	)
-
-	# === Pass 2: ExtentGenerateMask (1-pixel dilation per dispatch) ===
-	var extent_pixels := ceili(target_height_extension / pixel_size)
-	extent_pixels = clampi(extent_pixels, 0, 128)
-	print("[PlacementFitting] Extent: ext=%.1f pixel_size=%.3f extent_px=%d dirty=%s" % [
-		target_height_extension, pixel_size, extent_pixels, str(dr)])
-	for ei in range(extent_pixels):
-		_dispatch_extent_mask(input_textures, working, dr)
-		if _dispatch_failed:
-			_cleanup(input_textures, working, mesh_tex_rids)
-			return []
-		_submit_and_sync()
-		rd.texture_copy(
-			working.current_scene_depth, working.current_scene_depth_read,
-			Vector3.ZERO, Vector3.ZERO, Vector3(texture_size, texture_size, 1),
-			0, 0, 0, 0
-		)
-		_submit_and_sync()
-
 	# Copy current_scene_depth -> current_scene_depth_a
 	rd.texture_copy(
 		working.current_scene_depth, working.current_scene_depth_a,
@@ -376,17 +317,11 @@ func generate_heightfield_fit(num_iteration: int, spawn_size: float = 1.0, dirty
 
 func _load_shaders() -> void:
 	_shader_init = _compute.load_compute_shader("res://shaders/init_heightfield_fitting.glsl")
-	_shader_target_height = _compute.load_compute_shader("res://shaders/generate_target_height.glsl")
-	_shader_blur = _compute.load_compute_shader("res://shaders/blur_texture.glsl")
-	_shader_extent = _compute.load_compute_shader("res://shaders/extent_generate_mask.glsl")
 	_shader_fill = _compute.load_compute_shader("res://shaders/fill_heightfield_asset.glsl")
 	_shader_find = _compute.load_compute_shader("res://shaders/find_best_pixel.glsl")
 	_shader_update = _compute.load_compute_shader("res://shaders/update_current_height.glsl")
 
 	_pipeline_init = _compute.create_compute_pipeline(_shader_init)
-	_pipeline_target_height = _compute.create_compute_pipeline(_shader_target_height)
-	_pipeline_blur = _compute.create_compute_pipeline(_shader_blur)
-	_pipeline_extent = _compute.create_compute_pipeline(_shader_extent)
 	_pipeline_fill = _compute.create_compute_pipeline(_shader_fill)
 	_pipeline_find = _compute.create_compute_pipeline(_shader_find)
 	_pipeline_update = _compute.create_compute_pipeline(_shader_update)
@@ -516,109 +451,6 @@ func _dispatch_init(inputs: Dictionary, working: Dictionary, dr: Rect2i) -> void
 	if cl < 0:
 		return
 	rd.compute_list_bind_compute_pipeline(cl, _pipeline_init)
-	rd.compute_list_bind_uniform_set(cl, set0, 0)
-	rd.compute_list_bind_uniform_set(cl, set1, 1)
-	rd.compute_list_set_push_constant(cl, push_buf, push_buf.size())
-	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
-	_compute.end_compute_list()
-	_submit_and_sync()
-
-
-# Pass 1.5: Generate Target Height (flood-fill)
-
-func _dispatch_target_height(target_read: RID, working: Dictionary, dr: Rect2i) -> void:
-	var set0: RID = _compute.create_uniform_set([
-		_make_sampler_uniform(0, target_read),
-	], _shader_target_height, 0)
-
-	var set1: RID = _compute.create_uniform_set([
-		_make_image_uniform(0, working.target_height),
-	], _shader_target_height, 1)
-
-	var push_buf := PackedByteArray()
-	push_buf.resize(16)
-	push_buf.encode_s32(0, dr.position.x)
-	push_buf.encode_s32(4, dr.position.y)
-	push_buf.encode_s32(8, dr.size.x)
-	push_buf.encode_s32(12, dr.size.y)
-
-	var groups_x := ceili(float(dr.size.x) / 32.0)
-	var groups_y := ceili(float(dr.size.y) / 32.0)
-
-	var cl: int = _begin_dispatch("target_height")
-	if cl < 0:
-		return
-	rd.compute_list_bind_compute_pipeline(cl, _pipeline_target_height)
-	rd.compute_list_bind_uniform_set(cl, set0, 0)
-	rd.compute_list_bind_uniform_set(cl, set1, 1)
-	rd.compute_list_set_push_constant(cl, push_buf, push_buf.size())
-	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
-	_compute.end_compute_list()
-	_submit_and_sync()
-
-
-# Pass 1.6: Blur
-
-func _dispatch_blur(blur_read: RID, working: Dictionary, dr: Rect2i) -> void:
-	var set0: RID = _compute.create_uniform_set([
-		_make_sampler_uniform(0, blur_read),
-	], _shader_blur, 0)
-
-	var set1: RID = _compute.create_uniform_set([
-		_make_image_uniform(0, working.target_height),
-	], _shader_blur, 1)
-
-	var push_buf := PackedByteArray()
-	push_buf.resize(32)
-	push_buf.encode_float(0, 1.0)
-	push_buf.encode_s32(4, dr.position.x)
-	push_buf.encode_s32(8, dr.position.y)
-	push_buf.encode_s32(12, dr.size.x)
-	push_buf.encode_s32(16, dr.size.y)
-
-	var groups_x := ceili(float(dr.size.x) / 32.0)
-	var groups_y := ceili(float(dr.size.y) / 32.0)
-
-	var cl: int = _begin_dispatch("blur")
-	if cl < 0:
-		return
-	rd.compute_list_bind_compute_pipeline(cl, _pipeline_blur)
-	rd.compute_list_bind_uniform_set(cl, set0, 0)
-	rd.compute_list_bind_uniform_set(cl, set1, 1)
-	rd.compute_list_set_push_constant(cl, push_buf, push_buf.size())
-	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
-	_compute.end_compute_list()
-	_submit_and_sync()
-
-
-# Pass 2: Extent Generate Mask
-
-func _dispatch_extent_mask(inputs: Dictionary, working: Dictionary, dr: Rect2i) -> void:
-	var set0: RID = _compute.create_uniform_set([
-		_make_sampler_uniform(0, working.current_scene_depth_read),
-		_make_sampler_uniform(1, inputs.height_normal),
-	], _shader_extent, 0)
-
-	var set1: RID = _compute.create_uniform_set([
-		_make_image_uniform(0, working.current_scene_depth),
-	], _shader_extent, 1)
-
-	var push_buf := PackedByteArray()
-	push_buf.resize(32)
-	push_buf.encode_float(0, max_height)
-	push_buf.encode_float(4, capture_size)
-	push_buf.encode_s32(8, dr.position.x)
-	push_buf.encode_s32(12, dr.position.y)
-	push_buf.encode_s32(16, dr.size.x)
-	push_buf.encode_s32(20, dr.size.y)
-
-	var groups_x := ceili(float(dr.size.x) / 32.0)
-	var groups_y := ceili(float(dr.size.y) / 32.0)
-
-	var cl: int = _begin_dispatch("extent_mask")
-	if cl < 0:
-		return
-	rd.compute_list_bind_compute_pipeline(cl, _pipeline_extent)
 	rd.compute_list_bind_uniform_set(cl, set0, 0)
 	rd.compute_list_bind_uniform_set(cl, set1, 1)
 	rd.compute_list_set_push_constant(cl, push_buf, push_buf.size())
@@ -919,16 +751,10 @@ func _cleanup(_inputs: Dictionary, _working: Dictionary, _mesh_tex_rids: Array[R
 	_compute = null
 	_is_local_rd = false
 	_shader_init = RID()
-	_shader_target_height = RID()
-	_shader_blur = RID()
-	_shader_extent = RID()
 	_shader_fill = RID()
 	_shader_find = RID()
 	_shader_update = RID()
 	_pipeline_init = RID()
-	_pipeline_target_height = RID()
-	_pipeline_blur = RID()
-	_pipeline_extent = RID()
 	_pipeline_fill = RID()
 	_pipeline_find = RID()
 	_pipeline_update = RID()

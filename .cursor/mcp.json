@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "CursorMCP对话插件": {
+      "command": "node",
+      "args": [
+        "c:\\Users\\19223\\.cursor\\extensions\\local.xw-cursor-message-8.8.8\\dist\\mcp-server.mjs"
+      ],
+      "env": {
+        "MESSENGER_DATA_DIR": "C:\\Users\\19223\\.moyu-message\\0513522c4cf0"
+      }
+    },
+    "godot": {
+      "command": "node",
+      "args": [
+        "d:\\MyProject\\AITest\\MeshFill-Godot\\godot-mcp\\build\\index.js"
+      ],
+      "env": {
+        "GODOT_PATH": "D:\\.aidata\\Godot\\godot-source\\bin\\godot.windows.editor.x86_64.exe"
+      }
+    }
+  }
+}

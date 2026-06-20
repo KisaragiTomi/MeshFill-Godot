@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://sqichap1j46x"
+path="res://.godot/imported/brush_voxel_instances.glsl-8d0eddb0377038366fd096ffb1b4ceba.res"
+
+[deps]
+
+source_file="res://shaders/brush_voxel_instances.glsl"
+dest_files=["res://.godot/imported/brush_voxel_instances.glsl-8d0eddb0377038366fd096ffb1b4ceba.res"]
+
+[params]
+

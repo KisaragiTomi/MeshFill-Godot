@@ -505,9 +505,7 @@ func _make_descriptor() -> AssetDescriptor:
 		Vector3(0.25, 0.5, -0.25),
 		Color(0.2, 0.4, 0.6, 0.5),
 		0.3,
-		1.0,
-		SemanticProbeProfileScript.FLAG_COLOR | SemanticProbeProfileScript.FLAG_COMPLEXITY | SemanticProbeProfileScript.FLAG_COLLISION,
-		"positive",
+		1.0, 1.0, 1.0,
 		"manual"
 	)])
 	return descriptor

@@ -1,6 +1,8 @@
+@tool
 extends Node3D
 
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
+const NonHeadlessSceneGuardScript := preload("res://scripts/non_headless_scene_guard.gd")
 
 const STATUS_PASS := "PASS"
 const STATUS_SKIP := "SKIP"
@@ -29,10 +31,26 @@ const CPU_FALLBACK_FORBIDDEN_TERMS := [
 
 @export var initialize_test_terrain := true
 
+var _scene_startup_blocked := false
+
 
 func _ready() -> void:
+	if not Engine.is_editor_hint():
+		var msg := "[DemoContract] FATAL: F6/F5 runtime launch is prohibited. All demos must run in @tool editor mode. Scene: %s" % scene_file_path
+		push_error(msg)
+		printerr(msg)
+		_scene_startup_blocked = true
+		assert(false, msg)
+		return
+	_scene_startup_blocked = NonHeadlessSceneGuardScript.reject_scene_launch_if_headless(get_tree())
+	if _scene_startup_blocked:
+		return
 	if initialize_test_terrain:
 		ensure_test_terrain_initialized.call_deferred()
+
+
+func is_scene_startup_blocked() -> bool:
+	return _scene_startup_blocked or not Engine.is_editor_hint()
 
 
 func run_demo_contract_checks(expectations := {}) -> Dictionary:
@@ -93,9 +111,11 @@ func run_demo_contract_checks(expectations := {}) -> Dictionary:
 func ensure_test_terrain_initialized() -> Dictionary:
 	if not initialize_test_terrain:
 		return {"ok": true, "skipped": true, "reason": "disabled"}
+	if not Engine.is_editor_hint():
+		return {"ok": true, "skipped": true, "reason": "not_editor"}
 	if not is_inside_tree():
 		return {"ok": true, "skipped": true, "reason": "not_in_tree"}
-	return TerrainInitializerScript.ensure_shared_terrain(get_tree().root)
+	return TerrainInitializerScript.reuse_shared_terrain(self)
 
 
 func get_contract_source_docs() -> Array:

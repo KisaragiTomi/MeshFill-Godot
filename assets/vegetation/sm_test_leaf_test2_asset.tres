@@ -134,7 +134,5 @@ object_subtype = "test_leaf"
 mesh = SubResource("ArrayMesh_ir3o4")
 source_mesh = SubResource("ArrayMesh_c4ik0")
 source_mesh_path = "res://geo/SM_TestLeaf_Test2.FBX"
-scatter_max_count = 450
-scatter_max_scale = 0.14
 visual_layer = 14
 group = "placed_test_leaves"

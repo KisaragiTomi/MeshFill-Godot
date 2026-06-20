@@ -1,7 +1,14 @@
 ﻿# docs/core/meshfill-framework.md 测试场景
 
-源文档：`res://docs/core/meshfill-framework.md`  
+源文档：`res://demos/core-meshfill-framework/meshfill-framework.md`  
 测试场景：`res://demos/core-meshfill-framework/core-meshfill-framework.tscn`
+
+## 运行方式
+
+> **@tool 编辑器模式，禁止 F6。**
+>
+> 在 Godot 编辑器中双击打开 `.tscn` 场景文件即可。脚本在编辑器视口中实时运行。
+> F6（Run Current Scene）和 F5（Run Project）被 `core_demo_contract_fixture.gd` 守卫代码禁止。
 
 ## 测试方法
 
@@ -21,7 +28,7 @@
 
 所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
 
-3. 对照 `docs/graphs/meshfill_current_framework.svg`，检查文档中的模块边界和当前源码入口一致。
+3. 对照 `meshfill_current_framework.svg`，检查文档中的模块边界和当前源码入口一致。
 
 ## 验收标准
 
