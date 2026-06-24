@@ -1,21 +1,24 @@
 @tool
-extends "res://demos/core_demo_contract_fixture.gd"
+extends "res://scripts/core_demo_contract_fixture.gd"
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
-const AutoAssetFactory := preload("res://scripts/auto_asset_factory.gd")
 const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
+const VoxelDisplay := preload("res://scripts/voxel_display.gd")
 
 const VOXEL_DEBUG_NODE := "VoxelDebugGroup"
+const GEO_ASSET_ROOT := "Assets/Geo"
+const GEO_SOURCE_META := "geo_source_path"
+const GEO_MTIME_META := "geo_modified_time"
+const GEO_BOUND_SIZE_META := "geo_bound_size"
+const GEO_BOUND_LONGEST_META := "geo_bound_longest"
+const GEO_KIND_META := "geo_asset_kind"
+const GEO_SUPPORTED_EXTENSIONS := ["fbx", "glb", "gltf", "obj", "dae", "blend", "mesh", "res", "tscn", "scn"]
 
 # Voxel channel display modes (one shortcut each).
 const VOXEL_CHANNEL_NONE := ""
 const VOXEL_CHANNEL_COLOR := "color"
 const VOXEL_CHANNEL_COMPLEXITY := "complexity"
 const VOXEL_CHANNEL_COLLISION := "collision"
-
-const LEAF_FBX_PATH := "res://geo/SM_TestLeaf_Test2.FBX"
-const CLIFF1_FBX_PATH := "res://geo/cliff_01.FBX"
-const CLIFF2_FBX_PATH := "res://geo/cliff_02.FBX"
 
 const PROBE_DEBUG_NODE := "ProbeDebugGroup"
 const BUFFER_INFO_NODE := "BufferInfoOverlay"
@@ -30,6 +33,10 @@ const ROCK_COMPLEXITY := 0.75
 @export var max_probe_markers: int = 96
 @export_range(8, 96, 1) var voxel_grid_count: int = 28
 @export_range(0.0, 1.0, 0.05) var voxel_collision_strength: float = 0.9
+@export_range(0.05, 2.0, 0.05) var geo_import_scale: float = 0.35
+@export var geo_layout_origin := Vector3(-7.0, 0.0, 5.0)
+@export_range(4.0, 48.0, 0.5) var geo_layout_row_width: float = 14.0
+@export_range(0.1, 4.0, 0.1) var geo_layout_gap: float = 0.8
 # Collision erosion strictness per asset class. Rocks are bulky solids, so the
 # strict full 6-neighbour erosion (rock core only) is correct. Trees have a thin,
 # often 1-voxel trunk that strict erosion deletes entirely, so they use a looser
@@ -56,8 +63,10 @@ func _ready() -> void:
 	super._ready()
 	if is_scene_startup_blocked():
 		return
-	_place_assets()
+	_connect_geo_scan_buttons()
+	_collect_static_assets()
 	_update_instruction_labels()
+	_update_geo_scan_status()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -96,125 +105,441 @@ func _unhandled_input(event: InputEvent) -> void:
 			_mark_handled()
 
 
-# Trees use leaf FBX; rocks use two cliff FBX variants. Mesh comes from
-# AutoAssetFactory.load_mesh() which bakes the FBX import rotation (-90° Z-up→Y-up)
-# and UCX collision filtering into the vertices, so meshes arrive upright.
-# Ground height and row spacing are derived from each baked mesh's real AABB,
-# never hand-tuned constants.
-const ROW_GAP := 0.6
-const ASSET_BASE_LIFT := 0.0
-
-func _place_assets() -> void:
-	var rows := {
-		"tree": {
-			"z_base": 0.6,
-			"items": [
-				{"fbx": LEAF_FBX_PATH, "scale": 0.22, "rot_y": 0.0, "z_jit": 0.0},
-				{"fbx": LEAF_FBX_PATH, "scale": 0.24, "rot_y": 0.0, "z_jit": 0.6},
-				{"fbx": LEAF_FBX_PATH, "scale": 0.20, "rot_y": 0.0, "z_jit": 0.0},
-				{"fbx": LEAF_FBX_PATH, "scale": 0.22, "rot_y": 0.0, "z_jit": 0.4},
-			],
-		},
-		"rock": {
-			"z_base": 2.7,
-			"items": [
-				{"fbx": CLIFF1_FBX_PATH, "scale": 0.42, "rot_y": 0.0, "z_jit": 0.0},
-				{"fbx": CLIFF2_FBX_PATH, "scale": 0.40, "rot_y": 0.0, "z_jit": -0.2},
-				{"fbx": CLIFF1_FBX_PATH, "scale": 0.38, "rot_y": 0.0, "z_jit": 0.3},
-				{"fbx": CLIFF2_FBX_PATH, "scale": 0.40, "rot_y": 0.0, "z_jit": 0.0},
-			],
-		},
-	}
-
-	for asset_type in ["tree", "rock"]:
-		var row: Dictionary = rows[asset_type]
-		var items: Array = row["items"]
-		var resolved := []
-		for it in items:
-			var mesh := _resolve_mesh(it["fbx"])
-			var aabb := mesh.get_aabb()
-			var scale := float(it["scale"])
-			# Rotation-invariant horizontal footprint radius: circumscribed-circle
-			# radius of the XZ extent (half the XZ diagonal). This is the true upper
-			# bound of the horizontal envelope for any rot_y, so a max-extent estimate
-			# would under-spread and let rotated assets overlap.
-			var foot_radius := 0.5 * sqrt(aabb.size.x * aabb.size.x + aabb.size.z * aabb.size.z) * scale
-			# Lift so the baked mesh bottom rests on y=0.
-			var ground_y := -aabb.position.y * scale + ASSET_BASE_LIFT
-			resolved.append({
-				"mesh": mesh,
-				"scale": scale,
-				"rot_y": float(it["rot_y"]),
-				"z": float(row["z_base"]) + float(it["z_jit"]),
-				"ground_y": ground_y,
-				"foot_radius": foot_radius,
-				"type": asset_type,
-			})
-
-		var xs := _layout_row_x(resolved)
-		for i in range(resolved.size()):
-			var r: Dictionary = resolved[i]
-			var pos := Vector3(xs[i], r["ground_y"], r["z"])
-			var node := _spawn_asset(r["mesh"], pos, Vector3(r["scale"], r["scale"], r["scale"]), r["rot_y"], r["type"])
-			if asset_type == "tree":
+# Assets are now authored statically in the .tscn under Assets/Trees and
+# Assets/Rocks. Each asset is a Node3D container holding a "Mesh" MeshInstance3D
+# (baked ArrayMesh .res) and an "AssetLabel". This collector just wires the
+# existing nodes into the probe/voxel pipelines; no nodes are created at runtime.
+func _collect_static_assets() -> void:
+	_tree_nodes.clear()
+	_rock_nodes.clear()
+	var trees_root := get_node_or_null("Assets/Trees")
+	if trees_root:
+		for child in trees_root.get_children():
+			if child is Node3D:
+				_tree_nodes.append(child)
+	var rocks_root := get_node_or_null("Assets/Rocks")
+	if rocks_root:
+		for child in rocks_root.get_children():
+			if child is Node3D:
+				_rock_nodes.append(child)
+	var geo_root := get_node_or_null(GEO_ASSET_ROOT)
+	if geo_root:
+		for child in geo_root.get_children():
+			if not child is Node3D:
+				continue
+			var node := child as Node3D
+			if _geo_asset_kind(node) == "tree":
 				_tree_nodes.append(node)
 			else:
 				_rock_nodes.append(node)
 
 
-# Centered single-axis packing: adjacent centers spaced by the sum of footprint
-# radii plus ROW_GAP, then the whole row is recentered on x=0.
-func _layout_row_x(resolved: Array) -> Array:
-	var xs := []
-	xs.resize(resolved.size())
-	if resolved.is_empty():
-		return xs
-	var cursor := 0.0
-	xs[0] = 0.0
-	for i in range(1, resolved.size()):
-		cursor += float(resolved[i - 1]["foot_radius"]) + float(resolved[i]["foot_radius"]) + ROW_GAP
-		xs[i] = cursor
-	var span := float(xs[resolved.size() - 1])
-	var center_shift := span * 0.5
-	for i in range(xs.size()):
-		xs[i] = float(xs[i]) - center_shift
-	return xs
+# --- Geo scan tools --------------------------------------------------------
+
+func _connect_geo_scan_buttons() -> void:
+	var scan_button := get_node_or_null("GeoTools/Panel/VBox/ScanUpdatedGeo") as Button
+	if scan_button != null:
+		var scan_callable := Callable(self, "_on_scan_updated_geo_pressed")
+		if not scan_button.pressed.is_connected(scan_callable):
+			scan_button.pressed.connect(scan_callable)
+	var rescan_button := get_node_or_null("GeoTools/Panel/VBox/FullRescanGeo") as Button
+	if rescan_button != null:
+		var rescan_callable := Callable(self, "_on_full_rescan_geo_pressed")
+		if not rescan_button.pressed.is_connected(rescan_callable):
+			rescan_button.pressed.connect(rescan_callable)
 
 
-func _resolve_mesh(fbx_path: String) -> Mesh:
-	var mesh := AutoAssetFactory.load_mesh(fbx_path)
-	if mesh == null:
-		mesh = _make_fallback_box()
-	return mesh
+func _on_scan_updated_geo_pressed() -> void:
+	var result := _scan_geo_assets(false)
+	_update_geo_scan_status(_format_geo_scan_result(result))
 
 
-func _spawn_asset(mesh: Mesh, position: Vector3, scale: Vector3, rot_y_deg: float, asset_type: String) -> Node3D:
-	var container := Node3D.new()
-	container.name = "%s_%d" % [asset_type, randi()]
-	container.position = position
-	container.scale = scale
-	container.rotation_degrees.y = rot_y_deg
-	add_child(container)
+func _on_full_rescan_geo_pressed() -> void:
+	var result := _scan_geo_assets(true)
+	_update_geo_scan_status(_format_geo_scan_result(result))
 
-	var mi := MeshInstance3D.new()
-	mi.name = "Mesh"
-	mi.mesh = mesh
-	if asset_type == "tree":
-		mi.material_override = _make_tree_material()
+
+func _scan_geo_assets(full_rescan: bool) -> Dictionary:
+	_refresh_editor_filesystem()
+	var geo_root := _get_or_create_geo_asset_root()
+	if full_rescan:
+		for child in geo_root.get_children():
+			if child is Node:
+				(child as Node).free()
+
+	var existing := _geo_nodes_by_source_path(geo_root)
+	var files := _discover_geo_files("res://geo")
+	var added := 0
+	var updated := 0
+	var unchanged := 0
+	var skipped := 0
+
+	for path in files:
+		var modified := _file_modified_time(path)
+		var existing_node: Node3D = existing.get(path, null)
+		if existing_node != null and int(existing_node.get_meta(GEO_MTIME_META, -1)) == modified:
+			unchanged += 1
+			continue
+		var info := _load_geo_mesh_info(path)
+		var mesh: Mesh = info.get("mesh", null)
+		if mesh == null:
+			skipped += 1
+			continue
+		if existing_node != null:
+			_rebuild_geo_asset_node(existing_node, path, modified, info)
+			_set_owned_by_scene(existing_node)
+			updated += 1
+		else:
+			var node := _create_geo_asset_node(path, modified, info)
+			geo_root.add_child(node)
+			_set_owned_by_scene(node)
+			added += 1
+
+	_arrange_geo_asset_nodes()
+	_collect_static_assets()
+	_reset_voxel_cache()
+	_mark_scene_unsaved()
+	return {
+		"full": full_rescan,
+		"added": added,
+		"updated": updated,
+		"unchanged": unchanged,
+		"skipped": skipped,
+		"total": _geo_asset_nodes().size(),
+	}
+
+
+func _get_or_create_geo_asset_root() -> Node3D:
+	var root := get_node_or_null(GEO_ASSET_ROOT) as Node3D
+	if root != null:
+		return root
+	var assets := get_node_or_null("Assets") as Node3D
+	if assets == null:
+		assets = Node3D.new()
+		assets.name = "Assets"
+		add_child(assets)
+		_set_owned_by_scene(assets)
+	root = Node3D.new()
+	root.name = "Geo"
+	assets.add_child(root)
+	_set_owned_by_scene(root)
+	return root
+
+
+func _discover_geo_files(root_path: String) -> Array[String]:
+	var results: Array[String] = []
+	var dir := DirAccess.open(root_path)
+	if dir == null:
+		return results
+	dir.list_dir_begin()
+	while true:
+		var file_name := dir.get_next()
+		if file_name.is_empty():
+			break
+		if file_name.begins_with("."):
+			continue
+		var path := "%s/%s" % [root_path, file_name]
+		if dir.current_is_dir():
+			results.append_array(_discover_geo_files(path))
+		elif _is_supported_geo_file(path):
+			results.append(path)
+	dir.list_dir_end()
+	results.sort()
+	return results
+
+
+func _is_supported_geo_file(path: String) -> bool:
+	if path.to_lower().ends_with(".import"):
+		return false
+	var ext := path.get_extension().to_lower()
+	return GEO_SUPPORTED_EXTENSIONS.has(ext)
+
+
+func _load_geo_mesh_info(path: String) -> Dictionary:
+	var resource = load(path)
+	if resource is Mesh:
+		return {
+			"mesh": resource as Mesh,
+			"mesh_transform": Transform3D.IDENTITY,
+		}
+	if resource is PackedScene:
+		var instance := (resource as PackedScene).instantiate()
+		var info := _find_mesh_info_in_tree(instance)
+		if info.is_empty():
+			info = _find_mesh_info_in_tree(instance, Transform3D.IDENTITY, true)
+		instance.free()
+		return info
+	return {}
+
+
+func _find_mesh_info_in_tree(
+	node: Node,
+	parent_transform: Transform3D = Transform3D.IDENTITY,
+	allow_collision_helpers: bool = false
+) -> Dictionary:
+	var node_transform := parent_transform
+	if node is Node3D:
+		node_transform = parent_transform * (node as Node3D).transform
+	if allow_collision_helpers or not _is_collision_helper_node(node):
+		if node is MeshInstance3D:
+			var mesh := (node as MeshInstance3D).mesh
+			if mesh != null:
+				return {"mesh": mesh, "mesh_transform": node_transform}
+		if node is ImporterMeshInstance3D:
+			var importer_mesh = node.get("mesh")
+			if importer_mesh != null and importer_mesh.has_method("get_mesh"):
+				var converted = importer_mesh.get_mesh()
+				if converted is Mesh:
+					return {"mesh": converted as Mesh, "mesh_transform": node_transform}
+	for child in node.get_children():
+		var info := _find_mesh_info_in_tree(child, node_transform, allow_collision_helpers)
+		if not info.is_empty():
+			return info
+	return {}
+
+
+func _is_collision_helper_node(node: Node) -> bool:
+	var node_name := str(node.name).to_upper()
+	return node_name.begins_with("UCX_") \
+		or node_name.begins_with("UBX_") \
+		or node_name.begins_with("UCP_") \
+		or node_name.begins_with("USP_")
+
+
+func _create_geo_asset_node(path: String, modified: int, info: Dictionary) -> Node3D:
+	var node := Node3D.new()
+	node.name = _geo_node_name_for_path(path)
+	_rebuild_geo_asset_node(node, path, modified, info)
+	return node
+
+
+func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Dictionary) -> void:
+	for child in node.get_children():
+		(child as Node).free()
+
+	var mesh: Mesh = info.get("mesh", null)
+	var mesh_transform: Transform3D = info.get("mesh_transform", Transform3D.IDENTITY)
+	var bounds := _transformed_aabb(mesh.get_aabb(), mesh_transform) if mesh != null else AABB()
+	var kind := _classify_geo_asset(path)
+	var color := TREE_COLOR if kind == "tree" else ROCK_COLOR
+
+	node.name = _geo_node_name_for_path(path)
+	node.scale = Vector3.ONE * geo_import_scale
+	node.set_meta(GEO_SOURCE_META, path)
+	node.set_meta(GEO_MTIME_META, modified)
+	node.set_meta(GEO_BOUND_SIZE_META, bounds.size)
+	node.set_meta(GEO_BOUND_LONGEST_META, _aabb_longest_axis(bounds))
+	node.set_meta(GEO_KIND_META, kind)
+
+	var mesh_node := MeshInstance3D.new()
+	mesh_node.name = "Mesh"
+	mesh_node.mesh = mesh
+	mesh_node.transform = mesh_transform
+	mesh_node.material_override = _make_geo_asset_material(color)
+	node.add_child(mesh_node)
+
+	var label := Label3D.new()
+	label.name = "AssetLabel"
+	label.pixel_size = 0.01
+	label.font_size = 18
+	label.outline_size = 3
+	label.text = "%s\nbound %.2f" % [path.get_file().get_basename(), _aabb_longest_axis(bounds)]
+	label.position = Vector3(0.0, bounds.position.y + bounds.size.y + 0.6, 0.0)
+	node.add_child(label)
+
+
+func _arrange_geo_asset_nodes() -> void:
+	var nodes := _geo_asset_nodes()
+	nodes.sort_custom(func(a: Node3D, b: Node3D) -> bool:
+		var la := float(a.get_meta(GEO_BOUND_LONGEST_META, 0.0))
+		var lb := float(b.get_meta(GEO_BOUND_LONGEST_META, 0.0))
+		if not is_equal_approx(la, lb):
+			return la > lb
+		return str(a.get_meta(GEO_SOURCE_META, "")) < str(b.get_meta(GEO_SOURCE_META, ""))
+	)
+	var row_start_x := geo_layout_origin.x
+	var row_limit_x := geo_layout_origin.x + geo_layout_row_width
+	var cursor_x := row_start_x
+	var row_z := geo_layout_origin.z
+	var row_depth := 0.0
+	var scale := maxf(geo_import_scale, 0.001)
+
+	for node in nodes:
+		var bounds := _geo_node_local_aabb(node)
+		var size := bounds.size * scale
+		if cursor_x > row_start_x and cursor_x + size.x > row_limit_x:
+			cursor_x = row_start_x
+			row_z += row_depth + geo_layout_gap
+			row_depth = 0.0
+		node.scale = Vector3.ONE * scale
+		node.position = Vector3(
+			cursor_x - bounds.position.x * scale,
+			geo_layout_origin.y - bounds.position.y * scale,
+			row_z - (bounds.position.z + bounds.size.z * 0.5) * scale
+		)
+		cursor_x += maxf(size.x, geo_layout_gap) + geo_layout_gap
+		row_depth = maxf(row_depth, size.z)
+		_set_owned_by_scene(node)
+
+
+func _geo_asset_nodes() -> Array[Node3D]:
+	var nodes: Array[Node3D] = []
+	var root := get_node_or_null(GEO_ASSET_ROOT)
+	if root == null:
+		return nodes
+	for child in root.get_children():
+		if child is Node3D:
+			nodes.append(child as Node3D)
+	return nodes
+
+
+func _geo_nodes_by_source_path(root: Node) -> Dictionary:
+	var result := {}
+	for child in root.get_children():
+		if not child is Node3D:
+			continue
+		var node := child as Node3D
+		var path := str(node.get_meta(GEO_SOURCE_META, ""))
+		if path.is_empty():
+			continue
+		if result.has(path):
+			node.free()
+		else:
+			result[path] = node
+	return result
+
+
+func _geo_node_local_aabb(node: Node3D) -> AABB:
+	var mi := node.get_node_or_null("Mesh") as MeshInstance3D
+	if mi == null or mi.mesh == null:
+		return AABB(Vector3.ZERO, Vector3.ONE)
+	return _transformed_aabb(mi.mesh.get_aabb(), mi.transform)
+
+
+func _transformed_aabb(aabb: AABB, transform: Transform3D) -> AABB:
+	var points := [
+		aabb.position,
+		aabb.position + Vector3(aabb.size.x, 0.0, 0.0),
+		aabb.position + Vector3(0.0, aabb.size.y, 0.0),
+		aabb.position + Vector3(0.0, 0.0, aabb.size.z),
+		aabb.position + Vector3(aabb.size.x, aabb.size.y, 0.0),
+		aabb.position + Vector3(aabb.size.x, 0.0, aabb.size.z),
+		aabb.position + Vector3(0.0, aabb.size.y, aabb.size.z),
+		aabb.position + aabb.size,
+	]
+	var first: Vector3 = transform * points[0]
+	var min_p := first
+	var max_p := first
+	for i in range(1, points.size()):
+		var p: Vector3 = transform * points[i]
+		min_p.x = minf(min_p.x, p.x)
+		min_p.y = minf(min_p.y, p.y)
+		min_p.z = minf(min_p.z, p.z)
+		max_p.x = maxf(max_p.x, p.x)
+		max_p.y = maxf(max_p.y, p.y)
+		max_p.z = maxf(max_p.z, p.z)
+	return AABB(min_p, max_p - min_p)
+
+
+func _aabb_longest_axis(aabb: AABB) -> float:
+	return maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
+
+
+func _classify_geo_asset(path: String) -> String:
+	var lower := path.get_file().to_lower()
+	if lower.find("leaf") >= 0 or lower.find("tree") >= 0 or lower.find("foliage") >= 0:
+		return "tree"
+	return "rock"
+
+
+func _geo_asset_kind(node: Node3D) -> String:
+	return str(node.get_meta(GEO_KIND_META, _classify_geo_asset(str(node.get_meta(GEO_SOURCE_META, "")))))
+
+
+func _geo_node_name_for_path(path: String) -> String:
+	var base := path.get_file().get_basename()
+	var safe := ""
+	for i in range(base.length()):
+		var c := base.substr(i, 1)
+		if c.is_valid_identifier() or c.is_valid_int():
+			safe += c
+		else:
+			safe += "_"
+	if safe.is_empty():
+		safe = "GeoAsset"
+	return "Geo_%s" % safe
+
+
+func _make_geo_asset_material(color: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(color.r, color.g, color.b, 1.0)
+	mat.roughness = 0.85
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return mat
+
+
+func _file_modified_time(path: String) -> int:
+	var modified := FileAccess.get_modified_time(path)
+	if modified <= 0:
+		modified = FileAccess.get_modified_time(ProjectSettings.globalize_path(path))
+	return int(modified)
+
+
+func _refresh_editor_filesystem() -> void:
+	if not Engine.is_editor_hint():
+		return
+	var fs = EditorInterface.get_resource_filesystem()
+	if fs != null and fs.has_method("scan"):
+		fs.scan()
+
+
+func _reset_voxel_cache() -> void:
+	_voxel_results.clear()
+	_voxel_baked = false
+	if _voxel_channel != VOXEL_CHANNEL_NONE:
+		_clear_node(VOXEL_DEBUG_NODE)
+		_voxel_channel = VOXEL_CHANNEL_NONE
+
+
+func _set_owned_by_scene(node: Node) -> void:
+	var scene_owner: Node = self
+	var tree := get_tree()
+	if tree != null and tree.edited_scene_root != null:
+		scene_owner = tree.edited_scene_root
+	for item in _node_and_descendants(node):
+		item.owner = scene_owner
+
+
+func _node_and_descendants(node: Node) -> Array[Node]:
+	var result: Array[Node] = [node]
+	for child in node.get_children():
+		result.append_array(_node_and_descendants(child))
+	return result
+
+
+func _mark_scene_unsaved() -> void:
+	if Engine.is_editor_hint() and EditorInterface.has_method("mark_scene_as_unsaved"):
+		EditorInterface.mark_scene_as_unsaved()
+
+
+func _format_geo_scan_result(result: Dictionary) -> String:
+	return "Geo scan: added=%d updated=%d unchanged=%d skipped=%d total=%d" % [
+		int(result.get("added", 0)),
+		int(result.get("updated", 0)),
+		int(result.get("unchanged", 0)),
+		int(result.get("skipped", 0)),
+		int(result.get("total", 0)),
+	]
+
+
+func _update_geo_scan_status(text: String = "") -> void:
+	var label := get_node_or_null("GeoTools/Panel/VBox/GeoScanStatus") as Label
+	if label == null:
+		return
+	if text.is_empty():
+		label.text = "Geo assets: %d" % _geo_asset_nodes().size()
 	else:
-		mi.material_override = _make_rock_material()
-	container.add_child(mi)
-
-	var mat_label := Label3D.new()
-	mat_label.name = "AssetLabel"
-	mat_label.text = "Tree" if asset_type == "tree" else "Rock"
-	mat_label.position = Vector3(0.0, 1.8, 0.0)
-	mat_label.font_size = 18
-	mat_label.pixel_size = 0.01
-	mat_label.outline_size = 3
-	container.add_child(mat_label)
-
-	return container
+		label.text = text
 
 
 # ─── Probe Debug ──────────────────────────────────────────────
@@ -520,31 +845,6 @@ func _clear_node(node_name: String) -> void:
 	var existing := get_node_or_null(node_name)
 	if existing != null:
 		existing.free()
-
-
-func _make_fallback_box() -> BoxMesh:
-	var box := BoxMesh.new()
-	box.size = Vector3(1.0, 1.5, 0.8)
-	return box
-
-
-func _make_tree_material() -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.3, 0.55, 0.2, 1.0)
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	mat.metallic = 0.0
-	mat.roughness = 0.85
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return mat
-
-
-func _make_rock_material() -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.5, 0.44, 0.38, 1.0)
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	mat.metallic = 0.05
-	mat.roughness = 0.9
-	return mat
 
 
 func _make_probe_marker(probe: Dictionary, index: int) -> MeshInstance3D:

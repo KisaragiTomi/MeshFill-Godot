@@ -1,7 +1,10 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=10 format=3]
 
 [ext_resource type="Script" path="res://demos/asset-descriptor-demo/asset_descriptor_demo.gd" id="1_demo"]
 [ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
+[ext_resource type="ArrayMesh" path="res://demos/asset-descriptor-demo/baked_leaf.res" id="2_leaf"]
+[ext_resource type="ArrayMesh" path="res://demos/asset-descriptor-demo/baked_cliff_01.res" id="3_cliff1"]
+[ext_resource type="ArrayMesh" path="res://demos/asset-descriptor-demo/baked_cliff_02.res" id="4_cliff2"]
 
 [sub_resource type="StandardMaterial3D" id="ground_mat"]
 shading_mode = 0
@@ -10,13 +13,22 @@ albedo_color = Color(0.15, 0.16, 0.18, 1)
 [sub_resource type="PlaneMesh" id="ground_mesh"]
 size = Vector2(14, 10)
 
+[sub_resource type="StandardMaterial3D" id="tree_mat"]
+albedo_color = Color(0.3, 0.55, 0.2, 1)
+metallic = 0.0
+roughness = 0.85
+cull_mode = 2
+
+[sub_resource type="StandardMaterial3D" id="rock_mat"]
+albedo_color = Color(0.5, 0.44, 0.38, 1)
+metallic = 0.05
+roughness = 0.9
+
 [node name="AssetDescriptorDemo" type="Node3D" unique_id=1261577421]
 script = ExtResource("1_demo")
 metadata/source_docs = "res://demos/asset-descriptor-demo/asset-properties.md; res://demos/asset-descriptor-demo/auto-asset-scripting.md; res://demos/asset-descriptor-demo/asset-semantic-probes.md"
-metadata/test_doc = "res://demos/asset-descriptor-demo/asset-descriptor-demo.md"
+metadata/test_doc = "res://demos/asset-descriptor-demo/asset-descriptor.md"
 metadata/focus = "AssetDescriptor authority, shared fields, AutoObject mirrors, metadata boundary, ISWS handoff, semantic probes + collision debug + buffer info display"
-
-[node name="DemoSetup" type="Node3D" parent="." unique_id=2136139157 instance=ExtResource("99_setup")]
 
 [node name="RimLight" type="DirectionalLight3D" parent="." unique_id=1168863589]
 transform = Transform3D(-0.5, 0.1, -0.866, 0, 0.995, -0.1, -0.866, -0.06, 0.5, 0, 40, 0)
@@ -50,7 +62,152 @@ text = "Acceptance
 font_size = 28
 outline_size = 4
 
+[node name="GeoTools" type="CanvasLayer" parent="."]
+layer = 8
+
+[node name="Panel" type="PanelContainer" parent="GeoTools"]
+offset_left = 12.0
+offset_top = 12.0
+offset_right = 264.0
+offset_bottom = 116.0
+
+[node name="VBox" type="VBoxContainer" parent="GeoTools/Panel"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="ScanUpdatedGeo" type="Button" parent="GeoTools/Panel/VBox"]
+layout_mode = 2
+tooltip_text = "Scan res://geo for new or modified mesh files and arrange imported scene nodes."
+text = "Scan Updated Geo"
+
+[node name="FullRescanGeo" type="Button" parent="GeoTools/Panel/VBox"]
+layout_mode = 2
+tooltip_text = "Rebuild all imported geo scene nodes from res://geo and arrange them by mesh bounds."
+text = "Full Rescan Geo"
+
+[node name="GeoScanStatus" type="Label" parent="GeoTools/Panel/VBox"]
+layout_mode = 2
+text = "Geo assets: 0"
+
 [node name="GroundReference" type="MeshInstance3D" parent="." unique_id=1740757158]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.05, 0)
 material_override = SubResource("ground_mat")
 mesh = SubResource("ground_mesh")
+
+[node name="Assets" type="Node3D" parent="."]
+
+[node name="Trees" type="Node3D" parent="Assets"]
+
+[node name="Tree_0" type="Node3D" parent="Assets/Trees"]
+transform = Transform3D(0.22, 0, 0, 0, 0.22, 0, 0, 0, 0.22, -7.10639, 0.0326053, 0.6)
+
+[node name="Mesh" type="MeshInstance3D" parent="Assets/Trees/Tree_0"]
+material_override = SubResource("tree_mat")
+mesh = ExtResource("2_leaf")
+
+[node name="AssetLabel" type="Label3D" parent="Assets/Trees/Tree_0"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 0)
+pixel_size = 0.01
+text = "Tree"
+font_size = 18
+outline_size = 3
+
+[node name="Tree_1" type="Node3D" parent="Assets/Trees"]
+transform = Transform3D(0.24, 0, 0, 0, 0.24, 0, 0, 0, 0.24, -2.18072, 0.0355694, 1.2)
+
+[node name="Mesh" type="MeshInstance3D" parent="Assets/Trees/Tree_1"]
+material_override = SubResource("tree_mat")
+mesh = ExtResource("2_leaf")
+
+[node name="AssetLabel" type="Label3D" parent="Assets/Trees/Tree_1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 0)
+pixel_size = 0.01
+text = "Tree"
+font_size = 18
+outline_size = 3
+
+[node name="Tree_2" type="Node3D" parent="Assets/Trees"]
+transform = Transform3D(0.2, 0, 0, 0, 0.2, 0, 0, 0, 0.2, 2.55687, 0.0296412, 0.6)
+
+[node name="Mesh" type="MeshInstance3D" parent="Assets/Trees/Tree_2"]
+material_override = SubResource("tree_mat")
+mesh = ExtResource("2_leaf")
+
+[node name="AssetLabel" type="Label3D" parent="Assets/Trees/Tree_2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 0)
+pixel_size = 0.01
+text = "Tree"
+font_size = 18
+outline_size = 3
+
+[node name="Tree_3" type="Node3D" parent="Assets/Trees"]
+transform = Transform3D(0.22, 0, 0, 0, 0.22, 0, 0, 0, 0.22, 7.10639, 0.0326053, 1.0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Assets/Trees/Tree_3"]
+material_override = SubResource("tree_mat")
+mesh = ExtResource("2_leaf")
+
+[node name="AssetLabel" type="Label3D" parent="Assets/Trees/Tree_3"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 0)
+pixel_size = 0.01
+text = "Tree"
+font_size = 18
+outline_size = 3
+
+[node name="Rocks" type="Node3D" parent="Assets"]
+
+[node name="Rock_0" type="Node3D" parent="Assets/Rocks"]
+transform = Transform3D(0.42, 0, 0, 0, 0.42, 0, 0, 0, 0.42, -3.58116, 1.40758, 2.7)
+
+[node name="Mesh" type="MeshInstance3D" parent="Assets/Rocks/Rock_0"]
+material_override = SubResource("rock_mat")
+mesh = ExtResource("3_cliff1")
+
+[node name="AssetLabel" type="Label3D" parent="Assets/Rocks/Rock_0"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 0)
+pixel_size = 0.01
+text = "Rock"
+font_size = 18
+outline_size = 3
+
+[node name="Rock_1" type="Node3D" parent="Assets/Rocks"]
+transform = Transform3D(0.4, 0, 0, 0, 0.4, 0, 0, 0, 0.4, -1.15356, 1.36924, 2.5)
+
+[node name="Mesh" type="MeshInstance3D" parent="Assets/Rocks/Rock_1"]
+material_override = SubResource("rock_mat")
+mesh = ExtResource("4_cliff2")
+
+[node name="AssetLabel" type="Label3D" parent="Assets/Rocks/Rock_1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 0)
+pixel_size = 0.01
+text = "Rock"
+font_size = 18
+outline_size = 3
+
+[node name="Rock_2" type="Node3D" parent="Assets/Rocks"]
+transform = Transform3D(0.38, 0, 0, 0, 0.38, 0, 0, 0, 0.38, 1.2138, 1.27352, 3.0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Assets/Rocks/Rock_2"]
+material_override = SubResource("rock_mat")
+mesh = ExtResource("3_cliff1")
+
+[node name="AssetLabel" type="Label3D" parent="Assets/Rocks/Rock_2"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 0)
+pixel_size = 0.01
+text = "Rock"
+font_size = 18
+outline_size = 3
+
+[node name="Rock_3" type="Node3D" parent="Assets/Rocks"]
+transform = Transform3D(0.4, 0, 0, 0, 0.4, 0, 0, 0, 0.4, 3.58116, 1.36924, 2.7)
+
+[node name="Mesh" type="MeshInstance3D" parent="Assets/Rocks/Rock_3"]
+material_override = SubResource("rock_mat")
+mesh = ExtResource("4_cliff2")
+
+[node name="AssetLabel" type="Label3D" parent="Assets/Rocks/Rock_3"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 0)
+pixel_size = 0.01
+text = "Rock"
+font_size = 18
+outline_size = 3
