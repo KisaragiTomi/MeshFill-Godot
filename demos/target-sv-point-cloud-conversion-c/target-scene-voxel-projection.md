@@ -2,7 +2,7 @@
 
 本文定义 `TargetSceneVoxel`（简称 `TargetSV`）、`BrushSV` 和 `TargetSV_B` 的职责边界。`TargetSV_B` 是 prefilter / routing / scoring / result feedback 的 target guidance 输入，不是 committed `SceneVoxel`，也不是资产选择结果。
 
-![当前 TargetSV GPU 生成、持久化与调试显示流程](target-scene-voxel-current.svg)
+![当前 TargetSV GPU 生成、持久化与调试显示流程](../svg/target-scene-voxel-current.svg)
 
 ## 语义边界
 

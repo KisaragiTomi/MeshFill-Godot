@@ -1,10 +1,10 @@
 ﻿# Asset Properties
 
-![AutoObject asset properties map](autoobject_asset_properties.svg)
+![AutoObject asset properties map](../svg/autoobject_asset_properties.svg)
 
-![AutoObject and AssetDescriptor relationship](autoobject_descriptor_relationship.svg)
+![AutoObject and AssetDescriptor relationship](../svg/autoobject_descriptor_relationship.svg)
 
-![AutoAssetFactory relationships](autoassetfactory_relationships.svg)
+![AutoAssetFactory relationships](../svg/autoassetfactory_relationships.svg)
 
 本文是资产字段、descriptor 入口、runtime write record 和 metadata 边界的速查。`AssetDescriptor` 的统一定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)；源码已在 export 字段旁维护逐项含义，本页只写跨层契约和归属边界。
 

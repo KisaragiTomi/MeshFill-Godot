@@ -37,7 +37,7 @@ static func collect_descriptors(channel_profiles, voxel_write_specs: Array[Dicti
 				has_explicit_descriptors = true
 				var descriptor := descriptor_from_entry(raw_profile as Dictionary, 1)
 				var ch := int(descriptor.channel)
-				if _is_valid_channel(ch, channel_count):
+				if ch >= 0 and ch < channel_count:
 					descriptors_by_channel[ch] = descriptor
 		if not has_explicit_descriptors:
 			for ch in range(mini(raw_profiles.size(), channel_count)):
@@ -48,7 +48,7 @@ static func collect_descriptors(channel_profiles, voxel_write_specs: Array[Dicti
 			continue
 		var rec := record as Dictionary
 		var ch := int(rec.get("channel", -1))
-		if not _is_valid_channel(ch, channel_count) or descriptors_by_channel.has(ch):
+		if not (ch >= 0 and ch < channel_count) or descriptors_by_channel.has(ch):
 			continue
 		descriptors_by_channel[ch] = descriptor_from_entry(rec, maxi(int(rec.get("subdivisions", 1)), 1))
 
@@ -61,6 +61,3 @@ static func collect_descriptors(channel_profiles, voxel_write_specs: Array[Dicti
 		if descriptors_by_channel.has(ch):
 			descriptors.append((descriptors_by_channel[ch] as Dictionary).duplicate(true))
 	return descriptors
-
-static func _is_valid_channel(channel: int, channel_count: int) -> bool:
-	return channel >= 0 and channel < channel_count

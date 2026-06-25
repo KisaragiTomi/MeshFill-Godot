@@ -123,8 +123,8 @@ static func terrain_height_field_from_mesh(terrain: MeshInstance3D, texture_size
 		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 		for v in vertices:
 			var local := v
-			var px := _world_axis_to_height_index(local.x, capture_size, source_res)
-			var pz := _world_axis_to_height_index(local.z, capture_size, source_res)
+			var px := clampi(int(round(((local.x / maxf(capture_size, 0.0001)) + 0.5) * float(source_res - 1))), 0, source_res - 1)
+			var pz := clampi(int(round(((local.z / maxf(capture_size, 0.0001)) + 0.5) * float(source_res - 1))), 0, source_res - 1)
 			var idx := pz * source_res + px
 			if source_hit[idx] == 0:
 				source[idx] = local.y
@@ -190,11 +190,6 @@ static func _infer_square_vertex_resolution(mesh: Mesh) -> int:
 		max_vertices = maxi(max_vertices, vertices.size())
 	var res := int(round(sqrt(float(max_vertices))))
 	return res if res * res == max_vertices else 0
-
-
-static func _world_axis_to_height_index(value: float, capture_size: float, res: int) -> int:
-	var u := (value / maxf(capture_size, 0.0001)) + 0.5
-	return clampi(int(round(u * float(res - 1))), 0, res - 1)
 
 
 static func _field_max_abs(field: PackedFloat32Array) -> float:

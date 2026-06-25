@@ -4,16 +4,9 @@ const Prefilter := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
 const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
-
-
-func _has_rendering_device() -> bool:
-	if RenderingServer.get_rendering_device() != null:
-		return true
-	var local_rd := RenderingServer.create_local_rendering_device()
-	if local_rd == null:
-		return false
-	local_rd.free()
-	return true
+const CommonTestUtils := preload("res://scripts/common_test_utils.gd")
+const AutoObjectScript := preload("res://scripts/auto_object.gd")
+const CommonSceneVoxelFixture := preload("res://scripts/common_scene_voxel_fixture.gd")
 
 
 func _init() -> void:
@@ -42,12 +35,12 @@ func _init() -> void:
 
 func _test_position_only_anchor_layers() -> bool:
 	print("[AutoObjectProbePrefilter] test_position_only_anchor_layers...")
-	if not _has_rendering_device():
+	if not CommonTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only anchor collection")
 		return true
 	var grid_size := Vector3i(16, 8, 16)
 	var voxel_size := Vector3.ONE
-	var sv := _make_sv(grid_size, voxel_size)
+	var sv := CommonSceneVoxelFixture.make_flat_ground_sv(grid_size, voxel_size)
 
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
 	var target_field := PackedFloat32Array()
@@ -60,16 +53,16 @@ func _test_position_only_anchor_layers() -> bool:
 
 	for z in range(4, 8):
 		for x in range(4, 8):
-			target_field[_voxel_index(Vector3i(x, 1, z), grid_size) * 4 + 3] = 1.0
-			target_field[_voxel_index(Vector3i(x, 4, z), grid_size) * 4 + 3] = 1.0
+			target_field[(x + grid_size.x * (z + grid_size.z * 1)) * 4 + 3] = 1.0
+			target_field[(x + grid_size.x * (z + grid_size.z * 4)) * 4 + 3] = 1.0
 
-	var supported_asset := AutoObject.new()
+	var supported_asset := AutoObjectScript.new()
 	supported_asset.name = "supported_asset"
 	supported_asset.set_semantic_probes([
 		ProbeProfile.make_probe(Vector3.ZERO, Color.WHITE, 1.0, 0.0, 0.0, 1.0, "test")
 	])
 
-	var upper_asset := AutoObject.new()
+	var upper_asset := AutoObjectScript.new()
 	upper_asset.name = "upper_asset"
 	upper_asset.set_pivot_variants([{"name": "middle", "offset": Vector3(0.0, 3.0, 0.0), "score_bias": 0.0}])
 	upper_asset.set_semantic_probes([
@@ -81,7 +74,7 @@ func _test_position_only_anchor_layers() -> bool:
 	var result: Dictionary = prefilter.run_probe_prefilter(
 		sv,
 		[supported_asset, upper_asset],
-		_all_tile_ids(sv),
+		Prefilter.all_tile_ids(sv),
 		null,
 		target_field,
 		{"debug_read_candidate_route_cpu_expansion": true}
@@ -146,8 +139,6 @@ func _test_position_only_anchor_layers() -> bool:
 		anchors.size(),
 	])
 	return true
-
-
 func _test_candidate_routes_expand_for_probe_footprint_context_guard() -> bool:
 	print("[AutoObjectProbePrefilter] test_candidate_routes_expand_for_probe_footprint_context_guard...")
 	var profile := Prefilter._build_route_profile_from_arrays(
@@ -267,7 +258,6 @@ func _test_prefilter_dispatch_bounds_helpers() -> bool:
 		str(sanitized),
 	])
 	return true
-
 
 func _test_candidate_route_handoff_payload_schema() -> bool:
 	print("[AutoObjectProbePrefilter] test_candidate_route_handoff_payload_schema...")
@@ -565,7 +555,7 @@ func _test_prefilter_accepts_prepacked_target_field() -> bool:
 
 func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_uploads() -> bool:
 	print("[AutoObjectProbePrefilter] test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_uploads...")
-	if not _has_rendering_device():
+	if not CommonTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only TargetSV read-buffer borrowing")
 		return true
 
@@ -891,10 +881,10 @@ func _assert_route_input_contract(
 
 func _test_prefilter_borrows_profile_container_probe_records_or_skip() -> bool:
 	print("[AutoObjectProbePrefilter] test_prefilter_borrows_profile_container_probe_records_or_skip...")
-	if not _has_rendering_device():
+	if not CommonTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only profile probe buffer borrowing")
 		return true
-	var asset := AutoObject.new()
+	var asset := AutoObjectScript.new()
 	asset.name = "borrowed_profile_probe_asset"
 	asset.semantic_probe_density = 1.0
 	asset.set_semantic_probes([
@@ -965,41 +955,3 @@ func _test_prefilter_borrows_profile_container_probe_records_or_skip() -> bool:
 		int(range_words[1]),
 	])
 	return true
-
-
-func _make_sv(grid_size: Vector3i, voxel_size: Vector3) -> Dictionary:
-	var voxel_count := grid_size.x * grid_size.y * grid_size.z
-	var complexity_field := PackedFloat32Array()
-	var collision_field := PackedFloat32Array()
-	complexity_field.resize(voxel_count)
-	collision_field.resize(voxel_count)
-	for z in range(grid_size.z):
-		for x in range(grid_size.x):
-			complexity_field[_voxel_index(Vector3i(x, 0, z), grid_size)] = 1.0
-	var tile_grid_size := Vector3i(
-		ceili(float(grid_size.x) / 8.0),
-		ceili(float(grid_size.y) / 8.0),
-		ceili(float(grid_size.z) / 8.0)
-	)
-	return {
-		"type": "SV",
-		"grid_size": grid_size,
-		"voxel_size": voxel_size,
-		"grid_origin": Vector3.ZERO,
-		"complexity_field": complexity_field,
-		"collision_field": collision_field,
-		"tile_grid_size": tile_grid_size,
-		"total_tiles": tile_grid_size.x * tile_grid_size.y * tile_grid_size.z,
-		"dirty_tiles": {},
-	}
-
-
-func _voxel_index(p: Vector3i, grid_size: Vector3i) -> int:
-	return p.x + grid_size.x * (p.z + grid_size.z * p.y)
-
-
-func _all_tile_ids(sv: Dictionary) -> Array[int]:
-	var ids: Array[int] = []
-	for i in range(int(sv.get("total_tiles", 0))):
-		ids.append(i)
-	return ids

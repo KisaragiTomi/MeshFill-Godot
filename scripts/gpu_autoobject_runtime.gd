@@ -1237,7 +1237,7 @@ func _write_bulk_spawn_records(records: Array[Dictionary]) -> Dictionary:
 	var next_dirty_count := _dirty_delta_count + records.size()
 	if not _write_dirty_count(next_dirty_count, false):
 		return {"ok": false, "reason": "dirty_count_write_failed"}
-	_sync_gpu_writes()
+	submit_and_sync()
 	return {"ok": true, "reason": "ok", "pending_dirty_delta_count": next_dirty_count}
 
 
@@ -2352,7 +2352,7 @@ func _write_object_state(
 	ok = _write_buffer(_previous_bounds_min_buffer, bounds_offset, _pack_vec3i4(previous_voxel_min), false) and ok
 	ok = _write_buffer(_previous_bounds_max_buffer, bounds_offset, _pack_vec3i4(previous_voxel_max), false) and ok
 	ok = _write_buffer(_transform_buffer, transform_offset, _pack_transform(transform), false) and ok
-	_sync_gpu_writes()
+	submit_and_sync()
 	return ok
 
 
@@ -2401,7 +2401,7 @@ func _append_dirty_delta(
 	var next_count := _dirty_delta_count + 1
 	if not _write_dirty_count(next_count, false):
 		return false
-	_sync_gpu_writes()
+	submit_and_sync()
 	return true
 
 
@@ -2611,7 +2611,7 @@ func _write_buffer(buffer: RID, offset: int, bytes: PackedByteArray, sync_after:
 	if err != OK:
 		return false
 	if sync_after:
-		_sync_gpu_writes()
+		submit_and_sync()
 	return true
 
 
@@ -2621,10 +2621,6 @@ func _read_buffer_bytes(buffer: RID, offset: int, byte_count: int) -> PackedByte
 	if _rd == null or not buffer.is_valid() or byte_count <= 0:
 		return PackedByteArray()
 	return _rd.buffer_get_data(buffer, offset, byte_count)
-
-
-func _sync_gpu_writes() -> void:
-	submit_and_sync()
 
 
 func _read_s32(buffer: RID, offset: int) -> int:

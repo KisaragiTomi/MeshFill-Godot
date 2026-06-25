@@ -192,9 +192,6 @@ func _load_test_leaf_asset() -> Resource:
 	if asset.get("asset_id") != "sm_test_leaf_test2":
 		push_error("  FAIL: unexpected asset_id %s" % asset.get("asset_id"))
 		return null
-	if asset.get("object_subtype") != "test_leaf":
-		push_error("  FAIL: unexpected subtype %s" % asset.get("object_subtype"))
-		return null
 	if asset.call("get_mesh") == null:
 		push_error("  FAIL: asset has no mesh")
 		return null

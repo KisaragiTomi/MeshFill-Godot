@@ -39,19 +39,19 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, and
 
 | Path | Purpose |
 | --- | --- |
-| [`asset-descriptor-demo/autoobject_asset_properties.svg`](asset-descriptor-demo/autoobject_asset_properties.svg) | Descriptor-owned semantics, descriptor-owned fields, shared fields, `instance_stamp_write_spec` / `ISWS`, and public `SceneVoxel` payload boundaries |
-| [`asset-descriptor-demo/autoobject_descriptor_relationship.svg`](asset-descriptor-demo/autoobject_descriptor_relationship.svg) | Focused `AutoObject` runtime and `AssetDescriptor` authority relationship |
-| [`core-SPA-scene-placement-actor/autoobject_gpu_runtime_architecture.svg`](core-SPA-scene-placement-actor/autoobject_gpu_runtime_architecture.svg) | GPU-owned million-scale `AutoObject` runtime, CPU command/debug control plane, profile container, per-voxel object refs, and SV commit boundary |
-| [`asset-descriptor-demo/autoassetfactory_relationships.svg`](asset-descriptor-demo/autoassetfactory_relationships.svg) | Scaffold JSON, `AutoAssetFactory` normalization, saved object/vegetation assets, and runtime write path |
-| [`core-meshfill-framework/meshfill_current_framework.svg`](core-meshfill-framework/meshfill_current_framework.svg) | Current tick-level framework flow from target guidance and previous SV through routing, placement, commit, feedback, and next SV |
-| [`core-scene-placement-actor/scene-placement-actor.svg`](core-scene-placement-actor/scene-placement-actor.svg) | SPA-owned asset registry and runtime profile container with borrowed SV/runtime owners and the placement pipeline |
-| [`placement-meshfill-rock-placement/meshfill_compute_shader_3d_placement.svg`](placement-meshfill-rock-placement/meshfill_compute_shader_3d_placement.svg) | Heightfield fitting compute pipeline, iterative fill/update passes, descriptor-backed object instancing, and `SceneVoxel` integration |
-| [`placement-autoobject-probe-prefilter/autoobject_probe_prefilter_pipeline.svg`](placement-autoobject-probe-prefilter/autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter, dirty-region anchor collection, voxel-region votes, and readback route expansion |
-| [`placement-autoobject-probe-prefilter/autoobject_probe_scoring_logic.svg`](placement-autoobject-probe-prefilter/autoobject_probe_scoring_logic.svg) | Descriptor probe generation, GPU SoA packing, clamped SV/TargetSV_B sampling, weighted fit, and candidate-only top-K boundary |
-| [`core-scene-voxel-field-system/scene-voxel-flow.svg`](core-scene-voxel-field-system/scene-voxel-flow.svg) | `instance_stamp_write_spec` / `ISWS`, auto/brush source streams, `blend_scene_voxels()`, accepted `SceneVoxel` fields, feedback, and SV resident fields |
-| [`core-scenevoxeltile/scenevoxeltile.svg`](core-scenevoxeltile/scenevoxeltile.svg) | `SceneVoxelTile` coarse SV cell index, dirty triggers, SV owner boundary, object id ranges, summaries, and consumers |
-| [`target-sv-point-cloud-conversion-c/target-scene-voxel-current.svg`](target-sv-point-cloud-conversion-c/target-scene-voxel-current.svg) | `TargetSV`, `BrushSV`, `TargetSV_B`, target read buffers, consumer boundaries, and planned guidance sources |
-| [`placement-voxel-semantic-routing/voxel-semantic-routing.svg`](placement-voxel-semantic-routing/voxel-semantic-routing.svg) | Candidate voxel-region routing, conservative readback expansion, empty-route skip, same-type exclusion, and physical scoring boundary |
+| [`svg/autoobject_asset_properties.svg`](svg/autoobject_asset_properties.svg) | Descriptor-owned semantics, descriptor-owned fields, shared fields, `instance_stamp_write_spec` / `ISWS`, and public `SceneVoxel` payload boundaries |
+| [`svg/autoobject_descriptor_relationship.svg`](svg/autoobject_descriptor_relationship.svg) | Focused `AutoObject` runtime and `AssetDescriptor` authority relationship |
+| [`svg/autoobject_gpu_runtime_architecture.svg`](svg/autoobject_gpu_runtime_architecture.svg) | GPU-owned million-scale `AutoObject` runtime, CPU command/debug control plane, profile container, per-voxel object refs, and SV commit boundary |
+| [`svg/autoassetfactory_relationships.svg`](svg/autoassetfactory_relationships.svg) | Scaffold JSON, `AutoAssetFactory` normalization, saved object/vegetation assets, and runtime write path |
+| [`svg/meshfill_current_framework.svg`](svg/meshfill_current_framework.svg) | Current tick-level framework flow from target guidance and previous SV through routing, placement, commit, feedback, and next SV |
+| [`svg/scene-placement-actor.svg`](svg/scene-placement-actor.svg) | SPA-owned asset registry and runtime profile container with borrowed SV/runtime owners and the placement pipeline |
+| [`svg/meshfill_compute_shader_3d_placement.svg`](svg/meshfill_compute_shader_3d_placement.svg) | Heightfield fitting compute pipeline, iterative fill/update passes, descriptor-backed object instancing, and `SceneVoxel` integration |
+| [`svg/autoobject_probe_prefilter_pipeline.svg`](svg/autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter, dirty-region anchor collection, voxel-region votes, and readback route expansion |
+| [`svg/autoobject_probe_scoring_logic.svg`](svg/autoobject_probe_scoring_logic.svg) | Descriptor probe generation, GPU SoA packing, clamped SV/TargetSV_B sampling, weighted fit, and candidate-only top-K boundary |
+| [`svg/scene-voxel-flow.svg`](svg/scene-voxel-flow.svg) | `instance_stamp_write_spec` / `ISWS`, auto/brush source streams, `blend_scene_voxels()`, accepted `SceneVoxel` fields, feedback, and SV resident fields |
+| [`svg/scenevoxeltile.svg`](svg/scenevoxeltile.svg) | `SceneVoxelTile` coarse SV cell index, dirty triggers, SV owner boundary, object id ranges, summaries, and consumers |
+| [`svg/target-scene-voxel-current.svg`](svg/target-scene-voxel-current.svg) | `TargetSV`, `BrushSV`, `TargetSV_B`, target read buffers, consumer boundaries, and planned guidance sources |
+| [`svg/voxel-semantic-routing.svg`](svg/voxel-semantic-routing.svg) | Candidate voxel-region routing, conservative readback expansion, empty-route skip, same-type exclusion, and physical scoring boundary |
 
 ## Documentation Rules
 

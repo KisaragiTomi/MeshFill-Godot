@@ -1,6 +1,6 @@
 @tool
 class_name CommonTargetSVSetup
-extends Node
+extends Node3D
 
 ## Preloads TargetSV data from res://assets/target_sv/ at scene init.
 ## Lives in common_demo_setup.tscn so all demos get TargetSV without
@@ -8,34 +8,309 @@ extends Node
 
 const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
+const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
 const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
+const VoxelFieldDisplayGPUScript := preload("res://scripts/voxel_field_display_gpu.gd")
+
+const DISPLAY_NODE := "TargetSVVoxels"
+const GENERATED_GROUP := "meshfill_targetsv_generated"
+
+enum DisplayChannel { COLOR, COMPLEXITY, COLLISION }
+
+@export_group("Display")
+@export var display_visible: bool = true
+@export_enum("Color", "Complexity", "Collision") var display_channel: int = DisplayChannel.COLOR
+@export_range(0.0, 1.0, 0.001) var occupancy_threshold: float = 0.001
+@export var display_scale: float = 1.0
+@export var prefer_gpu_display: bool = true
+@export var fresnel_enabled: bool = true
 
 var _ready_ok := false
+var _metadata: Dictionary = {}
+var _visual_bytes := PackedByteArray()
+var _collision_bytes := PackedByteArray()
+var _texture_size := 0
+var _slice_count := 0
+var _voxel_count := 0
+var _capture_size := 0.0
+var _vertical_span := 0.0
+var _height_span := 0.0
+var _occupancy := PackedFloat32Array()
+var _collision := PackedFloat32Array()
+var _color_rgba := PackedFloat32Array()
+var _terrain_height := PackedFloat32Array()
+var _active_voxel_count := 0
+var _last_display_reason := ""
 
 
 func _ready() -> void:
-	if not Engine.is_editor_hint():
-		return
+	rebuild.call_deferred()
+
+
+func rebuild() -> void:
 	_ensure_loaded()
+	rebuild_display()
 
 
 func _ensure_loaded() -> void:
-	if not Engine.is_editor_hint():
-		return
 	if _ready_ok:
 		return
-	var meta := TargetSVLoaderScript.metadata()
-	if meta.is_empty():
+	TargetSVLoaderScript.reload()
+	_metadata = TargetSVLoaderScript.metadata()
+	_visual_bytes = TargetSVLoaderScript.visual_bytes()
+	_collision_bytes = TargetSVLoaderScript.collision_bytes()
+	if _metadata.is_empty():
 		push_warning("[CommonTargetSVSetup] TargetSV metadata not found")
 		return
+	_texture_size = int(_metadata.get("texture_size", 256))
+	_slice_count = int(_metadata.get("slice_count", 16))
+	_voxel_count = int(_metadata.get("voxel_count", _texture_size * _texture_size * _slice_count))
+	_capture_size = float(_metadata.get("capture_size", TerrainConfigScript.CAPTURE_SIZE))
+	_vertical_span = float(_metadata.get("vertical_span", 32.0))
+	_height_span = float(_metadata.get("max_height", TerrainConfigScript.MAX_HEIGHT))
 	_ready_ok = true
-	set_meta("targetsv_texture_size", int(meta.get("texture_size", 256)))
-	set_meta("targetsv_slice_count", int(meta.get("slice_count", 16)))
-	set_meta("targetsv_voxel_count", int(meta.get("voxel_count", 0)))
-	set_meta("targetsv_max_height", float(meta.get("max_height", TerrainConfigScript.MAX_HEIGHT)))
-	set_meta("targetsv_capture_size", float(meta.get("capture_size", TerrainConfigScript.CAPTURE_SIZE)))
-	set_meta("targetsv_vertical_span", float(meta.get("vertical_span", 32.0)))
+	set_meta("targetsv_texture_size", _texture_size)
+	set_meta("targetsv_slice_count", _slice_count)
+	set_meta("targetsv_voxel_count", _voxel_count)
+	set_meta("targetsv_max_height", _height_span)
+	set_meta("targetsv_capture_size", _capture_size)
+	set_meta("targetsv_vertical_span", _vertical_span)
 	set_meta("targetsv_valid", true)
+
+
+func rebuild_display() -> void:
+	_ensure_loaded()
+	_clear_display()
+	if not _ready_ok or not display_visible:
+		return
+	if not _prepare_display_fields():
+		push_warning("[CommonTargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
+		return
+
+	var node := _build_gpu_display() if prefer_gpu_display else null
+	if node == null:
+		node = _build_cpu_display()
+	if node == null:
+		push_warning("[CommonTargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
+		return
+	node.visible = display_visible
+	node.add_to_group(GENERATED_GROUP)
+	add_child(node)
+
+
+func _clear_display() -> void:
+	for child in get_children():
+		if child.is_in_group(GENERATED_GROUP) or child.name == DISPLAY_NODE:
+			remove_child(child)
+			child.free()
+
+
+func _prepare_display_fields() -> bool:
+	if _voxel_count <= 0:
+		_last_display_reason = "empty_voxel_count"
+		return false
+	var expected_visual_bytes := _voxel_count * 16
+	var expected_collision_bytes := _voxel_count * 4
+	var visual_valid := _visual_bytes.size() >= expected_visual_bytes
+	var collision_valid := _collision_bytes.size() >= expected_collision_bytes
+	if not visual_valid and not collision_valid:
+		_last_display_reason = "target_buffer_size_mismatch"
+		return false
+
+	_color_rgba = PackedFloat32Array()
+	if visual_valid:
+		_color_rgba = _visual_bytes.slice(0, expected_visual_bytes).to_float32_array()
+	else:
+		_color_rgba.resize(_voxel_count * 4)
+
+	_collision = PackedFloat32Array()
+	if collision_valid:
+		_collision = _collision_bytes.slice(0, expected_collision_bytes).to_float32_array()
+	else:
+		_collision.resize(_voxel_count)
+
+	if _color_rgba.size() < _voxel_count * 4:
+		_last_display_reason = "target_color_size_mismatch"
+		return false
+	if _collision.size() < _voxel_count:
+		_collision.resize(_voxel_count)
+
+	_occupancy = PackedFloat32Array()
+	_occupancy.resize(_voxel_count)
+	_active_voxel_count = 0
+	for i in range(_voxel_count):
+		var color_base := i * 4
+		var complexity := clampf(_color_rgba[color_base + 3], 0.0, 1.0)
+		var collision := clampf(_collision[i], 0.0, 1.0)
+		_color_rgba[color_base + 0] = clampf(_color_rgba[color_base + 0], 0.0, 1.0)
+		_color_rgba[color_base + 1] = clampf(_color_rgba[color_base + 1], 0.0, 1.0)
+		_color_rgba[color_base + 2] = clampf(_color_rgba[color_base + 2], 0.0, 1.0)
+		_color_rgba[color_base + 3] = complexity
+		_collision[i] = collision
+		_occupancy[i] = maxf(complexity, collision)
+		if _occupancy[i] > occupancy_threshold:
+			_active_voxel_count += 1
+
+	var terrain := TerrainInitializerScript.find_edit_time_terrain(self) as MeshInstance3D
+	_terrain_height = TerrainInitializerScript.terrain_height_field_from_mesh(terrain, _texture_size, _height_span)
+	_last_display_reason = "ok"
+	return true
+
+
+func _build_gpu_display() -> MultiMeshInstance3D:
+	if RenderingServer.get_rendering_device() == null:
+		_last_display_reason = "missing_rendering_device"
+		return null
+	var cell_size := _capture_size / maxf(float(_texture_size - 1), 1.0) * display_scale * 0.72
+	var slice_height := _vertical_span / maxf(float(_slice_count), 1.0) * display_scale * 0.72
+	var cell := Vector3(cell_size, maxf(slice_height, 0.02), cell_size)
+	var half := _capture_size * display_scale * 0.5 + cell_size
+	var y_max := (_height_span + _vertical_span) * display_scale + cell_size
+	var aabb := AABB(Vector3(-half, -cell_size, -half), Vector3(2.0 * half, y_max + 2.0 * cell_size, 2.0 * half))
+	var instance := VoxelDisplay.build_field_gpu(
+		_voxel_count,
+		cell,
+		aabb,
+		{
+			"occupancy": _occupancy,
+			"collision": _collision,
+			"color_rgba": _color_rgba,
+			"terrain_height": _terrain_height,
+		},
+		{
+			"xz_res": _texture_size,
+			"slice_count": _slice_count,
+			"view_mode": _view_mode(),
+			"capture_size": _capture_size,
+			"display_scale": display_scale,
+			"vertical_span": _vertical_span,
+			"height_span": _height_span,
+			"threshold": occupancy_threshold,
+		},
+		{"name": DISPLAY_NODE, "fill": 1.0}
+	)
+	if instance != null and fresnel_enabled:
+		_apply_fresnel_material(instance)
+	return instance
+
+
+func _build_cpu_display() -> MultiMeshInstance3D:
+	var centers := PackedVector3Array()
+	var colors := PackedColorArray()
+	var slice_voxel_count := _texture_size * _texture_size
+	for idx in range(_voxel_count):
+		if _occupancy[idx] <= occupancy_threshold:
+			continue
+		var slice_index := idx / slice_voxel_count
+		var rem := idx % slice_voxel_count
+		var z := rem / _texture_size
+		var x := rem % _texture_size
+		centers.append(voxel_to_world(x, slice_index, z))
+		colors.append(_channel_color(idx))
+	if centers.is_empty():
+		_last_display_reason = "no_visible_voxels"
+		return null
+
+	var cell_size := _capture_size / maxf(float(_texture_size - 1), 1.0) * display_scale * 0.72
+	var slice_height := _vertical_span / maxf(float(_slice_count), 1.0) * display_scale * 0.72
+	var instance := VoxelDisplay.build_colored(
+		centers,
+		Vector3(cell_size, maxf(slice_height, 0.02), cell_size),
+		colors,
+		{"name": DISPLAY_NODE, "fill": 1.0}
+	)
+	if instance != null and fresnel_enabled:
+		_apply_fresnel_material(instance)
+	return instance
+
+
+func _view_mode() -> int:
+	match display_channel:
+		DisplayChannel.COMPLEXITY:
+			return VoxelFieldDisplayGPUScript.VIEW_COMPLEXITY
+		DisplayChannel.COLLISION:
+			return VoxelFieldDisplayGPUScript.VIEW_COLLISION
+	return VoxelFieldDisplayGPUScript.VIEW_TARGET_COLOR
+
+
+func _channel_color(idx: int) -> Color:
+	var color_base := idx * 4
+	var complexity := _color_rgba[color_base + 3]
+	var collision := _collision[idx] if idx < _collision.size() else 0.0
+	match display_channel:
+		DisplayChannel.COLOR:
+			var c := Color(
+				_color_rgba[color_base + 0],
+				_color_rgba[color_base + 1],
+				_color_rgba[color_base + 2],
+				clampf(maxf(_occupancy[idx], 0.35), 0.35, 1.0)
+			)
+			var sand := Color(0.82, 0.78, 0.68, c.a)
+			return c.lerp(sand, clampf(collision * 0.45, 0.0, 1.0))
+		DisplayChannel.COMPLEXITY:
+			return Color(complexity, complexity * 0.7, 0.1, clampf(maxf(complexity, 0.35), 0.35, 1.0))
+		DisplayChannel.COLLISION:
+			return Color(0.1, collision * 0.8, collision, clampf(maxf(collision, 0.35), 0.35, 1.0))
+	return Color.WHITE
+
+
+func _apply_fresnel_material(instance: MultiMeshInstance3D) -> void:
+	if instance == null:
+		return
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	mat.vertex_color_use_as_albedo = true
+	mat.rim_enabled = true
+	mat.rim = 0.65
+	mat.rim_tint = 0.25
+	mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+	instance.material_override = mat
+
+
+func set_display_visible(val: bool) -> void:
+	display_visible = val
+	var node := get_node_or_null(DISPLAY_NODE)
+	if node != null:
+		node.visible = val
+	elif val:
+		rebuild_display()
+
+
+func is_display_visible() -> bool:
+	var node := get_node_or_null(DISPLAY_NODE)
+	return display_visible and (node == null or node.visible)
+
+
+func switch_display_channel(channel: int) -> void:
+	var next := clampi(channel, DisplayChannel.COLOR, DisplayChannel.COLLISION)
+	if display_channel == next and get_node_or_null(DISPLAY_NODE) != null:
+		return
+	display_channel = next
+	rebuild_display()
+
+
+func switch_channel(channel: int) -> void:
+	switch_display_channel(channel)
+
+
+func get_display_voxel_count() -> int:
+	return _active_voxel_count
+
+
+func get_last_display_reason() -> String:
+	return _last_display_reason
+
+
+func voxel_to_world(x: int, slice_index: int, z: int) -> Vector3:
+	var local_y := (float(slice_index) + 0.5) / maxf(float(_slice_count), 1.0) * _vertical_span
+	var height_idx := z * _texture_size + x
+	var terrain_y := _terrain_height[height_idx] if height_idx >= 0 and height_idx < _terrain_height.size() else 0.0
+	var fx := (float(x) / maxf(float(_texture_size - 1), 1.0) - 0.5) * _capture_size * display_scale
+	var fz := (float(z) / maxf(float(_texture_size - 1), 1.0) - 0.5) * _capture_size * display_scale
+	return Vector3(fx, (terrain_y + local_y) * display_scale, fz)
 
 
 func is_targetsv_ready() -> bool:

@@ -89,7 +89,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 
 ## GPU 优先架构
 
-项目包含 84+ 个 GLSL compute shader，核心路径全部 GPU 化：
+项目包含 87 个 GLSL compute shader，核心路径全部 GPU 化：
 
 - **目标生成**：`target_scene_voxel.glsl` 生成 TargetSV visual/collision buffers
 - **探针评分**：`score_anchor_asset_probes.glsl` 对标 anchor 和资产探针
@@ -112,7 +112,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 - [`demos/core-meshfill-framework/meshfill-framework.md`](demos/core-meshfill-framework/meshfill-framework.md) — 框架总览，模块归属与运行时流程
 - [`demos/core-scene-voxel-field-system/scene-voxel-field-system.md`](demos/core-scene-voxel-field-system/scene-voxel-field-system.md) — SceneVoxel 字段契约与 source/commit 边界
 - [`demos/asset-descriptor-demo/asset-descriptor.md`](demos/asset-descriptor-demo/asset-descriptor.md) — AssetDescriptor 资产语义定义
-- [`demos/core-scene-placement-actor/scene-placement-actor.md`](demos/core-scene-placement-actor/scene-placement-actor.md) — SPA 运行时编排器契约
+- [`demos/core-SPA-scene-placement-actor/scene-placement-actor.md`](demos/core-SPA-scene-placement-actor/scene-placement-actor.md) — SPA 运行时编排器契约
 - [`demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md`](demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md) — GPU 端百万级运行时架构
 - [`demos/target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md`](demos/target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md) — TargetSV 目标画布边界
 - [`demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md`](demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md) — 语义探针粗筛流程
@@ -121,6 +121,6 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 ## 技术栈
 
 - **引擎**：Godot 4.x（RenderingDevice + Vulkan）
-- **计算**：84+ GLSL compute shader
+- **计算**：87 个 GLSL compute shader
 - **语言**：GDScript（编排层） + GLSL（GPU 计算层）
 - **数据**：体素存储缓冲区（storage buffer）、3D 纹理、SceneVoxelTile 稀疏瓦片管理

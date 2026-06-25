@@ -45,11 +45,6 @@ var _pipeline_update: RID
 var _sampler: RID
 
 
-func _submit_and_sync() -> void:
-	if _compute != null:
-		_compute.submit_and_sync()
-
-
 func _begin_dispatch(pass_name: String) -> int:
 	var cl: int = _compute.begin_compute_list()
 	if cl < 0:
@@ -127,18 +122,6 @@ func _get_asset_size(asset) -> float:
 		if value != null:
 			return maxf(float(value), 0.0)
 	return 0.0
-
-
-func _get_asset_random_rotate(asset) -> Vector2:
-	return _vector2_from_value(_asset_value(asset, "random_rotate"), Vector2.ZERO)  # 随机旋转范围
-
-
-func _get_asset_random_scale(asset) -> Vector2:
-	return _vector2_from_value(_asset_value(asset, "random_scale"), Vector2.ONE)  # 随机缩放范围
-
-
-func _get_asset_random_height_offset(asset) -> Vector2:
-	return _vector2_from_value(_asset_value(asset, "random_height_offset"), Vector2.ZERO)  # 随机高度偏移范围
 
 
 func _get_asset_id(asset, index: int) -> String:
@@ -231,7 +214,7 @@ func generate_heightfield_fit(num_iteration: int, spawn_size: float = 1.0, dirty
 		dr = Rect2i(0, 0, texture_size, texture_size)
 
 	_load_shaders()
-	_create_sampler()
+	_sampler = _compute.create_linear_sampler()
 
 	var input_textures := _upload_input_textures()
 	var working := _create_working_textures()
@@ -242,9 +225,9 @@ func generate_heightfield_fit(num_iteration: int, spawn_size: float = 1.0, dirty
 		var asset = _active_fitting_assets[idx]
 		generate_datas.append({
 			"select_index": idx,                                            # 本轮选中的资产索引
-			"random_rotate": _get_asset_random_rotate(asset),               # 随机旋转范围
-			"random_scale": _get_asset_random_scale(asset),                 # 随机缩放范围
-			"random_height_offset": _get_asset_random_height_offset(asset),  # 随机高度偏移范围
+			"random_rotate": _vector2_from_value(_asset_value(asset, "random_rotate"), Vector2.ZERO),               # 随机旋转范围
+			"random_scale": _vector2_from_value(_asset_value(asset, "random_scale"), Vector2.ONE),                 # 随机缩放范围
+			"random_height_offset": _vector2_from_value(_asset_value(asset, "random_height_offset"), Vector2.ZERO),  # 随机高度偏移范围
 			"fitting_size": _get_asset_size(asset),                         # mesh_size-driven fitting size
 		})
 
@@ -297,7 +280,8 @@ func generate_heightfield_fit(num_iteration: int, spawn_size: float = 1.0, dirty
 		working.result_a = working.result_b
 		working.result_b = swap_r
 
-	_submit_and_sync()
+	if _compute != null:
+		_compute.submit_and_sync()
 	var th_data := rd.texture_get_data(working.target_height, 0)
 	_debug_target_height_image = Image.create_from_data(texture_size, texture_size, false, Image.FORMAT_RGBAH, th_data)
 
@@ -404,35 +388,23 @@ func _create_working_textures() -> Dictionary:
 
 # Uniform set helpers
 
-func _create_sampler() -> void:
-	_sampler = _compute.create_linear_sampler()
-
-
-func _make_sampler_uniform(binding: int, tex: RID) -> RDUniform:
-	return _compute.make_sampler_uniform(binding, _sampler, tex)
-
-
-func _make_image_uniform(binding: int, tex: RID) -> RDUniform:
-	return _compute.make_image_uniform(binding, tex)
-
-
 # Pass 1: Init
 
 func _dispatch_init(inputs: Dictionary, working: Dictionary, dr: Rect2i) -> void:
 	var set0: RID = _compute.create_uniform_set([
-		_make_sampler_uniform(0, inputs.scene_depth),
-		_make_sampler_uniform(1, inputs.object_depth),
-		_make_sampler_uniform(2, inputs.object_normal),
-		_make_sampler_uniform(3, inputs.target_height),
-		_make_sampler_uniform(4, inputs.placed_mask),
-		_make_sampler_uniform(5, inputs.placement_override_mask),
-		_make_sampler_uniform(6, inputs.placement_override_delta),
+		_compute.make_sampler_uniform(0, _sampler, inputs.scene_depth),
+		_compute.make_sampler_uniform(1, _sampler, inputs.object_depth),
+		_compute.make_sampler_uniform(2, _sampler, inputs.object_normal),
+		_compute.make_sampler_uniform(3, _sampler, inputs.target_height),
+		_compute.make_sampler_uniform(4, _sampler, inputs.placed_mask),
+		_compute.make_sampler_uniform(5, _sampler, inputs.placement_override_mask),
+		_compute.make_sampler_uniform(6, _sampler, inputs.placement_override_delta),
 	], _shader_init, 0)
 
 	var set1: RID = _compute.create_uniform_set([
-		_make_image_uniform(0, working.current_scene_depth),
-		_make_image_uniform(1, working.target_height),
-		_make_image_uniform(2, working.debug_view),
+		_compute.make_image_uniform(0, working.current_scene_depth),
+		_compute.make_image_uniform(1, working.target_height),
+		_compute.make_image_uniform(2, working.debug_view),
 	], _shader_init, 1)
 
 	var push_buf := PackedByteArray()
@@ -456,7 +428,8 @@ func _dispatch_init(inputs: Dictionary, working: Dictionary, dr: Rect2i) -> void
 	rd.compute_list_set_push_constant(cl, push_buf, push_buf.size())
 	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
 	_compute.end_compute_list()
-	_submit_and_sync()
+	if _compute != null:
+		_compute.submit_and_sync()
 
 
 # Pass 3: Fill Heightfield Asset
@@ -467,18 +440,18 @@ func _dispatch_fill(working: Dictionary, mesh_tex: RID, gen_data: Dictionary, sp
 	var draw_size: float = fitting_size / capture_size * spawn_size_val
 
 	var set0: RID = _compute.create_uniform_set([
-		_make_image_uniform(0, working.current_scene_depth_a),
-		_make_image_uniform(1, working.current_scene_depth_b),
-		_make_image_uniform(2, working.result_a),
-		_make_image_uniform(3, working.result_b),
-		_make_image_uniform(4, working.filter_result),
-		_make_image_uniform(5, working.save_rotate_scale),
-		_make_image_uniform(6, working.target_height),
-		_make_image_uniform(7, working.debug_view),
+		_compute.make_image_uniform(0, working.current_scene_depth_a),
+		_compute.make_image_uniform(1, working.current_scene_depth_b),
+		_compute.make_image_uniform(2, working.result_a),
+		_compute.make_image_uniform(3, working.result_b),
+		_compute.make_image_uniform(4, working.filter_result),
+		_compute.make_image_uniform(5, working.save_rotate_scale),
+		_compute.make_image_uniform(6, working.target_height),
+		_compute.make_image_uniform(7, working.debug_view),
 	], _shader_fill, 0)
 
 	var set1: RID = _compute.create_uniform_set([
-		_make_sampler_uniform(0, mesh_tex),
+		_compute.make_sampler_uniform(0, _sampler, mesh_tex),
 	], _shader_fill, 1)
 
 	var rr: Vector2 = gen_data.random_rotate
@@ -517,23 +490,24 @@ func _dispatch_fill(working: Dictionary, mesh_tex: RID, gen_data: Dictionary, sp
 	rd.compute_list_set_push_constant(cl, push_buf, push_buf.size())
 	rd.compute_list_dispatch(cl, groups, groups, 1)
 	_compute.end_compute_list()
-	_submit_and_sync()
+	if _compute != null:
+		_compute.submit_and_sync()
 
 
 # Pass 4: Find Best Pixel
 
 func _dispatch_find(working: Dictionary, inputs: Dictionary, select_idx: int) -> void:
 	var set0: RID = _compute.create_uniform_set([
-		_make_image_uniform(0, working.filter_result),
-		_make_image_uniform(1, working.save_rotate_scale),
-		_make_image_uniform(2, working.current_scene_depth_a),
-		_make_image_uniform(3, working.result_a),
-		_make_image_uniform(4, working.result_b),
-		_make_image_uniform(5, working.debug_view),
+		_compute.make_image_uniform(0, working.filter_result),
+		_compute.make_image_uniform(1, working.save_rotate_scale),
+		_compute.make_image_uniform(2, working.current_scene_depth_a),
+		_compute.make_image_uniform(3, working.result_a),
+		_compute.make_image_uniform(4, working.result_b),
+		_compute.make_image_uniform(5, working.debug_view),
 	], _shader_find, 0)
 
 	var set1: RID = _compute.create_uniform_set([
-		_make_sampler_uniform(0, inputs.scene_normal),
+		_compute.make_sampler_uniform(0, _sampler, inputs.scene_normal),
 	], _shader_find, 1)
 
 	var push_buf := PackedByteArray()
@@ -552,24 +526,25 @@ func _dispatch_find(working: Dictionary, inputs: Dictionary, select_idx: int) ->
 	rd.compute_list_set_push_constant(cl, push_buf, push_buf.size())
 	rd.compute_list_dispatch(cl, 1, 1, 1)
 	_compute.end_compute_list()
-	_submit_and_sync()
+	if _compute != null:
+		_compute.submit_and_sync()
 
 
 # Pass 5: Update Current Height
 
 func _dispatch_update(working: Dictionary, mesh_tex: RID, inputs: Dictionary, select_idx: int, dr: Rect2i) -> void:
 	var set0: RID = _compute.create_uniform_set([
-		_make_image_uniform(0, working.current_scene_depth_a),
-		_make_image_uniform(1, working.current_scene_depth_b),
-		_make_image_uniform(2, working.result_b),
-		_make_image_uniform(3, working.result_a),
-		_make_image_uniform(4, working.debug_view),
+		_compute.make_image_uniform(0, working.current_scene_depth_a),
+		_compute.make_image_uniform(1, working.current_scene_depth_b),
+		_compute.make_image_uniform(2, working.result_b),
+		_compute.make_image_uniform(3, working.result_a),
+		_compute.make_image_uniform(4, working.debug_view),
 	], _shader_update, 0)
 
 	var set1: RID = _compute.create_uniform_set([
-		_make_sampler_uniform(0, mesh_tex),
-		_make_sampler_uniform(1, inputs.scene_normal),
-		_make_sampler_uniform(2, working.target_height),
+		_compute.make_sampler_uniform(0, _sampler, mesh_tex),
+		_compute.make_sampler_uniform(1, _sampler, inputs.scene_normal),
+		_compute.make_sampler_uniform(2, _sampler, working.target_height),
 	], _shader_update, 1)
 
 	var push_buf := PackedByteArray()
@@ -594,7 +569,8 @@ func _dispatch_update(working: Dictionary, mesh_tex: RID, inputs: Dictionary, se
 	rd.compute_list_set_push_constant(cl, push_buf, push_buf.size())
 	rd.compute_list_dispatch(cl, groups, groups, 1)
 	_compute.end_compute_list()
-	_submit_and_sync()
+	if _compute != null:
+		_compute.submit_and_sync()
 
 
 # Result readback

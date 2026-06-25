@@ -1,10 +1,10 @@
-﻿# Complexity Field System
+# Complexity Field System
 
-本文维护 MeshFill 中 `SceneVoxel`、source write、`collision` 和 SV 常驻显存状态的契约。跨模块总览见 [`meshfill-framework.md`](../core-meshfill-framework/meshfill-framework.md)；`AssetDescriptor` 定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，资产字段归属见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；粗粒度 SV cell 管理见 [`scenevoxeltile.md`](../core-scenevoxeltile/scenevoxeltile.md)；AutoObject GPU-first 方向见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)；TargetSV、候选路由和 heightfield placement 分别见 [`target-scene-voxel-projection.md`](../target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md)、[`voxel-semantic-routing.md`](../placement-voxel-semantic-routing/voxel-semantic-routing.md)、[`meshfill-rock-placement-flow.md`](../placement-meshfill-rock-placement/meshfill-rock-placement-flow2.5d(暂停开发).md)。**SPA**（`ScenePlacementActor`）是 MeshFill 运行时编排器，借用 `SceneVoxelCommitter` 引用并在 commit 阶段调用 `apply_voxel_write_spec()`；详见 [`scene-placement-actor.md`](../core-scene-placement-actor/scene-placement-actor.md)。
+本文维护 MeshFill 中 `SceneVoxel`、source write、`collision` 和 SV 常驻显存状态的契约。跨模块总览见 [`meshfill-framework.md`](../core-meshfill-framework/meshfill-framework.md)；`AssetDescriptor` 定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，资产字段归属见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；粗粒度 SV cell 管理见 [`scenevoxeltile.md`](../core-scenevoxeltile/scenevoxeltile.md)；AutoObject GPU-first 方向见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)；TargetSV、候选路由和 heightfield placement 分别见 [`target-scene-voxel-projection.md`](../target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md)、[`voxel-semantic-routing.md`](../placement-voxel-semantic-routing/voxel-semantic-routing.md)、[`meshfill-rock-placement-flow.md`](../placement-meshfill-rock-placement/meshfill-rock-placement-flow2.5d(暂停开发).md)。**SPA**（`ScenePlacementActor`）是 MeshFill 运行时编排器，借用 `SceneVoxelCommitter` 引用并在 commit 阶段调用 `apply_voxel_write_spec()`；详见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
 
 **SceneVoxel Source Fusion**（**SVSF**）是 `AutoSV` + `BrushSV` + `LandscapeSV`（terrain base collision / target guidance）合成为 `BlendSV` / committed `SceneVoxel` 的正式命名。SVSF 包含 `resolve_scene_voxel_sources.glsl`（同 stream source candidate 仲裁 + 多源合并）和 `blend_scene_voxel_fields.glsl`（compact source records → dense field）两个 GPU pass，由 `blend_scene_voxels()` 统一编排。
 
-![SceneVoxel / SV source commit and resident GPU field flow](scene-voxel-flow.svg)
+![SceneVoxel / SV source commit and resident GPU field flow](../svg/scene-voxel-flow.svg)
 
 ## 本文范围
 
@@ -31,7 +31,7 @@
 - `TargetSV_B` / target guidance 变化只触发 routing、prefilter、scoring 或 feedback 侧 dirty，不写入 source stream，也不直接更新 committed `SceneVoxel`。
 - 文档和新调用优先使用 `mark_scene_voxel_tile_dirty()` / `mark_scene_voxel_tile_bounds_dirty()`；当前源码仍保留 `_sv_dirty_tiles` / `_sv_dirty_rects`、`invalidate_sv_tile()` / `invalidate_sv_rect()` 和 `SV_RESIDENT_TILE_SIZE = 8` 作为 dirty storage compatibility，不是新的核心概念，也不改变 `SceneVoxelTile` contract。
 
-体素与计算术语参见顶层 [`README.md`](../README.md#voxel-and-compute-terminology)。`collision` 是 canonical shared collision field；`instance_stamp_write_spec` / `ISWS` 是 canonical per-instance runtime write spec；`voxel_write_spec` 是 legacy alias。`SPA` 参见 [`scene-placement-actor.md`](../core-scene-placement-actor/scene-placement-actor.md)。
+体素与计算术语参见顶层 [`README.md`](../README.md#voxel-and-compute-terminology)。`collision` 是 canonical shared collision field；`instance_stamp_write_spec` / `ISWS` 是 canonical per-instance runtime write spec；`voxel_write_spec` 是 legacy alias。`SPA` 参见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
 
 ## 责任、输入和输出
 
@@ -269,11 +269,41 @@ SV resident state 字段含义维护在 `SceneVoxelCommitter._rebuild_sv()` 的 
 
 > **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，CPU fallback 不得作为通过条件。
 
+## 运行方式
+
+> **@tool 编辑器模式，禁止 F6。**
+>
+> 在 Godot 编辑器中双击打开 `.tscn` 场景文件即可。脚本在编辑器视口中实时运行。
+> F6（Run Current Scene）和 F5（Run Project）被 `core_demo_contract_fixture.gd` 守卫代码禁止。
+
+## 测试方法
+
+1. 打开 `core-scene-voxel-field-system.tscn`，确认场景 focus 为 source write / commit / resident fields。
+2. 运行 SceneVoxel 主契约测试：
+
+```bash
+<godot> --path . --rendering-driver vulkan --script tools/test_scene_voxel_field.gd
+<godot> --headless --path . --script tools/test_voxel_placement_record_commit.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_blendsv_feedback_score.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_dirty_tile_upload.gd
+```
+
+#### 禁止 `--headless`
+
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
+
+3. 对照 `scripts/scene_voxel_committer.gd`，检查 `_write_source_scene_voxel()`、`blend_scene_voxels()`、`_rebuild_sv()` 的职责没有互相越界。
+
+## Demo 验收标准
+
+- 可提交 source record 只来自 `AutoSceneVoxel` / `BrushSceneVoxel`，`TargetSceneVoxel` guidance record 被跳过。
+- committed `SceneVoxel` 公开 payload 只保留最小读取字段，不暴露 source-only sidecar。
+- `complexity_field` / `collision_field` 由 committed state 和 terrain collision 重建，不成为第二套权威输入。
+
 ## 测试场景
 
 | 场景 | 说明 | Godot 场景 |
 | --- | --- | --- |
-| [SceneVoxel 总览](../../demos/core-scene-voxel-field-system/core-scene-voxel-field-system.md) | 测试方法与验收标准 | [`../../demos/core-scene-voxel-field-system/core-scene-voxel-field-system.tscn`](../../demos/core-scene-voxel-field-system/core-scene-voxel-field-system.tscn) |
 | [SceneVoxel Commit](../../demos/modules/scene-voxel-commit/scene-voxel-commit.md) | 测试方法与验收标准 | [`../../demos/modules/scene-voxel-commit/scene-voxel-commit.tscn`](../../demos/modules/scene-voxel-commit/scene-voxel-commit.tscn) |
 | [Target Canvas Guidance](../../demos/modules/target-canvas-guidance/target-canvas-guidance.md) | 测试方法与验收标准 | [`../../demos/modules/target-canvas-guidance/target-canvas-guidance.tscn`](../../demos/modules/target-canvas-guidance/target-canvas-guidance.tscn) |
 | [SceneVoxelTile Dirty](../../demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md) | 测试方法与验收标准 | [`../../demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn`](../../demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn) |

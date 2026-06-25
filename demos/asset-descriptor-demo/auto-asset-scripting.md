@@ -2,9 +2,9 @@
 
 这份文档把新增通用物体 / 新增植被的手工步骤收拢到脚本入口，并同步当前字段契约。所有资产种类的默认语义定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。
 
-![AutoObject asset properties map](autoobject_asset_properties.svg)
+![AutoObject asset properties map](../svg/autoobject_asset_properties.svg)
 
-![AutoAssetFactory relationships](autoassetfactory_relationships.svg)
+![AutoAssetFactory relationships](../svg/autoassetfactory_relationships.svg)
 
 | File | Purpose |
 | --- | --- |

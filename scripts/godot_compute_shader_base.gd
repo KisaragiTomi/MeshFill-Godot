@@ -33,7 +33,7 @@ var sync_global_device := false
 
 var _rd: RenderingDevice
 var _owns_rendering_device := false
-var _disposed := false
+var _disposed := true
 var _compute_list_active := false
 var _buffer_zero_scratch := PackedByteArray()
 
@@ -154,7 +154,7 @@ func track_rid(
 	disposer: Callable = Callable(),
 	owned: bool = OWNED
 ) -> RID:
-	if not _is_valid_rid(rid):
+	if not rid.is_valid():
 		return rid
 
 	var resolved_scope: String = scope
@@ -210,7 +210,7 @@ func untrack_rid(rid: RID) -> RID:
 
 
 func release_rid(rid: RID, defer_if_busy: bool = true) -> void:
-	if not _is_valid_rid(rid):
+	if not rid.is_valid():
 		return
 	if _compute_list_active and defer_if_busy:
 		var scope: String = "_rid_%d" % _next_resource_id
@@ -325,7 +325,7 @@ func load_compute_shader(path: String, scope: String = SCOPE_PERSISTENT, label: 
 
 
 func create_compute_pipeline(shader: RID, scope: String = SCOPE_PERSISTENT, label: String = "") -> RID:
-	if _rd == null or not _is_valid_rid(shader):
+	if _rd == null or not shader.is_valid():
 		return RID()
 	var pipeline: RID = _rd.compute_pipeline_create(shader)
 	return track_rid(pipeline, KIND_PIPELINE, scope, label)
@@ -407,7 +407,7 @@ func storage_buffer_zero(byte_count: int, scope: String = SCOPE_FRAME, label: St
 
 
 func buffer_zero(rid: RID, byte_count: int) -> bool:
-	if _rd == null or not _is_valid_rid(rid):
+	if _rd == null or not rid.is_valid():
 		return false
 	if byte_count < 0:
 		return false
@@ -662,7 +662,7 @@ func _free_entry(entry: Dictionary) -> void:
 
 	var rid: RID = entry.get("rid", RID())
 	entry["alive"] = false
-	if _rd == null or not _is_valid_rid(rid):
+	if _rd == null or not rid.is_valid():
 		return
 	if not _should_free_resource(entry):
 		return
@@ -695,10 +695,6 @@ func _compact_dead_resources() -> void:
 		if bool(entry.get("alive", false)):
 			alive.append(entry)
 	_resources = alive
-
-
-func _is_valid_rid(rid: RID) -> bool:
-	return rid.is_valid()
 
 
 func _on_device_ready() -> void:

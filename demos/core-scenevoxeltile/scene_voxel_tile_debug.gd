@@ -1,7 +1,9 @@
 @tool
-extends "res://demos/core_demo_contract_fixture.gd"
+extends "res://scripts/core_demo_contract_fixture.gd"
 
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
+const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
+const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 # Dirty flag bit constants (mirroring SceneVoxelCommitter)
 const FLAG_SCENE := 1
@@ -37,8 +39,10 @@ const CAPTURE_SIZE := 16.0
 @export var tile_padding := 0.04
 
 var _committer: SceneVoxelCommitter
-var _tile_meshes: Dictionary = {}  # tile_id -> MeshInstance3D
-var _tile_wire_meshes: Dictionary = {}
+var _tile_multimesh_instance: MultiMeshInstance3D
+var _wire_multimesh_instance: MultiMeshInstance3D
+var _tile_instance_indices: Dictionary = {}  # tile_id -> instance_index
+var _tile_aabbs: Dictionary = {}  # tile_id -> AABB (world space)
 var _tile_container: Node3D
 var _wire_container: Node3D
 var _hud: Control
@@ -136,11 +140,7 @@ func _setup_visualization() -> void:
 
 
 func _add_bounding_grid() -> void:
-	var grid_world := Vector3(
-		float(_committer.grid_size.x) * _committer.voxel_size.x,
-		float(_committer.grid_size.y) * _committer.voxel_size.y,
-		float(_committer.grid_size.z) * _committer.voxel_size.z,
-	)
+	var grid_world := CommonVoxelSpaceScript.voxel_span_to_world_size(_committer.grid_size, _committer.voxel_size)
 	var center := _committer.grid_origin + grid_world * 0.5
 
 	var box := MeshInstance3D.new()
@@ -258,75 +258,82 @@ func _make_metric_row(parent: VBoxContainer, label_text: String, color: Color, f
 	return label
 
 
-# NOTE: This intentionally does not route through VoxelDisplay. Each tile needs
-# an independent MeshInstance3D plus a StaticBody3D/CollisionShape3D for per-tile
-# ray picking, and its color/wireframe toggles per tile at runtime. VoxelDisplay
-# emits one merged MultiMesh that cannot be ray-picked or restyled per cell, so
-# the unified path does not fit this interactive picker.
+# GPU-driven MultiMesh renderer with manual ray-AABB picking.
+# Each tile is one instance in a shared MultiMesh; tile colors are updated
+# per-instance via the MultiMesh buffer. Ray picking uses GDScript-side
+# ray-vs-AABB intersection against the known tile bounds -- no per-tile
+# collision bodies needed.
 func _build_tile_meshes() -> void:
+	var tiles: Dictionary = _committer._scene_voxel_tiles
+	if tiles.is_empty():
+		return
+
 	var tile_size: Vector3 = Vector3(_committer._scene_voxel_tile_size()) * _committer.voxel_size
 	var half_size := tile_size * 0.5
+	var box_size := tile_size - Vector3.ONE * tile_padding
+	var tile_count := tiles.size()
 
-	# Create cube mesh template
+	# --- Solid MultiMesh (per-instance color) ---
+	var box := BoxMesh.new()
+	box.size = box_size
 	var solid_mat := StandardMaterial3D.new()
 	solid_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	solid_mat.cull_mode = BaseMaterial3D.CULL_BACK
+	solid_mat.vertex_color_use_as_albedo = true
+	box.material = solid_mat
 
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = box
+	mm.instance_count = tile_count
+
+	_tile_multimesh_instance = MultiMeshInstance3D.new()
+	_tile_multimesh_instance.name = "TileMultiMesh"
+	_tile_multimesh_instance.multimesh = mm
+	_tile_container.add_child(_tile_multimesh_instance)
+
+	# --- Wire MultiMesh (single color, unshaded) ---
+	var wire_box := BoxMesh.new()
+	wire_box.size = box_size
 	var wire_mat := StandardMaterial3D.new()
 	wire_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	wire_mat.albedo_color = CLEAN_WIRE
 	wire_mat.flags_unshaded = true
+	wire_box.material = wire_mat
 
-	for tile_id in _committer._scene_voxel_tiles.keys():
-		var tile: Dictionary = _committer._scene_voxel_tiles[tile_id]
+	var wm := MultiMesh.new()
+	wm.transform_format = MultiMesh.TRANSFORM_3D
+	wm.use_colors = false
+	wm.mesh = wire_box
+	wm.instance_count = tile_count
+
+	_wire_multimesh_instance = MultiMeshInstance3D.new()
+	_wire_multimesh_instance.name = "WireMultiMesh"
+	_wire_multimesh_instance.multimesh = wm
+	_wire_multimesh_instance.visible = show_wireframe
+	_wire_container.add_child(_wire_multimesh_instance)
+
+	# --- Fill transforms + build AABB lookup ---
+	_tile_instance_indices.clear()
+	_tile_aabbs.clear()
+	var i := 0
+	for tile_id in tiles.keys():
+		var tile: Dictionary = tiles[tile_id]
 		var vm: Vector3i = tile["voxel_min"]
-
 		var world_pos := _voxel_to_world(vm) + half_size
 
-		# Solid tile box
-		var box_mesh := BoxMesh.new()
-		box_mesh.size = tile_size - Vector3.ONE * tile_padding
+		mm.set_instance_transform(i, Transform3D(Basis.IDENTITY, world_pos))
+		wm.set_instance_transform(i, Transform3D(Basis.IDENTITY, world_pos))
+		mm.set_instance_color(i, CLEAN_COLOR)
 
-		var mat_inst := solid_mat.duplicate()
-		mat_inst.albedo_color = CLEAN_COLOR
-
-		# Create a parent Node3D to hold mesh + collision
-		var tile_node := Node3D.new()
-		tile_node.name = "Tile_%d" % int(tile_id)
-		tile_node.position = world_pos
-		_tile_container.add_child(tile_node)
-
-		var solid_instance := MeshInstance3D.new()
-		solid_instance.name = "Mesh"
-		solid_instance.mesh = box_mesh
-		solid_instance.material_override = mat_inst
-		tile_node.add_child(solid_instance)
-		_tile_meshes[tile_id] = solid_instance
-
-		# StaticBody for ray-picking
-		var body := StaticBody3D.new()
-		body.name = "Body"
-		tile_node.add_child(body)
-
-		var coll_shape := CollisionShape3D.new()
-		coll_shape.name = "CollisionShape"
-		coll_shape.shape = BoxShape3D.new()
-		coll_shape.shape.size = box_mesh.size
-		body.add_child(coll_shape)
-
-		# Wireframe
-		var wire_instance := MeshInstance3D.new()
-		wire_instance.name = "Wire_%d" % int(tile_id)
-		wire_instance.mesh = box_mesh.duplicate()
-		wire_instance.material_override = wire_mat.duplicate()
-		wire_instance.position = world_pos
-		wire_instance.visible = show_wireframe
-		_wire_container.add_child(wire_instance)
-		_tile_wire_meshes[tile_id] = wire_instance
+		_tile_instance_indices[tile_id] = i
+		_tile_aabbs[tile_id] = AABB(world_pos - box_size * 0.5, box_size)
+		i += 1
 
 
 func _voxel_to_world(voxel_coord: Vector3i) -> Vector3:
-	return _committer.grid_origin + Vector3(voxel_coord) * _committer.voxel_size
+	return CommonVoxelSpaceScript.voxel_to_world(voxel_coord, _committer.grid_origin, _committer.voxel_size)
 
 
 func _full_refresh() -> void:
@@ -360,44 +367,47 @@ func _full_refresh() -> void:
 	_update_tile_colors()
 
 
+func _compute_tile_color(tile: Dictionary) -> Color:
+	var flags: Dictionary = tile.get("dirty_flags", {})
+	var is_dirty := bool(tile.get("dirty", false))
+	if not is_dirty or not highlight_dirty:
+		return CLEAN_COLOR
+
+	var blend := Color(0.1, 0.1, 0.1, 0.4)
+	var contrib := 0
+	for flag_name in flags.keys():
+		var bit := _flag_name_to_bit(flag_name)
+		if bit >= 0 and FLAG_COLORS.has(bit):
+			blend += FLAG_COLORS[bit]
+			contrib += 1
+	if contrib > 0:
+		blend.r /= contrib
+		blend.g /= contrib
+		blend.b /= contrib
+	blend.a = clampf(blend.a, 0.3, 0.8)
+	return blend
+
+
 func _update_tile_colors() -> void:
+	if _tile_multimesh_instance == null:
+		return
+	var mm: MultiMesh = _tile_multimesh_instance.multimesh
 	var sv := _committer.get_sv()
 	var tiles: Dictionary = sv.get("scene_voxel_tiles", {})
 
 	for tile_id in tiles.keys():
-		var tile: Dictionary = tiles[tile_id]
-		var instance: MeshInstance3D = _tile_meshes.get(tile_id)
-		if instance == null:
+		var idx: int = _tile_instance_indices.get(tile_id, -1)
+		if idx < 0:
 			continue
-
-		var flags: Dictionary = tile.get("dirty_flags", {})
+		var tile: Dictionary = tiles[tile_id]
+		var color := _compute_tile_color(tile)
 		var is_dirty := bool(tile.get("dirty", false))
-		var mat := instance.material_override as StandardMaterial3D
-
-		if not is_dirty or not highlight_dirty:
-			mat.albedo_color = CLEAN_COLOR
-			mat.emission = Color.BLACK
-		else:
-			var blend_color := Color(0.1, 0.1, 0.1, 0.4)
-			var contrib_count := 0
-			for flag_name in flags.keys():
-				var bit := _flag_name_to_bit(flag_name)
-				if bit >= 0 and FLAG_COLORS.has(bit):
-					blend_color += FLAG_COLORS[bit]
-					contrib_count += 1
-			if contrib_count > 0:
-				blend_color.r /= contrib_count
-				blend_color.g /= contrib_count
-				blend_color.b /= contrib_count
-			blend_color.a = clampf(blend_color.a, 0.3, 0.8)
-			mat.albedo_color = blend_color
-			mat.albedo_color.a = blend_color.a
-			if is_dirty:
-				mat.emission = Color(blend_color.r * 0.25, blend_color.g * 0.25, blend_color.b * 0.25)
-
+		# Emission hint for selected tile: blend yellow into albedo
 		if tile_id == _selected_tile_id:
-			mat.emission = Color(1.0, 1.0, 0.5)
-			mat.emission_energy_multiplier = 0.8
+			color = Color(1.0, 1.0, 0.5, maxf(color.a, 0.5))
+		elif is_dirty:
+			color.a = color.a  # keep alpha from blend
+		mm.set_instance_color(idx, color)
 
 
 func _flag_name_to_bit(flag_name: String) -> int:
@@ -414,9 +424,6 @@ func _flag_name_to_bit(flag_name: String) -> int:
 	return -1
 
 
-
-
-
 func _input(event: InputEvent) -> void:
 	if not Engine.is_editor_hint():
 		return
@@ -424,8 +431,8 @@ func _input(event: InputEvent) -> void:
 		match event.keycode:
 			KEY_T:
 				show_wireframe = not show_wireframe
-				for inst in _tile_wire_meshes.values():
-					inst.visible = show_wireframe
+				if _wire_multimesh_instance != null:
+					_wire_multimesh_instance.visible = show_wireframe
 			KEY_R:
 				# Refresh: mark some tiles dirty with random flags
 				_demo_tick += 1
@@ -452,42 +459,28 @@ func _ray_pick_tile() -> void:
 		return
 
 	var from := camera.project_ray_origin(get_viewport().get_mouse_position())
-	var to := from + camera.project_ray_normal(get_viewport().get_mouse_position()) * 1000.0
-	var space_state := get_world_3d().direct_space_state
-	var query := PhysicsRayQueryParameters3D.create(from, to)
-	query.collision_mask = 1  # Layer 1 (default)
+	var dir := camera.project_ray_normal(get_viewport().get_mouse_position())
+	var ray_length := 1000.0
 
-	var result := space_state.intersect_ray(query)
-	if not result.is_empty():
-		var collider: Node3D = result.get("collider")
-		if collider != null:
-			# Walk up to find the tile node (parent of StaticBody3D is the tile Node3D)
-			var tile_node := collider.get_parent()
-			if tile_node != null and tile_node.get_parent() == _tile_container:
-				_selected_tile_id = _find_tile_id_from_node(tile_node)
-				_update_selection_display()
-				_full_refresh()
-				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-				return
+	var best_tile_id := ""
+	var best_dist := ray_length
 
-	_selected_tile_id = ""
+	for tile_id in _tile_aabbs.keys():
+		var aabb: AABB = _tile_aabbs[tile_id]
+		var hit := aabb.intersects_ray(from, dir)
+		if hit is Vector3:
+			var dist := from.distance_to(hit)
+			if dist < best_dist:
+				best_dist = dist
+				best_tile_id = str(tile_id)
+
+	_selected_tile_id = best_tile_id
 	_update_selection_display()
 	_full_refresh()
 
 
-func _find_tile_id_from_node(tile_node: Node3D) -> String:
-	for tile_id in _tile_meshes.keys():
-		var mesh_inst: MeshInstance3D = _tile_meshes[tile_id]
-		if mesh_inst.get_parent() == tile_node:
-			return str(tile_id)
-	return ""
-
-
 func _get_camera() -> Camera3D:
-	for child in get_children():
-		if child is Camera3D:
-			return child
-	return null
+	return CommonDemoUI.find_any_camera(self, true, false)
 
 
 func _update_selection_display() -> void:

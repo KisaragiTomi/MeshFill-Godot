@@ -39,7 +39,7 @@ func _test_scene_loads() -> bool:
 		push_error("  FAIL: scene does not use edit-time common Terrain")
 		instance.free()
 		return false
-	var can_build_gpu_preview := _main_rendering_device_available()
+	var can_build_gpu_preview := RenderingServer.get_rendering_device() != null
 	visualization.set("build_project_voxels_on_ready", can_build_gpu_preview)
 	visualization.call("_rebuild_visualization")
 	if can_build_gpu_preview:
@@ -72,9 +72,6 @@ func _test_scene_loads() -> bool:
 	print("  OK: scene resource loads and builds project SceneVoxel snapshot")
 	return true
 
-
-func _main_rendering_device_available() -> bool:
-	return RenderingServer.get_rendering_device() != null
 
 
 func _assert_box_view_hotkey(visualization: Node, keycode: Key, expected_mode: String) -> bool:

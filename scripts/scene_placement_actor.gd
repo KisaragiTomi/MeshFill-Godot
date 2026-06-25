@@ -20,6 +20,14 @@ const VPGScript := preload("res://scripts/voxel_placement_generator.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const GPUAutoObjectRuntimeScript := preload("res://scripts/gpu_autoobject_runtime.gd")
+const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
+const AssetDescriptor := preload("res://scripts/auto_voxel_descriptor.gd")
+const AutoObject := preload("res://scripts/auto_object.gd")
+const AutoObjectProbePrefilterGPU := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
+const AutoVoxelRuntimeProfileContainer := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
+const GPUAutoObjectRuntime := preload("res://scripts/gpu_autoobject_runtime.gd")
+const SceneVoxelCommitter := preload("res://scripts/scene_voxel_committer.gd")
+const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generator.gd")
 
 const MESH_DESCRIPTION_BUFFER := "mesh_description"
 const MESH_DESCRIPTION_STRIDE_BYTES := 128
@@ -46,15 +54,21 @@ const ACCEPTED_PLACEMENT_SOURCE_BUFFER_INCOMPLETE_REASON := "incomplete_source_c
 ## Owned profile container — all registered descriptors live here, GPU-resident.
 var _runtime_profile_container: AutoVoxelRuntimeProfileContainer
 
+## SPA-owned AutoObject GPU state component. External runtime injection remains
+## available for legacy tests, but default lifecycle is owned by SPA.
+var _gpu_runtime: GPUAutoObjectRuntime
+var _owns_gpu_runtime := false
+var _autoobject_runtime_capacity := 1024
+
 ## External references (borrowed, not owned).
 var _sv_committer: SceneVoxelCommitter
-var _gpu_runtime: GPUAutoObjectRuntime
 
 ## Asset registry — parallel arrays mapping asset_id → descriptor + profile_id.
 var _registered_descriptors: Array[AssetDescriptor] = []
 var _registered_profile_ids: Array[int] = []
 var _registered_mesh: Array[Mesh] = []
 var _registered_autoobject_refs: Array[AutoObject] = []
+var _owned_autoobjects: Array[AutoObject] = []
 var _mesh_description_buffer: RID
 var _mesh_description_record_count := 0
 var _mesh_description_logical_byte_size := 0
@@ -116,10 +130,12 @@ func initialize(
 		_dispose_internal()
 		return false
 
-	if sv_committer != null:
-		attach_sv_committer(sv_committer)
 	if gpu_runtime != null:
 		attach_gpu_runtime(gpu_runtime)
+	else:
+		_ensure_owned_gpu_runtime()
+	if sv_committer != null:
+		attach_sv_committer(sv_committer)
 
 	_prepare_gpu_runtime_for_scene_voxel_committer()
 	_initialized = true
@@ -149,10 +165,14 @@ func _dispose_internal(sync_before_free: bool = true) -> void:
 		_placer.dispose()
 		_placer = null
 
+	if _gpu_runtime != null and _owns_gpu_runtime:
+		_gpu_runtime.dispose(sync_before_free)
+
 	_registered_descriptors.clear()
 	_registered_profile_ids.clear()
 	_registered_mesh.clear()
 	_registered_autoobject_refs.clear()
+	_clear_owned_autoobjects()
 	_last_pipeline_result.clear()
 	_brush_sv_control_metadata.clear()
 	_gpu_runtime_scene_voxel_setup_result.clear()
@@ -160,6 +180,7 @@ func _dispose_internal(sync_before_free: bool = true) -> void:
 	_initialized = false
 	_sv_committer = null
 	_gpu_runtime = null
+	_owns_gpu_runtime = false
 
 
 func is_initialized() -> bool:
@@ -175,8 +196,11 @@ func attach_sv_committer(sv_committer: SceneVoxelCommitter) -> void:
 	_prepare_gpu_runtime_for_scene_voxel_committer()
 
 
-func attach_gpu_runtime(gpu_runtime: GPUAutoObjectRuntime) -> void:
+func attach_gpu_runtime(gpu_runtime: GPUAutoObjectRuntime, owns_lifecycle: bool = false) -> void:
+	if _gpu_runtime != null and _gpu_runtime != gpu_runtime and _owns_gpu_runtime:
+		_gpu_runtime.dispose(false)
 	_gpu_runtime = gpu_runtime
+	_owns_gpu_runtime = owns_lifecycle
 	_prepare_gpu_runtime_for_scene_voxel_committer()
 
 
@@ -185,6 +209,32 @@ func get_sv_committer() -> SceneVoxelCommitter:
 
 
 func get_gpu_runtime() -> GPUAutoObjectRuntime:
+	_ensure_owned_gpu_runtime()
+	return _gpu_runtime
+
+
+func owns_gpu_runtime() -> bool:
+	return _owns_gpu_runtime
+
+
+func set_autoobject_runtime_capacity(max_objects: int, recreate_owned_runtime: bool = false) -> void:
+	_autoobject_runtime_capacity = maxi(max_objects, 1)
+	if recreate_owned_runtime and _gpu_runtime != null and _owns_gpu_runtime:
+		_gpu_runtime.dispose(false)
+		_gpu_runtime = null
+		_ensure_owned_gpu_runtime()
+		_prepare_gpu_runtime_for_scene_voxel_committer()
+
+
+func get_autoobject_runtime_capacity() -> int:
+	return _autoobject_runtime_capacity
+
+
+func _ensure_owned_gpu_runtime() -> GPUAutoObjectRuntime:
+	if _gpu_runtime != null:
+		return _gpu_runtime
+	_gpu_runtime = GPUAutoObjectRuntimeScript.new(_autoobject_runtime_capacity, false)
+	_owns_gpu_runtime = true
 	return _gpu_runtime
 
 
@@ -239,6 +289,8 @@ func register_asset(descriptor: AssetDescriptor, mesh_ref: Mesh = null, autoobje
 	_registered_profile_ids.append(profile_id)
 	_registered_mesh.append(mesh_ref)
 	_registered_autoobject_refs.append(autoobject_ref)
+	if autoobject_ref != null:
+		own_autoobject(autoobject_ref, _registered_autoobject_refs.size() - 1)
 	_mark_mesh_description_changed()
 
 	if not _upload_mesh_description_buffer():
@@ -246,6 +298,32 @@ func register_asset(descriptor: AssetDescriptor, mesh_ref: Mesh = null, autoobje
 		return -1
 
 	return profile_id
+
+
+## Canonical AutoObject asset entry point.  The actor owns registry/profile
+## upload; callers may keep local arrays only as UI or authoring caches.
+func register_autoobject_asset(autoobject_ref: AutoObject, mesh_ref: Mesh = null) -> int:
+	if autoobject_ref == null:
+		push_error("ScenePlacementActor: null AutoObject asset.")
+		return -1
+	var descriptor := _descriptor_from_autoobject_asset(autoobject_ref)
+	if descriptor == null:
+		push_error("ScenePlacementActor: AutoObject asset has no descriptor.")
+		return -1
+	var resolved_mesh := mesh_ref
+	if resolved_mesh == null:
+		resolved_mesh = autoobject_ref.mesh
+	if resolved_mesh == null:
+		resolved_mesh = descriptor.get_mesh()
+	return register_asset(descriptor, resolved_mesh, autoobject_ref)
+
+
+func register_autoobject_assets(autoobjects: Array) -> Array[int]:
+	var result: Array[int] = []
+	for raw in autoobjects:
+		var autoobject_ref := raw as AutoObject
+		result.append(register_autoobject_asset(autoobject_ref))
+	return result
 
 
 ## Register multiple descriptors at once.  Returns an Array of profile_ids
@@ -275,6 +353,15 @@ func replace_all_assets(
 	return true
 
 
+func replace_all_autoobject_assets(autoobjects: Array) -> bool:
+	clear_assets()
+	for raw in autoobjects:
+		var autoobject_ref := raw as AutoObject
+		if register_autoobject_asset(autoobject_ref) < 0:
+			return false
+	return true
+
+
 ## Clear the asset registry and re-upload an empty profile set.
 func clear_assets() -> void:
 	_free_cached_wrappers()
@@ -286,6 +373,7 @@ func clear_assets() -> void:
 	_registered_profile_ids.clear()
 	_registered_mesh.clear()
 	_registered_autoobject_refs.clear()
+	_clear_owned_autoobjects()
 	_mark_mesh_description_changed()
 	_release_mesh_description_buffer()
 
@@ -314,6 +402,153 @@ func get_profile_id_for_asset(asset_id: int) -> int:
 
 func get_registered_meshes() -> Array[Mesh]:
 	return _registered_mesh.duplicate()
+
+
+func get_registered_autoobject_refs() -> Array[AutoObject]:
+	_prune_owned_autoobjects()
+	return _registered_autoobject_refs.duplicate()
+
+
+func set_registered_autoobject_ref(asset_id: int, autoobject_ref: AutoObject) -> bool:
+	if asset_id < 0 or asset_id >= _registered_autoobject_refs.size():
+		return false
+	_registered_autoobject_refs[asset_id] = autoobject_ref
+	_free_cached_wrappers()
+	_mark_mesh_description_changed()
+	if is_initialized():
+		return _upload_mesh_description_buffer()
+	return true
+
+
+func own_autoobject(autoobject_ref: AutoObject, asset_id: int = -1) -> bool:
+	if autoobject_ref == null:
+		return false
+	_prune_owned_autoobjects()
+	if not _owned_autoobjects.has(autoobject_ref):
+		_owned_autoobjects.append(autoobject_ref)
+	autoobject_ref.set_meta("spa_owned", true)
+	autoobject_ref.set_meta("spa_owner", "ScenePlacementActor")
+	if asset_id >= 0:
+		autoobject_ref.set_meta("spa_asset_id", asset_id)
+		if asset_id < _registered_autoobject_refs.size():
+			var registered_ref: AutoObject = _registered_autoobject_refs[asset_id]
+			if registered_ref == null or registered_ref.is_queued_for_deletion():
+				set_registered_autoobject_ref(asset_id, autoobject_ref)
+	return true
+
+
+func release_autoobject(autoobject_ref: AutoObject) -> bool:
+	if autoobject_ref == null:
+		return false
+	var removed := _owned_autoobjects.has(autoobject_ref)
+	if removed:
+		_owned_autoobjects.erase(autoobject_ref)
+	var released_asset_id := int(autoobject_ref.get_meta("spa_asset_id", -1))
+	_clear_autoobject_owner_metadata(autoobject_ref)
+	if released_asset_id >= 0 and released_asset_id < _registered_autoobject_refs.size():
+		if _registered_autoobject_refs[released_asset_id] == autoobject_ref:
+			set_registered_autoobject_ref(released_asset_id, _find_owned_autoobject_for_asset(released_asset_id))
+	_prune_owned_autoobjects()
+	return removed
+
+
+func get_owned_autoobjects() -> Array[AutoObject]:
+	_prune_owned_autoobjects()
+	return _owned_autoobjects.duplicate()
+
+
+func get_owned_autoobject_count() -> int:
+	_prune_owned_autoobjects()
+	return _owned_autoobjects.size()
+
+
+func get_owned_autoobject(index: int) -> AutoObject:
+	_prune_owned_autoobjects()
+	if index < 0 or index >= _owned_autoobjects.size():
+		return null
+	return _owned_autoobjects[index]
+
+
+func has_owned_autoobject(autoobject_ref: AutoObject) -> bool:
+	_prune_owned_autoobjects()
+	return autoobject_ref != null and _owned_autoobjects.has(autoobject_ref)
+
+
+func get_asset_id_for_autoobject(autoobject_ref: AutoObject) -> int:
+	if autoobject_ref == null:
+		return -1
+	for i in range(_registered_autoobject_refs.size()):
+		if _registered_autoobject_refs[i] == autoobject_ref:
+			return i
+	var meta_asset_id := int(autoobject_ref.get_meta("spa_asset_id", -1))
+	if meta_asset_id >= 0 and meta_asset_id < _registered_descriptors.size():
+		return meta_asset_id
+	return -1
+
+
+func _find_owned_autoobject_for_asset(asset_id: int) -> AutoObject:
+	_prune_owned_autoobjects()
+	for obj in _owned_autoobjects:
+		if obj != null and int(obj.get_meta("spa_asset_id", -1)) == asset_id:
+			return obj
+	return null
+
+
+func _prune_owned_autoobjects() -> void:
+	for i in range(_owned_autoobjects.size() - 1, -1, -1):
+		var obj := _owned_autoobjects[i]
+		if obj == null or obj.is_queued_for_deletion():
+			_owned_autoobjects.remove_at(i)
+
+
+func _clear_owned_autoobjects(clear_metadata: bool = true) -> void:
+	if clear_metadata:
+		for obj in _owned_autoobjects:
+			_clear_autoobject_owner_metadata(obj)
+	_owned_autoobjects.clear()
+
+
+func _clear_autoobject_owner_metadata(autoobject_ref: AutoObject) -> void:
+	if autoobject_ref == null:
+		return
+	for key in ["spa_owned", "spa_owner", "spa_asset_id"]:
+		if autoobject_ref.has_meta(key):
+			autoobject_ref.remove_meta(key)
+
+
+func _descriptor_from_autoobject_asset(autoobject_ref: AutoObject) -> AssetDescriptor:
+	if autoobject_ref == null:
+		return null
+	var descriptor := autoobject_ref.voxel_descriptor as AssetDescriptor
+	if descriptor == null:
+		autoobject_ref.get_voxel_color()
+		descriptor = autoobject_ref.voxel_descriptor as AssetDescriptor
+	if descriptor == null:
+		descriptor = AutoObject.create_voxel_descriptor(
+			autoobject_ref.voxel_color,
+			autoobject_ref.voxel_complexity,
+			autoobject_ref.mesh_size * 0.5,
+			autoobject_ref.collision,
+			autoobject_ref.pivot_variants,
+			autoobject_ref.semantic_probe_profile,
+			autoobject_ref.semantic_probe_density,
+			autoobject_ref.context_sensing_radius
+		) as AssetDescriptor
+		autoobject_ref.voxel_descriptor = descriptor
+	if descriptor == null:
+		return null
+	if descriptor.asset_id.is_empty() and not autoobject_ref.asset_id.is_empty():
+		descriptor.asset_id = autoobject_ref.asset_id
+	if descriptor.object_type.is_empty():
+		descriptor.object_type = autoobject_ref.get_record_object_type()
+	if descriptor.mesh == null and autoobject_ref.mesh != null:
+		descriptor.mesh = autoobject_ref.mesh
+	var resolved_source_mesh := autoobject_ref.get_source_mesh()
+	if descriptor.source_mesh == null and resolved_source_mesh != null:
+		descriptor.source_mesh = resolved_source_mesh
+	if descriptor.source_mesh_path.is_empty() and not autoobject_ref.source_mesh_path.is_empty():
+		descriptor.source_mesh_path = autoobject_ref.source_mesh_path
+	return descriptor
 
 
 func get_mesh_description_for_asset(asset_id: int) -> Dictionary:
@@ -352,7 +587,7 @@ func get_mesh_description_for_asset(asset_id: int) -> Dictionary:
 		"autoobject_ref": autoobject_ref,
 		"asset_name": descriptor.asset_id if descriptor != null else "",
 		"object_type": descriptor.object_type if descriptor != null else "",
-		"object_subtype": descriptor.object_subtype if descriptor != null else "",
+		"object_subtype": "",
 		"mesh": mesh_ref,
 		"mesh_aabb": mesh_aabb,
 		"mesh_surface_count": mesh_surface_count,
@@ -609,6 +844,7 @@ func get_merged_gpu_buffer_summary() -> Dictionary:
 		report["gpu_runtime"] = {
 			"ready": _gpu_runtime.is_ready(),
 			"max_objects": _gpu_runtime.max_objects,
+			"lifecycle_owner": "ScenePlacementActor" if _owns_gpu_runtime else "external",
 		}
 		report["gpu_runtime_scene_voxel_setup"] = _gpu_runtime_scene_voxel_setup_result.duplicate(true)
 	if _sv_committer != null:
@@ -616,6 +852,100 @@ func get_merged_gpu_buffer_summary() -> Dictionary:
 	if not _brush_sv_control_metadata.is_empty():
 		report["brush_sv"] = get_brush_sv_persistence_metadata()
 	return report
+
+
+func is_autoobject_runtime_ready() -> bool:
+	return _gpu_runtime != null and _gpu_runtime.is_ready()
+
+
+func spawn_autoobject_batch_from_accepted_placement_records(
+	spawn_records: Array[Dictionary],
+	options: Dictionary = {}
+) -> Dictionary:
+	if not is_initialized():
+		return _autoobject_runtime_action_error("actor_not_initialized", "spawn_batch_from_accepted_placement_records")
+	if _gpu_runtime == null:
+		_ensure_owned_gpu_runtime()
+	if _sv_committer != null:
+		_prepare_gpu_runtime_for_scene_voxel_committer()
+	if _gpu_runtime == null or not _gpu_runtime.is_ready():
+		return _autoobject_runtime_action_error("gpu_autoobject_runtime_not_ready", "spawn_batch_from_accepted_placement_records")
+	var result: Dictionary = _gpu_runtime.spawn_batch_from_accepted_placement_records(
+		spawn_records,
+		options.duplicate(true)
+	)
+	_annotate_autoobject_runtime_action_result(result, "spawn_batch_from_accepted_placement_records")
+	result["record_count"] = spawn_records.size()
+	return result
+
+
+func flush_autoobject_runtime_to_scene_voxel_committer(options: Dictionary = {}) -> Dictionary:
+	if not is_initialized():
+		return _autoobject_runtime_action_error("actor_not_initialized", "flush_to_scene_voxel_committer")
+	if _gpu_runtime == null:
+		_ensure_owned_gpu_runtime()
+	if _sv_committer == null:
+		return _autoobject_runtime_action_error("missing_scene_voxel_committer", "flush_to_scene_voxel_committer")
+	var setup_result := _prepare_gpu_runtime_for_scene_voxel_committer()
+	if _gpu_runtime == null or not _gpu_runtime.is_ready():
+		return _autoobject_runtime_action_error("gpu_autoobject_runtime_not_ready", "flush_to_scene_voxel_committer")
+	if bool(setup_result.get("blocked", false)):
+		return _autoobject_runtime_action_error(
+			str(setup_result.get("blocked_reason", setup_result.get("reason", "runtime_scene_voxel_setup_blocked"))),
+			"flush_to_scene_voxel_committer"
+		)
+	var result: Dictionary = _gpu_runtime.flush_to_scene_voxel_committer(_sv_committer, options.duplicate(true))
+	_annotate_autoobject_runtime_action_result(result, "flush_to_scene_voxel_committer")
+	result["runtime_setup"] = setup_result.duplicate(true)
+	return result
+
+
+func run_autoobject_prefilter(
+	sv: Dictionary,
+	dirty_tile_ids: Array[int] = [],
+	target_field_bytes: PackedFloat32Array = PackedFloat32Array(),
+	target_read_buffers: Dictionary = {},
+	tile_summaries_rid: RID = RID(),
+	prefilter_settings: Dictionary = {}
+) -> Dictionary:
+	if not is_initialized():
+		return _pipeline_error("actor_not_initialized")
+	if _registered_descriptors.is_empty():
+		return _pipeline_error("no_registered_assets")
+	var prefilter := _get_prefilter()
+	_apply_prefilter_settings(prefilter, prefilter_settings)
+	var autoobjects := _build_autoobject_array_for_pipeline()
+	var result := prefilter.run_probe_prefilter(
+		sv,
+		autoobjects,
+		dirty_tile_ids,
+		_runtime_profile_container,
+		target_field_bytes,
+		target_read_buffers.duplicate(true),
+		tile_summaries_rid
+	)
+	result["control_plane"] = "ScenePlacementActor"
+	result["asset_registry_owner"] = "ScenePlacementActor"
+	result["runtime_profile_container_owner"] = "ScenePlacementActor"
+	result["asset_count"] = _registered_descriptors.size()
+	return result
+
+
+func _apply_prefilter_settings(prefilter: AutoObjectProbePrefilterGPU, settings: Dictionary) -> void:
+	if prefilter == null:
+		return
+	if settings.has("anchor_topk"):
+		prefilter.anchor_topk = maxi(int(settings.get("anchor_topk", prefilter.anchor_topk)), 1)
+	if settings.has("max_complexity_field"):
+		prefilter.max_complexity_field = clampf(float(settings.get("max_complexity_field", prefilter.max_complexity_field)), 0.0, 1.0)
+	if settings.has("max_collision_field"):
+		prefilter.max_collision_field = clampf(float(settings.get("max_collision_field", prefilter.max_collision_field)), 0.0, 1.0)
+	if settings.has("min_support"):
+		prefilter.min_support = clampf(float(settings.get("min_support", prefilter.min_support)), 0.0, 1.0)
+	if settings.has("min_target_interest"):
+		prefilter.min_target_interest = clampf(float(settings.get("min_target_interest", prefilter.min_target_interest)), 0.0, 1.0)
+	if settings.has("min_prefilter_score"):
+		prefilter.min_prefilter_score = clampf(float(settings.get("min_prefilter_score", prefilter.min_prefilter_score)), 0.0, 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -775,16 +1105,18 @@ func run_placement_pipeline(
 		placement_settings["gpu_state_chain_source"] = str(resident_field_handoff.get("gpu_state_chain_source", "scene_voxel_committer_scene_voxel_tile_resident_fields"))
 		placement_settings["resident_complexity_field_rendering_device"] = _rd
 	var resident_runtime_dirty_delta_ready := _gpu_runtime != null \
+		and _gpu_runtime.is_ready() \
 		and bool(_gpu_runtime_scene_voxel_setup_result.get("resident_gpu_dirty_delta_update_pass_opt_in_ready", false))
 	if resident_runtime_dirty_delta_ready:
 		placement_settings["use_compact_state_chain"] = true
 		placement_settings["cpu_state_chain_mode"] = "compact_stamp_deltas"
-	if _gpu_runtime != null:
+	if _gpu_runtime != null and _gpu_runtime.is_ready():
 		placement_settings["gpu_autoobject_runtime"] = _gpu_runtime
 		placement_settings["write_accepted_placements_to_gpu_runtime"] = true
 
 	var previous_resident_accepted_placement_writeback := false
 	var scoped_resident_accepted_placement_writeback := _gpu_runtime != null \
+		and _gpu_runtime.is_ready() \
 		and _gpu_runtime.has_method("set_use_resident_accepted_placement_writeback") \
 		and _gpu_runtime.has_method("get_use_resident_accepted_placement_writeback")
 	if scoped_resident_accepted_placement_writeback:
@@ -962,7 +1294,7 @@ func _get_placer() -> VoxelPlacementGenerator:
 
 func _build_resident_complexity_field_handoff(sv: Dictionary) -> Dictionary:
 	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
-	var expected_voxel_count := grid_size.x * grid_size.y * grid_size.z
+	var expected_voxel_count := CommonVoxelSpaceScript.voxel_count(grid_size)
 	var complexity_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER
 	var collision_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER
 	var stride_bytes := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
@@ -1394,9 +1726,45 @@ func _resident_candidate_route_handoff_summary_from_payload(
 	}
 
 
+func _autoobject_runtime_action_error(reason: String, action: String) -> Dictionary:
+	return {
+		"ok": false,
+		"reason": reason,
+		"blocked": true,
+		"blocked_reason": reason,
+		"source": "ScenePlacementActor",
+		"owner": "ScenePlacementActor",
+		"control_plane": "ScenePlacementActor",
+		"runtime_action": action,
+		"lifecycle_owner": "ScenePlacementActor" if _owns_gpu_runtime else "external",
+		"runtime_ready": _gpu_runtime != null and _gpu_runtime.is_ready(),
+		"runtime_setup": _gpu_runtime_scene_voxel_setup_result.duplicate(true),
+		"gpu_first": true,
+		"cpu_fallback": false,
+	}
+
+
+func _annotate_autoobject_runtime_action_result(result: Dictionary, action: String) -> Dictionary:
+	result["source"] = "ScenePlacementActor"
+	result["owner"] = "ScenePlacementActor"
+	result["control_plane"] = "ScenePlacementActor"
+	result["runtime_action"] = action
+	result["lifecycle_owner"] = "ScenePlacementActor" if _owns_gpu_runtime else "external"
+	result["runtime_ready"] = _gpu_runtime != null and _gpu_runtime.is_ready()
+	if not result.has("runtime_setup"):
+		result["runtime_setup"] = _gpu_runtime_scene_voxel_setup_result.duplicate(true)
+	if not result.has("gpu_first"):
+		result["gpu_first"] = true
+	if not result.has("cpu_fallback"):
+		result["cpu_fallback"] = false
+	return result
+
+
 func _prepare_gpu_runtime_for_scene_voxel_committer() -> Dictionary:
 	if _gpu_runtime == null:
-		_gpu_runtime_scene_voxel_setup_result = _gpu_runtime_scene_voxel_setup_blocked("missing_gpu_autoobject_runtime")
+		_ensure_owned_gpu_runtime()
+	if _gpu_runtime == null:
+		_gpu_runtime_scene_voxel_setup_result = _gpu_runtime_scene_voxel_setup_blocked("missing_autoobject_gpu_state")
 		return _gpu_runtime_scene_voxel_setup_result
 	if _sv_committer == null:
 		_gpu_runtime_scene_voxel_setup_result = _gpu_runtime_scene_voxel_setup_blocked("missing_scene_voxel_committer")
@@ -1421,6 +1789,7 @@ func _prepare_gpu_runtime_for_scene_voxel_committer() -> Dictionary:
 			_gpu_runtime_scene_voxel_setup_result["blocked_reason"] = "none"
 			_gpu_runtime_scene_voxel_setup_result["source"] = "ScenePlacementActor"
 			_gpu_runtime_scene_voxel_setup_result["owner"] = "ScenePlacementActor"
+			_gpu_runtime_scene_voxel_setup_result["lifecycle_owner"] = "ScenePlacementActor" if _owns_gpu_runtime else "external"
 			_gpu_runtime_scene_voxel_setup_result["runtime_setup_api"] = "GPUAutoObjectRuntime.setup_for_scene_voxel_committer"
 			return _gpu_runtime_scene_voxel_setup_result
 
@@ -1431,6 +1800,7 @@ func _prepare_gpu_runtime_for_scene_voxel_committer() -> Dictionary:
 	)
 	setup_result["source"] = "ScenePlacementActor"
 	setup_result["owner"] = "ScenePlacementActor"
+	setup_result["lifecycle_owner"] = "ScenePlacementActor" if _owns_gpu_runtime else "external"
 	setup_result["runtime_setup_api"] = "GPUAutoObjectRuntime.setup_for_scene_voxel_committer"
 	setup_result["resident_gpu_dirty_delta_update_pass_opt_in_ready"] = bool(setup_result.get("ok", false)) \
 		and bool(setup_result.get("same_rendering_device", false)) \
@@ -1453,6 +1823,7 @@ func _gpu_runtime_scene_voxel_setup_blocked(reason: String) -> Dictionary:
 		"blocked_reason": reason,
 		"source": "ScenePlacementActor",
 		"owner": "ScenePlacementActor",
+		"lifecycle_owner": "ScenePlacementActor" if _owns_gpu_runtime else "external",
 		"runtime_setup_api": "GPUAutoObjectRuntime.setup_for_scene_voxel_committer",
 		"runtime_ready": false,
 		"gpu_first": true,
@@ -1491,9 +1862,9 @@ func _flush_gpu_runtime_dirty_delta_to_scene_voxel_committer(placement_result: D
 		"resident_gpu_dirty_delta_update_pass_blocked_reason": "not_attempted",
 	}
 	if _gpu_runtime == null:
-		result["reason"] = "missing_gpu_autoobject_runtime"
-		result["blocked_reason"] = "missing_gpu_autoobject_runtime"
-		result["resident_gpu_dirty_delta_update_pass_blocked_reason"] = "missing_gpu_autoobject_runtime"
+		result["reason"] = "missing_autoobject_gpu_state"
+		result["blocked_reason"] = "missing_autoobject_gpu_state"
+		result["resident_gpu_dirty_delta_update_pass_blocked_reason"] = "missing_autoobject_gpu_state"
 		return result
 	if _sv_committer == null:
 		result["reason"] = "missing_scene_voxel_committer"
@@ -1547,7 +1918,10 @@ func _free_cached_wrappers() -> void:
 	for asset_index in _cached_lightweight_wrappers:
 		var wrapper: AutoObject = _cached_lightweight_wrappers[asset_index]
 		if wrapper != null and not wrapper.is_queued_for_deletion():
-			wrapper.queue_free()
+			if wrapper.is_inside_tree():
+				wrapper.queue_free()
+			else:
+				wrapper.free()
 	_cached_lightweight_wrappers.clear()
 
 
@@ -1864,7 +2238,7 @@ static func _pipeline_error(reason: String) -> Dictionary:
 
 
 static func _ensure_float_array(arr: PackedFloat32Array, grid_size: Vector3i) -> PackedFloat32Array:
-	var expected := grid_size.x * grid_size.y * grid_size.z
+	var expected := CommonVoxelSpaceScript.voxel_count(grid_size)
 	if arr.size() >= expected:
 		return arr
 	var result := arr.duplicate()
@@ -1874,7 +2248,7 @@ static func _ensure_float_array(arr: PackedFloat32Array, grid_size: Vector3i) ->
 
 static func _expected_target_byte_count(sv: Dictionary) -> int:
 	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
-	return maxi(grid_size.x * grid_size.y * grid_size.z, 1) * 4
+	return maxi(CommonVoxelSpaceScript.voxel_count(grid_size), 1) * 4
 
 
 static func _prepacked_target_bytes(settings: Dictionary, key: String, expected_bytes: int) -> PackedByteArray:
@@ -1935,6 +2309,10 @@ func _resident_target_read_buffer_handoff_summary(
 		"target_color_rgba8_buffer_rid_valid": ok and _resident_target_color_rgba8_buffer.is_valid(),
 		"target_color_rgba8_byte_count": expected_bytes if ok else 0,
 		"target_color_rgba8_stride_bytes": 4 if ok else 0,
+		"target_field_buffer": _resident_target_color_rgba8_buffer if ok else RID(),
+		"resident_target_field_buffer": _resident_target_color_rgba8_buffer if ok else RID(),
+		"target_field_buffer_rid": "valid" if ok and _resident_target_color_rgba8_buffer.is_valid() else "none",
+		"target_field_buffer_rid_valid": ok and _resident_target_color_rgba8_buffer.is_valid(),
 		"target_field_byte_count": safe_target_field_byte_count if ok else 0,
 		"target_field_stride_bytes": 16 if ok else 0,
 		"target_field_format": "vec4" if ok else "none",

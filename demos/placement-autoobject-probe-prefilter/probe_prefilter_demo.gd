@@ -1,10 +1,12 @@
 @tool
-extends "res://demos/core_demo_contract_fixture.gd"
+extends "res://scripts/core_demo_contract_fixture.gd"
 
 # Probe prefilter demo: loads all geo meshes, generates semantic probes,
 # and displays them with visual markers for inspection.
 
 const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
+const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
+const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
 
 var _entries: Array[Dictionary] = []
 var _selected_idx := -1
@@ -62,18 +64,11 @@ func _setup_materials() -> void:
 
 
 func _setup_hud() -> void:
-	var hud := CanvasLayer.new()
-	hud.name = "HUD"
-	add_child(hud)
-	_hud_label = Label.new()
-	_hud_label.name = "Info"
-	_hud_label.position = Vector2(24, 24)
-	_hud_label.add_theme_font_size_override("font_size", 16)
-	hud.add_child(_hud_label)
+	_hud_label = CommonDemoUI.setup_hud_label(self)
 
 
 func _load_and_display() -> void:
-	_entries = _load_geo_meshes()
+	_entries = CommonDemoAssets.load_mesh_entries()
 	_entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return float(a.volume) < float(b.volume))
 
@@ -106,9 +101,7 @@ func _load_and_display() -> void:
 
 
 func _frame_camera(total_width: float) -> void:
-	var cam := get_viewport().get_camera_3d()
-	if cam == null:
-		cam = get_node_or_null("DemoSetup/FlyCamera") as Camera3D
+	var cam := CommonDemoUI.find_camera(self, "DemoSetup/FlyCamera", "", true, false)
 	if cam == null:
 		return
 	var cx := total_width * 0.5
@@ -207,42 +200,3 @@ func _unhandled_input(event: InputEvent) -> void:
 		_:
 			return
 	get_viewport().set_input_as_handled()
-
-
-static func _load_geo_meshes() -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
-	var dir := DirAccess.open("res://geo")
-	if dir == null:
-		push_warning("[ProbeDemo] Cannot open res://geo")
-		return result
-	dir.list_dir_begin()
-	var fname := dir.get_next()
-	while fname != "":
-		if not dir.current_is_dir() and fname.to_lower().ends_with(".fbx"):
-			var path := "res://geo/" + fname
-			var res = load(path)
-			if res is PackedScene:
-				var mesh := _extract_mesh_from_scene(res as PackedScene)
-				if mesh != null:
-					var aabb := mesh.get_aabb()
-					var vol := aabb.size.x * aabb.size.y * aabb.size.z
-					result.append({"name": fname.get_basename(), "mesh": mesh, "volume": vol})
-		fname = dir.get_next()
-	dir.list_dir_end()
-	return result
-
-
-static func _extract_mesh_from_scene(scene: PackedScene) -> Mesh:
-	var inst := scene.instantiate()
-	if inst == null:
-		return null
-	var mesh: Mesh = null
-	if inst is MeshInstance3D:
-		mesh = (inst as MeshInstance3D).mesh
-	else:
-		for child in inst.get_children():
-			if child is MeshInstance3D and (child as MeshInstance3D).mesh != null:
-				mesh = (child as MeshInstance3D).mesh
-				break
-	inst.queue_free()
-	return mesh

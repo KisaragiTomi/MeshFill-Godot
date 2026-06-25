@@ -15,6 +15,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 
 const SCORE_SUBTILE_SHADER := "res://shaders/score_object_subtile.glsl"
 const REDUCE_SHADER := "res://shaders/reduce_object_rotation_scores.glsl"
+const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 const SUBTILE_SIZE := 8
 const SAMPLE_GROUP_SIZE := SUBTILE_SIZE * SUBTILE_SIZE * SUBTILE_SIZE
@@ -97,7 +98,7 @@ func score_all_assets(
 	var anchor_buf := storage_buffer_from_bytes(anchor_data, SCOPE_FRAME, "anchors")
 
 	var grid: Vector3i = scene_fields.get("grid", Vector3i.ZERO)
-	var voxel_count := grid.x * grid.y * grid.z
+	var voxel_count := CommonVoxelSpaceScript.voxel_count(grid)
 	if voxel_count <= 0:
 		push_error("[%s] Empty scene grid" % log_name)
 		dispose()
@@ -253,7 +254,7 @@ func _score_push_constant(
 	push.encode_s32(0, grid.x)
 	push.encode_s32(4, grid.y)
 	push.encode_s32(8, grid.z)
-	push.encode_s32(12, grid.x * grid.y * grid.z)
+	push.encode_s32(12, CommonVoxelSpaceScript.voxel_count(grid))
 	push.encode_s32(16, variant_capacity)
 	push.encode_s32(20, sample_group_count)
 	push.encode_s32(24, ROTATION_SLOTS)
@@ -732,16 +733,8 @@ static func anchor_sample_bounds_info(
 	var span := max_voxel - min_voxel + Vector3i.ONE
 	var voxel_size: Vector3 = scene_fields.get("voxel_size", Vector3.ONE)
 	var origin: Vector3 = scene_fields.get("grid_origin", Vector3.ZERO)
-	var min_corner := origin + Vector3(
-		float(min_voxel.x) * voxel_size.x,
-		float(min_voxel.y) * voxel_size.y,
-		float(min_voxel.z) * voxel_size.z
-	)
-	var size := Vector3(
-		float(span.x) * voxel_size.x,
-		float(span.y) * voxel_size.y,
-		float(span.z) * voxel_size.z
-	)
+	var min_corner := CommonVoxelSpaceScript.voxel_to_world(min_voxel, origin, voxel_size)
+	var size := CommonVoxelSpaceScript.voxel_span_to_world_size(span, voxel_size)
 	return {
 		"bounds_kind": "score_footprint" if score_valid else "asset_footprint_no_score",
 		"asset_index": resolved_asset_index,
@@ -871,7 +864,7 @@ static func footprint_from_voxelizer_result(
 
 	var grid: Vector3i = result["grid"]
 	var voxels: Array = result["voxels"]
-	var voxel_count := grid.x * grid.y * grid.z
+	var voxel_count := CommonVoxelSpaceScript.voxel_count(grid)
 
 	var occ := PackedInt32Array()
 	occ.resize(voxel_count)
@@ -880,7 +873,7 @@ static func footprint_from_voxelizer_result(
 
 	for v in voxels:
 		var coord: Vector3i = v["voxel"]
-		var idx := coord.x + grid.x * (coord.z + grid.z * coord.y)
+		var idx := CommonVoxelSpaceScript.voxel_index(coord, grid)
 		if idx < 0 or idx >= voxel_count:
 			continue
 		occ[idx] = 1

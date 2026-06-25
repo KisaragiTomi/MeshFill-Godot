@@ -35,9 +35,6 @@ func _enforce_headless_scene_policy() -> void:
 	if _is_script_launch() and not _has_running_scene():
 		return
 
-	_reject_headless_scene_launch()
-
-func _reject_headless_scene_launch() -> void:
 	reject_scene_launch_if_headless(get_tree())
 
 func _is_script_launch() -> bool:

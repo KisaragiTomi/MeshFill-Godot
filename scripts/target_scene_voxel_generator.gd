@@ -52,23 +52,55 @@ static func _decode_target_stats(stats_bytes: PackedByteArray) -> Dictionary:
 	if stats_bytes.size() < TARGET_STATS_BYTE_SIZE:
 		return {
 			"max_completely": 0.0,
+			"max_occupancy": 0.0,
 			"max_collision": 0.0,
 			"active_voxel_count": 0,
 			"collision_voxel_count": 0,
 			"visual_voxel_count": 0,
 			"min_active_completely": 0.0,
+			"min_active_occupancy": 0.0,
 			"max_visual_complexity": 0.0,
 		}
 	var min_active_packed := stats_bytes.decode_u32(TARGET_STATS_MIN_ACTIVE_PACKED_OFFSET)
 	return {
 		"max_completely": float(stats_bytes.decode_u32(TARGET_STATS_MAX_COMPLETELY_OFFSET)) / TARGET_STATS_QUANT_SCALE,
+		"max_occupancy": float(stats_bytes.decode_u32(TARGET_STATS_MAX_COMPLETELY_OFFSET)) / TARGET_STATS_QUANT_SCALE,
 		"max_collision": float(stats_bytes.decode_u32(TARGET_STATS_MAX_COLLISION_OFFSET)) / TARGET_STATS_QUANT_SCALE,
 		"active_voxel_count": int(stats_bytes.decode_u32(TARGET_STATS_ACTIVE_COUNT_OFFSET)),
 		"collision_voxel_count": int(stats_bytes.decode_u32(TARGET_STATS_COLLISION_COUNT_OFFSET)),
 		"visual_voxel_count": int(stats_bytes.decode_u32(TARGET_STATS_VISUAL_COUNT_OFFSET)),
 		"min_active_completely": (TARGET_STATS_MIN_PACK_BASE - float(min_active_packed)) / TARGET_STATS_QUANT_SCALE if min_active_packed > 0 else 0.0,
+		"min_active_occupancy": (TARGET_STATS_MIN_PACK_BASE - float(min_active_packed)) / TARGET_STATS_QUANT_SCALE if min_active_packed > 0 else 0.0,
 		"max_visual_complexity": float(stats_bytes.decode_u32(TARGET_STATS_MAX_VISUAL_OFFSET)) / TARGET_STATS_QUANT_SCALE,
 	}
+
+
+static func _target_field_vec4_from_color_and_completely(
+	color_rgba32f_bytes: PackedByteArray,
+	completely_bytes: PackedByteArray,
+	voxel_count: int
+) -> PackedFloat32Array:
+	var safe_count := maxi(voxel_count, 0)
+	var field := PackedFloat32Array()
+	field.resize(safe_count * 4)
+	var color_values := PackedFloat32Array()
+	if color_rgba32f_bytes.size() >= safe_count * 16:
+		color_values = color_rgba32f_bytes.to_float32_array()
+	var completely_values := PackedFloat32Array()
+	if completely_bytes.size() >= safe_count * 4:
+		completely_values = completely_bytes.to_float32_array()
+	for i in range(safe_count):
+		var field_base := i * 4
+		var color_base := i * 4
+		if color_values.size() >= color_base + 4:
+			field[field_base + 0] = color_values[color_base + 0]
+			field[field_base + 1] = color_values[color_base + 1]
+			field[field_base + 2] = color_values[color_base + 2]
+		if completely_values.size() > i:
+			field[field_base + 3] = completely_values[i]
+		elif color_values.size() >= color_base + 4:
+			field[field_base + 3] = color_values[color_base + 3]
+	return field
 
 
 static func decode_target_read_buffers(
@@ -103,6 +135,7 @@ static func decode_target_read_buffers(
 			"expected_collision_bytes": expected_collision_bytes,
 			"actual_collision_bytes": collision_bytes.size(),
 			"target_completely": target_completely,
+			"target_field": target_completely,
 			"target_color": target_color,
 		}
 
@@ -165,13 +198,16 @@ static func decode_target_read_buffers(
 		"expected_collision_bytes": expected_collision_bytes,
 		"actual_collision_bytes": collision_bytes.size(),
 		"target_completely": target_completely,
+		"target_field": target_completely,
 		"target_color": target_color,
 		"max_completely": max_completely,
+		"max_occupancy": max_completely,
 		"max_collision": max_collision,
 		"active_voxel_count": active_voxel_count,
 		"collision_voxel_count": collision_voxel_count,
 		"visual_voxel_count": visual_voxel_count,
 		"min_active_completely": min_active_completely,
+		"min_active_occupancy": min_active_completely,
 		"max_visual_complexity": max_visual_complexity,
 		"target_completely_source": "gpu_target_completely_buffer" if completely_valid else "decoded_visual_collision",
 	}
@@ -214,11 +250,24 @@ static func decode_target_read_buffers_gpu(
 			"expected_collision_bytes": expected_collision_bytes,
 			"actual_collision_bytes": collision_bytes.size(),
 			"target_completely": target_completely,
+			"target_field": target_completely,
 			"target_color": target_color,
 		}
 
-	var generator := TargetSceneVoxelGenerator.new()
-	var packed := generator.derive_target_packed_buffers(
+	var generator_script := load("res://scripts/target_scene_voxel_generator.gd") as Script
+	if generator_script == null:
+		return {
+			"valid": false,
+			"ok": false,
+			"reason": "target_scene_voxel_generator_script_missing",
+			"gpu_first": true,
+			"cpu_fallback": false,
+			"target_completely": target_completely,
+			"target_field": target_completely,
+			"target_color": target_color,
+		}
+	var generator = generator_script.new()
+	var packed: Dictionary = generator.derive_target_packed_buffers(
 		visual_bytes,
 		collision_bytes,
 		tex_size,
@@ -230,6 +279,7 @@ static func decode_target_read_buffers_gpu(
 	if not bool(packed.get("ok", false)):
 		packed["valid"] = false
 		packed["target_completely"] = target_completely
+		packed["target_field"] = target_completely
 		packed["target_color"] = target_color
 		return packed
 
@@ -258,7 +308,10 @@ static func decode_target_read_buffers_gpu(
 	packed["partial"] = not (visual_valid and collision_valid)
 	packed["reason"] = "ok" if visual_valid and collision_valid else "target_buffer_partial"
 	packed["target_completely"] = target_completely
+	packed["target_field"] = target_completely
 	packed["target_color"] = target_color
+	packed["max_occupancy"] = packed.get("max_completely", 0.0)
+	packed["min_active_occupancy"] = packed.get("min_active_completely", 0.0)
 	packed["decode_source"] = "target_sv_pack_read_buffers_compute"
 	packed["target_color_decode_format"] = "rgba32f_storage_buffer"
 	packed["target_color_stride_bytes"] = 16
@@ -316,7 +369,9 @@ func derive_target_packed_buffers(
 			"voxel_count": voxel_count,
 		}
 
-	_load_pack_shader()
+	_shader_pack = load_compute_shader("res://shaders/target_sv_pack_read_buffers.glsl")
+	if _shader_pack.is_valid():
+		_pipeline_pack = create_compute_pipeline(_shader_pack)
 	if not _shader_pack.is_valid() or not _pipeline_pack.is_valid():
 		_free_gpu()
 		return {
@@ -406,6 +461,7 @@ func derive_target_packed_buffers(
 		packed_completely = _rd.buffer_get_data(completely_out_buffer, 0, expected_collision_bytes)
 		packed_color = _rd.buffer_get_data(color_rgba8_out_buffer, 0, voxel_count * 4)
 		decoded_color = _rd.buffer_get_data(color_rgba32f_out_buffer, 0, expected_visual_bytes)
+	var target_field_bytes := _target_field_vec4_from_color_and_completely(decoded_color, packed_completely, voxel_count) if readback_packed_buffers else PackedFloat32Array()
 	var stats_bytes := _rd.buffer_get_data(stats_out_buffer, 0, TARGET_STATS_BYTE_SIZE)
 	var stats := _decode_target_stats(stats_bytes)
 	_free_gpu()
@@ -434,14 +490,17 @@ func derive_target_packed_buffers(
 		"actual_collision_bytes": collision_bytes.size(),
 		"target_completely_source": "gpu_target_completely_buffer" if completely_valid else "gpu_derived_visual_collision",
 		"target_completely_bytes": packed_completely,
+		"target_field_bytes": target_field_bytes,
 		"target_color_rgba8_bytes": packed_color,
 		"target_color_rgba32f_bytes": decoded_color,
 		"max_completely": stats.get("max_completely", 0.0),
+		"max_occupancy": stats.get("max_occupancy", stats.get("max_completely", 0.0)),
 		"max_collision": stats.get("max_collision", 0.0),
 		"active_voxel_count": stats.get("active_voxel_count", 0),
 		"collision_voxel_count": stats.get("collision_voxel_count", 0),
 		"visual_voxel_count": stats.get("visual_voxel_count", 0),
 		"min_active_completely": stats.get("min_active_completely", 0.0),
+		"min_active_occupancy": stats.get("min_active_occupancy", stats.get("min_active_completely", 0.0)),
 		"max_visual_complexity": stats.get("max_visual_complexity", 0.0),
 		"target_stats_source": "target_sv_pack_read_buffers_compute",
 	}
@@ -465,6 +524,7 @@ func derive_target_stats(
 		false
 	)
 	stats.erase("target_completely_bytes")
+	stats.erase("target_field_bytes")
 	stats.erase("target_color_rgba8_bytes")
 	stats.erase("target_color_rgba32f_bytes")
 	stats["stats_only"] = true
@@ -490,12 +550,14 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	if not ensure_device(true, true):
 		return {}
 
-	_load_shader()
+	_shader = load_compute_shader("res://shaders/target_scene_voxel.glsl")
+	if _shader.is_valid():
+		_pipeline = create_compute_pipeline(_shader)
 	if not _shader.is_valid() or not _pipeline.is_valid():
 		_free_gpu()
 		return {}
 
-	_create_sampler()
+	_sampler = create_linear_sampler()
 	var rock_img := rock_mask_img
 	if rock_img == null:
 		rock_img = Image.create(texture_size, texture_size, false, Image.FORMAT_RGBAF)
@@ -564,6 +626,7 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	var collision_bytes := _rd.buffer_get_data(collision_buffer)
 	var completely_bytes := _rd.buffer_get_data(completely_buffer)
 	var color_rgba8_bytes := _rd.buffer_get_data(color_rgba8_buffer)
+	var target_field_bytes := _target_field_vec4_from_color_and_completely(visual_bytes, completely_bytes, voxel_count)
 	var stats_bytes := _rd.buffer_get_data(stats_buffer, 0, TARGET_STATS_BYTE_SIZE)
 	var preview_data := _rd.texture_get_data(preview_tex, 0)
 	var preview_img := Image.create_from_data(texture_size, texture_size, false, Image.FORMAT_RGBAH, preview_data)
@@ -586,33 +649,20 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 		"visual_bytes": visual_bytes,        # 源 visual buffer 字节
 		"collision_bytes": collision_bytes,  # 源 collision buffer 字节
 		"target_completely_bytes": completely_bytes,  # GPU 解码后的 max(complexity, collision)
+		"target_field_bytes": target_field_bytes,
 		"target_color_rgba8_bytes": color_rgba8_bytes, # GPU 打包后的 target_color
 		"max_completely": stats.get("max_completely", 0.0), # GPU stats: max target completely in dirty dispatch
+		"max_occupancy": stats.get("max_occupancy", stats.get("max_completely", 0.0)),
 		"max_collision": stats.get("max_collision", 0.0), # GPU stats: max target collision in dirty dispatch
 		"active_voxel_count": stats.get("active_voxel_count", 0), # GPU stats: completely > 0.001
 		"collision_voxel_count": stats.get("collision_voxel_count", 0), # GPU stats: collision > 0.001
 		"visual_voxel_count": stats.get("visual_voxel_count", 0), # GPU stats: complexity > 0.001
 		"min_active_completely": stats.get("min_active_completely", 0.0), # GPU stats: min completely above threshold
+		"min_active_occupancy": stats.get("min_active_occupancy", stats.get("min_active_completely", 0.0)),
 		"max_visual_complexity": stats.get("max_visual_complexity", 0.0), # GPU stats: max visual complexity
 		"target_stats_source": "target_scene_voxel_compute",
 		"preview_image": preview_img,        # TargetSV preview 图像
 	}
-
-
-func _load_shader() -> void:
-	_shader = load_compute_shader("res://shaders/target_scene_voxel.glsl")
-	if _shader.is_valid():
-		_pipeline = create_compute_pipeline(_shader)
-
-
-func _load_pack_shader() -> void:
-	_shader_pack = load_compute_shader("res://shaders/target_sv_pack_read_buffers.glsl")
-	if _shader_pack.is_valid():
-		_pipeline_pack = create_compute_pipeline(_shader_pack)
-
-
-func _create_sampler() -> void:
-	_sampler = create_linear_sampler()
 
 
 func _free_gpu() -> void:

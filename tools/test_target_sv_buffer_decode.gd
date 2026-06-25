@@ -2,8 +2,9 @@ extends SceneTree
 
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
-const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
-const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const CommonAutoVoxelFixture := preload("res://scripts/common_auto_voxel_fixture.gd")
+const CommonTargetSVBufferFixture := preload("res://scripts/common_targetsv_buffer_fixture.gd")
+const CommonTestUtils := preload("res://scripts/common_test_utils.gd")
 
 
 func _init() -> void:
@@ -12,6 +13,7 @@ func _init() -> void:
 	ok = ok and _test_decode_rejects_missing_buffers()
 	ok = ok and _test_vpg_accepts_prepacked_target_field()
 	ok = ok and _test_vpg_accepts_prepacked_target_color_rgba8()
+	ok = ok and _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads()
 	ok = ok and _test_scene_placement_actor_prefers_prepacked_target_bytes()
 	ok = ok and _test_scene_placement_actor_keeps_brush_sv_control_metadata_only()
 	ok = ok and _test_scene_placement_actor_exposes_mesh_descriptions()
@@ -88,27 +90,12 @@ func _test_scene_placement_actor_exposes_mesh_descriptions() -> bool:
 	var source_mesh := SphereMesh.new()
 	source_mesh.radius = 0.5
 	source_mesh.height = 1.0
-	var descriptor: AssetDescriptor = AssetDescriptorScript.new()
-	descriptor.asset_id = "mesh_description_test"
-	descriptor.object_type = "vegetation"
-	descriptor.object_subtype = "leaf"
-	descriptor.mesh = mesh
-	descriptor.source_mesh = source_mesh
-	descriptor.source_mesh_path = "res://geo/source_leaf.FBX"
-	descriptor.set_color_and_complexity(Color(0.2, 0.7, 0.3, 1.0), 0.6)
-	descriptor.set_collision([])
-	descriptor.set_pivot_variants([{
-		"name": "root",
-		"offset": Vector3.ZERO,
-		"score_bias": 0.0,
-	}])
-	descriptor.set_semantic_probes([SemanticProbeProfileScript.make_probe(
-		Vector3.ZERO,
-		Color(0.2, 0.7, 0.3, 0.6),
-		0.5,
-		1.0, 0.0, 0.0,
-		"manual"
-	)])
+	var descriptor := CommonAutoVoxelFixture.make_mesh_description_descriptor(
+		"mesh_description_test",
+		mesh,
+		source_mesh,
+		"res://geo/source_leaf.FBX"
+	)
 
 	var profile_id := actor.register_asset(descriptor)
 	if profile_id < 0:
@@ -225,24 +212,13 @@ func _test_scene_placement_actor_exposes_mesh_descriptions() -> bool:
 
 func _test_decode_target_read_buffers() -> bool:
 	print("[TargetSVBufferDecode] test_decode_target_read_buffers...")
-	var tex_size := 2
-	var slice_count := 2
-	var voxel_count := tex_size * tex_size * slice_count
-	var visual := PackedByteArray()
-	var collision := PackedByteArray()
-	visual.resize(voxel_count * 16)
-	collision.resize(voxel_count * 4)
-
-	for i in range(voxel_count):
-		var base := i * 16
-		visual.encode_float(base + 0, float(i) / 10.0)
-		visual.encode_float(base + 4, float(i + 1) / 10.0)
-		visual.encode_float(base + 8, float(i + 2) / 10.0)
-		visual.encode_float(base + 12, 0.25)
-		collision.encode_float(i * 4, 0.1)
-
-	var strong_collision_idx := 5
-	collision.encode_float(strong_collision_idx * 4, 0.8)
+	var fixture := CommonTargetSVBufferFixture.make_linear_read_buffers()
+	var tex_size: int = fixture.get("tex_size", 0)
+	var slice_count: int = fixture.get("slice_count", 0)
+	var voxel_count: int = fixture.get("voxel_count", 0)
+	var visual: PackedByteArray = fixture.get("visual", PackedByteArray())
+	var collision: PackedByteArray = fixture.get("collision", PackedByteArray())
+	var strong_collision_idx: int = fixture.get("strong_collision_idx", -1)
 
 	var decoded := TargetSceneVoxelGenerator.decode_target_read_buffers(visual, collision, tex_size, slice_count)
 	if not bool(decoded.get("valid", false)):
@@ -317,27 +293,17 @@ func _test_decode_target_read_buffers() -> bool:
 
 func _test_decode_target_read_buffers_gpu_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_decode_target_read_buffers_gpu_or_skip...")
-	var rd := RenderingServer.create_local_rendering_device()
-	if rd == null:
+	if not CommonTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU TargetSV read-buffer decode")
 		return true
-	rd.free()
 
-	var tex_size := 2
-	var slice_count := 2
-	var voxel_count := tex_size * tex_size * slice_count
-	var visual := PackedByteArray()
-	var collision := PackedByteArray()
-	visual.resize(voxel_count * 16)
-	collision.resize(voxel_count * 4)
-	for i in range(voxel_count):
-		var base := i * 16
-		visual.encode_float(base + 0, float(i) / 10.0)
-		visual.encode_float(base + 4, float(i + 1) / 10.0)
-		visual.encode_float(base + 8, float(i + 2) / 10.0)
-		visual.encode_float(base + 12, 0.25)
-		collision.encode_float(i * 4, 0.1)
-	collision.encode_float(5 * 4, 0.8)
+	var fixture := CommonTargetSVBufferFixture.make_linear_read_buffers()
+	var tex_size: int = fixture.get("tex_size", 0)
+	var slice_count: int = fixture.get("slice_count", 0)
+	var voxel_count: int = fixture.get("voxel_count", 0)
+	var visual: PackedByteArray = fixture.get("visual", PackedByteArray())
+	var collision: PackedByteArray = fixture.get("collision", PackedByteArray())
+	var strong_collision_idx: int = fixture.get("strong_collision_idx", -1)
 
 	var decoded := TargetSceneVoxelGenerator.decode_target_read_buffers_gpu(
 		visual,
@@ -364,10 +330,10 @@ func _test_decode_target_read_buffers_gpu_or_skip() -> bool:
 	if target_field.size() != voxel_count or target_color.size() != voxel_count:
 		push_error("  FAIL: GPU decoded arrays have wrong size")
 		return false
-	if absf(target_field[5] - 0.8) > 0.001:
+	if absf(target_field[strong_collision_idx] - 0.8) > 0.001:
 		push_error("  FAIL: GPU decoded target field should include collision intent")
 		return false
-	var color: Color = target_color[5]
+	var color: Color = target_color[strong_collision_idx]
 	if absf(color.r - 0.5) > 0.001 \
 			or absf(color.g - 0.6) > 0.001 \
 			or absf(color.b - 0.7) > 0.001 \
@@ -496,29 +462,114 @@ func _test_vpg_accepts_prepacked_target_field() -> bool:
 	return true
 
 
+func _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads() -> bool:
+	print("[TargetSVBufferDecode] test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads...")
+	if not CommonTestUtils.has_rendering_device():
+		print("  SKIP: no RenderingDevice available for VPG TargetSV read-buffer borrowing")
+		return true
+
+	var grid_size := Vector3i(2, 2, 2)
+	var voxel_count := grid_size.x * grid_size.y * grid_size.z
+	var color_bytes := PackedByteArray()
+	color_bytes.resize(voxel_count * 4)
+	for i in range(voxel_count):
+		color_bytes.encode_u32(i * 4, VoxelPlacementGeneratorScript._pack_color_rgba8(Color(0.1, 0.2, 0.3, 0.4)))
+
+	var actor := ScenePlacementActorScript.new()
+	var target_buffers := actor.prepare_target_read_buffers_from_common_gpu({
+		"target_color_rgba8_bytes": color_bytes,
+	}, {"grid_size": grid_size})
+	if not bool(target_buffers.get("ok", false)):
+		actor.dispose(true)
+		push_error("  FAIL: resident TargetSV producer should be ready: %s" % str(target_buffers))
+		return false
+
+	var generator := VoxelPlacementGeneratorScript.new()
+	if not generator.attach_rendering_device(actor.get_rendering_device(), false):
+		generator.dispose()
+		actor.dispose(true)
+		push_error("  FAIL: VPG should attach actor RenderingDevice for same-RD borrow")
+		return false
+	var borrowed: Dictionary = generator._target_read_buffer_pack(target_buffers, voxel_count)
+	if not bool(borrowed.get("target_read_buffers_borrowed", false)) \
+			or str(borrowed.get("target_read_buffer_source", "")) != "borrowed_scene_placement_actor_resident" \
+			or str(borrowed.get("target_read_buffer_ownership", "")) != "borrowed_external" \
+			or bool(borrowed.get("target_field_bytes_uploaded", true)) \
+			or bool(borrowed.get("cpu_fallback", true)):
+		generator.dispose()
+		actor.dispose(true)
+		push_error("  FAIL: same-RD resident target_field should be borrowed without upload/fallback: %s" % str(borrowed))
+		return false
+	var borrowed_summary := generator._target_read_buffer_summary(borrowed)
+	if str(borrowed_summary.get("owner", "")) != "ScenePlacementActor" \
+			or str(borrowed_summary.get("target_field_buffer_rid", "")) != "valid" \
+			or int(borrowed_summary.get("target_field_byte_count", 0)) != voxel_count * 16:
+		generator.dispose()
+		actor.dispose(true)
+		push_error("  FAIL: borrowed VPG diagnostics should expose field owner/RID/byte count: %s" % str(borrowed_summary))
+		return false
+	generator.dispose()
+
+	var upload_field := PackedFloat32Array()
+	upload_field.resize(voxel_count * 4)
+	for i in range(voxel_count):
+		upload_field[i * 4 + 0] = 0.25
+		upload_field[i * 4 + 1] = 0.5
+		upload_field[i * 4 + 2] = 0.75
+		upload_field[i * 4 + 3] = 0.125 + float(i) * 0.01
+
+	var mismatch_generator := VoxelPlacementGeneratorScript.new()
+	if not mismatch_generator.ensure_device(true, false):
+		mismatch_generator.dispose()
+		actor.dispose(true)
+		print("  SKIP: no second local RenderingDevice available for mismatch upload branch")
+		return true
+	var uploaded: Dictionary = mismatch_generator._target_read_buffer_pack({
+		"target_read_buffers": target_buffers,
+		"target_field_bytes": upload_field,
+	}, voxel_count)
+	if bool(uploaded.get("target_read_buffers_borrowed", true)) \
+			or not bool(uploaded.get("target_read_buffers_uploaded", false)) \
+			or not bool(uploaded.get("target_field_bytes_uploaded", false)) \
+			or str(uploaded.get("target_read_buffer_source", "")) != "uploaded_target_field_bytes" \
+			or str(uploaded.get("source_reason", "")) != "resident_target_read_buffer_rendering_device_mismatch" \
+			or bool(uploaded.get("cpu_fallback", true)):
+		mismatch_generator.dispose()
+		actor.dispose(true)
+		push_error("  FAIL: RD mismatch should upload explicit vec4 target_field bytes: %s" % str(uploaded))
+		return false
+	var blocked: Dictionary = mismatch_generator._target_read_buffer_pack({
+		"target_read_buffers": target_buffers,
+	}, voxel_count)
+	if bool(blocked.get("ready", true)) \
+			or not bool(blocked.get("contract_blocked", false)) \
+			or str(blocked.get("reason", "")) != "resident_target_read_buffer_rendering_device_mismatch_no_debug_or_legacy_bytes" \
+			or bool(blocked.get("target_read_buffers_uploaded", true)) \
+			or bool(blocked.get("cpu_fallback", true)):
+		mismatch_generator.dispose()
+		actor.dispose(true)
+		push_error("  FAIL: RD mismatch without explicit field/color bytes should block: %s" % str(blocked))
+		return false
+	mismatch_generator.dispose()
+	actor.dispose(true)
+
+	print("  OK: VPG borrows SPA resident target_field and only uploads explicit field bytes on RD mismatch")
+	return true
+
+
 func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_gpu_derive_target_packed_buffers_or_skip...")
-	var rd := RenderingServer.create_local_rendering_device()
-	if rd == null:
+	if not CommonTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU TargetSV read-buffer pack")
 		return true
-	rd.free()
 
-	var tex_size := 2
-	var slice_count := 2
-	var voxel_count := tex_size * tex_size * slice_count
-	var visual := PackedByteArray()
-	var collision := PackedByteArray()
-	visual.resize(voxel_count * 16)
-	collision.resize(voxel_count * 4)
-	for i in range(voxel_count):
-		var base := i * 16
-		visual.encode_float(base + 0, float(i) / 10.0)
-		visual.encode_float(base + 4, float(i + 1) / 10.0)
-		visual.encode_float(base + 8, float(i + 2) / 10.0)
-		visual.encode_float(base + 12, 0.25)
-		collision.encode_float(i * 4, 0.1)
-	collision.encode_float(5 * 4, 0.8)
+	var fixture := CommonTargetSVBufferFixture.make_linear_read_buffers()
+	var tex_size: int = fixture.get("tex_size", 0)
+	var slice_count: int = fixture.get("slice_count", 0)
+	var voxel_count: int = fixture.get("voxel_count", 0)
+	var visual: PackedByteArray = fixture.get("visual", PackedByteArray())
+	var collision: PackedByteArray = fixture.get("collision", PackedByteArray())
+	var strong_collision_idx: int = fixture.get("strong_collision_idx", -1)
 
 	var generator := TargetSceneVoxelGenerator.new()
 	var packed := generator.derive_target_packed_buffers(visual, collision, tex_size, slice_count)
@@ -534,7 +585,7 @@ func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 		push_error("  FAIL: GPU packed buffer sizes mismatch")
 		return false
 	var field_values := field_bytes
-	if absf(field_values[5 * 4 + 3] - 0.8) > 0.001:
+	if absf(field_values[strong_collision_idx * 4 + 3] - 0.8) > 0.001:
 		push_error("  FAIL: GPU packed target field alpha should include collision intent")
 		return false
 	if absf(float(packed.get("max_occupancy", 0.0)) - 0.8) > 0.001:
@@ -576,11 +627,11 @@ func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 	var expected_color_bytes := PackedByteArray()
 	expected_color_bytes.resize(4)
 	expected_color_bytes.encode_u32(0, expected_rgba8)
-	if color_rgba8_bytes.slice(5 * 4, 6 * 4) != expected_color_bytes:
+	if color_rgba8_bytes.slice(strong_collision_idx * 4, (strong_collision_idx + 1) * 4) != expected_color_bytes:
 		push_error("  FAIL: GPU packed RGBA8 mismatch at strong collision voxel")
 		return false
 	var color_rgba32f_values := color_rgba32f_bytes.to_float32_array()
-	var color_base := 5 * 4
+	var color_base := strong_collision_idx * 4
 	if absf(color_rgba32f_values[color_base + 0] - 0.5) > 0.001 \
 			or absf(color_rgba32f_values[color_base + 1] - 0.6) > 0.001 \
 			or absf(color_rgba32f_values[color_base + 2] - 0.7) > 0.001 \
@@ -594,11 +645,9 @@ func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 
 func _test_gpu_derive_target_stats_only_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_gpu_derive_target_stats_only_or_skip...")
-	var rd := RenderingServer.create_local_rendering_device()
-	if rd == null:
+	if not CommonTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU TargetSV stats-only pack")
 		return true
-	rd.free()
 
 	var tex_size := 2
 	var slice_count := 2
@@ -669,11 +718,9 @@ func _test_gpu_derive_target_stats_only_or_skip() -> bool:
 
 func _test_gpu_generated_occupancy_buffer_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_gpu_generated_occupancy_buffer_or_skip...")
-	var rd := RenderingServer.create_local_rendering_device()
-	if rd == null:
+	if not CommonTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only TargetSV occupancy buffer")
 		return true
-	rd.free()
 
 	var tex_size := 4
 	var scene_depth := Image.create(tex_size, tex_size, false, Image.FORMAT_RGBAF)

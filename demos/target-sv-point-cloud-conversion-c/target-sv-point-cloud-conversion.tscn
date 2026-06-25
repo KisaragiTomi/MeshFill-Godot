@@ -1,16 +1,10 @@
 [gd_scene load_steps=3 format=3]
 
-[ext_resource type="Script" path="res://demos/target-sv-point-cloud-conversion-c/targetsv_brush_overlay_demo.gd" id="1_demo"]
+[ext_resource type="Script" path="res://scripts/meshfill_brush.gd" id="1_brush"]
 [ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
 
-[node name="TargetSVBrushOverlayDemo" type="Node3D"]
-script = ExtResource("1_demo")
-metadata/source_doc = "res://demos/target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md"
-metadata/source_docs = "res://demos/target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md;res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.md"
-metadata/test_doc = "res://demos/target-sv-point-cloud-conversion-c/targetsv-brush-overlay.md"
-metadata/focus = "Unified TargetSV demo: point-cloud guidance field (GPU box voxels via VoxelDisplay) + mouse-painted brush voxels (tetrahedra GPU compute). Brush instance transforms/colors are produced on the GPU (Vulkan RenderingDevice storage buffer compute) and uploaded once via multimesh_set_buffer; without RD the GPU upload SKIPs, no CPU fallback."
-metadata/gpu_required = true
-metadata/gpu_subitems = "gpu_upload;gpu_readback"
-metadata/cpu_fallback = false
+[node name="MeshFillBrushDemo" type="Node3D"]
+script = ExtResource("1_brush")
+guidance_visible = true
 
 [node name="DemoSetup" type="Node3D" parent="." instance=ExtResource("99_setup")]

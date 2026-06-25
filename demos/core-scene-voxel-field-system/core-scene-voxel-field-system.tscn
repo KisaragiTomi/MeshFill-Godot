@@ -1,6 +1,6 @@
 [gd_scene load_steps=3 format=3]
 
-[ext_resource type="Script" path="res://demos/core_demo_contract_fixture.gd" id="1_contract"]
+[ext_resource type="Script" path="res://scripts/core_demo_contract_fixture.gd" id="1_contract"]
 [ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
 
 [node name="CoreSceneVoxelFieldSystemDemo" type="Node3D" unique_id=1323643404]
@@ -8,7 +8,7 @@ script = ExtResource("1_contract")
 
 [node name="DemoSetup" type="Node3D" parent="." unique_id=1931050223 instance=ExtResource("99_setup")]
 metadata/source_doc = "res://demos/core-scene-voxel-field-system/scene-voxel-field-system.md"
-metadata/test_doc = "res://demos/core-scene-voxel-field-system/core-scene-voxel-field-system.md"
+metadata/test_doc = "res://demos/core-scene-voxel-field-system/scene-voxel-field-system.md"
 metadata/focus = "SceneVoxel source write, commit payload, collision, and SV resident fields"
 
 [node name="Title" type="Label3D" parent="." unique_id=2112915620]

@@ -1,6 +1,8 @@
 class_name AutoAssetFactory
 extends RefCounted
 
+const AutoObject := preload("res://scripts/auto_object.gd")
+const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const SUPPORTED_VEGETATION_MESH_CREATE_METHODS := [
 	"create_sample_autoobject_mesh",

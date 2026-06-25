@@ -1,5 +1,5 @@
 @tool
-extends "res://demos/core_demo_contract_fixture.gd"
+extends "res://scripts/core_demo_contract_fixture.gd"
 
 # Anchor collection demo: cached TargetSV + terrain height → GPU prefilter.
 #
@@ -7,11 +7,17 @@ extends "res://demos/core_demo_contract_fixture.gd"
 # VoxelDisplay.build_field_gpu for TargetSV rendering (same pipeline as
 # target-sv-point-cloud-conversion-c demo).
 
-const Prefilter := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
 const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
 const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const TargetSceneVoxelGeneratorScript := preload("res://scripts/target_scene_voxel_generator.gd")
 const VoxelFieldDisplayGPU := preload("res://scripts/voxel_field_display_gpu.gd")
+const AutoObject := preload("res://scripts/auto_object.gd")
+const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
+const VoxelDisplay := preload("res://scripts/voxel_display.gd")
+const CommonBufferUtils := preload("res://scripts/common_buffer_utils.gd")
+const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
+const CommonSceneVoxelFixture := preload("res://scripts/common_scene_voxel_fixture.gd")
+const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 const TILE_SIZE := 8
 
@@ -45,6 +51,7 @@ var _terrain_height := PackedFloat32Array()
 var _gpu_field_cache: Dictionary = {}
 var _targetsv_node: MultiMeshInstance3D
 var _assets: Array = []
+var _spa: Object
 var _anchor_set := {}
 var _anchor_count := 0
 var _collected := false
@@ -80,7 +87,7 @@ func _deferred_init() -> void:
 
 
 func _frame_camera() -> void:
-	var cam := get_node_or_null("DemoSetup/FlyCamera") as Camera3D
+	var cam := CommonDemoUI.find_camera(self, "DemoSetup/FlyCamera", "", false, false)
 	if cam == null:
 		return
 	var cx := _grid_origin.x + float(_grid.x) * _voxel_size.x * 0.5
@@ -106,6 +113,9 @@ func _avg_terrain_height() -> float:
 
 
 func _exit_tree() -> void:
+	if _spa != null:
+		_spa.dispose(false)
+		_spa = null
 	for asset in _assets:
 		if is_instance_valid(asset):
 			asset.free()
@@ -125,15 +135,15 @@ func _build_fields_from_terrain() -> void:
 	var slice_count := int(meta.get("slice_count", 16))
 	var capture_size := float(meta.get("capture_size", 1020.0))
 	var vertical_span := float(meta.get("vertical_span", 32.0))
-	var voxel_count := texture_size * slice_count * texture_size
 
 	_grid = Vector3i(texture_size, slice_count, texture_size)
-	_voxel_size = Vector3(
-		capture_size / maxf(float(texture_size), 1.0),
-		vertical_span / maxf(float(slice_count), 1.0),
-		capture_size / maxf(float(texture_size), 1.0)
+	var voxel_count := CommonVoxelSpaceScript.voxel_count(_grid)
+	_voxel_size = CommonVoxelSpaceScript.voxel_size_for_resolution(
+		capture_size,
+		texture_size,
+		vertical_span / maxf(float(slice_count), 1.0)
 	)
-	_grid_origin = Vector3(-capture_size * 0.5, 0.0, -capture_size * 0.5)
+	_grid_origin = CommonVoxelSpaceScript.default_grid_origin(capture_size)
 
 	var visual_raw := TargetSVLoaderScript.visual_bytes()
 	var collision_raw := TargetSVLoaderScript.collision_bytes()
@@ -141,16 +151,16 @@ func _build_fields_from_terrain() -> void:
 		push_error("[SVAnchorDemo] TargetSVLoader visual_bytes empty")
 		return
 
-	_target_field = _extract_float_field(visual_raw, voxel_count * 4, 4)
+	_target_field = CommonBufferUtils.decode_float_buffer(visual_raw, voxel_count * 4)
 
-	var raw_collision := _extract_float_field(collision_raw, voxel_count, 4)
+	var raw_collision := CommonBufferUtils.decode_float_buffer(collision_raw, voxel_count)
 	_complexity_field = PackedFloat32Array()
 	_complexity_field.resize(voxel_count)
 	_collision_field = PackedFloat32Array()
 	_collision_field.resize(voxel_count)
 	for z in range(texture_size):
 		for x in range(texture_size):
-			var idx := x + texture_size * (z + texture_size * 0)
+			var idx := CommonVoxelSpaceScript.voxel_index(Vector3i(x, 0, z), _grid)
 			_complexity_field[idx] = 1.0
 			_collision_field[idx] = raw_collision[idx] if idx < raw_collision.size() else 1.0
 
@@ -188,47 +198,12 @@ func _build_fields_from_terrain() -> void:
 		str(_grid), voxel_count, int(meta.get("non_empty_voxel_count", 0))])
 
 
-static func _extract_float_field(raw: PackedByteArray, float_count: int, bytes_per_float: int) -> PackedFloat32Array:
-	var needed := float_count * bytes_per_float
-	if raw.size() >= needed:
-		return raw.slice(0, needed).to_float32_array()
-	var field := PackedFloat32Array()
-	field.resize(float_count)
-	return field
-
-
 func _voxel_index(p: Vector3i) -> int:
-	return p.x + _grid.x * (p.z + _grid.z * p.y)
+	return CommonVoxelSpaceScript.voxel_index(p, _grid)
 
 
 func _voxel_count() -> int:
-	return _grid.x * _grid.y * _grid.z
-
-
-func _make_sv() -> Dictionary:
-	var tile_grid := Vector3i(
-		ceili(float(_grid.x) / float(TILE_SIZE)),
-		ceili(float(_grid.y) / float(TILE_SIZE)),
-		ceili(float(_grid.z) / float(TILE_SIZE))
-	)
-	return {
-		"type": "SV",
-		"grid_size": _grid,
-		"voxel_size": _voxel_size,
-		"grid_origin": _grid_origin,
-		"complexity_field": _complexity_field,
-		"collision_field": _collision_field,
-		"tile_grid_size": tile_grid,
-		"total_tiles": tile_grid.x * tile_grid.y * tile_grid.z,
-		"dirty_tiles": {},
-	}
-
-
-func _all_tile_ids(sv: Dictionary) -> Array[int]:
-	var ids: Array[int] = []
-	for i in range(int(sv.get("total_tiles", 0))):
-		ids.append(i)
-	return ids
+	return CommonVoxelSpaceScript.voxel_count(_grid)
 
 
 # --- Assets ----------------------------------------------------------------
@@ -259,6 +234,22 @@ func _build_assets() -> void:
 	_assets = [a0, a1, a2, a3]
 
 
+func _sync_assets_with_spa() -> bool:
+	if RenderingServer.get_rendering_device() == null:
+		_last_reason = "missing_rendering_device"
+		return false
+	if _spa == null:
+		_spa = ScenePlacementActorScript.new()
+	if not _spa.is_initialized():
+		if not _spa.initialize(true, true):
+			_last_reason = "spa_initialize_failed"
+			return false
+	if not _spa.replace_all_autoobject_assets(_assets):
+		_last_reason = "spa_asset_registration_failed"
+		return false
+	return true
+
+
 # --- GPU collection --------------------------------------------------------
 
 func _run_collection() -> void:
@@ -275,17 +266,31 @@ func _run_collection() -> void:
 	if RenderingServer.get_rendering_device() == null:
 		_last_reason = "missing_rendering_device"
 		return
+	if not _sync_assets_with_spa():
+		return
 
-	var sv := _make_sv()
-	var prefilter := Prefilter.new()
-	prefilter.max_complexity_field = max_complexity_field
-	prefilter.max_collision_field = max_collision_field
-	prefilter.min_support = min_support
-	prefilter.min_target_interest = min_target_interest
-	prefilter.min_prefilter_score = 0.0
-
-	var result: Dictionary = prefilter.run_probe_prefilter(
-		sv, _assets, _all_tile_ids(sv), null, _target_field, {"debug_readback_topk": true})
+	var sv := CommonSceneVoxelFixture.make_sv(
+		_grid,
+		_voxel_size,
+		_grid_origin,
+		_complexity_field,
+		_collision_field,
+		TILE_SIZE
+	)
+	var result: Dictionary = _spa.run_autoobject_prefilter(
+		sv,
+		[],
+		_target_field,
+		{"debug_readback_topk": true},
+		RID(),
+		{
+			"max_complexity_field": max_complexity_field,
+			"max_collision_field": max_collision_field,
+			"min_support": min_support,
+			"min_target_interest": min_target_interest,
+			"min_prefilter_score": 0.0,
+		}
+	)
 	_last_reason = str(result.get("prefilter_reason", result.get("reason", "")))
 	var anchors: Array = result.get("anchors", [])
 	for anchor in anchors:
@@ -297,7 +302,6 @@ func _run_collection() -> void:
 	_topk_data = result.get("anchor_autoobject_topk", {})
 	_anchor_count = _anchor_set.size()
 	_collected = true
-	prefilter.dispose()
 	print("[SVAnchorDemo] Collected %d anchors, topk entries=%d (reason=%s)" % [
 		_anchor_count, _topk_data.size(), _last_reason])
 
@@ -311,7 +315,7 @@ func _setup_visualization() -> void:
 
 
 func _world_center(p: Vector3i) -> Vector3:
-	var base := _grid_origin + (Vector3(p) + Vector3.ONE * 0.5) * _voxel_size
+	var base := CommonVoxelSpaceScript.voxel_center_to_world(p, _grid_origin, _voxel_size)
 	var hi := p.z * _grid.x + p.x
 	if hi >= 0 and hi < _terrain_height.size():
 		base.y += _terrain_height[hi]
@@ -452,14 +456,7 @@ func _iterate_grid_sampled(callback: Callable) -> void:
 # --- HUD & input -----------------------------------------------------------
 
 func _setup_hud() -> void:
-	var hud := CanvasLayer.new()
-	hud.name = "HUD"
-	add_child(hud)
-	_hud_label = Label.new()
-	_hud_label.name = "Info"
-	_hud_label.position = Vector2(24, 24)
-	_hud_label.add_theme_font_size_override("font_size", 16)
-	hud.add_child(_hud_label)
+	_hud_label = CommonDemoUI.setup_hud_label(self)
 
 
 func _update_hud() -> void:
@@ -577,7 +574,7 @@ func _try_pick_anchor(screen_pos: Vector2) -> void:
 		var vp: Vector3i = anchor.get("voxel_pos", Vector3i(-1, -1, -1))
 		var center := _world_center(vp)
 		var aabb := AABB(center - half, _voxel_size)
-		var hit := _ray_intersects_aabb(ray_origin, ray_dir, aabb)
+		var hit := AutoObject.ray_intersects_aabb(ray_origin, ray_dir, aabb)
 		if hit >= 0.0 and hit < best_dist:
 			best_dist = hit
 			best_id = int(anchor.get("id", i))
@@ -590,26 +587,6 @@ func _try_pick_anchor(screen_pos: Vector2) -> void:
 		_selected_anchor_id = -1
 		_selected_anchor_pos = Vector3i(-1, -1, -1)
 		_update_hud()
-
-
-static func _ray_intersects_aabb(origin: Vector3, dir: Vector3, aabb: AABB) -> float:
-	var t_min := -INF
-	var t_max := INF
-	for axis in range(3):
-		if absf(dir[axis]) < 1e-8:
-			if origin[axis] < aabb.position[axis] or origin[axis] > aabb.end[axis]:
-				return -1.0
-		else:
-			var inv := 1.0 / dir[axis]
-			var t1 := (aabb.position[axis] - origin[axis]) * inv
-			var t2 := (aabb.end[axis] - origin[axis]) * inv
-			if t1 > t2:
-				var tmp := t1; t1 = t2; t2 = tmp
-			t_min = maxf(t_min, t1)
-			t_max = minf(t_max, t2)
-			if t_min > t_max:
-				return -1.0
-	return t_min if t_min >= 0.0 else -1.0
 
 
 func _rerun() -> void:

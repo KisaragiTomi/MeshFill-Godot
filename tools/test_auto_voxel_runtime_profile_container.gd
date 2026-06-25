@@ -1,9 +1,7 @@
 extends SceneTree
 
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
-const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
-const AutoVoxelProfileScript := preload("res://scripts/auto_voxel_profile.gd")
-const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const CommonAutoVoxelFixture := preload("res://scripts/common_auto_voxel_fixture.gd")
 
 
 func _init() -> void:
@@ -28,7 +26,7 @@ func _init() -> void:
 
 func _test_descriptor_registration_stages_profile_data() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_descriptor_registration_stages_profile_data...")
-	var descriptor := _make_descriptor()
+	var descriptor := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
 	var container = RuntimeProfileContainerScript.new()
 	var profile_id: int = container.register_descriptor(descriptor, 0.25)
 	if profile_id <= 0:
@@ -93,7 +91,7 @@ func _test_descriptor_registration_stages_profile_data() -> bool:
 
 func _test_gpu_upload_readback_or_skip() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_gpu_upload_readback_or_skip...")
-	var descriptor := _make_descriptor()
+	var descriptor := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
 	var container = RuntimeProfileContainerScript.new()
 	var profile_id: int = container.register_descriptor(descriptor, 0.25)
 	if profile_id <= 0:
@@ -204,15 +202,15 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 		container.dispose(true)
 		push_error("  FAIL: GPU profile table collision range should be 0/0 for empty collision")
 		return false
-	if not _approx(profile_values[8], 0.2, 0.001) or not _approx(profile_values[11], 0.5, 0.001):
+	if not (absf(profile_values[8] - 0.2) <= 0.001) or not (absf(profile_values[11] - 0.5) <= 0.001):
 		container.dispose(true)
 		push_error("  FAIL: GPU profile table color/complexity readback mismatch")
 		return false
-	if not _approx(probe_values[0], 0.25, 0.001) or not _approx(probe_values[5], 0.3, 0.001):
+	if not (absf(probe_values[0] - 0.25) <= 0.001) or not (absf(probe_values[5] - 0.3) <= 0.001):
 		container.dispose(true)
 		push_error("  FAIL: GPU probe record readback mismatch")
 		return false
-	if not _approx(pivot_values[1], -0.25, 0.001) or not _approx(pivot_values[3], 0.1, 0.001):
+	if not (absf(pivot_values[1] - -0.25) <= 0.001) or not (absf(pivot_values[3] - 0.1) <= 0.001):
 		container.dispose(true)
 		push_error("  FAIL: GPU pivot record readback mismatch")
 		return false
@@ -303,10 +301,10 @@ func _test_readback_byte_count_validation_contract() -> bool:
 func _test_equivalent_descriptors_reuse_profile_id() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_equivalent_descriptors_reuse_profile_id...")
 	var container = RuntimeProfileContainerScript.new()
-	var descriptor_a := _make_descriptor()
+	var descriptor_a := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
 	descriptor_a.asset_id = "asset_a"
 	descriptor_a.object_type = "vegetation"
-	var descriptor_b := _make_descriptor()
+	var descriptor_b := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
 	descriptor_b.asset_id = "asset_b"
 	descriptor_b.object_type = "rock"
 
@@ -324,8 +322,8 @@ func _test_equivalent_descriptors_reuse_profile_id() -> bool:
 
 func _test_profile_registration_is_stable() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_profile_registration_is_stable...")
-	var profile_a := _make_profile()
-	var profile_b := _make_profile()
+	var profile_a := CommonAutoVoxelFixture.make_runtime_profile()
+	var profile_b := CommonAutoVoxelFixture.make_runtime_profile()
 	var container_a = RuntimeProfileContainerScript.new()
 	var container_b = RuntimeProfileContainerScript.new()
 	var id_a: int = container_a.register_profile(profile_a, 0.25)
@@ -343,7 +341,7 @@ func _test_profile_registration_is_stable() -> bool:
 
 func _test_dirty_profile_marking() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_dirty_profile_marking...")
-	var descriptor := _make_descriptor()
+	var descriptor := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
 	var container = RuntimeProfileContainerScript.new()
 	var profile_id: int = container.register_descriptor(descriptor, 0.25)
 	descriptor.set_color_and_complexity(Color(0.9, 0.1, 0.2, 1.0), 0.4)
@@ -447,7 +445,7 @@ func _test_container_stays_gpu_profile_control_plane() -> bool:
 
 func _test_descriptor_profile_id_and_probe_range_lookup() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_descriptor_profile_id_and_probe_range_lookup...")
-	var descriptor := _make_descriptor()
+	var descriptor := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
 	var container = RuntimeProfileContainerScript.new()
 	var profile_id: int = container.register_descriptor(
 		descriptor,
@@ -484,36 +482,3 @@ func _test_descriptor_profile_id_and_probe_range_lookup() -> bool:
 		return false
 	print("  OK: descriptor profile_id=%d probe_range=%s" % [profile_id, str(fresh_range)])
 	return true
-
-
-func _approx(a: float, b: float, eps: float) -> bool:
-	return absf(a - b) <= eps
-
-
-func _make_descriptor() -> AssetDescriptor:
-	var descriptor: AssetDescriptor = AssetDescriptorScript.new()
-	descriptor.set_color_and_complexity(Color(0.2, 0.4, 0.6, 1.0), 0.5)
-	descriptor.set_collision([])
-	descriptor.set_pivot_variants([{
-		"name": "root",
-		"offset": Vector3(0.0, -0.25, 0.0),
-		"score_bias": 0.1,
-	}])
-	descriptor.semantic_probe_density = 1.0
-	descriptor.context_sensing_radius = 0.5
-	descriptor.set_semantic_probes([SemanticProbeProfileScript.make_probe(
-		Vector3(0.25, 0.5, -0.25),
-		Color(0.2, 0.4, 0.6, 0.5),
-		0.3,
-		1.0, 1.0, 1.0,
-		"manual"
-	)])
-	return descriptor
-
-
-func _make_profile() -> AutoVoxelProfile:
-	var profile: AutoVoxelProfile = AutoVoxelProfileScript.new()
-	profile.color = Color(0.15, 0.25, 0.35, 1.0)
-	profile.complexity = 0.65
-	profile.collision = []
-	return profile

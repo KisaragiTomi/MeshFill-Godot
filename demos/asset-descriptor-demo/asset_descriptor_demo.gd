@@ -4,6 +4,7 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
 const VoxelDisplay := preload("res://scripts/voxel_display.gd")
+const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
 
 const VOXEL_DEBUG_NODE := "VoxelDebugGroup"
 const GEO_ASSET_ROOT := "Assets/Geo"
@@ -12,7 +13,7 @@ const GEO_MTIME_META := "geo_modified_time"
 const GEO_BOUND_SIZE_META := "geo_bound_size"
 const GEO_BOUND_LONGEST_META := "geo_bound_longest"
 const GEO_KIND_META := "geo_asset_kind"
-const GEO_SUPPORTED_EXTENSIONS := ["fbx", "glb", "gltf", "obj", "dae", "blend", "mesh", "res", "tscn", "scn"]
+const GEO_SCAN_EXTENSIONS := ["fbx"]
 
 # Voxel channel display modes (one shortcut each).
 const VOXEL_CHANNEL_NONE := ""
@@ -168,7 +169,7 @@ func _scan_geo_assets(full_rescan: bool) -> Dictionary:
 				(child as Node).free()
 
 	var existing := _geo_nodes_by_source_path(geo_root)
-	var files := _discover_geo_files("res://geo")
+	var files := CommonDemoAssets.discover_geo_files("res://geo", GEO_SCAN_EXTENSIONS)
 	var added := 0
 	var updated := 0
 	var unchanged := 0
@@ -226,84 +227,8 @@ func _get_or_create_geo_asset_root() -> Node3D:
 	return root
 
 
-func _discover_geo_files(root_path: String) -> Array[String]:
-	var results: Array[String] = []
-	var dir := DirAccess.open(root_path)
-	if dir == null:
-		return results
-	dir.list_dir_begin()
-	while true:
-		var file_name := dir.get_next()
-		if file_name.is_empty():
-			break
-		if file_name.begins_with("."):
-			continue
-		var path := "%s/%s" % [root_path, file_name]
-		if dir.current_is_dir():
-			results.append_array(_discover_geo_files(path))
-		elif _is_supported_geo_file(path):
-			results.append(path)
-	dir.list_dir_end()
-	results.sort()
-	return results
-
-
-func _is_supported_geo_file(path: String) -> bool:
-	if path.to_lower().ends_with(".import"):
-		return false
-	var ext := path.get_extension().to_lower()
-	return GEO_SUPPORTED_EXTENSIONS.has(ext)
-
-
 func _load_geo_mesh_info(path: String) -> Dictionary:
-	var resource = load(path)
-	if resource is Mesh:
-		return {
-			"mesh": resource as Mesh,
-			"mesh_transform": Transform3D.IDENTITY,
-		}
-	if resource is PackedScene:
-		var instance := (resource as PackedScene).instantiate()
-		var info := _find_mesh_info_in_tree(instance)
-		if info.is_empty():
-			info = _find_mesh_info_in_tree(instance, Transform3D.IDENTITY, true)
-		instance.free()
-		return info
-	return {}
-
-
-func _find_mesh_info_in_tree(
-	node: Node,
-	parent_transform: Transform3D = Transform3D.IDENTITY,
-	allow_collision_helpers: bool = false
-) -> Dictionary:
-	var node_transform := parent_transform
-	if node is Node3D:
-		node_transform = parent_transform * (node as Node3D).transform
-	if allow_collision_helpers or not _is_collision_helper_node(node):
-		if node is MeshInstance3D:
-			var mesh := (node as MeshInstance3D).mesh
-			if mesh != null:
-				return {"mesh": mesh, "mesh_transform": node_transform}
-		if node is ImporterMeshInstance3D:
-			var importer_mesh = node.get("mesh")
-			if importer_mesh != null and importer_mesh.has_method("get_mesh"):
-				var converted = importer_mesh.get_mesh()
-				if converted is Mesh:
-					return {"mesh": converted as Mesh, "mesh_transform": node_transform}
-	for child in node.get_children():
-		var info := _find_mesh_info_in_tree(child, node_transform, allow_collision_helpers)
-		if not info.is_empty():
-			return info
-	return {}
-
-
-func _is_collision_helper_node(node: Node) -> bool:
-	var node_name := str(node.name).to_upper()
-	return node_name.begins_with("UCX_") \
-		or node_name.begins_with("UBX_") \
-		or node_name.begins_with("UCP_") \
-		or node_name.begins_with("USP_")
+	return CommonDemoAssets.load_mesh_info(path)
 
 
 func _create_geo_asset_node(path: String, modified: int, info: Dictionary) -> Node3D:
@@ -319,7 +244,7 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 
 	var mesh: Mesh = info.get("mesh", null)
 	var mesh_transform: Transform3D = info.get("mesh_transform", Transform3D.IDENTITY)
-	var bounds := _transformed_aabb(mesh.get_aabb(), mesh_transform) if mesh != null else AABB()
+	var bounds := CommonDemoAssets.transformed_aabb(mesh.get_aabb(), mesh_transform) if mesh != null else AABB()
 	var kind := _classify_geo_asset(path)
 	var color := TREE_COLOR if kind == "tree" else ROCK_COLOR
 
@@ -328,7 +253,7 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 	node.set_meta(GEO_SOURCE_META, path)
 	node.set_meta(GEO_MTIME_META, modified)
 	node.set_meta(GEO_BOUND_SIZE_META, bounds.size)
-	node.set_meta(GEO_BOUND_LONGEST_META, _aabb_longest_axis(bounds))
+	node.set_meta(GEO_BOUND_LONGEST_META, CommonDemoAssets.aabb_longest_axis(bounds))
 	node.set_meta(GEO_KIND_META, kind)
 
 	var mesh_node := MeshInstance3D.new()
@@ -343,7 +268,7 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 	label.pixel_size = 0.01
 	label.font_size = 18
 	label.outline_size = 3
-	label.text = "%s\nbound %.2f" % [path.get_file().get_basename(), _aabb_longest_axis(bounds)]
+	label.text = "%s\nbound %.2f" % [path.get_file().get_basename(), CommonDemoAssets.aabb_longest_axis(bounds)]
 	label.position = Vector3(0.0, bounds.position.y + bounds.size.y + 0.6, 0.0)
 	node.add_child(label)
 
@@ -413,36 +338,7 @@ func _geo_node_local_aabb(node: Node3D) -> AABB:
 	var mi := node.get_node_or_null("Mesh") as MeshInstance3D
 	if mi == null or mi.mesh == null:
 		return AABB(Vector3.ZERO, Vector3.ONE)
-	return _transformed_aabb(mi.mesh.get_aabb(), mi.transform)
-
-
-func _transformed_aabb(aabb: AABB, transform: Transform3D) -> AABB:
-	var points := [
-		aabb.position,
-		aabb.position + Vector3(aabb.size.x, 0.0, 0.0),
-		aabb.position + Vector3(0.0, aabb.size.y, 0.0),
-		aabb.position + Vector3(0.0, 0.0, aabb.size.z),
-		aabb.position + Vector3(aabb.size.x, aabb.size.y, 0.0),
-		aabb.position + Vector3(aabb.size.x, 0.0, aabb.size.z),
-		aabb.position + Vector3(0.0, aabb.size.y, aabb.size.z),
-		aabb.position + aabb.size,
-	]
-	var first: Vector3 = transform * points[0]
-	var min_p := first
-	var max_p := first
-	for i in range(1, points.size()):
-		var p: Vector3 = transform * points[i]
-		min_p.x = minf(min_p.x, p.x)
-		min_p.y = minf(min_p.y, p.y)
-		min_p.z = minf(min_p.z, p.z)
-		max_p.x = maxf(max_p.x, p.x)
-		max_p.y = maxf(max_p.y, p.y)
-		max_p.z = maxf(max_p.z, p.z)
-	return AABB(min_p, max_p - min_p)
-
-
-func _aabb_longest_axis(aabb: AABB) -> float:
-	return maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
+	return CommonDemoAssets.transformed_aabb(mi.mesh.get_aabb(), mi.transform)
 
 
 func _classify_geo_asset(path: String) -> String:

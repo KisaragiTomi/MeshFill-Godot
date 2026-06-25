@@ -1,9 +1,9 @@
 #[compute]
 #version 450
 
-// Pass B: Reduce per-subtile partial scores into per-anchor best rotation.
+// Pass B: Reduce per-sample-group partial scores into per-anchor best rotation.
 //
-// One workgroup per anchor. First ROTATION_SLOTS threads each sum SUBTILE_COUNT
+// One workgroup per anchor. First ROTATION_SLOTS threads each sum sample groups
 // partial scores for their rotation slot, then thread 0 picks the best.
 //
 // Dispatch: (anchor_count, 1, 1)
@@ -32,15 +32,15 @@ void main() {
     uint lid = gl_LocalInvocationIndex;
     uint anchor_id = gl_WorkGroupID.x;
 
-    int stc = config.y;
+    int sample_group_count = config.y;
     int rot = config.z;
 
     float slot_score = 0.0;
 
     if (lid < uint(rot)) {
-        for (int st = 0; st < stc; st++) {
-            uint idx = anchor_id * uint(stc) * uint(rot)
-                     + uint(st) * uint(rot) + lid;
+        for (int group_id = 0; group_id < sample_group_count; group_id++) {
+            uint idx = anchor_id * uint(sample_group_count) * uint(rot)
+                     + uint(group_id) * uint(rot) + lid;
             slot_score += partial_scores[idx];
         }
     }

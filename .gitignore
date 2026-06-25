@@ -19,4 +19,19 @@ mempalace.md
 .automation/
 *.svg.import
 *.md.import
-_shots/*.import
+*.png.import
+_shots/
+
+# 本地 MCP / 编辑器环境（含本地绝对路径，不入库）
+.mcp.json
+godot-mcp/
+.codex-run/
+.cursor/
+tools/mcp_probe.js
+tools/mcp9090_client.py
+tools/ping9090.py
+tools/probe_ports.py
+tools/drive_editor_demo.py
+tools/focus_editor.ps1
+tools/set_update_continuously.py
+tools/godot-mcp-bridge/

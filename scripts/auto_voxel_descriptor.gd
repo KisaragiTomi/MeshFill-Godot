@@ -2,6 +2,7 @@ class_name AssetDescriptor
 extends Resource
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 
 @export var color: Color = Color.WHITE                         # canonical 默认颜色；alpha 同步 complexity
@@ -16,7 +17,6 @@ const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd
 @export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0 # 外围 context probes 半径；0 禁用
 @export var asset_id: String = ""                               # 植被资产 id / debug metadata
 @export var object_type: String = ""                            # runtime grouping，不替代 descriptor 语义
-@export var object_subtype: String = ""                         # subtype grouping / debug metadata
 @export var voxel_profile: AutoVoxelProfile                     # import-time profile source
 @export var mesh: Mesh                                          # 显示 mesh
 @export var source_mesh: Mesh                                   # source mesh，用于导入/重建
@@ -160,7 +160,8 @@ static func create_sample_autoobject_mesh() -> Mesh:
 
 func get_source_mesh() -> Mesh:
 	if not source_mesh_path.is_empty() and (source_mesh == null or source_mesh == mesh):
-		var loaded_source_mesh := AutoAssetFactory.load_source_mesh(source_mesh_path)
+		var factory_script = load("res://scripts/auto_asset_factory.gd")
+		var loaded_source_mesh = factory_script.load_source_mesh(source_mesh_path) if factory_script != null else null
 		if loaded_source_mesh != null:
 			source_mesh = loaded_source_mesh
 			return source_mesh
@@ -205,8 +206,6 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 		cfg["asset_id"] = asset_id
 	if not cfg.has("object_type"):
 		cfg["object_type"] = "vegetation" if object_type.is_empty() else object_type
-	if not cfg.has("object_subtype"):
-		cfg["object_subtype"] = object_subtype
 	if not cfg.has("visual_layer") and visual_layer > 0:
 		cfg["visual_layer"] = visual_layer
 	if not cfg.has("group") and not group.is_empty():

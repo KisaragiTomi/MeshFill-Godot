@@ -23,10 +23,18 @@ var _multimesh := RID()
 var _buffer_rid := RID()
 
 var _scratch: Array[RID] = []
+# Per-write uniform set tracked separately from the buffer scratch: it depends on
+# the externally-owned MultiMesh buffer, so freeing it needs a validity guard.
+var _uniform_set := RID()
 var _instance_count := 0
 var _ready := false
 var _disposed := false
 var _last_reason := "uninitialized"
+
+# Readback fallback for engines without RenderingServer.multimesh_get_buffer_rd_rid
+# (added in Godot 4.4). When true, _rd is a *local* RenderingDevice and the
+# instance buffer is read back and pushed via multimesh_set_buffer().
+var _use_readback := false
 
 
 func _init() -> void:
@@ -55,10 +63,20 @@ func bind_multimesh(multimesh_rid: RID, instance_count: int) -> bool:
 		return false
 	_multimesh = multimesh_rid
 	_instance_count = instance_count
-	_buffer_rid = RenderingServer.multimesh_get_buffer_rd_rid(_multimesh)
-	if not _buffer_rid.is_valid():
-		_last_reason = "multimesh_buffer_rid_invalid"
+	if RenderingServer.has_method("multimesh_get_buffer_rd_rid"):
+		_buffer_rid = RenderingServer.call("multimesh_get_buffer_rd_rid", _multimesh)
+		if not _buffer_rid.is_valid():
+			_last_reason = "multimesh_buffer_rid_invalid"
+			return false
+		return true
+	# Godot < 4.4: fall back to a local RenderingDevice + readback path.
+	var local := RenderingServer.create_local_rendering_device()
+	if local == null:
+		_last_reason = "local_rendering_device_unavailable"
 		return false
+	_rd = local
+	_use_readback = true
+	_last_reason = "readback_fallback"
 	return true
 
 
@@ -67,7 +85,10 @@ func bind_multimesh(multimesh_rid: RID, instance_count: int) -> bool:
 # vertical_span, height_span, brush_color, terrain_height }.
 # Dispatches the brush->instance compute write on the render thread. Zero readback.
 func write_brush(brush_voxels: PackedInt32Array, params: Dictionary) -> bool:
-	if not _ready or not _buffer_rid.is_valid():
+	if not _ready:
+		_last_reason = "writer_not_bound"
+		return false
+	if not _use_readback and not _buffer_rid.is_valid():
 		_last_reason = "writer_not_bound"
 		return false
 	if brush_voxels.size() != _instance_count * 4:
@@ -90,10 +111,71 @@ func write_brush(brush_voxels: PackedInt32Array, params: Dictionary) -> bool:
 			brush_colors[i * 4 + 2] = fallback_color.b
 			brush_colors[i * 4 + 3] = fallback_color.a
 
+	if _use_readback:
+		return _readback_write(brush_voxels, terrain_height, brush_colors, params.duplicate(true))
+
 	RenderingServer.call_on_render_thread(
 		_render_thread_write.bind(brush_voxels, terrain_height, brush_colors, params.duplicate(true))
 	)
 	_last_reason = "dispatched"
+	return true
+
+
+# Godot < 4.4 fallback: same compute on the local _rd into a scratch output
+# buffer, read back and uploaded via multimesh_set_buffer(). Synchronous.
+func _readback_write(
+	brush_voxels: PackedInt32Array,
+	terrain_height: PackedFloat32Array,
+	brush_colors: PackedFloat32Array,
+	params: Dictionary
+) -> bool:
+	_free_scratch()
+	if not _ensure_pipeline():
+		return false
+
+	var voxel_buf := _make_buffer(brush_voxels.to_byte_array())
+	var height_buf := _make_buffer(terrain_height.to_byte_array())
+	var color_buf := _make_buffer(brush_colors.to_byte_array())
+	if not voxel_buf.is_valid() or not height_buf.is_valid() or not color_buf.is_valid():
+		_last_reason = "scratch_buffer_create_failed"
+		return false
+
+	var out_bytes := PackedByteArray()
+	out_bytes.resize(_instance_count * FLOATS_PER_INSTANCE * 4)
+	var out_buf := _rd.storage_buffer_create(out_bytes.size(), out_bytes)
+	if not out_buf.is_valid():
+		_last_reason = "output_buffer_create_failed"
+		return false
+	_scratch.append(out_buf)
+
+	var uniforms: Array[RDUniform] = [
+		_storage_uniform(0, voxel_buf),
+		_storage_uniform(1, height_buf),
+		_storage_uniform(2, out_buf),
+		_storage_uniform(3, color_buf),
+	]
+	var set0 := _rd.uniform_set_create(uniforms, _shader, 0)
+	if not set0.is_valid():
+		_last_reason = "uniform_set_create_failed"
+		return false
+	_uniform_set = set0
+
+	var push := _pack_push(terrain_height.size(), params)
+	var groups := int(ceil(float(_instance_count) / float(LOCAL_SIZE)))
+
+	var cl := _rd.compute_list_begin()
+	_rd.compute_list_bind_compute_pipeline(cl, _pipeline)
+	_rd.compute_list_bind_uniform_set(cl, set0, 0)
+	_rd.compute_list_set_push_constant(cl, push, push.size())
+	_rd.compute_list_dispatch(cl, groups, 1, 1)
+	_rd.compute_list_end()
+	_rd.submit()
+	_rd.sync()
+
+	var data := _rd.buffer_get_data(out_buf)
+	RenderingServer.multimesh_set_buffer(_multimesh, data.to_float32_array())
+	_free_scratch()
+	_last_reason = "ok_readback"
 	return true
 
 
@@ -124,7 +206,7 @@ func _render_thread_write(
 	if not set0.is_valid():
 		_last_reason = "uniform_set_create_failed"
 		return
-	_scratch.append(set0)
+	_uniform_set = set0
 
 	var push := _pack_push(terrain_height.size(), params)
 	var groups := int(ceil(float(_instance_count) / float(LOCAL_SIZE)))
@@ -196,32 +278,73 @@ func _pack_push(height_count: int, params: Dictionary) -> PackedByteArray:
 func _free_scratch() -> void:
 	if _rd == null:
 		return
-	# Free in reverse creation order: the uniform set is created last and depends
-	# on the storage buffers, so it must be released before them.
-	for i in range(_scratch.size() - 1, -1, -1):
-		var rid: RID = _scratch[i]
-		if rid.is_valid():
-			_rd.free_rid(rid)
+	_free_resources(_rd, _uniform_set, _scratch)
+	_uniform_set = RID()
 	_scratch.clear()
 
 
 func dispose() -> void:
-	if _rd == null or _disposed:
+	if _disposed:
 		return
 	_disposed = true
-	RenderingServer.call_on_render_thread(_render_thread_dispose)
+	_release(_rd, _shader, _pipeline, _uniform_set, _scratch, _use_readback)
+	_rd = null
+	_shader = RID()
+	_pipeline = RID()
+	_uniform_set = RID()
+	_scratch = []
 
 
-func _render_thread_dispose() -> void:
-	_free_scratch()
-	if _pipeline.is_valid():
-		_rd.free_rid(_pipeline)
-		_pipeline = RID()
-	if _shader.is_valid():
-		_rd.free_rid(_shader)
-		_shader = RID()
+# Frees every GPU resource the writer owns. Static on purpose: it is also driven
+# from NOTIFICATION_PREDELETE, where the writer is an already-unreferenced
+# RefCounted. Calling an instance method there -- or binding `self` into a
+# render-thread callable -- fails with "call function on a null instance" and
+# leaks the RIDs. Binding only the device + RID values keeps the deferred free
+# valid even once the writer itself is gone.
+static func _release(rd: RenderingDevice, shader: RID, pipeline: RID, uniform_set: RID, buffers: Array, use_readback: bool) -> void:
+	if rd == null:
+		return
+	if use_readback:
+		# Local device: free synchronously on this thread, then destroy the device.
+		_free_all(rd, shader, pipeline, uniform_set, buffers)
+		rd.free()
+		return
+	# Main device: RID frees must run on the render thread. Reference the static
+	# helper by bare name (the class_name is not yet self-resolvable at compile).
+	RenderingServer.call_on_render_thread(_free_all.bind(rd, shader, pipeline, uniform_set, buffers))
+
+
+static func _free_all(rd: RenderingDevice, shader: RID, pipeline: RID, uniform_set: RID, buffers: Array) -> void:
+	if rd == null:
+		return
+	_free_resources(rd, uniform_set, buffers)
+	if pipeline.is_valid():
+		rd.free_rid(pipeline)
+	if shader.is_valid():
+		rd.free_rid(shader)
+
+
+# Frees the per-write scratch: the uniform set first (it depends on the buffers),
+# then the owned storage buffers. The uniform set also references the externally
+# owned MultiMesh buffer, so it can be auto-invalidated when that buffer is freed
+# first (orphaned node) -- guard with uniform_set_is_valid to avoid an invalid-ID
+# free.
+static func _free_resources(rd: RenderingDevice, uniform_set: RID, buffers: Array) -> void:
+	if rd == null:
+		return
+	if uniform_set.is_valid() and rd.uniform_set_is_valid(uniform_set):
+		rd.free_rid(uniform_set)
+	for i in range(buffers.size() - 1, -1, -1):
+		var rid: RID = buffers[i]
+		if rid.is_valid():
+			rd.free_rid(rid)
 
 
 func _notification(what: int) -> void:
+	# tree_exiting on the owning node drives dispose() while everything is alive.
+	# PREDELETE is the last-resort guard for an orphan writer that never left a
+	# tree: free inline via the static release. Calling the dispose() instance
+	# method here would fail with "null instance" on the dying RefCounted.
 	if what == NOTIFICATION_PREDELETE and not _disposed:
-		dispose()
+		_disposed = true
+		_release(_rd, _shader, _pipeline, _uniform_set, _scratch, _use_readback)

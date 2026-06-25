@@ -2,7 +2,7 @@
 
 > 状态：**已暂停开发**。该 2.5D heightfield fitting 路径不再是当前 placement score 主路径，接替它的 3D 体积评分设计见 [`meshfill-object-volume-score-3d.md`](meshfill-object-volume-score-3d.md)。本文保留作为历史实现与迁移参考。
 
-![MeshFill 3D placement overview and 2.5D heightfield fitting path](meshfill_compute_shader_3d_placement.svg)
+![MeshFill 3D placement overview and 2.5D heightfield fitting path](../svg/meshfill_compute_shader_3d_placement.svg)
 
 ## 核心思路
 

@@ -2,9 +2,9 @@
 
 本文记录 AutoObject probe 粗筛的当前实现契约。粗筛从 BlendSV-backed `SV[t - 1]` 与 `TargetSV_B` 中提取 position-only anchors，用 descriptor-backed semantic probes 给可用 `AutoObject` 打分，输出 per-asset candidate voxel regions。最终物理可放置性仍由 `score_voxel_tile.glsl` 精筛。
 
-![AutoObject probe prefilter pipeline](autoobject_probe_prefilter_pipeline.svg)
+![AutoObject probe prefilter pipeline](../svg/autoobject_probe_prefilter_pipeline.svg)
 
-![AutoObject probe scoring logic](autoobject_probe_scoring_logic.svg)
+![AutoObject probe scoring logic](../svg/autoobject_probe_scoring_logic.svg)
 
 当前实现已稳定：GPU pipeline、Host、Anchor、Probe source、Candidate regions、Route profile debug 均已实现，CPU scoring path 已删除。以下输入/输出契约仅作为架构参考。
 

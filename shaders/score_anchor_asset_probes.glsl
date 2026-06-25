@@ -101,9 +101,20 @@ float eval_probe(ivec3 sp, vec4 e_col, float e_coll,
     vec4 tf = target_field[idx];
     vec2 sv = complexity_coll[idx];   // .x = scene_complexity, .y = scene_collision
 
-    float color_fit      = 1.0 - distance(tf.rgb, e_col.rgb) / SQRT3;
-    float complexity_fit = 1.0 - abs(tf.a - e_col.a);
-    float collision_fit  = 1.0 - abs(max(tf.a, sv.y) - e_coll);
+    // Bipolar fit for color/complexity: match quality [0,1] is remapped to [-1,1].
+    // A mismatch now casts a negative vote instead of merely contributing 0, so a
+    // large probe count stops being a one-sided advantage — assets that match the
+    // target accumulate positive evidence, assets whose color/shape disagrees
+    // accumulate negative evidence and sink below smaller well-matched assets.
+    float color_match      = 1.0 - distance(tf.rgb, e_col.rgb) / SQRT3;  // [0,1]
+    float complexity_match = 1.0 - abs(tf.a - e_col.a);                  // [0,1]
+    float color_fit        = 2.0 * color_match - 1.0;                    // [-1,1]
+    float complexity_fit   = 2.0 * complexity_match - 1.0;               // [-1,1]
+
+    // Collision stays unipolar [0,1] so exclusion-zone negative weights keep their
+    // meaning: empty space -> fit 0 -> negative weight contributes 0 (no spurious
+    // reward), occupied space -> fit 1 -> negative weight penalizes as intended.
+    float collision_fit    = 1.0 - abs(max(tf.a, sv.y) - e_coll);        // [0,1]
 
     return w_color * color_fit + w_complexity * complexity_fit + w_collision * collision_fit;
 }

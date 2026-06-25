@@ -2,7 +2,7 @@ class_name SceneVoxelCommitter
 
 extends "res://scripts/godot_compute_shader_base.gd"
 
-const VOXEL_OCCUPIED_EPSILON := 0.01
+const VOXEL_OCCUPIED_EPSILON := VoxelGeneral.VOXEL_OCCUPIED_EPSILON
 
 const SV_RESIDENT_TILE_SIZE := 8
 
@@ -69,7 +69,7 @@ const SCENE_VOXEL_TILE_FLAG_FEEDBACK := 128
 const SCENE_VOXEL_TILE_FLAG_OBJECT_REFS := 256
 const SCENE_VOXEL_TILE_FLAG_MASK := 512
 
-const CHANNEL_COUNT := 4
+const CHANNEL_COUNT := VoxelGeneral.CHANNEL_COUNT
 
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const SceneVoxelProfileScript := preload("res://scripts/scene_voxel_profile.gd")
@@ -80,6 +80,7 @@ const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec
 const SceneVoxelVolumeChannelsScript := preload("res://scripts/scene_voxel_volume_channels.gd")
 const SceneVoxelBrushScript := preload("res://scripts/scene_voxel_brush.gd")
 const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
+const VoxelGeneralScript := preload("res://scripts/voxel_general.gd")
 
 var _base_res: int  ## Base resolution for world↔pixel coordinate mapping
 
@@ -94,7 +95,7 @@ var grid_origin: Vector3  ## World-space origin for voxel index conversion
 ## Packed RGBA completely field: one value per explicit channel, representing how completely each voxel is filled.
 ## When max(complexity, collision) == 0, the voxel is empty (nothing there).
 
-var _occupancy: Image
+var occupancy: Image
 
 ## Source collision scalar field generated through the shared max-stamp path.
 
@@ -174,9 +175,9 @@ var _shader_scene_voxel_tile_object_ref_update: RID
 
 var _pipeline_scene_voxel_tile_object_ref_update: RID
 
-var _shader_collect_disc_pixels: RID
+var _shader_stamp_collect_voxel_disc: RID
 
-var _pipeline_collect_disc_pixels: RID
+var _pipeline_stamp_collect_voxel_disc: RID
 
 var _shader_sample_r32_pixel: RID
 
@@ -185,6 +186,7 @@ var _pipeline_sample_r32_pixel: RID
 var _gpu_ready: bool = false
 
 
+## 初始化体素提交器，设置基础分辨率、捕获范围并按需启用 GPU
 func _init(base_resolution: int, capture_size: float, _enable_gpu: bool = true) -> void:
 
 	_base_res = base_resolution
@@ -199,9 +201,9 @@ func _init(base_resolution: int, capture_size: float, _enable_gpu: bool = true) 
 
 	grid_size = Vector3i(_base_res, 1, _base_res)
 
-	_occupancy = Image.create(_base_res, _base_res, false, Image.FORMAT_RGBAH)
+	occupancy = Image.create(_base_res, _base_res, false, Image.FORMAT_RGBAH)
 
-	_occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
+	occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
 
 	_source_collision_field = _create_collision_image(_base_res)
 
@@ -211,6 +213,7 @@ func _init(base_resolution: int, capture_size: float, _enable_gpu: bool = true) 
 
 	_init_gpu()
 
+## 初始化 GPU 资源，加载全部 compute shader 并构建管线，校验资源完整性
 func _init_gpu() -> void:
 
 	log_name = "SceneVoxelCommitter"
@@ -309,11 +312,11 @@ func _init_gpu() -> void:
 
 		_pipeline_scene_voxel_tile_object_ref_update = create_compute_pipeline(_shader_scene_voxel_tile_object_ref_update)
 
-	_shader_collect_disc_pixels = load_compute_shader("res://shaders/collect_disc_pixels.glsl")
+	_shader_stamp_collect_voxel_disc = load_compute_shader("res://shaders/stamp_collect_voxel_disc_3d.glsl")
 
-	if _shader_collect_disc_pixels.is_valid():
+	if _shader_stamp_collect_voxel_disc.is_valid():
 
-		_pipeline_collect_disc_pixels = create_compute_pipeline(_shader_collect_disc_pixels)
+		_pipeline_stamp_collect_voxel_disc = create_compute_pipeline(_shader_stamp_collect_voxel_disc)
 
 	_shader_sample_r32_pixel = load_compute_shader("res://shaders/sample_r32_pixel.glsl")
 
@@ -426,12 +429,12 @@ func _init_gpu() -> void:
 	if not _pipeline_scene_voxel_tile_object_ref_update.is_valid():
 
 		missing_gpu_rids.append("pipeline_scene_voxel_tile_object_ref_update")
-	if not _shader_collect_disc_pixels.is_valid():
+	if not _shader_stamp_collect_voxel_disc.is_valid():
 
-		missing_gpu_rids.append("shader_collect_disc_pixels")
-	if not _pipeline_collect_disc_pixels.is_valid():
+		missing_gpu_rids.append("shader_stamp_collect_voxel_disc")
+	if not _pipeline_stamp_collect_voxel_disc.is_valid():
 
-		missing_gpu_rids.append("pipeline_collect_disc_pixels")
+		missing_gpu_rids.append("pipeline_stamp_collect_voxel_disc")
 	if not _shader_sample_r32_pixel.is_valid():
 
 		missing_gpu_rids.append("shader_sample_r32_pixel")
@@ -449,6 +452,7 @@ func _init_gpu() -> void:
 
 		_gpu_fatal("Scene voxel compute resources are not ready: %s" % ", ".join(missing_gpu_rids))
 
+## 报告 GPU 致命错误，弹出提示并标记 GPU 未就绪
 func _gpu_fatal(msg: String) -> void:
 
 	var full := "[SceneVoxelCommitter] GPU ERROR: %s" % msg
@@ -482,6 +486,7 @@ func _gpu_dispatch_pipeline(cl: int, pipeline: RID, uniform_set: RID, push: Pack
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, groups.x, groups.y, groups.z)
 
+## 释放所有 GPU shader 与管线资源并重置 GPU 就绪状态
 func _free_gpu() -> void:
 
 	dispose()
@@ -545,9 +550,9 @@ func _free_gpu() -> void:
 
 	_shader_scene_voxel_tile_object_ref_update = RID()
 
-	_pipeline_collect_disc_pixels = RID()
+	_pipeline_stamp_collect_voxel_disc = RID()
 
-	_shader_collect_disc_pixels = RID()
+	_shader_stamp_collect_voxel_disc = RID()
 
 	_pipeline_sample_r32_pixel = RID()
 
@@ -557,6 +562,7 @@ func _free_gpu() -> void:
 
 	_gpu_ready = false
 
+## 释放前回调，清理场景体素 tile 与 source candidate 的常驻 GPU 缓冲
 func _on_before_dispose() -> void:
 
 	_release_scene_voxel_source_candidate_resident_buffers()
@@ -565,20 +571,17 @@ func _on_before_dispose() -> void:
 
 	_release_scene_voxel_tile_gpu_buffers()
 
+## 返回基于捕获尺寸的默认网格原点
 func _default_grid_origin() -> Vector3:
 
-	var half := _capture_size * 0.5
+	return VoxelGeneralScript.default_grid_origin(_capture_size)
 
-	return Vector3(-half, 0.0, -half)
-
+## 根据分辨率计算单个体素的世界空间尺寸
 func _voxel_size_for_resolution(resolution: int, y_size: float = 1.0) -> Vector3:
 
-	var res := maxi(resolution, 1)
+	return VoxelGeneralScript.voxel_size_for_resolution(_capture_size, resolution, y_size)
 
-	var xz_size := _capture_size / float(res)
-
-	return Vector3(xz_size, maxf(y_size, 0.0001), xz_size)
-
+## 配置场景体素网格的尺寸、体素大小与原点，并按需标记重建脏标记
 func configure_scene_voxel_grid(
 
 	p_grid_size: Vector3i,
@@ -619,6 +622,7 @@ func configure_scene_voxel_grid(
 
 		_mark_scene_voxel_tile_staging_dirty("grid_configured")
 
+## 从给定场景体素对象读取网格参数并应用配置
 func configure_from_sv(sv) -> void:
 
 	if sv == null:
@@ -641,6 +645,7 @@ func configure_from_sv(sv) -> void:
 
 	)
 
+## 根据体积分辨率与切片数应用网格元数据，更新尺寸并标记全量重建
 func _apply_volume_grid_metadata(xz_res: int, total_slices: int, y_min: float = 0.0, y_max: float = 1.0) -> void:
 
 	var safe_xz := maxi(xz_res, 1)
@@ -661,16 +666,12 @@ func _apply_volume_grid_metadata(xz_res: int, total_slices: int, y_min: float = 
 
 	_mark_scene_voxel_full_rebuild_dirty("volume_grid_metadata")
 
+## 创建指定分辨率的空白 R32 碰撞图像
 func _create_collision_image(resolution: int) -> Image:
 
-	var safe_res := maxi(resolution, 1)
+	return VoxelGeneralScript.create_r32_image(resolution)
 
-	var img := Image.create(safe_res, safe_res, false, Image.FORMAT_RF)
-
-	img.fill(Color(0.0, 0.0, 0.0, 0.0))
-
-	return img
-
+## GPU 逐像素取两张碰撞图像的最大值，返回合成后的 R32 图像
 func _max_collision_images_gpu(a: Image, b: Image) -> Image:
 
 	if a == null or a.is_empty() or b == null or b.is_empty():
@@ -782,10 +783,12 @@ func _max_collision_images_gpu(a: Image, b: Image) -> Image:
 
 	return result
 
+## 用 GPU 合成地形基础碰撞与源碰撞，刷新合并后的碰撞场
 func _refresh_combined_collision_field() -> void:
 
 	_collision_field = _max_collision_images_gpu(_terrain_base_collision_field, _source_collision_field)
 
+## 返回指定切片在 Y 方向的体素尺寸
 func _slice_voxel_size_y(slice_index: int = 0) -> float:
 
 	if _volume.is_empty():
@@ -802,68 +805,67 @@ func _slice_voxel_size_y(slice_index: int = 0) -> float:
 
 	return maxf(voxel_size.y, 0.0001)
 
+## 将世界坐标转换为体素索引坐标
 func world_to_voxel(world_pos: Vector3, resolution: int = -1) -> Vector3i:
 
 	var res := maxi(resolution if resolution > 0 else _base_res, 1)
 
 	var size := _voxel_size_for_resolution(res, voxel_size.y)
 
-	var local := world_pos - grid_origin
-
-	return Vector3i(
-
-		clampi(floori(local.x / size.x), 0, res - 1),
-
-		maxi(floori(local.y / size.y), 0),
-
-		clampi(floori(local.z / size.z), 0, res - 1)
-
+	return VoxelGeneralScript.world_to_voxel(
+		world_pos,
+		grid_origin,
+		size,
+		Vector3i(res, maxi(grid_size.y, 1), res),
+		false
 	)
 
+## 将体素索引坐标转换为世界坐标
 func voxel_to_world(voxel_pos: Vector3i, resolution: int = -1) -> Vector3:
 
 	var res := maxi(resolution if resolution > 0 else _base_res, 1)
 
 	var size := _voxel_size_for_resolution(res, voxel_size.y)
 
-	return grid_origin + Vector3(
+	return VoxelGeneralScript.voxel_to_world(voxel_pos, grid_origin, size)
 
-		float(voxel_pos.x) * size.x,
-
-		float(voxel_pos.y) * size.y,
-
-		float(voxel_pos.z) * size.z
-
-	)
-
+## 将世界坐标转换为体积分辨率下的 XZ 像素坐标
 func world_to_volume_pixel(world_pos: Vector3, resolution: int = -1) -> Vector2i:
 
 	var res := maxi(resolution if resolution > 0 else _base_res, 1)
 
-	var voxel := world_to_voxel(world_pos, res)
+	return VoxelGeneralScript.world_to_volume_pixel(
+		world_pos,
+		res,
+		grid_origin,
+		_voxel_size_for_resolution(res, voxel_size.y)
+	)
 
-	return Vector2i(voxel.x, voxel.z)
-
+## 将体积分辨率下的 XZ 像素坐标转换回世界坐标
 func volume_pixel_to_world(voxel_xz: Vector2i, resolution: int = -1, y: float = 0.0) -> Vector3:
 
 	var res := maxi(resolution if resolution > 0 else _base_res, 1)
 
 	var size := _voxel_size_for_resolution(res, voxel_size.y)
 
-	return grid_origin + Vector3(
+	return VoxelGeneralScript.volume_pixel_to_world(voxel_xz, grid_origin, size, y)
 
-		float(voxel_xz.x) * size.x,
+## 静态方法：将体素中心坐标转换为世界坐标（XZ 平面）
+static func voxel_center_to_world_static(voxel_pos: Vector3i, p_grid_origin: Vector3, p_voxel_size: Vector3, y: float = 0.0) -> Vector3:
 
-		y,
+	return VoxelGeneralScript.voxel_center_to_world_xz(voxel_pos, p_grid_origin, p_voxel_size, y)
 
-		float(voxel_xz.y) * size.z
+## 静态方法：将浮点体素中心坐标转换为世界坐标（XZ 平面）
+static func voxel_float_center_to_world_static(voxel_center: Vector3, p_grid_origin: Vector3, p_voxel_size: Vector3, y: float = 0.0) -> Vector3:
 
-	)
+	return VoxelGeneralScript.voxel_float_center_to_world_xz(voxel_center, p_grid_origin, p_voxel_size, y)
 
+## 判断通道索引是否在有效范围内
 func _is_valid_channel(channel: int) -> bool:
 
-	return channel >= 0 and channel < CHANNEL_COUNT
+	return VoxelGeneralScript.is_valid_channel(channel)
 
+## 导入掩码图像到指定通道，按复杂度混合进 occupancy
 func import_mask_channel(channel: int, mask_img: Image, complexity: float = 1.0) -> void:
 
 	assert(_gpu_ready, "[SceneVoxelCommitter] GPU not ready — cannot import mask")
@@ -876,6 +878,7 @@ func import_mask_channel(channel: int, mask_img: Image, complexity: float = 1.0)
 
 	_gpu_import_mask(channel, clampf(complexity, 0.0, 1.0), mask_img)
 
+## GPU 执行通道掩码导入，将掩码按复杂度写入 occupancy 纹理
 func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
 
 	var tex_src := upload_texture_2d(mask_img)
@@ -884,7 +887,7 @@ func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
 
 	# Upload current occupancy into rw texture
 
-	var occ_rgba := _occupancy.duplicate()
+	var occ_rgba := occupancy.duplicate()
 
 	if occ_rgba.get_format() != Image.FORMAT_RGBAH:
 
@@ -919,7 +922,7 @@ func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
 
 	var data := _rd.texture_get_data(tex_occ, 0)
 
-	_occupancy = Image.create_from_data(_base_res, _base_res, false, Image.FORMAT_RGBAH, data)
+	occupancy = Image.create_from_data(_base_res, _base_res, false, Image.FORMAT_RGBAH, data)
 
 	gc_frame()
 
@@ -929,12 +932,12 @@ func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
 
 ## Convert world-meter radius to pixels at base resolution.
 
+## 将世界半径换算为底图分辨率下的像素半径
 func _radius_to_px(radius_m: float) -> int:
 
-	var pixel_size := _capture_size / float(_base_res)
+	return VoxelGeneralScript.world_radius_to_texture_radius(radius_m, _capture_size, _base_res)
 
-	return maxi(1, ceili(radius_m / pixel_size))
-
+## 在图像上盖印一个圆形标量区域，失败时回退返回原图
 func _stamp_scalar_image_disc(img: Image, center_px: Vector2i, radius_px: int, value: float, channel: int = 0) -> Image:
 
 	if img == null or img.is_empty():
@@ -951,6 +954,7 @@ func _stamp_scalar_image_disc(img: Image, center_px: Vector2i, radius_px: int, v
 
 	return img
 
+## GPU 执行圆形标量盖印，支持 R32 与 RGBA 通道两种格式
 func _stamp_scalar_image_disc_gpu(img: Image, center_px: Vector2i, radius_px: int, value: float, channel: int = 0) -> Image:
 
 	if img == null or img.is_empty():
@@ -1048,59 +1052,78 @@ func _stamp_scalar_image_disc_gpu(img: Image, center_px: Vector2i, radius_px: in
 
 	return result
 
-func _collect_disc_pixels_gpu(
-	previous_img: Image,
+## GPU stamp a disc value across gathered R32 volume slices and collect changed
+## voxels in one 3D dispatch. slice_images are processed in order as a flattened
+## volume (slice-major). compare_mode selects the record condition:
+## 0 = value > previous, 1 = always, 2 = source compare (value > epsilon and
+## value + slop >= previous). Returns {"slices": Array[Image] (updated, same
+## order), "records": Array of {x, z, slice_local}}.
+func _stamp_collect_voxel_disc_gpu(
+	slice_images: Array,
 	center_px: Vector2i,
 	radius_px: int,
 	value: float,
-	force_write: bool = false,
-	source_compare: bool = false
-) -> Array[Vector2i]:
-	var pixels: Array[Vector2i] = []
-	if previous_img == null or previous_img.is_empty():
-		return pixels
-	if not _gpu_ready or _rd == null or not _sampler.is_valid():
-		return pixels
-	if not _shader_collect_disc_pixels.is_valid() or not _pipeline_collect_disc_pixels.is_valid():
-		return pixels
+	compare_mode: int
+) -> Dictionary:
+	var fallback := {"slices": slice_images, "records": []}
+	var depth := slice_images.size()
+	if depth <= 0:
+		return fallback
+	if not _gpu_ready or _rd == null:
+		return fallback
+	if not _shader_stamp_collect_voxel_disc.is_valid() or not _pipeline_stamp_collect_voxel_disc.is_valid():
+		return fallback
 
-	var width := previous_img.get_width()
-	var height := previous_img.get_height()
+	var first := slice_images[0] as Image
+	if first == null or first.is_empty():
+		return fallback
+	var xz_res := first.get_width()
+	if xz_res <= 0 or first.get_height() != xz_res:
+		return fallback
+	var voxel_per_slice := xz_res * xz_res
+
+	var volume_floats := PackedFloat32Array()
+	for i in range(depth):
+		var img := slice_images[i] as Image
+		if img == null or img.is_empty() or img.get_width() != xz_res or img.get_height() != xz_res or img.get_format() != Image.FORMAT_RF:
+			return fallback
+		var slice_floats := img.get_data().to_float32_array()
+		if slice_floats.size() != voxel_per_slice:
+			return fallback
+		volume_floats.append_array(slice_floats)
+
 	var radius := maxi(radius_px, 0)
 	var disc_size := radius * 2 + 1
-	var max_records := maxi(disc_size * disc_size, 1)
-	var src_tex := upload_texture_2d(
-		previous_img,
-		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
-		Image.FORMAT_RF,
-		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
-		SCOPE_FRAME,
-		"collect_disc_pixels_src"
-	)
-	var records_buffer := storage_buffer_zero(max_records * 16, SCOPE_FRAME, "collect_disc_pixel_records")
-	var counter_buffer := storage_buffer_zero(4, SCOPE_FRAME, "collect_disc_pixel_counter")
-	if not src_tex.is_valid() or not records_buffer.is_valid() or not counter_buffer.is_valid():
+	var max_records := maxi(disc_size * disc_size * depth, 1)
+
+	# Separate in/out buffers (both seeded with the previous volume) keep
+	# previous_value clean at clamped disc edges; out retains non-disc cells.
+	var in_buffer := storage_buffer_from_floats(volume_floats, SCOPE_FRAME, "stamp_collect_voxel_in")
+	var out_buffer := storage_buffer_from_floats(volume_floats, SCOPE_FRAME, "stamp_collect_voxel_out")
+	var records_buffer := storage_buffer_zero(max_records * 16, SCOPE_FRAME, "stamp_collect_voxel_records")
+	var counter_buffer := storage_buffer_zero(4, SCOPE_FRAME, "stamp_collect_voxel_counter")
+	if not in_buffer.is_valid() or not out_buffer.is_valid() or not records_buffer.is_valid() or not counter_buffer.is_valid():
 		gc_frame()
-		return pixels
+		return fallback
 
 	var set0 := create_uniform_set([
-		make_sampler_uniform(0, _sampler, src_tex),
-		make_storage_uniform(1, records_buffer),
-		make_storage_uniform(2, counter_buffer),
-	], _shader_collect_disc_pixels, 0, SCOPE_PASS, "collect_disc_pixels")
+		make_storage_uniform(0, in_buffer),
+		make_storage_uniform(1, out_buffer),
+		make_storage_uniform(2, records_buffer),
+		make_storage_uniform(3, counter_buffer),
+	], _shader_stamp_collect_voxel_disc, 0, SCOPE_PASS, "stamp_collect_voxel_disc")
 	if not set0.is_valid():
 		gc_frame()
-		return pixels
+		return fallback
 
 	var push := PackedByteArray()
 	push.resize(48)
-	var compare_mode := 1 if force_write else (2 if source_compare else 0)
-	push.encode_s32(0, width)
-	push.encode_s32(4, height)
+	push.encode_s32(0, xz_res)
+	push.encode_s32(4, depth)
 	push.encode_s32(8, max_records)
-	push.encode_s32(12, compare_mode)
-	push.encode_s32(16, clampi(center_px.x, 0, width - 1))
-	push.encode_s32(20, clampi(center_px.y, 0, height - 1))
+	push.encode_s32(12, clampi(compare_mode, 0, 2))
+	push.encode_s32(16, clampi(center_px.x, 0, xz_res - 1))
+	push.encode_s32(20, clampi(center_px.y, 0, xz_res - 1))
 	push.encode_s32(24, radius)
 	push.encode_s32(28, disc_size)
 	push.encode_float(32, clampf(value, 0.0, 1.0))
@@ -1108,28 +1131,43 @@ func _collect_disc_pixels_gpu(
 	push.encode_float(40, 0.00001)
 	push.encode_float(44, SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE)
 
-	var groups := dispatch_groups_2d(disc_size, disc_size, 16, 16)
-	if not _gpu_dispatch_and_sync(_pipeline_collect_disc_pixels, [set0], push, groups):
+	var groups := dispatch_groups_3d(disc_size, disc_size, depth, 8, 8, 1)
+	if not _gpu_dispatch_and_sync(_pipeline_stamp_collect_voxel_disc, [set0], push, groups):
 		gc_frame()
-		return pixels
+		return fallback
 
+	var out_bytes := _rd.buffer_get_data(out_buffer)
+	var updated_slices: Array = []
+	updated_slices.resize(depth)
+	var slice_byte_len := voxel_per_slice * 4
+	for i in range(depth):
+		var start := i * slice_byte_len
+		if start + slice_byte_len > out_bytes.size():
+			updated_slices[i] = slice_images[i]
+			continue
+		updated_slices[i] = Image.create_from_data(xz_res, xz_res, false, Image.FORMAT_RF, out_bytes.slice(start, start + slice_byte_len))
+
+	var records: Array = []
 	var counter_bytes := _rd.buffer_get_data(counter_buffer, 0, 4)
 	var record_count := 0
 	if counter_bytes.size() >= 4:
 		record_count = clampi(int(counter_bytes.decode_u32(0)), 0, max_records)
-	if record_count <= 0:
-		gc_frame()
-		return pixels
+	if record_count > 0:
+		var record_bytes := _rd.buffer_get_data(records_buffer, 0, record_count * 16)
+		for i in range(record_count):
+			var base := i * 16
+			if base + 12 > record_bytes.size():
+				break
+			records.append({
+				"x": int(record_bytes.decode_u32(base + 0)),
+				"z": int(record_bytes.decode_u32(base + 4)),
+				"slice_local": int(record_bytes.decode_u32(base + 8)),
+			})
 
-	var record_bytes := _rd.buffer_get_data(records_buffer, 0, record_count * 16)
 	gc_frame()
-	for i in range(record_count):
-		var base := i * 16
-		var x := int(record_bytes.decode_u32(base + 0)) if base + 4 <= record_bytes.size() else 0
-		var z := int(record_bytes.decode_u32(base + 4)) if base + 8 <= record_bytes.size() else 0
-		pixels.append(Vector2i(x, z))
-	return pixels
+	return {"slices": updated_slices, "records": records}
 
+## GPU 采样 R32 图像指定像素，返回单像素值字典
 func _sample_scalar_image_pixel_gpu(img: Image, px: Vector2i) -> Dictionary:
 	if img == null or img.is_empty():
 		return {}
@@ -1183,6 +1221,7 @@ func _sample_scalar_image_pixel_gpu(img: Image, px: Vector2i) -> Dictionary:
 		"cpu_fallback": false,
 	}
 
+## 计算碰撞记录的有效半径（半径减腐蚀加膨胀）
 func _collision_effective_radius(collision: Dictionary) -> float:
 
 	var radius := maxf(float(collision.get("radius", 0.0)), 0.0)
@@ -1197,50 +1236,22 @@ func _collision_effective_radius(collision: Dictionary) -> float:
 
 	return maxf(radius - erosion, 0.0) + dilation
 
+## 判断碰撞记录是否为点采样类型（含 voxel/local_pos/voxel_offset）
 func _is_point_collision_sample(collision: Dictionary) -> bool:
 
 	return collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset")
 
+## 从多种类型（Vector3i/Vector3/Array/Dictionary）解析出 Vector3i
 func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
 
-	if value is Vector3i:
+	return VoxelGeneralScript.vector3i_from_value(value, fallback)
 
-		return value as Vector3i
-
-	if value is Vector3:
-
-		var v := value as Vector3
-
-		return Vector3i(roundi(v.x), roundi(v.y), roundi(v.z))
-
-	if value is Array:
-
-		var arr := value as Array
-
-		if arr.size() >= 3:
-
-			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
-
-	if value is Dictionary:
-
-		var dict := value as Dictionary
-
-		return Vector3i(
-
-			int(dict.get("x", fallback.x)),
-
-			int(dict.get("y", fallback.y)),
-
-			int(dict.get("z", fallback.z))
-
-		)
-
-	return fallback
-
+## 从碰撞记录中提取本地体素坐标
 func _collision_local_voxel(collision: Dictionary) -> Vector3i:
 
 	return _vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
 
+## 计算碰撞层在底图上的基础像素坐标（点采样类型叠加本地偏移）
 func _collision_layer_base_px(base_px: Vector2i, collision: Dictionary) -> Vector2i:
 
 	if not _is_point_collision_sample(collision):
@@ -1257,6 +1268,7 @@ func _collision_layer_base_px(base_px: Vector2i, collision: Dictionary) -> Vecto
 
 	)
 
+## 计算碰撞记录的像素半径，点采样优先用 radius_px 字段
 func _collision_radius_px(collision: Dictionary) -> int:
 
 	if _is_point_collision_sample(collision):
@@ -1269,6 +1281,7 @@ func _collision_radius_px(collision: Dictionary) -> int:
 
 	return maxi(1, _radius_to_px(_collision_effective_radius(collision)))
 
+## 规范化共享场层列表，统一字段并计算有效半径与像素半径
 func _normalize_shared_field_layers(field_layers: Array, base_px: Vector2i = Vector2i(-1, -1)) -> Array[Dictionary]:
 
 	var result: Array[Dictionary] = []
@@ -1353,6 +1366,7 @@ func _normalize_shared_field_layers(field_layers: Array, base_px: Vector2i = Vec
 
 	return result
 
+## 根据基础像素与碰撞层生成源碰撞层列表，跳过目标体素类型
 func _make_source_collision(base_px: Vector2i, collision_layers: Array, rec: Dictionary = {}) -> Array[Dictionary]:
 
 	var updated: Array[Dictionary] = []
@@ -1413,10 +1427,12 @@ func _make_source_collision(base_px: Vector2i, collision_layers: Array, rec: Dic
 
 	return updated
 
+## 生成场单元的字符串键（字段名:像素x:像素y）
 func _field_cell_key(field_name: String, px: Vector2i) -> String:
 
 	return "%s:%d:%d" % [field_name, px.x, px.y]
 
+## 确保体量对象中包含重采样后的碰撞层字段
 func _ensure_volume_collision_layer() -> void:
 
 	if _volume.is_empty():
@@ -1443,6 +1459,7 @@ func _ensure_volume_collision_layer() -> void:
 
 		_volume["collision"] = {}
 
+## 重采样碰撞场到指定 XZ 分辨率，GPU 失败时返回空白图像
 func _resample_collision_field(source_img: Image, xz_res: int) -> Image:
 	var gpu_img := _resample_collision_field_gpu(source_img, xz_res)
 	if gpu_img != null and not gpu_img.is_empty():
@@ -1453,6 +1470,7 @@ func _resample_collision_field(source_img: Image, xz_res: int) -> Image:
 	return img
 
 
+## GPU 将碰撞场重采样到目标 XZ 分辨率
 func _resample_collision_field_gpu(source_img: Image, xz_res: int) -> Image:
 	if source_img == null or source_img.is_empty() or xz_res <= 0:
 		return null
@@ -1517,6 +1535,7 @@ func _resample_collision_field_gpu(source_img: Image, xz_res: int) -> Image:
 	return result
 
 
+## 在体量场的圆形区域盖印标量值，并收集变更像素更新单元映射
 func _stamp_scalar_volume_disc(
 	field_name: String,
 	cell_map_name: String,
@@ -1539,20 +1558,21 @@ func _stamp_scalar_volume_disc(
 
 	var field_img: Image = _volume.get(field_name, _create_collision_image(xz_res))
 
-	var previous_field_img := field_img
-
 	var voxel_px := _volume_px_from_base(base_px, xz_res)
 
 	var radius_vol := _volume_radius_from_base_radius(radius_px, xz_res)
-
-	field_img = _stamp_scalar_image_disc(field_img, voxel_px, radius_vol, value, 0)
 
 	var cell_map: Dictionary = _volume.get(cell_map_name, {})
 
 	var field_value := clampf(value, 0.0, 1.0)
 
-	var changed_pixels := _collect_disc_pixels_gpu(previous_field_img, voxel_px, radius_vol, field_value, false)
-	for px in changed_pixels:
+	# Stamp + collect the flat collision field as a depth-1 voxel volume.
+	var stamp_result := _stamp_collect_voxel_disc_gpu([field_img], voxel_px, radius_vol, field_value, 0)
+	var updated_slices: Array = stamp_result.get("slices", [field_img])
+	if updated_slices.size() > 0 and updated_slices[0] is Image:
+		field_img = updated_slices[0]
+	for rec in stamp_result.get("records", []):
+		var px := Vector2i(int(rec.x), int(rec.z))
 		var cell := cell_template.duplicate(true)
 		cell[value_key] = field_value
 		cell["base_pixel"] = base_px
@@ -1568,6 +1588,7 @@ func _stamp_scalar_volume_disc(
 
 	return voxel_px
 
+## 盖印单个共享场层到碰撞与复杂度场，返回更新后的层字典
 func _stamp_shared_field_layer(base_px: Vector2i, source_layer: Dictionary, rec: Dictionary = {}) -> Dictionary:
 
 	var normalized := _normalize_shared_field_layers([source_layer], base_px)
@@ -1632,6 +1653,7 @@ func _stamp_shared_field_layer(base_px: Vector2i, source_layer: Dictionary, rec:
 
 	return layer
 
+## 盖印多个共享场层并刷新合并碰撞场，返回更新后的层列表
 func _stamp_shared_field_layers(base_px: Vector2i, field_layers: Array, rec: Dictionary = {}) -> Array[Dictionary]:
 
 	var updated: Array[Dictionary] = []
@@ -1650,6 +1672,7 @@ func _stamp_shared_field_layers(base_px: Vector2i, field_layers: Array, rec: Dic
 
 	return updated
 
+## 清空源碰撞场缓存并重置体量中的碰撞层字段
 func _clear_shared_field_cache() -> void:
 
 	_source_collision_field.fill(Color(0.0, 0.0, 0.0, 0.0))
@@ -1670,6 +1693,7 @@ func _clear_shared_field_cache() -> void:
 
 	_volume["collision"] = {}
 
+## 从场景体素字典重建共享场缓存，按脚印去重盖印碰撞层
 func _rebuild_shared_field_cache_from_scene_voxels(scene_voxels: Dictionary) -> void:
 
 	_clear_shared_field_cache()
@@ -1712,14 +1736,16 @@ func _rebuild_shared_field_cache_from_scene_voxels(scene_voxels: Dictionary) -> 
 
 		_stamp_shared_field_layers(base_px, collision_layers, voxel)
 
+## 在指定通道上盖印 occupancy 的圆形区域
 func _stamp_occupancy_channel(base_px: Vector2i, channel: int, radius_px: int, complexity: float) -> void:
 
 	if not _is_valid_channel(channel):
 
 		return
 
-	_occupancy = _stamp_scalar_image_disc(_occupancy, base_px, maxi(radius_px, 1), complexity, channel)
+	occupancy = _stamp_scalar_image_disc(occupancy, base_px, maxi(radius_px, 1), complexity, channel)
 
+## 按 profile 在 occupancy 上逐通道盖印圆形区域
 func _stamp_occupancy(base_px: Vector2i, profile: Array[Dictionary]) -> void:
 
 	for entry in profile:
@@ -1740,9 +1766,10 @@ func _stamp_occupancy(base_px: Vector2i, profile: Array[Dictionary]) -> void:
 
 ## Returns an Image at _base_res where R = 1.0 if candidate, 0.0 if blocked.
 
+## GPU 按profile筛选候选并输出候选图像
 func _gpu_filter_candidates(profile: Array[Dictionary]) -> Image:
 
-	var tex_occ := upload_texture_2d(_occupancy)
+	var tex_occ := upload_texture_2d(occupancy)
 
 	var tex_out := create_rw_texture_2d(_base_res, _base_res, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT, RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)
 
@@ -1791,20 +1818,7 @@ func _gpu_filter_candidates(profile: Array[Dictionary]) -> Image:
 
 ## ─── Query & Debug ───
 
-func get_occupancy() -> Image:
-
-	return _occupancy
-
-## Get the combined coarse collision field image.
-
-func get_collision_field() -> Image:
-
-	return _collision_field
-
-func get_terrain_base_collision_field() -> Image:
-
-	return _terrain_base_collision_field
-
+## 设置地形基础碰撞场，重采样后刷新合并场并标记重建
 func set_terrain_base_collision_field(base_collision: Image) -> void:
 
 	_terrain_base_collision_field = _resample_collision_field(base_collision, _base_res)
@@ -1827,6 +1841,7 @@ func set_terrain_base_collision_field(base_collision: Image) -> void:
 
 ## Get every placed mesh voxel_write_spec.
 
+## 获取全部体素写入规格记录列表
 func get_voxel_write_specs() -> Array[Dictionary]:
 
 	var records: Array[Dictionary] = []
@@ -1841,6 +1856,7 @@ func get_voxel_write_specs() -> Array[Dictionary]:
 
 ## Get one placed mesh voxel_write_spec by id.
 
+## 按网格ID获取单条体素写入规格记录
 func get_voxel_write_spec(mesh_id: String) -> Dictionary:
 
 	if not _voxel_write_spec_index.has(mesh_id):
@@ -1853,16 +1869,19 @@ func get_voxel_write_spec(mesh_id: String) -> Dictionary:
 
 	return record.duplicate(true)
 
+## 返回已注册体素写入规格的数量
 func get_voxel_write_spec_count() -> int:
 
 	return _voxel_write_specs.size()
 
+## 从记录中读取有效通道索引，无效返回 -1
 func _record_channel(record: Dictionary) -> int:
 	var ch := int(record.get("channel", -1))
 	if not _is_valid_channel(ch):
 		return -1
 	return ch
 
+## 从记录中读取或换算像素半径，至少为 1
 func _record_radius_px(record: Dictionary) -> int:
 	if record.has("radius_px"):
 		return maxi(int(record.radius_px), 1)
@@ -1870,28 +1889,22 @@ func _record_radius_px(record: Dictionary) -> int:
 		return _radius_to_px(float(record.radius))
 	return 1
 
+## 将基础像素坐标转换为体积分辨率下的像素坐标
 func _volume_px_from_base(base_px: Vector2i, xz_res: int) -> Vector2i:
 
-	return Vector2i(
+	return VoxelGeneralScript.base_pixel_to_volume_pixel(base_px, _base_res, xz_res)
 
-		clampi(int(float(base_px.x) / float(_base_res) * float(xz_res)), 0, xz_res - 1),
-
-		clampi(int(float(base_px.y) / float(_base_res) * float(xz_res)), 0, xz_res - 1)
-
-	)
-
+## 将基础分辨率像素半径转换为体积分辨率像素半径
 func _volume_radius_from_base_radius(radius_px: int, xz_res: int) -> int:
 
-	if radius_px <= 0:
+	return VoxelGeneralScript.base_radius_to_volume_radius(radius_px, _base_res, xz_res)
 
-		return 0
-
-	return maxi(1, ceili(float(radius_px) / float(_base_res) * float(xz_res)))
-
+## 计算下一个写入 tick，取生成 tick 或已提交 tick+1
 func _next_write_tick() -> int:
 
 	return _generation_tick if _generation_tick > _committed_tick else _committed_tick + 1
 
+## 开始一个生成 tick，标记场景体素为脏并返回该 tick
 func begin_generation_tick(tick: int = -1) -> int:
 
 	var write_tick := tick if tick >= 0 else _next_write_tick()
@@ -1902,6 +1915,7 @@ func begin_generation_tick(tick: int = -1) -> int:
 
 	return write_tick
 
+## 根据记录与通道返回对应的切片索引列表
 func _slice_indices_for_channel_record(entry: Dictionary, channel: int) -> Array[int]:
 
 	var indices: Array[int] = []
@@ -1936,24 +1950,30 @@ func _slice_indices_for_channel_record(entry: Dictionary, channel: int) -> Array
 
 	return indices
 
+## 注册场景体素 tile 尺寸的项目设置
 func _register_scene_voxel_tile_project_settings() -> void:
 	SceneVoxelTileCodecScript.register_project_settings(SCENE_VOXEL_TILE_SIZE_SETTING, DEFAULT_SCENE_VOXEL_TILE_SIZE)
 
+## 读取配置的场景体素 tile 尺寸
 func _scene_voxel_tile_size() -> Vector3i:
 
 	return SceneVoxelTileCodecScript.configured_size(SCENE_VOXEL_TILE_SIZE_SETTING, DEFAULT_SCENE_VOXEL_TILE_SIZE)
 
+## 根据网格尺寸与 tile 尺寸计算 tile 网格尺寸
 func _scene_voxel_tile_grid_size(tile_size: Vector3i = Vector3i.ZERO) -> Vector3i:
 
 	var size := tile_size if tile_size.x > 0 and tile_size.y > 0 and tile_size.z > 0 else _scene_voxel_tile_size()
 	return SceneVoxelTileCodecScript.tile_grid_size(grid_size, size)
 
+## 由体素坐标反推所属 tile 坐标
 func _scene_voxel_tile_coord_from_voxel(voxel_coord: Vector3i) -> Vector3i:
 	return SceneVoxelTileCodecScript.tile_coord_from_voxel(voxel_coord, grid_size, _scene_voxel_tile_size())
 
+## 返回指定 tile 坐标的体素边界与基础矩形
 func _scene_voxel_tile_bounds(tile_coord: Vector3i) -> Dictionary:
 	return SceneVoxelTileCodecScript.tile_bounds(tile_coord, grid_size, _scene_voxel_tile_size())
 
+## 构造指定 tile 坐标的默认 tile 记录字典
 func _default_scene_voxel_tile_record(tile_coord: Vector3i) -> Dictionary:
 
 	var bounds := _scene_voxel_tile_bounds(tile_coord)
@@ -2016,6 +2036,7 @@ func _default_scene_voxel_tile_record(tile_coord: Vector3i) -> Dictionary:
 
 	}
 
+## 从 tile 记录中提取摘要信息
 func _scene_voxel_tile_summary(tile: Dictionary) -> Dictionary:
 
 	return {
@@ -2030,12 +2051,15 @@ func _scene_voxel_tile_summary(tile: Dictionary) -> Dictionary:
 
 	}
 
+## 从记录中按候选键顺序取首个 Vector3i 值
 func _scene_voxel_tile_first_vector3i(record: Dictionary, keys: Array[String], fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
 	return SceneVoxelTileCodecScript.first_vector3i(record, keys, fallback)
 
+## 判断记录中是否包含任一候选键
 func _scene_voxel_tile_has_any_key(record: Dictionary, keys: Array[String]) -> bool:
 	return SceneVoxelTileCodecScript.has_any_key(record, keys)
 
+## 规范化体素边界并裁剪到网格范围内
 func _scene_voxel_tile_normalized_bounds(voxel_min: Vector3i, voxel_max: Vector3i) -> Dictionary:
 	return SceneVoxelTileCodecScript.normalized_bounds(voxel_min, voxel_max, grid_size)
 
@@ -2054,6 +2078,7 @@ func _for_each_scene_voxel_tile_in_bounds(voxel_min: Vector3i, voxel_max: Vector
 			for tx in range(tile_min.x, tile_max.x + 1):
 				action.call(Vector3i(tx, ty, tz))
 
+## 从记录字段解析 tile 的体素边界，支持显式边界或基于像素换算
 func _scene_voxel_tile_bounds_from_record(record: Dictionary) -> Dictionary:
 
 	if _scene_voxel_tile_has_any_key(record, ["voxel_min", "bounds_min", "new_voxel_min", "new_bounds_min"]) and _scene_voxel_tile_has_any_key(record, ["voxel_max", "bounds_max", "new_voxel_max", "new_bounds_max"]):
@@ -2134,6 +2159,7 @@ func _scene_voxel_tile_bounds_from_record(record: Dictionary) -> Dictionary:
 
 	)
 
+## 从记录多个候选键中取首个非空 GPU autoobject ID
 func _scene_voxel_tile_gpu_autoobject_id(record: Dictionary) -> String:
 
 	for key in ["object_id", "auto_object_id", "auto_id", "id", "record_id"]:
@@ -2150,6 +2176,7 @@ func _scene_voxel_tile_gpu_autoobject_id(record: Dictionary) -> String:
 
 	return ""
 
+## 从源记录候选键中取调试用对象 ID
 func _scene_voxel_tile_debug_object_id(source_record: Dictionary) -> String:
 
 	for key in ["auto_object_id", "auto_id", "id", "record_id"]:
@@ -2162,6 +2189,7 @@ func _scene_voxel_tile_debug_object_id(source_record: Dictionary) -> String:
 
 	return ""
 
+## 从源记录候选键中取调试用源 ID
 func _scene_voxel_tile_debug_source_id(source_record: Dictionary) -> String:
 
 	for key in ["record_id", "id", "source_id", "auto_object_id", "auto_id"]:
@@ -2174,6 +2202,7 @@ func _scene_voxel_tile_debug_source_id(source_record: Dictionary) -> String:
 
 	return ""
 
+## 将值列表追加到目标数组，返回追加区间的起止索引
 func _append_scene_voxel_tile_debug_range(target: Array[String], values: Array) -> Vector2i:
 
 	var start := target.size()
@@ -2188,6 +2217,7 @@ func _append_scene_voxel_tile_debug_range(target: Array[String], values: Array) 
 
 	return Vector2i(start, target.size() - start)
 
+## 追加调试值到列表，可选去重
 func _append_scene_voxel_tile_debug_value(values: Array, value: String, unique: bool = true) -> void:
 
 	if value.is_empty():
@@ -2200,6 +2230,7 @@ func _append_scene_voxel_tile_debug_value(values: Array, value: String, unique: 
 
 	values.append(value)
 
+## 向 tile 追加记录的调试对象引用，返回更新后的 tile
 func _append_scene_voxel_tile_record_refs(tile: Dictionary, record: Dictionary, unique_source: bool = false) -> Dictionary:
 
 	var debug_id := _scene_voxel_tile_debug_object_id(record)
@@ -2212,6 +2243,7 @@ func _append_scene_voxel_tile_record_refs(tile: Dictionary, record: Dictionary, 
 
 	return tile
 
+## 对边界内所有 tile 追加记录引用
 func _append_scene_voxel_tile_record_refs_for_bounds(
 	record: Dictionary,
 	voxel_min: Vector3i,
@@ -2234,6 +2266,7 @@ func _append_scene_voxel_tile_record_refs_for_bounds(
 		_scene_voxel_tiles[tile_id] = tile
 	)
 
+## 重建 tile 紧凑对象引用区间，统计溢出并更新调试 ID 列表
 func _rebuild_scene_voxel_tile_compact_ranges() -> void:
 
 	_scene_voxel_tile_object_ids_debug.clear()
@@ -2289,6 +2322,7 @@ func _rebuild_scene_voxel_tile_compact_ranges() -> void:
 
 		_scene_voxel_tiles[tile_id] = tile
 
+## 重建 tile 源引用，重置引用字段后按 GPU autoobject 引用重新填充
 func _rebuild_scene_voxel_tile_source_refs() -> void:
 
 	for tile_id in _scene_voxel_tiles.keys():
@@ -2327,6 +2361,7 @@ func _rebuild_scene_voxel_tile_source_refs() -> void:
 
 	_rebuild_scene_voxel_tile_compact_ranges()
 
+## 触摸指定 tile，更新边界与脏标记并返回该 tile
 func _touch_scene_voxel_tile(tile_coord: Vector3i, dirty_flags = {}, source_record: Dictionary = {}) -> Dictionary:
 
 	var tile_grid := _scene_voxel_tile_grid_size()
@@ -2387,12 +2422,14 @@ func _touch_scene_voxel_tile(tile_coord: Vector3i, dirty_flags = {}, source_reco
 
 	return tile
 
+## 由切片索引与像素坐标触摸对应 tile
 func _touch_scene_voxel_tile_from_voxel(slice_index: int, voxel_xz: Vector2i, dirty_flags = {}, source_record: Dictionary = {}) -> void:
 
 	var coord := _scene_voxel_tile_coord_from_voxel(Vector3i(voxel_xz.x, slice_index, voxel_xz.y))
 
 	_touch_scene_voxel_tile(coord, dirty_flags, source_record)
 
+## 为场景体素 tile 标记对应遗留 SV tile 为脏
 func _mark_legacy_sv_tiles_for_scene_voxel_tile(tile_coord: Vector3i, dirty_flags: Dictionary) -> void:
 
 	if _volume.is_empty():
@@ -2431,6 +2468,7 @@ func _mark_legacy_sv_tiles_for_scene_voxel_tile(tile_coord: Vector3i, dirty_flag
 
 					_mark_sv_tile_dirty(slice_index, legacy_px, layer, SV_RESIDENT_TILE_SIZE, {}, false)
 
+## 重置所有 tile 的摘要统计字段并标记暂存脏
 func _reset_scene_voxel_tile_summaries() -> void:
 
 	for tile_id in _scene_voxel_tiles.keys():
@@ -2451,6 +2489,7 @@ func _reset_scene_voxel_tile_summaries() -> void:
 
 	_mark_scene_voxel_tile_staging_dirty("summary_reset")
 
+## 累加更新 tile 的场景复杂度摘要（计数与最值）
 func _update_scene_voxel_tile_scene_summary(slice_index: int, voxel_xz: Vector2i, complexity: float) -> void:
 
 	var coord := _scene_voxel_tile_coord_from_voxel(Vector3i(voxel_xz.x, slice_index, voxel_xz.y))
@@ -2481,6 +2520,7 @@ func _update_scene_voxel_tile_scene_summary(slice_index: int, voxel_xz: Vector2i
 
 	_mark_scene_voxel_tile_staging_dirty("scene_summary_rebuild")
 
+## 累加更新 tile 的碰撞强度摘要（计数与最值）
 func _update_scene_voxel_tile_collision_summary(slice_index: int, voxel_xz: Vector2i, collision_strength: float) -> void:
 
 	var coord := _scene_voxel_tile_coord_from_voxel(Vector3i(voxel_xz.x, slice_index, voxel_xz.y))
@@ -2511,6 +2551,7 @@ func _update_scene_voxel_tile_collision_summary(slice_index: int, voxel_xz: Vect
 
 	_mark_scene_voxel_tile_staging_dirty("collision_summary_rebuild")
 
+## 清除所有 tile 的脏标记并更新提交 tick
 func _clear_scene_voxel_tile_dirty_flags() -> void:
 
 	for tile_id in _scene_voxel_tiles.keys():
@@ -2531,6 +2572,7 @@ func _clear_scene_voxel_tile_dirty_flags() -> void:
 
 	_mark_scene_voxel_tile_staging_dirty("dirty_clear")
 
+## 返回当前所有脏 tile 的快照字典
 func _dirty_scene_voxel_tile_snapshot() -> Dictionary:
 
 	var result := {}
@@ -2545,6 +2587,7 @@ func _dirty_scene_voxel_tile_snapshot() -> Dictionary:
 
 	return result
 
+## 判断场景体素是否落在任一脏 tile 的体素边界内
 func _scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel: Dictionary, dirty_tiles: Dictionary) -> bool:
 
 	if dirty_tiles.is_empty():
@@ -2581,6 +2624,7 @@ func _scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel: Dictionary, dirty_tile
 
 	return false
 
+## 收集当前与上一帧中落在脏 tile 内的场景体素键
 func _dirty_scene_voxel_source_keys(current_scene_voxels: Dictionary, previous_scene_voxels: Dictionary, dirty_tiles: Dictionary) -> Dictionary:
 
 	var keys := {}
@@ -2611,10 +2655,12 @@ func _dirty_scene_voxel_source_keys(current_scene_voxels: Dictionary, previous_s
 
 	return keys
 
+## 收集源流映射中落在脏 tile 内的场景体素键
 func _dirty_scene_voxel_source_stream_keys(previous_scene_voxels: Dictionary, dirty_tiles: Dictionary) -> Dictionary:
 
 	return _dirty_scene_voxel_source_keys(_scene_voxel_source_stream_map(), previous_scene_voxels, dirty_tiles)
 
+## 上传场景体素 tile 的各类存储缓冲到 GPU,可选强制全量上传
 func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 
 	_scene_voxel_tile_last_upload_error = ""
@@ -2803,6 +2849,7 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 
 	return true
 
+## 增量更新脏 tile 对应的存储缓冲区段并刷新摘要
 func _update_scene_voxel_tile_dirty_ranges(
 	tile_ids: Array[String],
 	packed_records: PackedByteArray,
@@ -2930,6 +2977,7 @@ func _update_scene_voxel_tile_dirty_ranges(
 
 	return true
 
+## 从待上传 tile 列表中筛选出实际脏 tile 的 ID
 func _scene_voxel_tile_dirty_upload_ids(tile_ids: Array[String]) -> Array[String]:
 
 	var dirty_lookup := {}
@@ -2954,6 +3002,7 @@ func _scene_voxel_tile_dirty_upload_ids(tile_ids: Array[String]) -> Array[String
 
 	return scoped
 
+## 校验现有 GPU 缓冲是否可复用于当前 tile 集合与字段容量
 func _scene_voxel_tile_can_update_existing_buffers(tile_ids: Array[String], complexity_field_count: int, collision_field_count: int) -> bool:
 
 	if _rd == null or _scene_voxel_tile_uploaded_revision < 0:
@@ -2990,6 +3039,7 @@ func _scene_voxel_tile_can_update_existing_buffers(tile_ids: Array[String], comp
 
 	return true
 
+## 逐项比较两个字符串数组是否完全相等
 func _scene_voxel_tile_string_arrays_equal(a: Array[String], b: Array[String]) -> bool:
 
 	if a.size() != b.size():
@@ -3004,6 +3054,7 @@ func _scene_voxel_tile_string_arrays_equal(a: Array[String], b: Array[String]) -
 
 	return true
 
+## 按 tile 索引更新记录缓冲的对应字节区段
 func _update_scene_voxel_tile_record_ranges(
 	buffer_name: String,
 	bytes: PackedByteArray,
@@ -3038,6 +3089,7 @@ func _update_scene_voxel_tile_record_ranges(
 
 	return true
 
+## 整体覆盖写入指定 tile 缓冲并记录大小与哈希
 func _update_scene_voxel_tile_whole_buffer(buffer_name: String, bytes: PackedByteArray, record_count: int, stride_bytes: int) -> bool:
 
 	var upload_bytes := bytes.duplicate()
@@ -3065,6 +3117,7 @@ func _update_scene_voxel_tile_whole_buffer(buffer_name: String, bytes: PackedByt
 
 	return true
 
+## 按 tile 体素边界逐行更新场缓冲的字节区段
 func _update_scene_voxel_tile_field_ranges(
 	buffer_name: String,
 	value_count: int,
@@ -3157,6 +3210,7 @@ func _update_scene_voxel_tile_field_ranges(
 
 	return {"ok": true, "voxel_count": voxel_count, "range_count": range_count}
 
+## 根据作用域瓦片ID列表构建瓦片索引字节数组
 func _scene_voxel_tile_scoped_index_bytes(tile_ids: Array[String], scoped_tile_ids: Array[String]) -> PackedByteArray:
 
 	var indices := PackedInt32Array()
@@ -3171,6 +3225,7 @@ func _scene_voxel_tile_scoped_index_bytes(tile_ids: Array[String], scoped_tile_i
 
 	return indices.to_byte_array()
 
+## 通过Compute Shader更新瓦片摘要脏范围
 func _update_scene_voxel_tile_summary_dirty_ranges_compute(
 	tile_ids: Array[String],
 	scoped_tile_ids: Array[String],
@@ -3307,6 +3362,7 @@ func _update_scene_voxel_tile_summary_dirty_ranges_compute(
 		"cpu_fallback": false,
 	}
 
+## 将GPU自动对象脏增量打包为字节序列
 func _pack_gpu_autoobject_dirty_delta_words(deltas: Array) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	for raw_delta in deltas:
@@ -3354,6 +3410,7 @@ func _pack_gpu_autoobject_dirty_delta_words(deltas: Array) -> PackedByteArray:
 		bytes.encode_s32(base + 76, int(delta.get("flush_epoch", 0)))
 	return bytes
 
+## 打包对象引用更新Compute Shader的push constant字节
 func _pack_scene_voxel_tile_object_ref_update_push(
 	dirty_delta_count: int,
 	dirty_delta_capacity: int,
@@ -3389,6 +3446,7 @@ func _pack_scene_voxel_tile_object_ref_update_push(
 	push.encode_s32(76, dirty_flag_schema)
 	return push
 
+## 构造空的对象引用更新统计结果
 func _empty_scene_voxel_tile_object_ref_update_stats(reason: String) -> Dictionary:
 	return {
 		"ok": false,
@@ -3421,21 +3479,25 @@ func _empty_scene_voxel_tile_object_ref_update_stats(reason: String) -> Dictiona
 		"transient_dirty_scene_voxel_tile_cpu_metadata_bridge": "none",
 	}
 
+## 安全读取统计字数组的指定索引值
 func _scene_voxel_tile_object_ref_update_stat(words: PackedInt32Array, index: int) -> int:
 	if index < 0 or index >= words.size():
 		return 0
 	return maxi(int(words[index]), 0)
 
+## 根据脏增量来源返回对应的脏标记schema枚举
 func _scene_voxel_tile_object_ref_dirty_flag_schema(dirty_delta_source: String) -> int:
 	if dirty_delta_source.contains("gpu_autoobject_runtime"):
 		return SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME
 	return SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_SCENE_VOXEL_TILE
 
+## 将脏标记schema枚举转为可读名称
 func _scene_voxel_tile_object_ref_dirty_flag_schema_name(schema: int) -> String:
 	if schema == SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME:
 		return "gpu_autoobject_runtime_dirty_flags"
 	return "scene_voxel_tile_dirty_flags"
 
+## 由扁平瓦片索引还原三维瓦片坐标
 func _scene_voxel_tile_coord_from_object_ref_tile_index(tile_index: int, tile_grid: Vector3i) -> Vector3i:
 	var safe_x := maxi(tile_grid.x, 1)
 	var safe_z := maxi(tile_grid.z, 1)
@@ -3445,6 +3507,7 @@ func _scene_voxel_tile_coord_from_object_ref_tile_index(tile_index: int, tile_gr
 	var y := int(zy / safe_z)
 	return Vector3i(x, y, z)
 
+## 解码瞬态脏瓦片的标记位与工作清单
 func _decode_scene_voxel_tile_object_ref_transient_dirty_tiles(
 	dirty_flag_bytes: PackedByteArray,
 	dirty_worklist_bytes: PackedByteArray,
@@ -3493,6 +3556,7 @@ func _decode_scene_voxel_tile_object_ref_transient_dirty_tiles(
 		"flags_by_tile_id": flags_by_tile_id,
 	}
 
+## 将瞬态脏瓦片结果合并到返回字典
 func _merge_scene_voxel_tile_object_ref_transient_dirty_result(result: Dictionary, update_stats: Dictionary) -> void:
 	result["transient_dirty_scene_voxel_tile_gpu_emitted"] = bool(update_stats.get("transient_dirty_scene_voxel_tile_gpu_emitted", false))
 	result["transient_dirty_scene_voxel_tile_count"] = int(update_stats.get("transient_dirty_scene_voxel_tile_count", 0))
@@ -3509,6 +3573,7 @@ func _merge_scene_voxel_tile_object_ref_transient_dirty_result(result: Dictionar
 	result["transient_dirty_scene_voxel_tile_worklist_overflow_count"] = int(update_stats.get("transient_dirty_scene_voxel_tile_worklist_overflow_count", 0))
 	result["transient_dirty_scene_voxel_tile_cpu_metadata_bridge"] = str(update_stats.get("transient_dirty_scene_voxel_tile_cpu_metadata_bridge", "none"))
 
+## 基于借用脏增量缓冲执行GPU对象引用更新
 func _update_gpu_autoobject_object_refs_from_dirty_delta_buffer(
 	dirty_delta_buffer: RID,
 	dirty_delta_count: int,
@@ -3675,6 +3740,7 @@ func _update_gpu_autoobject_object_refs_from_dirty_delta_buffer(
 	gc_frame()
 	return stats.duplicate(true)
 
+## 由脏增量数组打包并派发GPU对象引用更新
 func _update_gpu_autoobject_object_refs_from_dirty_deltas(deltas: Array) -> Dictionary:
 	if deltas.is_empty():
 		_scene_voxel_tile_object_ref_last_update_stats = _empty_scene_voxel_tile_object_ref_update_stats("empty_dirty_delta_batch")
@@ -3703,6 +3769,7 @@ func _update_gpu_autoobject_object_refs_from_dirty_deltas(deltas: Array) -> Dict
 		"staged_dirty_delta_buffer"
 	)
 
+## 更新指定瓦片GPU缓冲的字节区间
 func _update_scene_voxel_tile_buffer_bytes(buffer_name: String, offset: int, bytes: PackedByteArray) -> bool:
 
 	if _rd == null or bytes.is_empty():
@@ -3731,6 +3798,7 @@ func _update_scene_voxel_tile_buffer_bytes(buffer_name: String, offset: int, byt
 
 	return true
 
+## 确保本地渲染设备已就绪
 func _ensure_scene_voxel_tile_rendering_device() -> bool:
 
 	if _rd != null:
@@ -3751,6 +3819,7 @@ func _ensure_scene_voxel_tile_rendering_device() -> bool:
 
 	return true
 
+## 判断场景体素瓦片GPU缓冲是否就绪
 func is_scene_voxel_tile_gpu_ready() -> bool:
 
 	if _rd == null or not _scene_voxel_tile_gpu_ready:
@@ -3771,6 +3840,7 @@ func is_scene_voxel_tile_gpu_ready() -> bool:
 
 	return true
 
+## 获取指定名称的瓦片GPU缓冲RID
 func get_scene_voxel_tile_gpu_buffer(buffer_name: String) -> RID:
 
 	return _scene_voxel_tile_gpu_buffers.get(buffer_name, RID())
@@ -3781,6 +3851,7 @@ func get_scene_voxel_tile_gpu_buffer(buffer_name: String) -> RID:
 func get_scene_voxel_tile_summary_gpu_buffer() -> RID:
 	return _scene_voxel_tile_gpu_buffers.get(SCENE_VOXEL_TILE_SUMMARY_BUFFER, RID())
 
+## 返回场景体素瓦片GPU缓冲汇总信息
 func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
 
 	var buffers := {}
@@ -3935,6 +4006,7 @@ func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
 		"buffers": buffers,
 	}
 
+## 回读瓦片GPU缓冲的调试快照
 func readback_scene_voxel_tile_debug_snapshot() -> Dictionary:
 
 	var summary := get_scene_voxel_tile_gpu_buffer_summary()
@@ -4001,6 +4073,7 @@ func readback_scene_voxel_tile_debug_snapshot() -> Dictionary:
 
 	return summary
 
+## 将GPU摘要发布到场景体素字典
 func _publish_scene_voxel_tile_gpu_summary_to_sv() -> void:
 
 	if _sv.is_empty():
@@ -4023,6 +4096,7 @@ func _publish_scene_voxel_tile_gpu_summary_to_sv() -> void:
 
 	_sv["scene_voxel_tile_summary_gpu_rid"] = get_scene_voxel_tile_summary_gpu_buffer()
 
+## 设置GPU自动上传开关并可选立即上传
 func set_scene_voxel_tile_gpu_auto_upload(enabled: bool, upload_now: bool = false) -> bool:
 
 	_scene_voxel_tile_gpu_auto_upload = enabled
@@ -4033,10 +4107,12 @@ func set_scene_voxel_tile_gpu_auto_upload(enabled: bool, upload_now: bool = fals
 
 	return true
 
+## 查询GPU自动上传是否启用
 func is_scene_voxel_tile_gpu_auto_upload_enabled() -> bool:
 
 	return _scene_voxel_tile_gpu_auto_upload
 
+## 标记staging数据已变更需要重新上传
 func _mark_scene_voxel_tile_staging_dirty(reason: String = "staging_changed") -> void:
 
 	_scene_voxel_tile_staging_revision += 1
@@ -4051,6 +4127,7 @@ func _mark_scene_voxel_tile_staging_dirty(reason: String = "staging_changed") ->
 
 		_scene_voxel_tile_gpu_stale_reason = "never_uploaded"
 
+## 在启用自动上传时尝试上传瓦片缓冲
 func _maybe_auto_upload_scene_voxel_tile_buffers(reason: String = "auto_upload") -> void:
 
 	if not _scene_voxel_tile_gpu_auto_upload:
@@ -4065,6 +4142,7 @@ func _maybe_auto_upload_scene_voxel_tile_buffers(reason: String = "auto_upload")
 
 		_scene_voxel_tile_last_upload_error = "%s_failed" % reason
 
+## 释放瓦片GPU缓冲并可保留指定缓冲
 func _release_scene_voxel_tile_gpu_buffers(preserve_buffer_names: Array = []) -> void:
 
 	var preserve := {}
@@ -4131,6 +4209,7 @@ func _release_scene_voxel_tile_gpu_buffers(preserve_buffer_names: Array = []) ->
 
 	_scene_voxel_tile_gpu_stale_reason = "buffers_released" if preserve.is_empty() else "buffers_released_partial"
 
+## 创建瓦片存储缓冲并登记元数据
 func _create_scene_voxel_tile_storage_buffer(buffer_name: String, bytes: PackedByteArray, record_count: int, stride_bytes: int) -> bool:
 
 	if _rd == null:
@@ -4169,6 +4248,7 @@ func _create_scene_voxel_tile_storage_buffer(buffer_name: String, bytes: PackedB
 
 	return true
 
+## 复用已有瓦片存储缓冲并刷新元数据
 func _reuse_scene_voxel_tile_storage_buffer(buffer_name: String, bytes: PackedByteArray, record_count: int, stride_bytes: int) -> bool:
 
 	if not _scene_voxel_tile_can_reuse_storage_buffer(buffer_name, bytes, record_count, stride_bytes):
@@ -4189,6 +4269,7 @@ func _reuse_scene_voxel_tile_storage_buffer(buffer_name: String, bytes: PackedBy
 
 	return true
 
+## 返回可复用的常驻字段缓冲名称列表
 func _scene_voxel_tile_reusable_resident_field_buffers(
 	packed_complexity_field: PackedByteArray,
 	complexity_field_count: int,
@@ -4218,6 +4299,7 @@ func _scene_voxel_tile_reusable_resident_field_buffers(
 
 	return reusable
 
+## 判断存储缓冲是否可按内容哈希复用
 func _scene_voxel_tile_can_reuse_storage_buffer(buffer_name: String, bytes: PackedByteArray, record_count: int, stride_bytes: int) -> bool:
 
 	var rid: RID = _scene_voxel_tile_gpu_buffers.get(buffer_name, RID())
@@ -4244,6 +4326,7 @@ func _scene_voxel_tile_can_reuse_storage_buffer(buffer_name: String, bytes: Pack
 
 	return int(_scene_voxel_tile_gpu_buffer_hashes.get(buffer_name, 0)) == _scene_voxel_tile_bytes_hash(bytes)
 
+## 通过哈希证明缓冲字节完全相等
 func _scene_voxel_tile_can_prove_buffer_bytes_equal(buffer_name: String, bytes: PackedByteArray, record_count: int, stride_bytes: int) -> bool:
 
 	var rid: RID = _scene_voxel_tile_gpu_buffers.get(buffer_name, RID())
@@ -4280,6 +4363,7 @@ func _scene_voxel_tile_can_prove_buffer_bytes_equal(buffer_name: String, bytes: 
 
 	return stored_hash == _scene_voxel_tile_bytes_hash(bytes)
 
+## 计算字节序列的FNV哈希
 func _scene_voxel_tile_bytes_hash(bytes: PackedByteArray) -> int:
 
 	var h := 2166136261
@@ -4292,6 +4376,7 @@ func _scene_voxel_tile_bytes_hash(bytes: PackedByteArray) -> int:
 
 	return h
 
+## 回读指定瓦片GPU缓冲的字节
 func _read_scene_voxel_tile_buffer_bytes(buffer_name: String) -> PackedByteArray:
 
 	if _rd == null:
@@ -4312,6 +4397,7 @@ func _read_scene_voxel_tile_buffer_bytes(buffer_name: String) -> PackedByteArray
 
 	return _rd.buffer_get_data(rid, 0, byte_size)
 
+## 准备上传用的复杂度字段数组
 func _scene_voxel_tile_complexity_field_for_upload() -> PackedFloat32Array:
 
 	if not _sv.is_empty():
@@ -4332,6 +4418,7 @@ func _scene_voxel_tile_complexity_field_for_upload() -> PackedFloat32Array:
 
 	return _try_make_sv_complexity_field_from_source_streams_gpu(xz_res, total_slices)
 
+## 将单通道复杂度字段扩展为vec4交错格式
 func _expand_complexity_field_to_vec4(field: PackedFloat32Array) -> PackedFloat32Array:
 	# Convert legacy float complexity-only field to vec4(rgba) interleaved format.
 	# For backward compatibility, white color is used when no color data exists.
@@ -4346,6 +4433,7 @@ func _expand_complexity_field_to_vec4(field: PackedFloat32Array) -> PackedFloat3
 		result[base + 3] = clampf(field[i], 0.0, 1.0)  # complexity as alpha
 	return result
 
+## 准备上传用的碰撞字段数组
 func _scene_voxel_tile_collision_field_for_upload() -> PackedFloat32Array:
 
 	if not _sv.is_empty():
@@ -4368,26 +4456,33 @@ func _scene_voxel_tile_collision_field_for_upload() -> PackedFloat32Array:
 
 	return _make_sv_collision_field(collision, xz_res, total_slices)
 
+## 将任意值转为打包浮点字段
 func _scene_voxel_tile_packed_float_field(value) -> PackedFloat32Array:
 	return SceneVoxelTileCodecScript.packed_float_field(value)
 
+## 将浮点字段打包为字节
 func _pack_scene_voxel_tile_float_field_bytes(values: PackedFloat32Array) -> PackedByteArray:
 	return SceneVoxelTileCodecScript.pack_float_field_bytes(values)
 
+## 将字节解码为浮点字段
 func _decode_scene_voxel_tile_float_field_bytes(bytes: PackedByteArray) -> PackedFloat32Array:
 	return SceneVoxelTileCodecScript.decode_float_field_bytes(bytes)
 
+## 返回排序后的瓦片ID列表
 func _scene_voxel_tile_sorted_ids() -> Array[String]:
 	return SceneVoxelTileCodecScript.sorted_tile_ids(_scene_voxel_tiles)
 
+## 打包瓦片记录为字节并缓存ID
 func _pack_scene_voxel_tile_record_bytes(tile_ids: Array[String]) -> PackedByteArray:
 
 	_scene_voxel_tile_gpu_tile_ids = tile_ids.duplicate()
 	return SceneVoxelTileCodecScript.pack_record_bytes(tile_ids, _scene_voxel_tiles, _scene_voxel_tile_size())
 
+## 打包瓦片摘要为字节
 func _pack_scene_voxel_tile_summary_bytes(tile_ids: Array[String]) -> PackedByteArray:
 	return SceneVoxelTileCodecScript.pack_summary_bytes(tile_ids, _scene_voxel_tiles)
 
+## 打包脏瓦片索引为字节并记录脏ID
 func _pack_scene_voxel_tile_dirty_index_bytes(tile_ids: Array[String]) -> PackedByteArray:
 	_scene_voxel_tile_gpu_dirty_tile_ids.clear()
 	var packed: Dictionary = SceneVoxelTileCodecScript.pack_dirty_index_bytes(tile_ids, _scene_voxel_tiles)
@@ -4398,6 +4493,7 @@ func _pack_scene_voxel_tile_dirty_index_bytes(tile_ids: Array[String]) -> Packed
 	var bytes: PackedByteArray = packed.get("bytes", PackedByteArray())
 	return bytes
 
+## 按稳定哈希打包固定槽位对象引用字节
 func _pack_scene_voxel_tile_fixed_object_ref_hash_bytes(
 	tile_ids: Array[String],
 	refs_per_tile: int = SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT
@@ -4425,14 +4521,17 @@ func _pack_scene_voxel_tile_fixed_object_ref_hash_bytes(
 
 	return bytes
 
+## 计算瓦片网格的总瓦片数
 func _scene_voxel_tile_total_tile_count(tile_grid: Vector3i = Vector3i.ZERO) -> int:
 	var grid := tile_grid if tile_grid.x > 0 and tile_grid.y > 0 and tile_grid.z > 0 else _scene_voxel_tile_grid_size()
-	return maxi(grid.x, 0) * maxi(grid.y, 0) * maxi(grid.z, 0)
+	return SceneVoxelTileCodecScript.tile_count(grid)
 
+## 由三维瓦片坐标计算扁平索引
 func _scene_voxel_tile_flattened_tile_index(tile_coord: Vector3i, tile_grid: Vector3i = Vector3i.ZERO) -> int:
 	var grid := tile_grid if tile_grid.x > 0 and tile_grid.y > 0 and tile_grid.z > 0 else _scene_voxel_tile_grid_size()
-	return tile_coord.x + grid.x * (tile_coord.z + grid.z * tile_coord.y)
+	return SceneVoxelTileCodecScript.tile_index_unclamped(tile_coord, grid)
 
+## 从任意值解析出数值对象ID
 func _scene_voxel_tile_numeric_object_id_from_value(value) -> int:
 	if value is int:
 		return int(value)
@@ -4444,6 +4543,7 @@ func _scene_voxel_tile_numeric_object_id_from_value(value) -> int:
 		return int(text)
 	return -1
 
+## 从记录字典中提取数值对象ID
 func _scene_voxel_tile_numeric_object_id(record: Dictionary) -> int:
 	for key in ["object_id", "auto_object_id", "auto_id", "id", "record_id"]:
 		if record.has(key):
@@ -4452,6 +4552,7 @@ func _scene_voxel_tile_numeric_object_id(record: Dictionary) -> int:
 				return numeric_id
 	return -1
 
+## 按数值键打包对象引用字节并统计溢出
 func _pack_scene_voxel_tile_numeric_object_ref_bytes(refs_per_tile: int = SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT) -> PackedByteArray:
 	var safe_refs_per_tile := maxi(refs_per_tile, 1)
 	var tile_grid := _scene_voxel_tile_grid_size()
@@ -4499,24 +4600,31 @@ func _pack_scene_voxel_tile_numeric_object_ref_bytes(refs_per_tile: int = SCENE_
 
 	return bytes
 
+## 解码脏索引字节为脏瓦片ID列表
 func _decode_scene_voxel_tile_dirty_ids(bytes: PackedByteArray) -> Array[String]:
 	return SceneVoxelTileCodecScript.decode_dirty_ids(bytes, _scene_voxel_tile_gpu_tile_ids)
 
+## 解码瓦片记录字节为字典数组
 func _decode_scene_voxel_tile_records(bytes: PackedByteArray, tile_ids: Array[String]) -> Array[Dictionary]:
 	return SceneVoxelTileCodecScript.decode_records(bytes, tile_ids)
 
+## 解码摘要字节为字典数组
 func _decode_scene_voxel_tile_summaries(bytes: PackedByteArray, tile_ids: Array[String]) -> Array[Dictionary]:
 	return SceneVoxelTileCodecScript.decode_summaries(bytes, tile_ids)
 
+## 计算字符串的稳定哈希
 static func _stable_scene_voxel_tile_hash(value: String) -> int:
 	return SceneVoxelTileCodecScript.stable_hash(value)
 
+## 生成SV瓦片的存储键
 func _sv_tile_key(slice_index: int, voxel_px: Vector2i, layer: String = "scene", tile_size: int = SV_RESIDENT_TILE_SIZE) -> String:
 	return SceneVoxelTileCodecScript.sv_tile_key(slice_index, voxel_px, layer, tile_size)
 
+## 计算SV瓦片的XZ边界矩形
 func _sv_tile_bounds(voxel_px: Vector2i, tile_size: int = SV_RESIDENT_TILE_SIZE) -> Rect2i:
 	return SceneVoxelTileCodecScript.sv_tile_bounds(voxel_px, tile_size)
 
+## 标记指定SV瓦片为脏并可选联动场景体素瓦片
 func _mark_sv_tile_dirty(
 	slice_index: int,
 	voxel_xz: Vector2i,
@@ -4574,10 +4682,12 @@ func _mark_sv_tile_dirty(
 
 	_sv_dirty = true
 
+## 将矩形裁剪到基础分辨率范围内
 func _clip_base_rect(rect: Rect2i) -> Rect2i:
 
 	return rect.intersection(Rect2i(0, 0, _base_res, _base_res))
 
+## 标记矩形区域内所有SV瓦片为脏
 func _mark_sv_rect_dirty(base_rect: Rect2i, slice_indices: Array = [], include_collision: bool = true) -> void:
 
 	var clipped := _clip_base_rect(base_rect)
@@ -4650,9 +4760,11 @@ func _mark_sv_rect_dirty(base_rect: Rect2i, slice_indices: Array = [], include_c
 
 					_mark_sv_tile_dirty(si, tile_px, "collision")
 
+## 打包场景体素提交的源流数值
 func _pack_scene_voxel_commit_source_values(source_stream: Dictionary, source_keys: Array) -> PackedFloat32Array:
 	return SceneVoxelCommitPayloadScript.pack_source_values(source_stream, source_keys, SCENE_VOXEL_COMMIT_SOURCE_FLOAT_STRIDE)
 
+## 尝试解析源键为体素坐标字典
 func _try_parse_scene_voxel_source_key_coord(source_key) -> Dictionary:
 	var parts := str(source_key).split(":")
 	if parts.size() != 3:
@@ -4663,6 +4775,7 @@ func _try_parse_scene_voxel_source_key_coord(source_key) -> Dictionary:
 		"voxel_z": int(parts[2]),
 	}
 
+## 将已提交源键打包为坐标字节
 func _pack_committed_scene_voxel_key_coord_bytes(source_keys: Array) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(source_keys.size() * SCENE_VOXEL_COMMITTED_KEY_COORD_STRIDE_BYTES)
@@ -4716,12 +4829,8 @@ func _try_blend_scene_voxel_commit_payloads_gpu(source_keys: Array, _commit_tick
 		return result
 
 	return {}
-func get_committed_scene_voxel_payload_buffer() -> RID:
-	return _committed_scene_voxel_payload_buffer
 
-func get_committed_scene_voxel_key_coord_buffer() -> RID:
-	return _committed_scene_voxel_key_coord_buffer
-
+## 检查已提交体素负载缓冲是否有效且字节计数匹配
 func _committed_scene_voxel_payload_buffer_ready() -> bool:
 	return (
 		_committed_scene_voxel_payload_buffer.is_valid()
@@ -4729,6 +4838,7 @@ func _committed_scene_voxel_payload_buffer_ready() -> bool:
 		and _committed_scene_voxel_payload_buffer_byte_count == _committed_scene_voxel_payload_buffer_count * SCENE_VOXEL_COMMITTED_PAYLOAD_STRIDE_BYTES
 	)
 
+## 检查已提交体素关键坐标缓冲是否有效且字节计数匹配
 func _committed_scene_voxel_key_coord_buffer_ready() -> bool:
 	return (
 		_committed_scene_voxel_key_coord_buffer.is_valid()
@@ -4736,6 +4846,7 @@ func _committed_scene_voxel_key_coord_buffer_ready() -> bool:
 		and _committed_scene_voxel_key_coord_buffer_byte_count == _committed_scene_voxel_key_coord_buffer_count * SCENE_VOXEL_COMMITTED_KEY_COORD_STRIDE_BYTES
 	)
 
+## 检查已提交负载与关键坐标缓冲是否构成可用的密集投影
 func _committed_scene_voxel_dense_projection_ready(expected_count: int = -1) -> bool:
 	if expected_count >= 0 and _committed_scene_voxel_payload_buffer_count != expected_count:
 		return false
@@ -4747,6 +4858,7 @@ func _committed_scene_voxel_dense_projection_ready(expected_count: int = -1) -> 
 		and _committed_scene_voxel_payload_buffer_count == _committed_scene_voxel_key_coord_buffer_count
 	)
 
+## 汇总已提交关键坐标缓冲的就绪状态与诊断信息
 func get_committed_scene_voxel_key_coord_buffer_summary() -> Dictionary:
 	var ready := _committed_scene_voxel_key_coord_buffer_ready()
 	var dense_projection_ready := _committed_scene_voxel_dense_projection_ready()
@@ -4773,6 +4885,7 @@ func get_committed_scene_voxel_key_coord_buffer_summary() -> Dictionary:
 		"cpu_fallback": false,
 	}
 
+## 检查公共调试缓存是否已根据提交缓冲填充完毕
 func _scene_voxel_public_debug_cache_hydrated() -> bool:
 	if _volume.is_empty():
 		return false
@@ -4786,12 +4899,14 @@ func _scene_voxel_public_debug_cache_hydrated() -> bool:
 	var expected_count := int(_volume.get("scene_voxels_debug_api_projection_expected_count", _committed_scene_voxel_payload_buffer_count))
 	return (raw_scene_voxels as Dictionary).size() == expected_count
 
+## 返回已填充的公共调试缓存条目数量
 func _scene_voxel_public_debug_cache_count() -> int:
 	if not _scene_voxel_public_debug_cache_hydrated():
 		return 0
 	var raw_scene_voxels = _volume.get("scene_voxels", {})
 	return (raw_scene_voxels as Dictionary).size() if raw_scene_voxels is Dictionary else 0
 
+## 汇总已提交体素负载缓冲及公共投影的诊断信息
 func get_committed_scene_voxel_payload_buffer_summary() -> Dictionary:
 	var ready := _committed_scene_voxel_payload_buffer_ready()
 	var dense_projection_ready := _committed_scene_voxel_dense_projection_ready()
@@ -4842,6 +4957,7 @@ func get_committed_scene_voxel_payload_buffer_summary() -> Dictionary:
 	summary.merge(get_committed_scene_voxel_key_coord_buffer_summary(), true)
 	return summary
 
+## 释放已提交体素负载及关键坐标缓冲并重置状态
 func _release_committed_scene_voxel_payload_buffer() -> void:
 	if _committed_scene_voxel_payload_buffer.is_valid():
 		release_rid(_committed_scene_voxel_payload_buffer, false)
@@ -4852,6 +4968,7 @@ func _release_committed_scene_voxel_payload_buffer() -> void:
 	_committed_scene_voxel_payload_buffer_commit_tick = -1
 	_committed_scene_voxel_payload_buffer_source = "none"
 
+## 释放已提交体素关键坐标缓冲并重置相关状态
 func _release_committed_scene_voxel_key_coord_buffer() -> void:
 	if _committed_scene_voxel_key_coord_buffer.is_valid():
 		release_rid(_committed_scene_voxel_key_coord_buffer, false)
@@ -4861,6 +4978,7 @@ func _release_committed_scene_voxel_key_coord_buffer() -> void:
 	_committed_scene_voxel_key_coord_buffer_commit_tick = -1
 	_committed_scene_voxel_key_coord_buffer_source = "none"
 
+## 标记公共调试缓存为待从已提交缓冲填充的暂存状态
 func _stage_scene_voxel_public_debug_cache_from_committed_buffers(commit_tick: int, expected_count: int) -> void:
 	if _volume.is_empty():
 		return
@@ -4876,6 +4994,7 @@ func _stage_scene_voxel_public_debug_cache_from_committed_buffers(commit_tick: i
 	_volume["scene_voxels_debug_api_collision_projection_source"] = "resident_committed_scene_voxel_payload_buffer"
 	_volume["scene_voxels_debug_api_collision_projection_exact_layers"] = false
 
+## 标记公共调试缓存已从已提交状态映射填充完成
 func _mark_scene_voxel_public_debug_cache_from_committed_map(commit_tick: int, expected_count: int) -> void:
 	if _volume.is_empty():
 		return
@@ -4891,6 +5010,7 @@ func _mark_scene_voxel_public_debug_cache_from_committed_map(commit_tick: int, e
 	_volume["scene_voxels_debug_api_collision_projection_readback_source"] = "none"
 	_volume["scene_voxels_debug_api_collision_projection_exact_layers"] = false
 
+## 从已提交负载槽位解码单个体素的调试投影字典
 func _committed_scene_voxel_debug_payload_from_slot(
 	payloads: PackedFloat32Array,
 	payload_base: int,
@@ -4939,6 +5059,7 @@ func _committed_scene_voxel_debug_payload_from_slot(
 		SharedPropertyTypeScript.apply_to_scene_voxel(scene_voxel, source_fields, complexity, include_collision)
 	)
 
+## 将公共调试缓存摘要发布到 sv 字典
 func _publish_scene_voxel_public_debug_cache_summary_to_sv() -> void:
 	if _sv.is_empty():
 		return
@@ -4966,6 +5087,7 @@ func _publish_scene_voxel_public_debug_cache_summary_to_sv() -> void:
 	if bool(committed_payload_summary.get("public_scene_voxel_projection_cache_hydrated", false)):
 		_sv["scene_voxel_count"] = int(committed_payload_summary.get("public_scene_voxel_projection_cache_count", _sv.get("scene_voxel_count", 0)))
 
+## 从已提交 GPU 缓冲回读并填充公共调试体素缓存
 func _hydrate_scene_voxel_public_debug_cache_from_committed_buffers() -> bool:
 	if _scene_voxel_public_debug_cache_hydrated():
 		return true
@@ -5030,6 +5152,7 @@ func _hydrate_scene_voxel_public_debug_cache_from_committed_buffers() -> bool:
 	_publish_scene_voxel_public_debug_cache_summary_to_sv()
 	return true
 
+## 将 GPU 负载数据提交写入最终场景体素源映射
 func _commit_scene_voxel_sources_from_gpu_payloads(
 	source_keys: Array,
 	payloads: PackedFloat32Array,
@@ -5047,11 +5170,13 @@ func _commit_scene_voxel_sources_from_gpu_payloads(
 		SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE
 	)
 
+## 尝试用 GPU 源流生成场景体素复杂度场并回读
 func _try_make_sv_complexity_field_from_source_streams_gpu(xz_res: int, total_slices: int) -> PackedFloat32Array:
 	var result := _try_make_sv_complexity_field_from_source_streams_gpu_result(xz_res, total_slices)
 	var field: PackedFloat32Array = result.get("field", PackedFloat32Array())
 	return field
 
+## 生成场景体素复杂度场并返回包含来源与缓冲的详细结果
 func _try_make_sv_complexity_field_from_source_streams_gpu_result(
 	xz_res: int,
 	total_slices: int,
@@ -5249,6 +5374,7 @@ func _try_make_sv_complexity_field_from_source_streams_gpu_result(
 		result["complexity_field_buffer"] = output_buffer
 	return result
 
+## 合并地形基础碰撞场与场景体素碰撞记录生成最终碰撞场
 func _make_sv_collision_field(collision: Dictionary, xz_res: int, total_slices: int) -> PackedFloat32Array:
 
 	var terrain_base_img: Image = _volume.get("terrain_base_collision_field", _resample_collision_field(_terrain_base_collision_field, xz_res))
@@ -5269,6 +5395,7 @@ func _make_sv_collision_field(collision: Dictionary, xz_res: int, total_slices: 
 
 	return field
 
+## 生成仅含碰撞记录摘要的碰撞场(不含地形基底)
 func _make_sv_collision_record_summary_field(collision: Dictionary, xz_res: int, total_slices: int) -> PackedFloat32Array:
 	var voxel_count := xz_res * xz_res * total_slices
 	var field := PackedFloat32Array()
@@ -5283,6 +5410,7 @@ func _make_sv_collision_record_summary_field(collision: Dictionary, xz_res: int,
 	push_error("[SceneVoxelCommitter] SV collision summary record merge compute failed")
 	return field
 
+## 在 GPU 上构建碰撞记录摘要缓冲并保留输出 RID
 func _make_sv_collision_record_summary_gpu_buffer(
 	collision: Dictionary,
 	xz_res: int,
@@ -5347,6 +5475,7 @@ func _make_sv_collision_record_summary_gpu_buffer(
 	gc_frame()
 	return result
 
+## 将碰撞字典打包为 GPU 合并所需的扁平浮点记录数组
 func _pack_sv_collision_records(collision: Dictionary, xz_res: int, total_slices: int) -> PackedFloat32Array:
 
 	var records := PackedFloat32Array()
@@ -5388,6 +5517,7 @@ func _pack_sv_collision_records(collision: Dictionary, xz_res: int, total_slices
 
 	return records
 
+## 在 GPU 上将碰撞记录合并进基础碰撞场并回读结果
 func _merge_sv_collision_records_gpu(base_field: PackedFloat32Array, collision: Dictionary, xz_res: int, total_slices: int) -> PackedFloat32Array:
 
 	var voxel_count := xz_res * xz_res * total_slices
@@ -5452,6 +5582,7 @@ func _merge_sv_collision_records_gpu(base_field: PackedFloat32Array, collision: 
 	return merged_field
 
 
+## 生成地形基础碰撞体素场,失败时返回空场
 func _make_terrain_base_collision_volume_field(terrain_base_img: Image, xz_res: int, total_slices: int) -> PackedFloat32Array:
 	if terrain_base_img == null or terrain_base_img.is_empty():
 		var empty_field := PackedFloat32Array()
@@ -5464,6 +5595,7 @@ func _make_terrain_base_collision_volume_field(terrain_base_img: Image, xz_res: 
 	return gpu_field
 
 
+## 用 GPU compute 着色器从地形图像生成三维碰撞体素场
 func _make_terrain_base_collision_volume_field_gpu(terrain_base_img: Image, xz_res: int, total_slices: int) -> PackedFloat32Array:
 	var voxel_count := xz_res * xz_res * total_slices
 	if terrain_base_img == null or terrain_base_img.is_empty() or voxel_count <= 0:
@@ -5520,6 +5652,7 @@ func _make_terrain_base_collision_volume_field_gpu(terrain_base_img: Image, xz_r
 	return field
 
 
+## 根据记录与图层构造场景体素源模板字典
 func _make_scene_voxel_source_record_template(
 
 	record: Dictionary,
@@ -5600,6 +5733,7 @@ func _make_scene_voxel_source_record_template(
 
 	return source_voxel
 
+## 清空所有场景体素源流及候选并释放已提交缓冲
 func _clear_scene_voxel_source_streams() -> void:
 
 	_auto_scene_voxel_sources.clear()
@@ -5616,6 +5750,7 @@ func _clear_scene_voxel_source_streams() -> void:
 
 	_release_committed_scene_voxel_payload_buffer()
 
+## 返回指定源流类型中给定键的当前源记录
 func _source_stream_current(source_type: String, key: String):
 
 	if source_type == "BrushSceneVoxel":
@@ -5624,6 +5759,7 @@ func _source_stream_current(source_type: String, key: String):
 
 	return _auto_scene_voxel_sources.get(key, {})
 
+## 将源元数据存入对应类型的源流字典
 func _store_scene_voxel_source(source_type: String, key: String, source_metadata: Dictionary) -> void:
 
 	if source_type == "BrushSceneVoxel":
@@ -5634,6 +5770,7 @@ func _store_scene_voxel_source(source_type: String, key: String, source_metadata
 
 		_auto_scene_voxel_sources[key] = source_metadata
 
+## 返回指定源类型对应的待处理候选流字典
 func _pending_source_stream(source_type: String) -> Dictionary:
 
 	if source_type == "BrushSceneVoxel":
@@ -5642,10 +5779,12 @@ func _pending_source_stream(source_type: String) -> Dictionary:
 
 	return _pending_auto_scene_voxel_source_candidates
 
+## 读取源候选字典的写入 tick 值
 func _source_candidate_write_tick(source_voxel: Dictionary) -> int:
 
 	return int(source_voxel.get("write_tick", -1))
 
+## 将源候选加入对应键的待处理候选队列
 func _queue_scene_voxel_source_candidate(source_type: String, key: String, source_metadata: Dictionary) -> void:
 
 	var pending_stream := _pending_source_stream(source_type)
@@ -5674,6 +5813,7 @@ func _queue_scene_voxel_source_candidate(source_type: String, key: String, sourc
 
 	pending_stream[key] = candidates
 
+## 将待处理候选流按键分组追加到组列表
 func _append_pending_source_candidate_groups(groups: Array[Dictionary], source_type: String, pending_stream: Dictionary) -> void:
 
 	for key in pending_stream.keys():
@@ -5694,12 +5834,14 @@ func _append_pending_source_candidate_groups(groups: Array[Dictionary], source_t
 
 		})
 
+## 收集所有待处理场景体素源候选分组
 func _pending_scene_voxel_source_candidate_groups() -> Array[Dictionary]:
 	var groups: Array[Dictionary] = []
 	_append_pending_source_candidate_groups(groups, "AutoSceneVoxel", _pending_auto_scene_voxel_source_candidates)
 	_append_pending_source_candidate_groups(groups, "BrushSceneVoxel", _pending_brush_scene_voxel_source_candidates)
 	return groups
 
+## 将候选分组展开为扁平的候选字典数组
 func _flatten_source_candidate_groups(groups: Array[Dictionary]) -> Array[Dictionary]:
 
 	var result: Array[Dictionary] = []
@@ -5716,6 +5858,7 @@ func _flatten_source_candidate_groups(groups: Array[Dictionary]) -> Array[Dictio
 
 	return result
 
+## 从候选分组中提取去重排序后的源键列表
 func _source_keys_from_candidate_groups(groups: Array[Dictionary]) -> Array:
 	var key_set := {}
 	for group in groups:
@@ -5724,6 +5867,7 @@ func _source_keys_from_candidate_groups(groups: Array[Dictionary]) -> Array:
 	source_keys.sort()
 	return source_keys
 
+## 将候选分组打包为 GPU 缓冲所需的字节与范围数据
 func _pack_scene_voxel_source_candidate_groups(groups: Array[Dictionary]) -> Dictionary:
 	# Build per-source-key candidate buckets: {key_str: {"auto": [candidates], "brush": [candidates]}}
 	var key_buckets := {}
@@ -5811,6 +5955,7 @@ func _pack_scene_voxel_source_candidate_groups(groups: Array[Dictionary]) -> Dic
 		"source_key_count": source_keys.size(),
 	}
 
+## 释放所有常驻源候选缓冲并重置容量与计数
 func _release_scene_voxel_source_candidate_resident_buffers() -> void:
 	if _scene_voxel_source_candidate_records_buffer.is_valid():
 		release_rid(_scene_voxel_source_candidate_records_buffer, false)
@@ -5833,12 +5978,14 @@ func _release_scene_voxel_source_candidate_resident_buffers() -> void:
 	_scene_voxel_source_candidate_group_indices_capacity = 0
 	_scene_voxel_source_candidate_group_indices_count = 0
 
+## 清零常驻源候选缓冲的条目计数(不释放缓冲)
 func _clear_scene_voxel_source_candidate_resident_counts() -> void:
 	_scene_voxel_source_candidate_records_count = 0
 	_scene_voxel_source_candidate_ranges_count = 0
 	_scene_voxel_source_candidate_payloads_count = 0
 	_scene_voxel_source_candidate_group_indices_count = 0
 
+## 上传或更新常驻源候选记录缓冲并返回是否成功
 func _stage_scene_voxel_source_candidate_records(bytes: PackedByteArray, record_count: int) -> bool:
 	if _rd == null or record_count <= 0:
 		_scene_voxel_source_candidate_records_count = 0
@@ -5883,6 +6030,7 @@ func _stage_scene_voxel_source_candidate_records(bytes: PackedByteArray, record_
 	_scene_voxel_source_candidate_records_count = record_count
 	return true
 
+## 上传或更新常驻源候选范围缓冲并返回是否成功
 func _stage_scene_voxel_source_candidate_ranges(bytes: PackedByteArray, range_count: int) -> bool:
 	if _rd == null or range_count <= 0:
 		_scene_voxel_source_candidate_ranges_count = 0
@@ -5927,6 +6075,7 @@ func _stage_scene_voxel_source_candidate_ranges(bytes: PackedByteArray, range_co
 	_scene_voxel_source_candidate_ranges_count = range_count
 	return true
 
+## 上传或更新常驻源候选负载缓冲并返回是否成功
 func _stage_scene_voxel_source_candidate_payloads(bytes: PackedByteArray, payload_count: int) -> bool:
 	if _rd == null or payload_count <= 0:
 		_scene_voxel_source_candidate_payloads_count = 0
@@ -5971,6 +6120,7 @@ func _stage_scene_voxel_source_candidate_payloads(bytes: PackedByteArray, payloa
 	_scene_voxel_source_candidate_payloads_count = payload_count
 	return true
 
+## 上传或更新常驻源候选分组索引缓冲并返回是否成功
 func _stage_scene_voxel_source_candidate_group_indices(bytes: PackedByteArray, group_count: int) -> bool:
 	if _rd == null or group_count <= 0:
 		_scene_voxel_source_candidate_group_indices_count = 0
@@ -6015,6 +6165,7 @@ func _stage_scene_voxel_source_candidate_group_indices(bytes: PackedByteArray, g
 	_scene_voxel_source_candidate_group_indices_count = group_count
 	return true
 
+## 统一组装上传全部常驻源候选缓冲并推进暂存纪元
 func _stage_scene_voxel_source_candidate_resident_buffers(
 	candidate_bytes: PackedByteArray,
 	candidate_count: int,
@@ -6038,6 +6189,7 @@ func _stage_scene_voxel_source_candidate_resident_buffers(
 	_scene_voxel_source_candidate_staging_epoch += 1
 	return true
 
+## 将待处理源候选暂存至常驻 GPU 缓冲并返回诊断报告
 func stage_pending_scene_voxel_source_candidates_to_resident_buffers() -> Dictionary:
 	var groups := _pending_scene_voxel_source_candidate_groups()
 	var report := {
@@ -6107,6 +6259,7 @@ func stage_pending_scene_voxel_source_candidates_to_resident_buffers() -> Dictio
 	report.merge(_scene_voxel_source_candidate_resident_diagnostics(staged), true)
 	return report
 
+## 生成常驻源候选缓冲的就绪状态与容量诊断字典
 func _scene_voxel_source_candidate_resident_diagnostics(staged: bool) -> Dictionary:
 	var resident_ready := (
 		staged
@@ -6175,6 +6328,7 @@ func _scene_voxel_source_candidate_resident_diagnostics(staged: bool) -> Diction
 		"resident_source_candidate_staging_epoch": _scene_voxel_source_candidate_staging_epoch,
 	}
 
+## 返回已解析源流的运行时读取来源诊断字典
 func _resolved_scene_voxel_source_stream_diagnostics(_resident: bool) -> Dictionary:
 	return {
 		"runtime_read_source": "merged_resolve_commit",
@@ -6185,6 +6339,7 @@ func _resolved_scene_voxel_source_stream_diagnostics(_resident: bool) -> Diction
 		"final_source_stream_resident_stride_bytes": SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE * 4,
 	}
 
+## 生成源候选 CPU 桥接的诊断字典
 func _scene_voxel_source_candidate_cpu_bridge_diagnostics(
 	winner_readback_source: String,
 	winner_readback_count: int,
@@ -6201,6 +6356,7 @@ func _scene_voxel_source_candidate_cpu_bridge_diagnostics(
 		"final_source_stream_resident_source": "none",
 	}
 
+## 从摘要字典提取并整理源桥接诊断字段
 func _scene_voxel_source_bridge_diagnostics_from_summary(summary: Dictionary) -> Dictionary:
 	return {
 		"runtime_read_source": str(summary.get("runtime_read_source", "none")),
@@ -6219,11 +6375,13 @@ func _scene_voxel_source_bridge_diagnostics_from_summary(summary: Dictionary) ->
 		"resident_brush_source_stream_buffer_rid": str(summary.get("resident_brush_source_stream_buffer_rid", "none")),
 	}
 
+## 计算源候选用于投影比较的优先级分数
 func _source_candidate_priority_for_projection(candidate: Dictionary) -> float:
 	if candidate.has("priority"):
 		return float(candidate.get("priority", 0.0))
 	return 100.0 if SceneVoxelSourceRecordScript.source_type_code(candidate) == SCENE_VOXEL_COMMIT_SOURCE_BRUSH else 10.0
 
+## 判断候选是否在优先级或复杂度上胜过当前选中项
 func _source_candidate_beats_projection(candidate: Dictionary, current: Dictionary) -> bool:
 	var candidate_priority := _source_candidate_priority_for_projection(candidate)
 	var current_priority := _source_candidate_priority_for_projection(current)
@@ -6233,6 +6391,7 @@ func _source_candidate_beats_projection(candidate: Dictionary, current: Dictiona
 		return false
 	return SceneVoxelScript.complexity(candidate) >= SceneVoxelScript.complexity(current)
 
+## 从候选数组中选出用于公共投影的最佳源候选
 func _selected_source_candidate_for_public_projection(candidates: Array) -> Dictionary:
 	var selected := {}
 	for raw_candidate in candidates:
@@ -6243,6 +6402,7 @@ func _selected_source_candidate_for_public_projection(candidates: Array) -> Dict
 			selected = candidate
 	return selected
 
+## 将解析后的源候选投影写入源流并返回投影数量
 func _project_resolved_source_candidates_for_public_debug(groups: Array[Dictionary]) -> int:
 	var projected_count := 0
 	for group in groups:
@@ -6258,6 +6418,7 @@ func _project_resolved_source_candidates_for_public_debug(groups: Array[Dictiona
 		projected_count += 1
 	return projected_count
 
+## 尝试在 GPU 上解析场景体素源候选并返回结果字典
 func _try_resolve_scene_voxel_source_candidates_gpu(groups: Array[Dictionary]) -> Dictionary:
 
 	if groups.is_empty():
@@ -6412,6 +6573,7 @@ func _try_resolve_scene_voxel_source_candidates_gpu(groups: Array[Dictionary]) -
 		"final_source_stream_resident": true,
 	}
 
+## 刷新待处理的场景体素源候选并尝试GPU解析提交
 func _flush_pending_scene_voxel_source_candidates() -> void:
 
 	var groups := _pending_scene_voxel_source_candidate_groups()
@@ -6495,10 +6657,12 @@ func _flush_pending_scene_voxel_source_candidates() -> void:
 
 	_pending_brush_scene_voxel_source_candidates.clear()
 
+## 判断上次场景体素源GPU解析是否失败被阻塞
 func _scene_voxel_source_resolve_blocked() -> bool:
 
 	return str(_last_scene_voxel_source_resolve_summary.get("mode", "")) == "compute_dispatch_failed"
 
+## 刷新候选并返回自动与笔刷体素源的合并流映射
 func _scene_voxel_source_stream_map() -> Dictionary:
 
 	_flush_pending_scene_voxel_source_candidates()
@@ -6515,6 +6679,7 @@ func _scene_voxel_source_stream_map() -> Dictionary:
 
 	return result
 
+## 将单条场景体素源记录入队为候选并标记对应瓦片脏
 func _enqueue_scene_voxel_source_record(source_voxel: Dictionary, source_tick: int = -1) -> void:
 
 	if source_voxel.is_empty():
@@ -6554,12 +6719,14 @@ func _enqueue_scene_voxel_source_record(source_voxel: Dictionary, source_tick: i
 
 	_mark_sv_tile_dirty(slice_index, voxel_xz, "scene", SV_RESIDENT_TILE_SIZE, source_metadata)
 
+## 根据记录的瓦片边界标记目标引导瓦片为脏
 func _mark_target_guidance_dirty(record: Dictionary) -> void:
 
 	var bounds := _scene_voxel_tile_bounds_from_record(record)
 
 	mark_scene_voxel_tile_bounds_dirty(bounds.voxel_min, bounds.voxel_max, SceneVoxelTargetScript.target_dirty_flags(), {})
 
+## 把线性索引转换为瓦片网格三维坐标
 func _tile_coord_from_summary_index(index: int, tile_grid: Vector3i) -> Vector3i:
 	var safe_x := maxi(tile_grid.x, 1)
 	var safe_y := maxi(tile_grid.y, 1)
@@ -6569,9 +6736,11 @@ func _tile_coord_from_summary_index(index: int, tile_grid: Vector3i) -> Vector3i
 	var z := int(yz / safe_y)
 	return Vector3i(x, y, z)
 
+## 将量化后的整数值还原为体素摘要浮点值
 func _decode_tile_summary_value(raw_value: int) -> float:
 	return float(maxi(raw_value, 0)) / SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE
 
+## 解码紧凑摘要缓冲区为场景体素瓦片摘要数组
 func _decode_scene_voxel_tile_compact_summaries(bytes: PackedByteArray, record_count: int, tile_grid: Vector3i) -> Array[Dictionary]:
 	var summaries: Array[Dictionary] = []
 	var byte_stride := SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE * 4
@@ -6610,6 +6779,7 @@ func _decode_scene_voxel_tile_compact_summaries(bytes: PackedByteArray, record_c
 		})
 	return summaries
 
+## 执行帧级GC但临时保留指定RID免被回收
 func _gc_frame_preserving_rids(preserved_rids: Array) -> void:
 	if preserved_rids.is_empty():
 		gc_frame()
@@ -6641,6 +6811,7 @@ func _gc_frame_preserving_rids(preserved_rids: Array) -> void:
 		if str(entry.get("scope", "")) == preserve_scope:
 			entry["scope"] = str(preserved.get("scope", SCOPE_FRAME))
 
+## 在GPU上对复杂度与碰撞场做体素瓦片摘要归约与紧凑化
 func _reduce_scene_voxel_tile_summaries_gpu(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
@@ -6793,6 +6964,7 @@ func _reduce_scene_voxel_tile_summaries_gpu(
 		"summary_compaction_source": "compact_scene_voxel_tile_summaries_compute",
 	}
 
+## 将GPU归约得到的瓦片摘要写回场景体素瓦片表并标记脏
 func _apply_scene_voxel_tile_reduce_summaries(reduced: Dictionary) -> void:
 	var summaries: Array = reduced.get("summaries", [])
 	for raw_summary in summaries:
@@ -6813,6 +6985,7 @@ func _apply_scene_voxel_tile_reduce_summaries(reduced: Dictionary) -> void:
 	if not summaries.is_empty():
 		_mark_scene_voxel_tile_staging_dirty("tile_summary_reduce")
 
+## 从归约摘要生成旧版场景与碰撞瓦片记录字典
 func _legacy_sv_tiles_from_reduce_summaries(
 	reduced: Dictionary,
 	tile_size: int,
@@ -6864,6 +7037,7 @@ func _legacy_sv_tiles_from_reduce_summaries(
 			}
 	return tiles
 
+## 重建场景体素(SV)状态并发布最终摘要快照
 func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 	if _volume.is_empty():
@@ -7149,6 +7323,7 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 	return _sv.duplicate(true)
 
+## 在3D体素切片上盖章圆形复杂度并生成场景体素源记录入队
 func _stamp_volume_slices(
 
 	base_px: Vector2i,
@@ -7183,34 +7358,46 @@ func _stamp_volume_slices(
 
 	var force_source_write := source_type == "BrushSceneVoxel" or bool(scene_voxel_template.get("write_empty_voxels", false))
 
+	# Gather the target slices and stamp + collect them in one 3D voxel pass.
+	var gathered: Array = []
 	for si in slice_indices:
+		gathered.append(slices[si])
 
-		var img: Image = slices[si]
+	var compare_mode := 1 if force_source_write else 2
+	var stamp_result := _stamp_collect_voxel_disc_gpu(gathered, voxel_px, radius_vol, v, compare_mode)
+	var updated_slices: Array = stamp_result.get("slices", gathered)
+	for local_i in range(slice_indices.size()):
+		var si: int = slice_indices[local_i]
+		slices[si] = updated_slices[local_i] if local_i < updated_slices.size() and updated_slices[local_i] is Image else gathered[local_i]
 
-		var previous_img := img
-
-		img = _stamp_scalar_image_disc(img, voxel_px, radius_vol, v, 0)
-
-		var changed_pixels := _collect_disc_pixels_gpu(previous_img, voxel_px, radius_vol, v, force_source_write, true) if not scene_voxel_template.is_empty() else []
-		for px in changed_pixels:
+	if not scene_voxel_template.is_empty():
+		for rec in stamp_result.get("records", []):
+			var local_slice := int(rec.slice_local)
+			if local_slice < 0 or local_slice >= slice_indices.size():
+				continue
 			var scene_voxel := scene_voxel_template.duplicate(true)
-			scene_voxel["slice_index"] = si
-			scene_voxel["voxel_xz"] = px
+			scene_voxel["slice_index"] = slice_indices[local_slice]
+			scene_voxel["voxel_xz"] = Vector2i(int(rec.x), int(rec.z))
 			scene_voxel["complexity"] = v
 			scene_voxel = SharedPropertyTypeScript.apply_to_scene_voxel(scene_voxel, scene_voxel, v, SharedPropertyTypeScript.has_collision_fields(scene_voxel))
 			scene_voxel = SceneVoxelSourceRecordScript.prepare_source_record(scene_voxel, write_tick if write_tick >= 0 else _generation_tick)
 			_enqueue_scene_voxel_source_record(scene_voxel)
 
-		slices[si] = img
-
 	_volume["slices"] = slices
 
 	return voxel_px
 
-## Apply an actual placed mesh's ISWS / legacy voxel_write_spec into SceneVoxel and buffers.
+## Apply an actual placed mesh's ISWS (instance stamp write spec) into SceneVoxel and buffers.
 
 ## This keeps runtime MeshInstance3D placement and the occupancy/voxel volume in sync.
 
+## 应用实例盖章写入规格并返回提交报告
+func apply_instance_stamp_write_spec(record: Dictionary, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
+	return apply_voxel_write_spec(record, defer_blend, generation_tick)
+
+## Deprecated: use apply_instance_stamp_write_spec() instead.
+
+## 应用单条体素写入规格并返回提交报告
 func apply_voxel_write_spec(record: Dictionary, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
 	if record.is_empty():
 		return {}
@@ -7306,6 +7493,7 @@ func apply_voxel_write_spec(record: Dictionary, defer_blend: bool = false, gener
 
 	return rec
 
+## 批量应用体素写入规格并返回综合报告
 func apply_voxel_write_specs(records: Array, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
 	return _apply_voxel_write_spec_batch(records, defer_blend, generation_tick, "apply_voxel_write_specs")
 
@@ -7344,6 +7532,7 @@ func apply_accepted_placement_source_buffer(
 		range_count
 	)
 
+## 构造已接受放置源缓冲区被阻塞的失败报告
 func _accepted_placement_source_buffer_blocked_report(
 	reason: String,
 	source_candidate_records_buffer: RID,
@@ -7390,6 +7579,7 @@ func _accepted_placement_source_buffer_blocked_report(
 	report["failed_count"] = maxi(candidate_count, 0)
 	return report
 
+## 批量应用体素写入规格并汇总应用结果与脏诊断报告
 func _apply_voxel_write_spec_batch(records: Array, defer_blend: bool, generation_tick: int, batch_api: String) -> Dictionary:
 	var report := {
 		"ok": true,
@@ -7448,9 +7638,10 @@ func _apply_voxel_write_spec_batch(records: Array, defer_blend: bool, generation
 
 	return report
 
+## 清空所有体素通道、源流、瓦片表与GPU缓冲并重置tick
 func clear_all() -> void:
 
-	_occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
+	occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
 
 	_volume = {}
 
@@ -7662,6 +7853,7 @@ var _committed_tick: int = 0
 
 var _sv_dirty: bool = true
 
+## 根据网格放置信息构建体素写入规格记录
 func _make_mesh_voxel_write_spec(
 	mesh_id: String,
 	mesh_type: String,
@@ -7722,6 +7914,7 @@ func _make_mesh_voxel_write_spec(
 		record["slice_indices"] = (primary.get("slice_indices", []) as Array).duplicate(true)
 	return record
 
+## 注册体素写入规格记录到规格表并返回记录
 func _register_voxel_write_spec(record: Dictionary) -> Dictionary:
 
 	var record_id: String = str(record.get("id", "mesh_%d" % _voxel_write_specs.size()))
@@ -7734,6 +7927,7 @@ func _register_voxel_write_spec(record: Dictionary) -> Dictionary:
 
 	return record
 
+## 根据当前体素体积刷新所有写入规格的体素坐标与切片索引
 func _update_voxel_write_specs_for_volume() -> void:
 	if _volume.is_empty():
 		return
@@ -7742,9 +7936,8 @@ func _update_voxel_write_specs_for_volume() -> void:
 	for ri in range(_voxel_write_specs.size()):
 		var record: Dictionary = _voxel_write_specs[ri]
 		var base_px: Vector2i = record.get("base_pixel", Vector2i.ZERO)
-		var vx := clampi(int(float(base_px.x) / float(_base_res) * float(xz_res)), 0, xz_res - 1)
-		var vz := clampi(int(float(base_px.y) / float(_base_res) * float(xz_res)), 0, xz_res - 1)
-		record["voxel_xz"] = Vector2i(vx, vz)
+		var voxel_px := _volume_px_from_base(base_px, xz_res)
+		record["voxel_xz"] = voxel_px
 		record["volume_xz_resolution"] = xz_res
 		var ch := _record_channel(record)
 		if ch >= 0:
@@ -7759,13 +7952,14 @@ func _update_voxel_write_specs_for_volume() -> void:
 			if not collision_layers[ci] is Dictionary:
 				continue
 			var collision_layer := (collision_layers[ci] as Dictionary).duplicate(true)
-			collision_layer["voxel_xz"] = Vector2i(vx, vz)
+			collision_layer["voxel_xz"] = voxel_px
 			collision_layer["volume_xz_resolution"] = xz_res
 			collision_layers[ci] = collision_layer
 		record["collision"] = collision_layers
 		_voxel_write_specs[ri] = record
 		_voxel_write_spec_index[str(record.id)] = ri
 
+## 从已有写入规格记录重建场景体素源流
 func _rebuild_scene_voxels_from_records() -> void:
 
 	if _volume.is_empty():
@@ -7788,6 +7982,7 @@ func _rebuild_scene_voxels_from_records() -> void:
 
 		apply_voxel_write_spec(record, true, write_tick)
 
+## 融合场景体素源流并提交体素到体积(主融合入口)
 func blend_scene_voxels(tick: int = -1) -> Dictionary:
 
 	if _volume.is_empty():
@@ -7975,6 +8170,7 @@ func blend_scene_voxels(tick: int = -1) -> Dictionary:
 
 	return SceneVoxelScript.accepted_map(final_scene_voxels)
 
+## 返回空的反馈评分结果字典
 func _empty_blendsv_feedback_result(target_role: String) -> Dictionary:
 	return {
 		"stage": "post_commit_blendsv_feedback",
@@ -7987,6 +8183,7 @@ func _empty_blendsv_feedback_result(target_role: String) -> Dictionary:
 	}
 
 
+## 对比目标体素场评估BlendSV反馈评分
 func score_blendsv_feedback_against_target(
 	target_field: PackedFloat32Array,
 	target_role: String = "TargetSV_B",
@@ -8001,6 +8198,7 @@ func score_blendsv_feedback_against_target(
 
 	return _empty_blendsv_feedback_result(target_role)
 
+## GPU计算BlendSV与目标体素场的反馈评分
 func _score_blendsv_feedback_against_target_gpu(
 	target_field: PackedFloat32Array,
 	target_role: String,
@@ -8123,6 +8321,7 @@ func _score_blendsv_feedback_against_target_gpu(
 		"score_source": "score_scene_voxel_feedback_compute",
 	}
 
+## 构建体素体积并初始化切片与元数据
 func build_voxel_volume(
 
 	xz_resolution: int = -1,
@@ -8270,6 +8469,7 @@ func build_voxel_volume(
 	return _volume
 
 
+## 生成占位切片图像,失败时返回空白图像
 func _make_occupancy_slice_image(channel: int, xz_res: int) -> Image:
 	var gpu_img := _make_occupancy_slice_image_gpu(channel, xz_res)
 	if gpu_img != null and not gpu_img.is_empty():
@@ -8282,10 +8482,11 @@ func _make_occupancy_slice_image(channel: int, xz_res: int) -> Image:
 	return slice_img
 
 
+## GPU生成指定通道的占位切片图像
 func _make_occupancy_slice_image_gpu(channel: int, xz_res: int) -> Image:
 	if channel < 0 or channel >= CHANNEL_COUNT or xz_res <= 0:
 		return null
-	if _occupancy == null or _occupancy.is_empty():
+	if occupancy == null or occupancy.is_empty():
 		return null
 	if not _gpu_ready or _rd == null or not _sampler.is_valid():
 		return null
@@ -8297,7 +8498,7 @@ func _make_occupancy_slice_image_gpu(channel: int, xz_res: int) -> Image:
 		return null
 
 	var occupancy_tex := upload_texture_2d(
-		_occupancy,
+		occupancy,
 		RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT,
 		Image.FORMAT_RGBAH,
 		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
@@ -8330,8 +8531,8 @@ func _make_occupancy_slice_image_gpu(channel: int, xz_res: int) -> Image:
 	push.resize(32)
 	push.encode_s32(0, xz_res)
 	push.encode_s32(4, xz_res)
-	push.encode_s32(8, _occupancy.get_width())
-	push.encode_s32(12, _occupancy.get_height())
+	push.encode_s32(8, occupancy.get_width())
+	push.encode_s32(12, occupancy.get_height())
 	push.encode_s32(16, _base_res)
 	push.encode_s32(20, channel)
 	push.encode_float(24, VOXEL_OCCUPIED_EPSILON)
@@ -8348,6 +8549,7 @@ func _make_occupancy_slice_image_gpu(channel: int, xz_res: int) -> Image:
 	return result
 
 
+## 查询指定世界坐标处的体素信息
 func query_voxel(wx: float, wz: float, height_above_terrain: float) -> Dictionary:
 
 	if _volume.is_empty():
@@ -8426,6 +8628,7 @@ func query_voxel(wx: float, wz: float, height_above_terrain: float) -> Dictionar
 
 	return {"complexity": 0.0, "color": Color.BLACK}
 
+## 获取已提交的场景体素映射
 func get_scene_voxels() -> Dictionary:
 
 	if _volume.is_empty():
@@ -8438,6 +8641,7 @@ func get_scene_voxels() -> Dictionary:
 
 	return SceneVoxelScript.accepted_map(scene_voxels)
 
+## 获取场景体素状态字典并在需要时重建
 func get_sv() -> Dictionary:
 
 	if _sv_dirty and not _volume.is_empty():
@@ -8454,18 +8658,22 @@ func get_sv() -> Dictionary:
 
 	return _sv.duplicate(true)
 
+## 标记指定SV瓦片为脏
 func invalidate_sv_tile(slice_index: int, voxel_xz: Vector2i, layer: String = "scene") -> void:
 
 	_mark_sv_tile_dirty(slice_index, voxel_xz, layer)
 
+## 标记指定矩形区域内的SV瓦片为脏
 func invalidate_sv_rect(base_rect: Rect2i, slice_indices: Array = [], include_collision: bool = true) -> void:
 
 	_mark_sv_rect_dirty(base_rect, slice_indices, include_collision)
 
+## 获取脏SV瓦片的快照
 func get_sv_dirty_tiles() -> Dictionary:
 
 	return _sv_dirty_tiles.duplicate(true)
 
+## 标记指定场景体素瓦片为脏
 func mark_scene_voxel_tile_dirty(tile_coord: Vector3i, dirty_flags = {}, source_record: Dictionary = {}) -> void:
 
 	var flags := SceneVoxelTileCodecScript.flags_from_value(dirty_flags)
@@ -8474,12 +8682,14 @@ func mark_scene_voxel_tile_dirty(tile_coord: Vector3i, dirty_flags = {}, source_
 
 	_mark_legacy_sv_tiles_for_scene_voxel_tile(tile_coord, flags)
 
+## 标记体素包围盒范围内所有瓦片为脏
 func mark_scene_voxel_tile_bounds_dirty(voxel_min: Vector3i, voxel_max: Vector3i, dirty_flags = {}, source_record: Dictionary = {}) -> void:
 
 	_for_each_scene_voxel_tile_in_bounds(voxel_min, voxel_max, func(tile_coord: Vector3i):
 		mark_scene_voxel_tile_dirty(tile_coord, dirty_flags, source_record)
 	)
 
+## 标记全量场景体素瓦片需重建为脏
 func _mark_scene_voxel_full_rebuild_dirty(reason: String = "full_rebuild") -> Dictionary:
 
 	return mark_all_scene_voxel_tiles_dirty(
@@ -8496,6 +8706,7 @@ func _mark_scene_voxel_full_rebuild_dirty(reason: String = "full_rebuild") -> Di
 
 	)
 
+## 标记全部场景体素瓦片为脏并返回快照
 func mark_all_scene_voxel_tiles_dirty(dirty_flags = {}, source_record: Dictionary = {}) -> Dictionary:
 
 	var flags := SceneVoxelTileCodecScript.flags_from_value(dirty_flags, "")
@@ -8530,6 +8741,7 @@ func mark_all_scene_voxel_tiles_dirty(dirty_flags = {}, source_record: Dictionar
 
 	}
 
+## 返回GPU自动对象引用范围策略诊断信息
 func get_gpu_autoobject_object_ref_range_policy_diagnostics(refs_per_tile: int = SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT) -> Dictionary:
 
 	var safe_refs_per_tile := maxi(refs_per_tile, 1)
@@ -8574,6 +8786,7 @@ func get_gpu_autoobject_object_ref_range_policy_diagnostics(refs_per_tile: int =
 		"gpu_autoobject_ref_key_schema_note": "Use u32 ref_key entries; 0 is empty, numeric GPU AutoObject object_id + 1 is the pending runtime key, and legacy CPU string hashes remain debug-only.",
 	}
 
+## 尝试基于脏增量数组派发GPU对象引用更新通道
 func try_apply_gpu_autoobject_object_ref_update_pass(deltas: Array) -> Dictionary:
 
 	var result := {
@@ -8664,6 +8877,7 @@ func try_apply_gpu_autoobject_object_ref_update_pass(deltas: Array) -> Dictionar
 
 	return result
 
+## 基于借用脏增量缓冲区派发GPU对象引用更新通道
 func try_apply_gpu_autoobject_object_ref_update_pass_from_buffer(
 	dirty_delta_buffer: RID,
 	dirty_delta_count: int,
@@ -8768,6 +8982,7 @@ func try_apply_gpu_autoobject_object_ref_update_pass_from_buffer(
 
 	return result
 
+## 应用单个GPU自动对象的脏增量并标记瓦片脏
 func apply_gpu_autoobject_dirty_delta(delta: Dictionary, dispatch_object_ref_update: bool = false) -> Dictionary:
 
 	if delta.is_empty():
@@ -8923,6 +9138,7 @@ func apply_gpu_autoobject_dirty_delta(delta: Dictionary, dispatch_object_ref_upd
 		result.merge(get_gpu_autoobject_object_ref_range_policy_diagnostics(), true)
 	return result
 
+## 批量应用GPU自动对象脏增量并聚合结果
 func apply_gpu_autoobject_dirty_deltas(deltas: Array) -> Dictionary:
 
 	var results: Array[Dictionary] = []
@@ -9043,14 +9259,30 @@ func apply_gpu_autoobject_dirty_deltas(deltas: Array) -> Dictionary:
 		_merge_scene_voxel_tile_object_ref_transient_dirty_result(result, object_ref_update)
 	return result
 
+## 获取脏场景体素瓦片快照
 func get_dirty_scene_voxel_tiles() -> Dictionary:
 
 	return _dirty_scene_voxel_tile_snapshot()
 
+## 获取全部场景体素瓦片的副本
 func get_scene_voxel_tiles() -> Dictionary:
 
 	return _scene_voxel_tiles.duplicate(true)
 
+## 获取指定坐标的场景体素瓦片记录
+func get_scene_voxel_tile(tile_coord: Vector3i) -> Dictionary:
+
+	var tile_id := SceneVoxelTileCodecScript.tile_id(tile_coord)
+
+	var record = _scene_voxel_tiles.get(tile_id, {})
+
+	if record is Dictionary:
+
+		return (record as Dictionary).duplicate(true)
+
+	return {}
+
+## 清除所有SV脏标记并刷新摘要
 func clear_sv_dirty() -> void:
 
 	_sv_dirty_tiles.clear()
@@ -9077,22 +9309,17 @@ func clear_sv_dirty() -> void:
 
 	_publish_scene_voxel_tile_gpu_summary_to_sv()
 
-func get_committed_tick() -> int:
-
-	return _committed_tick
-
+## 获取上次BlendSV提交摘要的副本
 func get_last_blend_scene_voxel_commit_summary() -> Dictionary:
 
 	return _last_blend_scene_voxel_commit_summary.duplicate(true)
 
+## 获取上次场景体素源解析摘要的副本
 func get_last_scene_voxel_source_resolve_summary() -> Dictionary:
 
 	return _last_scene_voxel_source_resolve_summary.duplicate(true)
 
-func get_generation_tick() -> int:
-
-	return _generation_tick
-
+## 获取指定切片与XZ坐标的场景体素记录
 func get_scene_voxel(slice_index: int, voxel_xz: Vector2i) -> Dictionary:
 
 	if _volume.is_empty():
@@ -9115,6 +9342,7 @@ func get_scene_voxel(slice_index: int, voxel_xz: Vector2i) -> Dictionary:
 
 ## Get a specific Y-slice Image from the volume.
 
+## 获取体积中指定Y切片的体素图像
 func get_voxel_slice(slice_index: int) -> Image:
 
 	if _volume.is_empty() or slice_index < 0 or slice_index >= _volume.total_slices:
@@ -9125,6 +9353,7 @@ func get_voxel_slice(slice_index: int) -> Image:
 
 ## Get metadata for a specific slice.
 
+## 获取指定切片的元数据
 func get_voxel_slice_meta(slice_index: int) -> Dictionary:
 
 	if _volume.is_empty() or slice_index < 0 or slice_index >= _volume.total_slices:
@@ -9135,6 +9364,7 @@ func get_voxel_slice_meta(slice_index: int) -> Dictionary:
 
 ## Get total number of slices in the volume.
 
+## 获取体积的切片总数
 func get_voxel_slice_count() -> int:
 
 	if _volume.is_empty():
@@ -9145,11 +9375,13 @@ func get_voxel_slice_count() -> int:
 
 ## Get full volume stats for debug.
 
+## 构造1x1空白RF图像
 func _empty_rf_image() -> Image:
 	var img := Image.create(1, 1, false, Image.FORMAT_RF)
 	img.fill(Color(0.0, 0.0, 0.0, 0.0))
 	return img
 
+## 归集并校验体积切片图像列表
 func _voxel_reduce_slice_images(xz_res: int, total_slices: int) -> Array:
 	if _volume.is_empty():
 		return []
@@ -9168,6 +9400,7 @@ func _voxel_reduce_slice_images(xz_res: int, total_slices: int) -> Array:
 		out.append(img)
 	return out
 
+## 归集体素碰撞场图像并按分辨率重采样
 func _voxel_reduce_collision_image(xz_res: int) -> Image:
 	var raw_collision = _volume.get("collision_field", null) if not _volume.is_empty() else null
 	var collision_img: Image = null
@@ -9183,6 +9416,7 @@ func _voxel_reduce_collision_image(xz_res: int) -> Image:
 		return _empty_rf_image()
 	return collision_img
 
+## GPU归约场景体素统计信息
 func _reduce_scene_voxel_stats_gpu(xz_res: int, total_slices: int) -> Dictionary:
 	var voxel_count := xz_res * xz_res * total_slices
 	if voxel_count <= 0:
@@ -9291,6 +9525,7 @@ func _reduce_scene_voxel_stats_gpu(xz_res: int, total_slices: int) -> Dictionary
 		"cpu_fallback": false,
 	}
 
+## 获取体素体积统计数据
 func get_voxel_stats() -> Dictionary:
 	if _volume.is_empty():
 		return {}
@@ -9366,9 +9601,10 @@ func get_voxel_stats() -> Dictionary:
  
 	}
 
+## 重置占位、体素体积与相关缓存状态
 func reset_occupancy() -> void:
 
-	_occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
+	occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
 
 	_collision_field.fill(Color(0.0, 0.0, 0.0, 0.0))
 
@@ -9422,6 +9658,7 @@ func reset_occupancy() -> void:
 
 	_sv_dirty = true
 
+## 校验体素体积的通道占用与多样性
 func validate_voxel(params: Dictionary = {}) -> Dictionary:
 	if _volume.is_empty():
 		return {"passed": false, "reason": "No voxel volume built", "metrics": {}}
@@ -9504,6 +9741,7 @@ func validate_voxel(params: Dictionary = {}) -> Dictionary:
 
 ## Returns Array[Dictionary], one per slice from bottom to top.
 
+## 获取指定XZ像素列的体素记录数组
 func get_voxel_column(px: int, pz: int) -> Array[Dictionary]:
 	var column: Array[Dictionary] = []
 	if _volume.is_empty():

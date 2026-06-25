@@ -1,3 +1,4 @@
+@tool
 class_name MeshVoxelizerGpu
 extends "res://scripts/godot_compute_shader_base.gd"
 
@@ -38,6 +39,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 
 const VOXELIZE_SHADER := "res://shaders/voxelize_mesh_solid.glsl"
 const COLLISION_SHADER := "res://shaders/voxel_collision_erode.glsl"
+const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 const MAX_TRIANGLES := 20000
 const MAX_GRID_AXIS := 96
@@ -100,7 +102,7 @@ func _run_gpu(
 	if not _voxelize_pipeline.is_valid() or not _collision_pipeline.is_valid():
 		return fail
 
-	var voxel_count := grid.x * grid.y * grid.z
+	var voxel_count := CommonVoxelSpaceScript.voxel_count(grid)
 	var tri_buf := storage_buffer_from_floats(triangles, SCOPE_FRAME, "triangles")
 	var occupancy_buf := storage_buffer_zero(voxel_count * 4, SCOPE_FRAME, "occupancy")
 	var color_buf := storage_buffer_zero(voxel_count * 4, SCOPE_FRAME, "color_field")
@@ -156,14 +158,14 @@ func _decode_voxels(
 	var occupancy := occupancy_bytes.to_int32_array()
 	var color := color_bytes.to_int32_array()
 	var collision := collision_bytes.to_float32_array()
-	var voxel_count := grid.x * grid.y * grid.z
+	var voxel_count := CommonVoxelSpaceScript.voxel_count(grid)
 	if occupancy.size() < voxel_count:
 		return voxels
 
 	for y in range(grid.y):
 		for z in range(grid.z):
 			for x in range(grid.x):
-				var index := x + grid.x * (z + grid.z * y)
+				var index := CommonVoxelSpaceScript.voxel_index(Vector3i(x, y, z), grid)
 				if (occupancy[index] & 1) == 0:
 					continue
 				var packed := int(color[index]) & 0xFFFFFFFF
@@ -204,19 +206,15 @@ func _collect_triangle_floats(mesh: Mesh) -> PackedFloat32Array:
 			for i in range(0, verts.size() - 2, 3):
 				if tri_count >= MAX_TRIANGLES:
 					return floats
-				_append_triangle(floats, verts[i], verts[i + 1], verts[i + 2])
+				floats.append_array([verts[i].x, verts[i].y, verts[i].z, 0.0, verts[i + 1].x, verts[i + 1].y, verts[i + 1].z, 0.0, verts[i + 2].x, verts[i + 2].y, verts[i + 2].z, 0.0])
 				tri_count += 1
 		else:
 			for i in range(0, indices.size() - 2, 3):
 				if tri_count >= MAX_TRIANGLES:
 					return floats
-				_append_triangle(floats, verts[indices[i]], verts[indices[i + 1]], verts[indices[i + 2]])
+				floats.append_array([verts[indices[i]].x, verts[indices[i]].y, verts[indices[i]].z, 0.0, verts[indices[i + 1]].x, verts[indices[i + 1]].y, verts[indices[i + 1]].z, 0.0, verts[indices[i + 2]].x, verts[indices[i + 2]].y, verts[indices[i + 2]].z, 0.0])
 				tri_count += 1
 	return floats
-
-
-func _append_triangle(floats: PackedFloat32Array, a: Vector3, b: Vector3, c: Vector3) -> void:
-	floats.append_array([a.x, a.y, a.z, 0.0, b.x, b.y, b.z, 0.0, c.x, c.y, c.z, 0.0])
 
 
 func _voxelize_push_constant(grid: Vector3i, tri_count: int, aabb_min: Vector3, cell_size: float, asset_color: Color) -> PackedByteArray:

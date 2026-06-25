@@ -1,8 +1,8 @@
-﻿# ScenePlacementActor (SPA)
+# ScenePlacementActor (SPA)
 
-本文维护 `ScenePlacementActor`（简称 `SPA`）的运行时编排契约。SPA 拥有 descriptor → GPU profile buffer 的完整生命周期，并把 asset registry、profile GPU buffers、prefilter、placement 和 commit 收敛到同一个入口；`SceneVoxelCommitter`、`GPUAutoObjectRuntime` 和 `TargetSV_B` 仍由外部 owner 提供。
+本文维护 `ScenePlacementActor`（简称 `SPA`）的运行时编排契约。SPA 拥有 descriptor → GPU profile buffer 与 AutoObject runtime object buffers 的完整生命周期，并把 asset registry、profile GPU buffers、AutoObject GPU state、prefilter、placement 和 commit 收敛到同一个入口；`SceneVoxelCommitter` 和 `TargetSV_B` 仍由外部 owner 提供。
 
-![ScenePlacementActor runtime orchestration](scene-placement-actor.svg)
+![ScenePlacementActor runtime orchestration](../svg/scene-placement-actor.svg)
 
 SPA 使 [`AssetDescriptor`](../asset-descriptor-demo/asset-descriptor.md) 的 probes、collision 和 pivots 在注册后立即 GPU 可读；SV（`SceneVoxel`）和 `AutoObject` 数据流经单条编排流水线：
 
@@ -22,7 +22,7 @@ register assets → prefilter（SV→candidates）→ placement（candidates→i
 ## 核心契约
 
 - **SPA** 是 MeshFill 运行时数据的统一编排容器：所有 `AssetDescriptor` 注册后立刻上传到 GPU 并保持 resident；同一个 `RenderingDevice` 被 profile container、prefilter 和 placer 共享，确保 borrowed probe buffer 路径零拷贝。
-- SPA **拥有** `AutoVoxelRuntimeProfileContainer`（创建、管理、释放）；**借用** `SceneVoxelCommitter` 和 `GPUAutoObjectRuntime`（外部注入，SPA 不控制其生命周期）。
+- SPA **拥有** `AutoVoxelRuntimeProfileContainer` 与默认 `GPUAutoObjectRuntime`（创建、管理、释放）；**借用** `SceneVoxelCommitter`（外部注入，SPA 不控制其生命周期）。外部 `GPUAutoObjectRuntime` 仅作为 legacy/test 注入入口。
 - `register_asset()` 立即调用 `register_descriptor()` + `upload_profiles()`：descriptor 的 probes/collision/pivots 注册后即时在 GPU 上，无需等待 frame end 或手动刷写。
 - `run_placement_pipeline()` 是按帧流水线入口：prefilter → placement → commit 三阶段串行执行，profile container 的 resident GPU buffers 被 prefilter 和 placer 直接借用。
 - Pipeline workers（`AutoObjectProbePrefilterGPU`、`VoxelPlacementGenerator`）懒创建并共享同一个 `RenderingDevice`，不重复获取设备。
@@ -52,7 +52,7 @@ register assets → prefilter（SV→candidates）→ placement（candidates→i
 | BrushSV persistence | `ScenePlacementActor` | 保存 brush delta / override 的持久化和序列化入口 | `BrushSV` 内容常驻于 SPA 生命周期；debug 通过稳定 buffer / readback 观察，CPU 只保留控制面元数据。 |
 | Pipeline workers | `ScenePlacementActor`（懒创建） | 创建并注入共享 `RenderingDevice` | `_prefilter` / `_placer` 不独立获取设备。 |
 | SceneVoxel / SV resident | `SceneVoxelCommitter` / SV owner | 借用外部引用，不拥有 | SPA 不管理 grid、tile dirty 或 blend。 |
-| GPU object runtime | `GPUAutoObjectRuntime` | 借用外部引用，不拥有 | SPA 在 placement common settings 中注入 `gpu_autoobject_runtime`。 |
+| GPU object runtime | `GPUAutoObjectRuntime`（SPA 默认拥有） | 创建、管理、释放；legacy/test 可外部注入 | 持有 `autoobject_*` SoA GPU buffers、allocator、dirty delta，并由 SPA 注入 placement common settings。 |
 | Target read buffers | `TargetSV` / `TargetSV_B`（caller 提供） | 从 `placement_common` 解码后透传到 prefilter 和 placer | 每帧由调用方重新传入，不缓存在 SPA 内；缺失时生成 zero-filled read buffers。 |
 | Candidate voxel regions | prefilter readback → SPA 编排 | 临时传递到 placer asset_defs | 不在 SPA 内持久化，仅存在于 `_last_pipeline_result`。 |
 
@@ -201,7 +201,7 @@ _build_placement_asset_defs(candidate_regions)
 | `AutoObjectProbePrefilterGPU` | SPA 懒创建、注入 RD | SPA → prefilter: SV fields + autoobjects + profile_container；prefilter → SPA: candidate regions |
 | `VoxelPlacementGenerator` | SPA 懒创建、注入 RD | SPA → placer: scene/collision fields + asset_defs + profile_container；placer → SPA: accepted placements |
 | `SceneVoxelCommitter` | SPA 借用引用 | SPA → committer: `apply_voxel_write_spec()` (accepted placements) |
-| `GPUAutoObjectRuntime` | SPA 借用引用 | SPA → runtime: placement settings 注入 `gpu_autoobject_runtime` |
+| `GPUAutoObjectRuntime` | SPA 默认拥有；legacy/test 可外部注入 | SPA → runtime: placement settings 注入 `gpu_autoobject_runtime` |
 | `SceneVoxel` / SV resident | SPA 不直接持有 | SV fields 由调用方传入 `run_placement_pipeline()`，SPA 不管理 |
 | `TargetSV_B` | SPA 不持有 | 每帧由调用方传入，SPA 只透传 |
 
@@ -214,7 +214,7 @@ spa.initialize(
     true,              # prefer_local_device
     true,              # allow_global_fallback
     sv_committer,      # 可选：SceneVoxelCommitter 引用
-    gpu_runtime        # 可选：GPUAutoObjectRuntime 引用
+    gpu_runtime        # 可选：legacy/test 外部 GPUAutoObjectRuntime 引用；默认由 SPA 创建
 )
 
 # 注册资产：即刻 GPU 可读
@@ -253,7 +253,7 @@ spa.dispose()
 
 轻量 AutoObject wrapper 创建逻辑在 `_make_lightweight_autoobject()` static 方法中；wrapper 不加入场景树，仅在 `queue_free()` 或 dispose 时释放。
 
-当前 `ScenePlacementActor.attach_sv_committer()` / `ScenePlacementActor.attach_gpu_runtime()` 只保存引用，不验证引用是否与 SPA 共享同一 `RenderingDevice`。调用方需确保三个对象使用同一设备。
+当前 `ScenePlacementActor` 默认创建并拥有 `GPUAutoObjectRuntime`，在 `attach_sv_committer()` 后通过 `GPUAutoObjectRuntime.setup_for_scene_voxel_committer()` 让 AutoObject GPU buffers 绑定到 `SceneVoxelCommitter` 的 `RenderingDevice`。`attach_gpu_runtime()` 仅保留给 legacy/test 外部 runtime 注入；调用方仍需确保外部 runtime 与 SPA / committer 使用同一设备。
 
 | 入口 | 作用 |
 | --- | --- |
@@ -276,8 +276,40 @@ spa.dispose()
 
 > **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，CPU fallback 不得作为通过条件。
 
+## 运行方式
+
+> **@tool 编辑器模式，禁止 F6。**
+>
+> 在 Godot 编辑器中打开 `core-scene-placement-actor.tscn`，`@tool` 脚本自动在编辑器视口中注册资产并执行 GPU SVTile AutoObject 批量放置，渲染点云热力图概览。
+
+## 测试方法
+
+1. 打开 `core-scene-placement-actor.tscn`，确认地形正确加载、HUD 显示 `GPU ready: YES`、SVTile 压力测试 `PASS` 且点云概览正常渲染。
+2. 交互测试：LMB 点选 GPU AutoObject / 数据记录（SVTile/SV/Anchor/TargetSV），Shift+0~5 切换选择模式，G 打印 GPU 报告，Space 重新注册并重跑 SVTile 压力测试。
+3. GPU 验收测试：
+
+```bash
+<godot> --path . --rendering-driver vulkan --script tools/test_auto_voxel_runtime_profile_container.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_core_demo_contracts.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_gpu_autoobject_runtime_bridge.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_dirty_tile_upload.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_voxel_multi_asset.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
+```
+
+## Demo 验收标准
+
+- SPA 初始化成功，`is_gpu_ready() == true`。
+- `register_asset()` 后 profile_id 有效且 GPU buffers resident。
+- GPU SVTile AutoObject 批量放置成功，HUD 报告 SVTile 压力测试 `PASS`，点云概览正确反映放置分布。
+- GPU AutoObject 点选与数据记录（SVTile/SV/Anchor/TargetSV）选择在各模式下均正常工作。
+- `AutoVoxelRuntimeProfileContainer` 由 SPA 创建、管理和释放。
+- VPG contract validation 通过后必须使用已 bound/consumed 的 GPU buffers。
+- 缺少 `RenderingDevice` 时报告 SKIP，不走 CPU 替代路径。
+
 ## 测试场景
 
-| 场景 | 说明 | Godot 场景 |
-| --- | --- | --- |
-| [ScenePlacementActor 编排](core-scene-placement-actor.md) | 测试方法与验收标准 | [`core-scene-placement-actor.tscn`](core-scene-placement-actor.tscn) |
+| 场景 | Godot 场景 |
+| --- | --- |
+| SPA 统一交互 Demo | [`core-scene-placement-actor.tscn`](core-scene-placement-actor.tscn) |

@@ -3,13 +3,19 @@ extends MeshInstance3D
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const ANCHOR_KIND := "anchor"
 const INSTANCE_STAMP_WRITE_SPEC_META_KEY := "instance_stamp_write_spec"
-const VOXEL_WRITE_SPEC_META_KEY := "voxel_write_spec"
+const VOXEL_WRITE_SPEC_META_KEY := "voxel_write_spec"  ## Deprecated: use INSTANCE_STAMP_WRITE_SPEC_META_KEY
+const SELECTABLE_GROUP := "autoobject_selectable"
+const SELECTABLE_META_KEY := "autoobject_selectable"
+const SELECTED_META_KEY := "autoobject_selected"
 
 @export var auto_id: String = ""                              # 查询和调试身份
 @export var instance_id: int = 0                              # MeshInstance3D instance id
+@export var selectable: bool = true                           # editor/runtime ray-pick participation
+@export_range(0.0, 64.0, 0.1) var selection_padding: float = 0.0 # selection AABB inflation in local units
 @export var voxel_descriptor: Resource                        # descriptor 持有入口，语义读取主路径
 @export var voxel_color: Color = Color.WHITE                  # Inspector mirror，同步到 descriptor
 @export_range(0.0, 1.0) var voxel_complexity: float = 1.0      # Inspector mirror，同步到 descriptor
@@ -36,6 +42,10 @@ const VOXEL_WRITE_SPEC_META_KEY := "voxel_write_spec"
 @export var mesh_index: int = -1                             # placement result 资产索引
 var voxel_write_spec: Dictionary = {}                         # 当前实例写入场景体素系统的 record handle
 var min_spacing_auto: bool = true                             # 是否按 bound_min_length 自动 spacing
+
+
+func _ready() -> void:
+	_sync_selectable_metadata()
 
 
 static func voxel_write_spec_meta_keys() -> Array:
@@ -198,10 +208,6 @@ func _sync_exported_fields_from_descriptor() -> void:
 	semantic_probe_profile = voxel_descriptor.semantic_probe_profile
 
 
-func _vector3_from_config_value(value, fallback: Vector3) -> Vector3:
-	return AutoObject.vector3_from_value(value, fallback)
-
-
 func _rotation_mode_from_config(config: Dictionary) -> String:
 	var mode := str(config.get("rotation_mode", ""))
 	if mode.is_empty():
@@ -216,11 +222,11 @@ func _apply_config_rotation(config: Dictionary) -> void:
 	var mode := _rotation_mode_from_config(config)
 	if mode == "XYZ":
 		if config.has("rotation_degrees"):
-			rotation_degrees = _vector3_from_config_value(config.rotation_degrees, rotation_degrees)
+			rotation_degrees = vector3_from_value(config.rotation_degrees, rotation_degrees)
 	else:
 		var y_rotation := rotation_degrees.y
 		if config.has("rotation_degrees"):
-			y_rotation = _vector3_from_config_value(config.rotation_degrees, rotation_degrees).y
+			y_rotation = vector3_from_value(config.rotation_degrees, rotation_degrees).y
 		rotation_degrees = Vector3(0.0, y_rotation, 0.0)
 
 
@@ -238,11 +244,11 @@ func configure_object(config: Dictionary) -> void:
 	if cfg.has("mesh_size"):
 		mesh_size = maxf(float(cfg.mesh_size), 0.0)
 	if cfg.has("random_rotate"):
-		random_rotate = AutoObject.vector2_from_value(cfg.random_rotate, random_rotate)
+		random_rotate = vector2_from_value(cfg.random_rotate, random_rotate)
 	if cfg.has("random_scale"):
-		random_scale = AutoObject.vector2_from_value(cfg.random_scale, random_scale)
+		random_scale = vector2_from_value(cfg.random_scale, random_scale)
 	if cfg.has("random_height_offset"):
-		random_height_offset = AutoObject.vector2_from_value(cfg.random_height_offset, random_height_offset)
+		random_height_offset = vector2_from_value(cfg.random_height_offset, random_height_offset)
 
 	if not cfg.has("auto_generate_vertical_pivots") and not cfg.has("pivot_variants"):
 		cfg["auto_generate_vertical_pivots"] = true
@@ -299,6 +305,10 @@ func configure_auto_object(config: Dictionary) -> void:
 		var configured_visual_layer := int(config.visual_layer)
 		if configured_visual_layer > 0:
 			set_layer_mask_value(configured_visual_layer, true)
+	if config.has("selectable"):
+		selectable = bool(config.selectable)
+	if config.has("selection_padding"):
+		selection_padding = maxf(float(config.selection_padding), 0.0)
 
 	var configured_material = config.get("material", null)
 	if configured_material is Material:
@@ -427,8 +437,6 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 		cfg["voxel_profile"] = voxel_profile
 	if not cfg.has("asset_id") and not asset_id.is_empty():
 		cfg["asset_id"] = asset_id
-	if not cfg.has("object_subtype") and not get_record_object_subtype().is_empty():
-		cfg["object_subtype"] = get_record_object_subtype()
 	if not cfg.has("mesh_height_texture") and mesh_height_texture != null:
 		cfg["mesh_height_texture"] = mesh_height_texture
 	if not cfg.has("mesh_size"):
@@ -453,6 +461,162 @@ func get_world_bound_size() -> Vector3:
 	)
 
 
+func get_selection_local_aabb() -> AABB:
+	var aabb := AABB()
+	if mesh != null:
+		aabb = mesh.get_aabb()
+	if aabb.size.length_squared() <= 0.000001:
+		aabb = _collision_local_aabb()
+	if aabb.size.length_squared() <= 0.000001:
+		aabb = AABB(Vector3(-0.5, -0.5, -0.5), Vector3.ONE)
+	var padding := maxf(selection_padding, 0.0)
+	if padding > 0.0:
+		aabb.position -= Vector3.ONE * padding
+		aabb.size += Vector3.ONE * padding * 2.0
+	return aabb
+
+
+func get_selection_world_aabb() -> AABB:
+	return _get_selection_world_transform() * get_selection_local_aabb()
+
+
+func _get_selection_world_transform() -> Transform3D:
+	if is_inside_tree():
+		return global_transform
+	var xform := transform
+	var parent := get_parent()
+	while parent != null:
+		if parent is Node3D:
+			xform = (parent as Node3D).transform * xform
+		parent = parent.get_parent()
+	return xform
+
+
+func is_selection_enabled(include_invisible: bool = false) -> bool:
+	if not selectable or is_queued_for_deletion():
+		return false
+	if include_invisible:
+		return true
+	if is_inside_tree():
+		return is_visible_in_tree()
+	return visible
+
+
+func raycast_selection(origin: Vector3, dir: Vector3, include_invisible: bool = false) -> float:
+	if not is_selection_enabled(include_invisible):
+		return -1.0
+	return ray_intersects_aabb(origin, dir, get_selection_world_aabb())
+
+
+func set_selectable(value: bool) -> void:
+	selectable = value
+	_sync_selectable_metadata()
+
+
+func set_selected(value: bool) -> void:
+	set_meta(SELECTED_META_KEY, value)
+
+
+func is_selected() -> bool:
+	return bool(get_meta(SELECTED_META_KEY, false))
+
+
+func _sync_selectable_metadata() -> void:
+	set_meta(SELECTABLE_META_KEY, selectable)
+	if selectable:
+		add_to_group(SELECTABLE_GROUP)
+	else:
+		remove_from_group(SELECTABLE_GROUP)
+
+
+static func pick_nearest_from_camera(
+	root: Node,
+	camera: Camera3D,
+	screen_pos: Vector2,
+	include_invisible: bool = false
+) -> AutoObject:
+	if root == null or camera == null:
+		return null
+	var origin := camera.project_ray_origin(screen_pos)
+	var dir := camera.project_ray_normal(screen_pos)
+	return pick_nearest(root, origin, dir, include_invisible)
+
+
+static func pick_nearest(
+	root: Node,
+	origin: Vector3,
+	dir: Vector3,
+	include_invisible: bool = false
+) -> AutoObject:
+	if root == null:
+		return null
+	var best := {
+		"object": null,
+		"distance": INF,
+	}
+	_pick_nearest_recursive(root, origin, dir, include_invisible, best)
+	return best["object"] as AutoObject
+
+
+static func set_tree_selection(root: Node, selected: AutoObject) -> void:
+	if root == null:
+		return
+	_set_tree_selection_recursive(root, selected)
+
+
+static func ray_intersects_aabb(origin: Vector3, dir: Vector3, aabb: AABB) -> float:
+	var t_min := -INF
+	var t_max := INF
+	for axis in range(3):
+		var axis_dir := float(dir[axis])
+		var min_v := float(aabb.position[axis])
+		var max_v := float(aabb.end[axis])
+		var origin_v := float(origin[axis])
+		if absf(axis_dir) < 0.0000001:
+			if origin_v < min_v or origin_v > max_v:
+				return -1.0
+			continue
+		var inv := 1.0 / axis_dir
+		var t1 := (min_v - origin_v) * inv
+		var t2 := (max_v - origin_v) * inv
+		if t1 > t2:
+			var swap := t1
+			t1 = t2
+			t2 = swap
+		t_min = maxf(t_min, t1)
+		t_max = minf(t_max, t2)
+		if t_min > t_max:
+			return -1.0
+	if t_max < 0.0:
+		return -1.0
+	return t_min if t_min >= 0.0 else t_max
+
+
+static func _pick_nearest_recursive(
+	node: Node,
+	origin: Vector3,
+	dir: Vector3,
+	include_invisible: bool,
+	best: Dictionary
+) -> void:
+	if node is AutoObject:
+		var obj := node as AutoObject
+		var dist := obj.raycast_selection(origin, dir, include_invisible)
+		if dist >= 0.0 and dist < float(best["distance"]):
+			best["object"] = obj
+			best["distance"] = dist
+	for child in node.get_children():
+		_pick_nearest_recursive(child, origin, dir, include_invisible, best)
+
+
+static func _set_tree_selection_recursive(node: Node, selected: AutoObject) -> void:
+	if node is AutoObject:
+		var obj := node as AutoObject
+		obj.set_selected(obj == selected)
+	for child in node.get_children():
+		_set_tree_selection_recursive(child, selected)
+
+
 func compute_bound_min_length() -> float:
 	var world_size := get_world_bound_size()
 	var result := INF
@@ -471,7 +635,8 @@ func refresh_bound_spacing() -> void:
 
 func get_source_mesh() -> Mesh:
 	if not source_mesh_path.is_empty() and (source_mesh == null or source_mesh == mesh):
-		var loaded_source_mesh := AutoAssetFactory.load_source_mesh(source_mesh_path)
+		var factory_script = load("res://scripts/auto_asset_factory.gd")
+		var loaded_source_mesh = factory_script.load_source_mesh(source_mesh_path) if factory_script != null else null
 		if loaded_source_mesh != null:
 			source_mesh = loaded_source_mesh
 			return source_mesh
@@ -517,8 +682,9 @@ func get_record_object_type() -> String:
 	return record_type if not record_type.is_empty() else "object"
 
 
+## Deprecated: object_subtype is removed from canonical schema. Always returns "".
 func get_record_object_subtype() -> String:
-	return str(voxel_write_spec.get("object_subtype", ""))
+	return ""
 
 
 func get_record_auto_source(fallback: String = "generated") -> String:
@@ -554,7 +720,7 @@ func make_voxel_profile(default_radius: float = -1.0) -> AutoVoxelProfile:
 	var color := get_voxel_color()
 	var complexity := get_voxel_complexity()
 	color.a = complexity
-	return AutoObject.create_voxel_profile(
+	return create_voxel_profile(
 		color,
 		complexity,
 		radius,
@@ -573,7 +739,7 @@ func is_valid_asset() -> bool:
 	return mesh != null and mesh_height_texture != null and mesh_size > 0.0
 
 
-func make_voxel_write_spec(
+func make_instance_stamp_write_spec(
 	record_id: String,
 	base_pixel: Vector2i,
 	volume_xz_resolution: int,
@@ -581,7 +747,7 @@ func make_voxel_write_spec(
 ) -> Dictionary:
 	var radius := get_record_radius()
 	var bounds_y := get_record_y_bounds()
-	return AutoObject.make_profile_voxel_write_spec(
+	return make_profile_voxel_write_spec(
 		record_id,
 		get_record_object_type(),
 		position,
@@ -597,13 +763,14 @@ func make_voxel_write_spec(
 		get_voxel_write_spec_extra_fields(extra_fields)
 	)
 
-func make_instance_stamp_write_spec(
+## Deprecated: use make_instance_stamp_write_spec() instead.
+func make_voxel_write_spec(
 	record_id: String,
 	base_pixel: Vector2i,
 	volume_xz_resolution: int,
 	extra_fields: Dictionary = {}
 ) -> Dictionary:
-	return make_voxel_write_spec(record_id, base_pixel, volume_xz_resolution, extra_fields)
+	return make_instance_stamp_write_spec(record_id, base_pixel, volume_xz_resolution, extra_fields)
 
 
 func set_pivot_variants(variants: Array) -> void:
@@ -651,7 +818,7 @@ func get_anchor_pivot_variant(anchor_kind: String = ANCHOR_KIND) -> Dictionary:
 	var best_y := INF
 	for raw_pivot in pivots:
 		var pivot := raw_pivot as Dictionary
-		var offset := _vector3_from_config_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
+		var offset := vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
 		if offset.y < best_y:
 			best_y = offset.y
 			best = pivot
@@ -660,7 +827,7 @@ func get_anchor_pivot_variant(anchor_kind: String = ANCHOR_KIND) -> Dictionary:
 
 func get_anchor_pivot_offset(anchor_kind: String = ANCHOR_KIND) -> Vector3:
 	var pivot := get_anchor_pivot_variant(anchor_kind)
-	return _vector3_from_config_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
+	return vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
 
 
 func get_anchor_relative_footprint_aabb(anchor_kind: String = ANCHOR_KIND) -> AABB:
@@ -809,6 +976,7 @@ func _sync_auto_metadata() -> void:
 	set_meta("auto_id", auto_id)
 	set_meta("auto_instance_id", instance_id)
 	set_meta("instance_mesh_id", int(voxel_write_spec.get("instance_mesh_id", instance_id)))
+	_sync_selectable_metadata()
 
 
 func _clear_state_mirror_metadata() -> void:
@@ -846,8 +1014,6 @@ func _sync_record_identity_from_config(config: Dictionary) -> void:
 		var configured_record_type := str(config.type)
 		voxel_write_spec["type"] = configured_record_type
 		voxel_write_spec["object_type"] = configured_record_type
-	if config.has("object_subtype"):
-		voxel_write_spec["object_subtype"] = str(config.object_subtype)
 
 
 func _normalize_anchor_kind_array(kinds) -> PackedStringArray:
@@ -904,14 +1070,14 @@ func _collision_local_aabb() -> AABB:
 
 func _collision_bounds(collision: Dictionary) -> AABB:
 	if collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset"):
-		var voxel_pos := _vector3_from_config_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
+		var voxel_pos := vector3_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
 		return AABB(voxel_pos - Vector3(0.5, 0.5, 0.5), Vector3.ONE)
 	var shape := str(collision.get("shape", collision.get("collision_shape", "cylinder"))).to_lower()
-	var center := _vector3_from_config_value(collision.get("offset", collision.get("center", collision.get("position", Vector3.ZERO))), Vector3.ZERO)
+	var center := vector3_from_value(collision.get("offset", collision.get("center", collision.get("position", Vector3.ZERO))), Vector3.ZERO)
 	if shape == "box" or shape == "cube":
-		var half_extents := _vector3_from_config_value(collision.get("half_extents", Vector3.ZERO), Vector3.ZERO)
+		var half_extents := vector3_from_value(collision.get("half_extents", Vector3.ZERO), Vector3.ZERO)
 		if half_extents.length_squared() <= 0.0001:
-			var size := _vector3_from_config_value(collision.get("size", Vector3.ZERO), Vector3.ZERO)
+			var size := vector3_from_value(collision.get("size", Vector3.ZERO), Vector3.ZERO)
 			if size.length_squared() > 0.0001:
 				half_extents = size * 0.5
 		if half_extents.length_squared() <= 0.0001:

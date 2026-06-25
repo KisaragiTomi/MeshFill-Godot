@@ -1848,11 +1848,15 @@ func _cmd_tilemap(params: Dictionary) -> void:
 		_send_response({"error": "Node not found: %s" % node_path})
 		return
 
-	if not node is TileMapLayer:
-		_send_response({"error": "Node is not a TileMapLayer: %s (is %s)" % [node_path, node.get_class()]})
+	var tilemap_class := node.get_class()
+	var is_tilemap_layer := tilemap_class == "TileMapLayer"
+	var is_tilemap := tilemap_class == "TileMap"
+	if not is_tilemap_layer and not is_tilemap:
+		_send_response({"error": "Node is not a TileMap/TileMapLayer: %s (is %s)" % [node_path, tilemap_class]})
 		return
 
-	var tilemap: TileMapLayer = node as TileMapLayer
+	var tilemap := node
+	var layer := int(params.get("layer", 0))
 
 	match action:
 		"set_cells":
@@ -1863,34 +1867,44 @@ func _cmd_tilemap(params: Dictionary) -> void:
 				var source_id: int = int(cell.get("source_id", 0))
 				var atlas_coords: Vector2i = Vector2i(int(cell.get("atlas_x", 0)), int(cell.get("atlas_y", 0)))
 				var alt_tile: int = int(cell.get("alt_tile", 0))
-				tilemap.set_cell(pos, source_id, atlas_coords, alt_tile)
+				if is_tilemap:
+					tilemap.call("set_cell", layer, pos, source_id, atlas_coords, alt_tile)
+				else:
+					tilemap.call("set_cell", pos, source_id, atlas_coords, alt_tile)
 				count += 1
 			_send_response({"success": true, "action": "set_cells", "count": count})
 		"get_cell":
 			var x: int = int(params.get("x", 0))
 			var y: int = int(params.get("y", 0))
 			var pos: Vector2i = Vector2i(x, y)
+			var source_id: int = int(tilemap.call("get_cell_source_id", layer, pos) if is_tilemap else tilemap.call("get_cell_source_id", pos))
+			var atlas_coords: Vector2i = tilemap.call("get_cell_atlas_coords", layer, pos) if is_tilemap else tilemap.call("get_cell_atlas_coords", pos)
+			var alt_tile: int = int(tilemap.call("get_cell_alternative_tile", layer, pos) if is_tilemap else tilemap.call("get_cell_alternative_tile", pos))
 			_send_response({
 				"success": true, "action": "get_cell",
 				"x": x, "y": y,
-				"source_id": tilemap.get_cell_source_id(pos),
-				"atlas_coords": _variant_to_json(tilemap.get_cell_atlas_coords(pos)),
-				"alt_tile": tilemap.get_cell_alternative_tile(pos)
+				"source_id": source_id,
+				"atlas_coords": _variant_to_json(atlas_coords),
+				"alt_tile": alt_tile
 			})
 		"erase_cells":
 			var cells: Array = params.get("cells", [])
 			var count: int = 0
 			for cell in cells:
-				tilemap.erase_cell(Vector2i(int(cell.get("x", 0)), int(cell.get("y", 0))))
+				var pos: Vector2i = Vector2i(int(cell.get("x", 0)), int(cell.get("y", 0)))
+				if is_tilemap:
+					tilemap.call("erase_cell", layer, pos)
+				else:
+					tilemap.call("erase_cell", pos)
 				count += 1
 			_send_response({"success": true, "action": "erase_cells", "count": count})
 		"get_used_cells":
 			var source_filter: int = int(params.get("source_id", -1))
-			var used: Array
+			var used: Array = []
 			if source_filter >= 0:
-				used = tilemap.get_used_cells_by_id(source_filter)
+				used = tilemap.call("get_used_cells_by_id", layer, source_filter) if is_tilemap else tilemap.call("get_used_cells_by_id", source_filter)
 			else:
-				used = tilemap.get_used_cells()
+				used = tilemap.call("get_used_cells", layer) if is_tilemap else tilemap.call("get_used_cells")
 			_send_response({"success": true, "action": "get_used_cells", "cells": _variant_to_json(used), "count": used.size()})
 		_:
 			_send_response({"error": "Unknown tilemap action: %s. Use set_cells, get_cell, erase_cells, or get_used_cells" % action})

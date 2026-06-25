@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=3]
+[gd_scene load_steps=12 format=3]
 
 [ext_resource type="Script" path="res://demos/asset-descriptor-demo/asset_descriptor_demo.gd" id="1_demo"]
 [ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
@@ -23,6 +23,13 @@ cull_mode = 2
 albedo_color = Color(0.5, 0.44, 0.38, 1)
 metallic = 0.05
 roughness = 0.9
+
+[sub_resource type="StandardMaterial3D" id="ruler_mat"]
+shading_mode = 0
+albedo_color = Color(0.95, 0.9, 0.25, 1)
+
+[sub_resource type="BoxMesh" id="unit_box"]
+size = Vector3(1, 1, 1)
 
 [node name="AssetDescriptorDemo" type="Node3D" unique_id=1261577421]
 script = ExtResource("1_demo")
@@ -77,13 +84,13 @@ theme_override_constants/separation = 6
 
 [node name="ScanUpdatedGeo" type="Button" parent="GeoTools/Panel/VBox"]
 layout_mode = 2
-tooltip_text = "Scan res://geo for new or modified mesh files and arrange imported scene nodes."
-text = "Scan Updated Geo"
+tooltip_text = "Scan res://geo for new or modified FBX files and arrange imported scene nodes by bounds."
+text = "Scan Geo FBX"
 
 [node name="FullRescanGeo" type="Button" parent="GeoTools/Panel/VBox"]
 layout_mode = 2
-tooltip_text = "Rebuild all imported geo scene nodes from res://geo and arrange them by mesh bounds."
-text = "Full Rescan Geo"
+tooltip_text = "Rebuild all imported FBX scene nodes from res://geo and arrange them by bounds."
+text = "Full Rescan FBX"
 
 [node name="GeoScanStatus" type="Label" parent="GeoTools/Panel/VBox"]
 layout_mode = 2
@@ -211,3 +218,105 @@ pixel_size = 0.01
 text = "Rock"
 font_size = 18
 outline_size = 3
+
+[node name="ScaleReference" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -5.5, 0, -0.8)
+
+[node name="GroundSquareN" type="MeshInstance3D" parent="ScaleReference"]
+transform = Transform3D(1, 0, 0, 0, 0.02, 0, 0, 0, 0.02, 0, 0.02, 0.5)
+material_override = SubResource("ruler_mat")
+mesh = SubResource("unit_box")
+
+[node name="GroundSquareS" type="MeshInstance3D" parent="ScaleReference"]
+transform = Transform3D(1, 0, 0, 0, 0.02, 0, 0, 0, 0.02, 0, 0.02, -0.5)
+material_override = SubResource("ruler_mat")
+mesh = SubResource("unit_box")
+
+[node name="GroundSquareE" type="MeshInstance3D" parent="ScaleReference"]
+transform = Transform3D(0.02, 0, 0, 0, 0.02, 0, 0, 0, 1, 0.5, 0.02, 0)
+material_override = SubResource("ruler_mat")
+mesh = SubResource("unit_box")
+
+[node name="GroundSquareW" type="MeshInstance3D" parent="ScaleReference"]
+transform = Transform3D(0.02, 0, 0, 0, 0.02, 0, 0, 0, 1, -0.5, 0.02, 0)
+material_override = SubResource("ruler_mat")
+mesh = SubResource("unit_box")
+
+[node name="GroundLabel" type="Label3D" parent="ScaleReference"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 0.85)
+pixel_size = 0.01
+text = "1m"
+font_size = 32
+outline_size = 5
+
+[node name="RulerBar" type="MeshInstance3D" parent="ScaleReference"]
+transform = Transform3D(0.04, 0, 0, 0, 20, 0, 0, 0, 0.04, -0.5, 10, 0)
+material_override = SubResource("ruler_mat")
+mesh = SubResource("unit_box")
+
+[node name="Tick1m" type="MeshInstance3D" parent="ScaleReference"]
+transform = Transform3D(0.2, 0, 0, 0, 0.03, 0, 0, 0, 0.03, -0.5, 1, 0)
+material_override = SubResource("ruler_mat")
+mesh = SubResource("unit_box")
+
+[node name="Tick5m" type="MeshInstance3D" parent="ScaleReference"]
+transform = Transform3D(0.3, 0, 0, 0, 0.03, 0, 0, 0, 0.03, -0.5, 5, 0)
+material_override = SubResource("ruler_mat")
+mesh = SubResource("unit_box")
+
+[node name="Tick10m" type="MeshInstance3D" parent="ScaleReference"]
+transform = Transform3D(0.3, 0, 0, 0, 0.03, 0, 0, 0, 0.03, -0.5, 10, 0)
+material_override = SubResource("ruler_mat")
+mesh = SubResource("unit_box")
+
+[node name="Tick15m" type="MeshInstance3D" parent="ScaleReference"]
+transform = Transform3D(0.3, 0, 0, 0, 0.03, 0, 0, 0, 0.03, -0.5, 15, 0)
+material_override = SubResource("ruler_mat")
+mesh = SubResource("unit_box")
+
+[node name="Tick20m" type="MeshInstance3D" parent="ScaleReference"]
+transform = Transform3D(0.3, 0, 0, 0, 0.03, 0, 0, 0, 0.03, -0.5, 20, 0)
+material_override = SubResource("ruler_mat")
+mesh = SubResource("unit_box")
+
+[node name="Label20m" type="Label3D" parent="ScaleReference"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.4, 19.7, 0)
+pixel_size = 0.01
+text = "20m"
+font_size = 28
+outline_size = 4
+
+[node name="Label15m" type="Label3D" parent="ScaleReference"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.4, 14.7, 0)
+pixel_size = 0.01
+text = "15m"
+font_size = 28
+outline_size = 4
+
+[node name="Label10m" type="Label3D" parent="ScaleReference"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.4, 9.7, 0)
+pixel_size = 0.01
+text = "10m"
+font_size = 28
+outline_size = 4
+
+[node name="Label5m" type="Label3D" parent="ScaleReference"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.4, 4.7, 0)
+pixel_size = 0.01
+text = "5m"
+font_size = 28
+outline_size = 4
+
+[node name="Label1m" type="Label3D" parent="ScaleReference"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.4, 0.7, 0)
+pixel_size = 0.01
+text = "1m"
+font_size = 28
+outline_size = 4
+
+[node name="Label0" type="Label3D" parent="ScaleReference"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.4, 0, 0)
+pixel_size = 0.01
+text = "0"
+font_size = 28
+outline_size = 4

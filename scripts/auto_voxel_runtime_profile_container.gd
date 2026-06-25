@@ -2,6 +2,7 @@ class_name AutoVoxelRuntimeProfileContainer
 extends RefCounted
 
 const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 

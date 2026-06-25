@@ -26,10 +26,12 @@ const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const GPUAutoObjectRuntimeScript := preload("res://scripts/gpu_autoobject_runtime.gd")
 const VoxelPickGPUScript := preload("res://scripts/voxel_pick_gpu.gd")
+const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 const VoxelDisplay := preload("res://scripts/voxel_display.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
 const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
 const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
+const CommonTargetSVLookup := preload("res://scripts/common_targetsv_lookup.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 const SELECT_COLOR := Color(1.0, 0.85, 0.0, 1.0)
 
@@ -84,9 +86,8 @@ const GENERATED_EDITOR_NODE_NAMES := [
 ]
 
 @export var autoobject_count := 65536
-@export var stress_grid_resolution := 512
+@export var autoobject_grid_resolution := 512
 @export var voxel_display_host_only := false
-@export var run_svtile_autoobject_stress := true
 @export var show_svtile_autoobject_overlay := true
 @export var show_anchor_sample_bounds := true
 @export var select_gpu_autoobjects := true
@@ -101,7 +102,6 @@ var _selection_mode := SelectionMode.MIXED
 # ---- SPA state ----
 var _spa
 var _sv_committer
-var _gpu_runtime
 var _voxel_pick_gpu
 var _initialized := false
 var _init_time_ms := 0.0
@@ -115,10 +115,10 @@ var _meshes: Array[Mesh] = []
 
 # ---- visuals ----
 var _hud_label: Label
-var _stress_overlay_root: Node3D
-var _stress_tile_heatmap: MultiMeshInstance3D
+var _autoobject_overlay_root: Node3D
+var _svtile_heatmap: MultiMeshInstance3D
 var _autoobject_points: MultiMeshInstance3D
-var _stress_label: Label3D
+var _autoobject_overlay_label: Label3D
 var _autoobject_selection_marker: MeshInstance3D
 var _autoobject_selection_label: Label3D
 var _data_selection_marker: MeshInstance3D
@@ -127,26 +127,20 @@ var _anchor_sample_bounds_marker: MeshInstance3D
 var _selected_data_record: Dictionary = {}
 var _external_voxel_display_root: Node3D
 var _volume_score_provider: Node
-var _voxel_display_visible := {
-	VOXEL_DISPLAY_GPU_OBJECTS: true,
-	VOXEL_DISPLAY_SVTILE: true,
-	VOXEL_DISPLAY_ANCHOR: true,
-	VOXEL_DISPLAY_SV: true,
-	VOXEL_DISPLAY_TARGETSV: true,
-}
+var _voxel_display_visible := SPAEditorContract.default_voxel_display_state()
 
-# ---- SVTile / AutoObject stress state ----
-var _stress_ready := false
-var _stress_spawn_result: Dictionary = {}
-var _stress_flush_result: Dictionary = {}
-var _stress_tile_summary: Dictionary = {}
-var _stress_spawn_time_ms := 0.0
-var _stress_flush_time_ms := 0.0
-var _stress_visual_time_ms := 0.0
-var _stress_tile_count := 0
-var _stress_occupied_tile_count := 0
-var _stress_max_refs_per_tile := 0
-var _stress_total_refs := 0
+# ---- SVTile / GPU AutoObject runtime state ----
+var _autoobject_runtime_ready := false
+var _autoobject_spawn_result: Dictionary = {}
+var _autoobject_flush_result: Dictionary = {}
+var _svtile_summary: Dictionary = {}
+var _autoobject_spawn_time_ms := 0.0
+var _autoobject_flush_time_ms := 0.0
+var _autoobject_visual_time_ms := 0.0
+var _svtile_total_tile_count := 0
+var _svtile_occupied_tile_count := 0
+var _svtile_max_refs_per_tile := 0
+var _svtile_total_refs := 0
 var _autoobject_positions: Array[Vector3] = []
 var _autoobject_asset_indices: Array[int] = []
 var _autoobject_ids: Array[int] = []
@@ -178,15 +172,15 @@ func _ready() -> void:
 ## 编辑器模式初始化入口：创建节点、加载资源、初始化SPA
 func _editor_init() -> void:
 	_cleanup_editor_nodes()
-	_stress_overlay_root = Node3D.new()
-	_stress_overlay_root.name = SVTILE_AUTOOBJECT_OVERLAY_ROOT_NAME
-	add_child(_stress_overlay_root, true)
+	_autoobject_overlay_root = Node3D.new()
+	_autoobject_overlay_root.name = SVTILE_AUTOOBJECT_OVERLAY_ROOT_NAME
+	add_child(_autoobject_overlay_root, true)
 	_load_meshes()
 	ensure_test_terrain_initialized()
 	_cache_terrain_field()
 	_init_spa()
 	_register_all_assets()
-	_run_svtile_autoobject_stress_test()
+	_run_gpu_autoobject_batch()
 	_setup_hud()
 	_frame_camera()
 	_apply_selection_mode_visuals()
@@ -198,7 +192,7 @@ func _editor_init() -> void:
 
 ## 设置选择模式并清除旧选中状态；插件工具栏和 Shift+数字快捷键都进入这里
 func set_spa_selection_mode(mode: int, clear_existing_selection: bool = true) -> void:
-	var next := clampi(mode, SelectionMode.MIXED, SelectionMode.TARGETSV)
+	var next := clampi(mode, SPAEditorContract.MODE_MIXED, SELECTION_MODE_NAMES.size() - 1)
 	var changed := _selection_mode != next
 	_selection_mode = next
 	if clear_existing_selection and changed and is_inside_tree():
@@ -223,6 +217,18 @@ func get_spa_selection_mode_name() -> String:
 	return _selection_mode_name()
 
 
+func get_scene_placement_actor() -> Object:
+	return _spa
+
+
+func own_autoobject(autoobject_ref: Object, asset_id: int = -1) -> bool:
+	if _spa == null or not _spa.has_method("own_autoobject"):
+		return false
+	if not (autoobject_ref is AutoObject):
+		return false
+	return bool(_spa.call("own_autoobject", autoobject_ref, asset_id))
+
+
 ## 在视口屏幕坐标处执行选择（按当前模式分派）
 func select_at_viewport_position(x: float, y: float, mode: int = -1) -> Dictionary:
 	if mode >= 0:
@@ -240,6 +246,8 @@ func select_at_viewport_position(x: float, y: float, mode: int = -1) -> Dictiona
 func select_data_voxel(mode: int, x: int, y: int, z: int) -> Dictionary:
 	var mode_id := int(mode)
 	set_spa_selection_mode(mode_id)
+	if _mode_requires_scene_voxel_committer(mode_id) and _sv_committer == null:
+		return {"ok": false, "reason": "scene_voxel_committer_unavailable", "mode": _selection_mode_name(mode_id)}
 	var record := _data_record_for_voxel(mode_id, Vector3i(int(x), int(y), int(z)))
 	if record.is_empty():
 		return {"ok": false, "reason": "no_data_record", "mode": _selection_mode_name(mode_id)}
@@ -304,8 +312,19 @@ func get_selected_anchor_tooltip_text() -> String:
 	return ""
 
 
+## Refresh SPA-owned visuals for the provider's current volume-score anchor.
+func refresh_volume_score_anchor_selection() -> Dictionary:
+	var record := _volume_score_selection_record()
+	_update_anchor_sample_bounds_marker(record)
+	_update_hud()
+	if record.is_empty():
+		return {"ok": false, "reason": "no_selected_anchor"}
+	return {"ok": true, "record": record}
+
+
 ## 设置指定体素调试域是否显示
 func set_voxel_display_visible(display_key: String, visible: bool) -> void:
+	_normalize_voxel_display_state()
 	if not _voxel_display_visible.has(display_key):
 		return
 	_voxel_display_visible[display_key] = visible
@@ -321,6 +340,7 @@ func is_voxel_display_visible(display_key: String) -> bool:
 
 ## 返回当前所有体素显示开关状态
 func get_voxel_display_state() -> Dictionary:
+	_normalize_voxel_display_state()
 	return _voxel_display_visible.duplicate(true)
 
 
@@ -365,6 +385,7 @@ func attach_voxel_display_root(display_root: Node3D, owner_key: String = "extern
 
 ## Register one external display node with one of SPA's voxel display keys.
 func register_voxel_display_node(display_key: String, node: Node3D, owner_key: String = "external") -> void:
+	_normalize_voxel_display_state()
 	if node == null or not _voxel_display_visible.has(display_key):
 		return
 	_ensure_external_voxel_display_root()
@@ -375,14 +396,20 @@ func register_voxel_display_node(display_key: String, node: Node3D, owner_key: S
 ## 根据模式枚举返回可读名称
 func _selection_mode_name(mode: int = -1) -> String:
 	var idx := _selection_mode if mode < 0 else mode
-	if idx >= 0 and idx < SELECTION_MODE_NAMES.size():
-		return SELECTION_MODE_NAMES[idx]
-	return "Unknown"
+	return SPAEditorContract.selection_mode_name(idx)
 
 
 ## 查询体素显示开关状态
 func _voxel_display_is_visible(display_key: String) -> bool:
+	_normalize_voxel_display_state()
 	return bool(_voxel_display_visible.get(display_key, true))
+
+
+## 确保运行时显示状态覆盖合同表里的所有体素域
+func _normalize_voxel_display_state() -> void:
+	for display_key in SPAEditorContract.default_voxel_display_state().keys():
+		if not _voxel_display_visible.has(display_key):
+			_voxel_display_visible[display_key] = true
 
 
 ## 统一将选择域映射到显示开关
@@ -410,8 +437,9 @@ func _call_volume_score_provider(method_name: String, args: Array = []) -> Dicti
 
 
 func _volume_score_anchor_selection_allowed() -> bool:
-	return _voxel_display_is_visible(VOXEL_DISPLAY_ANCHOR) \
-		and (_selection_mode == SelectionMode.MIXED or _selection_mode == SelectionMode.ANCHOR)
+	var anchor_key := SPAEditorContract.voxel_display_key_for_mode(SelectionMode.ANCHOR)
+	return _voxel_display_is_visible(anchor_key) \
+		and SPAEditorContract.mode_is_active(_selection_mode, SelectionMode.ANCHOR)
 
 
 func _volume_score_anchor_display_active() -> bool:
@@ -450,7 +478,9 @@ func _select_volume_score_anchor_at_position(cam: Camera3D, screen_pos: Vector2)
 
 
 func _cycle_volume_score_anchor_topk(delta: int) -> bool:
-	if _selection_mode != SelectionMode.ANCHOR or not _has_volume_score_selection():
+	if not SPAEditorContract.mode_is_active(_selection_mode, SelectionMode.ANCHOR):
+		return false
+	if not _has_volume_score_selection():
 		return false
 	var provider := _volume_score_provider_node()
 	if provider == null or not provider.has_method("cycle_selected_anchor_topk"):
@@ -554,16 +584,16 @@ func _selected_data_record_display_visible() -> bool:
 func _anchor_sample_bounds_visible(record: Dictionary) -> bool:
 	if not show_anchor_sample_bounds:
 		return false
-	if _selection_mode != SelectionMode.ANCHOR:
+	if not SPAEditorContract.mode_is_active(_selection_mode, SelectionMode.ANCHOR):
 		return false
-	if not _voxel_display_is_visible(VOXEL_DISPLAY_ANCHOR):
+	if not _voxel_display_is_visible(SPAEditorContract.voxel_display_key_for_mode(SelectionMode.ANCHOR)):
 		return false
 	return str(record.get("domain", "")) == SELECTION_DOMAIN_ANCHOR and record.has("sample_bounds")
 
 
-## Refresh the score-stage sample bounds marker; hidden outside Anchor mode.
+## Refresh the score-stage sample bounds marker; hidden outside anchor-pick modes.
 func _update_anchor_sample_bounds_marker(record: Dictionary = {}) -> void:
-	if _selection_mode != SelectionMode.ANCHOR:
+	if not SPAEditorContract.mode_is_active(_selection_mode, SelectionMode.ANCHOR):
 		_hide_node_if_valid(_anchor_sample_bounds_marker)
 		return
 	var source := record
@@ -600,7 +630,7 @@ func _sample_bounds_aabb(raw_bounds) -> AABB:
 
 ## Reuse the existing selection marker mesh with a red transparent wire material.
 func _ensure_anchor_sample_bounds_marker() -> void:
-	var parent := _stress_overlay_root if _stress_overlay_root != null else self
+	var parent := _autoobject_overlay_root if _autoobject_overlay_root != null else self
 	if _anchor_sample_bounds_marker == null or not is_instance_valid(_anchor_sample_bounds_marker):
 		_anchor_sample_bounds_marker = _make_selection_marker("SelectedAnchorSampleBounds")
 		parent.add_child(_anchor_sample_bounds_marker)
@@ -627,21 +657,23 @@ func _select_editor_selection_anchor_for_mode() -> void:
 ## 按模式将体素坐标转为对应数据记录；AutoObject 没有体素直选记录，需走点云拾取
 func _data_record_for_voxel(mode: int, raw_voxel: Vector3i) -> Dictionary:
 	var mode_id := int(mode)
-	if mode_id == SelectionMode.SVTILE:
-		return _svtile_record_for_voxel(_clamp_selection_voxel(raw_voxel))
-	if mode_id == SelectionMode.SV:
-		return _sv_record_for_voxel(_clamp_selection_voxel(raw_voxel))
-	if mode_id == SelectionMode.ANCHOR:
-		return _anchor_record_for_voxel(_clamp_selection_voxel(raw_voxel))
-	if mode_id == SelectionMode.TARGETSV:
-		return _targetsv_record_for_indices(raw_voxel.x, raw_voxel.y, raw_voxel.z)
-	return {}
+	var method_name := SPAEditorContract.data_record_method_for_mode(mode_id)
+	if method_name.is_empty() or not has_method(method_name):
+		return {}
+	var voxel := _clamp_selection_voxel(raw_voxel) if _mode_requires_scene_voxel_committer(mode_id) else raw_voxel
+	var result = callv(method_name, [voxel])
+	return result if result is Dictionary else {}
+
+
+## 判断该选择模式是否依赖SceneVoxelCommitter运行时
+func _mode_requires_scene_voxel_committer(mode_id: int) -> bool:
+	return SPAEditorContract.mode_requires_scene_voxel_committer(mode_id)
 
 
 ## 将体素坐标限制在合法范围内
 func _clamp_selection_voxel(voxel: Vector3i) -> Vector3i:
 	if _sv_committer == null:
-		var res := maxi(stress_grid_resolution, 1)
+		var res := maxi(autoobject_grid_resolution, 1)
 		return Vector3i(clampi(voxel.x, 0, res - 1), maxi(voxel.y, 0), clampi(voxel.z, 0, res - 1))
 	var grid: Vector3i = _sv_committer.grid_size
 	return Vector3i(
@@ -678,26 +710,21 @@ func _clear_scene_owner_recursive(node: Node) -> void:
 func _init_spa() -> void:
 	var t0 := Time.get_ticks_msec()
 	_dispose_spa_components(false)
-	if run_svtile_autoobject_stress:
-		_sv_committer = SceneVoxelCommitterScript.new(stress_grid_resolution, TerrainConfigScript.CAPTURE_SIZE, true)
-		_gpu_runtime = GPUAutoObjectRuntimeScript.new(autoobject_count, false)
+	_sv_committer = SceneVoxelCommitterScript.new(autoobject_grid_resolution, TerrainConfigScript.CAPTURE_SIZE, true)
 	_spa = ScenePlacementActorScript.new()
-	if run_svtile_autoobject_stress:
-		_spa.initialize(true, true, _sv_committer, _gpu_runtime)
-	else:
-		_spa.initialize(true, true)
+	_spa.set_autoobject_runtime_capacity(autoobject_count)
+	_spa.initialize(true, true, _sv_committer)
 	var merged_report: Dictionary = _spa.get_merged_gpu_buffer_summary() if _spa.has_method("get_merged_gpu_buffer_summary") else {}
 	_runtime_setup_result = merged_report.get("gpu_runtime_scene_voxel_setup", {})
 	_initialized = _spa.is_initialized()
 	_init_time_ms = float(Time.get_ticks_msec() - t0)
 	print("[SPA Demo] %s (%.0f ms)" % ["OK" if _initialized else "FAILED", _init_time_ms])
-	if run_svtile_autoobject_stress:
-		print("[SPA SVTile] Runtime setup: ok=%s reason=%s same_rd=%s max_objects=%d" % [
-			str(_runtime_setup_result.get("ok", false)),
-			str(_runtime_setup_result.get("reason", "")),
-			str(_runtime_setup_result.get("same_rendering_device", false)),
-			int(_runtime_setup_result.get("max_objects", 0)),
-		])
+	print("[SPA SVTile] Runtime setup: ok=%s reason=%s same_rd=%s max_objects=%d" % [
+		str(_runtime_setup_result.get("ok", false)),
+		str(_runtime_setup_result.get("reason", "")),
+		str(_runtime_setup_result.get("same_rendering_device", false)),
+		int(_runtime_setup_result.get("max_objects", 0)),
+	])
 
 
 ## 释放SPA、GPU运行时、SV提交器资源
@@ -708,14 +735,12 @@ func _dispose_spa_components(sync_before_free: bool = false) -> void:
 	if _spa != null:
 		_spa.dispose(sync_before_free)
 		_spa = null
-	if _gpu_runtime != null:
-		_gpu_runtime.dispose(sync_before_free)
-		_gpu_runtime = null
 	if _sv_committer != null:
 		_sv_committer.dispose(sync_before_free)
 		_sv_committer = null
 	_initialized = false
 	_runtime_setup_result.clear()
+	_reset_autoobject_runtime_state()
 
 
 ## 将所有网格资产注册到SPA并生成描述符
@@ -739,113 +764,109 @@ func _register_all_assets() -> void:
 	_register_time_ms = float(Time.get_ticks_msec() - t0)
 
 
-# ---- SVTile / AutoObject stress visualization -----------------------------
+# ---- SVTile / GPU AutoObject runtime visualization ------------------------
 
-## 运行SVTile+GPU AutoObject压力测试全流程
-func _run_svtile_autoobject_stress_test() -> void:
-	_reset_stress_state()
-	if not run_svtile_autoobject_stress:
-		return
+## 运行SVTile+GPU AutoObject正式批量流程
+func _run_gpu_autoobject_batch() -> void:
+	_reset_autoobject_runtime_state()
 	if not _initialized or _spa == null or _sv_committer == null:
-		_stress_flush_result = {"ok": false, "reason": "spa_or_svtile_not_ready"}
-		print("[SPA SVTile] SKIP: %s" % str(_stress_flush_result.get("reason", "")))
+		_autoobject_flush_result = {"ok": false, "reason": "spa_or_svtile_not_ready"}
+		print("[SPA SVTile] SKIP: %s" % str(_autoobject_flush_result.get("reason", "")))
 		return
 	if _profile_ids.is_empty():
-		_stress_spawn_result = {"ok": false, "reason": "no_registered_profiles"}
+		_autoobject_spawn_result = {"ok": false, "reason": "no_registered_profiles"}
 		print("[SPA SVTile] SKIP: no registered profiles")
 		return
 
-	_gpu_runtime = _spa.get_gpu_runtime()
-	if _gpu_runtime == null or not _gpu_runtime.is_ready():
-		_stress_spawn_result = {"ok": false, "reason": "gpu_autoobject_runtime_not_ready"}
+	if not _spa.is_autoobject_runtime_ready():
+		_autoobject_spawn_result = {"ok": false, "reason": "gpu_autoobject_runtime_not_ready"}
 		print("[SPA SVTile] FAIL: GPU AutoObject runtime not ready")
 		return
 
-	var tile_size := _stress_tile_size()
-	var tile_grid := _stress_tile_grid_size(tile_size)
+	var tile_size := _svtile_tile_size()
+	var tile_grid := _svtile_grid_size(tile_size)
 	var tile_counts := PackedInt32Array()
 	tile_counts.resize(tile_grid.x * tile_grid.y * tile_grid.z)
 	_autoobject_positions.clear()
 	_autoobject_asset_indices.clear()
 	_autoobject_ids.clear()
-	var spawn_records := _build_stress_spawn_records(tile_size, tile_grid, tile_counts, _autoobject_positions, _autoobject_asset_indices)
-	_stress_tile_count = tile_counts.size()
-	_collect_stress_tile_count_stats(tile_counts)
+	var spawn_records := _build_autoobject_spawn_records(tile_size, tile_grid, tile_counts, _autoobject_positions, _autoobject_asset_indices)
+	_svtile_total_tile_count = tile_counts.size()
+	_collect_svtile_ref_count_stats(tile_counts)
 
 	var metadata_t0 := Time.get_ticks_msec()
 	_sv_committer.mark_scene_voxel_tile_bounds_dirty(
 		Vector3i.ZERO,
 		_sv_committer.grid_size,
 		{"auto": true, "object_refs": true},
-		{"id": "spa_svtile_autoobject_stress", "source_id": "gpu_autoobject_batch"}
+		{"id": "spa_svtile_autoobject_batch", "source_id": "gpu_autoobject_batch"}
 	)
 	var uploaded: bool = _sv_committer.ensure_scene_voxel_tile_buffers_uploaded(true)
 	var metadata_ms := Time.get_ticks_msec() - metadata_t0
 	if not uploaded:
-		_stress_flush_result = _sv_committer.get_scene_voxel_tile_gpu_buffer_summary()
-		_stress_flush_result["ok"] = false
-		_stress_flush_result["reason"] = str(_stress_flush_result.get("reason", "scene_voxel_tile_upload_failed"))
-		print("[SPA SVTile] FAIL: tile metadata upload failed (%s)" % str(_stress_flush_result.get("reason", "")))
+		_autoobject_flush_result = _sv_committer.get_scene_voxel_tile_gpu_buffer_summary()
+		_autoobject_flush_result["ok"] = false
+		_autoobject_flush_result["reason"] = str(_autoobject_flush_result.get("reason", "scene_voxel_tile_upload_failed"))
+		print("[SPA SVTile] FAIL: tile metadata upload failed (%s)" % str(_autoobject_flush_result.get("reason", "")))
 		return
 
 	var spawn_t0 := Time.get_ticks_msec()
-	_stress_spawn_result = _gpu_runtime.spawn_batch_from_accepted_placement_records(spawn_records, {
+	_autoobject_spawn_result = _spa.spawn_autoobject_batch_from_accepted_placement_records(spawn_records, {
 		"use_accepted_placement_record_shader": true,
 	})
-	_stress_spawn_time_ms = float(Time.get_ticks_msec() - spawn_t0)
-	if not bool(_stress_spawn_result.get("ok", false)):
+	_autoobject_spawn_time_ms = float(Time.get_ticks_msec() - spawn_t0)
+	if not bool(_autoobject_spawn_result.get("ok", false)):
 		print("[SPA SVTile] FAIL: spawn %d GPU AutoObjects failed: %s" % [
 			spawn_records.size(),
-			str(_stress_spawn_result.get("reason", "unknown")),
+			str(_autoobject_spawn_result.get("reason", "unknown")),
 		])
 		return
-	_cache_autoobject_ids(_stress_spawn_result.get("object_ids", []))
+	_cache_autoobject_ids(_autoobject_spawn_result.get("object_ids", []))
 
 	var flush_t0 := Time.get_ticks_msec()
-	_stress_flush_result = _gpu_runtime.flush_to_scene_voxel_committer(_sv_committer, {})
-	_stress_flush_time_ms = float(Time.get_ticks_msec() - flush_t0)
-	_stress_tile_summary = _sv_committer.get_scene_voxel_tile_gpu_buffer_summary()
+	_autoobject_flush_result = _spa.flush_autoobject_runtime_to_scene_voxel_committer({})
+	_autoobject_flush_time_ms = float(Time.get_ticks_msec() - flush_t0)
+	_svtile_summary = _sv_committer.get_scene_voxel_tile_gpu_buffer_summary()
 
 	if show_svtile_autoobject_overlay:
 		var visual_t0 := Time.get_ticks_msec()
 		_build_svtile_autoobject_overlay(tile_counts, _autoobject_positions, _autoobject_asset_indices, tile_grid, tile_size)
-		_stress_visual_time_ms = float(Time.get_ticks_msec() - visual_t0)
+		_autoobject_visual_time_ms = float(Time.get_ticks_msec() - visual_t0)
 
-	var spawned := int(_stress_spawn_result.get("spawned_count", 0))
-	var inserted := int(_stress_flush_result.get("object_ref_inserted_slot_count", 0))
-	var overflow := int(_stress_flush_result.get("object_ref_overflow_count", 0))
-	_stress_ready = bool(_stress_flush_result.get("ok", false)) and inserted == spawned and overflow == 0
+	var spawned := int(_autoobject_spawn_result.get("spawned_count", 0))
+	var inserted := int(_autoobject_flush_result.get("object_ref_inserted_slot_count", 0))
+	var overflow := int(_autoobject_flush_result.get("object_ref_overflow_count", 0))
+	_autoobject_runtime_ready = bool(_autoobject_flush_result.get("ok", false)) and inserted == spawned and overflow == 0
 	print("[SPA SVTile] Metadata upload: ok=%s tiles=%d grid=%s tile_size=%s (%d ms)" % [
-		str(uploaded), _stress_tile_count, str(tile_grid), str(tile_size), metadata_ms,
+		str(uploaded), _svtile_total_tile_count, str(tile_grid), str(tile_size), metadata_ms,
 	])
 	print("[SPA SVTile] Spawned GPU AutoObjects: ok=%s count=%d shader=%s dispatch=%d time=%.0f ms" % [
-		str(_stress_spawn_result.get("ok", false)),
+		str(_autoobject_spawn_result.get("ok", false)),
 		spawned,
-		str(_stress_spawn_result.get("accepted_placement_record_shader_consumed", false)),
-		int(_stress_spawn_result.get("accepted_placement_record_shader_dispatch_count", 0)),
-		_stress_spawn_time_ms,
+		str(_autoobject_spawn_result.get("accepted_placement_record_shader_consumed", false)),
+		int(_autoobject_spawn_result.get("accepted_placement_record_shader_dispatch_count", 0)),
+		_autoobject_spawn_time_ms,
 	])
 	print("[SPA SVTile] Object refs flush: ok=%s inserted=%d touched=%d overflow=%d dirty_tiles=%d time=%.0f ms" % [
-		str(_stress_flush_result.get("ok", false)),
+		str(_autoobject_flush_result.get("ok", false)),
 		inserted,
-		int(_stress_flush_result.get("object_ref_touched_count", 0)),
+		int(_autoobject_flush_result.get("object_ref_touched_count", 0)),
 		overflow,
-		int(_stress_flush_result.get("dirty_scene_voxel_tile_count", _stress_tile_summary.get("dirty_tile_count", 0))),
-		_stress_flush_time_ms,
+		int(_autoobject_flush_result.get("dirty_scene_voxel_tile_count", _svtile_summary.get("dirty_tile_count", 0))),
+		_autoobject_flush_time_ms,
 	])
 	print("[SPA SVTile] Visualization: tiles=%d occupied=%d refs_per_tile avg=%.2f max=%d object_points=%d time=%.0f ms" % [
-		_stress_tile_count,
-		_stress_occupied_tile_count,
-		(float(_stress_total_refs) / float(maxi(_stress_occupied_tile_count, 1))),
-		_stress_max_refs_per_tile,
+		_svtile_total_tile_count,
+		_svtile_occupied_tile_count,
+		(float(_svtile_total_refs) / float(maxi(_svtile_occupied_tile_count, 1))),
+		_svtile_max_refs_per_tile,
 		_autoobject_positions.size(),
-		_stress_visual_time_ms,
+		_autoobject_visual_time_ms,
 	])
-	_print_autoobject_selection_self_test()
 
 
-## 构建压力测试的GPU批量放置记录列表
-func _build_stress_spawn_records(
+## 构建GPU AutoObject批量放置记录列表
+func _build_autoobject_spawn_records(
 	tile_size: Vector3i,
 	tile_grid: Vector3i,
 	tile_counts: PackedInt32Array,
@@ -854,7 +875,7 @@ func _build_stress_spawn_records(
 ) -> Array[Dictionary]:
 	var records: Array[Dictionary] = []
 	var requested_count := maxi(autoobject_count, 0)
-	var grid_res := maxi(stress_grid_resolution, 1)
+	var grid_res := maxi(autoobject_grid_resolution, 1)
 	var side_count := maxi(int(ceil(sqrt(float(maxi(requested_count, 1))))), 1)
 	var spacing_voxels := maxi(int(floor(float(grid_res) / float(side_count))), 1)
 	_autoobject_side_count = side_count
@@ -884,7 +905,7 @@ func _build_stress_spawn_records(
 		})
 		object_positions.append(world_pos)
 		object_asset_indices.append(asset_idx)
-		var tile_index := SceneVoxelTileCodecScript.tile_index_from_voxel(voxel_min, _stress_grid_size(), tile_size)
+		var tile_index := SceneVoxelTileCodecScript.tile_index_from_voxel(voxel_min, _scene_voxel_grid_size(), tile_size)
 		if tile_index >= 0 and tile_index < tile_counts.size():
 			tile_counts[tile_index] = tile_counts[tile_index] + 1
 	return records
@@ -898,34 +919,35 @@ func _build_svtile_autoobject_overlay(
 	tile_grid: Vector3i,
 	tile_size: Vector3i
 ) -> void:
-	if _stress_overlay_root == null:
-		_stress_overlay_root = Node3D.new()
-		_stress_overlay_root.name = SVTILE_AUTOOBJECT_OVERLAY_ROOT_NAME
-		add_child(_stress_overlay_root, true)
-	for child in _stress_overlay_root.get_children():
+	if _autoobject_overlay_root == null:
+		_autoobject_overlay_root = Node3D.new()
+		_autoobject_overlay_root.name = SVTILE_AUTOOBJECT_OVERLAY_ROOT_NAME
+		add_child(_autoobject_overlay_root, true)
+	for child in _autoobject_overlay_root.get_children():
 		child.queue_free()
+	_clear_autoobject_overlay_refs()
 
-	_stress_tile_heatmap = _make_tile_heatmap_multimesh(tile_counts, tile_grid, tile_size)
-	_stress_tile_heatmap.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_stress_overlay_root.add_child(_stress_tile_heatmap)
+	_svtile_heatmap = _make_tile_heatmap_multimesh(tile_counts, tile_grid, tile_size)
+	_svtile_heatmap.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_autoobject_overlay_root.add_child(_svtile_heatmap)
 
 	_autoobject_points = _make_object_points_multimesh(object_positions, object_asset_indices)
 	_autoobject_points.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_stress_overlay_root.add_child(_autoobject_points)
+	_autoobject_overlay_root.add_child(_autoobject_points)
 
-	_stress_label = Label3D.new()
-	_stress_label.name = "SVTileAutoObjectLegend"
-	_stress_label.text = "SPA -> GPU AutoObject -> SVTile refs\n%d autoobjects / %d occupied tiles / max %d refs per tile" % [
+	_autoobject_overlay_label = Label3D.new()
+	_autoobject_overlay_label.name = "SVTileAutoObjectLegend"
+	_autoobject_overlay_label.text = "SPA -> GPU AutoObject -> SVTile refs\n%d autoobjects / %d occupied tiles / max %d refs per tile" % [
 		object_positions.size(),
-		_stress_occupied_tile_count,
-		_stress_max_refs_per_tile,
+		_svtile_occupied_tile_count,
+		_svtile_max_refs_per_tile,
 	]
-	_stress_label.position = _stress_position_on_terrain_from_voxel_center(Vector3(12.0, 0.0, 12.0), 10.0)
-	_stress_label.font_size = 28
-	_stress_label.pixel_size = 0.45
-	_stress_label.outline_size = 8
-	_stress_label.modulate = Color(0.95, 0.98, 1.0, 1.0)
-	_stress_overlay_root.add_child(_stress_label)
+	_autoobject_overlay_label.position = _position_on_terrain_from_voxel_center(Vector3(12.0, 0.0, 12.0), 10.0)
+	_autoobject_overlay_label.font_size = 28
+	_autoobject_overlay_label.pixel_size = 0.45
+	_autoobject_overlay_label.outline_size = 8
+	_autoobject_overlay_label.modulate = Color(0.95, 0.98, 1.0, 1.0)
+	_autoobject_overlay_root.add_child(_autoobject_overlay_label)
 	_ensure_autoobject_selection_visuals()
 	_clear_autoobject_selection(false)
 	_apply_selection_mode_visuals()
@@ -940,7 +962,7 @@ func _make_tile_heatmap_multimesh(tile_counts: PackedInt32Array, tile_grid: Vect
 		if count <= 0:
 			continue
 		var tile_coord := SceneVoxelTileCodecScript.tile_coord_from_index(tile_index, tile_grid)
-		var bounds := SceneVoxelTileCodecScript.tile_bounds(tile_coord, _stress_grid_size(), tile_size)
+		var bounds := SceneVoxelTileCodecScript.tile_bounds(tile_coord, _scene_voxel_grid_size(), tile_size)
 		var tile_min: Vector3i = bounds.get("voxel_min", Vector3i.ZERO)
 		var tile_max: Vector3i = bounds.get("voxel_max", tile_min + Vector3i.ONE)
 		var center_voxel := Vector3(
@@ -948,14 +970,14 @@ func _make_tile_heatmap_multimesh(tile_counts: PackedInt32Array, tile_grid: Vect
 			0.0,
 			(float(tile_min.z) + float(tile_max.z)) * 0.5
 		)
-		var center := _stress_position_on_terrain_from_voxel_center(center_voxel, 0.22)
+		var center := _position_on_terrain_from_voxel_center(center_voxel, 0.22)
 		var size := Vector3(
 			maxf(float(tile_max.x - tile_min.x) * _sv_committer.voxel_size.x * 0.88, 0.2),
 			0.35,
 			maxf(float(tile_max.z - tile_min.z) * _sv_committer.voxel_size.z * 0.88, 0.2)
 		)
 		transforms.append(Transform3D(Basis().scaled(size), center))
-		colors.append(_stress_tile_color(count))
+		colors.append(_svtile_ref_color(count))
 	return VoxelDisplay.build_from_transforms(transforms, colors, {
 		"name": "SVTileHeatmap", "unshaded": true, "no_depth_test": true})
 
@@ -985,17 +1007,17 @@ func _cache_autoobject_ids(raw_ids) -> void:
 		_autoobject_ids.append(int(raw_id))
 
 
-## 确保压力测试选中标记和标签节点存在
+## 确保GPU AutoObject选中标记和标签节点存在
 func _ensure_autoobject_selection_visuals() -> void:
-	if _stress_overlay_root == null:
+	if _autoobject_overlay_root == null:
 		return
 	if _autoobject_selection_marker == null or not is_instance_valid(_autoobject_selection_marker):
 		_autoobject_selection_marker = _make_selection_marker("SelectedGPUAutoObjectMarker")
-		_stress_overlay_root.add_child(_autoobject_selection_marker)
+		_autoobject_overlay_root.add_child(_autoobject_selection_marker)
 	_configure_selection_marker(_autoobject_selection_marker)
 	if _autoobject_selection_label == null or not is_instance_valid(_autoobject_selection_label):
 		_autoobject_selection_label = _make_selection_label("SelectedGPUAutoObjectLabel", SELECT_COLOR)
-		_stress_overlay_root.add_child(_autoobject_selection_label)
+		_autoobject_overlay_root.add_child(_autoobject_selection_label)
 
 
 ## 创建一个选中标记用的线框 Box 节点
@@ -1074,7 +1096,7 @@ func _make_selection_material() -> StandardMaterial3D:
 	return _make_unshaded_material(Color(1.0, 0.9, 0.08, 0.92), false, true, true)
 
 
-## 设置压力测试点云中单个实例的颜色
+## 设置GPU AutoObject点云中单个实例的颜色
 func _set_autoobject_instance_color(object_index: int, color: Color) -> void:
 	if _autoobject_points == null or _autoobject_points.multimesh == null:
 		return
@@ -1090,7 +1112,7 @@ func _hide_node_if_valid(node: Node) -> void:
 		node.visible = false
 
 
-## 清除GPU AutoObject压力测试选中
+## 清除GPU AutoObject选中
 func _clear_autoobject_selection(update_hud: bool = true) -> void:
 	if _selected_autoobject_index >= 0:
 		_set_autoobject_instance_color(_selected_autoobject_index, _autoobject_color(_safe_asset_index(_selected_autoobject_index)))
@@ -1197,7 +1219,7 @@ func _select_data_record(record: Dictionary) -> void:
 
 ## 确保数据选中标记和标签节点存在
 func _ensure_data_selection_visuals() -> void:
-	var parent := _stress_overlay_root if _stress_overlay_root != null else self
+	var parent := _autoobject_overlay_root if _autoobject_overlay_root != null else self
 	if _data_selection_marker == null or not is_instance_valid(_data_selection_marker):
 		_data_selection_marker = _make_selection_marker("SelectedDataVoxelMarker")
 		parent.add_child(_data_selection_marker)
@@ -1273,7 +1295,7 @@ func _selection_record_visual_node(record: Dictionary) -> Node:
 			var display := targetsv.get_node_or_null("TargetSVVoxels")
 			return display if display != null else targetsv
 	if domain == SELECTION_DOMAIN_SVTILE or domain == SELECTION_DOMAIN_SV or domain == SELECTION_DOMAIN_ANCHOR:
-		return _stress_tile_heatmap if _stress_tile_heatmap != null else _stress_overlay_root
+		return _svtile_heatmap if _svtile_heatmap != null else _autoobject_overlay_root
 	return null
 
 
@@ -1282,19 +1304,13 @@ func _find_targetsv_setup() -> Node:
 	if not is_inside_tree():
 		return null
 	var root := get_tree().edited_scene_root if get_tree() != null else null
-	if root != null:
-		var found := root.find_child("TargetSVSetup", true, false)
-		if found != null:
-			return found
-	if get_parent() != null:
-		var sibling := get_parent().find_child("TargetSVSetup", true, false)
-		if sibling != null:
-			return sibling
-	return find_child("TargetSVSetup", true, false)
+	return CommonTargetSVLookup.find_setup(self, root, true, false, true)
 
 
 ## 按网格索引选中GPU AutoObject（API入口）
 func select_autoobject_by_index(object_index: int = -1) -> Dictionary:
+	if not _autoobject_runtime_ready:
+		return {"ok": false, "reason": "autoobject_runtime_not_ready"}
 	if _autoobject_positions.is_empty():
 		return {"ok": false, "reason": "no_autoobjects"}
 	var idx := object_index
@@ -1315,47 +1331,30 @@ func select_autoobject_by_index(object_index: int = -1) -> Dictionary:
 	}
 
 
-## 自检：对已知位置执行GPU AutoObject拾取验证
-func _print_autoobject_selection_self_test() -> void:
-	if _autoobject_positions.is_empty():
-		return
-	var probe_index := mini(_autoobject_positions.size() - 1, maxi(_autoobject_side_count + 1, 0))
-	var selection := _nearest_autoobject_at_world(_autoobject_positions[probe_index], null, Vector2.ZERO)
-	print("[SPA SVTile] Selection mode: ok=%s probe_index=%d selected_index=%d object_id=%d tile=%s" % [
-		str(not selection.is_empty()),
-		probe_index,
-		int(selection.get("object_index", -1)),
-		int(selection.get("object_id", -1)),
-		str(selection.get("tile_coord", Vector3i.ZERO)),
-	])
-
-
-
-
 ## 根据当前选择模式淡化非相关几何体；这只影响显示焦点，不改变拾取优先级
 func _apply_selection_mode_visuals() -> void:
-	var auto_focus := _selection_mode == SelectionMode.MIXED or _selection_mode == SelectionMode.AUTOOBJECT
-	var svtile_focus := _selection_mode == SelectionMode.MIXED or _selection_mode == SelectionMode.SVTILE
-	var sv_focus := _selection_mode == SelectionMode.MIXED or _selection_mode == SelectionMode.SV
-	var target_focus := _selection_mode == SelectionMode.MIXED or _selection_mode == SelectionMode.TARGETSV
-	var anchor_focus := _selection_mode == SelectionMode.MIXED or _selection_mode == SelectionMode.ANCHOR
-	var gpu_objects_visible := _voxel_display_is_visible(VOXEL_DISPLAY_GPU_OBJECTS)
-	var svtile_visible := _voxel_display_is_visible(VOXEL_DISPLAY_SVTILE)
+	var gpu_objects_key := SPAEditorContract.voxel_display_key_for_mode(SelectionMode.AUTOOBJECT)
+	var svtile_key := SPAEditorContract.voxel_display_key_for_mode(SelectionMode.SVTILE)
+	var target_key := SPAEditorContract.voxel_display_key_for_mode(SelectionMode.TARGETSV)
+	var auto_focus := SPAEditorContract.mode_is_active(_selection_mode, SelectionMode.AUTOOBJECT)
+	var target_focus := SPAEditorContract.mode_is_active(_selection_mode, SelectionMode.TARGETSV)
+	var tile_active := SPAEditorContract.mode_in_list(_selection_mode, SPAEditorContract.SVTILE_OVERLAY_FOCUS_MODES)
+	var gpu_objects_visible := _voxel_display_is_visible(gpu_objects_key)
+	var svtile_visible := _voxel_display_is_visible(svtile_key)
 
 	if _autoobject_points != null:
 		_autoobject_points.visible = gpu_objects_visible
 		_autoobject_points.transparency = 0.0 if auto_focus else SELECTION_FADED_TRANSPARENCY
-	if _stress_tile_heatmap != null:
-		var tile_active := svtile_focus or sv_focus or anchor_focus
-		_stress_tile_heatmap.visible = svtile_visible
-		_stress_tile_heatmap.transparency = 0.0 if tile_active else SELECTION_FADED_TRANSPARENCY
-	if _stress_label != null:
-		var label_color := _stress_label.modulate
-		_stress_label.visible = gpu_objects_visible or svtile_visible
-		label_color.a = 1.0 if (_selection_mode == SelectionMode.MIXED or svtile_focus or sv_focus or anchor_focus) else 0.25
-		_stress_label.modulate = label_color
+	if _svtile_heatmap != null:
+		_svtile_heatmap.visible = svtile_visible
+		_svtile_heatmap.transparency = 0.0 if tile_active else SELECTION_FADED_TRANSPARENCY
+	if _autoobject_overlay_label != null:
+		var label_color := _autoobject_overlay_label.modulate
+		_autoobject_overlay_label.visible = gpu_objects_visible or svtile_visible
+		label_color.a = 1.0 if (_selection_mode == SelectionMode.MIXED or tile_active) else 0.25
+		_autoobject_overlay_label.modulate = label_color
 
-	_apply_targetsv_visuals(target_focus)
+	_apply_targetsv_visuals(target_focus, target_key)
 	if _autoobject_selection_marker != null:
 		_autoobject_selection_marker.visible = _selected_autoobject_index >= 0 and gpu_objects_visible
 		_autoobject_selection_marker.transparency = 0.0
@@ -1371,11 +1370,13 @@ func _apply_selection_mode_visuals() -> void:
 
 
 ## 设置TargetSV体素显示状态和透明度
-func _apply_targetsv_visuals(target_focus: bool) -> void:
+func _apply_targetsv_visuals(target_focus: bool, target_key: String = "") -> void:
 	var targetsv := _find_targetsv_setup()
 	if targetsv == null:
 		return
-	var target_visible := _voxel_display_is_visible(VOXEL_DISPLAY_TARGETSV)
+	if target_key.is_empty():
+		target_key = SPAEditorContract.voxel_display_key_for_mode(SelectionMode.TARGETSV)
+	var target_visible := _voxel_display_is_visible(target_key)
 	if targetsv.has_method("set_display_visible"):
 		targetsv.set_display_visible(target_visible)
 	var display := targetsv.get_node_or_null("TargetSVVoxels")
@@ -1386,7 +1387,7 @@ func _apply_targetsv_visuals(target_focus: bool) -> void:
 
 
 ## 根据SVTile引用密度计算热力图颜色
-func _stress_tile_color(ref_count: int) -> Color:
+func _svtile_ref_color(ref_count: int) -> Color:
 	var density := clampf(float(ref_count) / float(maxi(SceneVoxelCommitterScript.SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT, 1)), 0.0, 1.0)
 	return Color(0.12 + density * 0.85, 0.58 + density * 0.35, 0.95 - density * 0.55, 0.34 + density * 0.36)
 
@@ -1404,49 +1405,49 @@ func _autoobject_color(asset_idx: int) -> Color:
 
 
 ## 统计SVTile占用数、最大引用数等指标
-func _collect_stress_tile_count_stats(tile_counts: PackedInt32Array) -> void:
-	_stress_occupied_tile_count = 0
-	_stress_max_refs_per_tile = 0
-	_stress_total_refs = 0
+func _collect_svtile_ref_count_stats(tile_counts: PackedInt32Array) -> void:
+	_svtile_occupied_tile_count = 0
+	_svtile_max_refs_per_tile = 0
+	_svtile_total_refs = 0
 	for count in tile_counts:
 		var c := int(count)
 		if c <= 0:
 			continue
-		_stress_occupied_tile_count += 1
-		_stress_total_refs += c
-		_stress_max_refs_per_tile = maxi(_stress_max_refs_per_tile, c)
+		_svtile_occupied_tile_count += 1
+		_svtile_total_refs += c
+		_svtile_max_refs_per_tile = maxi(_svtile_max_refs_per_tile, c)
 
 
 ## 从项目设置读取SVTile尺寸
-func _stress_tile_size() -> Vector3i:
+func _svtile_tile_size() -> Vector3i:
 	return SceneVoxelTileCodecScript.configured_size(
 		SceneVoxelCommitterScript.SCENE_VOXEL_TILE_SIZE_SETTING,
 		SceneVoxelCommitterScript.DEFAULT_SCENE_VOXEL_TILE_SIZE
 	)
 
 
-## 当前SPA压力测试所使用的SceneVoxel网格尺寸
-func _stress_grid_size() -> Vector3i:
+## 当前SPA GPU AutoObject运行时使用的SceneVoxel网格尺寸
+func _scene_voxel_grid_size() -> Vector3i:
 	if _sv_committer != null:
 		return _sv_committer.grid_size
-	return Vector3i(stress_grid_resolution, 1, stress_grid_resolution)
+	return Vector3i(autoobject_grid_resolution, 1, autoobject_grid_resolution)
 
 
 ## 根据体素网格计算SVTile网格维度
-func _stress_tile_grid_size(tile_size: Vector3i) -> Vector3i:
-	return SceneVoxelTileCodecScript.tile_grid_size(_stress_grid_size(), tile_size)
+func _svtile_grid_size(tile_size: Vector3i) -> Vector3i:
+	return SceneVoxelTileCodecScript.tile_grid_size(_scene_voxel_grid_size(), tile_size)
 
 
 ## 根据网格索引反算体素最小坐标
-func _stress_voxel_min_from_index(object_index: int) -> Vector3i:
+func _autoobject_voxel_min_from_index(object_index: int) -> Vector3i:
 	if _autoobject_side_count <= 0:
 		return Vector3i.ZERO
 	var px := object_index % _autoobject_side_count
 	var pz := int(floor(float(object_index) / float(_autoobject_side_count)))
 	return Vector3i(
-		clampi(px * _autoobject_spacing_voxels, 0, stress_grid_resolution - 1),
+		clampi(px * _autoobject_spacing_voxels, 0, autoobject_grid_resolution - 1),
 		0,
-		clampi(pz * _autoobject_spacing_voxels, 0, stress_grid_resolution - 1)
+		clampi(pz * _autoobject_spacing_voxels, 0, autoobject_grid_resolution - 1)
 	)
 
 
@@ -1467,7 +1468,7 @@ func _ensure_voxel_pick_gpu() -> bool:
 
 ## 通过射线+屏幕投影拾取最近的GPU AutoObject
 func _pick_autoobject_with_camera(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
-	if not select_gpu_autoobjects or not _stress_ready or not _voxel_display_is_visible(VOXEL_DISPLAY_GPU_OBJECTS):
+	if not _selection_allows_gpu_autoobjects() or not _autoobject_runtime_ready:
 		return {}
 	if cam == null or _autoobject_positions.is_empty():
 		return {}
@@ -1488,33 +1489,31 @@ func _pick_autoobject_with_camera(cam: Camera3D, screen_pos: Vector2) -> Diction
 ## 先走 GPU 点云拾取。Mixed 的数据域 fallback 只尝试 TargetSV -> SVTile，
 ## 避免一次点击在所有体素域之间产生含糊选择。
 func _pick_data_selection_record_with_camera(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
-	match _selection_mode:
-		SelectionMode.SVTILE:
-			if not _voxel_display_is_visible(VOXEL_DISPLAY_SVTILE):
-				return {}
-			return _pick_svtile_record_with_camera(cam, screen_pos)
-		SelectionMode.ANCHOR:
-			if not _voxel_display_is_visible(VOXEL_DISPLAY_ANCHOR):
-				return {}
-			if _volume_score_anchor_display_active():
-				return {}
-			return _pick_anchor_record_with_camera(cam, screen_pos)
-		SelectionMode.SV:
-			if not _voxel_display_is_visible(VOXEL_DISPLAY_SV):
-				return {}
-			return _pick_sv_record_with_camera(cam, screen_pos)
-		SelectionMode.TARGETSV:
-			if not _voxel_display_is_visible(VOXEL_DISPLAY_TARGETSV):
-				return {}
-			return _pick_targetsv_record_with_camera(cam, screen_pos)
-		SelectionMode.MIXED:
-			if _voxel_display_is_visible(VOXEL_DISPLAY_TARGETSV):
-				var target_hit := _pick_targetsv_record_with_camera(cam, screen_pos, false)
-				if not target_hit.is_empty():
-					return target_hit
-			if _voxel_display_is_visible(VOXEL_DISPLAY_SVTILE):
-				return _pick_svtile_record_with_camera(cam, screen_pos)
+	for mode_id in SPAEditorContract.data_pick_modes_for_selection_mode(_selection_mode):
+		var allow_empty_fallback := not (_selection_mode == SelectionMode.MIXED and int(mode_id) == SelectionMode.TARGETSV)
+		var hit := _pick_bound_data_selection_record(int(mode_id), cam, screen_pos, allow_empty_fallback)
+		if not hit.is_empty():
+			return hit
 	return {}
+
+
+## 通过合同表检查显示/依赖后调用对应体素域拾取器
+func _pick_bound_data_selection_record(mode_id: int, cam: Camera3D, screen_pos: Vector2, allow_empty_fallback: bool = true) -> Dictionary:
+	var display_key := SPAEditorContract.voxel_display_key_for_mode(mode_id)
+	if not display_key.is_empty() and not _voxel_display_is_visible(display_key):
+		return {}
+	if _mode_requires_scene_voxel_committer(mode_id) and _sv_committer == null:
+		return {}
+	if mode_id == SelectionMode.ANCHOR and _volume_score_anchor_display_active():
+		return {}
+	var method_name := SPAEditorContract.data_pick_method_for_mode(mode_id)
+	if method_name.is_empty() or not has_method(method_name):
+		return {}
+	var args := [cam, screen_pos]
+	if mode_id == SelectionMode.TARGETSV and not allow_empty_fallback:
+		args.append(false)
+	var result = callv(method_name, args)
+	return result if result is Dictionary else {}
 
 
 ## 射线命中地形并返回世界坐标和体素坐标
@@ -1524,7 +1523,7 @@ func _pick_voxel_hit_with_camera(cam: Camera3D, screen_pos: Vector2) -> Dictiona
 	var gpu_hit := _pick_voxel_hit_gpu(cam, screen_pos)
 	if not gpu_hit.is_empty():
 		return gpu_hit
-	var terrain_hit := _ray_to_stress_terrain(cam, screen_pos)
+	var terrain_hit := _ray_to_terrain(cam, screen_pos)
 	var world_pos: Vector3
 	if terrain_hit.is_empty():
 		world_pos = _ray_xz_plane_cam(cam, screen_pos, 0.0)
@@ -1550,10 +1549,10 @@ func _pick_voxel_hit_gpu(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
 	if not _ensure_voxel_pick_gpu():
 		return {}
 	var capture := TerrainConfigScript.CAPTURE_SIZE
-	var res := maxi(stress_grid_resolution, 1)
-	var grid_origin := Vector3(-capture * 0.5, 0.0, -capture * 0.5)
+	var res := maxi(autoobject_grid_resolution, 1)
+	var grid_origin := CommonVoxelSpaceScript.default_grid_origin(capture)
 	var grid_size := Vector3i(res, 1, res)
-	var voxel_size := Vector3(capture / float(res), 1.0, capture / float(res))
+	var voxel_size := CommonVoxelSpaceScript.voxel_size_for_resolution(capture, res, 1.0)
 	if _sv_committer != null:
 		grid_origin = _sv_committer.grid_origin
 		grid_size = _sv_committer.grid_size
@@ -1583,7 +1582,7 @@ func _pick_voxel_hit_gpu(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
 
 func _world_to_selection_voxel(world_pos: Vector3) -> Vector3i:
 	if _sv_committer != null:
-		var voxel: Vector3i = _sv_committer.world_to_voxel(world_pos, stress_grid_resolution)
+		var voxel: Vector3i = _sv_committer.world_to_voxel(world_pos, autoobject_grid_resolution)
 		var grid: Vector3i = _sv_committer.grid_size
 		return Vector3i(
 			clampi(voxel.x, 0, maxi(grid.x - 1, 0)),
@@ -1591,10 +1590,13 @@ func _world_to_selection_voxel(world_pos: Vector3) -> Vector3i:
 			clampi(voxel.z, 0, maxi(grid.z - 1, 0))
 		)
 	var capture := TerrainConfigScript.CAPTURE_SIZE
-	var res := maxi(stress_grid_resolution, 1)
-	var x := clampi(floori(((world_pos.x / capture) + 0.5) * float(res)), 0, res - 1)
-	var z := clampi(floori(((world_pos.z / capture) + 0.5) * float(res)), 0, res - 1)
-	return Vector3i(x, 0, z)
+	var res := maxi(autoobject_grid_resolution, 1)
+	return CommonVoxelSpaceScript.world_to_voxel(
+		world_pos,
+		CommonVoxelSpaceScript.default_grid_origin(capture),
+		CommonVoxelSpaceScript.voxel_size_for_resolution(capture, res, 1.0),
+		Vector3i(res, 1, res)
+	)
 
 
 ## 拾取相机点击处体素并交给指定构建器生成记录
@@ -1728,6 +1730,11 @@ func _pick_targetsv_record_with_camera(cam: Camera3D, screen_pos: Vector2, allow
 	var slice_height := vertical_span / maxf(float(slice_count), 1.0)
 	best["marker_size"] = Vector3(maxf(cell_size * 0.9, 0.2), maxf(slice_height * 0.9, 0.2), maxf(cell_size * 0.9, 0.2))
 	return best
+
+
+## 按统一体素坐标构建TargetSV选中记录
+func _targetsv_record_for_selection_voxel(voxel: Vector3i) -> Dictionary:
+	return _targetsv_record_for_indices(voxel.x, voxel.y, voxel.z)
 
 
 ## 按显式索引构建TargetSV选中记录
@@ -1866,12 +1873,14 @@ func _targetsv_record_for_voxel(
 
 ## 计算SVTile标记的世界位置和尺寸
 func _svtile_marker_transform(tile_coord: Vector3i, tile_size: Vector3i) -> Dictionary:
-	var voxel_size: Vector3 = _sv_committer.voxel_size if _sv_committer != null else Vector3(
-		TerrainConfigScript.CAPTURE_SIZE / float(maxi(stress_grid_resolution, 1)),
-		1.0,
-		TerrainConfigScript.CAPTURE_SIZE / float(maxi(stress_grid_resolution, 1))
+	var voxel_size := CommonVoxelSpaceScript.voxel_size_for_resolution(
+		TerrainConfigScript.CAPTURE_SIZE,
+		autoobject_grid_resolution,
+		1.0
 	)
-	var bounds := SceneVoxelTileCodecScript.tile_bounds(tile_coord, _stress_grid_size(), tile_size)
+	if _sv_committer != null:
+		voxel_size = _sv_committer.voxel_size
+	var bounds := SceneVoxelTileCodecScript.tile_bounds(tile_coord, _scene_voxel_grid_size(), tile_size)
 	var voxel_min: Vector3i = bounds.get("voxel_min", Vector3i.ZERO)
 	var voxel_max: Vector3i = bounds.get("voxel_max", voxel_min + Vector3i.ONE)
 	var center_voxel := Vector3(
@@ -1879,11 +1888,12 @@ func _svtile_marker_transform(tile_coord: Vector3i, tile_size: Vector3i) -> Dict
 		0.0,
 		(float(voxel_min.z) + float(voxel_max.z)) * 0.5
 	)
-	var center := _stress_position_on_terrain_from_voxel_center(center_voxel, 1.0)
+	var center := _position_on_terrain_from_voxel_center(center_voxel, 1.0)
+	var span_world := CommonVoxelSpaceScript.voxel_span_to_world_size(voxel_max - voxel_min, voxel_size)
 	var size := Vector3(
-		maxf(float(voxel_max.x - voxel_min.x) * voxel_size.x * 0.96, 0.2),
+		maxf(span_world.x * 0.96, 0.2),
 		2.5,
-		maxf(float(voxel_max.z - voxel_min.z) * voxel_size.z * 0.96, 0.2)
+		maxf(span_world.z * 0.96, 0.2)
 	)
 	return {"position": center, "size": size}
 
@@ -1896,7 +1906,7 @@ func _selection_voxel_marker_position(voxel: Vector3i, y_offset: float) -> Vecto
 
 
 ## 对地形高度场做射线检测（步进+二分求精）
-func _ray_to_stress_terrain(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
+func _ray_to_terrain(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
 	var origin := cam.project_ray_origin(screen_pos)
 	var dir := cam.project_ray_normal(screen_pos)
 	var interval := _ray_capture_interval(origin, dir)
@@ -1979,14 +1989,14 @@ func _position_in_capture_xz(pos: Vector3) -> bool:
 
 ## 由体素坐标一次性求出 tile 尺寸/网格/线性索引/坐标
 func _tile_info_for_voxel(voxel: Vector3i) -> Dictionary:
-	var tile_size := _stress_tile_size()
-	return SceneVoxelTileCodecScript.tile_info_for_voxel(voxel, _stress_grid_size(), tile_size)
+	var tile_size := _svtile_tile_size()
+	return SceneVoxelTileCodecScript.tile_info_for_voxel(voxel, _scene_voxel_grid_size(), tile_size)
 
 
 ## 由 GPU AutoObject 索引构建统一的选中记录字典
 func _make_autoobject_selection_record(object_index: int, screen_score: float) -> Dictionary:
 	var asset_idx := _safe_asset_index(object_index)
-	var voxel_min := _stress_voxel_min_from_index(object_index)
+	var voxel_min := _autoobject_voxel_min_from_index(object_index)
 	var tile := _tile_info_for_voxel(voxel_min)
 	return {
 		"domain": SELECTION_DOMAIN_AUTOOBJECT,
@@ -2010,10 +2020,13 @@ func _make_autoobject_selection_record(object_index: int, screen_score: float) -
 func _nearest_autoobject_at_world(world_pos: Vector3, cam: Camera3D, screen_pos: Vector2) -> Dictionary:
 	if _sv_committer == null or _autoobject_side_count <= 0 or _autoobject_spacing_voxels <= 0:
 		return {}
-	var voxel_x: float = ((world_pos.x - _sv_committer.grid_origin.x) / _sv_committer.voxel_size.x) - 0.5
-	var voxel_z: float = ((world_pos.z - _sv_committer.grid_origin.z) / _sv_committer.voxel_size.z) - 0.5
-	var base_px := int(round(voxel_x / float(_autoobject_spacing_voxels)))
-	var base_pz := int(round(voxel_z / float(_autoobject_spacing_voxels)))
+	var voxel_center := CommonVoxelSpaceScript.world_to_voxel_center(
+		world_pos,
+		_sv_committer.grid_origin,
+		_sv_committer.voxel_size
+	)
+	var base_px := int(round(voxel_center.x / float(_autoobject_spacing_voxels)))
+	var base_pz := int(round(voxel_center.z / float(_autoobject_spacing_voxels)))
 	var best_index := -1
 	var best_score := INF
 	var best_xz_dist2 := INF
@@ -2077,15 +2090,14 @@ func _voxel_center_to_world(voxel: Vector3i, y: float) -> Vector3:
 ## 浮点体素中心→世界坐标
 func _voxel_float_center_to_world(voxel_center: Vector3, y: float) -> Vector3:
 	if _sv_committer == null:
-		var res := maxi(stress_grid_resolution, 1)
-		var cell := TerrainConfigScript.CAPTURE_SIZE / float(res)
-		return SceneVoxelCommitterScript.voxel_float_center_to_world_static(
+		var res := maxi(autoobject_grid_resolution, 1)
+		return CommonVoxelSpaceScript.voxel_float_center_to_world_xz(
 			voxel_center,
-			Vector3(-TerrainConfigScript.CAPTURE_SIZE * 0.5, 0.0, -TerrainConfigScript.CAPTURE_SIZE * 0.5),
-			Vector3(cell, 1.0, cell),
+			CommonVoxelSpaceScript.default_grid_origin(TerrainConfigScript.CAPTURE_SIZE),
+			CommonVoxelSpaceScript.voxel_size_for_resolution(TerrainConfigScript.CAPTURE_SIZE, res, 1.0),
 			y
 		)
-	return SceneVoxelCommitterScript.voxel_float_center_to_world_static(
+	return CommonVoxelSpaceScript.voxel_float_center_to_world_xz(
 		voxel_center,
 		_sv_committer.grid_origin,
 		_sv_committer.voxel_size,
@@ -2094,16 +2106,16 @@ func _voxel_float_center_to_world(voxel_center: Vector3, y: float) -> Vector3:
 
 
 ## 体素中心→地形表面世界坐标
-func _stress_position_on_terrain_from_voxel_center(voxel_center: Vector3, y_offset: float) -> Vector3:
+func _position_on_terrain_from_voxel_center(voxel_center: Vector3, y_offset: float) -> Vector3:
 	var world_pos := _voxel_float_center_to_world(voxel_center, 0.0)
 	world_pos.y = _sample_height(world_pos.x, world_pos.z) + y_offset
 	return world_pos
 
 
-## 压力测试对象→地形表面世界坐标
+## GPU AutoObject对象→地形表面世界坐标
 func _autoobject_position_on_terrain(voxel: Vector3i) -> Vector3:
 	var center := Vector3(float(voxel.x) + 0.5, float(voxel.y) + 0.5, float(voxel.z) + 0.5)
-	return _stress_position_on_terrain_from_voxel_center(center, _autoobject_point_size() * 0.9)
+	return _position_on_terrain_from_voxel_center(center, _autoobject_point_size() * 0.9)
 
 
 ## GPU AutoObject点云的点尺寸
@@ -2113,19 +2125,19 @@ func _autoobject_point_size() -> float:
 	return maxf(minf(_sv_committer.voxel_size.x, _sv_committer.voxel_size.z) * 0.52, 0.35)
 
 
-## 重置所有压力测试状态变量和节点
-func _reset_stress_state() -> void:
-	_stress_ready = false
-	_stress_spawn_result.clear()
-	_stress_flush_result.clear()
-	_stress_tile_summary.clear()
-	_stress_spawn_time_ms = 0.0
-	_stress_flush_time_ms = 0.0
-	_stress_visual_time_ms = 0.0
-	_stress_tile_count = 0
-	_stress_occupied_tile_count = 0
-	_stress_max_refs_per_tile = 0
-	_stress_total_refs = 0
+## 重置所有GPU AutoObject运行时状态变量和节点
+func _reset_autoobject_runtime_state() -> void:
+	_autoobject_runtime_ready = false
+	_autoobject_spawn_result.clear()
+	_autoobject_flush_result.clear()
+	_svtile_summary.clear()
+	_autoobject_spawn_time_ms = 0.0
+	_autoobject_flush_time_ms = 0.0
+	_autoobject_visual_time_ms = 0.0
+	_svtile_total_tile_count = 0
+	_svtile_occupied_tile_count = 0
+	_svtile_max_refs_per_tile = 0
+	_svtile_total_refs = 0
 	_autoobject_positions.clear()
 	_autoobject_asset_indices.clear()
 	_autoobject_ids.clear()
@@ -2133,11 +2145,23 @@ func _reset_stress_state() -> void:
 	_autoobject_spacing_voxels = 1
 	_selected_autoobject_index = -1
 	_selected_autoobject_record.clear()
-	if _stress_overlay_root != null:
-		for child in _stress_overlay_root.get_children():
+	_selected_data_record.clear()
+	if _autoobject_overlay_root != null:
+		for child in _autoobject_overlay_root.get_children():
 			child.queue_free()
+	_clear_autoobject_overlay_refs()
+
+
+## 清除GPU AutoObject/SVTile叠加层及选择标记节点引用
+func _clear_autoobject_overlay_refs() -> void:
+	_svtile_heatmap = null
+	_autoobject_points = null
+	_autoobject_overlay_label = null
 	_autoobject_selection_marker = null
 	_autoobject_selection_label = null
+	_data_selection_marker = null
+	_data_selection_label = null
+	_anchor_sample_bounds_marker = null
 
 
 # ---- mesh + terrain --------------------------------------------------------
@@ -2185,9 +2209,10 @@ var _consume_editor_mouse_release := false
 
 ## 检查当前模式是否允许选择GPU AutoObject点云
 func _selection_allows_gpu_autoobjects() -> bool:
+	var gpu_display_key := SPAEditorContract.voxel_display_key_for_mode(SelectionMode.AUTOOBJECT)
 	return select_gpu_autoobjects \
-		and _voxel_display_is_visible(VOXEL_DISPLAY_GPU_OBJECTS) \
-		and (_selection_mode == SelectionMode.MIXED or _selection_mode == SelectionMode.AUTOOBJECT)
+		and _voxel_display_is_visible(gpu_display_key) \
+		and SPAEditorContract.mode_is_active(_selection_mode, SelectionMode.AUTOOBJECT)
 
 
 ## 检查是否有任何类型的选中状态
@@ -2280,7 +2305,7 @@ func _handle_editor_key(event: InputEventKey) -> bool:
 			return true
 		KEY_SPACE:
 			_register_all_assets()
-			_run_svtile_autoobject_stress_test()
+			_run_gpu_autoobject_batch()
 			_update_hud()
 			return true
 	return false
@@ -2288,20 +2313,7 @@ func _handle_editor_key(event: InputEventKey) -> bool:
 
 ## 键码→选择模式枚举映射；顺序必须和 SELECTION_MODE_NAMES / 插件工具栏一致
 func _selection_mode_from_keycode(keycode: int) -> int:
-	match keycode:
-		KEY_0:
-			return SelectionMode.MIXED
-		KEY_1:
-			return SelectionMode.AUTOOBJECT
-		KEY_2:
-			return SelectionMode.SVTILE
-		KEY_3:
-			return SelectionMode.ANCHOR
-		KEY_4:
-			return SelectionMode.SV
-		KEY_5:
-			return SelectionMode.TARGETSV
-	return -1
+	return SPAEditorContract.selection_mode_from_keycode(keycode)
 
 
 ## 相机射线与XZ平面求交
@@ -2363,33 +2375,32 @@ func _update_hud() -> void:
 			_selection_mode_name()
 		],
 	]
-	if run_svtile_autoobject_stress:
-		var spawned := int(_stress_spawn_result.get("spawned_count", 0))
-		var inserted := int(_stress_flush_result.get("object_ref_inserted_slot_count", 0))
-		var overflow := int(_stress_flush_result.get("object_ref_overflow_count", 0))
-		var touched := int(_stress_flush_result.get("object_ref_touched_count", 0))
-		var dirty_tiles := int(_stress_flush_result.get("dirty_scene_voxel_tile_count", _stress_tile_summary.get("dirty_tile_count", 0)))
-		var avg_refs := float(_stress_total_refs) / float(maxi(_stress_occupied_tile_count, 1))
-		lines.append("AutoObjects: %s   spawned: %d/%d   SVTile refs inserted: %d" % [
-			"PASS" if _stress_ready else "PENDING/FAIL",
-			spawned,
-			autoobject_count,
-			inserted,
-		])
-		lines.append("Tiles: %d occupied / %d total   avg refs/tile %.2f   max %d   overflow %d" % [
-			_stress_occupied_tile_count,
-			_stress_tile_count,
-			avg_refs,
-			_stress_max_refs_per_tile,
-			overflow,
-		])
-		lines.append("Dirty/touched: %d tiles / %d refs   spawn %.0f ms   flush %.0f ms   visual %.0f ms" % [
-			dirty_tiles,
-			touched,
-			_stress_spawn_time_ms,
-			_stress_flush_time_ms,
-			_stress_visual_time_ms,
-		])
+	var spawned := int(_autoobject_spawn_result.get("spawned_count", 0))
+	var inserted := int(_autoobject_flush_result.get("object_ref_inserted_slot_count", 0))
+	var overflow := int(_autoobject_flush_result.get("object_ref_overflow_count", 0))
+	var touched := int(_autoobject_flush_result.get("object_ref_touched_count", 0))
+	var dirty_tiles := int(_autoobject_flush_result.get("dirty_scene_voxel_tile_count", _svtile_summary.get("dirty_tile_count", 0)))
+	var avg_refs := float(_svtile_total_refs) / float(maxi(_svtile_occupied_tile_count, 1))
+	lines.append("AutoObjects: %s   spawned: %d/%d   SVTile refs inserted: %d" % [
+		"PASS" if _autoobject_runtime_ready else "PENDING/FAIL",
+		spawned,
+		autoobject_count,
+		inserted,
+	])
+	lines.append("Tiles: %d occupied / %d total   avg refs/tile %.2f   max %d   overflow %d" % [
+		_svtile_occupied_tile_count,
+		_svtile_total_tile_count,
+		avg_refs,
+		_svtile_max_refs_per_tile,
+		overflow,
+	])
+	lines.append("Dirty/touched: %d tiles / %d refs   spawn %.0f ms   flush %.0f ms   visual %.0f ms" % [
+		dirty_tiles,
+		touched,
+		_autoobject_spawn_time_ms,
+		_autoobject_flush_time_ms,
+		_autoobject_visual_time_ms,
+	])
 	lines.append("")
 	lines.append("LMB: select under current mode (GPU AutoObject / data voxel)")
 	lines.append("G: GPU report   Space: re-register + re-spawn   Esc: deselect")
@@ -2439,13 +2450,11 @@ func _update_hud() -> void:
 
 ## 将相机定位到地形框景位置
 func _frame_camera() -> void:
-	var cam := find_child("FlyCamera", true, false) as Camera3D
-	if cam == null and get_parent() != null:
-		cam = get_parent().find_child("FlyCamera", true, false) as Camera3D
+	var cam := CommonDemoUI.find_camera(self, "", "FlyCamera", false, true)
 	if cam == null:
 		return
 	var half := TerrainConfigScript.CAPTURE_SIZE * 0.5
-	var target_y := TerrainConfigScript.MAX_HEIGHT * 0.35 if run_svtile_autoobject_stress else 20.0
+	var target_y := TerrainConfigScript.MAX_HEIGHT * 0.35
 	cam.global_position = Vector3(-half * 0.45, half * 0.82, half * 0.95)
 	cam.look_at(Vector3(0.0, target_y, 0.0), Vector3.UP)
 	cam.fov = 60.0
@@ -2456,12 +2465,7 @@ func _frame_camera() -> void:
 
 ## 获取当前激活的Camera3D
 func _get_camera() -> Camera3D:
-	var cam := get_viewport().get_camera_3d()
-	if cam != null:
-		return cam
-	if get_parent() != null:
-		return get_parent().find_child("FlyCamera", true, false) as Camera3D
-	return find_child("FlyCamera", true, false) as Camera3D
+	return CommonDemoUI.find_camera(self, "", "FlyCamera", true, true)
 
 
 ## 每帧更新（编辑器模式占位，当前无 per-frame 同步需求）

@@ -43,7 +43,7 @@ shadow_enabled = false
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("env")
 
-[node name="TargetSVSetup" type="Node" parent="."]
+[node name="TargetSVSetup" type="Node3D" parent="."]
 script = ExtResource("5_tsv")
 
 [node name="Terrain" type="MeshInstance3D" parent="." groups=["meshfill_camera_ignore"]]

@@ -47,8 +47,56 @@ static func tile_coord_from_voxel(voxel_coord: Vector3i, grid_size: Vector3i, ti
 		clampi(int(voxel_coord.z / tile_size.z), 0, tile_grid.z - 1)
 	)
 
+static func tile_index(tile_coord: Vector3i, tile_grid: Vector3i) -> int:
+	var grid := Vector3i(maxi(tile_grid.x, 1), maxi(tile_grid.y, 1), maxi(tile_grid.z, 1))
+	var coord := Vector3i(
+		clampi(tile_coord.x, 0, grid.x - 1),
+		clampi(tile_coord.y, 0, grid.y - 1),
+		clampi(tile_coord.z, 0, grid.z - 1)
+	)
+	return tile_index_unclamped(coord, grid)
+
+static func tile_index_unclamped(tile_coord: Vector3i, tile_grid: Vector3i) -> int:
+	var grid := Vector3i(maxi(tile_grid.x, 1), maxi(tile_grid.y, 1), maxi(tile_grid.z, 1))
+	return tile_coord.x + grid.x * (tile_coord.z + grid.z * tile_coord.y)
+
+static func tile_count(tile_grid: Vector3i) -> int:
+	return maxi(tile_grid.x, 0) * maxi(tile_grid.y, 0) * maxi(tile_grid.z, 0)
+
+static func tile_coord_from_index(tile_index: int, tile_grid: Vector3i) -> Vector3i:
+	var grid := Vector3i(maxi(tile_grid.x, 1), maxi(tile_grid.y, 1), maxi(tile_grid.z, 1))
+	var safe_index := clampi(tile_index, 0, maxi(tile_count(grid) - 1, 0))
+	var plane := maxi(grid.x * grid.z, 1)
+	var ty := int(floor(float(safe_index) / float(plane)))
+	var rem := safe_index % plane
+	var tz := int(floor(float(rem) / float(grid.x)))
+	var tx := rem % grid.x
+	return Vector3i(tx, ty, tz)
+
+static func tile_index_from_voxel(voxel_coord: Vector3i, grid_size: Vector3i, tile_size: Vector3i) -> int:
+	var grid := tile_grid_size(grid_size, tile_size)
+	return tile_index(tile_coord_from_voxel(voxel_coord, grid_size, tile_size), grid)
+
+static func tile_info_for_voxel(voxel_coord: Vector3i, grid_size: Vector3i, tile_size: Vector3i) -> Dictionary:
+	var grid := tile_grid_size(grid_size, tile_size)
+	var coord := tile_coord_from_voxel(voxel_coord, grid_size, tile_size)
+	return {
+		"size": tile_size,
+		"grid": grid,
+		"index": tile_index(coord, grid),
+		"coord": coord,
+	}
+
 static func tile_id(tile_coord: Vector3i) -> String:
 	return "%d:%d:%d" % [tile_coord.x, tile_coord.y, tile_coord.z]
+
+static func object_ref_count(tile_record: Dictionary) -> int:
+	if tile_record.is_empty():
+		return 0
+	var ids = tile_record.get("auto_object_ids_debug", [])
+	if ids is Array:
+		return (ids as Array).size()
+	return maxi(int(tile_record.get("object_debug_range_count", 0)), int(tile_record.get("object_range_count", 0)))
 
 static func tile_bounds(tile_coord: Vector3i, grid_size: Vector3i, tile_size: Vector3i) -> Dictionary:
 	var voxel_min := Vector3i(

@@ -12,26 +12,15 @@ const OUT_COLLISION_STRENGTH := 8
 const OUT_COLLISION_LAYER_COUNT := 9
 const OUT_HAS_COLLISION := 10
 
+const CommonBufferUtils := preload("res://scripts/common_buffer_utils.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 
 static func decode_float_buffer(bytes: PackedByteArray, expected_size: int) -> PackedFloat32Array:
-	var expected_count := maxi(expected_size, 0)
-	var expected_bytes := expected_count * 4
-	var available_bytes := mini(bytes.size(), expected_bytes)
-	available_bytes -= available_bytes % 4
-	var values := bytes.slice(0, available_bytes).to_float32_array()
-	values.resize(expected_count)
-	return values
+	return CommonBufferUtils.decode_float_buffer(bytes, expected_size)
 
 static func decode_u32_buffer(bytes: PackedByteArray, expected_size: int) -> PackedInt32Array:
-	var expected_count := maxi(expected_size, 0)
-	var expected_bytes := expected_count * 4
-	var available_bytes := mini(bytes.size(), expected_bytes)
-	available_bytes -= available_bytes % 4
-	var values := bytes.slice(0, available_bytes).to_int32_array()
-	values.resize(expected_count)
-	return values
+	return CommonBufferUtils.decode_u32_buffer(bytes, expected_size)
 
 static func pack_source_values(source_stream: Dictionary, source_keys: Array, source_float_stride: int) -> PackedFloat32Array:
 	var values := PackedFloat32Array()

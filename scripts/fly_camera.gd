@@ -23,7 +23,8 @@ var _captured: bool = false
 
 func _ready() -> void:
 	current = true
-	_sync_angles_from_rotation()
+	_yaw = rotation.y
+	_pitch = rotation.x
 	if auto_frame_on_ready:
 		_auto_frame_when_scene_ready.call_deferred()
 
@@ -46,11 +47,6 @@ func _auto_frame_when_scene_ready() -> void:
 		if not is_inside_tree():
 			return
 	frame_visible_content()
-
-
-func _sync_angles_from_rotation() -> void:
-	_yaw = rotation.y
-	_pitch = rotation.x
 
 
 func _collect_visible_content_bounds() -> Dictionary:
@@ -112,7 +108,8 @@ func _node_world_bounds(node: Node3D) -> Dictionary:
 	if not (local is AABB):
 		return {"found": false}
 	var local_bounds: AABB = local
-	if not _is_valid_local_bounds(local_bounds):
+	var largest_axis := maxf(absf(local_bounds.size.x), maxf(absf(local_bounds.size.y), absf(local_bounds.size.z)))
+	if not (largest_axis > 0.0001):
 		return {"found": false}
 	return {"found": true, "bounds": _transform_aabb(node.global_transform, local_bounds)}
 
@@ -127,11 +124,6 @@ func _label3d_world_bounds(label: Label3D) -> Dictionary:
 	var height := maxf(float(line_count) * float(label.font_size) * label.pixel_size * 1.2, auto_frame_min_radius * 0.25)
 	var local := AABB(Vector3(-width * 0.5, -height * 0.5, -0.05), Vector3(width, height, 0.1))
 	return {"found": true, "bounds": _transform_aabb(label.global_transform, local)}
-
-
-func _is_valid_local_bounds(bounds: AABB) -> bool:
-	var largest_axis := maxf(absf(bounds.size.x), maxf(absf(bounds.size.y), absf(bounds.size.z)))
-	return largest_axis > 0.0001
 
 
 func _merge_bounds(result: Dictionary, bounds: AABB) -> void:
@@ -153,8 +145,8 @@ func _transform_aabb(transform: Transform3D, local: AABB) -> AABB:
 		for y in ys:
 			for z in zs:
 				var p := transform * Vector3(x, y, z)
-				min_v = min_v.min(p)
-				max_v = max_v.max(p)
+				min_v = Vector3(minf(min_v.x, p.x), minf(min_v.y, p.y), minf(min_v.z, p.z))
+				max_v = Vector3(maxf(max_v.x, p.x), maxf(max_v.y, p.y), maxf(max_v.z, p.z))
 	if (max_v - min_v).length_squared() <= 0.000001:
 		var pad := maxf(auto_frame_min_radius * 0.05, 0.1)
 		min_v -= Vector3.ONE * pad
@@ -189,7 +181,8 @@ func _frame_bounds(bounds: AABB) -> void:
 		global_position = center + view_back * distance
 		far = maxf(far, distance + radius * 4.0 + 10.0)
 	look_at(center, Vector3.UP)
-	_sync_angles_from_rotation()
+	_yaw = rotation.y
+	_pitch = rotation.x
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -200,8 +193,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 				_captured = true
 			else:
-				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-				_captured = false
+				_release_mouse_capture()
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_UP:
 			if _captured:
 				move_speed = clampf(move_speed * 1.2, 5.0, 600.0)
@@ -221,6 +213,22 @@ func _unhandled_input(event: InputEvent) -> void:
 		_pitch -= mm.relative.y * mouse_sensitivity
 		_pitch = clampf(_pitch, -PI / 2.0 + 0.01, PI / 2.0 - 0.01)
 		rotation = Vector3(_pitch, _yaw, 0.0)
+
+	if event is InputEventKey:
+		var key := event as InputEventKey
+		if key.pressed and not key.echo and key.keycode == KEY_ESCAPE:
+			_release_mouse_capture()
+
+
+func _release_mouse_capture() -> void:
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_captured = false
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_WINDOW_FOCUS_OUT or what == NOTIFICATION_EXIT_TREE:
+		_release_mouse_capture()
 
 
 func _process(delta: float) -> void:

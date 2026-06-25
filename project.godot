@@ -15,7 +15,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 [application]
 
 config/name="MeshFill-Godot"
-run/main_scene="res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.tscn"
+run/main_scene="res://demos/placement-meshfill-object-volume-score-3d/placement-meshfill-object-volume-score-3d.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
 
 [autoload]
@@ -28,7 +28,14 @@ project/assembly_name="MeshFill-Godot"
 
 [editor_plugins]
 
+meshfill_editor/enabled=true
+MeshFillEditor/enabled=true
 enabled=PackedStringArray("res://addons/meshfill_editor/plugin.cfg")
+
+[filesystem]
+
+import/fbx2gltf/enabled=false
+import/fbx/enabled=false
 
 [meshfill]
 

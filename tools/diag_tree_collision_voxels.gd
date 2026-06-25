@@ -2,14 +2,12 @@ extends SceneTree
 
 const AutoAssetFactory := preload("res://scripts/auto_asset_factory.gd")
 const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
-
-const LEAF_FBX_PATH := "res://geo/SM_TestLeaf_Test2.FBX"
-const CLIFF1_FBX_PATH := "res://geo/cliff_01.FBX"
+const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
 
 
 func _init() -> void:
-	_diag("TREE", LEAF_FBX_PATH, Color(0.35, 0.58, 0.24, 0.55), 2)
-	_diag("ROCK", CLIFF1_FBX_PATH, Color(0.48, 0.42, 0.35, 0.7), 6)
+	_diag("TREE", CommonDemoAssets.geo_path(0), CommonDemoAssets.asset_color(0), 2)
+	_diag("ROCK", CommonDemoAssets.geo_path(1), CommonDemoAssets.asset_color(1), 6)
 	quit()
 
 

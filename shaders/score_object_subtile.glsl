@@ -1,18 +1,18 @@
 #[compute]
 #version 450
 
-// Pass A: 3D object volume scoring — per-subtile partial accumulation.
+// Pass A: 3D object volume scoring — per-rotation valid sample accumulation.
 //
-// One workgroup owns one 8^3 subtile of the 50^3 sampling volume centered on
-// an anchor. Scene/target voxels are loaded into shared memory once, then
-// reused across all 12 rotation slots.
+// CPU side pre-bakes occupied footprint voxels into one sample record list per
+// rotation slot. Each workgroup handles 512 valid samples for one anchor and
+// writes one partial score per rotation slot.
 //
-// Dispatch: (SUBTILE_COUNT, anchor_count, 1)
-//   gl_WorkGroupID.x  = subtile linear id  0..subtile_count-1
+// Dispatch: (sample_group_count, anchor_count, 1)
+//   gl_WorkGroupID.x  = sample group id
 //   gl_WorkGroupID.y  = anchor id
-//   gl_LocalInvocationID.xyz = subtile-local voxel (8,8,8)
+//   gl_LocalInvocationIndex = sample lane inside the 512-record group
 //
-// Output: partial_scores buffer, one float per (anchor, subtile, rotation_slot).
+// Output: partial_scores buffer, one float per (anchor, sample_group, rotation).
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 
@@ -28,8 +28,8 @@ layout(set = 0, binding = 2, std430) restrict readonly buffer TargetField {
     vec4 target_field[];
 };
 
-layout(set = 0, binding = 3, std430) restrict readonly buffer FootprintOccupancy {
-    int footprint_occupancy[];
+layout(set = 0, binding = 3, std430) restrict readonly buffer FootprintSampleRecords {
+    ivec4 sample_records[];
 };
 
 layout(set = 0, binding = 4, std430) restrict readonly buffer FootprintProps {
@@ -40,20 +40,22 @@ layout(set = 0, binding = 5, std430) restrict readonly buffer AnchorPositions {
     ivec4 anchor_positions[];
 };
 
-layout(set = 0, binding = 6, std430) restrict writeonly buffer PartialScores {
+layout(set = 0, binding = 6, std430) restrict readonly buffer SampleCounts {
+    int sample_counts[];
+};
+
+layout(set = 0, binding = 7, std430) restrict writeonly buffer PartialScores {
     float partial_scores[];
 };
 
 layout(push_constant, std430) uniform Params {
-    ivec4 scene_grid;
-    ivec4 fp_grid;
-    ivec4 fp_pivot_extent;
-    ivec4 config;
+    ivec4 scene_grid;      // grid x/y/z, voxel_count
+    ivec4 sample_config;   // variant_capacity, sample_group_count, rotation_count, max_sample_count
+    ivec4 reserved0;
+    ivec4 reserved1;
     vec4 asset_color;
 };
 
-shared vec2 s_scene[512];
-shared vec4 s_target[512];
 shared float s_reduce[512];
 
 int sv_idx(ivec3 p) {
@@ -64,81 +66,44 @@ bool sv_valid(ivec3 p) {
     return all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, scene_grid.xyz));
 }
 
-int fp_idx(ivec3 p) {
-    return p.x + fp_grid.x * (p.z + fp_grid.z * p.y);
-}
-
-bool fp_valid(ivec3 p) {
-    return all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, fp_grid.xyz));
-}
-
 void main() {
     uint lid = gl_LocalInvocationIndex;
-    uint subtile_id = gl_WorkGroupID.x;
+    uint sample_group_id = gl_WorkGroupID.x;
     uint anchor_id = gl_WorkGroupID.y;
 
-    int spa = config.y;
-    int stc = config.z;
-    int rot = config.x;
-    int extent = fp_pivot_extent.w;
-    int half_ext = extent / 2;
-
-    if (subtile_id >= uint(stc)) return;
-
-    int sx = int(subtile_id) % spa;
-    int sy = (int(subtile_id) / spa) % spa;
-    int sz = int(subtile_id) / (spa * spa);
+    int variant_capacity = max(sample_config.x, 1);
+    int sample_group_count = max(sample_config.y, 1);
+    int rot = max(sample_config.z, 1);
+    if (sample_group_id >= uint(sample_group_count)) return;
 
     ivec3 anchor = anchor_positions[anchor_id].xyz;
-    ivec3 local_pos = ivec3(gl_LocalInvocationID.xyz);
-    ivec3 sample_pos = ivec3(sx, sy, sz) * 8 + local_pos;
-    ivec3 world_pos = anchor - ivec3(half_ext) + sample_pos;
-
-    bool in_extent = all(lessThan(sample_pos, ivec3(extent)));
-
-    if (in_extent && sv_valid(world_pos)) {
-        int si = sv_idx(world_pos);
-        s_scene[lid] = vec2(complexity_field[si].a, collision_field[si]);
-        s_target[lid] = target_field[si];
-    } else {
-        s_scene[lid] = vec2(0.0);
-        s_target[lid] = vec4(0.0);
-    }
-    barrier();
-
-    float PI = 3.14159265358979;
-    float angle_step = 2.0 * PI / float(rot);
+    uint sample_index = sample_group_id * 512u + lid;
 
     for (int slot = 0; slot < rot; slot++) {
-        float angle = float(slot) * angle_step;
-        float ca = cos(angle);
-        float sa = sin(angle);
-
         float contrib = 0.0;
+        int sample_count = max(sample_counts[slot], 0);
 
-        if (in_extent) {
-            vec3 rel = vec3(world_pos - anchor);
-            float fx = ca * rel.x - sa * rel.z;
-            float fz = sa * rel.x + ca * rel.z;
-            ivec3 fp = fp_pivot_extent.xyz + ivec3(int(round(fx)), int(rel.y), int(round(fz)));
+        if (sample_index < uint(sample_count)) {
+            uint record_index = uint(slot * variant_capacity) + sample_index;
+            ivec4 sample_record = sample_records[record_index];
+            int fp_index = sample_record.w;
+            ivec3 world_pos = anchor + sample_record.xyz;
 
-            if (fp_valid(fp)) {
-                int fi = fp_idx(fp);
-                if (footprint_occupancy[fi] != 0) {
-                    vec4 fpp = footprint_props[fi];
-                    vec2 scene = s_scene[lid];
-                    vec4 target = s_target[lid];
+            if (fp_index >= 0 && sv_valid(world_pos)) {
+                int si = sv_idx(world_pos);
+                vec2 scene = vec2(complexity_field[si].a, collision_field[si]);
+                vec4 target = target_field[si];
+                vec4 fpp = footprint_props[fp_index];
 
-                    float target_cx = target.a;
-                    float coverage = step(0.01, target_cx);
-                    float cx_fit = 1.0 - abs(target_cx - fpp.a);
-                    float col_dist = distance(target.rgb, asset_color.rgb);
-                    float col_fit = clamp(1.0 - col_dist / 1.732, 0.0, 1.0);
-                    float collision_pen = scene.y * fpp.a;
+                float target_cx = target.a;
+                float coverage = step(0.01, target_cx);
+                float cx_fit = 1.0 - abs(target_cx - fpp.a);
+                float col_dist = distance(target.rgb, asset_color.rgb);
+                float col_fit = clamp(1.0 - col_dist / 1.732, 0.0, 1.0);
+                float collision_pen = scene.y * fpp.a;
 
-                    contrib = coverage * (cx_fit * 0.4 + col_fit * 0.3 + 0.3)
-                            - collision_pen * 0.5;
-                }
+                contrib = coverage * (cx_fit * 0.4 + col_fit * 0.3 + 0.3)
+                        - collision_pen * 0.5;
             }
         }
 
@@ -150,8 +115,8 @@ void main() {
             for (uint i = 0u; i < 512u; i++) {
                 sum += s_reduce[i];
             }
-            uint out_idx = anchor_id * uint(stc) * uint(rot)
-                         + subtile_id * uint(rot) + uint(slot);
+            uint out_idx = anchor_id * uint(sample_group_count) * uint(rot)
+                         + sample_group_id * uint(rot) + uint(slot);
             partial_scores[out_idx] = sum;
         }
         barrier();

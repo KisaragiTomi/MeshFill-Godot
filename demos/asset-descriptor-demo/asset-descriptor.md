@@ -220,11 +220,59 @@ func _test_profile_upload_or_skip() -> bool:
 
 新增 descriptor 字段或修改本文契约后，必须同步更新 `test_markdown_contracts.gd` 中对应的合约断言。
 
+## Demo 场景
+
+场景：`res://demos/asset-descriptor-demo/asset-descriptor-demo.tscn`
+
+### 运行方式
+
+> **@tool 编辑器模式，禁止 F6。**
+>
+> 在 Godot 编辑器中双击打开 `.tscn` 场景文件即可。脚本在编辑器视口中实时运行，探针和体素通道的快捷键均在视口内操作。
+
+### 场景构成
+
+- 4 棵树 + 4 块岩石，从 FBX 加载首个 mesh 并 `duplicate(true)`；加载失败时回退到 `BoxMesh`。
+- 飞航相机、三点光照（Sun 暖光 + Fill 冷补光 + Rim 轮廓光）。
+- `WorldEnvironment` 开启 SSAO 与 Fog。
+
+### 快捷键
+
+| 键 | 功能 |
+| --- | --- |
+| `1` | 切换树木探针调试 |
+| `2` | 切换岩石探针调试 |
+| `3` | 切换全部探针 |
+| `C` | 清除所有调试节点 |
+| `B` | 切换 Buffer Info 叠加层 |
+
+### 契约测试
+
+`AssetDescriptor` 资产属性契约为纯 CPU 校验，可用 `--headless`：
+
+```bash
+godot --headless --path . --script tools/test_asset_properties_descriptor_contract.gd
+```
+
+核心 demo 契约与 markdown 契约必须用 Vulkan 驱动运行，禁止 `--headless`：
+
+```bash
+godot --path . --rendering-driver vulkan --script tools/test_core_demo_contracts.gd
+godot --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
+```
+
+### Demo 验收标准
+
+- `AssetDescriptor` 是资产默认语义的唯一主来源；`AutoObject` 同名字段只作 Inspector / 兼容入口。
+- `color` / `complexity` / `collision` 为 canonical 共享字段。
+- 探针 marker 颜色按 `shape_source` 区分，分层优先级 `convex > voxel_interior > surface > context`。
+- 碰撞柱体的半径、高度、中心与 `collision` 定义一致。
+
 ## 相关文档
 
-- [`asset-properties.md`((asset-properties.md)：descriptor、shared fields、metadata 和 `ISWS` 的字段归属边界。
-- [`auto-asset-scripting.md`((auto-asset-scripting.md)：脚手架 JSON 如何写入 descriptor / descriptor-backed asset。
-- [`asset-semantic-probes.md`((asset-semantic-probes.md)：descriptor-backed semantic probes。
-- [`scene-placement-actor.md`((scene-placement-actor.md)：descriptor 注册、GPU profile buffer 生命周期和 SPA 访问入口。
-- [`autoobject-gpu-runtime-architecture.md`((autoobject-gpu-runtime-architecture.md)：profile container、GPU object pool 和 runtime contract。
-- [`scene-voxel-field-system.md`((scene-voxel-field-system.md)：`ISWS`、source write、committed `SceneVoxel` 和 SV resident state。
+- [`asset-properties.md`](asset-properties.md)：descriptor、shared fields、metadata 和 `ISWS` 的字段归属边界。
+- [`auto-asset-scripting.md`](auto-asset-scripting.md)：脚手架 JSON 如何写入 descriptor / descriptor-backed asset。
+- [`asset-semantic-probes.md`](asset-semantic-probes.md)：descriptor-backed semantic probes。
+- [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)：descriptor 注册、GPU profile buffer 生命周期和 SPA 访问入口。
+- [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)：profile container、GPU object pool 和 runtime contract。
+- [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)：`ISWS`、source write、committed `SceneVoxel` 和 SV resident state。

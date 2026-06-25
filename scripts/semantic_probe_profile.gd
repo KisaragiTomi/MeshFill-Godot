@@ -507,10 +507,10 @@ static func pick_next_candidate(bucket: Array, selected: Array[Dictionary], sele
 static func candidate_nearest_distance(candidate: Dictionary, selected: Array[Dictionary]) -> float:
 	if selected.is_empty():
 		return INF
-	var offset := candidate_distance_offset(candidate)
+	var offset := vector3_from_value(candidate.get("_world_offset", candidate.get("offset", Vector3.ZERO)), Vector3.ZERO)
 	var nearest := INF
 	for other in selected:
-		var other_offset := candidate_distance_offset(other)
+		var other_offset := vector3_from_value(other.get("_world_offset", other.get("offset", Vector3.ZERO)), Vector3.ZERO)
 		nearest = minf(nearest, offset.distance_to(other_offset))
 	return nearest
 
@@ -518,9 +518,9 @@ static func candidate_nearest_distance(candidate: Dictionary, selected: Array[Di
 static func candidate_too_close(candidate: Dictionary, selected: Array[Dictionary], min_distance: float) -> bool:
 	if min_distance <= 0.0:
 		return false
-	var offset := candidate_distance_offset(candidate)
+	var offset := vector3_from_value(candidate.get("_world_offset", candidate.get("offset", Vector3.ZERO)), Vector3.ZERO)
 	for other in selected:
-		var other_offset := candidate_distance_offset(other)
+		var other_offset := vector3_from_value(other.get("_world_offset", other.get("offset", Vector3.ZERO)), Vector3.ZERO)
 		if offset.distance_to(other_offset) < min_distance:
 			return true
 	return false
@@ -555,10 +555,6 @@ static func _apply_candidate_world_offsets(candidates: Array[Dictionary], world_
 	for candidate in candidates:
 		var offset := vector3_from_value(candidate.get("offset", Vector3.ZERO), Vector3.ZERO)
 		candidate["_world_offset"] = Vector3(offset.x * scale_abs.x, offset.y * scale_abs.y, offset.z * scale_abs.z)
-
-
-static func candidate_distance_offset(candidate: Dictionary) -> Vector3:
-	return vector3_from_value(candidate.get("_world_offset", candidate.get("offset", Vector3.ZERO)), Vector3.ZERO)
 
 
 static func probe_candidate_key(candidate: Dictionary) -> String:

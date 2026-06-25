@@ -2,6 +2,7 @@ extends SceneTree
 
 const SCENE_PATH := "res://demos/asset-descriptor-demo/asset-descriptor-demo.tscn"
 const SHOT_DIR := "res://tools/_shots"
+const CommonShotUtils := preload("res://scripts/common_shot_utils.gd")
 
 
 func _initialize() -> void:
@@ -31,7 +32,7 @@ func _run() -> void:
 func _capture_and_check(inst: Node) -> bool:
 	var ok := true
 
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SHOT_DIR))
+	CommonShotUtils.ensure_dir(SHOT_DIR)
 
 	# Force camera to look at the scene from above
 	var cam := root.get_node_or_null("AssetDescriptorDemo/DemoSetup/FlyCamera") as Camera3D
@@ -129,18 +130,15 @@ func _capture_and_check(inst: Node) -> bool:
 
 
 func _shot(tag: String) -> bool:
-	var vp_tex := root.get_texture()
-	if vp_tex == null:
-		print("[SHOT] SKIP ", tag, " viewport texture unavailable")
+	var result := CommonShotUtils.save_viewport_png(root, "%s/%s.png" % [SHOT_DIR, tag], true)
+	if bool(result.get("skipped", false)):
+		print("[SHOT] SKIP ", tag, " ", result.get("reason", "image unavailable"))
 		return true
-	var img := vp_tex.get_image()
-	if img == null or img.is_empty():
-		print("[SHOT] SKIP ", tag, " image empty")
-		return true
-	var path := ProjectSettings.globalize_path("%s/%s.png" % [SHOT_DIR, tag])
-	var err := img.save_png(path)
-	if err != OK:
+	if not bool(result.get("ok", false)):
+		var err := int(result.get("error", FAILED))
 		print("[SHOT] FAIL save ", tag, " err=", error_string(err))
 		return false
+	var img := result.get("image", null) as Image
+	var path := str(result.get("path", ""))
 	print("[SHOT] saved ", path, " (", img.get_width(), "x", img.get_height(), ")")
 	return true

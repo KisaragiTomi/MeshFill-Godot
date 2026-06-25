@@ -1,6 +1,9 @@
 class_name VoxelDisplay
 extends RefCounted
 
+const VoxelFieldDisplayGPUScript := preload("res://scripts/voxel_field_display_gpu.gd")
+const BrushVoxelDisplayGPUScript := preload("res://scripts/brush_voxel_display_gpu.gd")
+
 # Unified voxel-grid visualization helper.
 #
 # Every voxel display in the project reduces to the same shape: a set of cell
@@ -14,22 +17,7 @@ extends RefCounted
 const DEFAULT_FILL := 0.9
 
 
-# --- Core renderer ---------------------------------------------------------
-
-# centers: voxel cell centers in local space.
-# cell_size: full voxel extent on each axis (box is inset by fill).
-# Returns a MultiMeshInstance3D, or null when there is nothing to draw.
-static func build(
-	centers: PackedVector3Array,
-	cell_size: Vector3,
-	color: Color = Color.WHITE,
-	options: Dictionary = {}
-) -> MultiMeshInstance3D:
-	var colors := PackedColorArray()
-	return _build_internal(centers, cell_size, color, colors, options)
-
-
-# Same as build(), but one color per center (colors.size() must match centers).
+# Per-voxel color box MultiMesh. colors.size() must match centers.
 static func build_colored(
 	centers: PackedVector3Array,
 	cell_size: Vector3,
@@ -39,30 +27,31 @@ static func build_colored(
 	return _build_internal(centers, cell_size, Color.WHITE, colors, options)
 
 
-# --- Tetrahedron renderer (brush voxels) -----------------------------------
-# Same model as build_colored(), but the per-instance mesh is a tetrahedron
-# instead of a box, so brush-painted voxels read as visually distinct from the
-# box voxels used for occupancy/target fields.
-static func build_tetra(
-	centers: PackedVector3Array,
-	cell_size: Vector3,
+# Per-instance transform MultiMesh. transforms must be Array[Transform3D],
+# colors.size() must match transforms. Uses a unit BoxMesh; scale/rotation
+# come from the per-instance transforms. Set options.unshaded=true for
+# flat debug overlays, options.no_depth_test=true to skip depth writes.
+static func build_from_transforms(
+	transforms: Array,  # Array[Transform3D]
 	colors: PackedColorArray,
 	options: Dictionary = {}
 ) -> MultiMeshInstance3D:
-	if centers.is_empty():
+	if transforms.is_empty():
 		return null
-	var fill := float(options.get("fill", DEFAULT_FILL))
-	var mesh := _make_tetra_mesh(cell_size, fill)
-	var use_colors := colors.size() == centers.size()
-	_apply_voxel_material(mesh, use_colors, Color.WHITE, options)
+	var count := transforms.size()
+	var use_colors := colors.size() == count
+
+	var box := BoxMesh.new()
+	box.size = Vector3.ONE
+	_apply_voxel_material(box, use_colors, Color.WHITE, options)
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = use_colors
-	mm.mesh = mesh
-	mm.instance_count = centers.size()
-	for i in range(centers.size()):
-		mm.set_instance_transform(i, Transform3D(Basis.IDENTITY, centers[i]))
+	mm.mesh = box
+	mm.instance_count = count
+	for i in range(count):
+		mm.set_instance_transform(i, transforms[i])
 		if use_colors:
 			mm.set_instance_color(i, colors[i])
 
@@ -138,24 +127,26 @@ static func build_field_gpu(
 	mm.use_colors = true
 	mm.mesh = cell
 	mm.instance_count = voxel_count
-	mm.custom_aabb = world_aabb
 
 	var node := MultiMeshInstance3D.new()
 	node.name = str(options.get("name", "VoxelDisplay"))
 	node.multimesh = mm
 	node.custom_aabb = world_aabb
 
-	var writer := VoxelFieldDisplayGPU.new()
+	var writer = VoxelFieldDisplayGPUScript.new()
 	if not writer.is_ready():
-		push_error("VoxelDisplay.build_field_gpu: %s" % writer.last_reason())
+		push_warning("VoxelDisplay.build_field_gpu skipped: %s" % writer.last_reason())
+		writer.dispose()
 		node.free()
 		return null
 	if not writer.bind_multimesh(mm.get_rid(), voxel_count):
-		push_error("VoxelDisplay.build_field_gpu: %s" % writer.last_reason())
+		push_warning("VoxelDisplay.build_field_gpu skipped: %s" % writer.last_reason())
+		writer.dispose()
 		node.free()
 		return null
 	if not writer.write_field(fields, params):
 		push_error("VoxelDisplay.build_field_gpu: %s" % writer.last_reason())
+		writer.dispose()
 		node.free()
 		return null
 
@@ -200,24 +191,26 @@ static func build_brush_tetra_gpu(
 	mm.use_colors = true
 	mm.mesh = mesh
 	mm.instance_count = instance_count
-	mm.custom_aabb = world_aabb
 
 	var node := MultiMeshInstance3D.new()
 	node.name = str(options.get("name", "VoxelDisplay"))
 	node.multimesh = mm
 	node.custom_aabb = world_aabb
 
-	var writer := BrushVoxelDisplayGPU.new()
+	var writer = BrushVoxelDisplayGPUScript.new()
 	if not writer.is_ready():
-		push_error("VoxelDisplay.build_brush_tetra_gpu: %s" % writer.last_reason())
+		push_warning("VoxelDisplay.build_brush_tetra_gpu skipped: %s" % writer.last_reason())
+		writer.dispose()
 		node.free()
 		return null
 	if not writer.bind_multimesh(mm.get_rid(), instance_count):
-		push_error("VoxelDisplay.build_brush_tetra_gpu: %s" % writer.last_reason())
+		push_warning("VoxelDisplay.build_brush_tetra_gpu skipped: %s" % writer.last_reason())
+		writer.dispose()
 		node.free()
 		return null
 	if not writer.write_brush(brush_voxels, params):
 		push_error("VoxelDisplay.build_brush_tetra_gpu: %s" % writer.last_reason())
+		writer.dispose()
 		node.free()
 		return null
 
@@ -240,6 +233,8 @@ static func _apply_voxel_material(
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	else:
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	if bool(options.get("no_depth_test", false)):
+		mat.no_depth_test = true
 	if use_colors:
 		mat.vertex_color_use_as_albedo = true
 	else:
@@ -279,37 +274,4 @@ static func _make_tetra_mesh(cell_size: Vector3, fill: float) -> ArrayMesh:
 	return st.commit()
 
 
-# --- Center generators -----------------------------------------------------
-
-# Rasterize an AutoObject-style collision entry (cylinder or box) into a regular
-# voxel grid, returning cell centers in the collision's local space.
-static func collision_centers(collision: Dictionary, cell_size: float) -> PackedVector3Array:
-	var centers := PackedVector3Array()
-	var step := maxf(cell_size, 0.001)
-	var radius := maxf(float(collision.get("radius", 0.0)), 0.0)
-	var y_min := float(collision.get("y_min", 0.0))
-	var y_max := float(collision.get("y_max", 0.0))
-	if y_max < y_min:
-		var swap := y_min
-		y_min = y_max
-		y_max = swap
-
-	var shape := str(collision.get("shape", "cylinder")).to_lower()
-	var nx := maxi(1, ceili(radius / step))
-	var nz := maxi(1, ceili(radius / step))
-	var ny := maxi(1, ceili((y_max - y_min) / step))
-
-	for yi in range(ny):
-		var cy := y_min + (float(yi) + 0.5) * step
-		for xi in range(-nx, nx + 1):
-			var cx := (float(xi) + 0.5) * step
-			for zi in range(-nz, nz + 1):
-				var cz := (float(zi) + 0.5) * step
-				if shape == "box" or shape == "cube":
-					if absf(cx) > radius or absf(cz) > radius:
-						continue
-				else:
-					if Vector2(cx, cz).length() > radius:
-						continue
-				centers.append(Vector3(cx, cy, cz))
-	return centers
+# --- All-GPU brush tetra renderer ------------------------------------------

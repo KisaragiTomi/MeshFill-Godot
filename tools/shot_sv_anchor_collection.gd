@@ -3,6 +3,7 @@ extends SceneTree
 const SCENE_PATH := "res://demos/core-sv-anchor-collection/core-sv-anchor-collection.tscn"
 const SHOT_DIR := "res://tools/_shots"
 const SHOT_NAME := "sv_anchor_collection_anchor_arrows.png"
+const CommonShotUtils := preload("res://scripts/common_shot_utils.gd")
 
 
 func _initialize() -> void:
@@ -30,7 +31,7 @@ func _run() -> void:
 
 func _verify_and_capture(inst: Node) -> bool:
 	var ok := true
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SHOT_DIR))
+	CommonShotUtils.ensure_dir(SHOT_DIR)
 
 	var terrain := inst.find_child("Terrain", true, false)
 	if terrain is MeshInstance3D:
@@ -113,18 +114,12 @@ func _verify_and_capture(inst: Node) -> bool:
 	for i in range(4):
 		await process_frame
 
-	var vp_tex := root.get_texture()
-	if vp_tex == null:
-		print("[ANCHOR_SHOT] FAIL viewport texture unavailable")
-		return false
-	var img := vp_tex.get_image()
-	if img == null or img.is_empty():
-		print("[ANCHOR_SHOT] FAIL screenshot image empty")
-		return false
-	var path := ProjectSettings.globalize_path("%s/%s" % [SHOT_DIR, SHOT_NAME])
-	var err := img.save_png(path)
-	if err != OK:
+	var result := CommonShotUtils.save_viewport_png(root, "%s/%s" % [SHOT_DIR, SHOT_NAME])
+	if not bool(result.get("ok", false)):
+		var err := int(result.get("error", FAILED))
 		print("[ANCHOR_SHOT] FAIL save screenshot err=", error_string(err))
 		return false
+	var img := result.get("image", null) as Image
+	var path := str(result.get("path", ""))
 	print("[ANCHOR_SHOT] saved ", path, " (", img.get_width(), "x", img.get_height(), ")")
 	return ok

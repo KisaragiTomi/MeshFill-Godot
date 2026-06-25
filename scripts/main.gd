@@ -2,6 +2,7 @@ extends Node3D
 
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const NonHeadlessSceneGuardScript := preload("res://scripts/non_headless_scene_guard.gd")
+const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 @export var num_iterations: int = 10
 @export var capture_size: float = TerrainConfigScript.CAPTURE_SIZE
@@ -21,24 +22,24 @@ const NonHeadlessSceneGuardScript := preload("res://scripts/non_headless_scene_g
 @export var landscape_cliff_slope_start: float = 0.35
 @export var landscape_cliff_slope_full: float = 0.8
 @export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0
-@export var enable_test_generation_tools: bool = true
-@export var run_startup_generation_tests: bool = false
+@export var enable_manual_generation_tools: bool = true
 
 const TEX_RES := TerrainConfigScript.TEXTURE_SIZE
 const OBJECT_VISUAL_LAYER := 10
 const OBJECT_VOXEL_COLOR := Color(0.55, 0.50, 0.45, 1.0)
 const TERRAIN_VOXEL_COLOR := Color(0.45, 0.42, 0.35, 1.0)
-const TEST_ONLY_GROUP := "test_only_generated"
-const TEST_ONLY_OBJECT_GROUP := "test_only_rocks"
+const MANUAL_GENERATED_GROUP := "manual_generated"
+const MANUAL_OBJECT_GROUP := "manual_objects"
 const PlacementFittingGeneratorScript := preload("res://scripts/placement_fitting_generator.gd")
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
 const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
-const TEST_ONLY_VEGETATION_GROUP := "test_only_vegetation"
+const MANUAL_VEGETATION_GROUP := "manual_vegetation"
 const TARGET_SV_SLICE_COUNT := 8
 const TARGET_SV_VERTICAL_SPAN := 16.0
 const TARGET_SV_DIR_NAME := "target_scene_voxel"
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
+const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
 const SceneVoxelBrushScript := preload("res://scripts/scene_voxel_brush.gd")
 const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
 const TARGET_SV_GENERATOR_PATH := "res://scripts/target_scene_voxel_generator.gd"
@@ -97,6 +98,8 @@ var _vegetation_generated: bool = false
 var _debug_mask_terrain: MeshInstance3D
 var _debug_probe_root: Node3D
 var _scene_voxel_committer
+var _scene_placement_actor: ScenePlacementActor
+var _autoobject_asset_profile_ids: Array[int] = []
 var _voxel_write_specs: Dictionary = {}
 var _target_sv_preview_image: Image
 var _target_sv_visual_bytes: PackedByteArray
@@ -120,19 +123,68 @@ func _get_level_root() -> Node:
 	return parent if parent != null else self
 
 
-func _get_level_child(node_name: String) -> Node:
-	return _get_level_root().get_node_or_null(NodePath(node_name))
-
-
-func _add_level_child(node: Node) -> void:
-	_get_level_root().add_child(node)
-
-
 func _get_level_children() -> Array[Node]:
 	var children: Array[Node] = []
 	for child in _get_level_root().get_children():
 		children.append(child)
 	return children
+
+
+func _exit_tree() -> void:
+	_dispose_scene_placement_actor(false)
+
+
+func _ensure_scene_placement_actor() -> bool:
+	if _scene_placement_actor != null and _scene_placement_actor.is_initialized():
+		if _scene_voxel_committer != null and _scene_placement_actor.get_sv_committer() != _scene_voxel_committer:
+			_scene_placement_actor.attach_sv_committer(_scene_voxel_committer)
+		return true
+	if _scene_voxel_committer == null:
+		_ensure_scene_voxel_committer()
+	if _scene_placement_actor == null:
+		_scene_placement_actor = ScenePlacementActorScript.new()
+	if not _scene_placement_actor.initialize(true, true, _scene_voxel_committer):
+		push_warning("[MeshFill] ScenePlacementActor unavailable; AutoObject registry sync skipped")
+		return false
+	return true
+
+
+func _dispose_scene_placement_actor(sync_before_free: bool = false) -> void:
+	if _scene_placement_actor != null:
+		_scene_placement_actor.dispose(sync_before_free)
+		_scene_placement_actor = null
+	_autoobject_asset_profile_ids.clear()
+
+
+func _sync_autoobject_assets_with_spa(assets: Array[AutoObject]) -> bool:
+	_autoobject_asset_profile_ids.clear()
+	if assets.is_empty():
+		return false
+	if not _ensure_scene_placement_actor():
+		return false
+	if not _scene_placement_actor.replace_all_autoobject_assets(assets):
+		_autoobject_asset_profile_ids = _scene_placement_actor.get_registered_profile_ids()
+		push_warning("[MeshFill] ScenePlacementActor AutoObject asset sync was incomplete")
+		return false
+	_autoobject_asset_profile_ids = _scene_placement_actor.get_registered_profile_ids()
+	return _autoobject_asset_profile_ids.size() == assets.size()
+
+
+func _ensure_autoobject_assets_registered() -> bool:
+	if _cached_assets.is_empty():
+		return false
+	if _scene_placement_actor == null or not _scene_placement_actor.is_initialized():
+		return _sync_autoobject_assets_with_spa(_cached_assets)
+	if _scene_placement_actor.get_asset_count() != _cached_assets.size():
+		return _sync_autoobject_assets_with_spa(_cached_assets)
+	return true
+
+
+func _own_autoobject_with_spa(autoobject_ref: AutoObject, asset_id: int = -1) -> void:
+	if autoobject_ref == null:
+		return
+	if _ensure_scene_placement_actor():
+		_scene_placement_actor.own_autoobject(autoobject_ref, asset_id)
 
 
 func _ready() -> void:
@@ -151,6 +203,7 @@ func _initialize_scene() -> void:
 		push_error("[MeshFill] Fatal: no cliff assets available")
 		return
 	_apply_semantic_probe_density_to_assets()
+	_sync_autoobject_assets_with_spa(_cached_assets)
 
 	_terrain_hit_y = _compute_terrain_avg_height(_cached_textures["target_height"])
 	_init_override_images()
@@ -159,21 +212,7 @@ func _initialize_scene() -> void:
 	_clear_object_mask()
 	_reuse_or_create_terrain_mesh(_cached_textures["target_height"])
 	_load_persisted_target_scene_voxel()
-	print("[MeshFill] Ready. Test tools: C=object step G/H=debug J=TargetSV_B Ctrl+J=recompute TargetSV/TargetSV_B V=delta B=brush N=target T=tile M=mask Ctrl+Z=undo")
-
-
-	print("[MeshFill] Brush override test")
-	_test_brush_override()
-
-
-func _auto_screenshot() -> void:
-	await get_tree().create_timer(2.0).timeout
-	RenderingServer.force_draw(true)
-	await get_tree().process_frame
-	await get_tree().process_frame
-	var img := get_viewport().get_texture().get_image()
-	img.save_png(OS.get_user_data_dir() + "/screenshot.png")
-	print("[MeshFill] Screenshot saved")
+	print("[MeshFill] Ready. Tools: C=object step G/H=debug J=TargetSV_B Ctrl+J=recompute TargetSV/TargetSV_B V=delta B=brush N=target T=tile M=mask Ctrl+Z=undo")
 
 
 func _save_viewport_screenshot() -> void:
@@ -181,55 +220,6 @@ func _save_viewport_screenshot() -> void:
 	var path := "%s/screenshot_%d.png" % [OS.get_user_data_dir(), Time.get_unix_time_from_system()]
 	img.save_png(path)
 	print("[MeshFill] Screenshot saved: %s" % path)
-
-
-func _test_brush_override() -> void:
-	if _override_delta == null or _override_mask == null:
-		print("[MeshFill] No override images initialized, skip brush test")
-		return
-
-	var pre_mask_count := _has_mask_pixels_gpu(_override_mask, 0.01)
-	if pre_mask_count < 0:
-		push_error("[MeshFill] Brush override pre-mask GPU count failed")
-		return
-	print("[MeshFill]   Before: %d override pixels" % pre_mask_count)
-
-	_brush_target = BRUSH_TARGET_HEIGHT
-	_set_brush_dimensions(31, 31, _brush_height)
-	var centers := [Vector2i(128, 128), Vector2i(64, 64), Vector2i(192, 192)]
-	for center in centers:
-		for stroke in range(5):
-			_paint_brush_footprint(center, 5.0)
-
-	var post_mask_count := _has_mask_pixels_gpu(_override_mask, 0.01)
-	if post_mask_count < 0:
-		push_error("[MeshFill] Brush override post-mask GPU count failed")
-		return
-	var delta_stats := _get_delta_stats_gpu(_override_delta)
-	if not bool(delta_stats.get("valid", false)):
-		push_error("[MeshFill] Brush override delta GPU stats failed")
-		return
-	var d_min := float(delta_stats.get("min", 0.0))
-	var d_max := float(delta_stats.get("max", 0.0))
-	print("[MeshFill]   After: %d override pixels, delta=[%.2f, %.2f]" % [post_mask_count, d_min, d_max])
-
-	var composited_th := _composite_target_height()
-	if composited_th == null:
-		push_error("[MeshFill] Brush override target-height composite failed")
-		return
-	var modified := _has_mask_pixels_gpu(_override_mask, 0.01)
-	if modified < 0:
-		push_error("[MeshFill] Brush override modified-pixel GPU count failed")
-		return
-	print("[MeshFill]   Composited target_height: %d pixels modified" % modified)
-
-	_regenerate()
-	print("[MeshFill]   Regenerating with overrides...")
-	await get_tree().process_frame
-	await get_tree().process_frame
-
-	print("[MeshFill] Brush override test complete")
-
 
 
 func _input(event: InputEvent) -> void:
@@ -299,7 +289,7 @@ func _input(event: InputEvent) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey:
 		var ke := event as InputEventKey
-		if ke.pressed and enable_test_generation_tools and ke.keycode == KEY_C:
+		if ke.pressed and enable_manual_generation_tools and ke.keycode == KEY_C:
 			_step_generate()
 		elif ke.pressed and ke.keycode == KEY_J and ke.ctrl_pressed:
 			_recompute_and_save_target_scene_voxel()
@@ -330,10 +320,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _world_to_texture_pixel(world_pos: Vector3, resolution: int = TEX_RES) -> Vector2i:
-	var half := capture_size / 2.0
-	var px := clampi(floori((world_pos.x + half) / capture_size * float(resolution)), 0, resolution - 1)
-	var pz := clampi(floori((world_pos.z + half) / capture_size * float(resolution)), 0, resolution - 1)
-	return Vector2i(px, pz)
+	return CommonVoxelSpaceScript.world_to_texture_pixel(world_pos, capture_size, resolution)
 
 
 func _vector3_from_record_value(value, fallback: Vector3) -> Vector3:
@@ -372,25 +359,25 @@ func _normalize_rotation_record(mi: MeshInstance3D, rec: Dictionary) -> void:
 	rec["rotation_degrees"] = rotation_value
 
 
-func _mark_test_only_record(record: Dictionary, kind: String) -> Dictionary:
+func _mark_manual_generation_record(record: Dictionary, kind: String) -> Dictionary:
 	var next_record := record.duplicate(true)
-	next_record["test_only"] = true
-	next_record["test_only_kind"] = kind
-	next_record["test_only_reason"] = "auto_generation_tool"
+	next_record["generated_by_tool"] = true
+	next_record["generation_tool_kind"] = kind
+	next_record["generation_tool_reason"] = "manual_generation_tool"
 	return next_record
 
 
-func _mark_test_only_generated(node: Node, kind: String) -> void:
+func _mark_manual_generated(node: Node, kind: String) -> void:
 	if node == null:
 		return
-	node.set_meta("test_only", true)
-	node.set_meta("test_only_kind", kind)
-	node.set_meta("test_only_reason", "auto_generation_tool")
-	node.add_to_group(TEST_ONLY_GROUP)
+	node.set_meta("generated_by_tool", true)
+	node.set_meta("generation_tool_kind", kind)
+	node.set_meta("generation_tool_reason", "manual_generation_tool")
+	node.add_to_group(MANUAL_GENERATED_GROUP)
 	if kind == "rock":
-		node.add_to_group(TEST_ONLY_OBJECT_GROUP)
+		node.add_to_group(MANUAL_OBJECT_GROUP)
 	elif kind == "vegetation":
-		node.add_to_group(TEST_ONLY_VEGETATION_GROUP)
+		node.add_to_group(MANUAL_VEGETATION_GROUP)
 
 
 func _instantiate_object_asset(asset: AutoObject) -> AutoObject:
@@ -562,6 +549,182 @@ func _generate_cliff_placements(generator: Node, num_iters: int) -> Array[Dictio
 	return generator.generate_heightfield_fit(num_iters)
 
 
+func _try_generate_cliff_placements_with_spa(name_prefix: String) -> bool:
+	if not _ensure_autoobject_assets_registered():
+		return false
+	if not _ensure_scene_placement_actor():
+		return false
+	if _scene_voxel_committer == null:
+		_ensure_scene_voxel_committer()
+	if _scene_voxel_committer == null:
+		return false
+
+	_rebuild_scene_voxel_committer_from_scene_records()
+	var sv: Dictionary = _scene_voxel_committer.get_sv()
+	if sv.is_empty():
+		push_warning("[MeshFill] SPA placement skipped: SceneVoxel data is empty")
+		return false
+
+	if _target_sv_b_target_color_rgba8_bytes.is_empty():
+		_load_persisted_target_scene_voxel()
+	var common := _spa_placement_common_settings(name_prefix, sv)
+	var t0 := Time.get_ticks_msec()
+	var result := _scene_placement_actor.run_placement_pipeline(sv, [], 4, common)
+	var elapsed := Time.get_ticks_msec() - t0
+	if not bool(result.get("ok", false)):
+		push_warning("[MeshFill] SPA placement blocked during %s: %s" % [
+			str(result.get("phase", "pipeline")),
+			str(result.get("reason", "unknown")),
+		])
+		return false
+
+	var placement_result: Dictionary = result.get("placement_result", {})
+	var placed_count := int(placement_result.get("total_placed", 0))
+	var visual_count := _instantiate_spa_placement_visuals(placement_result, name_prefix)
+	_sync_scene_voxel_write_specs_from_committer()
+	_sync_autoobject_mask_from_committer()
+	if _debug_mask_terrain != null:
+		var was_visible := _debug_mask_terrain.visible
+		_build_debug_mask_terrain()
+		if _debug_mask_terrain != null:
+			_debug_mask_terrain.visible = was_visible
+	_save_combined_mask_debug()
+	print("[MeshFill] SPA placement: %d accepted, %d visual nodes in %dms" % [placed_count, visual_count, elapsed])
+	return true
+
+
+func _spa_placement_common_settings(name_prefix: String, sv: Dictionary) -> Dictionary:
+	var target_color := _target_sv_b_target_color_rgba8_bytes
+	if target_color.is_empty():
+		target_color = _target_sv_target_color_rgba8_bytes
+	var target_completely := _target_sv_b_target_completely_bytes
+	if target_completely.is_empty():
+		target_completely = _target_sv_target_completely_bytes
+	var grid_size: Vector3i = sv.get("grid_size", Vector3i(TEX_RES, 1, TEX_RES))
+	return {
+		"global_quota": maxi(num_iterations, 0),
+		"result_capacity": maxi(num_iterations, 1),
+		"target_color_rgba8_bytes": target_color,
+		"target_completely_bytes": target_completely,
+		"use_resident_target_read_buffer_handoff": true,
+		"use_resident_candidate_route_handoff": true,
+		"use_gpu_candidate_route_pack": true,
+		"write_accepted_placements_to_gpu_runtime": true,
+		"read_full_field_outputs": false,
+		"debug_read_target_read_buffer_bytes": false,
+		"debug_read_candidate_route_cpu_expansion": false,
+		"type": "rock",
+		"auto_source": "meshfill_spa",
+		"source_voxel_type": "AutoSceneVoxel",
+		"id_prefix": name_prefix,
+		"capture_size": capture_size,
+		"volume_xz_resolution": grid_size.x,
+	}
+
+
+func _instantiate_spa_placement_visuals(placement_result: Dictionary, name_prefix: String) -> int:
+	var visual_count := 0
+	var raw_asset_results: Array = placement_result.get("asset_results", [])
+	for raw_asset_result in raw_asset_results:
+		if not raw_asset_result is Dictionary:
+			continue
+		var asset_result := raw_asset_result as Dictionary
+		var asset_index := int(asset_result.get("asset_index", -1))
+		if asset_index < 0 or asset_index >= _cached_assets.size():
+			continue
+		var asset := _cached_assets[asset_index]
+		var world_results: Array = asset_result.get("world_results", [])
+		var result_indices := _spa_visual_result_indices(asset_result, world_results.size())
+		for raw_index in result_indices:
+			var result_index := int(raw_index)
+			if result_index < 0 or result_index >= world_results.size():
+				continue
+			var raw_world = world_results[result_index]
+			if not raw_world is Dictionary:
+				continue
+			var world_result := raw_world as Dictionary
+			var mi := _instantiate_object_asset(asset)
+			var result_scale := _vector3_from_record_value(world_result.get("scale", Vector3.ONE), Vector3.ONE)
+			var visual_scale := result_scale * fbx_unit_scale * mesh_height_scale
+			mi.configure_from_asset(asset, {
+				"name": "%s_%d_m%d" % [name_prefix, visual_count, asset_index],
+				"position": world_result.get("position", Vector3.ZERO),
+				"rotation_mode": str(world_result.get("rotation_mode", "Y")),
+				"rotation_degrees": world_result.get("rotation_degrees", Vector3.ZERO),
+				"scale": visual_scale,
+				"visual_layer": OBJECT_VISUAL_LAYER,
+				"mesh_index": asset_index,
+				"auto_source": "meshfill_spa",
+				"groups": [MANUAL_GENERATED_GROUP, MANUAL_OBJECT_GROUP],
+			})
+			_get_level_root().add_child(mi)
+			_mark_manual_generated(mi, "rock")
+			_own_autoobject_with_spa(mi, asset_index)
+			var record := _mark_manual_generation_record(
+				_make_spa_cliff_voxel_write_spec(mi.name, world_result, mi, asset_index, asset),
+				"rock"
+			)
+			_attach_voxel_write_spec(mi, record)
+			if visual_count < 3:
+				print("  [SPA %d] pos=%s score=%.3f mesh=%d" % [
+					visual_count,
+					world_result.get("position", Vector3.ZERO),
+					float(world_result.get("score", 0.0)),
+					asset_index,
+				])
+			visual_count += 1
+	return visual_count
+
+
+func _spa_visual_result_indices(asset_result: Dictionary, world_result_count: int) -> Array[int]:
+	var indices: Array[int] = []
+	var writeback: Dictionary = asset_result.get("gpu_autoobject_runtime_writeback", {})
+	var spawned_indices: Array = writeback.get("spawned_result_indices", [])
+	if not spawned_indices.is_empty():
+		for raw_i in spawned_indices:
+			var i := int(raw_i)
+			if i >= 0 and i < world_result_count:
+				indices.append(i)
+		return indices
+	var spawned_count := clampi(int(writeback.get("spawned_count", world_result_count)), 0, world_result_count)
+	for i in range(spawned_count):
+		indices.append(i)
+	return indices
+
+
+func _make_spa_cliff_voxel_write_spec(
+	record_id: String,
+	world_result: Dictionary,
+	mi: MeshInstance3D,
+	mesh_index: int,
+	asset: AutoObject
+) -> Dictionary:
+	var mesh_aabb := asset.mesh.get_aabb() if asset != null and asset.mesh != null else AABB()
+	var record := _make_cliff_voxel_write_spec(
+		record_id,
+		{
+			"mesh_index": mesh_index,
+			"rotation_mode": world_result.get("rotation_mode", "Y"),
+			"rotation_degrees": world_result.get("rotation_degrees", Vector3.ZERO),
+			"score": float(world_result.get("score", 0.0)),
+			"channel": 0,
+		},
+		mi,
+		mesh_aabb,
+		asset
+	)
+	record["auto_source"] = "meshfill_spa"
+	record["asset_index"] = mesh_index
+	record["score"] = float(world_result.get("score", 0.0))
+	record["voxel_origin"] = world_result.get("voxel_origin", Vector3i.ZERO)
+	record["rotation_index"] = int(world_result.get("rotation_index", 0))
+	record["scale_index"] = int(world_result.get("scale_index", 0))
+	for debug_key in ["support_ratio", "solid_collision", "complexity_overlap", "clearance_overlap", "ignored_sample"]:
+		if world_result.has(debug_key):
+			record[debug_key] = world_result[debug_key]
+	return record
+
+
 func _make_cliff_voxel_write_spec(
 	record_id: String,
 	r: Dictionary,
@@ -580,7 +743,7 @@ func _make_cliff_voxel_write_spec(
 		y_min = y_max
 		y_max = tmp
 	var radius := maxf(mesh_aabb.size.x * absf(mi.scale.x), mesh_aabb.size.z * absf(mi.scale.z)) * 0.5
-	radius = maxf(radius, capture_size / float(TEX_RES))
+	radius = maxf(radius, CommonVoxelSpaceScript.texture_pixel_size(capture_size, TEX_RES))
 	var collision := asset.get_collision(radius) if asset != null else []
 	var channel := int(r.get("channel", 0))
 
@@ -679,8 +842,7 @@ func register_brush_autoobject(mi: AutoObject, placement_data: Dictionary = {}) 
 	if not data.has("id"):
 		data["id"] = mi.name
 	if not data.has("type"):
-		var object_subtype := mi.get_record_object_subtype()
-		data["type"] = object_subtype if not object_subtype.is_empty() else "vegetation"
+		data["type"] = "vegetation"
 	data["auto_source"] = "brush"
 	data["source_voxel_type"] = "BrushSceneVoxel"
 	if not data.has("auto_mix"):
@@ -704,14 +866,15 @@ func register_brush_autoobject(mi: AutoObject, placement_data: Dictionary = {}) 
 
 	mi.add_to_group("placed_brush_autoobjects")
 	if mi.get_parent() == null:
-		_add_level_child(mi)
+		_get_level_root().add_child(mi)
+	_own_autoobject_with_spa(mi, int(data.get("asset_index", -1)))
 	var defer_buffer_update := bool(data.get("defer_voxel_update", _painting))
 	_attach_autoobject_voxel_write_spec(mi, data, not defer_buffer_update)
 	if defer_buffer_update:
 		_brush_voxel_commit_pending = true
 		var brush_px := _world_to_texture_pixel(mi.position)
 		var brush_radius_px := 1
-		var pixel_size := capture_size / float(TEX_RES)
+		var pixel_size := CommonVoxelSpaceScript.texture_pixel_size(capture_size, TEX_RES)
 		brush_radius_px = maxi(brush_radius_px, ceili(float(maxi(_brush_width, _brush_length)) * 0.5))
 		brush_radius_px = maxi(brush_radius_px, ceili(float(data.get("radius", pixel_size)) / pixel_size))
 		for collision_raw in data["collision"]:
@@ -736,8 +899,7 @@ func commit_brush_autoobject_edits(dirty_rect: Rect2i = Rect2i()) -> void:
 
 
 func _meters_to_pixels(radius_m: float, resolution: int = TEX_RES) -> int:
-	var pixel_size := capture_size / float(maxi(resolution, 1))
-	return maxi(1, ceili(maxf(radius_m, 0.0) / pixel_size))
+	return CommonVoxelSpaceScript.world_radius_to_texture_radius(radius_m, capture_size, resolution)
 
 
 func _make_landscape_cliff_mask(height_img: Image) -> Image:
@@ -849,7 +1011,7 @@ func _sync_scene_voxel_write_specs_from_committer() -> void:
 func _sync_autoobject_mask_from_committer() -> void:
 	if _scene_voxel_committer == null:
 		return
-	var occupancy: Image = _scene_voxel_committer.get_occupancy()
+	var occupancy: Image = _scene_voxel_committer.occupancy
 	_autoobject_mask_image = _make_autoobject_activity_mask_from_occupancy(occupancy)
 
 
@@ -1023,6 +1185,7 @@ func _step_generate() -> void:
 	if _cached_textures.is_empty() or _cached_assets.is_empty():
 		push_error("[MeshFill] Cannot step: textures or assets not loaded")
 		return
+	_ensure_autoobject_assets_registered()
 
 	_step_count += 1
 	print("[MeshFill] Step %d" % _step_count)
@@ -1031,6 +1194,12 @@ func _step_generate() -> void:
 	var composited_th := _composite_target_height()
 
 	var prev_object_mask := _load_previous_object_mask()
+	if _try_generate_cliff_placements_with_spa("Cliff_s%d" % _step_count):
+		print("[MeshFill] Step %d complete through ScenePlacementActor. Total cliff meshes: %d." % [
+			_step_count,
+			get_tree().get_nodes_in_group("placed_objects").size(),
+		])
+		return
 
 	var generator := PlacementFittingGeneratorScript.new()
 	generator.texture_size = TEX_RES
@@ -1080,11 +1249,12 @@ func _step_generate() -> void:
 			"visual_layer": OBJECT_VISUAL_LAYER,
 			"mesh_index": mesh_index,
 			"auto_source": "meshfill",
-			"groups": [TEST_ONLY_GROUP, TEST_ONLY_OBJECT_GROUP],
+			"groups": [MANUAL_GENERATED_GROUP, MANUAL_OBJECT_GROUP],
 		})
-		_add_level_child(mi)
-		_mark_test_only_generated(mi, "rock")
-		var rock_record := _mark_test_only_record(_make_cliff_voxel_write_spec(mi.name, r, mi, mesh_aabb, asset), "rock")
+		_get_level_root().add_child(mi)
+		_mark_manual_generated(mi, "rock")
+		_own_autoobject_with_spa(mi, mesh_index)
+		var rock_record := _mark_manual_generation_record(_make_cliff_voxel_write_spec(mi.name, r, mi, mesh_aabb, asset), "rock")
 		_attach_voxel_write_spec(mi, rock_record)
 		if i < 3:
 			print("  [%d] pos=%s aabb_top=%.2f offset_y=%.2f" % [i, r.position, mesh_aabb.position.y + mesh_aabb.size.y, mesh_top_y])
@@ -1102,7 +1272,7 @@ func _step_generate() -> void:
 	_setup_debug_terrain()
 
 	generator.queue_free()
-	print("[MeshFill] Step %d complete. Total cliff meshes: %d. Use TEST ONLY C or the UI object button for next step." % [
+	print("[MeshFill] Step %d complete. Total cliff meshes: %d. Use C or the UI object button for next step." % [
 		_step_count, get_tree().get_nodes_in_group("placed_objects").size()])
 
 
@@ -1164,12 +1334,12 @@ func _setup_debug_terrain() -> void:
 	_debug_terrain.material_override = mat
 	_debug_terrain.name = "DebugTargetHeight"
 	_debug_terrain.visible = false
-	_add_level_child(_debug_terrain)
+	_get_level_root().add_child(_debug_terrain)
 	print("[MeshFill] Debug target height terrain ready [G to toggle]")
 
 
 func _setup_slider_ui() -> void:
-	if not enable_test_generation_tools:
+	if not enable_manual_generation_tools:
 		return
 
 	var layer := CanvasLayer.new()
@@ -1263,7 +1433,7 @@ func _setup_slider_ui() -> void:
 	_sh.call(shortcuts_vbox, "I", "Probe inspect mode")
 
 	section_header = Label.new()
-	section_header.text = "-- Generation [TEST] --"
+	section_header.text = "-- Generation --"
 	section_header.add_theme_color_override("font_color", Color(0.7, 0.7, 0.9))
 	section_header.add_theme_font_size_override("font_size", 13)
 	shortcuts_vbox.add_child(section_header)
@@ -1273,12 +1443,12 @@ func _setup_slider_ui() -> void:
 
 	var rock_button := Button.new()
 	rock_button.text = "C  Generate Object Step"
-	rock_button.pressed.connect(_run_test_object_generation)
+	rock_button.pressed.connect(_run_manual_object_generation)
 	vbox.add_child(rock_button)
 
 
-func _run_test_object_generation() -> void:
-	if not enable_test_generation_tools:
+func _run_manual_object_generation() -> void:
+	if not enable_manual_generation_tools:
 		return
 	_step_generate()
 
@@ -1306,6 +1476,8 @@ func _apply_semantic_probe_density_to_assets() -> void:
 		asset.semantic_probe_density = semantic_probe_density
 		asset.rebuild_semantic_probes(semantic_probe_density)
 	_update_probe_debug_label()
+	if _scene_placement_actor != null:
+		_sync_autoobject_assets_with_spa(_cached_assets)
 
 
 func _toggle_semantic_probe_debug() -> void:
@@ -1318,7 +1490,7 @@ func _toggle_semantic_probe_debug() -> void:
 		return
 	_debug_probe_root = Node3D.new()
 	_debug_probe_root.name = "DebugSemanticProbes"
-	_add_level_child(_debug_probe_root)
+	_get_level_root().add_child(_debug_probe_root)
 	_refresh_semantic_probe_debug()
 	print("[MeshFill] Semantic probe debug: ON")
 
@@ -1608,6 +1780,7 @@ func _regenerate() -> void:
 			if node.get_record_auto_source("") == "scatter":
 				_remove_voxel_write_spec(node)
 				node.queue_free()
+	_dispose_scene_placement_actor(false)
 	if _scene_voxel_committer != null:
 		_scene_voxel_committer._free_gpu()
 		_scene_voxel_committer = null
@@ -1649,7 +1822,7 @@ func _toggle_debug_overlay() -> void:
 			_debug_showing = true
 			print("[MeshFill] Target height debug: ON")
 	else:
-		print("[MeshFill] No height data available. Use TEST ONLY C or the UI rock button first.")
+		print("[MeshFill] No height data available. Use C or the UI rock button first.")
 
 
 func _toggle_diff_overlay() -> void:
@@ -1666,7 +1839,7 @@ func _toggle_diff_overlay() -> void:
 			_debug_diff_showing = true
 			print("[MeshFill] Height diff debug: ON")
 	else:
-		print("[MeshFill] No height data available. Use TEST ONLY C or the UI rock button first.")
+		print("[MeshFill] No height data available. Use C or the UI rock button first.")
 
 
 func _generate() -> void:
@@ -1683,11 +1856,21 @@ func _generate() -> void:
 	if assets.is_empty():
 		push_error("[MeshFill] Fatal: no cliff assets available")
 		return
+	_cached_textures = textures
+	_cached_cliff_meshes = cliff_meshes
+	_cached_assets = assets
+	_apply_semantic_probe_density_to_assets()
+	_sync_autoobject_assets_with_spa(assets)
 	for mi_idx in range(cliff_meshes.size()):
 		var aabb := cliff_meshes[mi_idx].get_aabb()
 		print("[MeshFill] Mesh %d AABB: pos=%s size=%s (Y-up: %.2f ~ %.2f)" % [
 			mi_idx, aabb.position, aabb.size,
 			aabb.position.y, aabb.position.y + aabb.size.y])
+
+	if _try_generate_cliff_placements_with_spa("Cliff"):
+		_create_terrain_mesh(textures["target_height"])
+		print("[MeshFill] Done through ScenePlacementActor. Total cliff meshes: %d." % get_tree().get_nodes_in_group("placed_objects").size())
+		return
 
 	var prev_object_mask := _load_previous_object_mask()
 
@@ -1738,11 +1921,12 @@ func _generate() -> void:
 			"visual_layer": OBJECT_VISUAL_LAYER,
 			"mesh_index": mesh_index,
 			"auto_source": "meshfill",
-			"groups": [TEST_ONLY_GROUP, TEST_ONLY_OBJECT_GROUP],
+			"groups": [MANUAL_GENERATED_GROUP, MANUAL_OBJECT_GROUP],
 		})
-		_add_level_child(mi)
-		_mark_test_only_generated(mi, "rock")
-		var rock_record := _mark_test_only_record(_make_cliff_voxel_write_spec(mi.name, r, mi, mesh_aabb, asset), "rock")
+		_get_level_root().add_child(mi)
+		_mark_manual_generated(mi, "rock")
+		_own_autoobject_with_spa(mi, mesh_index)
+		var rock_record := _mark_manual_generation_record(_make_cliff_voxel_write_spec(mi.name, r, mi, mesh_aabb, asset), "rock")
 		_attach_voxel_write_spec(mi, rock_record)
 		if i < 5:
 			print("  [%d] pos=%s rot=%.1f掳 scale=%.3f mesh=%d top_offset=%.2f" % [
@@ -2581,7 +2765,7 @@ func _build_target_scene_voxel_overlay() -> void:
 	_target_sv_debug_terrain.material_override = mat
 	_target_sv_debug_terrain.name = "DebugTargetSceneVoxel"
 	_target_sv_debug_terrain.visible = false
-	_add_level_child(_target_sv_debug_terrain)
+	_get_level_root().add_child(_target_sv_debug_terrain)
 	print("[TargetSV_B] TargetSV_B overlay ready [J to toggle]")
 
 
@@ -2978,7 +3162,7 @@ func _setup_diff_terrain(target_img: Image, current_img: Image) -> void:
 	_debug_diff_terrain.material_override = mat
 	_debug_diff_terrain.name = "DebugHeightDiff"
 	_debug_diff_terrain.visible = false
-	_add_level_child(_debug_diff_terrain)
+	_get_level_root().add_child(_debug_diff_terrain)
 	print("[MeshFill] Height diff overlay ready [H to toggle]")
 
 
@@ -3400,16 +3584,6 @@ func _get_delta_stats_gpu(delta_img: Image) -> Dictionary:
 	}
 
 
-func _u32_word(value: int) -> int:
-	return value if value >= 0 else value + 4294967296
-
-
-func _u32_from_bytes(bytes: PackedByteArray, fallback: int = 0) -> int:
-	if bytes.size() < 4:
-		return fallback
-	return int(bytes.decode_u32(0))
-
-
 func _ordered_uint_to_float(key: int) -> float:
 	var bits := 0
 	if (key & 0x80000000) != 0:
@@ -3600,7 +3774,6 @@ func _mark_brush_dirty_footprint(center: Vector2i) -> void:
 func _dirty_rect_with_margin(dirty_rect: Rect2i) -> Rect2i:
 	if dirty_rect.size.x <= 0 or dirty_rect.size.y <= 0:
 		return Rect2i(0, 0, TEX_RES, TEX_RES)
-	var pixel_size := capture_size / float(TEX_RES)
 	var footprint_margin := ceili(float(maxi(_brush_width, _brush_length)) * 0.5)
 	var margin := footprint_margin + 2
 	return dirty_rect.grow(margin).intersection(Rect2i(0, 0, TEX_RES, TEX_RES))
@@ -4050,7 +4223,7 @@ func _clear_override_tile_gpu(tile_rect: Rect2i) -> Dictionary:
 		out_images.append(Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, data))
 	var counter_data := rd.buffer_get_data(counter_buf, 0, 4)
 	compute.dispose()
-	var cleared := _u32_from_bytes(counter_data, 0)
+	var cleared := (int(counter_data.decode_u32(0)) if counter_data.size() >= 4 else 0)
 	return {
 		"override_mask": out_images[0],
 		"override_delta": out_images[1],
@@ -4256,7 +4429,7 @@ func _invalidate_overrides_gpu(terrain_img: Image) -> Dictionary:
 	var dep_terrain_data := rd.texture_get_data(out_dep_terrain_tex, 0)
 	var dep_rock_data := rd.texture_get_data(out_dep_object_tex, 0)
 	var counter_data := rd.buffer_get_data(counter_buf, 0, 4)
-	var invalidated := _u32_from_bytes(counter_data, 0)
+	var invalidated := (int(counter_data.decode_u32(0)) if counter_data.size() >= 4 else 0)
 	compute.dispose()
 	return {
 		"override_mask": Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, mask_data),
@@ -4346,7 +4519,7 @@ func _has_mask_pixels_gpu(mask_img: Image, threshold: float = 0.01) -> int:
 	compute.submit_and_sync()
 
 	var counter_data := rd.buffer_get_data(counter_buf, 0, 4)
-	var hit_count := _u32_from_bytes(counter_data, -1)
+	var hit_count := (int(counter_data.decode_u32(0)) if counter_data.size() >= 4 else -1)
 	compute.dispose()
 	return hit_count
 
@@ -4724,7 +4897,7 @@ func _capture_object_mask_gpu(current_height_img: Image) -> Dictionary:
 	var rock_data := rd.texture_get_data(rock_mask_tex, 0)
 	var counter_data := rd.buffer_get_data(counter_buf, 0, 4)
 	compute.dispose()
-	var nonzero := _u32_from_bytes(counter_data, 0)
+	var nonzero := (int(counter_data.decode_u32(0)) if counter_data.size() >= 4 else 0)
 	return {
 		"png_mask": Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RGBA8, png_data),
 		"object_mask": Image.create_from_data(TEX_RES, TEX_RES, false, Image.FORMAT_RF, rock_data),
@@ -4788,8 +4961,8 @@ func _load_scripted_rock_assets(out_meshes: Array[Mesh], out_assets: Array[AutoO
 		out_meshes.append(asset.mesh)
 		out_assets.append(asset)
 		loaded += 1
-		print("  Scripted rock asset: %s (%s, size=%.2fm)" % [
-			path, asset.get_record_object_subtype(), asset.mesh_size])
+		print("  Scripted rock asset: %s (size=%.2fm)" % [
+			path, asset.mesh_size])
 	return loaded
 
 
@@ -4830,7 +5003,6 @@ func _load_cliff_data(out_meshes: Array[Mesh], out_assets: Array[AutoObject]) ->
 			"mesh": mesh,
 			"source_mesh": source_mesh if source_mesh != null else mesh,
 			"source_mesh_path": cfg.fbx,
-			"object_subtype": "cliff",
 			"mesh_height_texture": htex,
 			"mesh_size": cfg.size,
 			"color": OBJECT_VOXEL_COLOR,
@@ -4875,7 +5047,6 @@ func _generate_procedural_cliffs(out_meshes: Array[Mesh], out_assets: Array[Auto
 		asset.configure_object({
 			"asset_id": cfg.name,
 			"name": cfg.name,
-			"object_subtype": "cliff",
 			"mesh": box,
 			"mesh_height_texture": ImageTexture.create_from_image(htex_img),
 			"mesh_size": cfg.size,
@@ -4963,7 +5134,7 @@ func _create_cliff_height_image_gpu(box_size: Vector3) -> Image:
 
 func _reuse_or_create_terrain_mesh(height_tex: ImageTexture) -> void:
 	# 启动时只复用编辑时 Terrain；运行时不再生成或替换地形网格。
-	var existing := _get_level_child("Terrain")
+	var existing := _get_level_root().get_node_or_null(NodePath("Terrain"))
 	if existing is MeshInstance3D and (existing as MeshInstance3D).mesh != null:
 		var mi := existing as MeshInstance3D
 		var res := int(mi.get_meta("terrain_resolution", height_tex.get_width()))
@@ -5248,6 +5419,8 @@ func _ensure_scene_voxel_committer() -> void:
 	if _scene_voxel_committer != null:
 		return
 	_scene_voxel_committer = SceneVoxelCommitterScript.new(TEX_RES, capture_size)
+	if _scene_placement_actor != null and _scene_placement_actor.is_initialized():
+		_scene_placement_actor.attach_sv_committer(_scene_voxel_committer)
 
 
 
@@ -5420,7 +5593,7 @@ func _build_debug_mask_terrain() -> void:
 	_debug_mask_terrain.material_override = mat
 	_debug_mask_terrain.name = "DebugCombinedMask"
 	_debug_mask_terrain.visible = false
-	_add_level_child(_debug_mask_terrain)
+	_get_level_root().add_child(_debug_mask_terrain)
 	print("[MeshFill] Combined mask debug terrain ready [M to toggle]")
 
 
@@ -5555,7 +5728,7 @@ func _target_sv_b_int_words(bytes: PackedByteArray, voxel_count: int) -> PackedI
 
 
 func _target_sv_b_color_rgba8_from_word(word: int) -> Color:
-	var rgba8 := _u32_word(word)
+	var rgba8 := word if word >= 0 else word + 4294967296
 	return Color(
 		float((rgba8 >> 24) & 0xFF) / 255.0,
 		float((rgba8 >> 16) & 0xFF) / 255.0,

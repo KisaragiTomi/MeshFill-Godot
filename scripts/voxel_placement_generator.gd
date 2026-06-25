@@ -8,6 +8,9 @@ extends "res://scripts/godot_compute_shader_base.gd"
 ## callers provide compact scene/collision field buffers and a simplified
 ## asset footprint, then receive compact placement records and stamped occupancy.
 
+const AutoObject := preload("res://scripts/auto_object.gd")
+const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
+
 const TILE_SIZE := 8
 const FOOTPRINT_CAPACITY := 128
 const RECORD_STRIDE := 4
@@ -38,6 +41,11 @@ const GPU_PROFILE_CONTAINER_CONFIG_KEYS := [
 	"auto_voxel_runtime_profile_container",
 	"runtime_profile_container",
 	"profile_container",
+]
+const SCENE_PLACEMENT_ACTOR_CONFIG_KEYS := [
+	"scene_placement_actor",
+	"placement_actor",
+	"spa",
 ]
 const CANDIDATE_REGION_BY_ASSET_CONFIG_KEYS := [
 	"candidate_voxel_regions_by_asset",
@@ -235,12 +243,18 @@ static func _get_config_voxel_write_spec(config: Dictionary) -> Dictionary:
 	return {}
 
 
-static func _should_create_voxel_write_spec(config: Dictionary) -> bool:
-	return bool(config.get("create_voxel_write_spec", false))
+static func _scene_placement_actor_from_config(config: Dictionary) -> Object:
+	for key in SCENE_PLACEMENT_ACTOR_CONFIG_KEYS:
+		if not config.has(key):
+			continue
+		var value = config.get(key)
+		if value is Object:
+			return value as Object
+	return null
 
 
-static func _scene_voxel_committer_from_config(config: Dictionary):
-	return config.get(SCENE_VOXEL_COMMITTER_CONFIG_KEY, config.get(PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY, null))
+static func _new_generator():
+	return load("res://scripts/voxel_placement_generator.gd").new()
 
 
 static func _has_candidate_regions_by_asset(settings: Dictionary) -> bool:
@@ -561,7 +575,7 @@ static func _apply_stamp_deltas_to_cpu_state(
 	stamp_deltas: Array,
 	grid_size: Vector3i
 ) -> Dictionary:
-	var expected_voxel_count := maxi(grid_size.x, 0) * maxi(grid_size.y, 0) * maxi(grid_size.z, 0)
+	var expected_voxel_count := CommonVoxelSpaceScript.voxel_count(grid_size)
 	var applied_count := 0
 	var complexity_write_count := 0
 	var collision_write_count := 0
@@ -576,7 +590,7 @@ static func _apply_stamp_deltas_to_cpu_state(
 				or voxel.x >= grid_size.x or voxel.y >= grid_size.y or voxel.z >= grid_size.z:
 			skipped_count += 1
 			continue
-		var index := voxel.x + grid_size.x * (voxel.z + grid_size.z * voxel.y)
+		var index := CommonVoxelSpaceScript.voxel_index(voxel, grid_size)
 		if index < 0 or index >= current_complexity.size() or index >= current_collision.size():
 			skipped_count += 1
 			continue
@@ -669,7 +683,7 @@ func run_multi_asset(
 	var compact_state_chain_reports: Array[Dictionary] = []
 	var compact_state_chain_applied_count := 0
 
-	var _voxel_count := grid_size.x * grid_size.y * grid_size.z
+	var _voxel_count := CommonVoxelSpaceScript.voxel_count(grid_size)
 	var _gpu_complexity_buffer: RID = _rid_from_value(common_settings.get("complexity_field_buffer_rid", RID()))
 	var _gpu_collision_buffer: RID = _rid_from_value(common_settings.get("collision_field_buffer_rid", RID()))
 	var _gpu_state_chain_requested := _gpu_state_chain_enabled(common_settings)
@@ -1302,9 +1316,9 @@ func _write_accepted_placements_to_scene_voxel_committer(
 			continue
 		var cfg := _runtime_voxel_write_spec_config(asset_def, common_settings, orig_idx, grid_size, voxel_size, grid_origin)
 		if target == null:
-			target = _scene_voxel_committer_from_config(cfg)
+			target = cfg.get(SCENE_VOXEL_COMMITTER_CONFIG_KEY, cfg.get(PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY, null))
 		var provided_record := _get_config_voxel_write_spec(cfg)
-		var should_create := _should_create_voxel_write_spec(cfg) or not provided_record.is_empty()
+		var should_create := bool(cfg.get("create_voxel_write_spec", false)) or not provided_record.is_empty()
 		if target == null or not should_create:
 			ranges.append(candidate_priorities.size())
 			ranges.append(0)
@@ -2134,11 +2148,7 @@ static func apply_pivot_to_footprint(footprint: Array, pivot_voxels: Vector3i) -
 
 
 static func _world_offset_to_voxels(offset: Vector3, voxel_size: Vector3) -> Vector3i:
-	return Vector3i(
-		roundi(offset.x / maxf(voxel_size.x, 0.0001)),
-		roundi(offset.y / maxf(voxel_size.y, 0.0001)),
-		roundi(offset.z / maxf(voxel_size.z, 0.0001))
-	)
+	return CommonVoxelSpaceScript.world_offset_to_voxels(offset, voxel_size)
 
 
 static func _placement_output_score(gpu_out: Dictionary) -> float:
@@ -2189,11 +2199,55 @@ static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> V
 # ---------------------------------------------------------------------------
 # node_class: all classes create AutoObject (AutoObject for heightfield objects, AutoObject for generic objects).
 
-static func instantiate_placement(
+func instantiate_placement_autoobject(
+	world_result: Dictionary,
+	node_class: String,
+	placement_mesh: Mesh,
+	extra_config: Dictionary = {},
+	parent: Node = null
+):
+	return instantiate_placement(world_result, node_class, placement_mesh, extra_config, parent)
+
+
+func spawn_placement_autoobject(
+	parent: Node,
 	world_result: Dictionary,
 	node_class: String,
 	placement_mesh: Mesh,
 	extra_config: Dictionary = {}
+):
+	return instantiate_placement(world_result, node_class, placement_mesh, extra_config, parent)
+
+
+func attach_generated_placement_voxel_write_spec(node, record: Dictionary) -> Dictionary:
+	return attach_placement_voxel_write_spec(node, record)
+
+
+func placement_results_to_world(
+	results: Array[Dictionary],
+	voxel_size: Vector3,
+	grid_origin: Vector3,
+	rotation_count: int = 24,
+	pivot_variant: Dictionary = {}
+) -> Array[Dictionary]:
+	return results_to_world(results, voxel_size, grid_origin, rotation_count, pivot_variant)
+
+
+func placement_world_to_volume_pixel(
+	world_pos: Vector3,
+	resolution: int,
+	p_grid_origin: Vector3,
+	p_voxel_size: Vector3
+) -> Vector2i:
+	return world_to_volume_pixel(world_pos, resolution, p_grid_origin, p_voxel_size)
+
+
+static func instantiate_placement(
+	world_result: Dictionary,
+	node_class: String,
+	placement_mesh: Mesh,
+	extra_config: Dictionary = {},
+	parent: Node = null
 ) -> AutoObject:
 	var node: AutoObject = _create_node_for_class(node_class)
 	var cfg := extra_config.duplicate(true)
@@ -2203,7 +2257,8 @@ static func instantiate_placement(
 	cfg["rotation_degrees"] = world_result.get("rotation_degrees", Vector3.ZERO)
 	cfg["scale"] = world_result.get("scale", Vector3.ONE)
 	cfg["mesh"] = placement_mesh
-	cfg["auto_source"] = "voxel_placement"
+	if not cfg.has("auto_source"):
+		cfg["auto_source"] = "voxel_placement"
 
 	if not cfg.has("name"):
 		cfg["name"] = "%s_%d" % [node_class, int(world_result.get("asset_index", 0))]
@@ -2214,15 +2269,18 @@ static func instantiate_placement(
 	else:
 		_configure_node(node, node_class, cfg)
 
+	if parent != null and node.get_parent() == null:
+		parent.add_child(node)
+
 	var record := _get_config_voxel_write_spec(cfg)
 	if not record.is_empty():
 		record = attach_placement_voxel_write_spec(node, record)
-	elif _should_create_voxel_write_spec(cfg):
+	elif bool(cfg.get("create_voxel_write_spec", false)):
 		record = make_placement_voxel_write_spec(node, world_result, node_class, cfg)
 		if not record.is_empty():
 			record = attach_placement_voxel_write_spec(node, record)
 
-	var target = _scene_voxel_committer_from_config(cfg)
+	var target = cfg.get(SCENE_VOXEL_COMMITTER_CONFIG_KEY, cfg.get(PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY, null))
 	if not record.is_empty() and target != null and target.has_method("apply_voxel_write_spec"):
 		var apply_method := "apply_voxel_write_spec"
 		var applied: Dictionary = target.call(
@@ -2233,6 +2291,10 @@ static func instantiate_placement(
 		)
 		if not applied.is_empty():
 			attach_placement_voxel_write_spec(node, applied)
+	var spa_owner := _scene_placement_actor_from_config(cfg)
+	if spa_owner != null and spa_owner.has_method("own_autoobject"):
+		var asset_id := int(world_result.get("asset_index", cfg.get("asset_index", -1)))
+		spa_owner.call("own_autoobject", node, asset_id)
 	return node
 
 
@@ -2240,13 +2302,14 @@ static func instantiate_placements(
 	world_results: Array,
 	node_class: String,
 	placement_mesh: Mesh,
-	extra_config: Dictionary = {}
+	extra_config: Dictionary = {},
+	parent: Node = null
 ) -> Array[AutoObject]:
 	var nodes: Array[AutoObject] = []
 	for i in range(world_results.size()):
 		var cfg := extra_config.duplicate(true)
 		cfg["name"] = "%s_%d" % [node_class, i]
-		var node := instantiate_placement(world_results[i], node_class, placement_mesh, cfg)
+		var node := instantiate_placement(world_results[i], node_class, placement_mesh, cfg, parent)
 		nodes.append(node)
 	return nodes
 
@@ -2308,10 +2371,6 @@ static func attach_placement_voxel_write_spec(node: AutoObject, record: Dictiona
 		rec["auto_source"] = node.get_record_auto_source("voxel_placement")
 	if not rec.has("object_type"):
 		rec["object_type"] = node.get_record_object_type()
-	if not rec.has("object_subtype"):
-		var node_subtype := node.get_record_object_subtype()
-		if not node_subtype.is_empty():
-			rec["object_subtype"] = node_subtype
 	if node.is_inside_tree():
 		rec["node_path"] = str(node.get_path())
 	node.set_instance_stamp_write_spec(rec)
@@ -2323,12 +2382,7 @@ static func world_to_texture_pixel(
 	capture_size: float,
 	resolution: int
 ) -> Vector2i:
-	var res := maxi(resolution, 1)
-	var size := maxf(capture_size, 0.0001)
-	var half := size * 0.5
-	var px := clampi(floori((world_pos.x + half) / size * float(res)), 0, res - 1)
-	var pz := clampi(floori((world_pos.z + half) / size * float(res)), 0, res - 1)
-	return Vector2i(px, pz)
+	return CommonVoxelSpaceScript.world_to_texture_pixel(world_pos, capture_size, resolution)
 
 
 static func world_to_volume_pixel(
@@ -2337,17 +2391,7 @@ static func world_to_volume_pixel(
 	p_grid_origin: Vector3,
 	p_voxel_size: Vector3
 ) -> Vector2i:
-	var res := maxi(resolution, 1)
-	var safe_voxel_size := Vector3(
-		maxf(p_voxel_size.x, 0.0001),
-		maxf(p_voxel_size.y, 0.0001),
-		maxf(p_voxel_size.z, 0.0001)
-	)
-	var local := world_pos - p_grid_origin
-	return Vector2i(
-		clampi(floori(local.x / safe_voxel_size.x), 0, res - 1),
-		clampi(floori(local.z / safe_voxel_size.z), 0, res - 1)
-	)
+	return CommonVoxelSpaceScript.world_to_volume_pixel(world_pos, resolution, p_grid_origin, p_voxel_size)
 
 
 static func _placement_base_pixel(
@@ -2367,16 +2411,12 @@ static func _placement_base_pixel(
 		if arr.size() >= 2:
 			return Vector2i(int(arr[0]), int(arr[1]))
 	var world_pos: Vector3 = world_result.get("position", Vector3.ZERO)
-	var target = _scene_voxel_committer_from_config(record_config)
+	var target = record_config.get(SCENE_VOXEL_COMMITTER_CONFIG_KEY, record_config.get(PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY, null))
 	if target != null and target.has_method("world_to_volume_pixel"):
 		return target.call("world_to_volume_pixel", world_pos, resolution)
 	if record_config.has("grid_origin") or record_config.has("voxel_size"):
-		var fallback_voxel_size := Vector3(
-			capture_size / float(maxi(resolution, 1)),
-			1.0,
-			capture_size / float(maxi(resolution, 1))
-		)
-		var fallback_grid_origin := Vector3(-capture_size * 0.5, 0.0, -capture_size * 0.5)
+		var fallback_voxel_size := CommonVoxelSpaceScript.voxel_size_for_resolution(capture_size, resolution, 1.0)
+		var fallback_grid_origin := CommonVoxelSpaceScript.default_grid_origin(capture_size)
 		return world_to_volume_pixel(
 			world_pos,
 			resolution,
@@ -2401,8 +2441,7 @@ static func _placement_record_extra_fields(
 	fields["auto_source"] = str(record_config.get("auto_source", node.get_record_auto_source("voxel_placement")))
 	fields["placement_source"] = "voxel_placement"
 	fields["source_voxel_type"] = str(record_config.get("source_voxel_type", "AutoSceneVoxel"))
-	var node_subtype := node.get_record_object_subtype()
-	fields["object_subtype"] = node_subtype if not node_subtype.is_empty() else node_class
+	fields["object_subtype"] = node_class
 	fields["asset_index"] = int(world_result.get("asset_index", record_config.get("asset_index", 0)))
 	fields["rotation_index"] = int(world_result.get("rotation_index", record_config.get("rotation_index", 0)))
 	fields["scale_index"] = int(world_result.get("scale_index", record_config.get("scale_index", 0)))
@@ -2434,7 +2473,6 @@ static func _create_node_for_class(node_class: String) -> AutoObject:
 static func _configure_node(node: AutoObject, node_class: String, cfg: Dictionary) -> void:
 	match node_class:
 		"rock", "cliff":
-			cfg["object_subtype"] = node_class
 			(node as AutoObject).configure_object(cfg)
 		_:
 			node.configure_auto_object(cfg)
@@ -2448,7 +2486,7 @@ func run_minimal(
 	settings: Dictionary = {}
 ) -> Dictionary:
 	_apply_settings(settings)
-	var voxel_count := grid_size.x * grid_size.y * grid_size.z
+	var voxel_count := CommonVoxelSpaceScript.voxel_count(grid_size)
 	if voxel_count <= 0:
 		push_error("VoxelPlacementGenerator: grid_size must be positive")
 		return {}
@@ -2609,17 +2647,38 @@ func run_minimal(
 		_free_gpu()
 		return blocked_output
 	var has_target := 1 if bool(target_buffer_pack.get("has_target", false)) else 0
-	var target_color_buffer: RID = target_buffer_pack.get("target_color_rgba8_buffer", RID())
+	var target_field_buffer: RID = target_buffer_pack.get("target_field_buffer", RID())
 	if bool(target_buffer_pack.get("target_read_buffers_borrowed", false)):
-		track_borrowed_rid(target_color_buffer, KIND_BUFFER, SCOPE_FRAME, "scene_placement_actor:target_color_rgba8")
+		track_borrowed_rid(target_field_buffer, KIND_BUFFER, SCOPE_FRAME, "scene_placement_actor:target_field")
+	elif bool(target_buffer_pack.get("target_field_bytes_uploaded", false)):
+		var target_field_data: PackedFloat32Array = target_buffer_pack.get("target_field_bytes", PackedFloat32Array())
+		target_field_buffer = storage_buffer_from_floats(
+			target_field_data,
+			SCOPE_FRAME,
+			"target_field_uploaded"
+		)
 	else:
-		target_color_buffer = storage_buffer_from_bytes(
+		var target_color_buffer := storage_buffer_from_bytes(
 			target_buffer_pack.get("target_color_rgba8_bytes", PackedByteArray()),
 			SCOPE_FRAME,
 			"target_color_rgba8_uploaded"
 		)
-
-	var target_field_buffer := _ensure_combined_target_field_buffer(complexity_buffer, collision_buffer, target_color_buffer, voxel_count)
+		target_field_buffer = _ensure_combined_target_field_buffer(complexity_buffer, collision_buffer, target_color_buffer, voxel_count)
+	if not target_field_buffer.is_valid():
+		var blocked_output := _gpu_contract_blocked_minimal_output(
+			complexity_data,
+			collision_data,
+			voxel_count,
+			tile_count,
+			tile_counts,
+			candidate_voxel_sparse_ids,
+			_gpu_contract_result(false, "target_field_buffer_not_ready")
+		)
+		blocked_output["target_read_buffer_summary"] = _target_read_buffer_summary(target_buffer_pack)
+		blocked_output["target_read_buffer_source"] = str(target_buffer_pack.get("target_read_buffer_source", "none"))
+		blocked_output["target_read_buffer_blocked_reason"] = "target_field_buffer_not_ready"
+		_free_gpu()
+		return blocked_output
 
 	var debug_voxel_buffer := storage_buffer_zero(voxel_count * NUM_DEBUG_CHANNELS * 4)
 	var score_contract_debug_buffer := storage_buffer_from_bytes(_pack_score_contract_debug_reset())
@@ -4626,25 +4685,105 @@ func _target_color_rgba8_bytes_from_settings(settings: Dictionary, voxel_count: 
 	return bytes
 
 
+func _target_field_bytes_from_settings(settings: Dictionary, voxel_count: int) -> Dictionary:
+	var expected_floats := maxi(voxel_count, 1) * 4
+	var raw_field = settings.get("target_field_bytes", PackedFloat32Array())
+	var prepacked := PackedFloat32Array()
+	if raw_field is PackedFloat32Array:
+		prepacked = raw_field
+	elif raw_field is PackedByteArray:
+		prepacked = (raw_field as PackedByteArray).to_float32_array()
+	if prepacked.size() >= expected_floats:
+		var field_bytes := prepacked
+		if field_bytes.size() > expected_floats:
+			field_bytes = field_bytes.slice(0, expected_floats)
+		return {
+			"bytes": field_bytes,
+			"has_target": true,
+			"source": "target_field_bytes",
+			"expected_float_count": expected_floats,
+			"actual_float_count": field_bytes.size(),
+			"target_field_byte_count": field_bytes.size() * 4,
+			"target_field_format": "vec4",
+			"target_field_stride_bytes": 16,
+		}
+	var empty := PackedFloat32Array()
+	empty.resize(expected_floats)
+	return {
+		"bytes": empty,
+		"has_target": false,
+		"source": "none",
+		"expected_float_count": expected_floats,
+		"actual_float_count": prepacked.size(),
+		"target_field_byte_count": 0,
+		"target_field_format": "vec4",
+		"target_field_stride_bytes": 16,
+	}
+
+
 func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Dictionary:
-	var expected_bytes := maxi(voxel_count, 1) * 4
+	var expected_color_bytes := maxi(voxel_count, 1) * 4
+	var expected_field_floats := maxi(voxel_count, 1) * 4
+	var expected_field_bytes := expected_field_floats * 4
 	var target_read_buffers: Dictionary = settings.get("target_read_buffers", {})
 	if target_read_buffers.is_empty() and settings.get("resident_target_read_buffer_handoff_summary", null) is Dictionary:
 		target_read_buffers = settings
-	var borrowed := _borrowed_target_read_buffer_pack(target_read_buffers, expected_bytes)
+	var borrowed := _borrowed_target_read_buffer_pack(target_read_buffers, expected_field_bytes)
 	if bool(borrowed.get("ready", false)):
 		return borrowed
 
-	var legacy_byte_settings := settings.duplicate(false)
+	var field_input := _target_read_buffer_legacy_field(settings, target_read_buffers)
+	var field_pack := _target_field_bytes_from_settings({"target_field_bytes": field_input}, voxel_count)
+	var has_field := bool(field_pack.get("has_target", false))
 	var color_input_bytes := _target_read_buffer_legacy_bytes(settings, target_read_buffers, "target_color_rgba8_bytes")
 	var upload_reason := str(borrowed.get("reason", "resident_handoff_absent"))
 	if _target_read_buffers_claim_resident(target_read_buffers) \
-			and color_input_bytes.size() < expected_bytes:
-		return _blocked_target_read_buffer_pack(upload_reason, expected_bytes, color_input_bytes.size())
+			and not has_field \
+			and color_input_bytes.size() < expected_color_bytes:
+		return _blocked_target_read_buffer_pack(
+			upload_reason,
+			expected_field_bytes,
+			field_input.size() * 4,
+			color_input_bytes.size()
+		)
 
+	if has_field:
+		var field_bytes: PackedFloat32Array = field_pack.get("bytes", PackedFloat32Array())
+		return {
+			"ready": true,
+			"target_read_buffer_source": "uploaded_target_field_bytes",
+			"target_read_buffer_ownership": "vpg_uploaded_owned",
+			"target_read_buffer_lifetime": "VoxelPlacementGenerator frame scope",
+			"target_read_buffers_borrowed": false,
+			"target_read_buffers_uploaded": true,
+			"target_field_bytes_uploaded": true,
+			"target_color_bytes_uploaded": false,
+			"target_field_buffer": RID(),
+			"target_field_bytes": field_bytes,
+			"target_field_byte_count": field_bytes.size() * 4,
+			"expected_byte_count": expected_field_bytes,
+			"target_field_format": "vec4",
+			"target_field_stride_bytes": 16,
+			"target_color_rgba8_buffer": RID(),
+			"target_color_rgba8_bytes": PackedByteArray(),
+			"target_color_rgba8_byte_count": 0,
+			"target_color_format": "none",
+			"target_color_stride_bytes": 0,
+			"has_target": true,
+			"owner": "VoxelPlacementGenerator",
+			"producer": "VoxelPlacementGenerator",
+			"borrowed_from": "none",
+			"source_reason": upload_reason,
+			"rendering_device_match": false,
+			"rid_valid": false,
+			"gpu_first": true,
+			"cpu_fallback": false,
+		}
+
+	var legacy_byte_settings := settings.duplicate(false)
 	legacy_byte_settings["target_color_rgba8_bytes"] = color_input_bytes
 	var color_bytes := _target_color_rgba8_bytes_from_settings(legacy_byte_settings, voxel_count)
-	var has_color := color_bytes.size() >= expected_bytes
+	var has_color := color_bytes.size() >= expected_color_bytes
 	return {
 		"ready": true,
 		"target_read_buffer_source": "uploaded_target_bytes",
@@ -4652,10 +4791,17 @@ func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Diction
 		"target_read_buffer_lifetime": "VoxelPlacementGenerator frame scope",
 		"target_read_buffers_borrowed": false,
 		"target_read_buffers_uploaded": true,
+		"target_field_bytes_uploaded": false,
+		"target_color_bytes_uploaded": true,
+		"target_field_buffer": RID(),
+		"target_field_bytes": PackedFloat32Array(),
+		"target_field_byte_count": expected_field_bytes,
+		"expected_byte_count": expected_field_bytes,
+		"target_field_format": "vec4",
+		"target_field_stride_bytes": 16,
 		"target_color_rgba8_buffer": RID(),
 		"target_color_rgba8_bytes": color_bytes,
 		"target_color_rgba8_byte_count": color_bytes.size(),
-		"expected_byte_count": expected_bytes,
 		"target_color_format": "rgba8_u32",
 		"target_color_stride_bytes": 4,
 		"has_target": has_color,
@@ -4670,17 +4816,23 @@ func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Diction
 	}
 
 
-func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected_bytes: int) -> Dictionary:
+func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected_field_bytes: int) -> Dictionary:
 	if target_read_buffers.is_empty():
 		return {"ready": false, "reason": "resident_handoff_absent"}
 
 	var summary: Dictionary = target_read_buffers.get("resident_target_read_buffer_handoff_summary", {})
-	var raw_color = target_read_buffers.get(
-		"target_color_rgba8_buffer",
-		target_read_buffers.get("resident_target_color_rgba8_buffer", summary.get("target_color_rgba8_buffer", RID()))
+	var raw_field = target_read_buffers.get(
+		"target_field_buffer",
+		target_read_buffers.get(
+			"resident_target_field_buffer",
+			summary.get(
+				"target_field_buffer",
+				summary.get("resident_target_field_buffer", summary.get("target_color_rgba8_buffer", RID()))
+			)
+		)
 	)
-	var color_buffer: RID = raw_color if raw_color is RID else RID()
-	if not color_buffer.is_valid():
+	var field_buffer: RID = raw_field if raw_field is RID else RID()
+	if not field_buffer.is_valid():
 		return {"ready": false, "reason": "resident_target_read_buffer_rid_invalid"}
 
 	var raw_source_rd = target_read_buffers.get("rendering_device", summary.get("rendering_device", null))
@@ -4688,8 +4840,14 @@ func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected
 	if source_rd == null or _rd == null or source_rd != _rd:
 		return {"ready": false, "reason": "resident_target_read_buffer_rendering_device_mismatch"}
 
-	var color_byte_count := int(target_read_buffers.get("target_color_rgba8_byte_count", summary.get("target_color_rgba8_byte_count", 0)))
-	if color_byte_count != expected_bytes:
+	var field_byte_count := int(target_read_buffers.get(
+		"target_field_byte_count",
+		summary.get(
+			"target_field_byte_count",
+			target_read_buffers.get("expected_byte_count", summary.get("expected_byte_count", 0))
+		)
+	))
+	if field_byte_count != expected_field_bytes:
 		return {"ready": false, "reason": "resident_target_read_buffer_byte_count_mismatch"}
 
 	return {
@@ -4699,12 +4857,19 @@ func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected
 		"target_read_buffer_lifetime": str(target_read_buffers.get("resident_target_read_buffer_lifetime", summary.get("target_read_buffer_lifetime", "ScenePlacementActor owned"))),
 		"target_read_buffers_borrowed": true,
 		"target_read_buffers_uploaded": false,
-		"target_color_rgba8_buffer": color_buffer,
+		"target_field_bytes_uploaded": false,
+		"target_color_bytes_uploaded": false,
+		"target_field_buffer": field_buffer,
+		"target_field_bytes": PackedFloat32Array(),
+		"target_field_byte_count": field_byte_count,
+		"expected_byte_count": expected_field_bytes,
+		"target_field_format": str(target_read_buffers.get("target_field_format", summary.get("target_field_format", "vec4"))),
+		"target_field_stride_bytes": int(target_read_buffers.get("target_field_stride_bytes", summary.get("target_field_stride_bytes", 16))),
+		"target_color_rgba8_buffer": RID(),
 		"target_color_rgba8_bytes": PackedByteArray(),
-		"target_color_rgba8_byte_count": color_byte_count,
-		"expected_byte_count": expected_bytes,
-		"target_color_format": str(target_read_buffers.get("target_color_format", summary.get("target_color_format", "rgba8_u32"))),
-		"target_color_stride_bytes": int(target_read_buffers.get("target_color_stride_bytes", summary.get("target_color_rgba8_stride_bytes", 4))),
+		"target_color_rgba8_byte_count": 0,
+		"target_color_format": "none",
+		"target_color_stride_bytes": 0,
 		"has_target": true,
 		"owner": str(target_read_buffers.get("resident_target_read_buffer_owner", summary.get("owner", "ScenePlacementActor"))),
 		"producer": str(summary.get("producer", "ScenePlacementActorTargetReadBuffers")),
@@ -4727,6 +4892,24 @@ func _target_read_buffers_claim_resident(target_read_buffers: Dictionary) -> boo
 	))
 
 
+func _target_read_buffer_legacy_field(settings: Dictionary, target_read_buffers: Dictionary) -> PackedFloat32Array:
+	var raw = settings.get("target_field_bytes", PackedFloat32Array())
+	if raw is PackedFloat32Array:
+		var field := raw as PackedFloat32Array
+		if not field.is_empty():
+			return field
+	elif raw is PackedByteArray:
+		var field_from_bytes := (raw as PackedByteArray).to_float32_array()
+		if not field_from_bytes.is_empty():
+			return field_from_bytes
+	var raw_handoff = target_read_buffers.get("target_field_bytes", PackedFloat32Array())
+	if raw_handoff is PackedFloat32Array:
+		return raw_handoff
+	if raw_handoff is PackedByteArray:
+		return (raw_handoff as PackedByteArray).to_float32_array()
+	return PackedFloat32Array()
+
+
 func _target_read_buffer_legacy_bytes(settings: Dictionary, target_read_buffers: Dictionary, key: String) -> PackedByteArray:
 	var raw = settings.get(key, PackedByteArray())
 	if raw is PackedByteArray:
@@ -4741,7 +4924,8 @@ func _target_read_buffer_legacy_bytes(settings: Dictionary, target_read_buffers:
 
 func _blocked_target_read_buffer_pack(
 	borrow_reason: String,
-	expected_bytes: int,
+	expected_field_bytes: int,
+	actual_field_bytes: int,
 	actual_color_bytes: int
 ) -> Dictionary:
 	var reason := "%s_no_debug_or_legacy_bytes" % borrow_reason
@@ -4753,10 +4937,17 @@ func _blocked_target_read_buffer_pack(
 		"target_read_buffer_lifetime": "none",
 		"target_read_buffers_borrowed": false,
 		"target_read_buffers_uploaded": false,
+		"target_field_bytes_uploaded": false,
+		"target_color_bytes_uploaded": false,
+		"target_field_buffer": RID(),
+		"target_field_bytes": PackedFloat32Array(),
+		"target_field_byte_count": actual_field_bytes,
+		"expected_byte_count": expected_field_bytes,
+		"target_field_format": "vec4",
+		"target_field_stride_bytes": 16,
 		"target_color_rgba8_buffer": RID(),
 		"target_color_rgba8_bytes": PackedByteArray(),
 		"target_color_rgba8_byte_count": actual_color_bytes,
-		"expected_byte_count": expected_bytes,
 		"target_color_format": "rgba8_u32",
 		"target_color_stride_bytes": 4,
 		"has_target": false,
@@ -4773,6 +4964,8 @@ func _blocked_target_read_buffer_pack(
 
 
 func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
+	var raw_field = pack.get("target_field_buffer", RID())
+	var field_buffer: RID = raw_field if raw_field is RID else RID()
 	var raw_color = pack.get("target_color_rgba8_buffer", RID())
 	var color_buffer: RID = raw_color if raw_color is RID else RID()
 	return {
@@ -4782,6 +4975,13 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 		"target_read_buffer_lifetime": str(pack.get("target_read_buffer_lifetime", "none")),
 		"target_read_buffers_borrowed": bool(pack.get("target_read_buffers_borrowed", false)),
 		"target_read_buffers_uploaded": bool(pack.get("target_read_buffers_uploaded", false)),
+		"target_field_bytes_uploaded": bool(pack.get("target_field_bytes_uploaded", false)),
+		"target_color_bytes_uploaded": bool(pack.get("target_color_bytes_uploaded", false)),
+		"target_field_buffer_rid": "valid" if field_buffer.is_valid() else "none",
+		"target_field_buffer_rid_valid": field_buffer.is_valid(),
+		"target_field_byte_count": int(pack.get("target_field_byte_count", 0)),
+		"target_field_format": str(pack.get("target_field_format", "none")),
+		"target_field_stride_bytes": int(pack.get("target_field_stride_bytes", 0)),
 		"target_color_rgba8_buffer_rid": "valid" if color_buffer.is_valid() else "none",
 		"target_color_rgba8_buffer_rid_valid": color_buffer.is_valid(),
 		"target_color_rgba8_byte_count": int(pack.get("target_color_rgba8_byte_count", 0)),
@@ -4802,7 +5002,7 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 
 func _ensure_combined_target_field_buffer(complexity_buffer: RID, collision_buffer: RID, target_color_buffer: RID, voxel_count: int) -> RID:
 	# Combines target_color_rgba8 (u32 RGBA8) with scene/collision fields into a single vec4 target_field buffer.
-	# target_field.a = completely = max(scene_complexity, collision) — 表示体素完全度，max(complexity, collision) == 0 时体素为空。
+	# target_field.a = completely = max(scene_complexity, collision); zero means the voxel is empty.
 	if not target_color_buffer.is_valid() or not complexity_buffer.is_valid() or not collision_buffer.is_valid():
 		return _create_zero_target_field_buffer(voxel_count)
 
@@ -4991,7 +5191,7 @@ func get_debug_channel_gpu(debug_voxel: PackedFloat32Array, channel: int, voxel_
 
 
 func voxel_index(p: Vector3i, grid_size: Vector3i) -> int:
-	return p.x + grid_size.x * (p.z + grid_size.z * p.y)
+	return CommonVoxelSpaceScript.voxel_index(p, grid_size)
 
 
 # ---------------------------------------------------------------------------
@@ -5051,7 +5251,7 @@ static func bake_box_footprint_gpu(
 	add_support: bool = true,
 	clearance_slices: int = 1
 ) -> Dictionary:
-	var generator := VoxelPlacementGenerator.new()
+	var generator = _new_generator()
 	return generator._bake_box_footprint_gpu(collision_entry, voxel_size, add_support, clearance_slices)
 
 
@@ -5061,7 +5261,7 @@ static func bake_cylinder_footprint_gpu(
 	add_support: bool = true,
 	clearance_slices: int = 1
 ) -> Dictionary:
-	var generator := VoxelPlacementGenerator.new()
+	var generator = _new_generator()
 	return generator._bake_cylinder_footprint_gpu(collision_entry, voxel_size, add_support, clearance_slices)
 
 
@@ -5072,7 +5272,7 @@ static func _bake_footprint_entry_gpu(
 	add_support: bool,
 	clearance_slices: int
 ) -> Dictionary:
-	var generator := VoxelPlacementGenerator.new()
+	var generator = _new_generator()
 	if shape == "cylinder":
 		return generator._bake_cylinder_footprint_gpu(collision_entry, voxel_size, add_support, clearance_slices)
 	if shape == "box" or shape == "cube":
@@ -5662,7 +5862,7 @@ static func rotate_footprint_y(
 
 
 static func rotate_footprint_y_gpu(footprint: Array[Dictionary], yaw_degrees: float) -> Dictionary:
-	var generator := VoxelPlacementGenerator.new()
+	var generator = _new_generator()
 	return generator._rotate_footprint_y_gpu(footprint, yaw_degrees)
 
 
@@ -5916,11 +6116,7 @@ static func results_to_world(
 		var origin: Vector3i = r.get("voxel_origin", Vector3i.ZERO)
 		var rot_idx := int(r.get("rotation_index", 0))
 		var scale_idx := int(r.get("scale_index", 0))
-		var world_pos := grid_origin + Vector3(
-			float(origin.x) * voxel_size.x,
-			float(origin.y) * voxel_size.y,
-			float(origin.z) * voxel_size.z
-		)
+		var world_pos := CommonVoxelSpaceScript.voxel_to_world(origin, grid_origin, voxel_size)
 		var yaw := float(rot_idx) * 360.0 / float(maxi(rotation_count, 1))
 		var pivot_offset := _vector3_from_value(pivot_variant.get("offset", Vector3.ZERO), Vector3.ZERO)
 		var pivot_world_offset := pivot_offset.rotated(Vector3.UP, deg_to_rad(yaw))

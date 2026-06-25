@@ -77,8 +77,8 @@ static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> V
 	return fallback
 
 
-static func create_profile(entry_color: Color, entry_complexity: float) -> AutoVoxelProfile:
-	var profile := AutoVoxelProfile.new()
+static func create_profile(entry_color: Color, entry_complexity: float):
+	var profile = load("res://scripts/auto_voxel_profile.gd").new()
 	profile.color = entry_color
 	profile.complexity = clampf(entry_complexity, 0.0, 1.0)
 	return profile

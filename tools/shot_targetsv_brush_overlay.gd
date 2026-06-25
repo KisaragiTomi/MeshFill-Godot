@@ -5,6 +5,7 @@ const SHOT_DIR := "res://tools/_shots"
 const VP_SIZE := Vector2i(1152, 648)
 const MIN_PAINT_DIFF := 0.002
 const MIN_MODE_DIFF := 0.0005
+const CommonShotUtils := preload("res://scripts/common_shot_utils.gd")
 
 var _vp: SubViewport
 var _demo: Node
@@ -21,7 +22,7 @@ func _run() -> void:
 		quit(1)
 		return
 
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SHOT_DIR))
+	CommonShotUtils.ensure_dir(SHOT_DIR)
 
 	var packed := load(SCENE_PATH) as PackedScene
 	if packed == null:
@@ -40,7 +41,7 @@ func _run() -> void:
 	print("[BRUSH_SHOT] scene instanced: ", _demo.name)
 
 	await _settle(50)
-	_camera = _find_camera(_demo)
+	_camera = CommonShotUtils.find_camera_recursive(_demo)
 	if _camera == null:
 		print("[BRUSH_SHOT] FAIL camera missing")
 		quit(1)
@@ -55,7 +56,7 @@ func _run() -> void:
 	var rgb := await _shot("brush_overlay_01_rgb")
 
 	var ok := paint_ok
-	var paint_diff := _image_diff_ratio(before.get("image", null), rgb.get("image", null))
+	var paint_diff := CommonShotUtils.image_diff_ratio(before.get("image", null), rgb.get("image", null))
 	print("[BRUSH_SHOT] diff before->rgb=", "%.5f" % paint_diff)
 	if paint_diff < MIN_PAINT_DIFF:
 		print("[BRUSH_SHOT] FAIL painted screenshot is too close to baseline")
@@ -63,7 +64,7 @@ func _run() -> void:
 
 	ok = await _switch_mode(KEY_T, 1, "complexity") and ok
 	var complexity := await _shot("brush_overlay_02_complexity")
-	var complexity_diff := _image_diff_ratio(rgb.get("image", null), complexity.get("image", null))
+	var complexity_diff := CommonShotUtils.image_diff_ratio(rgb.get("image", null), complexity.get("image", null))
 	print("[BRUSH_SHOT] diff rgb->complexity=", "%.5f" % complexity_diff)
 	if complexity_diff < MIN_MODE_DIFF:
 		print("[BRUSH_SHOT] FAIL complexity mode screenshot did not visibly change")
@@ -71,7 +72,7 @@ func _run() -> void:
 
 	ok = await _switch_mode(KEY_Y, 2, "collision") and ok
 	var collision := await _shot("brush_overlay_03_collision")
-	var collision_diff := _image_diff_ratio(complexity.get("image", null), collision.get("image", null))
+	var collision_diff := CommonShotUtils.image_diff_ratio(complexity.get("image", null), collision.get("image", null))
 	print("[BRUSH_SHOT] diff complexity->collision=", "%.5f" % collision_diff)
 	if collision_diff < MIN_MODE_DIFF:
 		print("[BRUSH_SHOT] FAIL collision mode screenshot did not visibly change")
@@ -79,7 +80,7 @@ func _run() -> void:
 
 	ok = await _switch_mode(KEY_R, 0, "rgb") and ok
 	var rgb_again := await _shot("brush_overlay_04_rgb_again")
-	var rgb_return_diff := _image_diff_ratio(rgb.get("image", null), rgb_again.get("image", null))
+	var rgb_return_diff := CommonShotUtils.image_diff_ratio(rgb.get("image", null), rgb_again.get("image", null))
 	print("[BRUSH_SHOT] diff rgb->rgb_again=", "%.5f" % rgb_return_diff)
 
 	print("[BRUSH_SHOT] RESULT ", "PASS" if ok else "FAIL")
@@ -121,7 +122,7 @@ func _trigger_brush_paint() -> bool:
 	var screen_pos := _camera.unproject_position(world)
 	print("[BRUSH_SHOT] projected paint center voxel=", center, " screen=", screen_pos)
 
-	var before_count := _brush_count()
+	var before_count := int((_demo.call("get_brush_state") as Dictionary).get("brush_voxel_count", 0))
 	var down := InputEventMouseButton.new()
 	down.button_index = MOUSE_BUTTON_LEFT
 	down.pressed = true
@@ -138,7 +139,7 @@ func _trigger_brush_paint() -> bool:
 	_demo.call("_unhandled_input", up)
 	await _settle(10)
 
-	var after_count := _brush_count()
+	var after_count := int((_demo.call("get_brush_state") as Dictionary).get("brush_voxel_count", 0))
 	var brush := _demo.get_node_or_null("BrushTetraVoxels") as MultiMeshInstance3D
 	var rendered_count := brush.multimesh.instance_count if brush != null and brush.multimesh != null else 0
 	print("[BRUSH_SHOT] brush count before=", before_count, " after=", after_count, " rendered=", rendered_count)
@@ -149,11 +150,6 @@ func _trigger_brush_paint() -> bool:
 		print("[BRUSH_SHOT] FAIL rendered instance count does not match brush state")
 		return false
 	return true
-
-
-func _brush_count() -> int:
-	var state: Dictionary = _demo.call("get_brush_state")
-	return int(state.get("brush_voxel_count", 0))
 
 
 func _switch_mode(keycode: Key, expected_mode: int, label: String) -> bool:
@@ -172,16 +168,6 @@ func _switch_mode(keycode: Key, expected_mode: int, label: String) -> bool:
 	return true
 
 
-func _find_camera(root_node: Node) -> Camera3D:
-	if root_node is Camera3D:
-		return root_node as Camera3D
-	for child in root_node.get_children():
-		var found := _find_camera(child)
-		if found != null:
-			return found
-	return null
-
-
 func _settle(frames: int = 8) -> void:
 	for i in range(frames):
 		await process_frame
@@ -191,40 +177,16 @@ func _settle(frames: int = 8) -> void:
 
 func _shot(tag: String) -> Dictionary:
 	await _settle(3)
-	var img := _vp.get_texture().get_image()
-	if img == null or img.is_empty():
-		print("[BRUSH_SHOT] FAIL empty image: ", tag)
+	var result := CommonShotUtils.save_viewport_png(_vp, "%s/%s.png" % [SHOT_DIR, tag], false, true)
+	var img := result.get("image", null) as Image
+	if img == null:
+		print("[BRUSH_SHOT] FAIL empty image: ", tag, " reason=", result.get("reason", "image unavailable"))
 		return {"ok": false, "image": null, "hash": ""}
-	var path := ProjectSettings.globalize_path("%s/%s.png" % [SHOT_DIR, tag])
-	var err := img.save_png(path)
-	if err != OK:
+	if not bool(result.get("ok", false)):
+		var err := int(result.get("error", FAILED))
 		print("[BRUSH_SHOT] FAIL save ", tag, " err=", error_string(err))
 		return {"ok": false, "image": img, "hash": ""}
-	var hash := FileAccess.get_md5(path)
+	var hash := str(result.get("hash", ""))
+	var path := str(result.get("path", ""))
 	print("[BRUSH_SHOT] saved ", tag, " size=", img.get_width(), "x", img.get_height(), " hash=", hash.substr(0, 8), " path=", path)
 	return {"ok": true, "image": img, "hash": hash}
-
-
-func _image_diff_ratio(a, b) -> float:
-	if a == null or b == null:
-		return 0.0
-	if not (a is Image) or not (b is Image):
-		return 0.0
-	var img_a := a as Image
-	var img_b := b as Image
-	var w := mini(img_a.get_width(), img_b.get_width())
-	var h := mini(img_a.get_height(), img_b.get_height())
-	if w <= 0 or h <= 0:
-		return 0.0
-	var changed := 0
-	var sampled := 0
-	var step := 2
-	for y in range(0, h, step):
-		for x in range(0, w, step):
-			var ca := img_a.get_pixel(x, y)
-			var cb := img_b.get_pixel(x, y)
-			var d := absf(ca.r - cb.r) + absf(ca.g - cb.g) + absf(ca.b - cb.b) + absf(ca.a - cb.a)
-			if d > 0.08:
-				changed += 1
-			sampled += 1
-	return float(changed) / float(maxi(sampled, 1))

@@ -1,16 +1,16 @@
 ﻿# AutoObject GPU Runtime Architecture
 
-本文整理百万级 `AutoObject` 的 GPU-first 运行时契约。`GPUAutoObjectRuntime`、`AutoVoxelRuntimeProfileContainer`、GPU object allocator、per-voxel object refs 和 exclusion 边界共同组成 runtime contract；运行时对象以 GPU-resident SoA buffers 为权威。CPU 只负责 authoring、profile 注册、命令提交、staging、debug readback 和 snapshot，不保留 CPU placement/runtime 替代实现。
+本文整理百万级 `AutoObject` 的 GPU-first 运行时契约。SPA 拥有 `GPUAutoObjectRuntime` 与 `AutoVoxelRuntimeProfileContainer` 的生命周期；`GPUAutoObjectRuntime` 内部持有 GPU object allocator、GPU-resident SoA object buffers、dirty delta 和 per-voxel object refs handoff。运行时对象以 GPU-resident SoA buffers 为权威。CPU 只负责 authoring、profile 注册、命令提交、staging、debug readback 和 snapshot，不保留 CPU placement/runtime 替代实现。
 
-**SPA**（`ScenePlacementActor`）是 MeshFill 运行时编排器，拥有 `AutoVoxelRuntimeProfileContainer` 的完整生命周期，借用 `GPUAutoObjectRuntime` 和 `SceneVoxelCommitter` 引用。所有模块通过 SPA 访问 profile container 的 GPU buffers，不直接操作容器实例；详见 [`scene-placement-actor.md`](scene-placement-actor.md)。
+**SPA**（`ScenePlacementActor`）是 MeshFill 运行时编排器，拥有 `AutoVoxelRuntimeProfileContainer` 和默认 `GPUAutoObjectRuntime` 的完整生命周期，借用 `SceneVoxelCommitter` 引用。所有模块通过 SPA 访问 profile container 与 AutoObject runtime GPU buffers，不直接操作容器实例；详见 [`scene-placement-actor.md`](scene-placement-actor.md)。
 
 本文是 runtime contract / architecture 文档。当前 `scripts/gpu_autoobject_runtime.gd`、`scripts/auto_voxel_runtime_profile_container.gd`、`scripts/auto_object.gd`、`scripts/scene_voxel_committer.gd`、`scripts/autoobject_probe_prefilter_gpu.gd`、`scripts/voxel_placement_generator.gd` 和 `scripts/scene_placement_actor.gd` 提供 GPU-first command/staging/debug 入口；GDScript 字典、snapshot 和 debug range 只用于上传准备或回查，不是验收用的 CPU 替代路径。跨框架总览见 [`meshfill-framework.md`](../core-meshfill-framework/meshfill-framework.md)；`AssetDescriptor` 定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)；SV commit / resident state 见 [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)；tile dirty 规则见 [`scenevoxeltile.md`](../core-scenevoxeltile/scenevoxeltile.md)。
 
-![AutoObject GPU runtime architecture](autoobject_gpu_runtime_architecture.svg)
+![AutoObject GPU runtime architecture](../svg/autoobject_gpu_runtime_architecture.svg)
 
 ## 核心契约
 
-- 当前 GPU-first contract 中，`GPUAutoObjectRuntime` 拥有 runtime object state：`object_id`、`object_type`、transform、`profile_id`、bounds、flags 和 previous/current bounds delta。空间索引由 per-voxel object refs（SV sidecar / GPU resident buffer）承担，不再由 `GPUAutoObjectRuntime` 维护独立的 spatial hash。
+- 当前 GPU-first contract 中，SPA 拥有 `GPUAutoObjectRuntime` 生命周期；`GPUAutoObjectRuntime` 作为 SPA 内部 state component 持有 runtime object state：`object_id`、`object_type`、transform、`profile_id`、bounds、flags 和 previous/current bounds delta。空间索引由 per-voxel object refs（SV sidecar / GPU resident buffer）承担，不再由 `GPUAutoObjectRuntime` 维护独立的 spatial hash。
 - CPU 是 control plane：注册 descriptor/profile、提交 spawn/update/free command、准备 staging payload、保存 snapshot、读取 selected/debug summary；不得为了 debug 长期保留 `BrushSV` / `AutoSV` 的等价内容副本。
 - [`AssetDescriptor`](../asset-descriptor-demo/asset-descriptor.md) 是资产默认语义来源；descriptor 编译为 `AutoVoxelRuntimeProfileContainer` 后，runtime object 只持有 `object_type`、`profile_id` 和实例上下文。descriptor 通过 SPA.register_asset() 注册并即时上传 GPU。
 - `object_type` 只用于粗分组、dispatch/exclusion 和 debug；资产差异、probe、collision、pivot 和默认 source 语义由 `profile_id` 指向的 profile 表达。
@@ -26,7 +26,7 @@
 | --- | --- | --- |
 | 资产默认语义 | `AssetDescriptor` | 编辑器和导入侧源数据；字段定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)。不直接进入每实例 GPU record；通过 SPA.register_asset() 注册到 runtime。 |
 | Runtime profile | `AutoVoxelRuntimeProfileContainer`（SPA 拥有） | descriptor / profile 去重、`profile_id`、`profile_table`、`probe_records`、`collision_records` 和 `pivot_records` GPU resident storage；`get_gpu_buffer_summary().runtime_ready` 和 valid buffer RID 是通过条件。SPA 创建并管理 container 生命周期，通过 `get_probe_records_buffer()` 等接口暴露 buffer RID。 |
-| Runtime object state | `GPUAutoObjectRuntime`（SPA 借用） | 运行时对象池、transform、profile id、bounds、flags 和 dirty object delta；`SceneVoxelCommitter.apply_gpu_autoobject_dirty_delta()` 只是 SV owner 接收 dirty delta 的入口。 |
+| Runtime object state | `GPUAutoObjectRuntime`（SPA 默认拥有） | 运行时对象池、transform、profile id、bounds、flags 和 dirty object delta；`SceneVoxelCommitter.apply_gpu_autoobject_dirty_delta()` 只是 SV owner 接收 dirty delta 的入口。 |
 | Grid / coordinate | `SV` / `SceneVoxelCommitter`（SPA 借用） | `grid_origin`、`voxel_size`、`grid_size`、SV resident fields、tick promotion；GPU runtime 不保存第二套 grid authority。 |
 | Dirty tile / commit | `SceneVoxelCommitter` / SV owner | `SceneVoxelTile` dirty flags、source/object range rebuild、SV resident field 发布和 `blend_scene_voxels()` 发布。 |
 | Source writes | placement / VPG source write path | Auto / brush source streams 在 commit 时合并到 committed `SceneVoxel`。 |
@@ -87,9 +87,9 @@ AssetDescriptor
 
 每个 runtime object 只保存 `object_type + profile_id + transform + bounds/flags`。百万个对象不重复存储 probes、collision samples、pivot variants 或 descriptor semantic fields。
 
-### 通过 SPA 访问 Profile Container
+### 通过 SPA 访问 Profile / Runtime Buffers
 
-**Profile container 由 SPA 拥有**，其他模块不直接创建或管理 `AutoVoxelRuntimeProfileContainer` 实例。访问路径：
+**Profile container 与 AutoObject GPU runtime 由 SPA 拥有**，其他模块不直接创建或管理 `AutoVoxelRuntimeProfileContainer` 或 `GPUAutoObjectRuntime` 实例。访问路径：
 
 ```text
 SPA (ScenePlacementActor)  ← 唯一 owner
@@ -98,6 +98,7 @@ SPA (ScenePlacementActor)  ← 唯一 owner
   ├── get_profile_table_buffer()         → 返回 profile_table RID
   ├── get_collision_records_buffer()     → 返回 collision_buffer RID
   ├── get_pivot_records_buffer()         → 返回 pivot_buffer RID
+  ├── get_gpu_runtime()                  → 返回 SPA-owned AutoObject GPU state component
   └── is_gpu_ready()                     → runtime_ready 检查
 
 <消费者通过 SPA 间接访问>
@@ -116,7 +117,7 @@ Profile container 规则：
 
 ```text
 SPA (ScenePlacementActor) 编排层  [顶层入口]
-  → initialize(RD, sv_committer, gpu_runtime)
+  → initialize(RD, sv_committer, gpu_runtime?)  [gpu_runtime 仅 legacy/test 外部注入；默认 SPA 创建]
   → register_asset(descriptor, mesh) × N  [即时 GPU 上传]
   → is_gpu_ready()?  [统一就绪检查]
   → run_placement_pipeline()  [每帧 pipeline]
@@ -131,7 +132,7 @@ CPU authoring / import
   -> SV owner maps bounds to affected SceneVoxelTile ids
   -> rebuild dirty tile object/source ranges
   -> route / prefilter / placement / same-type exclusion
-     prefilter 和 placer 通过 SPA 注入的 profile_container 访问 borrowed GPU buffers
+     prefilter 和 placer 通过 SPA 注入的 profile_container / gpu_runtime 访问 GPU buffers
   -> write AutoSceneVoxel source stream or VPG temp buffers
   -> blend_scene_voxels() publishes committed SceneVoxel and SV[tick] fields
   -> selected-object readback / debug summary when requested
@@ -151,7 +152,7 @@ CPU authoring / import
 | --- | --- | --- | --- |
 | CPU authoring / import | descriptor path、asset defaults、debug labels | profile registration command、spawn/update/free command | `GPUAutoObjectRuntime` command queue |
 | `AutoVoxelRuntimeProfileContainer`（SPA 拥有） | normalized descriptor/profile data | `profile_id`、probe/collision/pivot/profile buffers | object runtime、prefilter、placement shaders（通过 SPA 暴露的 buffer RID 访问） |
-| `GPUAutoObjectRuntime`（SPA 借用） | command queue、profile ids、transform updates | object buffers、dirty object delta | SV owner、placement / exclusion shaders |
+| `GPUAutoObjectRuntime`（SPA 默认拥有） | command queue、profile ids、transform updates | object buffers、dirty object delta | SV owner、placement / exclusion shaders |
 | `SceneVoxelCommitter` / SV owner（SPA 借用） | dirty object delta、SV grid params | `SceneVoxelTile` dirty set、source/object ranges、committed `SV[tick]` | prefilter、placement、debug query |
 | Placement / VPG | routed candidate regions、object/profile buffers、`SV[t - 1]`、`TargetSV_B` | accepted placements、temp duplicate buffers；可选 `gpu_autoobject_runtime_writeback` / `instance_stamp_writeback` | source write path / `blend_scene_voxels()` |
 

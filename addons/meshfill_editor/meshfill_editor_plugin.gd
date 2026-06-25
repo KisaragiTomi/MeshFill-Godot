@@ -1,10 +1,37 @@
 @tool
 extends EditorPlugin
 
+const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
+const MeshFillBrushScript := preload("res://scripts/meshfill_brush.gd")
+const CommonTargetSVLookup := preload("res://scripts/common_targetsv_lookup.gd")
+
 var _last_viewport_camera: Camera3D
 
-# ---- Brush toolbar button ----
+# ---- MeshFillBrush plugin integration ----
+var _brush: MeshFillBrushScript = null
 var _brush_btn: Button
+var _selection_mode_option: OptionButton
+var _geo_scan_btn: Button
+var _geo_scan_status_label: Label
+var _generate_anchor_btn: Button
+var _voxel_score_btn: Button
+var _anchor_score_status_label: Label
+var _voxel_visibility_panel: PanelContainer
+var _voxel_visibility_buttons: Dictionary = {}
+var _is_painting: bool = false
+var _brush_dirty: bool = false
+var _last_flush_msec: int = 0
+const BRUSH_FLUSH_INTERVAL_MS := 120
+const SPA_SELECTION_MODE_NAMES := SPAEditorContract.SELECTION_MODE_NAMES
+const VOXEL_VISIBILITY_PANEL_NAME := "MeshFillVoxelDisplayPanel"
+const VOXEL_DISPLAY_DEFINITIONS := SPAEditorContract.VOXEL_DISPLAY_DEFINITIONS
+const SPA_VOLUME_SCORE_ANCHOR_METHOD := SPAEditorContract.SPA_VOLUME_SCORE_ANCHOR_METHOD
+const SPA_VOLUME_SCORE_METHOD := SPAEditorContract.SPA_VOLUME_SCORE_METHOD
+const SPA_VOLUME_SCORE_PROVIDER_METHOD := SPAEditorContract.SPA_VOLUME_SCORE_PROVIDER_METHOD
+const VOLUME_SCORE_STATUS_METHODS := SPAEditorContract.VOLUME_SCORE_STATUS_METHODS
+const GEO_SCAN_METHOD := &"_scan_geo_assets"
+const GEO_SCAN_STATUS_METHOD := &"_update_geo_scan_status"
+const GEO_SCAN_FORMAT_METHOD := &"_format_geo_scan_result"
 
 # ---- MCP TCP Server ----
 var _tcp_server: TCPServer
@@ -37,16 +64,25 @@ func _enter_tree() -> void:
 	if not _try_bind_tcp():
 		_mark_duplicate_and_quit("MCP TCP port %d is already in use." % MCP_PORT)
 		return
+	set_input_event_forwarding_always_enabled()
 	set_process(true)
 	_cleanup_doc_import_files()
 	EditorInterface.get_resource_filesystem().filesystem_changed.connect(_cleanup_doc_import_files)
 	_connect_scene_signals()
 	_validate_current_scene.call_deferred()
 	_create_brush_toolbar_button()
+	_create_selection_mode_toolbar()
+	_create_geo_scan_toolbar()
+	_create_volume_score_toolbar()
+	_create_voxel_visibility_panel()
 	print("[MeshFill Editor] Activated — MCP bridge on 127.0.0.1:%d" % MCP_PORT)
 
 
 func _exit_tree() -> void:
+	_remove_voxel_visibility_panel()
+	_remove_volume_score_toolbar()
+	_remove_geo_scan_toolbar()
+	_remove_selection_mode_toolbar()
 	_remove_brush_toolbar_button()
 	_stop_tcp_server()
 	_stop_single_instance_port()
@@ -63,40 +99,172 @@ func _process(delta: float) -> void:
 		return
 	_poll_single_instance_port()
 	_poll_tcp()
+	_sync_selection_mode_option_from_scene()
+	_sync_geo_scan_toolbar_from_scene()
+	_sync_volume_score_toolbar_from_scene()
+	_sync_voxel_visibility_panel_from_scene()
 	_heartbeat_timer += delta
 	if _heartbeat_timer >= HEARTBEAT_INTERVAL_SEC:
 		_heartbeat_timer = 0.0
 		_write_heartbeat()
 
 
-# ---- Viewport input forwarding (existing) ---------------------------------
+# ---- MeshFillBrush EditorPlugin integration --------------------------------
+
+func _handles(object: Object) -> bool:
+	return object is MeshFillBrushScript or object is Node3D
+
+
+func _edit(object: Object) -> void:
+	if object is MeshFillBrushScript:
+		_brush = object as MeshFillBrushScript
+		_sync_brush_btn(_brush.brush_visible)
+	else:
+		_brush = null
+		_is_painting = false
+
 
 func _forward_3d_gui_input(viewport_camera: Camera3D, event: InputEvent) -> int:
 	_last_viewport_camera = viewport_camera
-	var scene_root := get_editor_interface().get_edited_scene_root()
-	if scene_root == null:
-		return AFTER_GUI_INPUT_PASS
-	if not scene_root.has_method("_editor_viewport_input"):
-		return AFTER_GUI_INPUT_PASS
-	if event is InputEventMouse:
-		var handled: bool = scene_root._editor_viewport_input(viewport_camera, event)
-		if handled:
-			return AFTER_GUI_INPUT_STOP
+	_refresh_brush_from_selection()
+
+	if _brush and _brush.is_data_loaded():
+		if event is InputEventKey and event.pressed and not event.echo and event.shift_pressed:
+			var handled := _handle_brush_shortcut(event.keycode)
+			if handled:
+				return AFTER_GUI_INPUT_STOP
+
+	var result := _forward_to_scene_viewport_input(viewport_camera, event)
+	if result != AFTER_GUI_INPUT_PASS:
+		return result
+	if _handle_brush_input(viewport_camera, event):
+		return AFTER_GUI_INPUT_STOP
+
 	return AFTER_GUI_INPUT_PASS
 
 
-func _shortcut_input(event: InputEvent) -> void:
-	if not (event is InputEventKey):
-		return
-	var scene_root := get_editor_interface().get_edited_scene_root()
-	if scene_root == null:
-		return
-	if not scene_root.has_method("_editor_viewport_input"):
-		return
-	var handled: bool = scene_root._editor_viewport_input(_last_viewport_camera, event)
-	if handled:
-		get_viewport().set_input_as_handled()
-		_sync_brush_btn_from_scene(scene_root)
+func _refresh_brush_from_selection() -> void:
+	var selected := get_editor_interface().get_selection().get_selected_nodes()
+	for node in selected:
+		if node is MeshFillBrushScript:
+			if _brush != node:
+				_brush = node as MeshFillBrushScript
+				_sync_brush_btn(_brush.brush_visible)
+			return
+	if _brush != null:
+		_brush = null
+		_is_painting = false
+
+
+func _handle_brush_input(viewport_camera: Camera3D, event: InputEvent) -> bool:
+	if not _is_brush_painting_active():
+		return false
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			if mb.pressed:
+				_is_painting = true
+				_brush_dirty = false
+				var voxel := _brush.screen_to_voxel_xz(viewport_camera, mb.position)
+				if voxel.x >= 0:
+					_brush.paint_at_voxel(voxel)
+					_brush_dirty = true
+					_throttled_flush()
+			else:
+				_is_painting = false
+				_flush_brush()
+			return true
+	if event is InputEventMouseMotion and _is_painting:
+		var voxel := _brush.screen_to_voxel_xz(viewport_camera, (event as InputEventMouseMotion).position)
+		if voxel.x >= 0:
+			_brush.paint_at_voxel(voxel)
+			_brush_dirty = true
+			_throttled_flush()
+		return true
+	return false
+
+
+func _forward_to_scene_viewport_input(viewport_camera: Camera3D, event: InputEvent) -> int:
+	var spa := _scene_spa_host()
+	if spa == null or not spa.has_method(&"_editor_viewport_input"):
+		return AFTER_GUI_INPUT_PASS
+	if spa._editor_viewport_input(viewport_camera, event):
+		return AFTER_GUI_INPUT_STOP
+	return AFTER_GUI_INPUT_PASS
+
+
+func _handle_brush_shortcut(keycode: int) -> bool:
+	match keycode:
+		KEY_B:
+			_brush.brush_visible = not _brush.brush_visible
+			_brush.set_brush_visible(_brush.brush_visible)
+			_sync_brush_btn(_brush.brush_visible)
+			return true
+		KEY_G:
+			var targetsv := _find_targetsv_setup()
+			if targetsv != null and targetsv.has_method("set_display_visible"):
+				var visible := true
+				if targetsv.has_method("is_display_visible"):
+					visible = not bool(targetsv.is_display_visible())
+				targetsv.set_display_visible(visible)
+			else:
+				_brush.guidance_visible = not _brush.guidance_visible
+				_brush.set_guidance_visible(_brush.guidance_visible)
+			return true
+		KEY_R:
+			_set_targetsv_channel(MeshFillBrushScript.DisplayChannel.COLOR)
+			_brush.switch_channel(MeshFillBrushScript.DisplayChannel.COLOR)
+			return true
+		KEY_T:
+			_set_targetsv_channel(MeshFillBrushScript.DisplayChannel.COMPLEXITY)
+			_brush.switch_channel(MeshFillBrushScript.DisplayChannel.COMPLEXITY)
+			return true
+		KEY_Y:
+			_set_targetsv_channel(MeshFillBrushScript.DisplayChannel.COLLISION)
+			_brush.switch_channel(MeshFillBrushScript.DisplayChannel.COLLISION)
+			return true
+		KEY_C:
+			_brush.clear_brush()
+			return true
+		KEY_EQUAL, KEY_KP_ADD:
+			_brush.brush_width = clampi(_brush.brush_width + 2, 1, 128)
+			_brush.brush_length = clampi(_brush.brush_length + 2, 1, 128)
+			return true
+		KEY_MINUS, KEY_KP_SUBTRACT:
+			_brush.brush_width = clampi(_brush.brush_width - 2, 1, 128)
+			_brush.brush_length = clampi(_brush.brush_length - 2, 1, 128)
+			return true
+	return false
+
+
+func _find_targetsv_setup() -> Node:
+	if _brush == null:
+		return null
+	var root := get_editor_interface().get_edited_scene_root()
+	return CommonTargetSVLookup.find_setup(_brush, root, false, true, false)
+
+
+func _set_targetsv_channel(channel: int) -> void:
+	var targetsv := _find_targetsv_setup()
+	if targetsv != null and targetsv.has_method("switch_display_channel"):
+		targetsv.switch_display_channel(channel)
+
+
+func _is_brush_painting_active() -> bool:
+	return _brush != null and _brush.is_data_loaded() and _brush.brush_visible
+
+
+func _flush_brush() -> void:
+	if _brush_dirty and _brush:
+		_brush.flush_brush()
+		_brush_dirty = false
+		_last_flush_msec = Time.get_ticks_msec()
+
+
+func _throttled_flush() -> void:
+	var now := Time.get_ticks_msec()
+	if now - _last_flush_msec >= BRUSH_FLUSH_INTERVAL_MS:
+		_flush_brush()
 
 
 # ---- Brush toolbar button --------------------------------------------------
@@ -110,7 +278,7 @@ func _create_brush_toolbar_button() -> void:
 	_brush_btn.tooltip_text = "Toggle brush painting (Shift+B)"
 	_brush_btn.add_theme_font_size_override("font_size", 13)
 	_brush_btn.toggled.connect(_on_brush_btn_toggled)
-	_update_brush_btn_style(true)
+	_sync_brush_btn(true)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _brush_btn)
 
 
@@ -122,33 +290,16 @@ func _remove_brush_toolbar_button() -> void:
 
 
 func _on_brush_btn_toggled(pressed: bool) -> void:
-	_update_brush_btn_style(pressed)
-	var root := get_editor_interface().get_edited_scene_root()
-	if root == null:
-		return
-	if "brush_visible" in root:
-		root.brush_visible = pressed
-		if root.has_method("_apply_brush_visibility"):
-			root._apply_brush_visibility()
-		if root.has_method("_update_brush_toggle_btn"):
-			root._update_brush_toggle_btn()
-		if root.has_method("_build_labels"):
-			root._build_labels()
+	_sync_brush_btn(pressed)
+	if _brush:
+		_brush.set_brush_visible(pressed)
 
 
-func _sync_brush_btn_from_scene(root: Node) -> void:
-	if _brush_btn == null or root == null:
-		return
-	if "brush_visible" in root:
-		var state: bool = root.brush_visible
-		if _brush_btn.button_pressed != state:
-			_brush_btn.set_pressed_no_signal(state)
-			_update_brush_btn_style(state)
-
-
-func _update_brush_btn_style(active: bool) -> void:
+func _sync_brush_btn(active: bool) -> void:
 	if _brush_btn == null:
 		return
+	if _brush_btn.button_pressed != active:
+		_brush_btn.set_pressed_no_signal(active)
 	var style := StyleBoxFlat.new()
 	style.corner_radius_top_left = 4
 	style.corner_radius_top_right = 4
@@ -171,6 +322,445 @@ func _update_brush_btn_style(active: bool) -> void:
 	var pressed_style := style.duplicate() as StyleBoxFlat
 	pressed_style.bg_color = style.bg_color.darkened(0.1)
 	_brush_btn.add_theme_stylebox_override("pressed", pressed_style)
+
+
+# ---- SPA selection mode toolbar -------------------------------------------
+
+func _create_selection_mode_toolbar() -> void:
+	_selection_mode_option = OptionButton.new()
+	_selection_mode_option.tooltip_text = "SPA selection mode (Shift+0..5)"
+	_selection_mode_option.custom_minimum_size = Vector2(128, 0)
+	_selection_mode_option.add_theme_font_size_override("font_size", 13)
+	for i in range(SPA_SELECTION_MODE_NAMES.size()):
+		_selection_mode_option.add_item(SPAEditorContract.selection_mode_name(i), i)
+		_selection_mode_option.set_item_tooltip(i, _selection_mode_tooltip(i))
+	_selection_mode_option.item_selected.connect(_on_selection_mode_selected)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _selection_mode_option)
+	_sync_selection_mode_option_from_scene()
+
+
+func _remove_selection_mode_toolbar() -> void:
+	if _selection_mode_option != null:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _selection_mode_option)
+		_selection_mode_option.queue_free()
+		_selection_mode_option = null
+
+
+func _on_selection_mode_selected(index: int) -> void:
+	var host := _scene_selection_mode_host()
+	if host != null and host.has_method("set_spa_selection_mode"):
+		# UI -> SPA: the OptionButton index is the SelectionMode enum value.
+		host.set_spa_selection_mode(index)
+
+
+func _sync_selection_mode_option_from_scene() -> void:
+	if _selection_mode_option == null:
+		return
+	var host := _scene_selection_mode_host()
+	_selection_mode_option.visible = host != null
+	if host == null or not host.has_method("get_spa_selection_mode"):
+		_selection_mode_option.disabled = true
+		return
+	_selection_mode_option.disabled = false
+	var mode := clampi(int(host.get_spa_selection_mode()), 0, SPA_SELECTION_MODE_NAMES.size() - 1)
+	if _selection_mode_option.selected != mode:
+		_selection_mode_option.select(mode)
+
+
+func _selection_mode_tooltip(mode: int) -> String:
+	if mode == SPAEditorContract.MODE_MIXED:
+		return "Mixed: GPU AutoObject, volume-score anchors, then bound data voxel domains"
+	var binding := SPAEditorContract.binding_for_mode(mode)
+	var label := str(binding.get("mode_label", SPAEditorContract.selection_mode_name(mode)))
+	var display_key := str(binding.get("display_key", binding.get("key", "")))
+	var domain := str(binding.get("domain", ""))
+	var tooltip := str(binding.get("tooltip", ""))
+	if tooltip.is_empty():
+		return label
+	return "%s (%s / %s): %s" % [label, domain, display_key, tooltip]
+
+
+func _scene_selection_mode_host() -> Node:
+	return _scene_spa_host()
+
+
+func _scene_spa_host() -> Node:
+	var root := get_editor_interface().get_edited_scene_root()
+	if root == null:
+		return null
+	if root.name == "CoreSPADemo" and root.has_method("set_spa_selection_mode"):
+		return root
+	var core := root.find_child("CoreSPADemo", true, false)
+	if core != null and core.has_method("set_spa_selection_mode"):
+		return core
+	return null
+
+
+# ---- Asset descriptor geo scan toolbar ------------------------------------
+
+func _create_geo_scan_toolbar() -> void:
+	_geo_scan_btn = _make_toolbar_action_button(
+		" Geo FBX ",
+		"Full rescan res://geo FBX files and arrange AssetDescriptorDemo geo assets by bounds"
+	)
+	_geo_scan_btn.name = "MeshFillGeoFbxScanButton"
+	_geo_scan_btn.pressed.connect(_on_geo_scan_pressed)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _geo_scan_btn)
+
+	_geo_scan_status_label = Label.new()
+	_geo_scan_status_label.name = "MeshFillGeoFbxScanStatus"
+	_geo_scan_status_label.custom_minimum_size = Vector2(190, 0)
+	_geo_scan_status_label.clip_text = true
+	_geo_scan_status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_geo_scan_status_label.add_theme_font_size_override("font_size", 13)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _geo_scan_status_label)
+
+	_sync_geo_scan_toolbar_from_scene()
+
+
+func _remove_geo_scan_toolbar() -> void:
+	if _geo_scan_btn != null:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _geo_scan_btn)
+		_geo_scan_btn.queue_free()
+		_geo_scan_btn = null
+	if _geo_scan_status_label != null:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _geo_scan_status_label)
+		_geo_scan_status_label.queue_free()
+		_geo_scan_status_label = null
+
+
+func _on_geo_scan_pressed() -> void:
+	var host := _scene_geo_scan_host()
+	if host == null:
+		push_warning("[MeshFill Editor] Current scene has no AssetDescriptorDemo geo scan entry.")
+		_sync_geo_scan_toolbar_from_scene()
+		return
+	var result = host.call(GEO_SCAN_METHOD, true)
+	if result is Dictionary:
+		var scene_summary := _format_geo_scan_toolbar_result(result)
+		if host.has_method(GEO_SCAN_FORMAT_METHOD):
+			scene_summary = str(host.call(GEO_SCAN_FORMAT_METHOD, result))
+		if host.has_method(GEO_SCAN_STATUS_METHOD):
+			host.call(GEO_SCAN_STATUS_METHOD, scene_summary)
+		_set_geo_scan_status(_format_geo_scan_toolbar_result(result))
+		print("[MeshFill Editor] Geo FBX scan -> %s" % scene_summary)
+	else:
+		_set_geo_scan_status("Geo: scan done")
+
+
+func _sync_geo_scan_toolbar_from_scene() -> void:
+	var host := _scene_geo_scan_host()
+	var has_geo_scan := host != null
+	if _geo_scan_btn != null:
+		_geo_scan_btn.visible = has_geo_scan
+		_geo_scan_btn.disabled = not has_geo_scan
+	if _geo_scan_status_label == null:
+		return
+	_geo_scan_status_label.visible = has_geo_scan
+	if not has_geo_scan:
+		_set_geo_scan_status("")
+		return
+	var scene_status := host.get_node_or_null("GeoTools/Panel/VBox/GeoScanStatus") as Label
+	if scene_status != null:
+		_set_geo_scan_status(str(scene_status.text))
+	elif _geo_scan_status_label.text.strip_edges().is_empty():
+		_set_geo_scan_status("Geo: ready")
+
+
+func _set_geo_scan_status(text: String) -> void:
+	if _geo_scan_status_label == null:
+		return
+	_geo_scan_status_label.text = text
+	_geo_scan_status_label.tooltip_text = text
+
+
+func _format_geo_scan_toolbar_result(result: Dictionary) -> String:
+	return "Geo: +%d upd%d skip%d total%d" % [
+		int(result.get("added", 0)),
+		int(result.get("updated", 0)),
+		int(result.get("skipped", 0)),
+		int(result.get("total", 0)),
+	]
+
+
+func _scene_geo_scan_host() -> Node:
+	var root := get_editor_interface().get_edited_scene_root()
+	if root != null and root.has_method(GEO_SCAN_METHOD):
+		return root
+	return null
+
+
+# ---- Volume score toolbar --------------------------------------------------
+
+func _create_volume_score_toolbar() -> void:
+	_generate_anchor_btn = _make_toolbar_action_button(
+		" Anchors ",
+		"Generate volume-score anchors for the current scene"
+	)
+	_generate_anchor_btn.pressed.connect(_on_generate_anchor_pressed)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _generate_anchor_btn)
+
+	_voxel_score_btn = _make_toolbar_action_button(
+		" Score ",
+		"Run voxel volume-score calculation for the current scene"
+	)
+	_voxel_score_btn.pressed.connect(_on_voxel_score_pressed)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _voxel_score_btn)
+
+	_anchor_score_status_label = Label.new()
+	_anchor_score_status_label.tooltip_text = "Selected anchor top-k asset scores"
+	_anchor_score_status_label.custom_minimum_size = Vector2(520, 0)
+	_anchor_score_status_label.clip_text = true
+	_anchor_score_status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_anchor_score_status_label.add_theme_font_size_override("font_size", 13)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _anchor_score_status_label)
+
+	_sync_volume_score_toolbar_from_scene()
+
+
+func _remove_volume_score_toolbar() -> void:
+	if _generate_anchor_btn != null:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _generate_anchor_btn)
+		_generate_anchor_btn.queue_free()
+		_generate_anchor_btn = null
+	if _voxel_score_btn != null:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _voxel_score_btn)
+		_voxel_score_btn.queue_free()
+		_voxel_score_btn = null
+	if _anchor_score_status_label != null:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _anchor_score_status_label)
+		_anchor_score_status_label.queue_free()
+		_anchor_score_status_label = null
+
+
+func _make_toolbar_action_button(label: String, tooltip: String) -> Button:
+	var btn := Button.new()
+	btn.flat = true
+	btn.text = label
+	btn.tooltip_text = tooltip
+	btn.add_theme_font_size_override("font_size", 13)
+	btn.custom_minimum_size = Vector2(78, 0)
+	return btn
+
+
+func _on_generate_anchor_pressed() -> void:
+	_call_spa_volume_score_method(SPA_VOLUME_SCORE_ANCHOR_METHOD, "Generate Anchors")
+	_sync_volume_score_toolbar_from_scene()
+
+
+func _on_voxel_score_pressed() -> void:
+	_call_spa_volume_score_method(SPA_VOLUME_SCORE_METHOD, "Voxel Score")
+	_sync_volume_score_toolbar_from_scene()
+
+
+func _sync_volume_score_toolbar_from_scene() -> void:
+	var host := _scene_spa_host()
+	var has_spa := host != null
+	var has_provider := _spa_has_volume_score_provider(host)
+	if _generate_anchor_btn != null:
+		_generate_anchor_btn.visible = has_spa
+		_generate_anchor_btn.disabled = not has_spa or not has_provider or not host.has_method(SPA_VOLUME_SCORE_ANCHOR_METHOD)
+	if _voxel_score_btn != null:
+		_voxel_score_btn.visible = has_spa
+		_voxel_score_btn.disabled = not has_spa or not has_provider or not host.has_method(SPA_VOLUME_SCORE_METHOD)
+	if _anchor_score_status_label != null:
+		_anchor_score_status_label.visible = has_spa
+		if not has_spa:
+			_anchor_score_status_label.text = ""
+			_anchor_score_status_label.tooltip_text = ""
+			return
+		if not has_provider:
+			_anchor_score_status_label.text = ""
+			_anchor_score_status_label.tooltip_text = ""
+		else:
+			if host.has_method("get_selected_anchor_summary_text"):
+				_anchor_score_status_label.text = str(host.call("get_selected_anchor_summary_text"))
+			if host.has_method("get_selected_anchor_tooltip_text"):
+				_anchor_score_status_label.tooltip_text = str(host.call("get_selected_anchor_tooltip_text"))
+
+
+func _spa_has_volume_score_provider(host: Node) -> bool:
+	if host == null or not host.has_method(SPA_VOLUME_SCORE_PROVIDER_METHOD):
+		return false
+	return bool(host.call(SPA_VOLUME_SCORE_PROVIDER_METHOD))
+
+
+func _call_spa_volume_score_method(method_name: String, action_name: String) -> void:
+	var host := _scene_spa_host()
+	if not _spa_has_volume_score_provider(host):
+		push_warning("[MeshFill Editor] No SPA volume-score provider in the current scene.")
+		return
+	if not host.has_method(method_name):
+		push_warning("[MeshFill Editor] SPA has no callable %s entry." % method_name)
+		return
+	var result = host.call(method_name)
+	if result is Dictionary and result.has("ok") and not bool(result.get("ok", false)):
+		push_warning("[MeshFill Editor] %s returned: %s" % [
+			action_name,
+			str(result.get("reason", "not ok")),
+		])
+	print("[MeshFill Editor] %s -> %s.%s" % [action_name, host.name, method_name])
+
+
+# ---- Voxel display visibility panel ---------------------------------------
+
+func _create_voxel_visibility_panel() -> void:
+	_remove_voxel_visibility_panel()
+	_voxel_visibility_panel = PanelContainer.new()
+	_voxel_visibility_panel.name = VOXEL_VISIBILITY_PANEL_NAME
+	_voxel_visibility_panel.tooltip_text = "Voxel Display visibility"
+	_voxel_visibility_panel.custom_minimum_size = Vector2(168.0, 34.0)
+	_voxel_visibility_panel.mouse_filter = Control.MOUSE_FILTER_PASS
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.055, 0.07, 0.09, 0.58)
+	style.border_color = Color(0.28, 0.66, 0.95, 0.35)
+	style.border_width_left = 1
+	style.border_width_top = 1
+	style.border_width_right = 1
+	style.border_width_bottom = 1
+	style.corner_radius_top_left = 3
+	style.corner_radius_top_right = 3
+	style.corner_radius_bottom_left = 3
+	style.corner_radius_bottom_right = 3
+	style.content_margin_left = 4.0
+	style.content_margin_right = 4.0
+	style.content_margin_top = 2.0
+	style.content_margin_bottom = 2.0
+	_voxel_visibility_panel.add_theme_stylebox_override("panel", style)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _voxel_visibility_panel)
+
+	var columns := HBoxContainer.new()
+	columns.name = "VoxelVisibilityToolbar"
+	columns.add_theme_constant_override("separation", 4)
+	_voxel_visibility_panel.add_child(columns)
+
+	var title := Label.new()
+	title.text = "VD"
+	title.tooltip_text = "Voxel Display"
+	title.custom_minimum_size = Vector2(22.0, 30.0)
+	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 11)
+	title.add_theme_color_override("font_color", Color(0.88, 0.94, 1.0, 1.0))
+	columns.add_child(title)
+
+	var rows := VBoxContainer.new()
+	rows.name = "VoxelVisibilityRows"
+	rows.add_theme_constant_override("separation", 1)
+	columns.add_child(rows)
+
+	var row_top := HBoxContainer.new()
+	row_top.name = "VoxelVisibilityRowTop"
+	row_top.add_theme_constant_override("separation", 2)
+	rows.add_child(row_top)
+
+	var row_bottom := HBoxContainer.new()
+	row_bottom.name = "VoxelVisibilityRowBottom"
+	row_bottom.add_theme_constant_override("separation", 2)
+	rows.add_child(row_bottom)
+
+	_voxel_visibility_buttons.clear()
+	for i in range(VOXEL_DISPLAY_DEFINITIONS.size()):
+		var definition: Dictionary = VOXEL_DISPLAY_DEFINITIONS[i]
+		var key := str(definition.get("key", ""))
+		var button := Button.new()
+		button.name = "Toggle_%s" % key
+		button.text = str(definition.get("label", key))
+		button.tooltip_text = str(definition.get("tooltip", ""))
+		button.toggle_mode = true
+		button.flat = false
+		button.custom_minimum_size = Vector2(30.0, 14.0)
+		button.add_theme_font_size_override("font_size", 10)
+		button.toggled.connect(_on_voxel_visibility_toggled.bind(key))
+		if i < 3:
+			row_top.add_child(button)
+		else:
+			row_bottom.add_child(button)
+		_voxel_visibility_buttons[key] = button
+	_sync_voxel_visibility_panel_from_scene()
+
+
+func _remove_voxel_visibility_panel() -> void:
+	var base := get_editor_interface().get_base_control()
+	if base != null:
+		var existing := base.get_node_or_null(NodePath(VOXEL_VISIBILITY_PANEL_NAME))
+		if existing != null:
+			base.remove_child(existing)
+			existing.queue_free()
+	if _voxel_visibility_panel != null:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _voxel_visibility_panel)
+		_voxel_visibility_panel.queue_free()
+	_voxel_visibility_panel = null
+	_voxel_visibility_buttons.clear()
+
+
+func _on_voxel_visibility_toggled(pressed: bool, key: String) -> void:
+	var host := _scene_voxel_display_host()
+	if host == null or not host.has_method("set_voxel_display_visible"):
+		return
+	host.call("set_voxel_display_visible", key, pressed)
+	_sync_voxel_visibility_panel_from_scene()
+
+
+func _sync_voxel_visibility_panel_from_scene() -> void:
+	if _voxel_visibility_panel == null:
+		return
+	var host := _scene_voxel_display_host()
+	_voxel_visibility_panel.visible = host != null
+	if host == null:
+		return
+	var state := {}
+	if host.has_method("get_voxel_display_state"):
+		var value = host.call("get_voxel_display_state")
+		if value is Dictionary:
+			state = value
+	for key in _voxel_visibility_buttons.keys():
+		var button := _voxel_visibility_buttons[key] as BaseButton
+		if button == null:
+			continue
+		button.disabled = not host.has_method("set_voxel_display_visible")
+		var visible := bool(state.get(str(key), true))
+		if button.button_pressed != visible:
+			button.set_pressed_no_signal(visible)
+		_apply_voxel_visibility_button_style(button, visible, button.disabled)
+
+
+func _apply_voxel_visibility_button_style(button: BaseButton, active: bool, disabled: bool) -> void:
+	var bg := Color(0.17, 0.46, 0.70, 0.95) if active else Color(0.10, 0.12, 0.15, 0.92)
+	var border := Color(0.48, 0.78, 1.0, 0.85) if active else Color(0.24, 0.32, 0.40, 0.82)
+	if disabled:
+		bg = Color(0.09, 0.10, 0.11, 0.45)
+		border = Color(0.20, 0.22, 0.24, 0.45)
+	var normal := StyleBoxFlat.new()
+	normal.bg_color = bg
+	normal.border_color = border
+	normal.border_width_left = 1
+	normal.border_width_top = 1
+	normal.border_width_right = 1
+	normal.border_width_bottom = 1
+	normal.corner_radius_top_left = 2
+	normal.corner_radius_top_right = 2
+	normal.corner_radius_bottom_left = 2
+	normal.corner_radius_bottom_right = 2
+	normal.content_margin_left = 3.0
+	normal.content_margin_right = 3.0
+	normal.content_margin_top = 0.0
+	normal.content_margin_bottom = 0.0
+	button.add_theme_stylebox_override("normal", normal)
+	var hover := normal.duplicate() as StyleBoxFlat
+	hover.bg_color = bg.lightened(0.14)
+	button.add_theme_stylebox_override("hover", hover)
+	var pressed := normal.duplicate() as StyleBoxFlat
+	pressed.bg_color = bg.lightened(0.22) if active else Color(0.15, 0.22, 0.28, 0.95)
+	button.add_theme_stylebox_override("pressed", pressed)
+	button.add_theme_stylebox_override("hover_pressed", pressed)
+	button.add_theme_stylebox_override("disabled", normal)
+	button.add_theme_color_override("font_color", Color(0.95, 0.98, 1.0, 1.0) if active else Color(0.62, 0.76, 0.88, 1.0))
+	button.add_theme_color_override("font_disabled_color", Color(0.46, 0.50, 0.54, 1.0))
+
+
+func _scene_voxel_display_host() -> Node:
+	return _scene_spa_host()
 
 
 # ---- TCP Server ------------------------------------------------------------
@@ -541,7 +1131,7 @@ func _force_quit_duplicate(reason: String = "") -> void:
 
 # ---- Documentation file import cleanup (.svg / .md) ----
 
-const _JUNK_IMPORT_EXTENSIONS := [".svg.import", ".md.import"]
+const _JUNK_IMPORT_EXTENSIONS := [".svg.import", ".md.import", ".png.import"]
 const _JUNK_IMPORT_DIRS := ["res://demos", "res://docs", "res://_shots"]
 
 func _cleanup_doc_import_files() -> void:
@@ -549,7 +1139,7 @@ func _cleanup_doc_import_files() -> void:
 	for scan_dir in _JUNK_IMPORT_DIRS:
 		removed += _remove_junk_imports_in(scan_dir)
 	if removed > 0:
-		print("[MeshFill Editor] Removed %d junk .import files (.svg/.md/screenshots)" % removed)
+		print("[MeshFill Editor] Removed %d junk .import files (.svg/.md/.png/screenshots)" % removed)
 
 
 func _remove_junk_imports_in(scan_path: String) -> int:

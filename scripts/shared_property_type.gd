@@ -1,6 +1,7 @@
 class_name SharedPropertyType
 extends RefCounted
 
+const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
 const COLOR_KEY := "color"                         # shared visual color; alpha mirrors complexity
 const COMPLEXITY_KEY := "complexity"               # shared occupancy/strength
 const COLLISION_KEY := "collision"                 # canonical shared collision field
@@ -153,7 +154,7 @@ static func _normalize_collision(source: Array, default_radius: float = 0.0) -> 
 		if not raw_collision is Dictionary:
 			continue
 		var collision := (raw_collision as Dictionary).duplicate(true)
-		if _is_point_collision_sample(collision):
+		if collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset"):
 			var voxel := _vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
 			collision["voxel"] = voxel
 			collision["collision_strength"] = clampf(float(collision.get("collision_strength", 1.0)), 0.0, 1.0)
@@ -178,10 +179,6 @@ static func _normalize_collision(source: Array, default_radius: float = 0.0) -> 
 		collision["collision_strength"] = clampf(float(collision.get("collision_strength", 1.0)), 0.0, 1.0)
 		result.append(collision)
 	return result
-
-
-static func _is_point_collision_sample(collision: Dictionary) -> bool:
-	return collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset")
 
 
 static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:

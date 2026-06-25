@@ -19,6 +19,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
+const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 const TILE_SIZE := 8
 const MAX_ASSETS := 256
@@ -81,7 +82,7 @@ func run_probe_prefilter(
 	if voxel_sparse_ids.is_empty():
 		voxel_sparse_ids = _dirty_tile_ids_from_sv(sv)
 	if voxel_sparse_ids.is_empty():
-		voxel_sparse_ids = _all_tile_ids(sv)
+		voxel_sparse_ids = all_tile_ids(sv)
 	if voxel_sparse_ids.is_empty():
 		return _empty_result("no_voxel_regions")
 
@@ -125,7 +126,7 @@ func _run_gpu_pipeline(
 ) -> Dictionary:
 	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
 	var voxel_size: Vector3 = sv.get("voxel_size", Vector3.ONE)
-	var voxel_count: int = grid_size.x * grid_size.y * grid_size.z
+	var voxel_count: int = CommonVoxelSpaceScript.voxel_count(grid_size)
 	var tile_grid := Vector3i(
 		_ceil_div_positive(grid_size.x, TILE_SIZE),
 		_ceil_div_positive(grid_size.y, TILE_SIZE),
@@ -827,11 +828,11 @@ func _pack_all_probes(
 		range_entries[i] = Vector2i(0, 0)
 
 	for obj_idx in range(asset_count):
-		var autoobject := autoobjects[obj_idx] as AutoObject
-		if autoobject == null:
+		var autoobject := autoobjects[obj_idx] as Object
+		if autoobject == null or not autoobject.has_method("get_semantic_probes"):
 			continue
 
-		var probes: Array = autoobject.get_semantic_probes(autoobject.semantic_probe_density)
+		var probes: Array = autoobject.call("get_semantic_probes", _semantic_probe_density(autoobject))
 		var start := all_probes.size()
 		for probe in probes:
 			if probe is Dictionary:
@@ -899,7 +900,7 @@ func _pack_profile_container_probes(
 	range_bytes.resize(maxi(asset_count, 1) * 8)
 	var profile_ids: Array[int] = []
 	for asset_id in range(asset_count):
-		var autoobject := autoobjects[asset_id] as AutoObject
+		var autoobject := autoobjects[asset_id] as Object
 		if autoobject == null:
 			profile_ids.append(-1)
 			range_bytes.encode_u32(asset_id * 8 + 0, 0)
@@ -1612,7 +1613,7 @@ func _append_shader_tile_ids_for_scene_voxel_tile(tile: Dictionary, tile_grid: V
 					result.append(tile_id)
 
 
-func _all_tile_ids(sv: Dictionary) -> Array[int]:
+static func all_tile_ids(sv: Dictionary) -> Array[int]:
 	var total := int(sv.get("total_tiles", 0))
 	var result: Array[int] = []
 	for i in range(total):
@@ -1699,7 +1700,7 @@ func _profile_container_ready_to_borrow(runtime_profile_container: Object) -> bo
 	return probe_buffer.is_valid()
 
 
-func _profile_id_from_autoobject(autoobject: AutoObject, runtime_profile_container: Object) -> int:
+func _profile_id_from_autoobject(autoobject: Object, runtime_profile_container: Object) -> int:
 	if autoobject == null:
 		return -1
 	for profile_key in ["profile_id", "auto_voxel_profile_id", "runtime_profile_id", "asset_profile_id"]:
@@ -1722,14 +1723,15 @@ func _profile_id_from_autoobject(autoobject: AutoObject, runtime_profile_contain
 	var descriptor = autoobject.get("voxel_descriptor")
 	if not descriptor is Resource:
 		return -1
-	var density := float(autoobject.get("semantic_probe_density")) if _object_has_property(autoobject, "semantic_probe_density") else -1.0
+	var density := _semantic_probe_density(autoobject) if _object_has_property(autoobject, "semantic_probe_density") else -1.0
+	var mesh_ref = autoobject.get("mesh") if _object_has_property(autoobject, "mesh") else null
 	return int(runtime_profile_container.call(
 		"get_profile_id_for_descriptor",
 		descriptor,
 		0.0,
 		density,
 		Vector3.ONE,
-		autoobject.mesh
+		mesh_ref
 	))
 
 
@@ -2082,12 +2084,12 @@ static func _probe_metric_weights(p: Dictionary) -> Vector3:
 static func _build_route_profiles(autoobjects: Array, asset_count: int, voxel_size: Vector3) -> Array[Dictionary]:
 	var profiles: Array[Dictionary] = []
 	for obj_idx in range(asset_count):
-		var autoobject := autoobjects[obj_idx] as AutoObject
+		var autoobject := autoobjects[obj_idx] as Object
 		if autoobject == null:
 			profiles.append(_empty_route_profile(obj_idx))
 			continue
-		var probes: Array = autoobject.get_semantic_probes(autoobject.semantic_probe_density)
-		var collisions: Array = autoobject.get_collision() if autoobject.has_method("get_collision") else []
+		var probes: Array = autoobject.call("get_semantic_probes", _semantic_probe_density(autoobject)) if autoobject.has_method("get_semantic_probes") else []
+		var collisions: Array = autoobject.call("get_collision") if autoobject.has_method("get_collision") else []
 		var context_radius := _object_context_sensing_radius(autoobject)
 		profiles.append(_build_route_profile_from_arrays(
 			probes,
@@ -2187,14 +2189,7 @@ static func _footprint_voxel_bounds(collision: Array, voxel_size: Vector3) -> Di
 
 
 static func _radius_to_voxels(radius: float, voxel_size: Vector3) -> Vector3i:
-	var r := maxf(radius, 0.0)
-	if r <= 0.0:
-		return Vector3i.ZERO
-	return Vector3i(
-		ceili(r / maxf(voxel_size.x, 0.0001)),
-		ceili(r / maxf(voxel_size.y, 0.0001)),
-		ceili(r / maxf(voxel_size.z, 0.0001))
-	)
+	return CommonVoxelSpaceScript.radius_to_voxels(radius, voxel_size)
 
 
 static func _padding_to_tile_radius(min_pad: Vector3i, max_pad: Vector3i) -> Vector3i:
@@ -2306,11 +2301,7 @@ static func _tile_id_to_pos(tile_id: int, tile_grid: Vector3i) -> Vector3i:
 
 
 static func _world_offset_to_voxels(offset: Vector3, voxel_size: Vector3) -> Vector3i:
-	return Vector3i(
-		roundi(offset.x / maxf(voxel_size.x, 0.0001)),
-		roundi(offset.y / maxf(voxel_size.y, 0.0001)),
-		roundi(offset.z / maxf(voxel_size.z, 0.0001))
-	)
+	return CommonVoxelSpaceScript.world_offset_to_voxels(offset, voxel_size)
 
 
 static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
@@ -2329,7 +2320,7 @@ static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> V
 	return fallback
 
 
-static func _object_context_sensing_radius(autoobject: AutoObject) -> float:
+static func _object_context_sensing_radius(autoobject: Object) -> float:
 	if autoobject == null:
 		return 0.0
 	var descriptor = autoobject.get("voxel_descriptor") if _object_has_property(autoobject, "voxel_descriptor") else null
@@ -2338,6 +2329,12 @@ static func _object_context_sensing_radius(autoobject: AutoObject) -> float:
 	if _object_has_property(autoobject, "context_sensing_radius"):
 		return maxf(float(autoobject.get("context_sensing_radius")), 0.0)
 	return 0.0
+
+
+static func _semantic_probe_density(autoobject: Object) -> float:
+	if autoobject != null and _object_has_property(autoobject, "semantic_probe_density"):
+		return float(autoobject.get("semantic_probe_density"))
+	return 1.0
 
 
 static func _object_has_property(object: Object, property_name: String) -> bool:
