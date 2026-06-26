@@ -16,7 +16,6 @@ const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_ge
 const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
 const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
 const CommonVolumeScore3D := preload("res://scripts/common_volume_score_3d.gd")
-const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 
 const VOXEL_DISPLAY_GPU_OBJECTS := SPAEditorContract.VOXEL_DISPLAY_GPU_OBJECTS
@@ -483,7 +482,7 @@ func _build_scene_fields() -> void:
 	)
 	_terrain_height = _scene_fields.get("terrain_height", _terrain_height)
 	var grid: Vector3i = _scene_fields.get("grid", Vector3i.ZERO)
-	var voxel_count := CommonVoxelSpaceScript.voxel_count(grid)
+	var voxel_count := VoxelGeneral.voxel_count(grid)
 	print("[VolumeScore] Scene field: grid=%s voxels=%d" % [
 		str(_scene_fields.grid), voxel_count])
 
@@ -723,7 +722,7 @@ func _world_result_for_winning_anchor(
 	var anchor_voxel := ObjectVolumeScoreGpuScript.anchor_voxel_at(_anchors, anchor_index)
 	var voxel_size: Vector3 = _scene_fields.get("voxel_size", Vector3.ONE)
 	var anchor_world := _anchor_world_positions[anchor_index]
-	var synthetic_origin := anchor_world - CommonVoxelSpaceScript.voxel_to_world(anchor_voxel, Vector3.ZERO, voxel_size)
+	var synthetic_origin := anchor_world - VoxelGeneral.voxel_to_world(anchor_voxel, Vector3.ZERO, voxel_size)
 	var rotation_slot := clampi(
 		int(anchor_result.get("rotation_slot", 0)),
 		0,

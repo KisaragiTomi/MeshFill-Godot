@@ -19,7 +19,6 @@ extends "res://scripts/godot_compute_shader_base.gd"
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
-const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 const TILE_SIZE := 8
 const MAX_ASSETS := 256
@@ -126,7 +125,7 @@ func _run_gpu_pipeline(
 ) -> Dictionary:
 	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
 	var voxel_size: Vector3 = sv.get("voxel_size", Vector3.ONE)
-	var voxel_count: int = CommonVoxelSpaceScript.voxel_count(grid_size)
+	var voxel_count: int = VoxelGeneral.voxel_count(grid_size)
 	var tile_grid := Vector3i(
 		_ceil_div_positive(grid_size.x, TILE_SIZE),
 		_ceil_div_positive(grid_size.y, TILE_SIZE),
@@ -2189,7 +2188,7 @@ static func _footprint_voxel_bounds(collision: Array, voxel_size: Vector3) -> Di
 
 
 static func _radius_to_voxels(radius: float, voxel_size: Vector3) -> Vector3i:
-	return CommonVoxelSpaceScript.radius_to_voxels(radius, voxel_size)
+	return VoxelGeneral.radius_to_voxels(radius, voxel_size)
 
 
 static func _padding_to_tile_radius(min_pad: Vector3i, max_pad: Vector3i) -> Vector3i:
@@ -2301,7 +2300,7 @@ static func _tile_id_to_pos(tile_id: int, tile_grid: Vector3i) -> Vector3i:
 
 
 static func _world_offset_to_voxels(offset: Vector3, voxel_size: Vector3) -> Vector3i:
-	return CommonVoxelSpaceScript.world_offset_to_voxels(offset, voxel_size)
+	return VoxelGeneral.world_offset_to_voxels(offset, voxel_size)
 
 
 static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:

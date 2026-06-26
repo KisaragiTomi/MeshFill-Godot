@@ -7,7 +7,6 @@ const ObjectVolumeScoreGpuScript := preload("res://scripts/object_volume_score_g
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
 const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
-const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 
 static func voxelize_common_assets(voxel_grid_count: int, fallback_to_box: bool = true) -> Dictionary:
@@ -101,9 +100,9 @@ static func build_scene_fields(
 	var gy := maxi(grid_height_slices, 2)
 	var gz := gx
 	var grid := Vector3i(gx, gy, gz)
-	var voxel_count := CommonVoxelSpaceScript.voxel_count(grid)
+	var voxel_count := VoxelGeneral.voxel_count(grid)
 	var voxel_size_y := max_height / float(gy)
-	var voxel_size := CommonVoxelSpaceScript.voxel_size_for_resolution(capture_size, gx, voxel_size_y)
+	var voxel_size := VoxelGeneral.voxel_size_for_resolution(capture_size, gx, voxel_size_y)
 	var terrain := terrain_height
 	if terrain.size() != gx * gz:
 		terrain = procedural_terrain(gx, gz)
@@ -124,7 +123,7 @@ static func build_scene_fields(
 			var max_above := maxi(int(target_max_height_frac * float(gy)), min_above + 2)
 
 			for y in range(gy):
-				var idx := CommonVoxelSpaceScript.voxel_index(Vector3i(x, y, z), grid)
+				var idx := VoxelGeneral.voxel_index(Vector3i(x, y, z), grid)
 				if y <= ground_slice:
 					cx_floats[idx * 4 + 3] = 0.8
 					coll_floats[idx] = 0.9
@@ -146,7 +145,7 @@ static func build_scene_fields(
 	return {
 		"grid": grid,
 		"voxel_size": voxel_size,
-		"grid_origin": CommonVoxelSpaceScript.default_grid_origin(capture_size),
+		"grid_origin": VoxelGeneral.default_grid_origin(capture_size),
 		"complexity_bytes": cx_floats.to_byte_array(),
 		"collision_bytes": coll_floats.to_byte_array(),
 		"target_bytes": target_floats.to_byte_array(),
@@ -184,7 +183,7 @@ static func anchor_world_positions(
 	var voxel_size: Vector3 = scene_fields.get("voxel_size", Vector3.ONE)
 	var origin: Vector3 = scene_fields.get("grid_origin", Vector3.ZERO)
 	for anchor in anchors:
-		var world := CommonVoxelSpaceScript.voxel_float_center_to_world(anchor + Vector3.ONE * 0.5, origin, voxel_size)
+		var world := VoxelGeneral.voxel_float_center_to_world(anchor + Vector3.ONE * 0.5, origin, voxel_size)
 		var hi := int(anchor.z) * grid.x + int(anchor.x)
 		var terrain_y := terrain_height[hi] if hi >= 0 and hi < terrain_height.size() else world.y
 		world.y = terrain_y + voxel_size.y * 0.5

@@ -2,7 +2,6 @@ extends Node3D
 
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const NonHeadlessSceneGuardScript := preload("res://scripts/non_headless_scene_guard.gd")
-const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 @export var num_iterations: int = 10
 @export var capture_size: float = TerrainConfigScript.CAPTURE_SIZE
@@ -320,7 +319,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _world_to_texture_pixel(world_pos: Vector3, resolution: int = TEX_RES) -> Vector2i:
-	return CommonVoxelSpaceScript.world_to_texture_pixel(world_pos, capture_size, resolution)
+	return VoxelGeneral.world_to_texture_pixel(world_pos, capture_size, resolution)
 
 
 func _vector3_from_record_value(value, fallback: Vector3) -> Vector3:
@@ -743,7 +742,7 @@ func _make_cliff_voxel_write_spec(
 		y_min = y_max
 		y_max = tmp
 	var radius := maxf(mesh_aabb.size.x * absf(mi.scale.x), mesh_aabb.size.z * absf(mi.scale.z)) * 0.5
-	radius = maxf(radius, CommonVoxelSpaceScript.texture_pixel_size(capture_size, TEX_RES))
+	radius = maxf(radius, VoxelGeneral.texture_pixel_size(capture_size, TEX_RES))
 	var collision := asset.get_collision(radius) if asset != null else []
 	var channel := int(r.get("channel", 0))
 
@@ -874,7 +873,7 @@ func register_brush_autoobject(mi: AutoObject, placement_data: Dictionary = {}) 
 		_brush_voxel_commit_pending = true
 		var brush_px := _world_to_texture_pixel(mi.position)
 		var brush_radius_px := 1
-		var pixel_size := CommonVoxelSpaceScript.texture_pixel_size(capture_size, TEX_RES)
+		var pixel_size := VoxelGeneral.texture_pixel_size(capture_size, TEX_RES)
 		brush_radius_px = maxi(brush_radius_px, ceili(float(maxi(_brush_width, _brush_length)) * 0.5))
 		brush_radius_px = maxi(brush_radius_px, ceili(float(data.get("radius", pixel_size)) / pixel_size))
 		for collision_raw in data["collision"]:
@@ -899,7 +898,7 @@ func commit_brush_autoobject_edits(dirty_rect: Rect2i = Rect2i()) -> void:
 
 
 func _meters_to_pixels(radius_m: float, resolution: int = TEX_RES) -> int:
-	return CommonVoxelSpaceScript.world_radius_to_texture_radius(radius_m, capture_size, resolution)
+	return VoxelGeneral.world_radius_to_texture_radius(radius_m, capture_size, resolution)
 
 
 func _make_landscape_cliff_mask(height_img: Image) -> Image:

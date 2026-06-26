@@ -17,7 +17,6 @@ const VoxelDisplay := preload("res://scripts/voxel_display.gd")
 const CommonBufferUtils := preload("res://scripts/common_buffer_utils.gd")
 const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
 const CommonSceneVoxelFixture := preload("res://scripts/common_scene_voxel_fixture.gd")
-const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 const TILE_SIZE := 8
 
@@ -137,13 +136,13 @@ func _build_fields_from_terrain() -> void:
 	var vertical_span := float(meta.get("vertical_span", 32.0))
 
 	_grid = Vector3i(texture_size, slice_count, texture_size)
-	var voxel_count := CommonVoxelSpaceScript.voxel_count(_grid)
-	_voxel_size = CommonVoxelSpaceScript.voxel_size_for_resolution(
+	var voxel_count := VoxelGeneral.voxel_count(_grid)
+	_voxel_size = VoxelGeneral.voxel_size_for_resolution(
 		capture_size,
 		texture_size,
 		vertical_span / maxf(float(slice_count), 1.0)
 	)
-	_grid_origin = CommonVoxelSpaceScript.default_grid_origin(capture_size)
+	_grid_origin = VoxelGeneral.default_grid_origin(capture_size)
 
 	var visual_raw := TargetSVLoaderScript.visual_bytes()
 	var collision_raw := TargetSVLoaderScript.collision_bytes()
@@ -160,7 +159,7 @@ func _build_fields_from_terrain() -> void:
 	_collision_field.resize(voxel_count)
 	for z in range(texture_size):
 		for x in range(texture_size):
-			var idx := CommonVoxelSpaceScript.voxel_index(Vector3i(x, 0, z), _grid)
+			var idx := VoxelGeneral.voxel_index(Vector3i(x, 0, z), _grid)
 			_complexity_field[idx] = 1.0
 			_collision_field[idx] = raw_collision[idx] if idx < raw_collision.size() else 1.0
 
@@ -199,11 +198,11 @@ func _build_fields_from_terrain() -> void:
 
 
 func _voxel_index(p: Vector3i) -> int:
-	return CommonVoxelSpaceScript.voxel_index(p, _grid)
+	return VoxelGeneral.voxel_index(p, _grid)
 
 
 func _voxel_count() -> int:
-	return CommonVoxelSpaceScript.voxel_count(_grid)
+	return VoxelGeneral.voxel_count(_grid)
 
 
 # --- Assets ----------------------------------------------------------------
@@ -315,7 +314,7 @@ func _setup_visualization() -> void:
 
 
 func _world_center(p: Vector3i) -> Vector3:
-	var base := CommonVoxelSpaceScript.voxel_center_to_world(p, _grid_origin, _voxel_size)
+	var base := VoxelGeneral.voxel_center_to_world(p, _grid_origin, _voxel_size)
 	var hi := p.z * _grid.x + p.x
 	if hi >= 0 and hi < _terrain_height.size():
 		base.y += _terrain_height[hi]

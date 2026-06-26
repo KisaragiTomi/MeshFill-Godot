@@ -39,7 +39,6 @@ extends "res://scripts/godot_compute_shader_base.gd"
 
 const VOXELIZE_SHADER := "res://shaders/voxelize_mesh_solid.glsl"
 const COLLISION_SHADER := "res://shaders/voxel_collision_erode.glsl"
-const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 const MAX_TRIANGLES := 20000
 const MAX_GRID_AXIS := 96
@@ -102,7 +101,7 @@ func _run_gpu(
 	if not _voxelize_pipeline.is_valid() or not _collision_pipeline.is_valid():
 		return fail
 
-	var voxel_count := CommonVoxelSpaceScript.voxel_count(grid)
+	var voxel_count := VoxelGeneral.voxel_count(grid)
 	var tri_buf := storage_buffer_from_floats(triangles, SCOPE_FRAME, "triangles")
 	var occupancy_buf := storage_buffer_zero(voxel_count * 4, SCOPE_FRAME, "occupancy")
 	var color_buf := storage_buffer_zero(voxel_count * 4, SCOPE_FRAME, "color_field")
@@ -158,14 +157,14 @@ func _decode_voxels(
 	var occupancy := occupancy_bytes.to_int32_array()
 	var color := color_bytes.to_int32_array()
 	var collision := collision_bytes.to_float32_array()
-	var voxel_count := CommonVoxelSpaceScript.voxel_count(grid)
+	var voxel_count := VoxelGeneral.voxel_count(grid)
 	if occupancy.size() < voxel_count:
 		return voxels
 
 	for y in range(grid.y):
 		for z in range(grid.z):
 			for x in range(grid.x):
-				var index := CommonVoxelSpaceScript.voxel_index(Vector3i(x, y, z), grid)
+				var index := VoxelGeneral.voxel_index(Vector3i(x, y, z), grid)
 				if (occupancy[index] & 1) == 0:
 					continue
 				var packed := int(color[index]) & 0xFFFFFFFF

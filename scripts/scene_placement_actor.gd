@@ -20,7 +20,6 @@ const VPGScript := preload("res://scripts/voxel_placement_generator.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const GPUAutoObjectRuntimeScript := preload("res://scripts/gpu_autoobject_runtime.gd")
-const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 const AssetDescriptor := preload("res://scripts/auto_voxel_descriptor.gd")
 const AutoObject := preload("res://scripts/auto_object.gd")
 const AutoObjectProbePrefilterGPU := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
@@ -1294,7 +1293,7 @@ func _get_placer() -> VoxelPlacementGenerator:
 
 func _build_resident_complexity_field_handoff(sv: Dictionary) -> Dictionary:
 	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
-	var expected_voxel_count := CommonVoxelSpaceScript.voxel_count(grid_size)
+	var expected_voxel_count := VoxelGeneral.voxel_count(grid_size)
 	var complexity_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER
 	var collision_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER
 	var stride_bytes := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
@@ -2238,7 +2237,7 @@ static func _pipeline_error(reason: String) -> Dictionary:
 
 
 static func _ensure_float_array(arr: PackedFloat32Array, grid_size: Vector3i) -> PackedFloat32Array:
-	var expected := CommonVoxelSpaceScript.voxel_count(grid_size)
+	var expected := VoxelGeneral.voxel_count(grid_size)
 	if arr.size() >= expected:
 		return arr
 	var result := arr.duplicate()
@@ -2248,7 +2247,7 @@ static func _ensure_float_array(arr: PackedFloat32Array, grid_size: Vector3i) ->
 
 static func _expected_target_byte_count(sv: Dictionary) -> int:
 	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
-	return maxi(CommonVoxelSpaceScript.voxel_count(grid_size), 1) * 4
+	return maxi(VoxelGeneral.voxel_count(grid_size), 1) * 4
 
 
 static func _prepacked_target_bytes(settings: Dictionary, key: String, expected_bytes: int) -> PackedByteArray:

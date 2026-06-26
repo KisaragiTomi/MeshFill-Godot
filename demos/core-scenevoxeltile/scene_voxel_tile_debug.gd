@@ -3,7 +3,6 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
 const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
-const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 # Dirty flag bit constants (mirroring SceneVoxelCommitter)
 const FLAG_SCENE := 1
@@ -140,7 +139,7 @@ func _setup_visualization() -> void:
 
 
 func _add_bounding_grid() -> void:
-	var grid_world := CommonVoxelSpaceScript.voxel_span_to_world_size(_committer.grid_size, _committer.voxel_size)
+	var grid_world := VoxelGeneral.voxel_span_to_world_size(_committer.grid_size, _committer.voxel_size)
 	var center := _committer.grid_origin + grid_world * 0.5
 
 	var box := MeshInstance3D.new()
@@ -333,7 +332,7 @@ func _build_tile_meshes() -> void:
 
 
 func _voxel_to_world(voxel_coord: Vector3i) -> Vector3:
-	return CommonVoxelSpaceScript.voxel_to_world(voxel_coord, _committer.grid_origin, _committer.voxel_size)
+	return VoxelGeneral.voxel_to_world(voxel_coord, _committer.grid_origin, _committer.voxel_size)
 
 
 func _full_refresh() -> void:

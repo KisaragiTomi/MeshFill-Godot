@@ -26,7 +26,6 @@ const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const GPUAutoObjectRuntimeScript := preload("res://scripts/gpu_autoobject_runtime.gd")
 const VoxelPickGPUScript := preload("res://scripts/voxel_pick_gpu.gd")
-const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 const VoxelDisplay := preload("res://scripts/voxel_display.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
 const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
@@ -1552,9 +1551,9 @@ func _pick_voxel_hit_gpu(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
 		return {}
 	var capture := TerrainConfigScript.CAPTURE_SIZE
 	var res := maxi(autoobject_grid_resolution, 1)
-	var grid_origin := CommonVoxelSpaceScript.default_grid_origin(capture)
+	var grid_origin := VoxelGeneral.default_grid_origin(capture)
 	var grid_size := Vector3i(res, 1, res)
-	var voxel_size := CommonVoxelSpaceScript.voxel_size_for_resolution(capture, res, 1.0)
+	var voxel_size := VoxelGeneral.voxel_size_for_resolution(capture, res, 1.0)
 	if _sv_committer != null:
 		grid_origin = _sv_committer.grid_origin
 		grid_size = _sv_committer.grid_size
@@ -1593,10 +1592,10 @@ func _world_to_selection_voxel(world_pos: Vector3) -> Vector3i:
 		)
 	var capture := TerrainConfigScript.CAPTURE_SIZE
 	var res := maxi(autoobject_grid_resolution, 1)
-	return CommonVoxelSpaceScript.world_to_voxel(
+	return VoxelGeneral.world_to_voxel(
 		world_pos,
-		CommonVoxelSpaceScript.default_grid_origin(capture),
-		CommonVoxelSpaceScript.voxel_size_for_resolution(capture, res, 1.0),
+		VoxelGeneral.default_grid_origin(capture),
+		VoxelGeneral.voxel_size_for_resolution(capture, res, 1.0),
 		Vector3i(res, 1, res)
 	)
 
@@ -1875,7 +1874,7 @@ func _targetsv_record_for_voxel(
 
 ## 计算SVTile标记的世界位置和尺寸
 func _svtile_marker_transform(tile_coord: Vector3i, tile_size: Vector3i) -> Dictionary:
-	var voxel_size := CommonVoxelSpaceScript.voxel_size_for_resolution(
+	var voxel_size := VoxelGeneral.voxel_size_for_resolution(
 		TerrainConfigScript.CAPTURE_SIZE,
 		autoobject_grid_resolution,
 		1.0
@@ -1891,7 +1890,7 @@ func _svtile_marker_transform(tile_coord: Vector3i, tile_size: Vector3i) -> Dict
 		(float(voxel_min.z) + float(voxel_max.z)) * 0.5
 	)
 	var center := _position_on_terrain_from_voxel_center(center_voxel, 1.0)
-	var span_world := CommonVoxelSpaceScript.voxel_span_to_world_size(voxel_max - voxel_min, voxel_size)
+	var span_world := VoxelGeneral.voxel_span_to_world_size(voxel_max - voxel_min, voxel_size)
 	var size := Vector3(
 		maxf(span_world.x * 0.96, 0.2),
 		2.5,
@@ -2022,7 +2021,7 @@ func _make_autoobject_selection_record(object_index: int, screen_score: float) -
 func _nearest_autoobject_at_world(world_pos: Vector3, cam: Camera3D, screen_pos: Vector2) -> Dictionary:
 	if _sv_committer == null or _autoobject_side_count <= 0 or _autoobject_spacing_voxels <= 0:
 		return {}
-	var voxel_center := CommonVoxelSpaceScript.world_to_voxel_center(
+	var voxel_center := VoxelGeneral.world_to_voxel_center(
 		world_pos,
 		_sv_committer.grid_origin,
 		_sv_committer.voxel_size
@@ -2093,13 +2092,13 @@ func _voxel_center_to_world(voxel: Vector3i, y: float) -> Vector3:
 func _voxel_float_center_to_world(voxel_center: Vector3, y: float) -> Vector3:
 	if _sv_committer == null:
 		var res := maxi(autoobject_grid_resolution, 1)
-		return CommonVoxelSpaceScript.voxel_float_center_to_world_xz(
+		return VoxelGeneral.voxel_float_center_to_world_xz(
 			voxel_center,
-			CommonVoxelSpaceScript.default_grid_origin(TerrainConfigScript.CAPTURE_SIZE),
-			CommonVoxelSpaceScript.voxel_size_for_resolution(TerrainConfigScript.CAPTURE_SIZE, res, 1.0),
+			VoxelGeneral.default_grid_origin(TerrainConfigScript.CAPTURE_SIZE),
+			VoxelGeneral.voxel_size_for_resolution(TerrainConfigScript.CAPTURE_SIZE, res, 1.0),
 			y
 		)
-	return CommonVoxelSpaceScript.voxel_float_center_to_world_xz(
+	return VoxelGeneral.voxel_float_center_to_world_xz(
 		voxel_center,
 		_sv_committer.grid_origin,
 		_sv_committer.voxel_size,

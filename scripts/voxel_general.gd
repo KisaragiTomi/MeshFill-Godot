@@ -6,7 +6,7 @@ extends RefCounted
 ## 包含：
 ##   - 坐标空间换算（原 common_voxel_space.gd 内容，已合并于此）
 ##   - 通用体素常量与无状态原语（自 scene_voxel_committer.gd 抽取）
-## historical common_voxel_space.gd 现为指向本类的兼容垫片，后续可弃用。
+## 注：旧 common_voxel_space.gd 兼容垫片（曾 extends 本类）已删除，全项目体素索引/坐标映射统一直接使用 VoxelGeneral。
 
 const MIN_VOXEL_SIZE := 0.0001
 

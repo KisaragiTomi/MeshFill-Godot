@@ -1,17 +1,8 @@
 @tool
 extends RefCounted
 
-const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 const DEFAULT_TILE_SIZE := 8
-
-
-static func voxel_count(grid_size: Vector3i) -> int:
-	return CommonVoxelSpaceScript.voxel_count(grid_size)
-
-
-static func voxel_index(position: Vector3i, grid_size: Vector3i) -> int:
-	return CommonVoxelSpaceScript.voxel_index(position, grid_size)
 
 
 static func tile_grid_size_for_grid(grid_size: Vector3i, tile_size: int = DEFAULT_TILE_SIZE) -> Vector3i:
@@ -52,14 +43,14 @@ static func make_flat_ground_sv(
 	tile_size: int = DEFAULT_TILE_SIZE,
 	grid_origin: Vector3 = Vector3.ZERO
 ) -> Dictionary:
-	var count := voxel_count(grid_size)
+	var count := VoxelGeneral.voxel_count(grid_size)
 	var complexity_field := PackedFloat32Array()
 	var collision_field := PackedFloat32Array()
 	complexity_field.resize(count)
 	collision_field.resize(count)
 	for z in range(maxi(grid_size.z, 0)):
 		for x in range(maxi(grid_size.x, 0)):
-			var index := voxel_index(Vector3i(x, 0, z), grid_size)
+			var index := VoxelGeneral.voxel_index(Vector3i(x, 0, z), grid_size)
 			if index >= 0 and index < complexity_field.size():
 				complexity_field[index] = 1.0
 	return make_sv(

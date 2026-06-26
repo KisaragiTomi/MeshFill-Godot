@@ -9,7 +9,6 @@ extends "res://scripts/godot_compute_shader_base.gd"
 ## asset footprint, then receive compact placement records and stamped occupancy.
 
 const AutoObject := preload("res://scripts/auto_object.gd")
-const CommonVoxelSpaceScript := preload("res://scripts/common_voxel_space.gd")
 
 const TILE_SIZE := 8
 const FOOTPRINT_CAPACITY := 128
@@ -575,7 +574,7 @@ static func _apply_stamp_deltas_to_cpu_state(
 	stamp_deltas: Array,
 	grid_size: Vector3i
 ) -> Dictionary:
-	var expected_voxel_count := CommonVoxelSpaceScript.voxel_count(grid_size)
+	var expected_voxel_count := VoxelGeneral.voxel_count(grid_size)
 	var applied_count := 0
 	var complexity_write_count := 0
 	var collision_write_count := 0
@@ -590,7 +589,7 @@ static func _apply_stamp_deltas_to_cpu_state(
 				or voxel.x >= grid_size.x or voxel.y >= grid_size.y or voxel.z >= grid_size.z:
 			skipped_count += 1
 			continue
-		var index := CommonVoxelSpaceScript.voxel_index(voxel, grid_size)
+		var index := VoxelGeneral.voxel_index(voxel, grid_size)
 		if index < 0 or index >= current_complexity.size() or index >= current_collision.size():
 			skipped_count += 1
 			continue
@@ -683,7 +682,7 @@ func run_multi_asset(
 	var compact_state_chain_reports: Array[Dictionary] = []
 	var compact_state_chain_applied_count := 0
 
-	var _voxel_count := CommonVoxelSpaceScript.voxel_count(grid_size)
+	var _voxel_count := VoxelGeneral.voxel_count(grid_size)
 	var _gpu_complexity_buffer: RID = _rid_from_value(common_settings.get("complexity_field_buffer_rid", RID()))
 	var _gpu_collision_buffer: RID = _rid_from_value(common_settings.get("collision_field_buffer_rid", RID()))
 	var _gpu_state_chain_requested := _gpu_state_chain_enabled(common_settings)
@@ -2148,7 +2147,7 @@ static func apply_pivot_to_footprint(footprint: Array, pivot_voxels: Vector3i) -
 
 
 static func _world_offset_to_voxels(offset: Vector3, voxel_size: Vector3) -> Vector3i:
-	return CommonVoxelSpaceScript.world_offset_to_voxels(offset, voxel_size)
+	return VoxelGeneral.world_offset_to_voxels(offset, voxel_size)
 
 
 static func _placement_output_score(gpu_out: Dictionary) -> float:
@@ -2382,7 +2381,7 @@ static func world_to_texture_pixel(
 	capture_size: float,
 	resolution: int
 ) -> Vector2i:
-	return CommonVoxelSpaceScript.world_to_texture_pixel(world_pos, capture_size, resolution)
+	return VoxelGeneral.world_to_texture_pixel(world_pos, capture_size, resolution)
 
 
 static func world_to_volume_pixel(
@@ -2391,7 +2390,7 @@ static func world_to_volume_pixel(
 	p_grid_origin: Vector3,
 	p_voxel_size: Vector3
 ) -> Vector2i:
-	return CommonVoxelSpaceScript.world_to_volume_pixel(world_pos, resolution, p_grid_origin, p_voxel_size)
+	return VoxelGeneral.world_to_volume_pixel(world_pos, resolution, p_grid_origin, p_voxel_size)
 
 
 static func _placement_base_pixel(
@@ -2415,8 +2414,8 @@ static func _placement_base_pixel(
 	if target != null and target.has_method("world_to_volume_pixel"):
 		return target.call("world_to_volume_pixel", world_pos, resolution)
 	if record_config.has("grid_origin") or record_config.has("voxel_size"):
-		var fallback_voxel_size := CommonVoxelSpaceScript.voxel_size_for_resolution(capture_size, resolution, 1.0)
-		var fallback_grid_origin := CommonVoxelSpaceScript.default_grid_origin(capture_size)
+		var fallback_voxel_size := VoxelGeneral.voxel_size_for_resolution(capture_size, resolution, 1.0)
+		var fallback_grid_origin := VoxelGeneral.default_grid_origin(capture_size)
 		return world_to_volume_pixel(
 			world_pos,
 			resolution,
@@ -2486,7 +2485,7 @@ func run_minimal(
 	settings: Dictionary = {}
 ) -> Dictionary:
 	_apply_settings(settings)
-	var voxel_count := CommonVoxelSpaceScript.voxel_count(grid_size)
+	var voxel_count := VoxelGeneral.voxel_count(grid_size)
 	if voxel_count <= 0:
 		push_error("VoxelPlacementGenerator: grid_size must be positive")
 		return {}
@@ -5190,10 +5189,6 @@ func get_debug_channel_gpu(debug_voxel: PackedFloat32Array, channel: int, voxel_
 	}
 
 
-func voxel_index(p: Vector3i, grid_size: Vector3i) -> int:
-	return CommonVoxelSpaceScript.voxel_index(p, grid_size)
-
-
 # ---------------------------------------------------------------------------
 # Footprint baking: collision -> GPU footprint array
 # ---------------------------------------------------------------------------
@@ -6116,7 +6111,7 @@ static func results_to_world(
 		var origin: Vector3i = r.get("voxel_origin", Vector3i.ZERO)
 		var rot_idx := int(r.get("rotation_index", 0))
 		var scale_idx := int(r.get("scale_index", 0))
-		var world_pos := CommonVoxelSpaceScript.voxel_to_world(origin, grid_origin, voxel_size)
+		var world_pos := VoxelGeneral.voxel_to_world(origin, grid_origin, voxel_size)
 		var yaw := float(rot_idx) * 360.0 / float(maxi(rotation_count, 1))
 		var pivot_offset := _vector3_from_value(pivot_variant.get("offset", Vector3.ZERO), Vector3.ZERO)
 		var pivot_world_offset := pivot_offset.rotated(Vector3.UP, deg_to_rad(yaw))
