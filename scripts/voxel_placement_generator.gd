@@ -9,6 +9,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 ## asset footprint, then receive compact placement records and stamped occupancy.
 
 const AutoObject := preload("res://scripts/auto_object.gd")
+const VoxelPlacementOutputScript := preload("res://scripts/voxel_placement_output.gd")
 const VoxelFootprintBakerScript := preload("res://scripts/voxel_footprint_baker.gd")
 
 const TILE_SIZE := 8
@@ -2240,242 +2241,6 @@ func placement_world_to_volume_pixel(
 	p_voxel_size: Vector3
 ) -> Vector2i:
 	return world_to_volume_pixel(world_pos, resolution, p_grid_origin, p_voxel_size)
-
-
-static func instantiate_placement(
-	world_result: Dictionary,
-	node_class: String,
-	placement_mesh: Mesh,
-	extra_config: Dictionary = {},
-	parent: Node = null
-) -> AutoObject:
-	var node: AutoObject = _create_node_for_class(node_class)
-	var cfg := extra_config.duplicate(true)
-
-	cfg["position"] = world_result.get("position", Vector3.ZERO)
-	cfg["rotation_mode"] = "Y"
-	cfg["rotation_degrees"] = world_result.get("rotation_degrees", Vector3.ZERO)
-	cfg["scale"] = world_result.get("scale", Vector3.ONE)
-	cfg["mesh"] = placement_mesh
-	if not cfg.has("auto_source"):
-		cfg["auto_source"] = "voxel_placement"
-
-	if not cfg.has("name"):
-		cfg["name"] = "%s_%d" % [node_class, int(world_result.get("asset_index", 0))]
-
-	var asset = cfg.get("asset", null)
-	if node is AutoObject and asset is AutoObject:
-		(node as AutoObject).configure_from_asset(asset as AutoObject, cfg)
-	else:
-		_configure_node(node, node_class, cfg)
-
-	if parent != null and node.get_parent() == null:
-		parent.add_child(node)
-
-	var record := _get_config_voxel_write_spec(cfg)
-	if not record.is_empty():
-		record = attach_placement_voxel_write_spec(node, record)
-	elif bool(cfg.get("create_voxel_write_spec", false)):
-		record = make_placement_voxel_write_spec(node, world_result, node_class, cfg)
-		if not record.is_empty():
-			record = attach_placement_voxel_write_spec(node, record)
-
-	var target = cfg.get(SCENE_VOXEL_COMMITTER_CONFIG_KEY, cfg.get(PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY, null))
-	if not record.is_empty() and target != null and target.has_method("apply_voxel_write_spec"):
-		var apply_method := "apply_voxel_write_spec"
-		var applied: Dictionary = target.call(
-			apply_method,
-			record,
-			bool(cfg.get("defer_blend", false)),
-			int(cfg.get("generation_tick", -1))
-		)
-		if not applied.is_empty():
-			attach_placement_voxel_write_spec(node, applied)
-	var spa_owner := _scene_placement_actor_from_config(cfg)
-	if spa_owner != null and spa_owner.has_method("own_autoobject"):
-		var asset_id := int(world_result.get("asset_index", cfg.get("asset_index", -1)))
-		spa_owner.call("own_autoobject", node, asset_id)
-	return node
-
-
-static func instantiate_placements(
-	world_results: Array,
-	node_class: String,
-	placement_mesh: Mesh,
-	extra_config: Dictionary = {},
-	parent: Node = null
-) -> Array[AutoObject]:
-	var nodes: Array[AutoObject] = []
-	for i in range(world_results.size()):
-		var cfg := extra_config.duplicate(true)
-		cfg["name"] = "%s_%d" % [node_class, i]
-		var node := instantiate_placement(world_results[i], node_class, placement_mesh, cfg, parent)
-		nodes.append(node)
-	return nodes
-
-
-static func make_placement_voxel_write_spec(
-	node: AutoObject,
-	world_result: Dictionary,
-	node_class: String,
-	record_config: Dictionary = {}
-) -> Dictionary:
-	if node == null:
-		return {}
-
-	var resolution := maxi(int(record_config.get("volume_xz_resolution", record_config.get("texture_resolution", 256))), 1)
-	var capture := float(record_config.get("capture_size", record_config.get("world_capture_size", float(resolution))))
-	if capture <= 0.0:
-		capture = float(resolution)
-	var base_px := _placement_base_pixel(world_result, record_config, capture, resolution)
-	var record_id := str(record_config.get("record_id", record_config.get("id", node.name)))
-	if record_id.is_empty():
-		record_id = "%s_%d" % [node_class, int(world_result.get("asset_index", 0))]
-
-	var fields := _placement_record_extra_fields(node, world_result, node_class, record_config)
-	var record := node.make_instance_stamp_write_spec(
-		record_id,
-		base_px,
-		resolution,
-		fields
-	)
-	record["rotation_mode"] = str(world_result.get("rotation_mode", record_config.get("rotation_mode", "Y"))).to_upper()
-	record["rotation_degrees"] = world_result.get("rotation_degrees", node.rotation_degrees)
-	record["mesh_name"] = node.name
-	return record
-
-
-static func attach_placement_voxel_write_spec(node: AutoObject, record: Dictionary) -> Dictionary:
-	if node == null or record.is_empty():
-		return {}
-	var rec := record.duplicate(true)
-	node.refresh_bound_spacing()
-	var instance_id := node.refresh_instance_id()
-	var record_id := str(rec.get("id", node.name))
-	if record_id.is_empty():
-		record_id = node.name
-	rec["id"] = record_id
-	rec["mesh_name"] = node.name
-	rec["position"] = node.position
-	rec["scale"] = node.scale
-	rec["rotation_degrees"] = rec.get("rotation_degrees", node.rotation_degrees)
-	rec["instance_id"] = instance_id
-	rec["auto_instance_id"] = instance_id
-	if node.auto_id.is_empty():
-		node.auto_id = record_id
-	rec["auto_id"] = node.auto_id
-	rec["auto_object_id"] = node.auto_id
-	rec["instance_mesh_id"] = instance_id
-	rec["mesh_instance_id"] = instance_id
-	if not rec.has("auto_source"):
-		rec["auto_source"] = node.get_record_auto_source("voxel_placement")
-	if not rec.has("object_type"):
-		rec["object_type"] = node.get_record_object_type()
-	if node.is_inside_tree():
-		rec["node_path"] = str(node.get_path())
-	node.set_instance_stamp_write_spec(rec)
-	return node.get_instance_stamp_write_spec()
-
-
-static func world_to_texture_pixel(
-	world_pos: Vector3,
-	capture_size: float,
-	resolution: int
-) -> Vector2i:
-	return VoxelGeneral.world_to_texture_pixel(world_pos, capture_size, resolution)
-
-
-static func world_to_volume_pixel(
-	world_pos: Vector3,
-	resolution: int,
-	p_grid_origin: Vector3,
-	p_voxel_size: Vector3
-) -> Vector2i:
-	return VoxelGeneral.world_to_volume_pixel(world_pos, resolution, p_grid_origin, p_voxel_size)
-
-
-static func _placement_base_pixel(
-	world_result: Dictionary,
-	record_config: Dictionary,
-	capture_size: float,
-	resolution: int
-) -> Vector2i:
-	var raw_base = record_config.get("base_pixel", world_result.get("base_pixel", null))
-	if raw_base is Vector2i:
-		return raw_base as Vector2i
-	if raw_base is Vector2:
-		var v := raw_base as Vector2
-		return Vector2i(roundi(v.x), roundi(v.y))
-	if raw_base is Array:
-		var arr := raw_base as Array
-		if arr.size() >= 2:
-			return Vector2i(int(arr[0]), int(arr[1]))
-	var world_pos: Vector3 = world_result.get("position", Vector3.ZERO)
-	var target = record_config.get(SCENE_VOXEL_COMMITTER_CONFIG_KEY, record_config.get(PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY, null))
-	if target != null and target.has_method("world_to_volume_pixel"):
-		return target.call("world_to_volume_pixel", world_pos, resolution)
-	if record_config.has("grid_origin") or record_config.has("voxel_size"):
-		var fallback_voxel_size := VoxelGeneral.voxel_size_for_resolution(capture_size, resolution, 1.0)
-		var fallback_grid_origin := VoxelGeneral.default_grid_origin(capture_size)
-		return world_to_volume_pixel(
-			world_pos,
-			resolution,
-			_vector3_from_value(record_config.get("grid_origin", fallback_grid_origin), fallback_grid_origin),
-			_vector3_from_value(record_config.get("voxel_size", fallback_voxel_size), fallback_voxel_size)
-		)
-	return world_to_texture_pixel(world_pos, capture_size, resolution)
-
-
-static func _placement_record_extra_fields(
-	node: AutoObject,
-	world_result: Dictionary,
-	node_class: String,
-	record_config: Dictionary
-) -> Dictionary:
-	var fields := {}
-	for key in record_config.keys():
-		if VOXEL_WRITE_SPEC_CONFIG_KEYS.has(key) or AutoObject.voxel_write_spec_meta_keys().has(key):
-			continue
-		fields[key] = record_config[key]
-
-	fields["auto_source"] = str(record_config.get("auto_source", node.get_record_auto_source("voxel_placement")))
-	fields["placement_source"] = "voxel_placement"
-	fields["source_voxel_type"] = str(record_config.get("source_voxel_type", "AutoSceneVoxel"))
-	fields["object_subtype"] = node_class
-	fields["asset_index"] = int(world_result.get("asset_index", record_config.get("asset_index", 0)))
-	fields["rotation_index"] = int(world_result.get("rotation_index", record_config.get("rotation_index", 0)))
-	fields["scale_index"] = int(world_result.get("scale_index", record_config.get("scale_index", 0)))
-	fields["voxel_origin"] = world_result.get("voxel_origin", Vector3i.ZERO)
-
-	for debug_key in [
-		"score",
-		"support_ratio",
-		"solid_collision",
-		"complexity_overlap",
-		"clearance_overlap",
-		"ignored_sample",
-	]:
-		if world_result.has(debug_key):
-			fields[debug_key] = world_result[debug_key]
-	if node is AutoObject:
-		fields["mesh_index"] = int((node as AutoObject).mesh_index)
-	return fields
-
-
-static func _create_node_for_class(node_class: String) -> AutoObject:
-	match node_class:
-		"rock", "cliff":
-			return AutoObject.new()
-		_:
-			return AutoObject.new()
-
-
-static func _configure_node(node: AutoObject, node_class: String, cfg: Dictionary) -> void:
-	match node_class:
-		"rock", "cliff":
-			(node as AutoObject).configure_object(cfg)
-		_:
-			node.configure_auto_object(cfg)
 
 
 func run_minimal(
@@ -5194,129 +4959,6 @@ func get_debug_channel_gpu(debug_voxel: PackedFloat32Array, channel: int, voxel_
 # Footprint baking: collision -> GPU footprint array
 # ---------------------------------------------------------------------------
 
-static func results_to_world(
-	results: Array[Dictionary],
-	voxel_size: Vector3,
-	grid_origin: Vector3,
-	rotation_count: int = 24,
-	pivot_variant: Dictionary = {}
-) -> Array[Dictionary]:
-	var world_results: Array[Dictionary] = []
-	for r in results:
-		if not bool(r.get("valid", false)):
-			continue
-		var origin: Vector3i = r.get("voxel_origin", Vector3i.ZERO)
-		var rot_idx := int(r.get("rotation_index", 0))
-		var scale_idx := int(r.get("scale_index", 0))
-		var world_pos := VoxelGeneral.voxel_to_world(origin, grid_origin, voxel_size)
-		var yaw := float(rot_idx) * 360.0 / float(maxi(rotation_count, 1))
-		var pivot_offset := _vector3_from_value(pivot_variant.get("offset", Vector3.ZERO), Vector3.ZERO)
-		var pivot_world_offset := pivot_offset.rotated(Vector3.UP, deg_to_rad(yaw))
-		var instance_pos := world_pos - pivot_world_offset
-		world_results.append({
-			"position": instance_pos,
-			"anchor_position": world_pos,
-			"pivot_variant": str(pivot_variant.get("name", "bottom")),
-			"pivot_offset": pivot_offset,
-			"rotation_degrees": Vector3(0.0, yaw, 0.0),
-			"rotation_mode": "Y",
-			"scale": Vector3.ONE,
-			"score": float(r.get("score", 0.0)),
-			"voxel_origin": origin,
-			"rotation_index": rot_idx,
-			"scale_index": scale_idx,
-			"asset_index": int(r.get("asset_index", 0)),
-			"support_ratio": float(r.get("support_ratio", 0.0)),
-			"solid_collision": float(r.get("solid_collision", 0.0)),
-			"complexity_overlap": float(r.get("complexity_overlap", 0.0)),
-			"clearance_overlap": float(r.get("clearance_overlap", 0.0)),
-			"ignored_sample": float(r.get("ignored_sample", 0.0)),
-		})
-	return world_results
-
-
-# ---------------------------------------------------------------------------
-# voxel_write_spec creation
-# ---------------------------------------------------------------------------
-
-static func make_voxel_write_spec(
-	world_result: Dictionary,
-	node: AutoObject,
-	config: Dictionary = {}
-) -> Dictionary:
-	if node != null:
-		var node_record_id := str(config.get("id", node.name if not node.name.is_empty() else "voxel_placement_%d" % int(world_result.get("asset_index", 0))))
-		var fields := config.duplicate(true)
-		fields.erase("id")
-		fields.erase("id_prefix")
-		if not fields.has("auto_source"):
-			fields["auto_source"] = "voxel_placement"
-		if not fields.has("source_voxel_type"):
-			fields["source_voxel_type"] = "AutoSceneVoxel"
-		fields["score"] = float(world_result.get("score", 0.0))
-		fields["voxel_origin"] = world_result.get("voxel_origin", Vector3i.ZERO)
-		fields["rotation_index"] = int(world_result.get("rotation_index", 0))
-		fields["asset_index"] = int(world_result.get("asset_index", 0))
-		var node_record := node.make_instance_stamp_write_spec(node_record_id, Vector2i.ZERO, 0, fields)
-		node_record["position"] = world_result.get("position", node.position)
-		node_record["scale"] = world_result.get("scale", node.scale)
-		if world_result.has("rotation_degrees"):
-			node_record["rotation_degrees"] = world_result.rotation_degrees
-		return node_record
-
-	var color: Color = config.get("color", Color.WHITE)
-	var complexity := clampf(float(config.get("complexity", color.a)), 0.0, 1.0)
-	color.a = complexity
-	var position: Vector3 = world_result.get("position", Vector3.ZERO)
-	var scale_val: Vector3 = world_result.get("scale", Vector3.ONE)
-	var record_id := str(config.get("id", "voxel_placement_%d" % int(world_result.get("asset_index", 0))))
-	var collision_layers: Array = config.get("collision", [])
-
-	var record := {
-		"id": record_id,
-		"type": config.get("type", "vegetation"),
-		"auto_source": "voxel_placement",
-		"source_voxel_type": "AutoSceneVoxel",
-		"position": position,
-		"scale": scale_val,
-		"base_pixel": Vector2i.ZERO,
-		"voxel_xz": Vector2i.ZERO,
-		"volume_xz_resolution": 0,
-		"color": color,
-		"complexity": complexity,
-		"collision": collision_layers,
-		"score": float(world_result.get("score", 0.0)),
-		"voxel_origin": world_result.get("voxel_origin", Vector3i.ZERO),
-		"rotation_index": int(world_result.get("rotation_index", 0)),
-		"rotation_mode": str(world_result.get("rotation_mode", "Y")).to_upper(),
-		"rotation_degrees": world_result.get("rotation_degrees", Vector3.ZERO),
-		"asset_index": int(world_result.get("asset_index", 0)),
-	}
-	if config.has("channel"):
-		record["channel"] = int(config.channel)
-		record["radius"] = float(config.get("radius", 0.0))
-		if config.has("y_min"):
-			record["y_min"] = float(config.y_min)
-		if config.has("y_max"):
-			record["y_max"] = float(config.y_max)
-	return record
-
-
-static func make_voxel_write_specs(
-	world_results: Array,
-	nodes: Array,
-	config: Dictionary = {}
-) -> Array[Dictionary]:
-	var records: Array[Dictionary] = []
-	for i in range(world_results.size()):
-		var node: AutoObject = nodes[i] if i < nodes.size() else null
-		var cfg := config.duplicate(true)
-		cfg["id"] = "%s_%d" % [str(config.get("id_prefix", "voxel_placement")), i]
-		records.append(make_voxel_write_spec(world_results[i], node, cfg))
-	return records
-
-
-## ===== VoxelFootprintBaker 静态委托桩(抽出后保持外部/内部调用兼容) =====
 static func bake_footprint_from_collision(
 	collision_layers: Array,
 	voxel_size: Vector3,
@@ -5330,3 +4972,54 @@ static func rotate_footprint_y(
 	footprint: Array[Dictionary], yaw_degrees: float
 ) -> Array[Dictionary]:
 	return VoxelFootprintBakerScript.rotate_footprint_y(footprint, yaw_degrees)
+
+
+
+## ===== VoxelPlacementOutput 静态委托桩 =====
+static func _placement_base_pixel(world_result: Dictionary,
+	record_config: Dictionary,
+	capture_size: float,
+	resolution: int) -> Vector2i:
+	return VoxelPlacementOutputScript._placement_base_pixel(world_result, record_config, capture_size, resolution)
+static func attach_placement_voxel_write_spec(node: AutoObject, record: Dictionary) -> Dictionary:
+	return VoxelPlacementOutputScript.attach_placement_voxel_write_spec(node, record)
+static func instantiate_placement(world_result: Dictionary,
+	node_class: String,
+	placement_mesh: Mesh,
+	extra_config: Dictionary = {},
+	parent: Node = null) -> AutoObject:
+	return VoxelPlacementOutputScript.instantiate_placement(world_result, node_class, placement_mesh, extra_config, parent)
+static func instantiate_placements(world_results: Array,
+	node_class: String,
+	placement_mesh: Mesh,
+	extra_config: Dictionary = {},
+	parent: Node = null) -> Array[AutoObject]:
+	return VoxelPlacementOutputScript.instantiate_placements(world_results, node_class, placement_mesh, extra_config, parent)
+static func make_placement_voxel_write_spec(node: AutoObject,
+	world_result: Dictionary,
+	node_class: String,
+	record_config: Dictionary = {}) -> Dictionary:
+	return VoxelPlacementOutputScript.make_placement_voxel_write_spec(node, world_result, node_class, record_config)
+static func make_voxel_write_spec(world_result: Dictionary,
+	node: AutoObject,
+	config: Dictionary = {}) -> Dictionary:
+	return VoxelPlacementOutputScript.make_voxel_write_spec(world_result, node, config)
+static func make_voxel_write_specs(world_results: Array,
+	nodes: Array,
+	config: Dictionary = {}) -> Array[Dictionary]:
+	return VoxelPlacementOutputScript.make_voxel_write_specs(world_results, nodes, config)
+static func results_to_world(results: Array[Dictionary],
+	voxel_size: Vector3,
+	grid_origin: Vector3,
+	rotation_count: int = 24,
+	pivot_variant: Dictionary = {}) -> Array[Dictionary]:
+	return VoxelPlacementOutputScript.results_to_world(results, voxel_size, grid_origin, rotation_count, pivot_variant)
+static func world_to_texture_pixel(world_pos: Vector3,
+	capture_size: float,
+	resolution: int) -> Vector2i:
+	return VoxelPlacementOutputScript.world_to_texture_pixel(world_pos, capture_size, resolution)
+static func world_to_volume_pixel(world_pos: Vector3,
+	resolution: int,
+	p_grid_origin: Vector3,
+	p_voxel_size: Vector3) -> Vector2i:
+	return VoxelPlacementOutputScript.world_to_volume_pixel(world_pos, resolution, p_grid_origin, p_voxel_size)
