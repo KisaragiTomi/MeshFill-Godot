@@ -282,3 +282,62 @@ static func vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Ve
 		)
 
 	return fallback
+
+
+# ============================================================
+# 碰撞记录几何原语（自 scene_voxel_committer.gd 抽取，无状态、按显式参数传入网格信息）
+# ============================================================
+
+## 计算碰撞记录的有效半径（半径减腐蚀加膨胀）。原 scene_voxel_committer._collision_effective_radius。
+static func collision_effective_radius(collision: Dictionary) -> float:
+	var radius := maxf(float(collision.get("radius", 0.0)), 0.0)
+	var erosion := maxf(float(collision.get("erosion_radius", 0.0)), 0.0)
+	var dilation := maxf(float(collision.get("dilation_radius", 0.0)), 0.0)
+	if erosion > 0.0 and radius <= erosion:
+		return 0.0
+	return maxf(radius - erosion, 0.0) + dilation
+
+
+## 判断碰撞记录是否为点采样类型（含 voxel/local_pos/voxel_offset 字段）。
+static func is_point_collision_sample(collision: Dictionary) -> bool:
+	return collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset")
+
+
+## 从碰撞记录中提取本地体素坐标（voxel / local_pos / voxel_offset）。
+static func collision_local_voxel(collision: Dictionary) -> Vector3i:
+	return vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
+
+
+## 计算碰撞层在底图上的基础像素坐标：点采样类型叠加本地偏移并按 base_res 裁剪。
+static func collision_layer_base_px(base_px: Vector2i, collision: Dictionary, base_res: int) -> Vector2i:
+	if not is_point_collision_sample(collision):
+		return base_px
+	var local := collision_local_voxel(collision)
+	return Vector2i(
+		clampi(base_px.x + local.x, 0, base_res - 1),
+		clampi(base_px.y + local.z, 0, base_res - 1)
+	)
+
+
+## 计算碰撞记录的像素半径：点采样优先用 radius_px 字段，否则按有效半径换算。
+static func collision_radius_px(collision: Dictionary, capture_size: float, base_res: int) -> int:
+	if is_point_collision_sample(collision):
+		return maxi(int(collision.get("radius_px", 0)), 0)
+	if collision.has("radius_px"):
+		return maxi(int(collision.radius_px), 1)
+	return maxi(1, world_radius_to_texture_radius(collision_effective_radius(collision), capture_size, base_res))
+
+
+## 将单通道标量字段扩展为 vec4(rgba) 交错格式：RGB 填白、标量作为 alpha。
+## 原 scene_voxel_committer._expand_complexity_field_to_vec4（旧浮点复杂度场兼容路径）。
+static func expand_scalar_field_to_vec4(field: PackedFloat32Array) -> PackedFloat32Array:
+	var voxel_count := field.size()
+	var result := PackedFloat32Array()
+	result.resize(voxel_count * 4)
+	for i in range(voxel_count):
+		var base := i * 4
+		result[base + 0] = 1.0
+		result[base + 1] = 1.0
+		result[base + 2] = 1.0
+		result[base + 3] = clampf(field[i], 0.0, 1.0)
+	return result
