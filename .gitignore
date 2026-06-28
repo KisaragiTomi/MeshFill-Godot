@@ -1,8 +1,6 @@
 .godot/
 _archive/
 
-geo/SM_Cliff_06.FBX
-
 *.tmp
 *.log
 *-冲突-*
@@ -17,6 +15,9 @@ __pycache__/
 # Local assistant notes
 mempalace.md
 .automation/
+
+# 重构临时备份（committer/generator 拆分过程快照与工具，不入库）
+.refactor_bak/
 *.svg.import
 *.md.import
 *.png.import
@@ -27,11 +28,10 @@ _shots/
 godot-mcp/
 .codex-run/
 .cursor/
-tools/mcp_probe.js
-tools/mcp9090_client.py
-tools/ping9090.py
+tools/editor_bridge_client.py
+tools/editor_bridge_probe.js
+tools/ping_editor_bridge.py
 tools/probe_ports.py
 tools/drive_editor_demo.py
 tools/focus_editor.ps1
-tools/set_update_continuously.py
 tools/godot-mcp-bridge/

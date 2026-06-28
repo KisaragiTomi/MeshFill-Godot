@@ -2,7 +2,7 @@
 
 本文定义 `TargetSceneVoxel`（简称 `TargetSV`）、`BrushSV` 和 `TargetSV_B` 的职责边界。`TargetSV_B` 是 prefilter / routing / scoring / result feedback 的 target guidance 输入，不是 committed `SceneVoxel`，也不是资产选择结果。
 
-![当前 TargetSV GPU 生成、持久化与调试显示流程](../svg/target-scene-voxel-current.svg)
+![当前 TargetSV GPU 生成、持久化与调试显示流程](diagrams/target-scene-voxel-current.svg)
 
 ## 语义边界
 
@@ -46,7 +46,7 @@
 - 当前 record builder 会为 `TargetSceneVoxel` 设置 `target_guidance_only = true`、`height_buffer_applied = false`、`collision_buffer_applied = false`。
 - 最终 `collision_field` 由 committed `SceneVoxel.collision` 与 terrain base collision 发布到 SV resident collision channel。
 
-这个边界由 `tools/test_target_guidance_source_boundary.gd` 覆盖。
+这个 guidance-only 边界由 `tools/test_markdown_contracts.gd` 的 TargetSV point-cloud 合约校验覆盖。
 
 ## Prefilter / Routing 关系
 

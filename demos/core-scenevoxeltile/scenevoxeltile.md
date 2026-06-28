@@ -1,8 +1,8 @@
 # SceneVoxelTile 粗粒度 SV Cell 管理系统
 
-本文定义 `SceneVoxelTile`：由 `SceneVoxelCommitter` / SV owner 持有的粗粒度 cell index / dirty record，用来统一管理 dirty、局部 voxel 范围、AutoObject 引用和增量更新边界。点选 voxel 时，所属 `SceneVoxelTile` 由 voxel 坐标和 `scene_voxel_tile_size` 直接推导，不从 provenance 或公开 sidecar 查询。`SceneVoxel` / SV committed payload 见 [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)；资产默认语义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，字段归属边界见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；GPU-first AutoObject 方向见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)；placement route 术语见 [`voxel-semantic-routing.md`](../placement-voxel-semantic-routing/voxel-semantic-routing.md)。SPA（`ScenePlacementActor`）借用 `SceneVoxelCommitter` 引用编排 commit，不直接管理 tile dirty sidecar；详见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
+本文定义 `SceneVoxelTile`：由 `SceneVoxelCommitter` / SV owner 持有的粗粒度 cell index / dirty record，用来统一管理 dirty、局部 voxel 范围、AutoObject 引用和增量更新边界。点选 voxel 时，所属 `SceneVoxelTile` 由 voxel 坐标和 `scene_voxel_tile_size` 直接推导，不从 provenance 或公开 sidecar 查询。`SceneVoxel` / SV committed payload 见 [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)；资产默认语义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，字段归属边界见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；GPU-first AutoObject 方向见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)。SPA（`ScenePlacementActor`）借用 `SceneVoxelCommitter` 引用编排 commit，不直接管理 tile dirty sidecar；详见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
 
-![SceneVoxelTile coarse SV cell index](../svg/scenevoxeltile.svg)
+![SceneVoxelTile coarse SV cell index](diagrams/scenevoxeltile.svg)
 
 ## 目标
 
@@ -249,12 +249,11 @@ placement/exclusion 的邻域查询走 per-voxel object refs（直接通过 voxe
 
 被接受的 placement 结果需要生成 `ISWS` / source record，再通过 `SceneVoxelTile` dirty 和 `blend_scene_voxels()` 发布到 committed `SceneVoxel`；placement shader 的 temporary `complexity_field_out` / `collision_field_out` 不直接成为 SV source of truth。
 
-Heightfield rock fitting 是独立 producer，输出 placement results 后由 `main.gd` 实例化并派生 `ISWS`；详见 [`meshfill-rock-placement-flow.md`](../placement-meshfill-rock-placement/meshfill-rock-placement-flow2.5d(暂停开发).md)。Target-driven voxel region route 见 [`voxel-semantic-routing.md`](../placement-voxel-semantic-routing/voxel-semantic-routing.md)。
 
 以下功能均已实现并通过测试验证，详见各测试文件入口。
 
 
-> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，CPU fallback 不得作为通过条件。
+> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，且不得以非 GPU 路径作为通过条件。
 
 ## 运行方式
 
@@ -269,13 +268,12 @@ Heightfield rock fitting 是独立 producer，输出 placement results 后由 `m
 2. 运行 Vulkan GPU 验收，确认真实 `RenderingDevice`、GPU storage buffers 和 readback 路径：
 
 ```bash
-<godot> --path . --rendering-driver vulkan --script tools/test_voxel_dirty_tile_upload.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_scene_voxel_field.gd
 ```
 
 #### 禁止 `--headless`
 
-所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，且不得以非 GPU 路径作为通过条件。
 
 3. 检查 `project.godot` 中 `meshfill/scene_voxel_tile/size_voxels` 的覆盖值是否与文档说明一致。
 

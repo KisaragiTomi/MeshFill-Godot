@@ -1,10 +1,10 @@
 # Complexity Field System
 
-本文维护 MeshFill 中 `SceneVoxel`、source write、`collision` 和 SV 常驻显存状态的契约。跨模块总览见 [`meshfill-framework.md`](../core-meshfill-framework/meshfill-framework.md)；`AssetDescriptor` 定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，资产字段归属见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；粗粒度 SV cell 管理见 [`scenevoxeltile.md`](../core-scenevoxeltile/scenevoxeltile.md)；AutoObject GPU-first 方向见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)；TargetSV、候选路由和 heightfield placement 分别见 [`target-scene-voxel-projection.md`](../target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md)、[`voxel-semantic-routing.md`](../placement-voxel-semantic-routing/voxel-semantic-routing.md)、[`meshfill-rock-placement-flow.md`](../placement-meshfill-rock-placement/meshfill-rock-placement-flow2.5d(暂停开发).md)。**SPA**（`ScenePlacementActor`）是 MeshFill 运行时编排器，借用 `SceneVoxelCommitter` 引用并在 commit 阶段调用 `apply_voxel_write_spec()`；详见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
+本文维护 MeshFill 中 `SceneVoxel`、source write、`collision` 和 SV 常驻显存状态的契约。跨模块总览见 [`meshfill-framework.md`](../core-meshfill-framework/meshfill-framework.md)；`AssetDescriptor` 定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，资产字段归属见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；粗粒度 SV cell 管理见 [`scenevoxeltile.md`](../core-scenevoxeltile/scenevoxeltile.md)；AutoObject GPU-first 方向见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)；TargetSV 见 [`target-scene-voxel-projection.md`](../target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md)。**SPA**（`ScenePlacementActor`）是 MeshFill 运行时编排器，借用 `SceneVoxelCommitter` 引用并在 commit 阶段调用 `apply_voxel_write_spec()`；详见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
 
 **SceneVoxel Source Fusion**（**SVSF**）是 `AutoSV` + `BrushSV` + `LandscapeSV`（terrain base collision / target guidance）合成为 `BlendSV` / committed `SceneVoxel` 的正式命名。SVSF 包含 `resolve_scene_voxel_sources.glsl`（同 stream source candidate 仲裁 + 多源合并）和 `blend_scene_voxel_fields.glsl`（compact source records → dense field）两个 GPU pass，由 `blend_scene_voxels()` 统一编排。
 
-![SceneVoxel / SV source commit and resident GPU field flow](../svg/scene-voxel-flow.svg)
+![SceneVoxel / SV source commit and resident GPU field flow](diagrams/scene-voxel-flow.svg)
 
 ## 本文范围
 
@@ -267,7 +267,7 @@ SV resident state 字段含义维护在 `SceneVoxelCommitter._rebuild_sv()` 的 
 
 
 
-> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，CPU fallback 不得作为通过条件。
+> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，且不得以非 GPU 路径作为通过条件。
 
 ## 运行方式
 
@@ -285,12 +285,11 @@ SV resident state 字段含义维护在 `SceneVoxelCommitter._rebuild_sv()` 的 
 <godot> --path . --rendering-driver vulkan --script tools/test_scene_voxel_field.gd
 <godot> --headless --path . --script tools/test_voxel_placement_record_commit.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_blendsv_feedback_score.gd
-<godot> --path . --rendering-driver vulkan --script tools/test_voxel_dirty_tile_upload.gd
 ```
 
 #### 禁止 `--headless`
 
-所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，且不得以非 GPU 路径作为通过条件。
 
 3. 对照 `scripts/scene_voxel_committer.gd`，检查 `_write_source_scene_voxel()`、`blend_scene_voxels()`、`_rebuild_sv()` 的职责没有互相越界。
 

@@ -2,7 +2,7 @@
 
 本文维护 `ScenePlacementActor`（简称 `SPA`）的运行时编排契约。SPA 拥有 descriptor → GPU profile buffer 与 AutoObject runtime object buffers 的完整生命周期，并把 asset registry、profile GPU buffers、AutoObject GPU state、prefilter、placement 和 commit 收敛到同一个入口；`SceneVoxelCommitter` 和 `TargetSV_B` 仍由外部 owner 提供。
 
-![ScenePlacementActor runtime orchestration](../svg/scene-placement-actor.svg)
+![ScenePlacementActor runtime orchestration](diagrams/scene-placement-actor.svg)
 
 SPA 使 [`AssetDescriptor`](../asset-descriptor-demo/asset-descriptor.md) 的 probes、collision 和 pivots 在注册后立即 GPU 可读；SV（`SceneVoxel`）和 `AutoObject` 数据流经单条编排流水线：
 
@@ -274,7 +274,7 @@ spa.dispose()
 - [`../placement/target-scene-voxel-projection.md`](../target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md)：`TargetSV_B` read buffer 生成和 guidance-only 边界。
 
 
-> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，CPU fallback 不得作为通过条件。
+> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，且不得以非 GPU 路径作为通过条件。
 
 ## 运行方式
 
@@ -293,8 +293,6 @@ spa.dispose()
 <godot> --path . --rendering-driver vulkan --script tools/test_core_demo_contracts.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_gpu_autoobject_runtime_bridge.gd
-<godot> --path . --rendering-driver vulkan --script tools/test_voxel_dirty_tile_upload.gd
-<godot> --path . --rendering-driver vulkan --script tools/test_voxel_multi_asset.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
 ```
 

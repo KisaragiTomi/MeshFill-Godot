@@ -1,5 +1,5 @@
 ---
-description: 项目核心约束：仅编辑器模式运行 + GPU 优先
+description: 项目核心约束：仅编辑器单实例模式运行 + GPU 优先
 globs: **/*.gd, **/*.glsl
 alwaysApply: true
 ---
@@ -10,7 +10,8 @@ alwaysApply: true
 
 本项目禁止以游戏模式 (F5 / `godot --path`) 运行，只允许编辑器模式 (`godot -e`)。
 
-- `editor_only_guard.gd` 是 Autoload 守卫，游戏模式下立即 `quit(1)` + `OS.crash()`，**禁止删除或绕过**
+- 编辑器单实例由两层守卫保证，**禁止删除或绕过**：(1) 所有场景树脚本通过 `@tool` + `if not Engine.is_editor_hint(): return` 守卫，确保运行时回调只在编辑器执行；(2) `non_headless_scene_guard.gd`（挂在 `demos/common_demo_setup.tscn`，由 `core_demo_contract_fixture.gd` 调用）在检测到 headless 显示后端时 `push_error` + `quit(1)` 拒绝场景启动
+- 启动 `godot -e` 前必须确认当前项目没有已运行的 Godot 编辑器实例；同一项目一次只允许一个编辑器实例，发现已有实例时复用或关闭原实例，禁止再启动第二个
 - 所有挂载到场景树的脚本（extends Node / Node3D / Camera3D 等）如果包含 `_ready()` / `_process()` / `_physics_process()` / `_unhandled_input()` 等回调，**必须添加 `@tool` 注解**，否则编辑器模式下回调不会执行
 - 不需要编辑器回调的纯数据脚本（extends Resource / RefCounted）无需 `@tool`
 - EditorPlugin 脚本天生在编辑器运行，已有 `@tool` 即可

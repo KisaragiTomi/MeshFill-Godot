@@ -4,7 +4,7 @@
 
 Descriptor 通过 SPA（`ScenePlacementActor`）注册到 GPU profile container，使其 probes/collision/pivots 即刻 GPU 可读；SPA 生命周期和访问接口见 [`scene-placement-actor.md`((scene-placement-actor.md)。
 
-![AutoObject probe scoring logic](../svg/autoobject_probe_scoring_logic.svg)
+![AutoObject probe scoring logic](../placement-autoobject-probe-prefilter/diagrams/autoobject_probe_scoring_logic.svg)
 
 ## 当前边界
 
@@ -27,7 +27,7 @@ Descriptor 通过 SPA（`ScenePlacementActor`）注册到 GPU profile container�
 
 `AutoObject.semantic_probe_profile`、`semantic_probe_density` 和 `context_sensing_radius` 只作为 Inspector / 配置字典入口；新逻辑应通过 descriptor-backed getter 读取 probes。
 
-本文只维护资产 probe schema 与 prefilter 交接。placement route 扩张、空候选 skip、physical score 和 result feedback 分别见 `../placement/autoobject-probe-prefilter.md`、`../placement/voxel-semantic-routing.md` 和 `scene-voxel-field-system.md`。
+本文只维护资产 probe schema 与 prefilter 交接。placement route 扩张、空候选 skip、physical score 和 result feedback 分别见 `../placement/autoobject-probe-prefilter.md` 和 `scene-voxel-field-system.md`。
 
 ## Probe 数据结构
 
@@ -155,7 +155,7 @@ Prefilter 从 supported candidate position 来源收集位置，写入统一的 
 
 ## 可执行 JSON 示例
 
-该示例可直接交给 `tools/scaffold_auto_asset.gd`；probe 会由 descriptor-backed `collision`、mesh 和默认 probe 参数生成。
+probe 会由 descriptor-backed `collision`、mesh 和默认 probe 参数生成。
 
 ```json
 {
@@ -191,7 +191,6 @@ Prefilter 从 supported candidate position 来源收集位置，写入统一的 
 - `shaders/score_anchor_asset_probes.glsl`：clamped sampling、score terms、`min_prefilter_score` 前的 probe evaluation。
 - `shaders/select_anchor_topk.glsl` / `shaders/reduce_anchor_topk_to_voxel_regions.glsl`：per-anchor top-K 与 per-asset voxel-region votes。
 - `../placement/autoobject-probe-prefilter.md`：placement 侧 prefilter / routing 边界。
-- `../placement/voxel-semantic-routing.md`：`candidate_voxel_regions_by_asset` 消费、legacy sparse alias、空候选 skip 和候选内 rerank 边界。
 - `scene-voxel-field-system.md`：`SV[t - 1(` / `TargetSV_B` 读取边界、source write 和 committed `SceneVoxel` 发布。
 
 ## 开放问题
@@ -208,7 +207,7 @@ Prefilter 从 supported candidate position 来源收集位置，写入统一的 
 
 按是否需要 RenderingDevice 分为两种驱动模式：
 
-- **CPU-only 测试**（不涉及 RenderingDevice、compute shader、storage buffer 或 GPU readback）：
+- **非 GPU 测试**（不涉及 RenderingDevice、compute shader、storage buffer 或 GPU readback）：
 
 ```powershell
 godot --headless --path . --script tools/test_semantic_probe_generation.gd
@@ -217,7 +216,7 @@ godot --headless --path . --script tools/test_semantic_probe_generation.gd
 - **GPU / Vulkan 测试**（需要 RenderingDevice，禁止 `--headless`）：
 
 ```powershell
-godot --path . --rendering-driver vulkan --script tools/test_voxel_multi_asset.gd
+godot --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
 ```
 
 驱动模式由 `tools/test_markdown_contracts.gd` 中的 `DEMO_CPU_ONLY_TEST_SCRIPTS` / `DEMO_GPU_TEST_SCRIPTS` 列表合约强制执行，使用错误驱动模式会被报错。所有测试通过时 `quit(0)`，失败时 `quit(1)`。
@@ -226,10 +225,9 @@ godot --path . --rendering-driver vulkan --script tools/test_voxel_multi_asset.g
 
 | 测试文件 | 覆盖范围 | 驱动模式 |
 | --- | --- | --- |
-| [`test_semantic_probe_generation.gd`((../../tools/test_semantic_probe_generation.gd) | probe 生成（mesh convex/voxel_interior/surface/context/fallback）、density 缩放、convex 生成、collision 采样、`PROBE_WORLD_MIN_DISTANCE` 约束、asset instance probe 转移 | CPU-only |
-| [`test_markdown_contracts.gd`((../../tools/test_markdown_contracts.gd) | descriptor-backed `get_semantic_probes()` 权威性、probe 不进入 `ISWS` shared fields、`cpu_fallback=false` 合约、`profile_probe_pack` blocked reason、候选 region alias 边界 | CPU-only |
+| [`test_semantic_probe_generation.gd`((../../tools/test_semantic_probe_generation.gd) | probe 生成（mesh convex/voxel_interior/surface/context/fallback）、density 缩放、convex 生成、collision 采样、`PROBE_WORLD_MIN_DISTANCE` 约束、asset instance probe 转移 | 非 GPU |
+| [`test_markdown_contracts.gd`((../../tools/test_markdown_contracts.gd) | descriptor-backed `get_semantic_probes()` 权威性、probe 不进入 `ISWS` shared fields、`cpu_fallback=false` 合约、`profile_probe_pack` blocked reason、候选 region alias 边界 | 非 GPU |
 | [`test_auto_voxel_runtime_profile_container.gd`((../../tools/test_auto_voxel_runtime_profile_container.gd) | probe 注册进 profile container、resident `probe_records` buffer、等效 descriptor 下 probe 去重、profile 常驻后的 probe buffer 借用 | GPU (vulkan) |
-| [`test_voxel_multi_asset.gd`((../../tools/test_voxel_multi_asset.gd) | prefilter 端到端（anchor 收集 -> probe scoring -> top-K -> voxel-region readback）、`profile_probe_pack` 验证、GPU prefilter 输出 contract、candidate regions 边界 | GPU (vulkan) |
 | [`test_core_demo_contracts.gd`((../../tools/test_core_demo_contracts.gd) | demo 场景执行其 `run_demo_contract_checks()`、probe 相关 demo 的 GPU/RD 策略验证 | GPU (vulkan) |
 
 ### 关键测试场景
@@ -281,7 +279,7 @@ godot --path . --rendering-driver vulkan --script tools/test_voxel_multi_asset.g
 
 ### 测试结构模式
 
-新增 CPU-only 测试时遵循以下模板：
+新增 非 GPU 测试时遵循以下模板：
 
 ```gdscript
 extends SceneTree

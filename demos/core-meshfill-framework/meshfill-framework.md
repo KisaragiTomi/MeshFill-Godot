@@ -1,8 +1,8 @@
 # MeshFill Framework
 
-本文整理当前 MeshFill-Godot 框架的数据归属、生成主线、候选路由和运行时查询边界。本文只保留跨模块总览；`AssetDescriptor` 定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，资产字段归属边界见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；SceneVoxel/source 写入、collision 和 SV 常驻显存规则见 [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)；TargetSV 设计见 [`target-scene-voxel-projection.md`](../target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md)；候选资产路由见 [`voxel-semantic-routing.md`](../placement-voxel-semantic-routing/voxel-semantic-routing.md)；AutoObject probe 粗筛见 [`autoobject-probe-prefilter.md`](../placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md)。**SPA**（`ScenePlacementActor`）是 MeshFill 的运行时统一编排器，管理 descriptor 注册、GPU buffer 生命周期和 prefilter→placement→commit 三阶段流水线；完整契约见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
+本文整理当前 MeshFill-Godot 框架的数据归属、生成主线、候选路由和运行时查询边界。本文只保留跨模块总览；`AssetDescriptor` 定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，资产字段归属边界见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；SceneVoxel/source 写入、collision 和 SV 常驻显存规则见 [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)；TargetSV 设计见 [`target-scene-voxel-projection.md`](../target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md)；AutoObject probe 粗筛见 [`autoobject-probe-prefilter.md`](../placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md)。**SPA**（`ScenePlacementActor`）是 MeshFill 的运行时统一编排器，管理 descriptor 注册、GPU buffer 生命周期和 prefilter→placement→commit 三阶段流水线；完整契约见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
 
-![MeshFill 当前框架总览](../svg/meshfill_current_framework.svg)
+![MeshFill 当前框架总览](diagrams/meshfill_current_framework.svg)
 
 ## 文档边界
 
@@ -160,15 +160,13 @@ placement
 | --- | --- | --- |
 | SPA (ScenePlacementActor) | `scripts/scene_placement_actor.gd` | 运行时编排器，拥有 `AutoVoxelRuntimeProfileContainer` 完整生命周期，管理 asset registry、GPU buffer 就绪和 prefilter→placement→commit 三阶段流水线。详见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。 |
 | TargetSV generation | `scripts/target_scene_voxel_generator.gd` / `shaders/target_scene_voxel.glsl` | 当前 GPU 生成 TargetSV visual / collision buffers、decode read buffers 和 debug preview。 |
-| TargetSV persistence | `scripts/main.gd` | 保存、加载、重算和显示 TargetSV overlay。 |
+| TargetSV persistence | `scripts/common_targetsv_setup.gd` / `scripts/target_sv_loader.gd` / `scripts/target_scene_voxel_generator.gd` | 持久化数据落在 `assets/target_sv/`；`TargetSVLoader` 加载 metadata / visual / collision buffers 并上传或解码，`CommonTargetSVSetup` 负责 editor demo 预加载和 overlay 显示，`TargetSceneVoxelGenerator` 负责 GPU 生成、dirty rect 重算和 debug preview。 |
 | Asset model | `scripts/auto_object.gd` / `scripts/auto_voxel_descriptor.gd` | `AutoObject` 是共同运行时基类；`AssetDescriptor` 的统一定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)。profile 只作为共享数据和生成辅助，descriptor 通过 SPA.register_asset() 注册并即时上传 GPU。 |
 | Probe prefilter | `scripts/autoobject_probe_prefilter_gpu.gd` / [`autoobject-probe-prefilter.md`](../placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md) | GPU-only 粗筛路径；`anchor_autoobject_topk` 当前不回读，公开输出以 `candidate_voxel_regions_by_asset` 为主；`autoobject_candidate_voxel_sparses` / `candidate_voxel_sparses_by_asset` 仅作为 legacy/debug alias；不保留 CPU 替代路径。SPA 创建 prefilter worker 并注入共享 RD + profile_container。 |
-| Semantic routing | [`voxel-semantic-routing.md`](../placement-voxel-semantic-routing/voxel-semantic-routing.md) | 定义当前 `candidate_voxel_regions_by_asset` / legacy `candidate_voxel_sparses_by_asset` candidate voxel-region 合约、TargetSV_B clamp 采样、空候选 skip，以及候选内 rerank / route validation 边界。 |
 | 3D voxel placement | `scripts/voxel_placement_generator.gd` / `shaders/score_voxel_tile.glsl` / `shaders/reduce_voxel_tiles.glsl` / `shaders/stamp_voxel_field.glsl` | 物理精筛和 stamp 主路径；不负责全库语义查找。SPA 创建 placer worker 并注入共享 RD + profile_container。 |
 | SV resident buffers | `scripts/scene_voxel_committer.gd` | `SceneVoxelCommitter` 持有 SV resident state；SV 自持 `SV[t - 1]` / `SV[tick]` 的 scene/collision GPU resident buffers、grid metadata 和 dirty regions，服务 probe、placement、validation 和 debug query，不作为第二套权威数据模型。SPA 借用引用。 |
-| Placement fitting | `scripts/placement_fitting_generator.gd` / `init_heightfield_fitting.glsl` / `fill_heightfield_asset.glsl` | 通用 heightfield fitting producer；当前 rock/cliff 流程只是 consumer。 |
 | Runtime object indexing | `GPUAutoObjectRuntime` / `AutoVoxelRuntimeProfileContainer` / `SceneVoxelTile` | GPU object pool 负责 object id、`object_type`、profile、transform、bounds 和 dirty delta；profile container 负责 resident profile/probe/collision/pivot buffers；`SceneVoxelTile` 只保存局部 object id ranges 和 dirty summary。SPA 拥有 profile_container，借用 gpu_runtime。 |
-| Dirty `SceneVoxelTile` updates | `scripts/main.gd` / `scripts/scene_voxel_committer.gd` / `scripts/autoobject_probe_prefilter_gpu.gd` / `scripts/voxel_placement_generator.gd` | AutoObject、brush、target、profile 和 placement 只发 dirty delta / bounds；SV owner 通过 `mark_scene_voxel_tile_dirty()` / `mark_scene_voxel_tile_bounds_dirty()` 映射为 affected `SceneVoxelTile` dirty。`invalidate_sv_tile()` / `invalidate_sv_rect()` 只是 legacy compatibility storage，再局部重建 source/routing、candidate voxel regions 和 BlendSV-backed resident fields。 |
+| Dirty `SceneVoxelTile` updates | `scripts/scene_voxel_committer.gd` / `scripts/autoobject_probe_prefilter_gpu.gd` / `scripts/voxel_placement_generator.gd` / `scripts/scene_placement_actor.gd` | AutoObject、brush、target、profile 和 placement 只发 dirty delta / bounds；SPA 编排 prefilter→placement→commit，VPG 将 accepted placement source buffers 交给 `SceneVoxelCommitter`。SV owner 通过 `mark_scene_voxel_tile_dirty()` / `mark_scene_voxel_tile_bounds_dirty()` 映射为 affected `SceneVoxelTile` dirty。`invalidate_sv_tile()` / `invalidate_sv_rect()` 只是 legacy compatibility storage，再局部重建 source/routing、candidate voxel regions 和 BlendSV-backed resident fields。 |
 
 ## Dirty Update Rules
 
@@ -220,7 +218,7 @@ dirty target bounds
 - SPA 是 MeshFill 运行时数据的一站式入口：所有 descriptor 注册、GPU buffer 访问和 pipeline 编排应通过 SPA 而非直接操作 `AutoVoxelRuntimeProfileContainer` 或 worker 实例。
 
 
-> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，CPU fallback 不得作为通过条件。
+> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，且不得以非 GPU 路径作为通过条件。
 
 ## 运行方式
 
@@ -237,7 +235,6 @@ dirty target bounds
 ```bash
 <godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
-<godot> --path . --rendering-driver vulkan --script tools/test_voxel_candidate_routing_contract.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_voxel_placement_generator.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_scene_voxel_field.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_blendsv_feedback_score.gd
@@ -245,9 +242,9 @@ dirty target bounds
 
 #### 禁止 `--headless`
 
-所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，CPU fallback 不得作为通过条件。
+所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，且不得以非 GPU 路径作为通过条件。
 
-3. 对照 `meshfill_current_framework.svg`，检查文档中的模块边界和当前源码入口一致。
+3. 对照 `diagrams/meshfill_current_framework.svg`，检查文档中的模块边界和当前源码入口一致。
 
 ## Demo 验收标准
 
@@ -260,6 +257,5 @@ dirty target bounds
 | 场景 | 说明 | Godot 场景 |
 | --- | --- | --- |
 | [Target Canvas Guidance](../../demos/modules/target-canvas-guidance/target-canvas-guidance.md) | 测试方法与验收标准 | [`../../demos/modules/target-canvas-guidance/target-canvas-guidance.tscn`](../../demos/modules/target-canvas-guidance/target-canvas-guidance.tscn) |
-| [Candidate Routing Contract](../../demos/modules/candidate-routing-contract/candidate-routing-contract.md) | 测试方法与验收标准 | [`../../demos/modules/candidate-routing-contract/candidate-routing-contract.tscn`](../../demos/modules/candidate-routing-contract/candidate-routing-contract.tscn) |
 | [SceneVoxel Commit](../../demos/modules/scene-voxel-commit/scene-voxel-commit.md) | 测试方法与验收标准 | [`../../demos/modules/scene-voxel-commit/scene-voxel-commit.tscn`](../../demos/modules/scene-voxel-commit/scene-voxel-commit.tscn) |
 | [GPU AutoObject Runtime Plan](../../demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md) | 测试方法与验收标准 | [`../../demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn`](../../demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn) |

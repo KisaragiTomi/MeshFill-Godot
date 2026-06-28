@@ -36,7 +36,7 @@ python tools/convert_target_sv_point_cloud.py
 
 - `Cd` 写入 TargetSV `color.rgb`，`complex` 写入 canonical `complexity`，`collision` 写入独立 collision buffer。
 - `P.y` 按相对地形高度映射到 vertical slice；地形高度只用于世界位置可视化，不把 TargetSV 写入 committed `SceneVoxel`。
-- metadata 保持 `target_guidance_only=true`、`height_buffer_applied=false`、`collision_buffer_applied=false`。
+- metadata 保持 `target_guidance_only=true`、`height_buffer_applied=false`、`collision_buffer_applied=false`；即 TargetSV 是 guidance-only 输入，转换阶段不把 source buffers 标记为 applied。
 
 ## 测试
 

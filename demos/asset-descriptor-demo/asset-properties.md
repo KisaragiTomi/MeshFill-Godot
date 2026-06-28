@@ -1,10 +1,10 @@
 ﻿# Asset Properties
 
-![AutoObject asset properties map](../svg/autoobject_asset_properties.svg)
+![AutoObject asset properties map](diagrams/autoobject_asset_properties.svg)
 
-![AutoObject and AssetDescriptor relationship](../svg/autoobject_descriptor_relationship.svg)
+![AutoObject and AssetDescriptor relationship](diagrams/autoobject_descriptor_relationship.svg)
 
-![AutoAssetFactory relationships](../svg/autoassetfactory_relationships.svg)
+![AutoAssetFactory relationships](diagrams/autoassetfactory_relationships.svg)
 
 本文是资产字段、descriptor 入口、runtime write record 和 metadata 边界的速查。`AssetDescriptor` 的统一定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)；源码已在 export 字段旁维护逐项含义，本页只写跨层契约和归属边界。
 
@@ -197,10 +197,10 @@ shader / SV 通过 profile_id 采样资产 profile
 - `meshfill-framework.md`：框架数据归属和主流程。
 - `scene-voxel-field-system.md`：`instance_stamp_write_spec` / `ISWS`、source voxel、committed `SceneVoxel` 和 SV resident collision field。
 - `asset-semantic-probes.md`：descriptor-backed semantic probes。
-- `auto-asset-scripting.md`：`AutoAssetFactory` 和 `tools/scaffold_auto_asset.gd` 的 JSON 输入。
+- `auto-asset-scripting.md`：`AutoAssetFactory` 的 JSON 输入。
 
 
-> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，CPU fallback 不得作为通过条件。
+> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，且不得以非 GPU 路径作为通过条件。
 
 ## 测试场景
 

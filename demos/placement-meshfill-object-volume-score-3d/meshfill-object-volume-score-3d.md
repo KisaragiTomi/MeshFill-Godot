@@ -4,7 +4,7 @@
 
 > 状态：**实现中（GPU compute + volume score demo）**。两阶段 compute shader 已落地：`shaders/score_object_subtile.glsl`（Pass A: sample group × 12 rotation partial 累加）、`shaders/reduce_object_rotation_scores.glsl`（Pass B: 跨 sample group reduce + best rotation pick）。GPU 编排由 `scripts/object_volume_score_gpu.gd` 管理。当前演示场景 `demos/placement-meshfill-object-volume-score-3d/` 会在默认地形的每个 anchor 上对所有 geo 物体逐一评分比较。当前 in-tree 的 tile 粒度评分 `shaders/score_voxel_tile.glsl`（`TILE_SIZE = 8`）仍并存。
 
-2.5D heightfield 路径已标记暂停，见 [`meshfill-rock-placement-flow2.5d(暂停开发).md`((meshfill-rock-placement-flow2.5d(暂停开发).md)。3D 路径只接替「物理 score」阶段，上游 probe prefilter 与候选路由契约不变。
+2.5D heightfield 路径已废弃移除。3D 路径只接替「物理 score」阶段，上游 probe prefilter 与候选路由契约不变。
 
 ## 运行方式
 
@@ -147,7 +147,7 @@ per-object score record 字段含义维护在对应 GDScript owner 的 readback 
 - 上游候选仍由 `autoobject-probe-prefilter.md` 的 prefilter 提供；空候选仍直接 skip，不回退 full grid。
 - score 不写 committed `SceneVoxel`；接受的 placement 仍走现有 `instance_stamp_writeback` / `SceneVoxelCommitter` source write。
 - `TargetSV_B` 只作为 target / guidance 输入采样，不进入 committed source，越界 clamp 规则同 prefilter。
-- score 不做 semantic dot / MLP / route rerank；语义重排仍是候选内 TODO，见 [`voxel-semantic-routing-todo.md`((voxel-semantic-routing-todo.md)。
+- score 不做 semantic dot / MLP / route rerank；语义重排仍是候选内 TODO。
 - 不引入 float `atomicAdd`；跨 sample group 汇总只通过独立 reduce pass。
 
 ## Open Questions

@@ -96,7 +96,7 @@ AssetDescriptor resource
 
 按是否需要 RenderingDevice 分为两种驱动模式：
 
-- **CPU-only 测试**（不涉及 RenderingDevice、compute shader、storage buffer 或 GPU readback）：
+- **非 GPU 测试**（不涉及 RenderingDevice、compute shader、storage buffer 或 GPU readback）：
 
 ```powershell
 godot --headless --path . --script tools/test_asset_properties_descriptor_contract.gd
@@ -114,10 +114,9 @@ godot --path . --rendering-driver vulkan --script tools/test_auto_voxel_runtime_
 
 | 测试文件 | 覆盖范围 | 驱动模式 |
 | --- | --- | --- |
-| [`test_asset_properties_descriptor_contract.gd`((../../tools/test_asset_properties_descriptor_contract.gd) | `SHARED_FIELD_KEYS`、collision canonical、descriptor-backed getter 权威性、`to_record_fields()` collision key、channel 排除、factory 创建 | CPU-only |
+| [`test_asset_properties_descriptor_contract.gd`((../../tools/test_asset_properties_descriptor_contract.gd) | `SHARED_FIELD_KEYS`、collision canonical、descriptor-backed getter 权威性、`to_record_fields()` collision key、channel 排除、factory 创建 | 非 GPU |
 | [`test_auto_voxel_runtime_profile_container.gd`((../../tools/test_auto_voxel_runtime_profile_container.gd) | descriptor 注册、profile 分阶段、GPU 上传/回读、等效 descriptor 去重、dirty profile 标记、profile 容器边界 | GPU (vulkan) |
-| [`test_markdown_contracts.gd`((../../tools/test_markdown_contracts.gd) | descriptor-backed getter 权威性、`ISWS` record 携带 collision、`apply_to_scene_voxel` 传播、zero-complexity 不擦除 terrain collision、channel 排除、候选 region 别名 | CPU-only |
-| [`test_voxel_multi_asset.gd`((../../tools/test_voxel_multi_asset.gd) | multi-asset pipeline、GPU 运行时 profile 合同、accepted placement writeback | GPU (vulkan) |
+| [`test_markdown_contracts.gd`((../../tools/test_markdown_contracts.gd) | descriptor-backed getter 权威性、`ISWS` record 携带 collision、`apply_to_scene_voxel` 传播、zero-complexity 不擦除 terrain collision、channel 排除、候选 region 别名 | 非 GPU |
 | [`test_voxel_asset_priority.gd`((../../tools/test_voxel_asset_priority.gd) | asset priority/weight/quota，通过 VPG pipeline 使用 collision/priority/weight 定义 | GPU (vulkan) |
 
 ### 关键测试场景
@@ -160,7 +159,7 @@ godot --path . --rendering-driver vulkan --script tools/test_auto_voxel_runtime_
 
 ### 测试结构模式
 
-新增 CPU-only 测试时遵循以下模板：
+新增 非 GPU 测试时遵循以下模板：
 
 ```gdscript
 extends SceneTree

@@ -210,8 +210,8 @@ For terrain/object placement pipelines, treat the GPU work as a staged solver:
 - `find`: reduce to best pixel, tile, object, or placement.
 - `update`: write current height, occupancy, mask, and compact result records.
 
-MeshFill-Godot memory source: the project uses `scripts/placement_fitting_generator.gd`
-plus the current voxel placement path to manage heightfield fitting, candidate-region scoring,
+MeshFill-Godot memory source: the project uses the current voxel placement path
+(`scripts/voxel_placement_generator.gd`) to manage candidate-region scoring,
 stamping, and BlendSV-backed `instance_stamp_write_spec` / `ISWS` output over SV / TargetSV_B resident fields; `voxel_write_spec` is a legacy compatibility alias.
 
 ## Sparse Pixel And Thread Remapping

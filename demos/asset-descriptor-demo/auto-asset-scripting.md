@@ -2,15 +2,14 @@
 
 这份文档把新增通用物体 / 新增植被的手工步骤收拢到脚本入口，并同步当前字段契约。所有资产种类的默认语义定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。
 
-![AutoObject asset properties map](../svg/autoobject_asset_properties.svg)
+![AutoObject asset properties map](diagrams/autoobject_asset_properties.svg)
 
-![AutoAssetFactory relationships](../svg/autoassetfactory_relationships.svg)
+![AutoAssetFactory relationships](diagrams/autoassetfactory_relationships.svg)
 
 | File | Purpose |
 | --- | --- |
 | `scripts/auto_asset_factory.gd` | 脚手架 / 导入 helper；创建和保存 `AutoObject` asset、`AssetDescriptor`，并提供 ISWS wrapper。 |
 | `scripts/auto_voxel_descriptor.gd` | 持久化 descriptor-backed `AutoObject` 资产默认语义，并保存 mesh / scatter / visual helper。 |
-| `tools/scaffold_auto_asset.gd` | Godot 命令行脚手架，按 JSON 生成或更新资产资源。 |
 
 ## 核心契约
 
@@ -23,7 +22,7 @@
 
 | 项 | 当前契约 |
 | --- | --- |
-| 职责 | 将手写 object / vegetation 资源步骤收拢到 `AutoAssetFactory` 和 `tools/scaffold_auto_asset.gd`。 |
+| 职责 | 将手写 object / vegetation 资源步骤收拢到 `AutoAssetFactory` 静态 helper。 |
 | 输入 | JSON config、已有 mesh / `mesh_height_texture`、descriptor shared fields。 |
 | 输出 | `AutoObject` scene 或 `AssetDescriptor` resource。 |
 | 生命周期 | JSON -> factory normalize -> resource write -> runtime load descriptor-backed asset -> GPU placement / source write 构造 `ISWS`。 |
@@ -32,19 +31,43 @@
 | Core runtime 边界 | `ISWS` 进入 source voxel / committed `SceneVoxel` 的规则见 `scene-voxel-field-system.md`；metadata 只作为查询 handle。 |
 | GPU runtime 边界 | `GPUAutoObjectRuntime` / profile container 只消费脚手架产物编译出的 profile；本文不新增 runtime object schema，也不提供 CPU runtime fallback。 |
 
-## Command
+## 脚本入口
 
-```bash
-godot --headless --path . --script tools/scaffold_auto_asset.gd -- --config res://tools/my_asset.json
+`AutoAssetFactory`（`scripts/auto_asset_factory.gd`）是一组 GDScript 静态 helper（mesh / 高度图加载、descriptor / profile 创建、资源保存、ISWS wrapper），不再有独立的 JSON 命令行工具。从编辑器脚本或 `@tool` 节点直接调用即可创建 / 更新资产。
+
+物体资产（`AutoObject` 场景）：
+
+```gdscript
+var asset := AutoAssetFactory.load_or_new_object_asset("res://assets/objects/cliff_03_asset.tscn")
+AutoAssetFactory.create_or_update_object_asset(
+    asset,
+    AutoAssetFactory.load_mesh("res://geo/cliff_03.FBX"),
+    AutoAssetFactory.load_texture_or_raw("res://geo/cliff_03_height.raw"),
+    4.2,                           # mesh_size
+    null,                          # profile fallback（可选）
+    Color(0.55, 0.5, 0.45, 1.0),   # entry_color
+    1.0,                           # entry_complexity
+    [],                            # collision
+)
+AutoAssetFactory.save_object_asset(asset, "res://assets/objects/cliff_03_asset.tscn")
 ```
 
-如果本机 Godot 命令不是 `godot`，替换成实际 Godot 4.6 可执行文件。
+植被 / descriptor 资产（`AssetDescriptor` `.tres`）：
+
+```gdscript
+var descriptor := AutoAssetFactory.create_voxel_descriptor(
+    Color(0.9, 0.35, 0.5, 0.7),    # entry_color
+    0.7,                           # entry_complexity
+    0.25,                          # default_radius
+    [],                            # collision
+)
+AutoAssetFactory.save_resource(descriptor, "res://assets/vegetation/flower_descriptor.tres")
+```
 
 ## 输入规则
 
 | 输入 | 规则 |
 | --- | --- |
-| `type` | 脚手架 dispatch 字段；当前只接受 `object` 或 `vegetation`。 |
 | `asset_path` | 物体保存 `AutoObject` scene；植被保存 `AssetDescriptor` `.tres`。 |
 | `descriptor_path` | 植被旧配置 fallback；新配置使用 `asset_path`。 |
 | `asset_id` | 具体资产身份 / debug / profile 去重输入；不是 runtime subtype。 |
@@ -57,7 +80,7 @@ godot --headless --path . --script tools/scaffold_auto_asset.gd -- --config res:
 | `mesh_height_texture` | 物体高度场 fitting 输入；`.raw` 使用 `raw_width` / `raw_height`，默认 256。 |
 | `mesh_create_method` | 只用于植被 descriptor 内置 mesh 工厂，必须在白名单中。 |
 
-`tools/scaffold_auto_asset.gd` 对 rock 和 vegetation 都只读取 `collision`；旧 `collision_voxels` 不再作为 config fallback。
+`AutoAssetFactory` 对 rock 和 vegetation 都只读取 `collision`；旧 `collision_voxels` 不再作为 config fallback。
 
 脚手架只负责生成或更新资产文件，不负责把实例直接写入 `SceneVoxel`。落地到 SV 的生命周期从 runtime 加载这些资源后开始：GPU placement 生成实例，prefilter 只收窄 candidate regions，`AutoObject` 或 placement helper 构造 `ISWS`，再交给 `SceneVoxelCommitter`。
 
@@ -140,11 +163,3 @@ register_brush_autoobject(flower_asset.make_instance_config())
 - `asset-properties.md`：descriptor、shared fields、metadata 和 `ISWS` 边界。
 - `asset-semantic-probes.md`：descriptor-backed probes 的生成来源和 prefilter 交接。
 - `scene-voxel-field-system.md`：`ISWS` 写入到 source voxel / committed `SceneVoxel` 的数据流。
-- `../placement/voxel-semantic-routing.md`：脚手架产物进入 placement 后的 candidate voxel-region 消费边界。
-
-## 测试场景
-
-| 场景 | 说明 | Godot 场景 |
-| --- | --- | --- |
-| [资产脚手架总览](../../demos/core-auto-asset-scripting/core-auto-asset-scripting.md) | 测试方法与验收标准 | [`../../demos/core-auto-asset-scripting/core-auto-asset-scripting.tscn`](../../demos/core-auto-asset-scripting/core-auto-asset-scripting.tscn) |
-| [Auto Asset Scaffolding](../../demos/modules/auto-asset-scaffolding/auto-asset-scaffolding.md) | 测试方法与验收标准 | [`../../demos/modules/auto-asset-scaffolding/auto-asset-scaffolding.tscn`](../../demos/modules/auto-asset-scaffolding/auto-asset-scaffolding.tscn) |

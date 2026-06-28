@@ -49,8 +49,6 @@ MCP 测试脚本：`res://demos/core-SPA-scene-placement-actor/spa_test.gd`（9 
 <godot> --path . --rendering-driver vulkan --script tools/test_core_demo_contracts.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_gpu_autoobject_runtime_bridge.gd
-<godot> --path . --rendering-driver vulkan --script tools/test_voxel_dirty_tile_upload.gd
-<godot> --path . --rendering-driver vulkan --script tools/test_voxel_multi_asset.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
 ```
 

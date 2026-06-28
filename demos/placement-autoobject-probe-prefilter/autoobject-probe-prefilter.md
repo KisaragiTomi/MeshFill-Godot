@@ -2,9 +2,9 @@
 
 本文记录 AutoObject probe 粗筛的当前实现契约。粗筛从 BlendSV-backed `SV[t - 1]` 与 `TargetSV_B` 中提取 position-only anchors，用 descriptor-backed semantic probes 给可用 `AutoObject` 打分，输出 per-asset candidate voxel regions。最终物理可放置性仍由 `score_voxel_tile.glsl` 精筛。
 
-![AutoObject probe prefilter pipeline](../svg/autoobject_probe_prefilter_pipeline.svg)
+![AutoObject probe prefilter pipeline](diagrams/autoobject_probe_prefilter_pipeline.svg)
 
-![AutoObject probe scoring logic](../svg/autoobject_probe_scoring_logic.svg)
+![AutoObject probe scoring logic](diagrams/autoobject_probe_scoring_logic.svg)
 
 当前实现已稳定：GPU pipeline、Host、Anchor、Probe source、Candidate regions、Route profile debug 均已实现，CPU scoring path 已删除。以下输入/输出契约仅作为架构参考。
 
@@ -229,7 +229,7 @@ Debug 输出字段含义维护在 `scripts/autoobject_probe_prefilter_gpu.gd` �
 - 把 CPU debug view 迁移为 actor 生命周期内的 GPU resident route buffer。
 - 保持 `candidate_voxel_regions_by_asset` / `candidate_voxel_regions` 为文档和高层接口命名；旧 `sparse` key 只描述兼容 alias。
 - Route validation / semantic rerank / MLP 只作为候选内二次验证计划，不能绕过 upstream prefilter。
-- 是否增加 tile summary / mip / feedback priority，统一记录在 [`voxel-semantic-routing-todo.md`](voxel-semantic-routing-todo.md)。
+- 是否增加 tile summary / mip / feedback priority。
 
 ## 测试场景
 

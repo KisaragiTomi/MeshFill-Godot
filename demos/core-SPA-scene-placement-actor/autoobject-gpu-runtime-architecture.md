@@ -6,7 +6,7 @@
 
 本文是 runtime contract / architecture 文档。当前 `scripts/gpu_autoobject_runtime.gd`、`scripts/auto_voxel_runtime_profile_container.gd`、`scripts/auto_object.gd`、`scripts/scene_voxel_committer.gd`、`scripts/autoobject_probe_prefilter_gpu.gd`、`scripts/voxel_placement_generator.gd` 和 `scripts/scene_placement_actor.gd` 提供 GPU-first command/staging/debug 入口；GDScript 字典、snapshot 和 debug range 只用于上传准备或回查，不是验收用的 CPU 替代路径。跨框架总览见 [`meshfill-framework.md`](../core-meshfill-framework/meshfill-framework.md)；`AssetDescriptor` 定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)；SV commit / resident state 见 [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)；tile dirty 规则见 [`scenevoxeltile.md`](../core-scenevoxeltile/scenevoxeltile.md)。
 
-![AutoObject GPU runtime architecture](../svg/autoobject_gpu_runtime_architecture.svg)
+![AutoObject GPU runtime architecture](diagrams/autoobject_gpu_runtime_architecture.svg)
 
 ## 核心契约
 
@@ -159,7 +159,7 @@ CPU authoring / import
 所有以下阶段均已落地实现，运行时严格遵守 GPU-first contract。GDScript sidecar、staging table 和 debug readback 只用于上传准备、状态查询或验证边界，不作为 CPU runtime 实现。
 
 
-> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，CPU fallback 不得作为通过条件。
+> **禁止 --headless**：本模块的所有 GPU 测试依赖 RenderingDevice，必须在 Vulkan 驱动下运行（--rendering-driver vulkan），使用 --headless 会导致测试无法访问 GPU，且不得以非 GPU 路径作为通过条件。
 
 ## 测试场景
 
