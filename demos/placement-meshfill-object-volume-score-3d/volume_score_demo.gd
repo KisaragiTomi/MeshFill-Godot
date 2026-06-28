@@ -104,8 +104,8 @@ func run_volume_score_pipeline() -> Dictionary:
 	if not Engine.is_editor_hint():
 		return {"ok": false, "reason": "not_editor_hint"}
 	_sync_spa_bindings()
-	_load_and_voxelize()
 	_build_scene_fields()
+	_load_and_voxelize()
 	_generate_anchors()
 	_run_gpu_scoring()
 	_build_visualization()
@@ -139,6 +139,7 @@ func calculate_voxel_scores() -> Dictionary:
 	_run_gpu_scoring()
 	_build_visualization()
 	_update_hud()
+	_notify_spa_selected_anchor_changed()
 	return _volume_score_status(true)
 
 
@@ -324,11 +325,61 @@ func _ensure_scene_fields_ready() -> bool:
 
 
 func _ensure_scoring_inputs_ready() -> bool:
-	if not _voxelized or _footprints.is_empty():
-		_load_and_voxelize()
 	if not _ensure_scene_fields_ready():
 		return false
+	if not _voxelized or _footprints.is_empty():
+		_load_and_voxelize()
+	elif not _ensure_footprints_scene_voxel_profile_ready():
+		print("[VolumeScore] Revoxelizing assets: stale footprint sample metadata")
+		_load_and_voxelize()
 	return not _footprints.is_empty()
+
+
+func _ensure_footprints_scene_voxel_profile_ready() -> bool:
+	var voxel_size: Vector3 = _scene_fields.get("voxel_size", Vector3.ZERO)
+	if not _valid_scene_voxel_size(voxel_size):
+		return false
+	for i in range(_footprints.size()):
+		var footprint: Dictionary = _footprints[i]
+		if not _footprint_has_asset_bounds_metadata(footprint):
+			return false
+		var profile := ObjectVolumeScoreGpuScript.ensure_rotation_sample_profile(
+			footprint,
+			voxel_size
+		)
+		if not _scene_sample_profile_matches(profile, voxel_size):
+			return false
+		_footprints[i] = footprint
+	return true
+
+
+func _footprint_has_asset_bounds_metadata(footprint: Dictionary) -> bool:
+	if float(footprint.get("cell_size", 0.0)) <= 0.000001:
+		return false
+	if not footprint.has("aabb_min") or not (footprint["aabb_min"] is Vector3):
+		return false
+	if not footprint.has("aabb_size") or not (footprint["aabb_size"] is Vector3):
+		return false
+	if not footprint.has("pivot_local") or not (footprint["pivot_local"] is Vector3):
+		return false
+	return true
+
+
+func _scene_sample_profile_matches(profile: Dictionary, voxel_size: Vector3) -> bool:
+	if not bool(profile.get("ok", false)):
+		return false
+	if not bool(profile.get("scene_voxel_units", false)):
+		return false
+	var cached: Vector3 = profile.get("scene_voxel_size", Vector3.ZERO)
+	return is_equal_approx(cached.x, voxel_size.x) \
+		and is_equal_approx(cached.y, voxel_size.y) \
+		and is_equal_approx(cached.z, voxel_size.z)
+
+
+func _valid_scene_voxel_size(voxel_size: Vector3) -> bool:
+	return voxel_size.x > 0.000001 \
+		and voxel_size.y > 0.000001 \
+		and voxel_size.z > 0.000001
 
 
 func _clear_score_results() -> void:
@@ -434,9 +485,15 @@ func _exit_tree() -> void:
 # 同时预烘每个旋转槽的有效 sample records，用于后续评分。
 
 func _load_and_voxelize() -> void:
+	if _scene_fields.is_empty():
+		_build_scene_fields()
 	_assets.clear()
 	_footprints.clear()
-	var loaded := CommonVolumeScore3D.voxelize_common_assets(voxel_grid_count)
+	var loaded := CommonVolumeScore3D.voxelize_common_assets(
+		voxel_grid_count,
+		true,
+		_scene_fields.get("voxel_size", Vector3.ZERO)
+	)
 	for asset in loaded.get("assets", []):
 		if asset is Dictionary:
 			_assets.append(asset)
@@ -525,10 +582,33 @@ func _run_gpu_scoring() -> bool:
 	_total_dispatches = _footprints.size() * 2
 
 	_winner_per_anchor = ObjectVolumeScoreGpuScript.best_asset_per_anchor(_results, _total_anchors)
+	_sync_asset_sample_metadata_from_results()
 	_scored = true
 	print("[VolumeScore] GPU scoring: %d assets × %d anchors in %.0f ms (%d dispatches)" % [
 		_footprints.size(), _total_anchors, _elapsed_score_ms, _total_dispatches])
 	return true
+
+
+func _sync_asset_sample_metadata_from_results() -> void:
+	for result in _results:
+		if not (result is Dictionary):
+			continue
+		var result_dict := result as Dictionary
+		var asset_index := int(result_dict.get("asset_index", -1))
+		if asset_index < 0 or asset_index >= _assets.size():
+			continue
+		var asset: Dictionary = _assets[asset_index]
+		asset["sample_extent"] = int(result_dict.get("sample_extent", asset.get("sample_extent", 1)))
+		asset["sample_variant_count"] = int(result_dict.get(
+			"sample_variant_count",
+			asset.get("sample_variant_count", 0)
+		))
+		asset["sample_group_count"] = int(result_dict.get(
+			"sample_group_count",
+			asset.get("sample_group_count", 0)
+		))
+		asset["subtile_count"] = int(result_dict.get("subtile_count", asset.get("subtile_count", 0)))
+		_assets[asset_index] = asset
 
 
 func _selected_anchor_voxel() -> Vector3i:
@@ -731,7 +811,7 @@ func _world_result_for_winning_anchor(
 	var raw_result := {
 		"valid": true,
 		"voxel_origin": anchor_voxel,
-		"rotation_index": rotation_slot,
+		"rotation_index": 0,  # 旋转已禁用：忽略评分选中的旋转槽，始终以默认朝向放置
 		"scale_index": 0,
 		"score": float(anchor_result.get("score", 0.0)),
 		"asset_index": asset_index,
@@ -751,12 +831,8 @@ func _world_result_for_winning_anchor(
 	world_result["anchor_index"] = anchor_index
 	world_result["anchor_position"] = anchor_world
 	world_result["rotation_slot"] = rotation_slot
-	if anchor_result.has("yaw"):
-		var current_rotation: Vector3 = world_result.get("rotation_degrees", Vector3.ZERO)
-		var yaw := float(anchor_result.get("yaw", current_rotation.y))
-		var pivot_offset: Vector3 = pivot_variant.get("offset", Vector3.ZERO)
-		world_result["position"] = anchor_world - pivot_offset.rotated(Vector3.UP, deg_to_rad(yaw))
-		world_result["rotation_degrees"] = Vector3(0.0, yaw, 0.0)
+	# 旋转已禁用：忽略评分选中的 yaw，强制 identity 朝向（位置已按无旋转 pivot 计算）。
+	world_result["rotation_degrees"] = Vector3.ZERO
 	return world_result
 
 
@@ -892,7 +968,7 @@ func _anchor_marker_radius() -> float:
 func _selected_anchor_sample_bounds_info() -> Dictionary:
 	var selected_entry := _selected_anchor_topk_entry()
 	var asset_index := int(selected_entry.get("asset_index", -1))
-	return ObjectVolumeScoreGpuScript.anchor_sample_bounds_info(
+	var info := ObjectVolumeScoreGpuScript.anchor_sample_bounds_info(
 		_results,
 		_assets,
 		_footprints,
@@ -901,6 +977,30 @@ func _selected_anchor_sample_bounds_info() -> Dictionary:
 		_selected_anchor_idx,
 		asset_index
 	)
+	return _sample_bounds_to_anchor_world_frame(info)
+
+
+## anchor_sample_bounds_info 在原始体素网格系里算 bounds（grid_origin、格子角点）；
+## 放置的物体/锚点活在地形锚定世界系（synthetic_origin、格子中心 + 地形高度）。
+## 这里把 bounds 整体平移到物体坐标系：让 anchor 体素中心对齐到 anchor_world，
+## 与 _world_result_for_winning_anchor 的 synthetic_origin 放置保持同一参考点，
+## 这样评分足迹框与放置的胜出物体使用同一坐标系，能正确 bound 住物体。
+func _sample_bounds_to_anchor_world_frame(info: Dictionary) -> Dictionary:
+	if info.is_empty():
+		return info
+	if _selected_anchor_idx < 0 or _selected_anchor_idx >= _anchor_world_positions.size():
+		return info
+	var voxel_size: Vector3 = _scene_fields.get("voxel_size", Vector3.ONE)
+	var grid_origin: Vector3 = _scene_fields.get("grid_origin", Vector3.ZERO)
+	var anchor_voxel := ObjectVolumeScoreGpuScript.anchor_voxel_at(_anchors, _selected_anchor_idx)
+	var anchor_world := _anchor_world_positions[_selected_anchor_idx]
+	var delta := anchor_world - VoxelGeneral.voxel_to_world(anchor_voxel, grid_origin, voxel_size) - voxel_size * 0.5
+	if info.get("position", null) is Vector3:
+		info["position"] = (info["position"] as Vector3) + delta
+	if info.get("aabb", null) is AABB:
+		var box: AABB = info["aabb"]
+		info["aabb"] = AABB(box.position + delta, box.size)
+	return info
 
 
 func _frame_camera() -> void:

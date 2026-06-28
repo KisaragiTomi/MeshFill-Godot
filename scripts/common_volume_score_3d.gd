@@ -9,7 +9,11 @@ const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd"
 const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
 
 
-static func voxelize_common_assets(voxel_grid_count: int, fallback_to_box: bool = true) -> Dictionary:
+static func voxelize_common_assets(
+	voxel_grid_count: int,
+	fallback_to_box: bool = true,
+	scene_voxel_size: Vector3 = Vector3.ZERO
+) -> Dictionary:
 	var t0 := Time.get_ticks_msec()
 	var assets: Array[Dictionary] = []
 	var footprints: Array[Dictionary] = []
@@ -32,7 +36,10 @@ static func voxelize_common_assets(voxel_grid_count: int, fallback_to_box: bool 
 		var footprint := ObjectVolumeScoreGpuScript.footprint_from_voxelizer_result(
 			vox_result, color, longest)
 		var ext := ObjectVolumeScoreGpuScript.compute_extent_params(longest)
-		var sample_profile := ObjectVolumeScoreGpuScript.ensure_rotation_sample_profile(footprint)
+		var sample_profile := ObjectVolumeScoreGpuScript.ensure_rotation_sample_profile(
+			footprint,
+			scene_voxel_size
+		)
 		var asset := {
 			"name": CommonDemoAssets.asset_name(i, asset_path.get_file()),
 			"path": asset_path,

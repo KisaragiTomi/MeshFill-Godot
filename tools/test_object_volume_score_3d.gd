@@ -28,6 +28,7 @@ func _init() -> void:
 	var ok := true
 	ok = _test_extent_tiers() and ok
 	ok = _test_rotation_sample_profile() and ok
+	ok = _test_scene_voxel_scaled_sample_profile() and ok
 
 	if not rd_available:
 		print("[VolumeScore3D] GPU subitems SKIP (no RenderingDevice — headless smoke).")
@@ -105,6 +106,43 @@ func _test_rotation_sample_profile() -> bool:
 	return true
 
 
+func _test_scene_voxel_scaled_sample_profile() -> bool:
+	print("[VolumeScore3D] test_scene_voxel_scaled_sample_profile...")
+	var coords: Array[Vector3i] = []
+	for y in range(2):
+		for z in range(5):
+			for x in range(10):
+				coords.append(Vector3i(x, y, z))
+	var footprint := _make_test_footprint(Vector3i(10, 2, 5), Vector3i(5, 0, 2), coords)
+	footprint["cell_size"] = 0.1
+	footprint["aabb_min"] = Vector3.ZERO
+	footprint["aabb_size"] = Vector3(1.0, 0.2, 0.5)
+	footprint["pivot_local"] = Vector3(0.5, 0.0, 0.25)
+	var raw_profile := ObjectVolumeScoreGpuScript.build_rotation_sample_profile(footprint)
+	var scene_profile := ObjectVolumeScoreGpuScript.build_rotation_sample_profile(
+		footprint,
+		Vector3(0.5, 0.5, 0.5)
+	)
+	var raw_bounds: Array = raw_profile.get("bounds_by_slot", [])
+	var scene_bounds: Array = scene_profile.get("bounds_by_slot", [])
+	if raw_bounds.is_empty() or scene_bounds.is_empty():
+		push_error("  FAIL: missing profile bounds")
+		return false
+	var raw_span: Vector3i = (raw_bounds[0] as Dictionary).get("span", Vector3i.ZERO)
+	var scene_span: Vector3i = (scene_bounds[0] as Dictionary).get("span", Vector3i.ZERO)
+	if raw_span != Vector3i(10, 2, 5):
+		push_error("  FAIL: raw profile span changed unexpectedly: %s" % str(raw_span))
+		return false
+	if scene_span != Vector3i(3, 1, 1):
+		push_error("  FAIL: scene-scaled profile should follow asset bounds, got %s" % str(scene_span))
+		return false
+	if int(scene_profile.get("max_sample_count", 0)) >= int(raw_profile.get("max_sample_count", 0)):
+		push_error("  FAIL: scene-scaled profile did not compact high-res asset samples")
+		return false
+	print("  PASS: scene voxel sample profile follows asset bounds instead of asset voxel count")
+	return true
+
+
 func _make_test_footprint(grid: Vector3i, pivot: Vector3i, coords: Array[Vector3i]) -> Dictionary:
 	var voxel_count := grid.x * grid.y * grid.z
 	var occ := PackedInt32Array()
@@ -133,7 +171,12 @@ func _make_test_footprint(grid: Vector3i, pivot: Vector3i, coords: Array[Vector3
 func _test_full_gpu_pipeline() -> bool:
 	print("[VolumeScore3D] test_full_gpu_pipeline...")
 
-	var assets := _load_and_voxelize()
+	var scene_fields := CommonVolumeScore3D.build_scene_fields(
+		GRID_RES,
+		GRID_HEIGHT,
+		CommonVolumeScore3D.procedural_terrain(GRID_RES, GRID_RES)
+	)
+	var assets := _load_and_voxelize(scene_fields.get("voxel_size", Vector3.ZERO))
 	if assets.is_empty():
 		push_error("  FAIL: no assets voxelized")
 		return false
@@ -142,11 +185,6 @@ func _test_full_gpu_pipeline() -> bool:
 	for a in assets:
 		footprints.append(a["footprint"])
 
-	var scene_fields := CommonVolumeScore3D.build_scene_fields(
-		GRID_RES,
-		GRID_HEIGHT,
-		CommonVolumeScore3D.procedural_terrain(GRID_RES, GRID_RES)
-	)
 	var terrain_height: PackedFloat32Array = scene_fields.get("terrain_height", PackedFloat32Array())
 	var anchors := CommonVolumeScore3D.generate_anchors(scene_fields, terrain_height, ANCHOR_SPACING)
 	print("[VolumeScore3D] anchors=%d spacing=%d" % [anchors.size(), ANCHOR_SPACING])
@@ -213,8 +251,12 @@ func _test_full_gpu_pipeline() -> bool:
 	return true
 
 
-func _load_and_voxelize() -> Array[Dictionary]:
-	var loaded := CommonVolumeScore3D.voxelize_common_assets(VOXEL_GRID_COUNT)
+func _load_and_voxelize(scene_voxel_size: Vector3 = Vector3.ZERO) -> Array[Dictionary]:
+	var loaded := CommonVolumeScore3D.voxelize_common_assets(
+		VOXEL_GRID_COUNT,
+		true,
+		scene_voxel_size
+	)
 	var assets: Array[Dictionary] = []
 	for asset in loaded.get("assets", []):
 		if not asset is Dictionary:

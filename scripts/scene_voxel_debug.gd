@@ -129,11 +129,11 @@ static func public_cache_hydrated(committer) -> bool:
 	var raw_scene_voxels = committer._volume.get("scene_voxels", {})
 	if not raw_scene_voxels is Dictionary:
 		return false
-	if int(committer._volume.get("scene_voxels_debug_api_projection_commit_tick", -1)) != committer._committed_scene_voxel_payload_buffer_commit_tick:
+	if int(committer._volume.get("scene_voxels_debug_api_projection_commit_tick", -1)) != committer._source_staging._committed_scene_voxel_payload_buffer_commit_tick:
 		return false
 	if str(committer._volume.get("scene_voxels_debug_api_projection_source", "none")) != "resident_committed_scene_voxel_payload_key_coord_buffers":
 		return false
-	var expected_count := int(committer._volume.get("scene_voxels_debug_api_projection_expected_count", committer._committed_scene_voxel_payload_buffer_count))
+	var expected_count := int(committer._volume.get("scene_voxels_debug_api_projection_expected_count", committer._source_staging._committed_scene_voxel_payload_buffer_count))
 	return (raw_scene_voxels as Dictionary).size() == expected_count
 
 
@@ -216,29 +216,29 @@ static func hydrate_public_cache_from_committed_buffers(committer) -> bool:
 		return false
 	if str(committer._volume.get("scene_voxels_debug_api_projection_source", "none")) != "resident_committed_scene_voxel_payload_key_coord_buffers":
 		return false
-	var expected_count := int(committer._volume.get("scene_voxels_debug_api_projection_expected_count", committer._committed_scene_voxel_payload_buffer_count))
+	var expected_count := int(committer._volume.get("scene_voxels_debug_api_projection_expected_count", committer._source_staging._committed_scene_voxel_payload_buffer_count))
 	if not committer._committed_scene_voxel_dense_projection_ready(expected_count):
 		return false
 	var payload_bytes = committer._rd.buffer_get_data(
-		committer._committed_scene_voxel_payload_buffer,
+		committer._source_staging._committed_scene_voxel_payload_buffer,
 		0,
-		committer._committed_scene_voxel_payload_buffer_byte_count
+		committer._source_staging._committed_scene_voxel_payload_buffer_byte_count
 	)
-	if payload_bytes.size() < committer._committed_scene_voxel_payload_buffer_byte_count:
+	if payload_bytes.size() < committer._source_staging._committed_scene_voxel_payload_buffer_byte_count:
 		return false
 	var key_coord_bytes = committer._rd.buffer_get_data(
-		committer._committed_scene_voxel_key_coord_buffer,
+		committer._source_staging._committed_scene_voxel_key_coord_buffer,
 		0,
-		committer._committed_scene_voxel_key_coord_buffer_byte_count
+		committer._source_staging._committed_scene_voxel_key_coord_buffer_byte_count
 	)
-	if key_coord_bytes.size() < committer._committed_scene_voxel_key_coord_buffer_byte_count:
+	if key_coord_bytes.size() < committer._source_staging._committed_scene_voxel_key_coord_buffer_byte_count:
 		return false
 	var payloads := SceneVoxelCommitPayloadScript.decode_float_buffer(
 		payload_bytes,
-		committer._committed_scene_voxel_payload_buffer_count * COMMIT_OUTPUT_FLOAT_STRIDE
+		committer._source_staging._committed_scene_voxel_payload_buffer_count * COMMIT_OUTPUT_FLOAT_STRIDE
 	)
 	var projected_scene_voxels := {}
-	for slot in range(committer._committed_scene_voxel_payload_buffer_count):
+	for slot in range(committer._source_staging._committed_scene_voxel_payload_buffer_count):
 		var coord_offset := slot * COMMITTED_KEY_COORD_STRIDE_BYTES
 		if coord_offset + COMMITTED_KEY_COORD_STRIDE_BYTES > key_coord_bytes.size():
 			return false
@@ -263,13 +263,13 @@ static func hydrate_public_cache_from_committed_buffers(committer) -> bool:
 	committer._volume["scene_voxels_debug_api_projection_readback_source"] = "resident_committed_scene_voxel_payload_buffer_debug_api_readback"
 	committer._volume["scene_voxels_debug_api_projection_hydrated"] = true
 	committer._volume["scene_voxels_debug_api_projection_expected_count"] = expected_public_count
-	committer._volume["scene_voxels_debug_api_projection_commit_tick"] = committer._committed_scene_voxel_payload_buffer_commit_tick
+	committer._volume["scene_voxels_debug_api_projection_commit_tick"] = committer._source_staging._committed_scene_voxel_payload_buffer_commit_tick
 	committer._volume["scene_voxels_debug_api_projection_runtime_owner"] = false
 	committer._volume["scene_voxels_debug_api_projection_complexity_field_source"] = false
 	committer._volume["scene_voxels_debug_api_collision_projection_source"] = "resident_committed_scene_voxel_payload_buffer"
 	committer._volume["scene_voxels_debug_api_collision_projection_readback_source"] = "resident_committed_scene_voxel_payload_buffer_debug_api_readback"
 	committer._volume["scene_voxels_debug_api_collision_projection_exact_layers"] = false
-	committer._last_blend_scene_voxel_commit_summary.merge(committer.get_committed_scene_voxel_payload_buffer_summary(), true)
+	committer._source_staging._last_blend_scene_voxel_commit_summary.merge(committer.get_committed_scene_voxel_payload_buffer_summary(), true)
 	publish_public_cache_summary_to_sv(committer)
 	return true
 
@@ -288,12 +288,12 @@ static func readback_tile_snapshot(committer) -> Dictionary:
 		summary["complexity_field_values"] = PackedFloat32Array()
 		summary["collision_field_values"] = PackedFloat32Array()
 		return summary
-	var tile_record_bytes = committer._read_scene_voxel_tile_buffer_bytes(TILE_RECORD_BUFFER)
-	var summary_record_bytes = committer._read_scene_voxel_tile_buffer_bytes(TILE_SUMMARY_BUFFER)
-	var dirty_index_bytes = committer._read_scene_voxel_tile_buffer_bytes(TILE_DIRTY_INDEX_BUFFER)
-	var object_ref_bytes = committer._read_scene_voxel_tile_buffer_bytes(TILE_OBJECT_REF_BUFFER)
-	var complexity_field_bytes = committer._read_scene_voxel_tile_buffer_bytes(TILE_COMPLEXITY_FIELD_BUFFER)
-	var collision_field_bytes = committer._read_scene_voxel_tile_buffer_bytes(TILE_COLLISION_FIELD_BUFFER)
+	var tile_record_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_RECORD_BUFFER)
+	var summary_record_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_SUMMARY_BUFFER)
+	var dirty_index_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_DIRTY_INDEX_BUFFER)
+	var object_ref_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_OBJECT_REF_BUFFER)
+	var complexity_field_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_COMPLEXITY_FIELD_BUFFER)
+	var collision_field_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_COLLISION_FIELD_BUFFER)
 	summary["readback_snapshot"] = true
 	summary["tile_record_bytes"] = tile_record_bytes
 	summary["summary_record_bytes"] = summary_record_bytes
@@ -301,12 +301,12 @@ static func readback_tile_snapshot(committer) -> Dictionary:
 	summary["object_ref_bytes"] = object_ref_bytes
 	summary["complexity_field_bytes"] = complexity_field_bytes
 	summary["collision_field_bytes"] = collision_field_bytes
-	summary["complexity_field_values"] = committer._decode_scene_voxel_tile_float_field_bytes(complexity_field_bytes)
-	summary["collision_field_values"] = committer._decode_scene_voxel_tile_float_field_bytes(collision_field_bytes)
-	summary["tile_ids"] = committer._scene_voxel_tile_gpu_tile_ids.duplicate()
-	summary["dirty_tile_ids"] = committer._decode_scene_voxel_tile_dirty_ids(dirty_index_bytes)
-	summary["tile_records"] = committer._decode_scene_voxel_tile_records(tile_record_bytes, committer._scene_voxel_tile_gpu_tile_ids)
-	summary["summary_records"] = committer._decode_scene_voxel_tile_summaries(summary_record_bytes, committer._scene_voxel_tile_gpu_tile_ids)
+	summary["complexity_field_values"] = committer._tile_store._decode_scene_voxel_tile_float_field_bytes(complexity_field_bytes)
+	summary["collision_field_values"] = committer._tile_store._decode_scene_voxel_tile_float_field_bytes(collision_field_bytes)
+	summary["tile_ids"] = committer._tile_store._scene_voxel_tile_gpu_tile_ids.duplicate()
+	summary["dirty_tile_ids"] = committer._tile_store._decode_scene_voxel_tile_dirty_ids(dirty_index_bytes)
+	summary["tile_records"] = committer._tile_store._decode_scene_voxel_tile_records(tile_record_bytes, committer._tile_store._scene_voxel_tile_gpu_tile_ids)
+	summary["summary_records"] = committer._tile_store._decode_scene_voxel_tile_summaries(summary_record_bytes, committer._tile_store._scene_voxel_tile_gpu_tile_ids)
 	return summary
 
 
@@ -315,10 +315,10 @@ static func project_resolved_source_candidates(committer, groups: Array[Dictiona
 	var projected_count := 0
 	for group in groups:
 		var candidates: Array = group.get("candidates", [])
-		var selected = committer._selected_source_candidate_for_public_projection(candidates)
+		var selected = committer._source_staging._selected_source_candidate_for_public_projection(candidates)
 		if selected.is_empty():
 			continue
-		committer._store_scene_voxel_source(
+		committer._source_staging._store_scene_voxel_source(
 			str(group.get("source_type", "AutoSceneVoxel")),
 			str(group.get("key", "")),
 			selected

@@ -1,3 +1,4 @@
+@tool
 class_name AutoObject
 extends MeshInstance3D
 
@@ -19,7 +20,7 @@ const SELECTED_META_KEY := "autoobject_selected"
 @export var voxel_descriptor: Resource                        # descriptor 持有入口，语义读取主路径
 @export var voxel_color: Color = Color.WHITE                  # Inspector mirror，同步到 descriptor
 @export_range(0.0, 1.0) var voxel_complexity: float = 1.0      # Inspector mirror，同步到 descriptor
-@export var collision: Array[Dictionary] = []                 # canonical input，同步到 descriptor
+@export var collision: Array = []                             # canonical input，同步到 descriptor
 @export var min_spacing: float = 0.0                          # placement spacing；0 表示自动
 @export var bound_min_length: float = 0.0                     # scaled bound 最小轴长
 @export var source_mesh: Mesh                                 # source mesh，用于导入/重建

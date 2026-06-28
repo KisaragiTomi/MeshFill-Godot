@@ -255,9 +255,6 @@ func select_data_voxel(mode: int, x: int, y: int, z: int) -> Dictionary:
 func get_current_selection_record() -> Dictionary:
 	if not _active_selection.is_empty():
 		return _active_selection.duplicate(true)
-	var volume_score_record := _volume_score_selection_record()
-	if not volume_score_record.is_empty():
-		return volume_score_record
 	return {}
 
 
@@ -267,12 +264,17 @@ func register_volume_score_provider(provider: Node) -> void:
 		return
 	_volume_score_provider = provider
 	print("[SPA VolumeScore] Provider registered: %s" % str(provider.get_path()))
+	refresh_volume_score_anchor_selection()
 
 
 ## Remove the volume-score provider when its owner exits the tree.
 func unregister_volume_score_provider(provider: Node) -> void:
 	if provider != null and _volume_score_provider == provider:
 		_volume_score_provider = null
+		if _active_selection_is_volume_score_anchor():
+			_active_selection.clear()
+			_update_anchor_sample_bounds_marker()
+			_update_hud()
 
 
 ## True when SPA has a live volume-score provider to delegate editor actions to.
@@ -493,6 +495,8 @@ func _cycle_volume_score_anchor_topk(delta: int) -> bool:
 	if not (result is Dictionary) or not bool(result.get("ok", false)):
 		return false
 	var record := _volume_score_selection_record(result)
+	if not record.is_empty():
+		_active_selection = record.duplicate(true)
 	_update_anchor_sample_bounds_marker(record)
 	_update_hud()
 	return true
@@ -607,8 +611,12 @@ func _update_anchor_sample_bounds_marker(record: Dictionary = {}) -> void:
 		_hide_node_if_valid(_anchor_sample_bounds_marker)
 		return
 	var source := record
-	if source.is_empty():
-		source = _volume_score_selection_record()
+	if source.is_empty() or str(source.get("geometry", "")) == SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR:
+		var fresh_source := _volume_score_selection_record()
+		if not fresh_source.is_empty():
+			source = fresh_source
+		elif source.is_empty() and _active_selection_is_volume_score_anchor():
+			source = _active_selection
 	if not _anchor_sample_bounds_visible(source):
 		_hide_node_if_valid(_anchor_sample_bounds_marker)
 		return
@@ -1338,28 +1346,13 @@ func select_autoobject_by_index(object_index: int = -1) -> Dictionary:
 
 ## 根据当前选择模式淡化非相关几何体；这只影响显示焦点，不改变拾取优先级
 func _apply_selection_mode_visuals() -> void:
-	var gpu_objects_key := SPAEditorContract.voxel_display_key_for_mode(SelectionMode.AUTOOBJECT)
-	var svtile_key := SPAEditorContract.voxel_display_key_for_mode(SelectionMode.SVTILE)
-	var target_key := SPAEditorContract.voxel_display_key_for_mode(SelectionMode.TARGETSV)
-	var auto_focus := SPAEditorContract.mode_is_active(_selection_mode, SelectionMode.AUTOOBJECT)
-	var target_focus := SPAEditorContract.mode_is_active(_selection_mode, SelectionMode.TARGETSV)
-	var tile_active := SPAEditorContract.mode_in_list(_selection_mode, SPAEditorContract.SVTILE_OVERLAY_FOCUS_MODES)
-	var gpu_objects_visible := _voxel_display_is_visible(gpu_objects_key)
-	var svtile_visible := _voxel_display_is_visible(svtile_key)
-
-	if _autoobject_points != null:
-		_autoobject_points.visible = gpu_objects_visible
-		_autoobject_points.transparency = 0.0 if auto_focus else SELECTION_FADED_TRANSPARENCY
-	if _svtile_heatmap != null:
-		_svtile_heatmap.visible = svtile_visible
-		_svtile_heatmap.transparency = 0.0 if tile_active else SELECTION_FADED_TRANSPARENCY
-	if _autoobject_overlay_label != null:
-		var label_color := _autoobject_overlay_label.modulate
-		_autoobject_overlay_label.visible = gpu_objects_visible or svtile_visible
-		label_color.a = 1.0 if (_selection_mode == SelectionMode.MIXED or tile_active) else 0.25
-		_autoobject_overlay_label.modulate = label_color
-
-	_apply_targetsv_visuals(target_focus, target_key)
+	for binding in _selection_mode_visual_bindings():
+		_apply_selection_mode_visual_binding(binding)
+	_apply_autoobject_overlay_label_visual()
+	_apply_targetsv_visuals(
+		_selection_mode_focuses(SelectionMode.TARGETSV),
+		SPAEditorContract.voxel_display_key_for_mode(SelectionMode.TARGETSV)
+	)
 	var box_visible := _active_selection_box_visible()
 	if _selection_marker != null:
 		_selection_marker.visible = box_visible
@@ -1368,6 +1361,55 @@ func _apply_selection_mode_visuals() -> void:
 		_selection_label.visible = box_visible
 	_update_anchor_sample_bounds_marker()
 	_apply_all_external_voxel_display_visibility()
+
+
+func _selection_mode_visual_bindings() -> Array[Dictionary]:
+	return [
+		{
+			"node": _autoobject_points,
+			"display_key": SPAEditorContract.voxel_display_key_for_mode(SelectionMode.AUTOOBJECT),
+			"mode": SelectionMode.AUTOOBJECT,
+		},
+		{
+			"node": _svtile_heatmap,
+			"display_key": SPAEditorContract.voxel_display_key_for_mode(SelectionMode.SVTILE),
+			"focus_modes": SPAEditorContract.SVTILE_OVERLAY_FOCUS_MODES,
+		},
+	]
+
+
+func _apply_selection_mode_visual_binding(binding: Dictionary) -> void:
+	var node := binding.get("node") as GeometryInstance3D
+	if node == null:
+		return
+	var display_key := str(binding.get("display_key", ""))
+	node.visible = display_key.is_empty() or _voxel_display_is_visible(display_key)
+	node.transparency = 0.0 if _selection_mode_visual_focused(binding) else SELECTION_FADED_TRANSPARENCY
+
+
+func _selection_mode_visual_focused(binding: Dictionary) -> bool:
+	if binding.has("focus_modes"):
+		return _selection_mode_focuses_any(binding.get("focus_modes", []))
+	return _selection_mode_focuses(int(binding.get("mode", -1)))
+
+
+func _selection_mode_focuses(mode_id: int) -> bool:
+	return SPAEditorContract.mode_is_active(_selection_mode, mode_id)
+
+
+func _selection_mode_focuses_any(mode_ids: Array) -> bool:
+	return SPAEditorContract.mode_in_list(_selection_mode, mode_ids)
+
+
+func _apply_autoobject_overlay_label_visual() -> void:
+	if _autoobject_overlay_label == null:
+		return
+	var gpu_objects_visible := _voxel_display_is_visible(SPAEditorContract.voxel_display_key_for_mode(SelectionMode.AUTOOBJECT))
+	var svtile_visible := _voxel_display_is_visible(SPAEditorContract.voxel_display_key_for_mode(SelectionMode.SVTILE))
+	var label_color := _autoobject_overlay_label.modulate
+	_autoobject_overlay_label.visible = gpu_objects_visible or svtile_visible
+	label_color.a = 1.0 if _selection_mode_focuses_any(SPAEditorContract.SVTILE_OVERLAY_FOCUS_MODES) else 0.25
+	_autoobject_overlay_label.modulate = label_color
 
 
 ## 设置TargetSV体素显示状态和透明度
@@ -2216,7 +2258,7 @@ func _selection_allows_gpu_autoobjects() -> bool:
 
 ## 检查是否有任何类型的选中状态
 func _has_active_selection() -> bool:
-	return not _active_selection.is_empty() or _has_volume_score_selection()
+	return not _active_selection.is_empty()
 
 
 ## 鼠标点击的统一选择入口。

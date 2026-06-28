@@ -1,6 +1,6 @@
 [gd_scene load_steps=3 format=3]
 
-[ext_resource type="Script" path="res://scripts/meshfill_brush.gd" id="1_brush"]
+[ext_resource type="Script" path="res://addons/meshfill_editor/meshfill_brush.gd" id="1_brush"]
 [ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
 
 [node name="MeshFillBrushDemo" type="Node3D"]

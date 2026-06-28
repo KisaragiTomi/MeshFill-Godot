@@ -15,12 +15,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 [application]
 
 config/name="MeshFill-Godot"
-run/main_scene="res://demos/placement-meshfill-object-volume-score-3d/placement-meshfill-object-volume-score-3d.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
-
-[autoload]
-
-McpInteractionServer="*res://scripts/mcp_interaction_server.gd"
 
 [dotnet]
 
@@ -40,3 +35,7 @@ import/fbx/enabled=false
 [meshfill]
 
 scene_voxel_tile/size_voxels=Vector3i(4, 4, 4)
+
+[meshfill_editor]
+
+bake_fbx_python="D:/Python310/python.exe"

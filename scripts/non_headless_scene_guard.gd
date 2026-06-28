@@ -1,3 +1,4 @@
+@tool
 extends Node
 
 const HEADLESS_DISPLAY_NAME := "headless"

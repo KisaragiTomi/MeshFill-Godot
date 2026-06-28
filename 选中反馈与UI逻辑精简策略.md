@@ -103,7 +103,7 @@ domain 特有的副作用（AutoObject 给点云实例染色、anchor 刷新 sam
 | 步骤 A：统一可视节点 | 单个 `_selection_marker` + `_selection_label`，由 `_ensure_selection_visual()` 创建；anchor 的 `_anchor_sample_bounds_marker` 作为可选附加层保留 |
 | 步骤 B：唯一写入口 | `set_active_selection(record)`（点选域）/ `clear_active_selection(update_hud, clear_provider)`（统一清除）；可视摆位收口于 `_apply_selection_visual(record)`，按 `geometry` 分派 |
 | 步骤 C：表驱动文本 | marker label → `_format_selection_label(record)`；HUD 选中段 → `_append_active_selection_hud_lines(lines)` |
+| selection-mode 可见性 | `_apply_selection_mode_visuals()` 只做调度；节点显示/淡化由 `_selection_mode_visual_bindings()` 与 `_apply_selection_mode_visual_binding(binding)` 数据驱动 |
 | volume-score anchor | 权威态仍在 provider，`refresh_volume_score_anchor_selection()` 作为回调把镜像写入 `_active_selection`；SPA 不为其出 box marker（provider 自绘高亮），HUD 改为显示其 `summary` 行（此前为空） |
 
-验证：`<godot> --headless --path . --import` 全工程解析零 `Parse Error`。视口点击矩阵仍需按 [ui-click-test-plan.md](demos/core-SPA-scene-placement-actor/ui-click-test-plan.md) 在编辑器 `@tool` 模式人工或经 MCP `call_method` 验收。
-
+验证：`<godot> --headless --path . --import` 可用于确认脚本扫描/类注册阶段无 `Parse Error`；当前项目会在 editor layout 阶段由 `non_headless_scene_guard.gd` 拦截并返回非零。视口点击矩阵仍需按 [ui-click-test-plan.md](demos/ui-click-test-plan.md) 在编辑器 `@tool` 模式人工或经 MCP `call_method` 验收。

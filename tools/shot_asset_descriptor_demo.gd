@@ -19,7 +19,7 @@ func _run() -> void:
 	root.add_child(inst)
 	print("[SHOT] scene instanced: ", inst.name)
 
-	# 等待 autoload 地形注入(call_deferred) + 多帧渲染稳定
+	# Wait for deferred terrain setup and viewport frames to settle.
 	for i in range(40):
 		await process_frame
 	RenderingServer.force_draw(true)

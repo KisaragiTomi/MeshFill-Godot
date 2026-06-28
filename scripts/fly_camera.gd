@@ -1,3 +1,4 @@
+@tool
 extends Camera3D
 
 @export var move_speed: float = 50.0
@@ -22,6 +23,10 @@ var _captured: bool = false
 
 
 func _ready() -> void:
+	if not Engine.is_editor_hint():
+		set_process(false)
+		set_process_unhandled_input(false)
+		return
 	current = true
 	_yaw = rotation.y
 	_pitch = rotation.x
@@ -186,6 +191,8 @@ func _frame_bounds(bounds: AABB) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if not Engine.is_editor_hint():
+		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_RIGHT:
@@ -232,6 +239,8 @@ func _notification(what: int) -> void:
 
 
 func _process(delta: float) -> void:
+	if not Engine.is_editor_hint():
+		return
 	var speed := fast_move_speed if Input.is_key_pressed(KEY_SHIFT) else move_speed
 	var direction := Vector3.ZERO
 

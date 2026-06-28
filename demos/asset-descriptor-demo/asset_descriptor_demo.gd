@@ -15,6 +15,19 @@ const GEO_BOUND_LONGEST_META := "geo_bound_longest"
 const GEO_KIND_META := "geo_asset_kind"
 const GEO_SCAN_EXTENSIONS := ["fbx"]
 
+# ---- Bake transform -> source FBX (editor tool) ---------------------------
+const BAKE_SCRIPT_PATH := "res://tools/bake_fbx_transform.py"
+const BAKE_BACKUP_DIR := "res://backup/geo"
+const BAKE_PYTHON_SETTING := "meshfill_editor/bake_fbx_python"
+
+var _bake_status_label: Label
+var _bake_info_label: Label
+var _bake_dialog: ConfirmationDialog
+var _bake_output_dialog: AcceptDialog
+var _bake_scale_check: CheckBox
+var _bake_rotation_check: CheckBox
+var _bake_target: Node3D
+
 # Voxel channel display modes (one shortcut each).
 const VOXEL_CHANNEL_NONE := ""
 const VOXEL_CHANNEL_COLOR := "color"
@@ -23,6 +36,15 @@ const VOXEL_CHANNEL_COLLISION := "collision"
 
 const PROBE_DEBUG_NODE := "ProbeDebugGroup"
 const BUFFER_INFO_NODE := "BufferInfoOverlay"
+
+const EDITOR_ACTION_TREE_PROBES := &"tree_probes"
+const EDITOR_ACTION_ROCK_PROBES := &"rock_probes"
+const EDITOR_ACTION_ALL_PROBES := &"all_probes"
+const EDITOR_ACTION_VOXEL_COLOR := &"voxel_color"
+const EDITOR_ACTION_VOXEL_COMPLEXITY := &"voxel_complexity"
+const EDITOR_ACTION_VOXEL_COLLISION := &"voxel_collision"
+const EDITOR_ACTION_CLEAR_DEBUG := &"clear_debug"
+const EDITOR_ACTION_BUFFER_INFO := &"buffer_info"
 
 const TREE_COLOR := Color(0.35, 0.58, 0.24, 0.55)
 const TREE_COMPLEXITY := 0.45
@@ -34,7 +56,6 @@ const ROCK_COMPLEXITY := 0.75
 @export var max_probe_markers: int = 96
 @export_range(8, 96, 1) var voxel_grid_count: int = 28
 @export_range(0.0, 1.0, 0.05) var voxel_collision_strength: float = 0.9
-@export_range(0.05, 2.0, 0.05) var geo_import_scale: float = 0.35
 @export var geo_layout_origin := Vector3(-7.0, 0.0, 5.0)
 @export_range(4.0, 48.0, 0.5) var geo_layout_row_width: float = 14.0
 @export_range(0.1, 4.0, 0.1) var geo_layout_gap: float = 0.8
@@ -65,45 +86,114 @@ func _ready() -> void:
 	if is_scene_startup_blocked():
 		return
 	_connect_geo_scan_buttons()
+	_ensure_bake_ui()
 	_collect_static_assets()
 	_update_instruction_labels()
 	_update_geo_scan_status()
 
 
-func _unhandled_input(event: InputEvent) -> void:
-	if not Engine.is_editor_hint():
-		return
+# Debug shortcuts are driven by the editor 3D viewport, not runtime input. The
+# MeshFill editor plugin forwards viewport key events here via _forward_3d_gui_input,
+# so the 1..6 / C / B overlays respond while the cursor is over the editor viewport.
+# Returning true tells the plugin to consume the event (AFTER_GUI_INPUT_STOP).
+func _editor_viewport_input(_viewport_camera: Camera3D, event: InputEvent) -> bool:
 	if not event is InputEventKey:
-		return
+		return false
 	var ke := event as InputEventKey
 	if not ke.pressed or ke.echo:
-		return
+		return false
 
-	match ke.keycode:
+	# The 3D editor setting "emulate_numpad" rewrites number-row 1..9 to keypad
+	# codes before the event reaches here, so fold KP_0..KP_9 back to 0..9 to keep
+	# the digit shortcuts working regardless of that setting.
+	var keycode := ke.keycode
+	if keycode >= KEY_KP_0 and keycode <= KEY_KP_9:
+		keycode = KEY_0 + (keycode - KEY_KP_0)
+
+	match keycode:
 		KEY_1:
-			_toggle_tree_probes()
-			_mark_handled()
+			asset_descriptor_editor_action(EDITOR_ACTION_TREE_PROBES)
+			return true
 		KEY_2:
-			_toggle_rock_probes()
-			_mark_handled()
+			asset_descriptor_editor_action(EDITOR_ACTION_ROCK_PROBES)
+			return true
 		KEY_3:
-			_toggle_all_probes()
-			_mark_handled()
+			asset_descriptor_editor_action(EDITOR_ACTION_ALL_PROBES)
+			return true
 		KEY_4:
-			_show_voxel_channel(VOXEL_CHANNEL_COLOR)
-			_mark_handled()
+			asset_descriptor_editor_action(EDITOR_ACTION_VOXEL_COLOR)
+			return true
 		KEY_5:
-			_show_voxel_channel(VOXEL_CHANNEL_COMPLEXITY)
-			_mark_handled()
+			asset_descriptor_editor_action(EDITOR_ACTION_VOXEL_COMPLEXITY)
+			return true
 		KEY_6:
-			_show_voxel_channel(VOXEL_CHANNEL_COLLISION)
-			_mark_handled()
+			asset_descriptor_editor_action(EDITOR_ACTION_VOXEL_COLLISION)
+			return true
 		KEY_C:
-			_clear_all_debug()
-			_mark_handled()
+			asset_descriptor_editor_action(EDITOR_ACTION_CLEAR_DEBUG)
+			return true
 		KEY_B:
+			asset_descriptor_editor_action(EDITOR_ACTION_BUFFER_INFO)
+			return true
+	return false
+
+
+func asset_descriptor_editor_actions() -> Array[Dictionary]:
+	return [
+		{"id": EDITOR_ACTION_TREE_PROBES, "label": "Tree probes", "shortcut": "1"},
+		{"id": EDITOR_ACTION_ROCK_PROBES, "label": "Rock probes", "shortcut": "2"},
+		{"id": EDITOR_ACTION_ALL_PROBES, "label": "All probes", "shortcut": "3"},
+		{"id": EDITOR_ACTION_VOXEL_COLOR, "label": "Voxel color", "shortcut": "4"},
+		{"id": EDITOR_ACTION_VOXEL_COMPLEXITY, "label": "Voxel complexity", "shortcut": "5"},
+		{"id": EDITOR_ACTION_VOXEL_COLLISION, "label": "Voxel collision", "shortcut": "6"},
+		{"id": EDITOR_ACTION_CLEAR_DEBUG, "label": "Clear debug", "shortcut": "C"},
+		{"id": EDITOR_ACTION_BUFFER_INFO, "label": "Buffer info", "shortcut": "B"},
+	]
+
+
+func asset_descriptor_editor_action(action: StringName) -> Dictionary:
+	match action:
+		EDITOR_ACTION_TREE_PROBES:
+			_toggle_tree_probes()
+		EDITOR_ACTION_ROCK_PROBES:
+			_toggle_rock_probes()
+		EDITOR_ACTION_ALL_PROBES:
+			_toggle_all_probes()
+		EDITOR_ACTION_VOXEL_COLOR:
+			_show_voxel_channel(VOXEL_CHANNEL_COLOR)
+		EDITOR_ACTION_VOXEL_COMPLEXITY:
+			_show_voxel_channel(VOXEL_CHANNEL_COMPLEXITY)
+		EDITOR_ACTION_VOXEL_COLLISION:
+			_show_voxel_channel(VOXEL_CHANNEL_COLLISION)
+		EDITOR_ACTION_CLEAR_DEBUG:
+			_clear_all_debug()
+		EDITOR_ACTION_BUFFER_INFO:
 			_toggle_buffer_info()
-			_mark_handled()
+		_:
+			return {"ok": false, "reason": "unknown_action", "action": str(action)}
+	return _asset_descriptor_debug_state(action)
+
+
+func get_asset_descriptor_debug_state() -> Dictionary:
+	return _asset_descriptor_debug_state()
+
+
+func _asset_descriptor_debug_state(action: StringName = &"") -> Dictionary:
+	return {
+		"ok": true,
+		"action": str(action),
+		"tree_probes_visible": _tree_probes_visible,
+		"rock_probes_visible": _rock_probes_visible,
+		"buffer_info_visible": _buffer_info_visible,
+		"voxel_channel": _voxel_channel,
+		"voxel_baked": _voxel_baked,
+		"voxel_result_count": _voxel_results.size(),
+		"tree_probe_count": _tree_probes.size(),
+		"rock_probe_count": _rock_probes.size(),
+		"has_probe_debug": get_node_or_null(PROBE_DEBUG_NODE) != null,
+		"has_voxel_debug": get_node_or_null(VOXEL_DEBUG_NODE) != null,
+		"has_buffer_info": get_node_or_null(BUFFER_INFO_NODE) != null,
+	}
 
 
 # Assets are now authored statically in the .tscn under Assets/Trees and
@@ -249,7 +339,7 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 	var color := TREE_COLOR if kind == "tree" else ROCK_COLOR
 
 	node.name = _geo_node_name_for_path(path)
-	node.scale = Vector3.ONE * geo_import_scale
+	node.scale = Vector3.ONE  # 1:1 — geo assets use their true imported FBX scale
 	node.set_meta(GEO_SOURCE_META, path)
 	node.set_meta(GEO_MTIME_META, modified)
 	node.set_meta(GEO_BOUND_SIZE_META, bounds.size)
@@ -287,20 +377,19 @@ func _arrange_geo_asset_nodes() -> void:
 	var cursor_x := row_start_x
 	var row_z := geo_layout_origin.z
 	var row_depth := 0.0
-	var scale := maxf(geo_import_scale, 0.001)
 
 	for node in nodes:
 		var bounds := _geo_node_local_aabb(node)
-		var size := bounds.size * scale
+		var size := bounds.size
 		if cursor_x > row_start_x and cursor_x + size.x > row_limit_x:
 			cursor_x = row_start_x
 			row_z += row_depth + geo_layout_gap
 			row_depth = 0.0
-		node.scale = Vector3.ONE * scale
+		node.scale = Vector3.ONE
 		node.position = Vector3(
-			cursor_x - bounds.position.x * scale,
-			geo_layout_origin.y - bounds.position.y * scale,
-			row_z - (bounds.position.z + bounds.size.z * 0.5) * scale
+			cursor_x - bounds.position.x,
+			geo_layout_origin.y - bounds.position.y,
+			row_z - (bounds.position.z + bounds.size.z * 0.5)
 		)
 		cursor_x += maxf(size.x, geo_layout_gap) + geo_layout_gap
 		row_depth = maxf(row_depth, size.z)
@@ -436,6 +525,240 @@ func _update_geo_scan_status(text: String = "") -> void:
 		label.text = "Geo assets: %d" % _geo_asset_nodes().size()
 	else:
 		label.text = text
+
+
+# --- Bake transform -> source FBX ------------------------------------------
+#
+# Freezes the selected geo asset's scale + rotation into its source .FBX via the
+# Autodesk FBX Python SDK (tools/bake_fbx_transform.py). Godot owns all the axis
+# math: each FBX imports through a per-file conversion C (= the child "Mesh"
+# node's transform), so the transform baked into the FBX's own control-point
+# space is M = C^-1 * T * C, where T is the user's scale/rotation. Only M (three
+# basis columns) crosses into Python.
+
+func _ensure_bake_ui() -> void:
+	if not Engine.is_editor_hint():
+		return
+	_ensure_bake_setting()
+	var vbox := get_node_or_null("GeoTools/Panel/VBox") as VBoxContainer
+	if vbox == null:
+		return
+	var btn := vbox.get_node_or_null("BakeSelectedFbx") as Button
+	if btn == null:
+		btn = Button.new()
+		btn.name = "BakeSelectedFbx"
+		btn.text = "Bake → FBX (selected)"
+		btn.tooltip_text = "Freeze the selected geo asset's scale + rotation into its source .FBX. Overwrites the file (original copied to res://backup/geo). Requires the Autodesk FBX Python SDK — set the path in Project Settings: meshfill_editor/bake_fbx_python."
+		vbox.add_child(btn)
+		var rescan := vbox.get_node_or_null("FullRescanGeo")
+		if rescan != null:
+			vbox.move_child(btn, rescan.get_index() + 1)
+		btn.pressed.connect(_on_bake_selected_to_fbx_pressed)
+	var status := vbox.get_node_or_null("BakeStatus") as Label
+	if status == null:
+		status = Label.new()
+		status.name = "BakeStatus"
+		status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		status.custom_minimum_size = Vector2(240, 0)
+		status.add_theme_font_size_override("font_size", 12)
+		status.text = ""
+		vbox.add_child(status)
+	_bake_status_label = status
+	var panel := get_node_or_null("GeoTools/Panel") as Control
+	if panel != null:
+		panel.reset_size()
+
+
+func _ensure_bake_setting() -> void:
+	if not Engine.is_editor_hint():
+		return
+	if not ProjectSettings.has_setting(BAKE_PYTHON_SETTING):
+		ProjectSettings.set_setting(BAKE_PYTHON_SETTING, "python")
+	ProjectSettings.set_initial_value(BAKE_PYTHON_SETTING, "python")
+	ProjectSettings.add_property_info({
+		"name": BAKE_PYTHON_SETTING,
+		"type": TYPE_STRING,
+		"hint": PROPERTY_HINT_GLOBAL_FILE,
+		"hint_string": "*.exe,*",
+	})
+
+
+func _on_bake_selected_to_fbx_pressed() -> void:
+	if not Engine.is_editor_hint():
+		return
+	var node := _resolve_selected_geo_node()
+	if node == null:
+		_set_bake_status("Select a geo asset (under Assets/Geo) first.")
+		return
+	_bake_target = node
+	_show_bake_dialog(node)
+
+
+func _resolve_selected_geo_node() -> Node3D:
+	if not Engine.is_editor_hint():
+		return null
+	var selection := EditorInterface.get_selection()
+	if selection == null:
+		return null
+	for n in selection.get_selected_nodes():
+		var cur: Node = n
+		while cur != null:
+			if cur is Node3D and cur.has_meta(GEO_SOURCE_META):
+				return cur as Node3D
+			cur = cur.get_parent()
+	return null
+
+
+func _show_bake_dialog(node: Node3D) -> void:
+	var src := str(node.get_meta(GEO_SOURCE_META, ""))
+	var basis := node.transform.basis
+	var rot_deg := basis.get_euler() * 57.2957795
+	var scl := basis.get_scale()
+	if _bake_dialog == null:
+		_bake_dialog = ConfirmationDialog.new()
+		_bake_dialog.title = "Bake transform → FBX"
+		_bake_dialog.ok_button_text = "Bake"
+		var vb := VBoxContainer.new()
+		vb.add_theme_constant_override("separation", 8)
+		_bake_info_label = Label.new()
+		_bake_info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_bake_info_label.custom_minimum_size = Vector2(420, 0)
+		vb.add_child(_bake_info_label)
+		_bake_rotation_check = CheckBox.new()
+		_bake_rotation_check.text = "Bake rotation"
+		_bake_rotation_check.button_pressed = true
+		vb.add_child(_bake_rotation_check)
+		_bake_scale_check = CheckBox.new()
+		_bake_scale_check.text = "Bake scale (off = rotation only)"
+		_bake_scale_check.button_pressed = true
+		vb.add_child(_bake_scale_check)
+		_bake_dialog.add_child(vb)
+		_bake_dialog.confirmed.connect(_on_bake_confirmed)
+		add_child(_bake_dialog)
+	_bake_info_label.text = (
+		"Source: %s\nScale: (%.3f, %.3f, %.3f)\nRotation°: (%.2f, %.2f, %.2f)\n\n"
+		+ "This OVERWRITES the source .FBX. The original is copied to\nres://backup/geo first."
+	) % [src, scl.x, scl.y, scl.z, rot_deg.x, rot_deg.y, rot_deg.z]
+	_bake_dialog.popup_centered()
+
+
+func _on_bake_confirmed() -> void:
+	var bake_rotation := _bake_rotation_check != null and _bake_rotation_check.button_pressed
+	var bake_scale := _bake_scale_check != null and _bake_scale_check.button_pressed
+	_do_bake(_bake_target, bake_rotation, bake_scale)
+
+
+func _do_bake(node: Node3D, bake_rotation: bool, bake_scale: bool) -> void:
+	if node == null:
+		return
+	if not bake_rotation and not bake_scale:
+		_set_bake_status("Nothing selected to bake (check rotation and/or scale).")
+		return
+	var src_res := str(node.get_meta(GEO_SOURCE_META, ""))
+	if src_res.is_empty():
+		_set_bake_status("Selected node has no geo_source_path.")
+		return
+
+	# C = the per-file import conversion (child Mesh node transform).
+	var mesh_inst := node.get_node_or_null("Mesh") as Node3D
+	var c_basis: Basis = mesh_inst.transform.basis if mesh_inst != null else Basis.IDENTITY
+
+	# T = the user's transform, restricted to the chosen channels.
+	var node_basis := node.transform.basis
+	var rot_b := Basis(node_basis.get_rotation_quaternion())
+	var scl := node_basis.get_scale()
+	var t := Basis.IDENTITY
+	if bake_rotation:
+		t = rot_b
+	if bake_scale:
+		t = t * Basis.IDENTITY.scaled(scl)
+
+	# M = C^-1 * T * C, expressed in the FBX's own control-point space.
+	var m := c_basis.inverse() * t * c_basis
+	var parts := PackedStringArray()
+	for v in [m.x, m.y, m.z]:
+		parts.append("%.10f" % v.x)
+		parts.append("%.10f" % v.y)
+		parts.append("%.10f" % v.z)
+	var basis_arg := ",".join(parts)
+
+	var python := str(ProjectSettings.get_setting(BAKE_PYTHON_SETTING, "python"))
+	var script_abs := ProjectSettings.globalize_path(BAKE_SCRIPT_PATH)
+	var src_abs := ProjectSettings.globalize_path(src_res)
+	var backup_abs := ProjectSettings.globalize_path(BAKE_BACKUP_DIR)
+	DirAccess.make_dir_recursive_absolute(backup_abs)
+
+	if not FileAccess.file_exists(script_abs):
+		_set_bake_status("Bake script missing: %s" % BAKE_SCRIPT_PATH)
+		return
+
+	var args := PackedStringArray([
+		script_abs,
+		"--fbx", src_abs,
+		"--basis-cols", basis_arg,
+		"--backup", backup_abs,
+		"--label", str(node.name),
+	])
+	_set_bake_status("Baking %s …" % src_res.get_file())
+	var out := []
+	var code := OS.execute(python, args, out, true)
+	var log_text := ""
+	for chunk in out:
+		log_text += str(chunk)
+
+	if code == 0:
+		# Geometry now carries the transform — clear the baked channels so the
+		# look isn't applied twice after reimport.
+		if bake_rotation:
+			node.rotation = Vector3.ZERO
+		if bake_scale:
+			node.scale = Vector3.ONE
+		_mark_scene_unsaved()
+		_set_bake_status("Baked → %s. Reimporting…" % src_res.get_file())
+		print("[AssetDescriptorDemo] Bake OK:\n%s" % log_text)
+		_reimport_after_bake(src_res)
+	else:
+		_set_bake_status("Bake FAILED (exit %d) — see dialog." % code)
+		_show_bake_output("Command:\n%s %s\n\n--- output ---\n%s" % [
+			python, " ".join(args), log_text])
+		push_error("[AssetDescriptorDemo] FBX bake failed (exit %d): %s" % [code, log_text])
+
+
+func _reimport_after_bake(src_res: String) -> void:
+	if not Engine.is_editor_hint():
+		return
+	var fs = EditorInterface.get_resource_filesystem()
+	if fs == null:
+		return
+	fs.update_file(src_res)
+	fs.reimport_files(PackedStringArray([src_res]))
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_scan_geo_assets(false)
+	_update_geo_scan_status()
+	_set_bake_status("Baked → %s (reimported)." % src_res.get_file())
+
+
+func _show_bake_output(text: String) -> void:
+	if _bake_output_dialog == null:
+		_bake_output_dialog = AcceptDialog.new()
+		_bake_output_dialog.title = "Bake → FBX output"
+		_bake_output_dialog.min_size = Vector2(680, 380)
+		var edit := TextEdit.new()
+		edit.name = "Output"
+		edit.editable = false
+		edit.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+		edit.custom_minimum_size = Vector2(660, 340)
+		_bake_output_dialog.add_child(edit)
+		add_child(_bake_output_dialog)
+	(_bake_output_dialog.get_node("Output") as TextEdit).text = text
+	_bake_output_dialog.popup_centered()
+
+
+func _set_bake_status(text: String) -> void:
+	if _bake_status_label != null:
+		_bake_status_label.text = text
+	print("[AssetDescriptorDemo] %s" % text)
 
 
 # ─── Probe Debug ──────────────────────────────────────────────
@@ -773,7 +1096,7 @@ func _make_probe_marker(probe: Dictionary, index: int) -> MeshInstance3D:
 func _update_instruction_labels() -> void:
 	var method_label := get_node_or_null("TestMethod") as Label3D
 	if method_label != null:
-		method_label.text = ("Shortcuts\n" +
+		method_label.text = ("Editor: AD Debug toolbar or viewport shortcuts\n" +
 			"1: Tree probes    2: Rock probes    3: All probes\n" +
 			"4: Voxel color    5: Voxel complexity    6: Voxel collision\n" +
 			"C: Clear debug    B: Buffer info")
@@ -783,9 +1106,3 @@ func _update_instruction_labels() -> void:
 			"- AssetDescriptor is semantic authority\n" +
 			"- color/complexity/collision are shared fields\n" +
 			"- probes & buffers display correctly")
-
-
-func _mark_handled() -> void:
-	var vp := get_viewport()
-	if vp != null:
-		vp.set_input_as_handled()

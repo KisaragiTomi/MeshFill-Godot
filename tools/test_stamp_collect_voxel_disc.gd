@@ -64,7 +64,7 @@ func _disc_cells() -> Array:
 
 func _run_case(committer, compare_mode: int, prior: Array, expect_record: Array) -> void:
 	var slices := _make_slices(prior)
-	var result: Dictionary = committer._stamp_collect_voxel_disc_gpu(slices, Vector2i(CX, CZ), RADIUS, VALUE, compare_mode)
+	var result: Dictionary = committer._field_builder._stamp_collect_voxel_disc_gpu(slices, Vector2i(CX, CZ), RADIUS, VALUE, compare_mode)
 	var updated: Array = result.get("slices", [])
 	var records: Array = result.get("records", [])
 	var disc_cells := _disc_cells()

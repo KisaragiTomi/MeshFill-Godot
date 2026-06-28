@@ -6,25 +6,22 @@ const GEO_PATHS := [
 	"res://geo/SM_TestLeaf_Test2.FBX",
 	"res://geo/cliff_01.FBX",
 	"res://geo/cliff_02.FBX",
-	"res://geo/SM_Cliff_06.FBX",
 ]
 
 const SUPPORTED_GEO_EXTENSIONS := ["fbx", "glb", "gltf", "obj", "dae", "blend", "mesh", "res", "tscn", "scn"]
 
-const ASSET_NAMES := ["Leaf", "Cliff01", "Cliff02", "Cliff06"]
+const ASSET_NAMES := ["Leaf", "Cliff01", "Cliff02"]
 
 const ASSET_COLORS := [
 	Color(0.35, 0.58, 0.24, 0.45),
 	Color(0.48, 0.42, 0.35, 0.75),
 	Color(0.52, 0.46, 0.38, 0.70),
-	Color(0.55, 0.50, 0.44, 0.80),
 ]
 
 const WIRE_COLORS := [
 	Color(0.2, 0.9, 0.3, 0.7),
 	Color(0.9, 0.4, 0.2, 0.7),
 	Color(0.2, 0.5, 1.0, 0.7),
-	Color(1.0, 0.85, 0.1, 0.7),
 ]
 
 

@@ -2,7 +2,7 @@
 extends EditorPlugin
 
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
-const MeshFillBrushScript := preload("res://scripts/meshfill_brush.gd")
+const MeshFillBrushScript := preload("res://addons/meshfill_editor/meshfill_brush.gd")
 const CommonTargetSVLookup := preload("res://scripts/common_targetsv_lookup.gd")
 
 var _last_viewport_camera: Camera3D
@@ -10,9 +10,17 @@ var _last_viewport_camera: Camera3D
 # ---- MeshFillBrush plugin integration ----
 var _brush: MeshFillBrushScript = null
 var _brush_btn: Button
+# The brush toolbar button is only relevant for scenes that actually contain a
+# MeshFillBrush (e.g. terrain/SPA scenes). Scenes like asset-descriptor-demo have
+# no brush, so the button is hidden there. Recomputed on scene change.
+var _scene_has_brush := false
 var _selection_mode_option: OptionButton
 var _geo_scan_btn: Button
 var _geo_scan_status_label: Label
+var _asset_descriptor_debug_menu: MenuButton
+var _asset_descriptor_debug_status_label: Label
+var _asset_descriptor_debug_host_instance_id := 0
+var _asset_descriptor_debug_action_ids: Array[StringName] = []
 var _generate_anchor_btn: Button
 var _voxel_score_btn: Button
 var _anchor_score_status_label: Label
@@ -32,6 +40,9 @@ const VOLUME_SCORE_STATUS_METHODS := SPAEditorContract.VOLUME_SCORE_STATUS_METHO
 const GEO_SCAN_METHOD := &"_scan_geo_assets"
 const GEO_SCAN_STATUS_METHOD := &"_update_geo_scan_status"
 const GEO_SCAN_FORMAT_METHOD := &"_format_geo_scan_result"
+const ASSET_DESCRIPTOR_ACTION_METHOD := &"asset_descriptor_editor_action"
+const ASSET_DESCRIPTOR_ACTIONS_METHOD := &"asset_descriptor_editor_actions"
+const ASSET_DESCRIPTOR_STATE_METHOD := &"get_asset_descriptor_debug_state"
 
 # ---- MCP TCP Server ----
 var _tcp_server: TCPServer
@@ -73,6 +84,7 @@ func _enter_tree() -> void:
 	_create_brush_toolbar_button()
 	_create_selection_mode_toolbar()
 	_create_geo_scan_toolbar()
+	_create_asset_descriptor_debug_toolbar()
 	_create_volume_score_toolbar()
 	_create_voxel_visibility_panel()
 	print("[MeshFill Editor] Activated — MCP bridge on 127.0.0.1:%d" % MCP_PORT)
@@ -81,6 +93,7 @@ func _enter_tree() -> void:
 func _exit_tree() -> void:
 	_remove_voxel_visibility_panel()
 	_remove_volume_score_toolbar()
+	_remove_asset_descriptor_debug_toolbar()
 	_remove_geo_scan_toolbar()
 	_remove_selection_mode_toolbar()
 	_remove_brush_toolbar_button()
@@ -99,8 +112,10 @@ func _process(delta: float) -> void:
 		return
 	_poll_single_instance_port()
 	_poll_tcp()
+	_sync_brush_btn_visibility()
 	_sync_selection_mode_option_from_scene()
 	_sync_geo_scan_toolbar_from_scene()
+	_sync_asset_descriptor_debug_toolbar_from_scene()
 	_sync_volume_score_toolbar_from_scene()
 	_sync_voxel_visibility_panel_from_scene()
 	_heartbeat_timer += delta
@@ -185,12 +200,27 @@ func _handle_brush_input(viewport_camera: Camera3D, event: InputEvent) -> bool:
 
 
 func _forward_to_scene_viewport_input(viewport_camera: Camera3D, event: InputEvent) -> int:
-	var spa := _scene_spa_host()
-	if spa == null or not spa.has_method(&"_editor_viewport_input"):
+	var host := _scene_viewport_input_host()
+	if host == null:
 		return AFTER_GUI_INPUT_PASS
-	if spa._editor_viewport_input(viewport_camera, event):
+	if host._editor_viewport_input(viewport_camera, event):
 		return AFTER_GUI_INPUT_STOP
 	return AFTER_GUI_INPUT_PASS
+
+
+# Any edited scene implementing the editor viewport input contract receives
+# forwarded 3D viewport events. The SPA host takes priority (it owns selection
+# mode), otherwise the edited scene root (e.g. AssetDescriptorDemo) is used so
+# its debug shortcuts cover the editor viewport instead of relying on runtime
+# _unhandled_input.
+func _scene_viewport_input_host() -> Node:
+	var spa := _scene_spa_host()
+	if spa != null and spa.has_method(&"_editor_viewport_input"):
+		return spa
+	var root := get_editor_interface().get_edited_scene_root()
+	if root != null and root.has_method(&"_editor_viewport_input"):
+		return root
+	return null
 
 
 func _handle_brush_shortcut(keycode: int) -> bool:
@@ -280,6 +310,8 @@ func _create_brush_toolbar_button() -> void:
 	_brush_btn.toggled.connect(_on_brush_btn_toggled)
 	_sync_brush_btn(true)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _brush_btn)
+	_scene_has_brush = _detect_scene_brush(get_editor_interface().get_edited_scene_root())
+	_sync_brush_btn_visibility()
 
 
 func _remove_brush_toolbar_button() -> void:
@@ -322,6 +354,26 @@ func _sync_brush_btn(active: bool) -> void:
 	var pressed_style := style.duplicate() as StyleBoxFlat
 	pressed_style.bg_color = style.bg_color.darkened(0.1)
 	_brush_btn.add_theme_stylebox_override("pressed", pressed_style)
+
+
+func _detect_scene_brush(root: Node) -> bool:
+	if root == null:
+		return false
+	if root is MeshFillBrushScript:
+		return true
+	for child in root.get_children():
+		if _detect_scene_brush(child):
+			return true
+	return false
+
+
+func _sync_brush_btn_visibility() -> void:
+	if _brush_btn == null:
+		return
+	var root := get_editor_interface().get_edited_scene_root()
+	var show_btn := _brush != null or (root != null and _scene_has_brush)
+	if _brush_btn.visible != show_btn:
+		_brush_btn.visible = show_btn
 
 
 # ---- SPA selection mode toolbar -------------------------------------------
@@ -488,6 +540,148 @@ func _scene_geo_scan_host() -> Node:
 	if root != null and root.has_method(GEO_SCAN_METHOD):
 		return root
 	return null
+
+
+# ---- Asset descriptor debug toolbar ---------------------------------------
+
+func _create_asset_descriptor_debug_toolbar() -> void:
+	_asset_descriptor_debug_menu = MenuButton.new()
+	_asset_descriptor_debug_menu.name = "MeshFillAssetDescriptorDebugMenu"
+	_asset_descriptor_debug_menu.flat = true
+	_asset_descriptor_debug_menu.text = " AD Debug "
+	_asset_descriptor_debug_menu.tooltip_text = "AssetDescriptorDemo debug overlays"
+	_asset_descriptor_debug_menu.custom_minimum_size = Vector2(96, 0)
+	_asset_descriptor_debug_menu.add_theme_font_size_override("font_size", 13)
+	_asset_descriptor_debug_menu.get_popup().id_pressed.connect(_on_asset_descriptor_debug_action_pressed)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _asset_descriptor_debug_menu)
+
+	_asset_descriptor_debug_status_label = Label.new()
+	_asset_descriptor_debug_status_label.name = "MeshFillAssetDescriptorDebugStatus"
+	_asset_descriptor_debug_status_label.custom_minimum_size = Vector2(260, 0)
+	_asset_descriptor_debug_status_label.clip_text = true
+	_asset_descriptor_debug_status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_asset_descriptor_debug_status_label.add_theme_font_size_override("font_size", 13)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _asset_descriptor_debug_status_label)
+
+	_sync_asset_descriptor_debug_toolbar_from_scene()
+
+
+func _remove_asset_descriptor_debug_toolbar() -> void:
+	if _asset_descriptor_debug_menu != null:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _asset_descriptor_debug_menu)
+		_asset_descriptor_debug_menu.queue_free()
+		_asset_descriptor_debug_menu = null
+	if _asset_descriptor_debug_status_label != null:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _asset_descriptor_debug_status_label)
+		_asset_descriptor_debug_status_label.queue_free()
+		_asset_descriptor_debug_status_label = null
+	_asset_descriptor_debug_action_ids.clear()
+	_asset_descriptor_debug_host_instance_id = 0
+
+
+func _on_asset_descriptor_debug_action_pressed(id: int) -> void:
+	if id < 0 or id >= _asset_descriptor_debug_action_ids.size():
+		return
+	var host := _scene_asset_descriptor_debug_host()
+	if host == null:
+		push_warning("[MeshFill Editor] Current scene has no AssetDescriptor debug entry.")
+		_sync_asset_descriptor_debug_toolbar_from_scene()
+		return
+	var action := _asset_descriptor_debug_action_ids[id]
+	var result = host.call(ASSET_DESCRIPTOR_ACTION_METHOD, action)
+	if result is Dictionary:
+		if not bool(result.get("ok", false)):
+			push_warning("[MeshFill Editor] AssetDescriptor debug action failed: %s" % str(result.get("reason", "unknown")))
+		_set_asset_descriptor_debug_status(_format_asset_descriptor_debug_state(result))
+	print("[MeshFill Editor] AssetDescriptor debug -> %s" % str(action))
+	_sync_asset_descriptor_debug_toolbar_from_scene()
+
+
+func _sync_asset_descriptor_debug_toolbar_from_scene() -> void:
+	var host := _scene_asset_descriptor_debug_host()
+	var has_host := host != null
+	if _asset_descriptor_debug_menu != null:
+		_asset_descriptor_debug_menu.visible = has_host
+		_asset_descriptor_debug_menu.disabled = not has_host
+	if _asset_descriptor_debug_status_label != null:
+		_asset_descriptor_debug_status_label.visible = has_host
+	if not has_host:
+		_asset_descriptor_debug_host_instance_id = 0
+		_asset_descriptor_debug_action_ids.clear()
+		_set_asset_descriptor_debug_status("")
+		return
+	_ensure_asset_descriptor_debug_menu_items(host)
+	if host.has_method(ASSET_DESCRIPTOR_STATE_METHOD):
+		var state = host.call(ASSET_DESCRIPTOR_STATE_METHOD)
+		if state is Dictionary:
+			_set_asset_descriptor_debug_status(_format_asset_descriptor_debug_state(state))
+
+
+func _ensure_asset_descriptor_debug_menu_items(host: Node) -> void:
+	if _asset_descriptor_debug_menu == null:
+		return
+	var host_id := host.get_instance_id()
+	if _asset_descriptor_debug_host_instance_id == host_id and not _asset_descriptor_debug_action_ids.is_empty():
+		return
+	_asset_descriptor_debug_host_instance_id = host_id
+	_asset_descriptor_debug_action_ids.clear()
+	var popup := _asset_descriptor_debug_menu.get_popup()
+	popup.clear()
+	var actions: Array = []
+	if host.has_method(ASSET_DESCRIPTOR_ACTIONS_METHOD):
+		actions = host.call(ASSET_DESCRIPTOR_ACTIONS_METHOD)
+	if actions.is_empty():
+		actions = _default_asset_descriptor_debug_actions()
+	for action_info in actions:
+		if not action_info is Dictionary:
+			continue
+		var action_id := StringName(str(action_info.get("id", "")))
+		if String(action_id).is_empty():
+			continue
+		var label := str(action_info.get("label", action_id))
+		var shortcut := str(action_info.get("shortcut", ""))
+		if not shortcut.is_empty():
+			label = "%s (%s)" % [label, shortcut]
+		var item_id := _asset_descriptor_debug_action_ids.size()
+		popup.add_item(label, item_id)
+		_asset_descriptor_debug_action_ids.append(action_id)
+
+
+func _default_asset_descriptor_debug_actions() -> Array[Dictionary]:
+	return [
+		{"id": &"tree_probes", "label": "Tree probes", "shortcut": "1"},
+		{"id": &"rock_probes", "label": "Rock probes", "shortcut": "2"},
+		{"id": &"all_probes", "label": "All probes", "shortcut": "3"},
+		{"id": &"voxel_color", "label": "Voxel color", "shortcut": "4"},
+		{"id": &"voxel_complexity", "label": "Voxel complexity", "shortcut": "5"},
+		{"id": &"voxel_collision", "label": "Voxel collision", "shortcut": "6"},
+		{"id": &"clear_debug", "label": "Clear debug", "shortcut": "C"},
+		{"id": &"buffer_info", "label": "Buffer info", "shortcut": "B"},
+	]
+
+
+func _scene_asset_descriptor_debug_host() -> Node:
+	var root := get_editor_interface().get_edited_scene_root()
+	if root != null and root.has_method(ASSET_DESCRIPTOR_ACTION_METHOD):
+		return root
+	return null
+
+
+func _set_asset_descriptor_debug_status(text: String) -> void:
+	if _asset_descriptor_debug_status_label == null:
+		return
+	_asset_descriptor_debug_status_label.text = text
+	_asset_descriptor_debug_status_label.tooltip_text = text
+
+
+func _format_asset_descriptor_debug_state(state: Dictionary) -> String:
+	var tree := "on" if bool(state.get("tree_probes_visible", false)) else "off"
+	var rock := "on" if bool(state.get("rock_probes_visible", false)) else "off"
+	var buffer := "on" if bool(state.get("buffer_info_visible", false)) else "off"
+	var voxel := str(state.get("voxel_channel", ""))
+	if voxel.is_empty():
+		voxel = "none"
+	return "AD: tree=%s rock=%s voxel=%s buffer=%s" % [tree, rock, voxel, buffer]
 
 
 # ---- Volume score toolbar --------------------------------------------------
@@ -809,12 +1003,12 @@ func _poll_single_instance_port() -> void:
 	while _instance_server.is_connection_available():
 		var peer := _instance_server.take_connection()
 		if peer != null:
-			peer.put_utf8_string(JSON.stringify({
+			peer.put_data((JSON.stringify({
 				"status": "owned",
 				"pid": OS.get_process_id(),
 				"project": _project_key,
 				"mcp_port": MCP_PORT
-			}) + "\n")
+			}) + "\n").to_utf8_buffer())
 			peer.disconnect_from_host()
 
 
@@ -862,10 +1056,10 @@ func _drain_buffer(peer: StreamPeerTCP) -> void:
 		var json := JSON.new()
 		if json.parse(line) == OK:
 			var resp := _dispatch(json.data as Dictionary)
-			peer.put_utf8_string(JSON.stringify(resp) + "\n")
+			peer.put_data((JSON.stringify(resp) + "\n").to_utf8_buffer())
 		else:
-			peer.put_utf8_string(JSON.stringify({
-				"id": null, "error": json.get_error_message()}) + "\n")
+			peer.put_data((JSON.stringify({
+				"id": null, "error": json.get_error_message()}) + "\n").to_utf8_buffer())
 	_peer_buffers[pid] = buf
 
 
@@ -903,6 +1097,8 @@ func _dispatch(req: Dictionary) -> Dictionary:
 			result = _cmd_get_open_scene()
 		"open_scene":
 			result = _cmd_open_scene(params)
+		"screenshot":
+			result = _cmd_screenshot(params)
 		_:
 			return {"id": rid, "error": "unknown method: %s" % method}
 
@@ -939,6 +1135,36 @@ func _node_tree(node: Node, depth: int, max_depth: int) -> Dictionary:
 	return d
 
 
+func _resolve_edited_scene_node(path: String) -> Node:
+	var root := get_editor_interface().get_edited_scene_root()
+	if root == null:
+		return null
+	var root_name := str(root.name)
+	var normalized := path.strip_edges()
+	if normalized.is_empty() or normalized == ".":
+		return root
+	if normalized == root_name:
+		return root
+	if normalized.begins_with("%s/" % root_name):
+		normalized = normalized.substr(root_name.length() + 1)
+		if normalized.is_empty():
+			return root
+	if normalized.begins_with("./"):
+		normalized = normalized.substr(2)
+		if normalized.is_empty():
+			return root
+	var node: Node
+	if normalized.begins_with("/"):
+		node = root.get_tree().root.get_node_or_null(NodePath(normalized))
+	else:
+		node = root.get_node_or_null(NodePath(normalized))
+	if node == root:
+		return node
+	if node != null and root.is_ancestor_of(node):
+		return node
+	return null
+
+
 func _cmd_select_node(params: Dictionary) -> Dictionary:
 	var path: String = str(params.get("path", ""))
 	if path.is_empty():
@@ -946,11 +1172,7 @@ func _cmd_select_node(params: Dictionary) -> Dictionary:
 	var root := get_editor_interface().get_edited_scene_root()
 	if root == null:
 		return {"error": "no scene open"}
-	var node: Node
-	if path.begins_with("/"):
-		node = root.get_tree().root.get_node_or_null(NodePath(path))
-	else:
-		node = root.get_node_or_null(NodePath(path))
+	var node := _resolve_edited_scene_node(path)
 	if node == null:
 		return {"error": "node not found: %s" % path}
 	var sel := get_editor_interface().get_selection()
@@ -977,7 +1199,7 @@ func _cmd_get_node_info(params: Dictionary) -> Dictionary:
 	var root := get_editor_interface().get_edited_scene_root()
 	if root == null:
 		return {"error": "no scene open"}
-	var node := root.get_node_or_null(NodePath(path))
+	var node := _resolve_edited_scene_node(path)
 	if node == null:
 		return {"error": "node not found"}
 	var info: Dictionary = {
@@ -1008,12 +1230,12 @@ func _cmd_set_node_property(params: Dictionary) -> Dictionary:
 	var path: String = str(params.get("path", ""))
 	var prop: String = str(params.get("property", ""))
 	var value = params.get("value")
-	if path.is_empty() or prop.is_empty():
-		return {"error": "missing 'path' or 'property'"}
+	if prop.is_empty():
+		return {"error": "missing 'property'"}
 	var root := get_editor_interface().get_edited_scene_root()
 	if root == null:
 		return {"error": "no scene open"}
-	var node := root.get_node_or_null(NodePath(path))
+	var node := _resolve_edited_scene_node(path)
 	if node == null:
 		return {"error": "node not found"}
 	if prop == "position" and node is Node3D and value is Array:
@@ -1030,12 +1252,12 @@ func _cmd_set_node_property(params: Dictionary) -> Dictionary:
 func _cmd_move_node(params: Dictionary) -> Dictionary:
 	var path: String = str(params.get("path", ""))
 	var pos: Array = params.get("position", []) if params.has("position") else []
-	if path.is_empty() or pos.size() < 3:
-		return {"error": "missing 'path' or 'position' [x,y,z]"}
+	if pos.size() < 3:
+		return {"error": "missing 'position' [x,y,z]"}
 	var root := get_editor_interface().get_edited_scene_root()
 	if root == null:
 		return {"error": "no scene open"}
-	var node := root.get_node_or_null(NodePath(path))
+	var node := _resolve_edited_scene_node(path)
 	if node == null or not node is Node3D:
 		return {"error": "node not found or not Node3D"}
 	(node as Node3D).position = Vector3(float(pos[0]), float(pos[1]), float(pos[2]))
@@ -1047,11 +1269,7 @@ func _cmd_get_children(params: Dictionary) -> Dictionary:
 	var root := get_editor_interface().get_edited_scene_root()
 	if root == null:
 		return {"error": "no scene open"}
-	var node: Node
-	if path.is_empty() or path == ".":
-		node = root
-	else:
-		node = root.get_node_or_null(NodePath(path))
+	var node := _resolve_edited_scene_node(path)
 	if node == null:
 		return {"error": "node not found"}
 	var ch: Array = []
@@ -1068,12 +1286,12 @@ func _cmd_call_method(params: Dictionary) -> Dictionary:
 	var path: String = str(params.get("path", ""))
 	var method_name: String = str(params.get("method", ""))
 	var args: Array = params.get("args", []) if params.has("args") else []
-	if path.is_empty() or method_name.is_empty():
-		return {"error": "missing 'path' or 'method'"}
+	if method_name.is_empty():
+		return {"error": "missing 'method'"}
 	var root := get_editor_interface().get_edited_scene_root()
 	if root == null:
 		return {"error": "no scene open"}
-	var node := root.get_node_or_null(NodePath(path))
+	var node := _resolve_edited_scene_node(path)
 	if node == null:
 		return {"error": "node not found"}
 	if not node.has_method(method_name):
@@ -1103,6 +1321,34 @@ func _cmd_open_scene(params: Dictionary) -> Dictionary:
 		"ok": true,
 		"scene": root.scene_file_path if root else null,
 		"root_name": root.name if root else null,
+	}
+
+
+## Capture the editor 3D viewport (the edited scene's viewport) to a PNG file and
+## return its absolute path so external tooling can read the image directly.
+func _cmd_screenshot(params: Dictionary) -> Dictionary:
+	var root := get_editor_interface().get_edited_scene_root()
+	if root == null:
+		return {"error": "no scene open"}
+	var viewport := root.get_viewport()
+	if viewport == null or viewport.get_texture() == null:
+		return {"error": "no viewport texture"}
+	var img := viewport.get_texture().get_image()
+	if img == null:
+		return {"error": "no viewport image"}
+	var req_path: String = str(params.get("path", "res://_shots/mcp_screenshot.png"))
+	var abs_path := req_path
+	if req_path.begins_with("res://") or req_path.begins_with("user://"):
+		abs_path = ProjectSettings.globalize_path(req_path)
+	DirAccess.make_dir_recursive_absolute(abs_path.get_base_dir())
+	var err := img.save_png(abs_path)
+	if err != OK:
+		return {"error": "save_png failed: %d" % err}
+	return {
+		"ok": true,
+		"path": abs_path,
+		"width": img.get_width(),
+		"height": img.get_height(),
 	}
 
 
@@ -1350,6 +1596,7 @@ func _validate_current_scene() -> void:
 
 
 func _validate_scene(root: Node) -> void:
+	_scene_has_brush = _detect_scene_brush(root)
 	if root == null:
 		return
 	_validate_terrain(root)

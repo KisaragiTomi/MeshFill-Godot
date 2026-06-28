@@ -263,7 +263,7 @@ func _make_metric_row(parent: VBoxContainer, label_text: String, color: Color, f
 # ray-vs-AABB intersection against the known tile bounds -- no per-tile
 # collision bodies needed.
 func _build_tile_meshes() -> void:
-	var tiles: Dictionary = _committer._scene_voxel_tiles
+	var tiles: Dictionary = _committer.get_scene_voxel_tiles()
 	if tiles.is_empty():
 		return
 
@@ -466,7 +466,7 @@ func _ray_pick_tile() -> void:
 
 	for tile_id in _tile_aabbs.keys():
 		var aabb: AABB = _tile_aabbs[tile_id]
-		var hit := aabb.intersects_ray(from, dir)
+		var hit = aabb.intersects_ray(from, dir)
 		if hit is Vector3:
 			var dist := from.distance_to(hit)
 			if dist < best_dist:
@@ -487,7 +487,7 @@ func _update_selection_display() -> void:
 		_metric_labels["selected"].text = "Selected: none"
 		return
 
-	var tile: Dictionary = _committer._scene_voxel_tiles.get(_selected_tile_id, {})
+	var tile: Dictionary = _committer.get_scene_voxel_tiles().get(_selected_tile_id, {})
 	if tile.is_empty():
 		_metric_labels["selected"].text = "Selected: --"
 		return
@@ -522,12 +522,12 @@ func _apply_demo_update() -> void:
 	var flags: Dictionary = combos[_demo_tick % combos.size()]
 
 	# Apply to a random subset of tiles
-	var tile_ids := _committer._scene_voxel_tiles.keys()
+	var tile_ids := _committer.get_scene_voxel_tiles().keys()
 	tile_ids.sort()
 	var count := maxi(1, int(ceil(float(tile_ids.size()) / 3.0)))
 	for i in range(count):
 		var tile_id: String = tile_ids[(i * 7 + _demo_tick * 3) % tile_ids.size()]
-		var tile: Dictionary = _committer._scene_voxel_tiles.get(tile_id, {})
+		var tile: Dictionary = _committer.get_scene_voxel_tiles().get(tile_id, {})
 		if tile.is_empty():
 			continue
 		var coord: Vector3i = tile["tile_coord"]

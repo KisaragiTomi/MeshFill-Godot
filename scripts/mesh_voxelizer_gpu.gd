@@ -77,7 +77,7 @@ func voxelize(
 	if not ensure_device():
 		return {"ok": false, "reason": "no-RD", "grid": grid, "cell_size": cell_size, "aabb_min": aabb_min, "voxels": []}
 
-	var result := _run_gpu(triangles, tri_count, grid, cell_size, aabb_min, asset_color, collision_strength, collision_min_neighbors)
+	var result := _run_gpu(triangles, tri_count, grid, cell_size, aabb_min, aabb.size, asset_color, collision_strength, collision_min_neighbors)
 	dispose()
 	return result
 
@@ -88,6 +88,7 @@ func _run_gpu(
 	grid: Vector3i,
 	cell_size: float,
 	aabb_min: Vector3,
+	aabb_size: Vector3,
 	asset_color: Color,
 	collision_strength: float,
 	collision_min_neighbors: int
@@ -142,7 +143,15 @@ func _run_gpu(
 	gc_frame()
 
 	var voxels := _decode_voxels(grid, cell_size, aabb_min, occupancy_bytes, color_bytes, collision_bytes)
-	return {"ok": true, "reason": "ok", "grid": grid, "cell_size": cell_size, "aabb_min": aabb_min, "voxels": voxels}
+	return {
+		"ok": true,
+		"reason": "ok",
+		"grid": grid,
+		"cell_size": cell_size,
+		"aabb_min": aabb_min,
+		"aabb_size": aabb_size,
+		"voxels": voxels,
+	}
 
 
 func _decode_voxels(

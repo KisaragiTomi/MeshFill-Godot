@@ -18,6 +18,9 @@ mempalace.md
 
 # 重构临时备份（committer/generator 拆分过程快照与工具，不入库）
 .refactor_bak/
+
+# 本地 Houdini 备份，不入库
+backup/
 *.svg.import
 *.md.import
 *.png.import
