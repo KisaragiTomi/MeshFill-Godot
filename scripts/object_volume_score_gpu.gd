@@ -4,7 +4,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 
 ## 3D object volume scoring GPU pipeline.
 ##
-## Implements the two-pass architecture from meshfill-object-volume-score-3d.md:
+## Implements the two-pass architecture from placement-score-3d.md:
 ##   Pass A: score_object_subtile.glsl  — per-rotation valid sample accumulation
 ##   Pass B: reduce_object_rotation_scores.glsl — reduce + best rotation pick
 ##

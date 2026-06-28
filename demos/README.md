@@ -28,7 +28,7 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, and
 
 | File | Purpose |
 | --- | --- |
-| [`placement/meshfill-object-volume-score-3d.md`](placement/meshfill-object-volume-score-3d.md) | Planned 3D per-object `50^3` volume score: subtile workgroups, 12 rotation slots, shared-memory sampling, and reduce aggregation |
+| [`placement-score-3d/placement-score-3d.md`](placement-score-3d/placement-score-3d.md) | Planned 3D per-object `50^3` volume score: subtile workgroups, 12 rotation slots, shared-memory sampling, and reduce aggregation |
 | [`placement/target-scene-voxel-projection.md`](placement/target-scene-voxel-projection.md) | `TargetSceneVoxel` canvas, stamp model, planned VDB import, projection cache, and current GPU persistence |
 | [`placement/autoobject-probe-prefilter.md`](placement/autoobject-probe-prefilter.md) | AutoObject semantic probe prefilter, CPU/GPU responsibilities, anchor collection, and candidate voxel-region output |
 
