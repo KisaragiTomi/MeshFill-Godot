@@ -12,11 +12,8 @@
     "godot": {
       "command": "node",
       "args": [
-        "d:\\MyProject\\AITest\\MeshFill-Godot\\godot-mcp\\build\\index.js"
-      ],
-      "env": {
-        "GODOT_PATH": "D:\\.aidata\\Godot\\godot-source\\bin\\godot.windows.editor.x86_64.exe"
-      }
+        "d:\\MyProject\\AITest\\MeshFill-Godot\\tools\\godot-mcp-bridge\\server.mjs"
+      ]
     }
   }
 }

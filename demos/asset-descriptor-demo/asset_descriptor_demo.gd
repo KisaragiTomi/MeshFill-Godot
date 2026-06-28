@@ -35,22 +35,20 @@ const VOXEL_CHANNEL_COMPLEXITY := "complexity"
 const VOXEL_CHANNEL_COLLISION := "collision"
 
 const PROBE_DEBUG_NODE := "ProbeDebugGroup"
-const BUFFER_INFO_NODE := "BufferInfoOverlay"
 
-const EDITOR_ACTION_TREE_PROBES := &"tree_probes"
-const EDITOR_ACTION_ROCK_PROBES := &"rock_probes"
-const EDITOR_ACTION_ALL_PROBES := &"all_probes"
+const EDITOR_ACTION_PROBES := &"probes"
 const EDITOR_ACTION_VOXEL_COLOR := &"voxel_color"
 const EDITOR_ACTION_VOXEL_COMPLEXITY := &"voxel_complexity"
 const EDITOR_ACTION_VOXEL_COLLISION := &"voxel_collision"
 const EDITOR_ACTION_CLEAR_DEBUG := &"clear_debug"
-const EDITOR_ACTION_BUFFER_INFO := &"buffer_info"
 
 const TREE_COLOR := Color(0.35, 0.58, 0.24, 0.55)
 const TREE_COMPLEXITY := 0.45
 
 const ROCK_COLOR := Color(0.48, 0.42, 0.35, 0.7)
 const ROCK_COMPLEXITY := 0.75
+
+const GEO_BOUND_BOX_COLOR := Color(1.0, 0.08, 0.04, 0.85)
 
 @export_range(0.1, 8.0, 0.1) var probe_density: float = 1.0
 @export var max_probe_markers: int = 96
@@ -69,15 +67,14 @@ const ROCK_COMPLEXITY := 0.75
 
 var _tree_nodes: Array[Node3D] = []
 var _rock_nodes: Array[Node3D] = []
-var _tree_probes: Array[Dictionary] = []
-var _rock_probes: Array[Dictionary] = []
-var _tree_probes_visible := false
-var _rock_probes_visible := false
-var _buffer_info_visible := false
+# Visualization is single-target: probes / voxels apply only to the editor-selected asset.
+var _probes: Array[Dictionary] = []
+var _probes_visible := false
+var _probe_target_node: Node3D = null
 
-# Voxelization cache: per asset node, the structured result from MeshVoxelizerGpu.
+# Voxelization cache: the structured result for the currently baked (selected) node only.
 var _voxel_results: Array[Dictionary] = []
-var _voxel_baked := false
+var _voxel_baked_node: Node3D = null
 var _voxel_channel := VOXEL_CHANNEL_NONE
 
 
@@ -102,6 +99,10 @@ func _editor_viewport_input(_viewport_camera: Camera3D, event: InputEvent) -> bo
 	var ke := event as InputEventKey
 	if not ke.pressed or ke.echo:
 		return false
+	# 1..4 / C 在编辑器 3D 视口里本身是导航/工具快捷键（切换视图等）。
+	# 要求同时按住 Ctrl+Alt+Shift 才触发 Demo 动作，避开 Godot 默认快捷键冲突。
+	if not (ke.ctrl_pressed and ke.alt_pressed and ke.shift_pressed):
+		return false
 
 	# The 3D editor setting "emulate_numpad" rewrites number-row 1..9 to keypad
 	# codes before the event reaches here, so fold KP_0..KP_9 back to 0..9 to keep
@@ -112,53 +113,37 @@ func _editor_viewport_input(_viewport_camera: Camera3D, event: InputEvent) -> bo
 
 	match keycode:
 		KEY_1:
-			asset_descriptor_editor_action(EDITOR_ACTION_TREE_PROBES)
+			asset_descriptor_editor_action(EDITOR_ACTION_PROBES)
 			return true
 		KEY_2:
-			asset_descriptor_editor_action(EDITOR_ACTION_ROCK_PROBES)
-			return true
-		KEY_3:
-			asset_descriptor_editor_action(EDITOR_ACTION_ALL_PROBES)
-			return true
-		KEY_4:
 			asset_descriptor_editor_action(EDITOR_ACTION_VOXEL_COLOR)
 			return true
-		KEY_5:
+		KEY_3:
 			asset_descriptor_editor_action(EDITOR_ACTION_VOXEL_COMPLEXITY)
 			return true
-		KEY_6:
+		KEY_4:
 			asset_descriptor_editor_action(EDITOR_ACTION_VOXEL_COLLISION)
 			return true
 		KEY_C:
 			asset_descriptor_editor_action(EDITOR_ACTION_CLEAR_DEBUG)
-			return true
-		KEY_B:
-			asset_descriptor_editor_action(EDITOR_ACTION_BUFFER_INFO)
 			return true
 	return false
 
 
 func asset_descriptor_editor_actions() -> Array[Dictionary]:
 	return [
-		{"id": EDITOR_ACTION_TREE_PROBES, "label": "Tree probes", "shortcut": "1"},
-		{"id": EDITOR_ACTION_ROCK_PROBES, "label": "Rock probes", "shortcut": "2"},
-		{"id": EDITOR_ACTION_ALL_PROBES, "label": "All probes", "shortcut": "3"},
-		{"id": EDITOR_ACTION_VOXEL_COLOR, "label": "Voxel color", "shortcut": "4"},
-		{"id": EDITOR_ACTION_VOXEL_COMPLEXITY, "label": "Voxel complexity", "shortcut": "5"},
-		{"id": EDITOR_ACTION_VOXEL_COLLISION, "label": "Voxel collision", "shortcut": "6"},
-		{"id": EDITOR_ACTION_CLEAR_DEBUG, "label": "Clear debug", "shortcut": "C"},
-		{"id": EDITOR_ACTION_BUFFER_INFO, "label": "Buffer info", "shortcut": "B"},
+		{"id": EDITOR_ACTION_PROBES, "label": "Probes (selected)", "shortcut": "Ctrl+Alt+Shift+1"},
+		{"id": EDITOR_ACTION_VOXEL_COLOR, "label": "Voxel color (selected)", "shortcut": "Ctrl+Alt+Shift+2"},
+		{"id": EDITOR_ACTION_VOXEL_COMPLEXITY, "label": "Voxel complexity (selected)", "shortcut": "Ctrl+Alt+Shift+3"},
+		{"id": EDITOR_ACTION_VOXEL_COLLISION, "label": "Voxel collision (selected)", "shortcut": "Ctrl+Alt+Shift+4"},
+		{"id": EDITOR_ACTION_CLEAR_DEBUG, "label": "Clear debug", "shortcut": "Ctrl+Alt+Shift+C"},
 	]
 
 
 func asset_descriptor_editor_action(action: StringName) -> Dictionary:
 	match action:
-		EDITOR_ACTION_TREE_PROBES:
-			_toggle_tree_probes()
-		EDITOR_ACTION_ROCK_PROBES:
-			_toggle_rock_probes()
-		EDITOR_ACTION_ALL_PROBES:
-			_toggle_all_probes()
+		EDITOR_ACTION_PROBES:
+			_toggle_probes()
 		EDITOR_ACTION_VOXEL_COLOR:
 			_show_voxel_channel(VOXEL_CHANNEL_COLOR)
 		EDITOR_ACTION_VOXEL_COMPLEXITY:
@@ -167,8 +152,6 @@ func asset_descriptor_editor_action(action: StringName) -> Dictionary:
 			_show_voxel_channel(VOXEL_CHANNEL_COLLISION)
 		EDITOR_ACTION_CLEAR_DEBUG:
 			_clear_all_debug()
-		EDITOR_ACTION_BUFFER_INFO:
-			_toggle_buffer_info()
 		_:
 			return {"ok": false, "reason": "unknown_action", "action": str(action)}
 	return _asset_descriptor_debug_state(action)
@@ -179,20 +162,17 @@ func get_asset_descriptor_debug_state() -> Dictionary:
 
 
 func _asset_descriptor_debug_state(action: StringName = &"") -> Dictionary:
+	var target := _probe_target_node if _probe_target_node != null else _resolve_selected_asset_node()
 	return {
 		"ok": true,
 		"action": str(action),
-		"tree_probes_visible": _tree_probes_visible,
-		"rock_probes_visible": _rock_probes_visible,
-		"buffer_info_visible": _buffer_info_visible,
+		"selected": target.name if target != null else "none",
+		"probes_visible": _probes_visible,
 		"voxel_channel": _voxel_channel,
-		"voxel_baked": _voxel_baked,
+		"probe_count": _probes.size(),
 		"voxel_result_count": _voxel_results.size(),
-		"tree_probe_count": _tree_probes.size(),
-		"rock_probe_count": _rock_probes.size(),
 		"has_probe_debug": get_node_or_null(PROBE_DEBUG_NODE) != null,
 		"has_voxel_debug": get_node_or_null(VOXEL_DEBUG_NODE) != null,
-		"has_buffer_info": get_node_or_null(BUFFER_INFO_NODE) != null,
 	}
 
 
@@ -348,8 +328,11 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 
 	var mesh_node := MeshInstance3D.new()
 	mesh_node.name = "Mesh"
-	mesh_node.mesh = mesh
-	mesh_node.transform = mesh_transform
+	# Bake only the import conversion (mesh_transform) into geometry so the Mesh child
+	# stays at Transform3D.IDENTITY with clean axes. The mesh keeps its native FBX
+	# pivot (cliffs: geometric center), so the container origin sits at that pivot.
+	mesh_node.mesh = CommonDemoAssets.bake_mesh_xform(mesh, mesh_transform)
+	mesh_node.transform = Transform3D.IDENTITY
 	mesh_node.material_override = _make_geo_asset_material(color)
 	node.add_child(mesh_node)
 
@@ -359,8 +342,12 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 	label.font_size = 18
 	label.outline_size = 3
 	label.text = "%s\nbound %.2f" % [path.get_file().get_basename(), CommonDemoAssets.aabb_longest_axis(bounds)]
+	# Float the label just above the mesh top (bounds follow the native pivot).
 	label.position = Vector3(0.0, bounds.position.y + bounds.size.y + 0.6, 0.0)
 	node.add_child(label)
+
+	var bound_box := _make_geo_bound_box(bounds)
+	node.add_child(bound_box)
 
 
 func _arrange_geo_asset_nodes() -> void:
@@ -383,15 +370,17 @@ func _arrange_geo_asset_nodes() -> void:
 		var size := bounds.size
 		if cursor_x > row_start_x and cursor_x + size.x > row_limit_x:
 			cursor_x = row_start_x
-			row_z += row_depth + geo_layout_gap
+			row_z += row_depth * 2.0
 			row_depth = 0.0
 		node.scale = Vector3.ONE
+		# 排列时 Y 轴归零：容器原点固定在布局基线（geo_layout_origin.y，默认 0）。
+		# 网格保留 FBX 原生轴心（cliff 为几何中心），物体以该轴心居中于 y=0。
 		node.position = Vector3(
 			cursor_x - bounds.position.x,
-			geo_layout_origin.y - bounds.position.y,
+			geo_layout_origin.y,
 			row_z - (bounds.position.z + bounds.size.z * 0.5)
 		)
-		cursor_x += maxf(size.x, geo_layout_gap) + geo_layout_gap
+		cursor_x += size.x * 2.0
 		row_depth = maxf(row_depth, size.z)
 		_set_owned_by_scene(node)
 
@@ -480,7 +469,7 @@ func _refresh_editor_filesystem() -> void:
 
 func _reset_voxel_cache() -> void:
 	_voxel_results.clear()
-	_voxel_baked = false
+	_voxel_baked_node = null
 	if _voxel_channel != VOXEL_CHANNEL_NONE:
 		_clear_node(VOXEL_DEBUG_NODE)
 		_voxel_channel = VOXEL_CHANNEL_NONE
@@ -763,124 +752,134 @@ func _set_bake_status(text: String) -> void:
 
 # ─── Probe Debug ──────────────────────────────────────────────
 
-func _toggle_tree_probes() -> void:
-	if _tree_probes_visible:
-		_clear_probe_group("TreeProbes")
-		_tree_probes.clear()
-		_tree_probes_visible = false
-	else:
-		_build_probes(_tree_nodes, "TreeProbes", TREE_COLOR, TREE_COMPLEXITY, _tree_probes)
-		_tree_probes_visible = true
+func _toggle_probes() -> void:
+	if _probes_visible:
+		_clear_probe_group("Probes")
+		_probes.clear()
+		_probes_visible = false
+		_probe_target_node = null
+		return
+	var node := _resolve_selected_asset_node()
+	if node == null:
+		push_warning("[AssetDescriptorDemo] Select a tree/rock asset first — probes apply to the selection only.")
+		return
+	_build_probes_for_node(node)
+	_probes_visible = true
+	_probe_target_node = node
 
 
-func _toggle_rock_probes() -> void:
-	if _rock_probes_visible:
-		_clear_probe_group("RockProbes")
-		_rock_probes.clear()
-		_rock_probes_visible = false
-	else:
-		_build_probes(_rock_nodes, "RockProbes", ROCK_COLOR, ROCK_COMPLEXITY, _rock_probes)
-		_rock_probes_visible = true
+# Walk up from the editor selection to the owning asset container (a node tracked
+# in _tree_nodes / _rock_nodes). Returns null when nothing relevant is selected.
+func _resolve_selected_asset_node() -> Node3D:
+	if not Engine.is_editor_hint():
+		return null
+	var selection := EditorInterface.get_selection()
+	if selection == null:
+		return null
+	_collect_static_assets()
+	var asset_set := {}
+	for n in _tree_nodes:
+		asset_set[n] = true
+	for n in _rock_nodes:
+		asset_set[n] = true
+	for sel in selection.get_selected_nodes():
+		var cur: Node = sel
+		while cur != null:
+			if cur is Node3D and asset_set.has(cur):
+				return cur as Node3D
+			cur = cur.get_parent()
+	return null
 
 
-func _toggle_all_probes() -> void:
-	if _tree_probes_visible or _rock_probes_visible:
-		_clear_all_debug()
-	else:
-		_build_probes(_tree_nodes, "TreeProbes", TREE_COLOR, TREE_COMPLEXITY, _tree_probes)
-		_build_probes(_rock_nodes, "RockProbes", ROCK_COLOR, ROCK_COMPLEXITY, _rock_probes)
-		_tree_probes_visible = true
-		_rock_probes_visible = true
+func _node_is_tree(node: Node3D) -> bool:
+	return _tree_nodes.has(node)
 
 
-func _build_probes(nodes: Array[Node3D], group_name: String, color: Color, complexity: float, out_probes: Array) -> void:
+func _node_color(node: Node3D) -> Color:
+	return TREE_COLOR if _node_is_tree(node) else ROCK_COLOR
+
+
+func _node_complexity(node: Node3D) -> float:
+	return TREE_COMPLEXITY if _node_is_tree(node) else ROCK_COMPLEXITY
+
+
+func _node_min_neighbors(node: Node3D) -> int:
+	return tree_collision_min_neighbors if _node_is_tree(node) else rock_collision_min_neighbors
+
+
+func _build_probes_for_node(node: Node3D) -> void:
+	var mi := node.get_node_or_null("Mesh") as MeshInstance3D
+	if mi == null or mi.mesh == null:
+		return
 	# Probe interior sampling reads the generic GPU voxel field so each probe's
-	# collision sits at the same per-voxel level as color / complexity, instead of
-	# a separate hand-authored cylinder strength.
-	_ensure_voxels_baked()
+	# collision sits at the same per-voxel level as color / complexity.
+	_ensure_voxels_baked_for_node(node)
 	var debug_root := _get_or_create_debug_root()
-
+	_clear_probe_group("Probes")
 	var group := Node3D.new()
-	group.name = group_name
+	group.name = "Probes"
 	debug_root.add_child(group)
 
-	for i in range(nodes.size()):
-		var node := nodes[i]
-		var mi := node.get_node_or_null("Mesh") as MeshInstance3D
-		if mi == null or mi.mesh == null:
-			continue
+	var voxel_samples := _voxel_field_samples(node)
+	_probes = SemanticProbeProfileScript.generate_from_mesh(
+		mi.mesh, voxel_samples, _node_color(node), _node_complexity(node), probe_density, max_probe_markers
+	)
 
-		var voxel_samples := _voxel_field_samples(node)
-		var probes := SemanticProbeProfileScript.generate_from_mesh(
-			mi.mesh, voxel_samples, color, complexity, probe_density, max_probe_markers
+	for j in range(mini(_probes.size(), max_probe_markers)):
+		var marker := _make_probe_marker(_probes[j], j)
+		var local_offset := SemanticProbeProfileScript.vector3_from_value(
+			_probes[j].get("offset", Vector3.ZERO), Vector3.ZERO
 		)
-		out_probes.append_array(probes)
+		# Mesh-local offset -> world via the Mesh node (carries import + pivot offset)
+		marker.position = mi.to_global(local_offset)
+		group.add_child(marker)
 
-		# Per-asset debug sub-node at world origin (no inherited scale)
-		var asset_debug := Node3D.new()
-		asset_debug.name = "%s_%d" % [group_name, i]
-		group.add_child(asset_debug)
-
-		for j in range(mini(probes.size(), max_probe_markers)):
-			var marker := _make_probe_marker(probes[j], j)
-			var local_offset := SemanticProbeProfileScript.vector3_from_value(
-				probes[j].get("offset", Vector3.ZERO), Vector3.ZERO
-			)
-			# Convert mesh-local offset to world position via container transform
-			marker.position = node.to_global(local_offset)
-			asset_debug.add_child(marker)
-
-		# Summary label above asset in world space
-		var sum_label := Label3D.new()
-		sum_label.name = "ProbeCount"
-		sum_label.text = "probes=%d" % mini(probes.size(), max_probe_markers)
-		sum_label.position = node.position + Vector3(0.0, 2.5, 0.0)
-		sum_label.font_size = 20
-		sum_label.pixel_size = 0.01
-		sum_label.outline_size = 4
-		asset_debug.add_child(sum_label)
+	# Summary label above the selected asset in world space
+	var sum_label := Label3D.new()
+	sum_label.name = "ProbeCount"
+	sum_label.text = "%s\nprobes=%d" % [node.name, mini(_probes.size(), max_probe_markers)]
+	sum_label.position = node.position + Vector3(0.0, 2.5, 0.0)
+	sum_label.font_size = 20
+	sum_label.pixel_size = 0.01
+	sum_label.outline_size = 4
+	group.add_child(sum_label)
 
 
 # ─── Voxelization (GPU solid voxelize + per-channel display) ──
 
 func _show_voxel_channel(channel: String) -> void:
-	# Re-pressing the active channel key toggles it off.
-	if _voxel_channel == channel:
+	var node := _resolve_selected_asset_node()
+	# Re-pressing the active channel on the same node toggles it off.
+	if node != null and _voxel_channel == channel and _voxel_baked_node == node:
 		_clear_node(VOXEL_DEBUG_NODE)
 		_voxel_channel = VOXEL_CHANNEL_NONE
 		return
-	_ensure_voxels_baked()
+	if node == null:
+		push_warning("[AssetDescriptorDemo] Select a tree/rock asset first — voxels apply to the selection only.")
+		return
+	_ensure_voxels_baked_for_node(node)
 	_clear_node(VOXEL_DEBUG_NODE)
 	_voxel_channel = channel
 	_build_voxel_channel_display(channel)
 
 
-func _ensure_voxels_baked() -> void:
-	if _voxel_baked:
+# Voxelize only the selected node; re-bakes when the selection changes.
+func _ensure_voxels_baked_for_node(node: Node3D) -> void:
+	if _voxel_baked_node == node and not _voxel_results.is_empty():
 		return
-	_voxel_baked = true
 	_voxel_results.clear()
+	_voxel_baked_node = node
+	var mi := node.get_node_or_null("Mesh") as MeshInstance3D
+	if mi == null or mi.mesh == null:
+		return
 	var voxelizer = MeshVoxelizerGpuScript.new()
-	for entry in _voxel_bake_targets():
-		var node: Node3D = entry["node"]
-		var mi := node.get_node_or_null("Mesh") as MeshInstance3D
-		if mi == null or mi.mesh == null:
-			continue
-		var result := voxelizer.voxelize(mi.mesh, voxel_grid_count, entry["color"], voxel_collision_strength, int(entry["min_neighbors"]))
-		if not bool(result.get("ok", false)):
-			push_warning("[AssetDescriptorDemo] voxelize failed for %s: %s" % [node.name, str(result.get("reason", "unknown"))])
-			continue
-		result["node"] = node
-		_voxel_results.append(result)
-
-
-func _voxel_bake_targets() -> Array:
-	var targets := []
-	for node in _tree_nodes:
-		targets.append({"node": node, "color": TREE_COLOR, "min_neighbors": tree_collision_min_neighbors})
-	for node in _rock_nodes:
-		targets.append({"node": node, "color": ROCK_COLOR, "min_neighbors": rock_collision_min_neighbors})
-	return targets
+	var result := voxelizer.voxelize(
+		mi.mesh, voxel_grid_count, _node_color(node), voxel_collision_strength, _node_min_neighbors(node))
+	if not bool(result.get("ok", false)):
+		push_warning("[AssetDescriptorDemo] voxelize failed for %s: %s" % [node.name, str(result.get("reason", "unknown"))])
+		return
+	result["node"] = node
+	_voxel_results.append(result)
 
 
 # Turn this asset's baked voxel field into per-voxel collision samples for the
@@ -914,6 +913,9 @@ func _build_voxel_channel_display(channel: String) -> void:
 	var shown_voxels := 0
 	for result in _voxel_results:
 		var node: Node3D = result["node"]
+		var mi := node.get_node_or_null("Mesh") as MeshInstance3D
+		if mi == null:
+			continue
 		var cell_size: float = result["cell_size"]
 		var voxels: Array = result["voxels"]
 		total_voxels += voxels.size()
@@ -924,13 +926,13 @@ func _build_voxel_channel_display(channel: String) -> void:
 			var channel_color := _voxel_channel_color(v, channel)
 			if channel_color.a <= 0.0:
 				continue
-			# Mesh-local center -> world via the asset container transform.
-			centers.append(node.to_global(v["local_center"]))
+			# Mesh-local center -> world via the Mesh node (carries import + pivot offset)
+			centers.append(mi.to_global(v["local_center"]))
 			colors.append(channel_color)
 		shown_voxels += centers.size()
 
-		# Cell size is in mesh-local units; the container scale maps it to world.
-		var world_cell := cell_size * node.scale.x
+		# Cell size is in mesh-local units; the Mesh node's world scale maps it to world.
+		var world_cell := cell_size * mi.global_transform.basis.get_scale().x
 		var cell := Vector3(world_cell, world_cell, world_cell)
 		var display := VoxelDisplay.build_colored(centers, cell, colors, {
 			"name": "%s_%s" % [node.name, channel],
@@ -972,71 +974,17 @@ func _voxel_channel_color(voxel: Dictionary, channel: String) -> Color:
 			return Color(0, 0, 0, 0.0)
 
 
-# ─── Buffer Info Overlay ──────────────────────────────────────
-
-func _toggle_buffer_info() -> void:
-	if _buffer_info_visible:
-		_clear_node(BUFFER_INFO_NODE)
-		_buffer_info_visible = false
-	else:
-		_build_buffer_info()
-		_buffer_info_visible = true
-
-
-func _build_buffer_info() -> void:
-	var root := Node3D.new()
-	root.name = BUFFER_INFO_NODE
-	# Place to the right of scene, slightly elevated, facing camera
-	root.position = Vector3(4.0, 1.5, 2.0)
-	add_child(root)
-
-	var info := Label3D.new()
-	info.name = "BufferInfoText"
-	info.text = _format_buffer_info()
-	info.font_size = 32
-	info.pixel_size = 0.01
-	info.outline_size = 6
-	root.add_child(info)
-
-
-func _format_buffer_info() -> String:
-	var tree_count := _tree_nodes.size()
-	var rock_count := _rock_nodes.size()
-	var tree_probes_total := 0
-	var rock_probes_total := 0
-	for probes in _tree_probes:
-		tree_probes_total += probes.size()
-	for probes in _rock_probes:
-		rock_probes_total += probes.size()
-
-	return ("BUFFER/PROBE INFO\n" +
-		"Trees: %d  Rocks: %d\n" +
-		"Tree probes: %d  Rock probes: %d\n" +
-		"Tree color: %.2f/%.2f/%.2f complexity: %.2f\n" +
-		"Rock color: %.2f/%.2f/%.2f complexity: %.2f\n" +
-		"Density: %.1f  Max markers: %d"
-	) % [
-		tree_count, rock_count,
-		tree_probes_total, rock_probes_total,
-		TREE_COLOR.r, TREE_COLOR.g, TREE_COLOR.b, TREE_COMPLEXITY,
-		ROCK_COLOR.r, ROCK_COLOR.g, ROCK_COLOR.b, ROCK_COMPLEXITY,
-		probe_density, max_probe_markers,
-	]
-
-
 # ─── Clear ────────────────────────────────────────────────────
 
 func _clear_all_debug() -> void:
-	_clear_probe_group("TreeProbes")
-	_clear_probe_group("RockProbes")
-	_clear_node(BUFFER_INFO_NODE)
+	_clear_node(PROBE_DEBUG_NODE)
 	_clear_node(VOXEL_DEBUG_NODE)
-	_tree_probes.clear()
-	_rock_probes.clear()
-	_tree_probes_visible = false
-	_rock_probes_visible = false
-	_buffer_info_visible = false
+	_probes.clear()
+	_probes_visible = false
+	_probe_target_node = null
 	_voxel_channel = VOXEL_CHANNEL_NONE
+	_voxel_baked_node = null
+	_voxel_results.clear()
 
 
 func _clear_probe_group(group_name: String) -> void:
@@ -1064,6 +1012,47 @@ func _clear_node(node_name: String) -> void:
 	var existing := get_node_or_null(node_name)
 	if existing != null:
 		existing.free()
+
+
+func _make_wire_box_mesh() -> ImmediateMesh:
+	var half := 0.5
+	var corners := [
+		Vector3(-half, -half, -half), Vector3( half, -half, -half),
+		Vector3( half, -half,  half), Vector3(-half, -half,  half),
+		Vector3(-half,  half, -half), Vector3( half,  half, -half),
+		Vector3( half,  half,  half), Vector3(-half,  half,  half),
+	]
+	var edges := [
+		[0, 1], [1, 2], [2, 3], [3, 0],
+		[4, 5], [5, 6], [6, 7], [7, 4],
+		[0, 4], [1, 5], [2, 6], [3, 7],
+	]
+	var mesh := ImmediateMesh.new()
+	mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	for edge in edges:
+		mesh.surface_add_vertex(corners[int(edge[0])])
+		mesh.surface_add_vertex(corners[int(edge[1])])
+	mesh.surface_end()
+	return mesh
+
+
+# Red wireframe AABB box. Centered on the mesh's actual AABB in container space, so it
+# tracks the native pivot (cliffs: geometric center) wherever the mesh sits.
+func _make_geo_bound_box(bounds: AABB) -> MeshInstance3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = GEO_BOUND_BOX_COLOR
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.no_depth_test = true
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var box := MeshInstance3D.new()
+	box.name = "BoundBox"
+	box.mesh = _make_wire_box_mesh()
+	box.material_override = mat
+	box.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	box.position = bounds.position + bounds.size * 0.5
+	box.scale = bounds.size
+	return box
 
 
 func _make_probe_marker(probe: Dictionary, index: int) -> MeshInstance3D:
@@ -1096,10 +1085,10 @@ func _make_probe_marker(probe: Dictionary, index: int) -> MeshInstance3D:
 func _update_instruction_labels() -> void:
 	var method_label := get_node_or_null("TestMethod") as Label3D
 	if method_label != null:
-		method_label.text = ("Editor: AD Debug toolbar or viewport shortcuts\n" +
-			"1: Tree probes    2: Rock probes    3: All probes\n" +
-			"4: Voxel color    5: Voxel complexity    6: Voxel collision\n" +
-			"C: Clear debug    B: Buffer info")
+		method_label.text = ("Select an asset, then hold Ctrl+Alt+Shift — visuals apply to the selection:\n" +
+			"Ctrl+Alt+Shift+1: Probes\n" +
+			"Ctrl+Alt+Shift+2: Voxel color    Ctrl+Alt+Shift+3: Voxel complexity    Ctrl+Alt+Shift+4: Voxel collision\n" +
+			"Ctrl+Alt+Shift+C: Clear debug")
 	var acceptance_label := get_node_or_null("Acceptance") as Label3D
 	if acceptance_label != null:
 		acceptance_label.text = ("Acceptance\n" +

@@ -757,10 +757,10 @@ func _build_winning_anchor_content() -> void:
 			continue
 		var asset: Dictionary = _assets[winner]
 		var mesh := asset.get("mesh", null) as Mesh
-		if mesh == null:
+		if mesh == null or winner >= _footprints.size():
 			continue
 		var asset_name := str(asset.get("name", "Asset%d" % winner))
-		var pivot_variant := _anchor_pivot_variant_for_mesh(mesh)
+		var pivot_variant := _anchor_pivot_variant_for_footprint(_footprints[winner])
 		var world_result := _world_result_for_winning_anchor(anchor_result, winner, i, pivot_variant)
 		if world_result.is_empty():
 			continue
@@ -779,10 +779,14 @@ func _build_winning_anchor_content() -> void:
 			_register_spa_voxel_display_node(VOXEL_DISPLAY_GPU_OBJECTS, placed_node as Node3D)
 
 
-func _anchor_pivot_variant_for_mesh(mesh: Mesh) -> Dictionary:
+# Single source of truth for the pivot: the exact point the scorer anchored the
+# footprint at (footprint.pivot_local, from footprint_from_voxelizer_result). The
+# placement reads the SAME value, so the placed pose always matches the scored
+# footprint — wherever the pivot sits, scoring and placement cannot diverge.
+func _anchor_pivot_variant_for_footprint(footprint: Dictionary) -> Dictionary:
 	return {
 		"name": "anchor",
-		"offset": _anchor_pivot_for_mesh(mesh),
+		"offset": footprint.get("pivot_local", Vector3.ZERO),
 		"score_bias": 0.0,
 	}
 
@@ -811,7 +815,7 @@ func _world_result_for_winning_anchor(
 	var raw_result := {
 		"valid": true,
 		"voxel_origin": anchor_voxel,
-		"rotation_index": 0,  # 旋转已禁用：忽略评分选中的旋转槽，始终以默认朝向放置
+		"rotation_index": rotation_slot,  # 使用评分选中的旋转槽，放置姿态与打分 footprint 一致
 		"scale_index": 0,
 		"score": float(anchor_result.get("score", 0.0)),
 		"asset_index": asset_index,
@@ -831,8 +835,6 @@ func _world_result_for_winning_anchor(
 	world_result["anchor_index"] = anchor_index
 	world_result["anchor_position"] = anchor_world
 	world_result["rotation_slot"] = rotation_slot
-	# 旋转已禁用：忽略评分选中的 yaw，强制 identity 朝向（位置已按无旋转 pivot 计算）。
-	world_result["rotation_degrees"] = Vector3.ZERO
 	return world_result
 
 
@@ -892,17 +894,6 @@ func _base_pixel_for_anchor(anchor_index: int) -> Vector2i:
 	if pixel is Vector2i:
 		return pixel
 	return Vector2i.ZERO
-
-
-func _anchor_pivot_for_mesh(mesh: Mesh) -> Vector3:
-	if mesh == null:
-		return Vector3.ZERO
-	var aabb := mesh.get_aabb()
-	return Vector3(
-		aabb.position.x + aabb.size.x * 0.5,
-		aabb.position.y,
-		aabb.position.z + aabb.size.z * 0.5
-	)
 
 
 func _build_selected_anchor_overlay() -> void:

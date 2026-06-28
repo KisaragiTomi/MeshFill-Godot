@@ -123,7 +123,6 @@ func score_all_assets(
 	for asset_idx in range(asset_footprints.size()):
 		var fp: Dictionary = asset_footprints[asset_idx]
 		var fp_grid: Vector3i = fp.get("grid", Vector3i.ZERO)
-		var fp_pivot: Vector3i = fp.get("pivot", Vector3i.ZERO)
 		var fp_voxel_count := fp_grid.x * fp_grid.y * fp_grid.z
 		if fp_voxel_count <= 0:
 			results.append({"asset_index": asset_idx, "ok": false, "reason": "empty_footprint"})
@@ -325,23 +324,20 @@ func _decode_results(
 	}
 
 
-## 获取资产的旋转采样剖面：命中缓存则复用，否则现场构建并写回缓存。
-## 是否可用场景体素单位决定使用的缓存键及匹配校验条件。
+## 获取资产的旋转采样剖面（场景体素单位）：命中缓存且体素尺寸匹配则复用，
+## 否则现场构建并写回缓存。
 static func ensure_rotation_sample_profile(
 	asset_footprint: Dictionary,
 	scene_voxel_size: Vector3 = Vector3.ZERO
 ) -> Dictionary:
-	var use_scene_units := _can_build_scene_voxel_profile(asset_footprint, scene_voxel_size)
-	var cache_key := "rotation_sample_profile_scene" if use_scene_units else "rotation_sample_profile"
-	var profile_value = asset_footprint.get(cache_key, {})
+	var profile_value = asset_footprint.get("rotation_sample_profile", {})
 	if profile_value is Dictionary:
 		var profile := profile_value as Dictionary
 		if bool(profile.get("ok", false)) \
-				and (not use_scene_units or _profile_matches_scene_voxel_size(profile, scene_voxel_size)):
+				and _profile_matches_scene_voxel_size(profile, scene_voxel_size):
 			return profile
-	var profile_voxel_size := scene_voxel_size if use_scene_units else Vector3.ZERO
-	var built := build_rotation_sample_profile(asset_footprint, profile_voxel_size)
-	asset_footprint[cache_key] = built
+	var built := build_rotation_sample_profile(asset_footprint, scene_voxel_size)
+	asset_footprint["rotation_sample_profile"] = built
 	return built
 
 
@@ -352,17 +348,17 @@ static func build_rotation_sample_profile(
 	scene_voxel_size: Vector3 = Vector3.ZERO
 ) -> Dictionary:
 	var fp_grid: Vector3i = asset_footprint.get("grid", Vector3i.ZERO)
-	var fp_pivot: Vector3i = asset_footprint.get("pivot", Vector3i.ZERO)
 	var fp_voxel_count := fp_grid.x * fp_grid.y * fp_grid.z
 	if fp_voxel_count <= 0:
 		return _empty_rotation_sample_profile("empty_footprint")
+	if not _can_build_scene_voxel_profile(asset_footprint, scene_voxel_size):
+		return _empty_rotation_sample_profile("missing_scene_voxel_units")
 	var occupancy_bytes: PackedByteArray = asset_footprint.get("occupancy_bytes", PackedByteArray())
 	var occupancy := occupancy_bytes.to_int32_array()
 	if occupancy.size() < fp_voxel_count:
 		return _empty_rotation_sample_profile("occupancy_size_mismatch")
 	var props_bytes: PackedByteArray = asset_footprint.get("props_bytes", PackedByteArray())
 	var props := props_bytes.to_float32_array()
-	var use_scene_units := _can_build_scene_voxel_profile(asset_footprint, scene_voxel_size)
 
 	var max_records_per_slot := _variant_capacity_for_grid(fp_grid)
 	var per_slot_records: Array = []
@@ -380,11 +376,9 @@ static func build_rotation_sample_profile(
 			occupancy,
 			props,
 			fp_grid,
-			fp_pivot,
 			slot,
 			asset_footprint,
-			scene_voxel_size,
-			use_scene_units
+			scene_voxel_size
 		)
 		var records := _limit_sample_records(raw_records, max_records_per_slot)
 		per_slot_records.append(records)
@@ -423,22 +417,20 @@ static func build_rotation_sample_profile(
 		"records": packed_records,
 		"records_bytes": packed_records.to_byte_array(),
 		"max_variants_per_rotation": MAX_VARIANTS_PER_ROTATION,
-		"scene_voxel_units": use_scene_units,
-		"scene_voxel_size": scene_voxel_size if use_scene_units else Vector3.ZERO,
+		"scene_voxel_units": true,
+		"scene_voxel_size": scene_voxel_size,
 	}
 
 
-## 为单个旋转槽构建去重后的采样记录：旋转每个被占用的足迹体素，按偏移量
-## 去重，同一偏移保留碰撞强度更高的足迹索引。
+## 为单个旋转槽构建去重后的采样记录：把每个被占用的足迹体素转换成「相对 pivot_local、
+## 经 yaw 旋转的场景体素偏移」，按偏移去重，同一偏移保留碰撞强度更高的足迹索引。
 static func _build_slot_sample_records(
 	occupancy: PackedInt32Array,
 	props: PackedFloat32Array,
 	fp_grid: Vector3i,
-	fp_pivot: Vector3i,
 	rotation_slot: int,
-	asset_footprint: Dictionary = {},
-	scene_voxel_size: Vector3 = Vector3.ZERO,
-	use_scene_units: bool = false
+	asset_footprint: Dictionary,
+	scene_voxel_size: Vector3
 ) -> PackedInt32Array:
 	var records := PackedInt32Array()
 	var offset_to_record := {}
@@ -451,22 +443,13 @@ static func _build_slot_sample_records(
 				var fp_index := x + fp_grid.x * (z + fp_grid.z * y)
 				if occupancy[fp_index] == 0:
 					continue
-				var offset := Vector3i.ZERO
-				if use_scene_units:
-					offset = _scene_voxel_offset_for_asset_voxel(
-						Vector3i(x, y, z),
-						asset_footprint,
-						scene_voxel_size,
-						ca,
-						sa
-					)
-				else:
-					var rel := Vector3i(x - fp_pivot.x, y - fp_pivot.y, z - fp_pivot.z)
-					offset = Vector3i(
-						int(round(ca * float(rel.x) + sa * float(rel.z))),
-						rel.y,
-						int(round(-sa * float(rel.x) + ca * float(rel.z)))
-					)
+				var offset := _scene_voxel_offset_for_asset_voxel(
+					Vector3i(x, y, z),
+					asset_footprint,
+					scene_voxel_size,
+					ca,
+					sa
+				)
 				var key := "%d,%d,%d" % [offset.x, offset.y, offset.z]
 				if not offset_to_record.has(key):
 					offset_to_record[key] = records.size() / SAMPLE_RECORD_STRIDE_INTS
@@ -1029,5 +1012,6 @@ static func footprint_from_voxelizer_result(
 		"aabb_size": aabb_size,
 		"pivot_local": pivot_local,
 	}
-	footprint["rotation_sample_profile"] = build_rotation_sample_profile(footprint)
+	# 旋转采样剖面按需构建：需要场景体素尺寸，由 ensure_rotation_sample_profile() 在
+	# 评分/放置时用场景 voxel_size 生成（见 build_rotation_sample_profile）。
 	return footprint

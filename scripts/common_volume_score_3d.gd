@@ -21,7 +21,13 @@ static func voxelize_common_assets(
 
 	for i in range(CommonDemoAssets.count()):
 		var asset_path := CommonDemoAssets.geo_path(i)
-		var mesh := CommonDemoAssets.load_mesh(asset_path)
+		var mesh_info := CommonDemoAssets.load_mesh_info(asset_path)
+		var raw_mesh: Mesh = mesh_info.get("mesh", null)
+		var mesh_xform: Transform3D = mesh_info.get("mesh_transform", Transform3D.IDENTITY)
+		# Bake mesh_transform + base-pivot so the placed AutoObject mesh has its
+		# bottom-center at local origin — coordinate axes zeroed at the placement point.
+		var mesh := CommonDemoAssets.bake_mesh_xform(
+			raw_mesh, CommonDemoAssets.base_pivot_xform(raw_mesh, mesh_xform))
 		var fallback := false
 		if mesh == null:
 			if not fallback_to_box:

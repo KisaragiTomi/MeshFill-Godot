@@ -3,7 +3,7 @@ extends SceneTree
 ## 3D Object Volume Score — GPU acceptance harness.
 ##
 ## Drives the same core pipeline as the editor-mode volume score demo
-## (demos/placement-meshfill-object-volume-score-3d) without the viewport:
+## (demos/placement-score-3d) without the viewport:
 ##   load+voxelize geo -> build scene field -> generate anchors ->
 ##   GPU two-pass score (Pass A subtile + Pass B reduce) -> readback decode.
 ##
@@ -77,7 +77,13 @@ func _test_rotation_sample_profile() -> bool:
 		for x in range(2, 5):
 			coords.append(Vector3i(x, 0, z))
 	var footprint := _make_test_footprint(Vector3i(7, 1, 5), Vector3i(3, 0, 2), coords)
-	var profile := ObjectVolumeScoreGpuScript.build_rotation_sample_profile(footprint)
+	# 场景单位剖面：令 cell_size == 场景 voxel == 1，使采样偏移保持整数对齐，
+	# 这样随 yaw 变化的 span 仍然精确可断言。
+	footprint["cell_size"] = 1.0
+	footprint["aabb_min"] = Vector3.ZERO
+	footprint["aabb_size"] = Vector3(7.0, 1.0, 5.0)
+	footprint["pivot_local"] = Vector3(3.5, 0.0, 2.5)
+	var profile := ObjectVolumeScoreGpuScript.build_rotation_sample_profile(footprint, Vector3.ONE)
 	if not bool(profile.get("ok", false)):
 		push_error("  FAIL: sample profile not ok: %s" % str(profile))
 		return false
@@ -118,25 +124,22 @@ func _test_scene_voxel_scaled_sample_profile() -> bool:
 	footprint["aabb_min"] = Vector3.ZERO
 	footprint["aabb_size"] = Vector3(1.0, 0.2, 0.5)
 	footprint["pivot_local"] = Vector3(0.5, 0.0, 0.25)
-	var raw_profile := ObjectVolumeScoreGpuScript.build_rotation_sample_profile(footprint)
 	var scene_profile := ObjectVolumeScoreGpuScript.build_rotation_sample_profile(
 		footprint,
 		Vector3(0.5, 0.5, 0.5)
 	)
-	var raw_bounds: Array = raw_profile.get("bounds_by_slot", [])
+	if not bool(scene_profile.get("ok", false)):
+		push_error("  FAIL: scene profile not ok: %s" % str(scene_profile))
+		return false
 	var scene_bounds: Array = scene_profile.get("bounds_by_slot", [])
-	if raw_bounds.is_empty() or scene_bounds.is_empty():
+	if scene_bounds.is_empty():
 		push_error("  FAIL: missing profile bounds")
 		return false
-	var raw_span: Vector3i = (raw_bounds[0] as Dictionary).get("span", Vector3i.ZERO)
 	var scene_span: Vector3i = (scene_bounds[0] as Dictionary).get("span", Vector3i.ZERO)
-	if raw_span != Vector3i(10, 2, 5):
-		push_error("  FAIL: raw profile span changed unexpectedly: %s" % str(raw_span))
-		return false
 	if scene_span != Vector3i(3, 1, 1):
 		push_error("  FAIL: scene-scaled profile should follow asset bounds, got %s" % str(scene_span))
 		return false
-	if int(scene_profile.get("max_sample_count", 0)) >= int(raw_profile.get("max_sample_count", 0)):
+	if int(scene_profile.get("max_sample_count", 0)) >= coords.size():
 		push_error("  FAIL: scene-scaled profile did not compact high-res asset samples")
 		return false
 	print("  PASS: scene voxel sample profile follows asset bounds instead of asset voxel count")

@@ -201,6 +201,27 @@ const TOOLS = [
     description: "Get info about the currently open scene",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "godot_open_scene",
+    description: "Open a scene in the editor by res:// path, making it the active edited scene",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Scene path, e.g. 'res://demos/foo/foo.tscn'" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "godot_screenshot",
+    description: "Capture the editor 3D viewport to a PNG file and return its absolute path",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Optional output path (res:// or absolute). Default res://_shots/mcp_screenshot.png" },
+      },
+    },
+  },
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -222,6 +243,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     godot_get_children: "get_children",
     godot_call_method: "call_method",
     godot_get_open_scene: "get_open_scene",
+    godot_open_scene: "open_scene",
+    godot_screenshot: "screenshot",
   };
 
   const method = methodMap[name];

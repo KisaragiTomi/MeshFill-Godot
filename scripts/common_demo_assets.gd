@@ -237,3 +237,47 @@ static func transformed_aabb(aabb: AABB, transform: Transform3D) -> AABB:
 
 static func aabb_longest_axis(aabb: AABB) -> float:
 	return maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
+
+
+# Bake xform into mesh vertex positions (and normals) so the caller can set
+# MeshInstance3D.transform = IDENTITY while the mesh displays identically.
+# Returns source unchanged when xform is identity. Ignores tangents (not needed
+# for geo display) and preserves surface materials and primitive types.
+static func bake_mesh_xform(source: Mesh, xform: Transform3D) -> Mesh:
+	if source == null:
+		return null
+	if xform.is_equal_approx(Transform3D.IDENTITY):
+		return source
+	var normal_basis := xform.basis.inverse().transposed()
+	var result := ArrayMesh.new()
+	for surf_idx in range(source.get_surface_count()):
+		var arrays := source.surface_get_arrays(surf_idx)
+		if arrays.is_empty():
+			continue
+		var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		for i in range(verts.size()):
+			verts[i] = xform * verts[i]
+		arrays[Mesh.ARRAY_VERTEX] = verts
+		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+		if normals.size() == verts.size():
+			for i in range(normals.size()):
+				normals[i] = (normal_basis * normals[i]).normalized()
+			arrays[Mesh.ARRAY_NORMAL] = normals
+		result.add_surface_from_arrays(source.surface_get_primitive_type(surf_idx), arrays)
+		result.surface_set_material(surf_idx, source.surface_get_material(surf_idx))
+	return result
+
+
+# Returns the combined transform that: (1) applies mesh_transform, then (2)
+# shifts the result so the AABB bottom-center lands at the local origin.
+# Use as the xform argument to bake_mesh_xform.
+static func base_pivot_xform(mesh: Mesh, mesh_transform: Transform3D) -> Transform3D:
+	if mesh == null:
+		return mesh_transform
+	var bounds := transformed_aabb(mesh.get_aabb(), mesh_transform)
+	var shift := Vector3(
+		-(bounds.position.x + bounds.size.x * 0.5),
+		-bounds.position.y,
+		-(bounds.position.z + bounds.size.z * 0.5)
+	)
+	return Transform3D(mesh_transform.basis, mesh_transform.origin + shift)

@@ -649,14 +649,11 @@ func _ensure_asset_descriptor_debug_menu_items(host: Node) -> void:
 
 func _default_asset_descriptor_debug_actions() -> Array[Dictionary]:
 	return [
-		{"id": &"tree_probes", "label": "Tree probes", "shortcut": "1"},
-		{"id": &"rock_probes", "label": "Rock probes", "shortcut": "2"},
-		{"id": &"all_probes", "label": "All probes", "shortcut": "3"},
-		{"id": &"voxel_color", "label": "Voxel color", "shortcut": "4"},
-		{"id": &"voxel_complexity", "label": "Voxel complexity", "shortcut": "5"},
-		{"id": &"voxel_collision", "label": "Voxel collision", "shortcut": "6"},
-		{"id": &"clear_debug", "label": "Clear debug", "shortcut": "C"},
-		{"id": &"buffer_info", "label": "Buffer info", "shortcut": "B"},
+		{"id": &"probes", "label": "Probes (selected)", "shortcut": "Ctrl+Alt+Shift+1"},
+		{"id": &"voxel_color", "label": "Voxel color (selected)", "shortcut": "Ctrl+Alt+Shift+2"},
+		{"id": &"voxel_complexity", "label": "Voxel complexity (selected)", "shortcut": "Ctrl+Alt+Shift+3"},
+		{"id": &"voxel_collision", "label": "Voxel collision (selected)", "shortcut": "Ctrl+Alt+Shift+4"},
+		{"id": &"clear_debug", "label": "Clear debug", "shortcut": "Ctrl+Alt+Shift+C"},
 	]
 
 
@@ -675,13 +672,14 @@ func _set_asset_descriptor_debug_status(text: String) -> void:
 
 
 func _format_asset_descriptor_debug_state(state: Dictionary) -> String:
-	var tree := "on" if bool(state.get("tree_probes_visible", false)) else "off"
-	var rock := "on" if bool(state.get("rock_probes_visible", false)) else "off"
-	var buffer := "on" if bool(state.get("buffer_info_visible", false)) else "off"
+	var probes := "on" if bool(state.get("probes_visible", false)) else "off"
 	var voxel := str(state.get("voxel_channel", ""))
 	if voxel.is_empty():
 		voxel = "none"
-	return "AD: tree=%s rock=%s voxel=%s buffer=%s" % [tree, rock, voxel, buffer]
+	var sel := str(state.get("selected", ""))
+	if sel.is_empty():
+		sel = "none"
+	return "AD: selected=%s  probes=%s  voxel=%s" % [sel, probes, voxel]
 
 
 # ---- Volume score toolbar --------------------------------------------------
@@ -1327,13 +1325,16 @@ func _cmd_open_scene(params: Dictionary) -> Dictionary:
 ## Capture the editor 3D viewport (the edited scene's viewport) to a PNG file and
 ## return its absolute path so external tooling can read the image directly.
 func _cmd_screenshot(params: Dictionary) -> Dictionary:
-	var root := get_editor_interface().get_edited_scene_root()
-	if root == null:
-		return {"error": "no scene open"}
-	var viewport := root.get_viewport()
+	var ei := get_editor_interface()
+	# 必须用 3D 编辑器视口；edited_scene_root.get_viewport() 是 2x2 占位视口。
+	ei.set_main_screen_editor("3D")
+	var viewport: Viewport = ei.get_editor_viewport_3d(0)
+	if viewport == null:
+		var root := ei.get_edited_scene_root()
+		viewport = root.get_viewport() if root != null else null
 	if viewport == null or viewport.get_texture() == null:
 		return {"error": "no viewport texture"}
-	var img := viewport.get_texture().get_image()
+	var img: Image = viewport.get_texture().get_image()
 	if img == null:
 		return {"error": "no viewport image"}
 	var req_path: String = str(params.get("path", "res://_shots/mcp_screenshot.png"))
