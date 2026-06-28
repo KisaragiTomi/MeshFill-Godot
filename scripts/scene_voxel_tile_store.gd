@@ -2241,7 +2241,7 @@ func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
 
 func readback_scene_voxel_tile_debug_snapshot() -> Dictionary:
 
-	return SceneVoxelDebugScript.readback_tile_snapshot(self)
+	return SceneVoxelDebugScript.readback_tile_snapshot(_committer)
 
 ## 将GPU摘要发布到场景体素字典
 

@@ -361,12 +361,12 @@ func get_committed_scene_voxel_key_coord_buffer_summary() -> Dictionary:
 ## 检查公共调试缓存是否已根据提交缓冲填充完毕
 
 func _scene_voxel_public_debug_cache_hydrated() -> bool:
-	return SceneVoxelDebugScript.public_cache_hydrated(self)
+	return SceneVoxelDebugScript.public_cache_hydrated(_committer)
 
 ## 返回已填充的公共调试缓存条目数量
 
 func _scene_voxel_public_debug_cache_count() -> int:
-	return SceneVoxelDebugScript.public_cache_count(self)
+	return SceneVoxelDebugScript.public_cache_count(_committer)
 
 ## 汇总已提交体素负载缓冲及公共投影的诊断信息
 
@@ -446,12 +446,12 @@ func _release_committed_scene_voxel_key_coord_buffer() -> void:
 ## 标记公共调试缓存为待从已提交缓冲填充的暂存状态
 
 func _stage_scene_voxel_public_debug_cache_from_committed_buffers(commit_tick: int, expected_count: int) -> void:
-	SceneVoxelDebugScript.stage_public_cache_from_committed_buffers(self, commit_tick, expected_count)
+	SceneVoxelDebugScript.stage_public_cache_from_committed_buffers(_committer, commit_tick, expected_count)
 
 ## 标记公共调试缓存已从已提交状态映射填充完成
 
 func _mark_scene_voxel_public_debug_cache_from_committed_map(commit_tick: int, expected_count: int) -> void:
-	SceneVoxelDebugScript.mark_public_cache_from_committed_map(self, commit_tick, expected_count)
+	SceneVoxelDebugScript.mark_public_cache_from_committed_map(_committer, commit_tick, expected_count)
 
 ## 从已提交负载槽位解码单个体素的调试投影字典
 
@@ -466,12 +466,12 @@ func _committed_scene_voxel_debug_payload_from_slot(
 ## 将公共调试缓存摘要发布到 sv 字典
 
 func _publish_scene_voxel_public_debug_cache_summary_to_sv() -> void:
-	SceneVoxelDebugScript.publish_public_cache_summary_to_sv(self)
+	SceneVoxelDebugScript.publish_public_cache_summary_to_sv(_committer)
 
 ## 从已提交 GPU 缓冲回读并填充公共调试体素缓存
 
 func _hydrate_scene_voxel_public_debug_cache_from_committed_buffers() -> bool:
-	return SceneVoxelDebugScript.hydrate_public_cache_from_committed_buffers(self)
+	return SceneVoxelDebugScript.hydrate_public_cache_from_committed_buffers(_committer)
 
 ## 将 GPU 负载数据提交写入最终场景体素源映射
 
@@ -1478,7 +1478,7 @@ func _selected_source_candidate_for_public_projection(candidates: Array) -> Dict
 ## 将解析后的源候选投影写入源流并返回投影数量
 
 func _project_resolved_source_candidates_for_public_debug(groups: Array[Dictionary]) -> int:
-	return SceneVoxelDebugScript.project_resolved_source_candidates(self, groups)
+	return SceneVoxelDebugScript.project_resolved_source_candidates(_committer, groups)
 
 ## 尝试在 GPU 上解析场景体素源候选并返回结果字典
 
