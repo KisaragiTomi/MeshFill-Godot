@@ -180,4 +180,4 @@ assert(core.get_voxel_display_state()["svtile"] == false)
 - 空白点击、释放事件、滚轮事件和 disabled 工具栏都不产生重复选择或错误状态。
 - `Anchors`、`Score`、anchor LMB 和滚轮 top-k 能完成一条 volume-score 点击闭环。
 - Inspector 参数改变后，视口点击行为与参数语义一致。
-- 所有 UI 点击测试均保持 GPU-first 语义；缺少 RenderingDevice 时只能报告 SKIP / no hit，不能把 CPU-only 路径当作通过。
+- 所有 UI 点击测试均保持 GPU-first 语义；缺少 RenderingDevice 时只能报告 SKIP / no hit，不能把 非 GPU 路径当作通过。
