@@ -96,37 +96,17 @@ var grid_origin: Vector3  ## World-space origin for voxel index conversion
 ## Packed RGBA completely field: one value per explicit channel, representing how completely each voxel is filled.
 ## When max(complexity, collision) == 0, the voxel is empty (nothing there).
 
-
 ## Source collision scalar field generated through the shared max-stamp path.
 
 ## Terrain base remains a separate input; both are published as one resident collision field.
 
-
 ## Authoritative terrain/base collision input layer.
 
-
 ## Resident collision read field: max(TerrainBaseCollision, source collision field).
-
 
 ## GPU resources
 
 var _sampler: RID
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 var _shader_score_scene_voxel_feedback: RID
 
@@ -135,20 +115,6 @@ var _pipeline_score_scene_voxel_feedback: RID
 var _shader_reduce_scene_voxel_stats: RID
 
 var _pipeline_reduce_scene_voxel_stats: RID
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 var _gpu_ready: bool = false
 
@@ -189,7 +155,6 @@ var _collision_field: Image:
 	set(value):
 		if _field_builder:
 			_field_builder._collision_field = value
-
 
 ## 初始化体素提交器，设置基础分辨率、捕获范围并按需启用 GPU
 func _init(base_resolution: int, capture_size: float, _enable_gpu: bool = true) -> void:
@@ -255,26 +220,6 @@ func _init_gpu() -> void:
 
 	_sampler = create_linear_sampler()
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 	_shader_score_scene_voxel_feedback = load_compute_shader("res://shaders/score_scene_voxel_feedback.glsl")
 
 	if _shader_score_scene_voxel_feedback.is_valid():
@@ -287,70 +232,11 @@ func _init_gpu() -> void:
 
 		_pipeline_reduce_scene_voxel_stats = create_compute_pipeline(_shader_reduce_scene_voxel_stats)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 	var missing_gpu_rids: Array[String] = []
 
 	if not _sampler.is_valid():
 
 		missing_gpu_rids.append("sampler")
-
-
-		missing_gpu_rids.append("shader_import")
-
-
-		missing_gpu_rids.append("pipeline_import")
-
-
-		missing_gpu_rids.append("shader_filter")
-
-
-		missing_gpu_rids.append("pipeline_filter")
-
-
-		missing_gpu_rids.append("shader_max_collision")
-
-
-		missing_gpu_rids.append("pipeline_max_collision")
-
-
-
-
-
-
-
-
-
-		missing_gpu_rids.append("shader_stamp_r32_disc")
-
-		missing_gpu_rids.append("pipeline_stamp_r32_disc")
-
-		missing_gpu_rids.append("shader_stamp_rgba_channel_disc")
-
-		missing_gpu_rids.append("pipeline_stamp_rgba_channel_disc")
-
-		missing_gpu_rids.append("shader_merge_sv_collision_records")
-
-		missing_gpu_rids.append("pipeline_merge_sv_collision_records")
 	if not _shader_score_scene_voxel_feedback.is_valid():
 
 		missing_gpu_rids.append("shader_score_scene_voxel_feedback")
@@ -363,24 +249,6 @@ func _init_gpu() -> void:
 	if not _pipeline_reduce_scene_voxel_stats.is_valid():
 
 		missing_gpu_rids.append("pipeline_reduce_scene_voxel_stats")
-
-
-
-
-
-
-
-
-
-
-
-		missing_gpu_rids.append("shader_stamp_collect_voxel_disc")
-
-		missing_gpu_rids.append("pipeline_stamp_collect_voxel_disc")
-
-		missing_gpu_rids.append("shader_sample_r32_pixel")
-
-		missing_gpu_rids.append("pipeline_sample_r32_pixel")
 
 	_gpu_ready = missing_gpu_rids.is_empty()
 
@@ -431,21 +299,6 @@ func _free_gpu() -> void:
 
 	dispose()
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 	_pipeline_score_scene_voxel_feedback = RID()
 
 	_shader_score_scene_voxel_feedback = RID()
@@ -453,20 +306,6 @@ func _free_gpu() -> void:
 	_pipeline_reduce_scene_voxel_stats = RID()
 
 	_shader_reduce_scene_voxel_stats = RID()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 	_sampler = RID()
 
@@ -1695,77 +1534,11 @@ var _voxel_write_specs: Array[Dictionary] = []
 
 var _voxel_write_spec_index: Dictionary = {}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 var _sv: Dictionary = {}
 
 var _sv_dirty_tiles: Dictionary = {}
 
 var _sv_dirty_rects: Array[Rect2i] = []
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 var _generation_tick: int = 1
 
@@ -2079,7 +1852,6 @@ func blend_scene_voxels(tick: int = -1) -> Dictionary:
 
 	_rebuild_shared_field_cache_from_scene_voxels(final_scene_voxels)
 
-
 	_committed_tick = max(_committed_tick, commit_tick)
 
 	_generation_tick = max(_generation_tick, commit_tick + 1)
@@ -2101,7 +1873,6 @@ func _empty_blendsv_feedback_result(target_role: String) -> Dictionary:
 		"target_occupied_count": 0,
 		"overlap_occupied_count": 0,
 	}
-
 
 ## 对比目标体素场评估BlendSV反馈评分
 func score_blendsv_feedback_against_target(
@@ -2388,7 +2159,6 @@ func build_voxel_volume(
 
 	return _volume
 
-
 ## 生成占位切片图像,失败时返回空白图像
 func _make_occupancy_slice_image(channel: int, xz_res: int) -> Image:
 	var gpu_img := _make_occupancy_slice_image_gpu(channel, xz_res)
@@ -2398,7 +2168,6 @@ func _make_occupancy_slice_image(channel: int, xz_res: int) -> Image:
 	if VoxelGeneralScript.is_valid_channel(channel) and xz_res > 0:
 		push_error("[SceneVoxelCommitter] Occupancy slice GPU compute failed")
 	return slice_img
-
 
 ## GPU生成指定通道的占位切片图像
 func _make_occupancy_slice_image_gpu(channel: int, xz_res: int) -> Image:
@@ -2465,7 +2234,6 @@ func _make_occupancy_slice_image_gpu(channel: int, xz_res: int) -> Image:
 	var result := Image.create_from_data(xz_res, xz_res, false, Image.FORMAT_RF, data)
 	gc_frame()
 	return result
-
 
 ## 查询指定世界坐标处的体素信息
 func query_voxel(wx: float, wz: float, height_above_terrain: float) -> Dictionary:
@@ -2884,11 +2652,11 @@ func get_voxel_stats() -> Dictionary:
 		})
 
 	return {
- 
+
 		"xz_resolution": xz_res,
- 
+
 		"total_slices": total_slices,
- 
+
 		"grid_size": grid_size,
 
 		"voxel_size": voxel_size,
@@ -2914,7 +2682,7 @@ func get_voxel_stats() -> Dictionary:
 		"committed_tick": _committed_tick,
 
 		"occupancy_pct": "%.1f%%" % [float(occupied_voxels) / float(total_voxels) * 100.0] if total_voxels > 0 else "0%",
- 
+
 		"per_slice": per_slice,
 
 		"gpu_dispatched": true,
@@ -2922,7 +2690,7 @@ func get_voxel_stats() -> Dictionary:
 		"cpu_fallback": false,
 
 		"stats_source": str(reduced.get("stats_source", "unknown")),
- 
+
 	}
 
 ## 重置占位、体素体积与相关缓存状态
@@ -3103,8 +2871,6 @@ func get_voxel_column(px: int, pz: int) -> Array[Dictionary]:
 
 	return column
 
-
-
 ## ===== SceneVoxelTileStore 委托桩(抽出后保持内部/外部调用兼容) =====
 func _apply_scene_voxel_tile_reduce_summaries(reduced: Dictionary) -> void:
 	_tile_store._apply_scene_voxel_tile_reduce_summaries(reduced)
@@ -3189,8 +2955,6 @@ func try_apply_gpu_autoobject_object_ref_update_pass_from_buffer(dirty_delta_buf
 	dirty_delta_source: String = "borrowed_dirty_delta_buffer") -> Dictionary:
 	return _tile_store.try_apply_gpu_autoobject_object_ref_update_pass_from_buffer(dirty_delta_buffer, dirty_delta_count, dirty_delta_capacity, dirty_delta_source)
 
-
-
 ## ===== SceneVoxelSourceStaging 委托桩(抽出后保持内部/外部调用兼容) =====
 func _clear_scene_voxel_source_streams() -> void:
 	_source_staging._clear_scene_voxel_source_streams()
@@ -3249,8 +3013,6 @@ func get_committed_scene_voxel_payload_buffer_summary() -> Dictionary:
 	return _source_staging.get_committed_scene_voxel_payload_buffer_summary()
 func stage_pending_scene_voxel_source_candidates_to_resident_buffers() -> Dictionary:
 	return _source_staging.stage_pending_scene_voxel_source_candidates_to_resident_buffers()
-
-
 
 ## ===== SceneVoxelCollisionField 委托桩 =====
 func _create_collision_image(resolution: int) -> Image:
