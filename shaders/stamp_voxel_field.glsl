@@ -12,11 +12,11 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) restrict buffer ComplexityField {
-    vec4 complexity_field[];
+    uint complexity_field_rgba8[];
 };
 
 layout(set = 0, binding = 1, std430) restrict buffer CollisionField {
-    uint collision_field[];
+    uint collision_field_r8_words[];
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer PlacementResults {
@@ -58,6 +58,20 @@ layout(push_constant, std430) uniform Params {
 const uint RECORD_STRIDE = 4u;
 const uint DELTA_STRIDE = 2u;
 
+uint quantize_unorm8(float value) {
+    return uint(round(clamp(value, 0.0, 1.0) * 255.0));
+}
+
+uint pack_rgba8(vec4 value) {
+    uvec4 q = uvec4(
+        quantize_unorm8(value.r),
+        quantize_unorm8(value.g),
+        quantize_unorm8(value.b),
+        quantize_unorm8(value.a)
+    );
+    return (q.r << 24u) | (q.g << 16u) | (q.b << 8u) | q.a;
+}
+
 bool in_grid_bounds(ivec3 p) {
     return p.x >= 0 && p.y >= 0 && p.z >= 0
         && p.x < grid_size_counts.x
@@ -74,15 +88,23 @@ int voxel_index(ivec3 p) {
     return p.x + grid_size_counts.x * (p.z + grid_size_counts.z * p.y);
 }
 
-void atomic_max_float_nonnegative_collision(int index, float value) {
-    uint new_bits = floatBitsToUint(max(value, 0.0));
-    uint old_bits = collision_field[index];
-    while (uintBitsToFloat(old_bits) < value) {
-        uint previous_bits = atomicCompSwap(collision_field[index], old_bits, new_bits);
-        if (previous_bits == old_bits) {
+void atomic_max_collision_r8(uint index, float value) {
+    uint word_index = index >> 2u;
+    uint shift = (index & 3u) * 8u;
+    uint mask = 0xFFu << shift;
+    uint q = quantize_unorm8(value);
+    uint old_word = collision_field_r8_words[word_index];
+    for (int attempt = 0; attempt < 32; attempt++) {
+        uint current = (old_word & mask) >> shift;
+        if (current >= q) {
             return;
         }
-        old_bits = previous_bits;
+        uint new_word = (old_word & ~mask) | (q << shift);
+        uint previous = atomicCompSwap(collision_field_r8_words[word_index], old_word, new_word);
+        if (previous == old_word) {
+            return;
+        }
+        old_word = previous;
     }
 }
 
@@ -131,9 +153,9 @@ void main() {
     float collision_strength = footprint_collision_strength >= params.x ? clamp(footprint_collision_strength * params.z, 0.0, 1.0) : 0.0;
 
     int index = voxel_index(p);
-    complexity_field[index] = vec4(stamp_color.rgb, complexity);
+    complexity_field_rgba8[index] = pack_rgba8(vec4(stamp_color.rgb, complexity));
     if (collision_strength > 0.0) {
-        atomic_max_float_nonnegative_collision(index, collision_strength);
+        atomic_max_collision_r8(uint(index), collision_strength);
     }
 
     uint compact_index = atomicAdd(stamp_delta_count, 1u);

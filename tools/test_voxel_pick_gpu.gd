@@ -3,6 +3,14 @@ extends SceneTree
 const VoxelPickGPUScript := preload("res://scripts/voxel_pick_gpu.gd")
 
 
+func _pack_rgba8_for_test(color: Color) -> int:
+	var r := int(round(clampf(color.r, 0.0, 1.0) * 255.0))
+	var g := int(round(clampf(color.g, 0.0, 1.0) * 255.0))
+	var b := int(round(clampf(color.b, 0.0, 1.0) * 255.0))
+	var a := int(round(clampf(color.a, 0.0, 1.0) * 255.0))
+	return ((r & 0xFF) << 24) | ((g & 0xFF) << 16) | ((b & 0xFF) << 8) | (a & 0xFF)
+
+
 func _init() -> void:
 	print("[VoxelPickGPU] === GPU pick shader smoke ===")
 	var rd_available := RenderingServer.get_rendering_device() != null
@@ -59,18 +67,15 @@ func _test_targetsv_pick() -> bool:
 	var slice_count := 2
 	var voxel_count := texture_size * texture_size * slice_count
 	var visual := PackedByteArray()
-	visual.resize(voxel_count * 16)
+	visual.resize(voxel_count * 4)
 	var collision := PackedByteArray()
-	collision.resize(voxel_count * 4)
+	collision.resize(voxel_count)
 	var hit_x := 2
 	var hit_z := 2
 	var hit_slice := 0
 	var hit_idx := (hit_slice * texture_size + hit_z) * texture_size + hit_x
-	visual.encode_float(hit_idx * 16 + 0, 0.25)
-	visual.encode_float(hit_idx * 16 + 4, 0.50)
-	visual.encode_float(hit_idx * 16 + 8, 0.75)
-	visual.encode_float(hit_idx * 16 + 12, 1.0)
-	collision.encode_float(hit_idx * 4, 0.0)
+	visual.encode_u32(hit_idx * 4, _pack_rgba8_for_test(Color(0.25, 0.50, 0.75, 1.0)))
+	collision[hit_idx] = 0
 
 	var terrain := PackedFloat32Array()
 	terrain.resize(texture_size * texture_size)

@@ -1,33 +1,32 @@
 #[compute]
 #version 450
 
-// Derive TargetSV packed placement buffers from persisted readback buffers.
+// Derive TargetSV packed placement buffers from canonical 8bit readback buffers.
 // Inputs:
-//   binding 0: rgba32f visual buffer, vec4(color.rgb, complexity)
-//   binding 1: r32f collision buffer
-//   binding 2: optional r32f completely input buffer (completely = max(complexity, collision) 表示体素完全度)
+//   binding 0: rgba8 visual buffer packed as uint, high-to-low bytes RGBA
+//   binding 1: r8 collision buffer packed four voxels per uint
+//   binding 2: optional r8 completely input buffer packed four voxels per uint
 // Outputs:
-//   binding 3: r32f completely buffer
+//   binding 3: r8 completely buffer packed four voxels per uint
 //   binding 4: rgba8 packed as uint, high-to-low bytes RGBA
 //   binding 5: u32 stats buffer: max completely, max collision, active/collision/visual voxel counts, min active completely, max visual complexity
-//   binding 6: rgba32f color decode buffer, vec4(color.rgb, complexity), stride 16 bytes
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) restrict readonly buffer TargetVisual {
-    vec4 target_visual[];
+    uint target_visual_rgba8[];
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer TargetCollision {
-    float target_collision[];
+    uint target_collision_r8_words[];
 };
 
-layout(set = 0, binding = 2, std430) restrict readonly buffer TargetOccupancyInput {
-    float target_occupancy_input[];
+layout(set = 0, binding = 2, std430) restrict readonly buffer TargetCompletelyInput {
+    uint target_completely_input_r8_words[];
 };
 
-layout(set = 0, binding = 3, std430) restrict writeonly buffer TargetOccupancyOut {
-    float target_occupancy_out[];
+layout(set = 0, binding = 3, std430) restrict buffer TargetCompletelyOut {
+    uint target_completely_out_r8_words[];
 };
 
 layout(set = 0, binding = 4, std430) restrict writeonly buffer TargetColorRgba8Out {
@@ -36,10 +35,6 @@ layout(set = 0, binding = 4, std430) restrict writeonly buffer TargetColorRgba8O
 
 layout(set = 0, binding = 5, std430) restrict buffer TargetStatsOut {
     uint target_stats_out[];
-};
-
-layout(set = 0, binding = 6, std430) restrict writeonly buffer TargetColorRgba32fOut {
-    vec4 target_color_rgba32f_out[];
 };
 
 const uint TARGET_STATS_MAX_OCCUPANCY = 0u;
@@ -54,14 +49,41 @@ const float TARGET_STATS_ACTIVE_THRESHOLD = 0.001;
 
 layout(push_constant, std430) uniform Params {
     int voxel_count;                 // byte 0: total voxels to scan
-    int use_collision_as_completely;  // byte 4: use max(complexity, collision) as completely when no completely input exists
-    int completely_input_valid;       // byte 8: binding 2 has one r32f per voxel
+    int use_collision_as_completely; // byte 4: use max(complexity, collision) as completely when no completely input exists
+    int completely_input_valid;      // byte 8: binding 2 has one r8 value per voxel
     int write_packed_buffers;        // byte 12: write bindings 3/4, disabled for stats-only dispatch
 };
 
-uint pack_rgba8(vec4 color) {
-    uvec4 bytes = uvec4(clamp(round(color * 255.0), vec4(0.0), vec4(255.0)));
-    return (bytes.r << 24u) | (bytes.g << 16u) | (bytes.b << 8u) | bytes.a;
+vec4 unpack_rgba8(uint packed) {
+    return vec4(
+        float((packed >> 24u) & 0xFFu) / 255.0,
+        float((packed >> 16u) & 0xFFu) / 255.0,
+        float((packed >>  8u) & 0xFFu) / 255.0,
+        float((packed >>  0u) & 0xFFu) / 255.0
+    );
+}
+
+float unpack_r8(uint packed_word, uint idx) {
+    uint shift = (idx & 3u) * 8u;
+    return float((packed_word >> shift) & 0xFFu) / 255.0;
+}
+
+float load_collision_r8(uint idx) {
+    return unpack_r8(target_collision_r8_words[idx >> 2u], idx);
+}
+
+float load_completely_input_r8(uint idx) {
+    return unpack_r8(target_completely_input_r8_words[idx >> 2u], idx);
+}
+
+uint pack_r8(float value) {
+    return uint(clamp(round(value * 255.0), 0.0, 255.0));
+}
+
+void store_completely_r8(uint idx, float value) {
+    uint word_index = idx >> 2u;
+    uint shift = (idx & 3u) * 8u;
+    atomicOr(target_completely_out_r8_words[word_index], pack_r8(value) << shift);
 }
 
 uint quantize_unit(float value) {
@@ -74,22 +96,21 @@ void main() {
         return;
     }
 
-    vec4 visual = target_visual[idx];
-    vec3 color = clamp(visual.rgb, vec3(0.0), vec3(1.0));
+    uint visual_word = target_visual_rgba8[idx];
+    vec4 visual = unpack_rgba8(visual_word);
     float complexity = clamp(visual.a, 0.0, 1.0);
-    float collision = clamp(target_collision[idx], 0.0, 1.0);
+    float collision = clamp(load_collision_r8(idx), 0.0, 1.0);
 
     float completely = complexity;
     if (completely_input_valid != 0) {
-        completely = clamp(target_occupancy_input[idx], 0.0, 1.0);
+        completely = clamp(load_completely_input_r8(idx), 0.0, 1.0);
     } else if (use_collision_as_completely != 0) {
         completely = max(complexity, collision);
     }
 
     if (write_packed_buffers != 0) {
-        target_occupancy_out[idx] = completely;
-        target_color_rgba8_out[idx] = pack_rgba8(vec4(color, complexity));
-        target_color_rgba32f_out[idx] = vec4(color, complexity);
+        store_completely_r8(idx, completely);
+        target_color_rgba8_out[idx] = visual_word;
     }
     atomicMax(target_stats_out[TARGET_STATS_MAX_OCCUPANCY], quantize_unit(completely));
     atomicMax(target_stats_out[TARGET_STATS_MAX_COLLISION], quantize_unit(collision));

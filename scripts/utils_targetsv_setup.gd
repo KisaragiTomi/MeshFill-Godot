@@ -1,9 +1,9 @@
 @tool
-class_name CommonTargetSVSetup
+class_name UtilsTargetSVSetup
 extends Node3D
 
 ## Preloads TargetSV data from res://assets/target_sv/ at scene init.
-## Lives in common_demo_setup.tscn so all demos get TargetSV without
+## Lives in utils_demo_setup.tscn so all demos get TargetSV without
 ## redundant loader calls or per-scene configuration.
 
 const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
@@ -60,7 +60,7 @@ func _ensure_loaded() -> void:
 	_visual_bytes = TargetSVLoaderScript.visual_bytes()
 	_collision_bytes = TargetSVLoaderScript.collision_bytes()
 	if _metadata.is_empty():
-		push_warning("[CommonTargetSVSetup] TargetSV metadata not found")
+		push_warning("[UtilsTargetSVSetup] TargetSV metadata not found")
 		return
 	_texture_size = int(_metadata.get("texture_size", 256))
 	_slice_count = int(_metadata.get("slice_count", 16))
@@ -84,14 +84,14 @@ func rebuild_display() -> void:
 	if not _ready_ok or not display_visible:
 		return
 	if not _prepare_display_fields():
-		push_warning("[CommonTargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
+		push_warning("[UtilsTargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
 		return
 
 	var node := _build_gpu_display() if prefer_gpu_display else null
 	if node == null:
 		node = _build_cpu_display()
 	if node == null:
-		push_warning("[CommonTargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
+		push_warning("[UtilsTargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
 		return
 	node.visible = display_visible
 	node.add_to_group(GENERATED_GROUP)
@@ -109,31 +109,32 @@ func _prepare_display_fields() -> bool:
 	if _voxel_count <= 0:
 		_last_display_reason = "empty_voxel_count"
 		return false
-	var expected_visual_bytes := _voxel_count * 16
-	var expected_collision_bytes := _voxel_count * 4
-	var visual_valid := _visual_bytes.size() >= expected_visual_bytes
-	var collision_valid := _collision_bytes.size() >= expected_collision_bytes
-	if not visual_valid and not collision_valid:
-		_last_display_reason = "target_buffer_size_mismatch"
+	var decoded := TargetSVLoaderScript.decode()
+	if not bool(decoded.get("valid", false)):
+		_last_display_reason = str(decoded.get("reason", "target_decode_failed"))
+		return false
+
+	var target_color: PackedColorArray = decoded.get("target_color", PackedColorArray())
+	var target_collision: PackedFloat32Array = decoded.get("target_collision", PackedFloat32Array())
+	var target_completely: PackedFloat32Array = decoded.get("target_completely", PackedFloat32Array())
+	if target_color.size() < _voxel_count or target_completely.size() < _voxel_count:
+		_last_display_reason = "target_decode_size_mismatch"
 		return false
 
 	_color_rgba = PackedFloat32Array()
-	if visual_valid:
-		_color_rgba = _visual_bytes.slice(0, expected_visual_bytes).to_float32_array()
-	else:
-		_color_rgba.resize(_voxel_count * 4)
+	_color_rgba.resize(_voxel_count * 4)
+	for i in range(_voxel_count):
+		var c := target_color[i] if i < target_color.size() else Color(0.0, 0.0, 0.0, 0.0)
+		var color_base := i * 4
+		_color_rgba[color_base + 0] = clampf(c.r, 0.0, 1.0)
+		_color_rgba[color_base + 1] = clampf(c.g, 0.0, 1.0)
+		_color_rgba[color_base + 2] = clampf(c.b, 0.0, 1.0)
+		_color_rgba[color_base + 3] = clampf(c.a, 0.0, 1.0)
 
 	_collision = PackedFloat32Array()
-	if collision_valid:
-		_collision = _collision_bytes.slice(0, expected_collision_bytes).to_float32_array()
-	else:
-		_collision.resize(_voxel_count)
-
-	if _color_rgba.size() < _voxel_count * 4:
-		_last_display_reason = "target_color_size_mismatch"
-		return false
-	if _collision.size() < _voxel_count:
-		_collision.resize(_voxel_count)
+	_collision.resize(_voxel_count)
+	for i in range(_voxel_count):
+		_collision[i] = clampf(target_collision[i], 0.0, 1.0) if i < target_collision.size() else 0.0
 
 	_occupancy = PackedFloat32Array()
 	_occupancy.resize(_voxel_count)
@@ -142,12 +143,9 @@ func _prepare_display_fields() -> bool:
 		var color_base := i * 4
 		var complexity := clampf(_color_rgba[color_base + 3], 0.0, 1.0)
 		var collision := clampf(_collision[i], 0.0, 1.0)
-		_color_rgba[color_base + 0] = clampf(_color_rgba[color_base + 0], 0.0, 1.0)
-		_color_rgba[color_base + 1] = clampf(_color_rgba[color_base + 1], 0.0, 1.0)
-		_color_rgba[color_base + 2] = clampf(_color_rgba[color_base + 2], 0.0, 1.0)
 		_color_rgba[color_base + 3] = complexity
 		_collision[i] = collision
-		_occupancy[i] = maxf(complexity, collision)
+		_occupancy[i] = clampf(target_completely[i], 0.0, 1.0) if i < target_completely.size() else maxf(complexity, collision)
 		if _occupancy[i] > occupancy_threshold:
 			_active_voxel_count += 1
 

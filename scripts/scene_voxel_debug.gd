@@ -15,7 +15,6 @@ const COMMITTED_KEY_COORD_STRIDE_BYTES := 16
 ## 镜像 SceneVoxelCommitter 的 tile GPU buffer 名称（若 committer 改名，readback 测试会暴露）。
 const TILE_RECORD_BUFFER := "scene_voxel_tile_records"
 const TILE_SUMMARY_BUFFER := "scene_voxel_tile_summaries"
-const TILE_DIRTY_INDEX_BUFFER := "scene_voxel_tile_dirty_indices"
 const TILE_OBJECT_REF_BUFFER := "scene_voxel_tile_object_refs"
 const TILE_COMPLEXITY_FIELD_BUFFER := "scene_voxel_tile_complexity_field"
 const TILE_COLLISION_FIELD_BUFFER := "scene_voxel_tile_collision_field"
@@ -281,7 +280,6 @@ static func readback_tile_snapshot(committer) -> Dictionary:
 		summary["readback_snapshot"] = false
 		summary["tile_record_bytes"] = PackedByteArray()
 		summary["summary_record_bytes"] = PackedByteArray()
-		summary["dirty_index_bytes"] = PackedByteArray()
 		summary["object_ref_bytes"] = PackedByteArray()
 		summary["complexity_field_bytes"] = PackedByteArray()
 		summary["collision_field_bytes"] = PackedByteArray()
@@ -290,21 +288,20 @@ static func readback_tile_snapshot(committer) -> Dictionary:
 		return summary
 	var tile_record_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_RECORD_BUFFER)
 	var summary_record_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_SUMMARY_BUFFER)
-	var dirty_index_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_DIRTY_INDEX_BUFFER)
 	var object_ref_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_OBJECT_REF_BUFFER)
 	var complexity_field_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_COMPLEXITY_FIELD_BUFFER)
 	var collision_field_bytes = committer._tile_store._read_scene_voxel_tile_buffer_bytes(TILE_COLLISION_FIELD_BUFFER)
 	summary["readback_snapshot"] = true
 	summary["tile_record_bytes"] = tile_record_bytes
 	summary["summary_record_bytes"] = summary_record_bytes
-	summary["dirty_index_bytes"] = dirty_index_bytes
 	summary["object_ref_bytes"] = object_ref_bytes
 	summary["complexity_field_bytes"] = complexity_field_bytes
 	summary["collision_field_bytes"] = collision_field_bytes
-	summary["complexity_field_values"] = committer._tile_store._decode_scene_voxel_tile_float_field_bytes(complexity_field_bytes)
-	summary["collision_field_values"] = committer._tile_store._decode_scene_voxel_tile_float_field_bytes(collision_field_bytes)
+	var resident_voxel_count := int(summary.get("resident_field_voxel_count", summary.get("complexity_field_voxel_count", 0)))
+	summary["complexity_field_values"] = committer._tile_store._decode_scene_voxel_tile_complexity_field_bytes(complexity_field_bytes, resident_voxel_count)
+	summary["collision_field_values"] = committer._tile_store._decode_scene_voxel_tile_collision_field_bytes(collision_field_bytes, resident_voxel_count)
 	summary["tile_ids"] = committer._tile_store._scene_voxel_tile_gpu_tile_ids.duplicate()
-	summary["dirty_tile_ids"] = committer._tile_store._decode_scene_voxel_tile_dirty_ids(dirty_index_bytes)
+	summary["dirty_tile_ids"] = committer._tile_store._scene_voxel_tile_gpu_dirty_tile_ids.duplicate()
 	summary["tile_records"] = committer._tile_store._decode_scene_voxel_tile_records(tile_record_bytes, committer._tile_store._scene_voxel_tile_gpu_tile_ids)
 	summary["summary_records"] = committer._tile_store._decode_scene_voxel_tile_summaries(summary_record_bytes, committer._tile_store._scene_voxel_tile_gpu_tile_ids)
 	return summary

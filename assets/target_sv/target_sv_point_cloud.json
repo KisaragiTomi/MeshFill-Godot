@@ -14,8 +14,8 @@
   "max_height": 120.0,
   "capture_size": 1020.0,
   "vertical_span": 32.0,
-  "visual_format": "rgba32f",
-  "collision_format": "r32f",
+  "visual_format": "rgba8_unorm",
+  "collision_format": "r8_unorm",
   "attribute_map": {
     "position": "P",
     "color": "Cd",
@@ -39,7 +39,7 @@
   "complexity_max": 1.0,
   "collision_max": 1.0,
   "fileversion": "20.5.370",
-  "visual_path": "res://assets/target_sv/target_sv_point_cloud_visual.rgba32f",
-  "collision_path": "res://assets/target_sv/target_sv_point_cloud_collision.r32f",
+  "visual_path": "res://assets/target_sv/target_sv_point_cloud_visual.rgba8",
+  "collision_path": "res://assets/target_sv/target_sv_point_cloud_collision.r8",
   "preview_path": "res://assets/target_sv/target_sv_point_cloud_preview.png"
 }

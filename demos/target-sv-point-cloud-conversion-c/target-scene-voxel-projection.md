@@ -146,8 +146,8 @@ target_anchor_projection_rgba8[anchor]
 Houdini / DCC
   -> export VDB grids
   -> offline converter
-  -> target_scene_voxel_visual.rgba32f
-  -> target_scene_voxel_collision.r32f
+  -> target_scene_voxel_visual.rgba8
+  -> target_scene_voxel_collision.r8
   -> target_scene_voxel.json
   -> Godot runtime loads TargetSV buffers
 ```

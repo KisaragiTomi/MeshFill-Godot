@@ -606,6 +606,3 @@ static func make_voxel_write_specs(
 		cfg["id"] = "%s_%d" % [str(config.get("id_prefix", "voxel_placement")), i]
 		records.append(make_voxel_write_spec(world_results[i], node, cfg))
 	return records
-
-
-## ===== VoxelFootprintBaker 静态委托桩(抽出后保持外部/内部调用兼容) =====

@@ -12,7 +12,7 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer BrushComplexity {
 };
 
 layout(set = 0, binding = 2, std430) restrict buffer OutputComplexity {
-    vec4 out_complexity[];
+    uint out_complexity_rgba8[];
 };
 
 layout(set = 0, binding = 3, std430) restrict readonly buffer CommittedSceneVoxelPayloads {
@@ -55,6 +55,20 @@ const int PROJECTION_SOURCE_STREAMS = 0;
 const int PROJECTION_COMMITTED_PAYLOADS = 1;
 const int COMMITTED_KEY_COORD_STRIDE_BYTES = 16;
 
+uint quantize_unorm8(float value) {
+    return uint(round(clamp(value, 0.0, 1.0) * 255.0));
+}
+
+uint pack_rgba8(vec4 value) {
+    uvec4 q = uvec4(
+        quantize_unorm8(value.r),
+        quantize_unorm8(value.g),
+        quantize_unorm8(value.b),
+        quantize_unorm8(value.a)
+    );
+    return (q.r << 24u) | (q.g << 16u) | (q.b << 8u) | q.a;
+}
+
 void scatter_committed_payload_slot(uint idx) {
     if (committed_payload_stride < 8 || committed_key_coord_stride_bytes != COMMITTED_KEY_COORD_STRIDE_BYTES) {
         return;
@@ -86,7 +100,7 @@ void scatter_committed_payload_slot(uint idx) {
         clamp(committed_payloads[payload_base + OUT_COLOR_B], 0.0, 1.0),
         clamp(committed_payloads[payload_base + OUT_COMPLEXITY], 0.0, 1.0)
     );
-    out_complexity[out_idx] = out_color;
+    out_complexity_rgba8[out_idx] = pack_rgba8(out_color);
 }
 
 void main() {
@@ -163,5 +177,5 @@ void main() {
     }
 
     uint out_idx = uint(voxel_x + xz_res * (voxel_z + xz_res * slice_index));
-    out_complexity[out_idx] = vec4(out_rgb, out_value);
+    out_complexity_rgba8[out_idx] = pack_rgba8(vec4(out_rgb, out_value));
 }

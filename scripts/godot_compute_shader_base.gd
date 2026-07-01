@@ -51,17 +51,28 @@ func _notification(what: int) -> void:
 			dispose()
 
 
+## 共有的 RenderingDevice 获取逻辑：优先创建本地 device（owns=true），否则回退到
+## 全局 device（owns=false）；两者都失败时 rd 为 null。以静态形式暴露，供本基类的
+## ensure_device() 与不继承本基类的 GPU 持有者（如 AutoVoxelRuntimeProfileContainer）
+## 共用，避免各处重复实现 create_local + global-fallback 的获取代码。
+static func acquire_rendering_device(prefer_local_device: bool = true, allow_global_fallback: bool = true) -> Dictionary:
+	var rd: RenderingDevice = null
+	if prefer_local_device:
+		rd = RenderingServer.create_local_rendering_device()
+	if rd != null:
+		return {"rd": rd, "owns": true}
+	if allow_global_fallback:
+		rd = RenderingServer.get_rendering_device()
+	return {"rd": rd, "owns": false}
+
+
 func ensure_device(prefer_local_device: bool = true, allow_global_fallback: bool = true) -> bool:
 	if _rd != null:
 		return true
 
-	if prefer_local_device:
-		_rd = RenderingServer.create_local_rendering_device()
-		_owns_rendering_device = _rd != null
-
-	if _rd == null and allow_global_fallback:
-		_rd = RenderingServer.get_rendering_device()
-		_owns_rendering_device = false
+	var acquired := acquire_rendering_device(prefer_local_device, allow_global_fallback)
+	_rd = acquired["rd"]
+	_owns_rendering_device = acquired["owns"]
 
 	if _rd == null:
 		if DisplayServer.get_name() == "headless":
@@ -96,6 +107,17 @@ func get_rendering_device() -> RenderingDevice:
 
 func owns_rendering_device() -> bool:
 	return _owns_rendering_device
+
+
+## 从任意协作对象读取其 RenderingDevice：对象非 null 且暴露 get_rendering_device() 时返回该设备，
+## 否则返回 null。共有静态形式，供各处以鸭子类型方式借用 committer/runtime/profile 容器的设备，
+## 收敛重复的 has_method("get_rendering_device") + call(...) 样板。
+## 注意：返回 null 无法区分“对象无此方法”与“方法返回 null”；需要区分二者的调用点
+## （如 GPUAutoObjectRuntime 里带专属 reason 的契约校验）应保留各自独立的 has_method() 判断。
+static func rendering_device_of(object: Object) -> RenderingDevice:
+	if object != null and object.has_method("get_rendering_device"):
+		return object.call("get_rendering_device")
+	return null
 
 
 func dispose(sync_before_free: bool = false) -> void:

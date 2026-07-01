@@ -179,7 +179,7 @@ SV 与 TargetSV 的 per-voxel 强度字段统一为 8bit unorm，归一化到 `[
 - texture（如 SV resident field 用 `R8_UNORM` / `R8G8B8A8_UNORM` image）：GPU 采样自动把 unorm 映射回 `[0, 1]` 的 `float`，shader 端无需手动解包。
 - storage buffer（如 TargetSV 的 collision / completely raw byte 缓存、SV source record packing）：8bit 值以打包字节存放，shader 端必须显式 `float(byte) / 255.0` 解包，CPU 端必须按 `u8` 步长打包/读取，不能继续用 `PackedFloat32Array` 的 fp32 步长。
 
-> 实现注意：当前代码里 SV `complexity` / `collision` 走 `Image.FORMAT_RF`（r32f 纹理）+ `PackedFloat32Array`，TargetSV collision / occupancy 走 r32f raw storage buffer。降到 8bit 不是单纯换 `DATA_FORMAT`，storage buffer 一侧还要改字节打包步长与 shader 解包逻辑。
+> 实现注意：当前 canonical SV / TargetSV 体素源数据已经统一到 8bit：color / complexity 使用 `RGBA8`，collision / completely 使用 `R8`，storage buffer 路径按字节打包并在 shader 中显式解包。`rgba32f` / `r32f` 只保留在旧资产兼容、调试视图或地形中间图像路径。
 
 | 字段 | 含义 | 格式 | 取值 |
 | --- | --- | --- | --- |

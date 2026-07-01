@@ -14,9 +14,9 @@ const VoxelFieldDisplayGPU := preload("res://scripts/voxel_field_display_gpu.gd"
 const AutoObject := preload("res://scripts/auto_object.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
 const VoxelDisplay := preload("res://scripts/voxel_display.gd")
-const CommonBufferUtils := preload("res://scripts/common_buffer_utils.gd")
-const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
-const CommonSceneVoxelFixture := preload("res://scripts/common_scene_voxel_fixture.gd")
+const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+const UtilsDemoUI := preload("res://scripts/utils_demo_ui.gd")
+const UtilsSceneVoxelFixture := preload("res://scripts/utils_scene_voxel_fixture.gd")
 
 const TILE_SIZE := 8
 
@@ -86,7 +86,7 @@ func _deferred_init() -> void:
 
 
 func _frame_camera() -> void:
-	var cam := CommonDemoUI.find_camera(self, "DemoSetup/FlyCamera", "", false, false)
+	var cam := UtilsDemoUI.find_camera(self, "DemoSetup/FlyCamera", "", false, false)
 	if cam == null:
 		return
 	var cx := _grid_origin.x + float(_grid.x) * _voxel_size.x * 0.5
@@ -150,9 +150,27 @@ func _build_fields_from_terrain() -> void:
 		push_error("[SVAnchorDemo] TargetSVLoader visual_bytes empty")
 		return
 
-	_target_field = CommonBufferUtils.decode_float_buffer(visual_raw, voxel_count * 4)
+	var decoded := TargetSceneVoxelGeneratorScript.decode_target_read_buffers_gpu(
+		visual_raw, collision_raw, texture_size, slice_count)
+	if not bool(decoded.get("valid", false)):
+		decoded = TargetSceneVoxelGeneratorScript.decode_target_read_buffers(
+			visual_raw, collision_raw, texture_size, slice_count)
+	if not bool(decoded.get("valid", false)):
+		push_error("[SVAnchorDemo] TargetSV decode failed: %s" % str(decoded))
+		return
 
-	var raw_collision := CommonBufferUtils.decode_float_buffer(collision_raw, voxel_count)
+	var occupancy: PackedFloat32Array = decoded.get("target_completely", PackedFloat32Array())
+	var target_color: PackedColorArray = decoded.get("target_color", PackedColorArray())
+	var collision_decoded: PackedFloat32Array = decoded.get("target_collision", PackedFloat32Array())
+	_target_field = PackedFloat32Array()
+	_target_field.resize(voxel_count * 4)
+	for i in range(voxel_count):
+		var c := target_color[i] if i < target_color.size() else Color(0.0, 0.0, 0.0, 0.0)
+		_target_field[i * 4 + 0] = c.r
+		_target_field[i * 4 + 1] = c.g
+		_target_field[i * 4 + 2] = c.b
+		_target_field[i * 4 + 3] = occupancy[i] if i < occupancy.size() else c.a
+
 	_complexity_field = PackedFloat32Array()
 	_complexity_field.resize(voxel_count)
 	_collision_field = PackedFloat32Array()
@@ -161,21 +179,13 @@ func _build_fields_from_terrain() -> void:
 		for x in range(texture_size):
 			var idx := VoxelGeneral.voxel_index(Vector3i(x, 0, z), _grid)
 			_complexity_field[idx] = 1.0
-			_collision_field[idx] = raw_collision[idx] if idx < raw_collision.size() else 1.0
+			_collision_field[idx] = collision_decoded[idx] if idx < collision_decoded.size() else 1.0
 
 	var terrain := TerrainInitializerScript.find_edit_time_terrain(self) as MeshInstance3D
 	var max_h := float(meta.get("max_height", 120.0))
 	_terrain_height = TerrainInitializerScript.terrain_height_field_from_mesh(
 		terrain, texture_size, max_h)
 
-	var decoded := TargetSceneVoxelGeneratorScript.decode_target_read_buffers_gpu(
-		visual_raw, collision_raw, texture_size, slice_count)
-	if not bool(decoded.get("valid", false)):
-		decoded = TargetSceneVoxelGeneratorScript.decode_target_read_buffers(
-			visual_raw, collision_raw, texture_size, slice_count)
-	var occupancy: PackedFloat32Array = decoded.get("target_completely", PackedFloat32Array())
-	var target_color: PackedColorArray = decoded.get("target_color", PackedColorArray())
-	var collision_decoded: PackedFloat32Array = decoded.get("target_collision", PackedFloat32Array())
 	var color_rgba := PackedFloat32Array()
 	color_rgba.resize(voxel_count * 4)
 	for i in range(mini(voxel_count, target_color.size())):
@@ -187,7 +197,7 @@ func _build_fields_from_terrain() -> void:
 		"capture_size": capture_size, "vertical_span": vertical_span,
 		"height_span": max_h, "voxel_count": voxel_count,
 		"occupancy": occupancy,
-		"collision": collision_decoded if collision_decoded.size() == voxel_count else raw_collision,
+		"collision": collision_decoded,
 		"color_rgba": color_rgba,
 		"terrain_height": _terrain_height.duplicate(),
 	}
@@ -268,7 +278,7 @@ func _run_collection() -> void:
 	if not _sync_assets_with_spa():
 		return
 
-	var sv := CommonSceneVoxelFixture.make_sv(
+	var sv := UtilsSceneVoxelFixture.make_sv(
 		_grid,
 		_voxel_size,
 		_grid_origin,
@@ -455,7 +465,7 @@ func _iterate_grid_sampled(callback: Callable) -> void:
 # --- HUD & input -----------------------------------------------------------
 
 func _setup_hud() -> void:
-	_hud_label = CommonDemoUI.setup_hud_label(self)
+	_hud_label = UtilsDemoUI.setup_hud_label(self)
 
 
 func _update_hud() -> void:

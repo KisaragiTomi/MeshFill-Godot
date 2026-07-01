@@ -12,15 +12,15 @@ const OUT_COLLISION_STRENGTH := 8
 const OUT_COLLISION_LAYER_COUNT := 9
 const OUT_HAS_COLLISION := 10
 
-const CommonBufferUtils := preload("res://scripts/common_buffer_utils.gd")
+const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 
 static func decode_float_buffer(bytes: PackedByteArray, expected_size: int) -> PackedFloat32Array:
-	return CommonBufferUtils.decode_float_buffer(bytes, expected_size)
+	return UtilsBufferUtils.decode_float_buffer(bytes, expected_size)
 
 static func decode_u32_buffer(bytes: PackedByteArray, expected_size: int) -> PackedInt32Array:
-	return CommonBufferUtils.decode_u32_buffer(bytes, expected_size)
+	return UtilsBufferUtils.decode_u32_buffer(bytes, expected_size)
 
 static func pack_source_values(source_stream: Dictionary, source_keys: Array, source_float_stride: int) -> PackedFloat32Array:
 	var values := PackedFloat32Array()

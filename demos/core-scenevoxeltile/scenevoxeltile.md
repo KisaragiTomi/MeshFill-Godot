@@ -88,7 +88,7 @@ Grid initialized / resized
 | 侧 | 当前职责 | 不拥有 |
 | --- | --- | --- |
 | CPU / GDScript | `_scene_voxel_tiles` command staging、named dirty API、legacy dirty sync、debug label map、upload preparation 和 readback display；只作为 SV owner control/debug plane。 | CPU runtime fallback、GPU object SoA buffers、placement shader 的 temporary output。 |
-| GPU storage buffers | `scene_voxel_tile_records`、`scene_voxel_tile_summaries`、`scene_voxel_tile_dirty_indices`、`scene_voxel_tile_object_refs`、`scene_voxel_tile_complexity_field`、`scene_voxel_tile_collision_field`；有 RD 时作为 tile metadata 和 resident scene/collision runtime read source。 | AutoObject descriptor defaults、完整对象状态、source authoring history。 |
+| GPU storage buffers | `scene_voxel_tile_records`、`scene_voxel_tile_summaries`、`scene_voxel_tile_object_refs`、`scene_voxel_tile_complexity_field`、`scene_voxel_tile_collision_field`；有 RD 时作为 tile metadata 和 resident scene/collision runtime read source。 | AutoObject descriptor defaults、完整对象状态、source authoring history。 |
 | GPU compute | probe prefilter、candidate voxel-region scoring、dirty-tile-limited resident upload；dirty-tile-limited source finalize 由 `SceneVoxelCommitter.blend_scene_voxels()` 的 dirty `SceneVoxelTile` scope 驱动，不是 GPU source-of-truth。 | `SceneVoxelTile` 的 runtime 替代路径、committed `SceneVoxel` payload、AutoObject descriptor defaults。 |
 | 兼容 storage | `_sv_dirty_tiles` / `_sv_dirty_rects`、`SV_RESIDENT_TILE_SIZE = 8`。 | 新 semantic concept；它们只是 resident buffer / shader path 的 legacy storage。 |
 

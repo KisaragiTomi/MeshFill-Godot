@@ -1,10 +1,17 @@
 extends RefCounted
 
+const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+
 const RECORD_STRIDE_BYTES := 128
 const SUMMARY_STRIDE_BYTES := 32
-const INDEX_STRIDE_BYTES := 4
 const REF_STRIDE_BYTES := 4
-const FIELD_STRIDE_BYTES := 16
+const COMPLEXITY_FIELD_FORMAT_RGBA8 := "rgba8_unorm"
+const COLLISION_FIELD_FORMAT_R8 := "r8_unorm"
+const COMPLEXITY_FIELD_STRIDE_BYTES := 4
+const COLLISION_FIELD_STRIDE_BYTES := 1
+const LEGACY_FLOAT4_FIELD_STRIDE_BYTES := 16
+const LEGACY_FLOAT_FIELD_STRIDE_BYTES := 4
+const FIELD_STRIDE_BYTES := COMPLEXITY_FIELD_STRIDE_BYTES
 
 const FLAG_SCENE := 1
 const FLAG_COLLISION := 2
@@ -235,8 +242,127 @@ static func pack_float_field_bytes(values: PackedFloat32Array) -> PackedByteArra
 
 static func decode_float_field_bytes(bytes: PackedByteArray) -> PackedFloat32Array:
 	var available_bytes := bytes.size()
-	available_bytes -= available_bytes % FIELD_STRIDE_BYTES
+	available_bytes -= available_bytes % LEGACY_FLOAT_FIELD_STRIDE_BYTES
 	return bytes.slice(0, available_bytes).to_float32_array()
+
+static func quantize_unorm8(value: float) -> int:
+	return clampi(int(round(clampf(value, 0.0, 1.0) * 255.0)), 0, 255)
+
+static func pack_rgba8_word(color: Color) -> int:
+	var r := quantize_unorm8(color.r)
+	var g := quantize_unorm8(color.g)
+	var b := quantize_unorm8(color.b)
+	var a := quantize_unorm8(color.a)
+	return ((r & 0xFF) << 24) | ((g & 0xFF) << 16) | ((b & 0xFF) << 8) | (a & 0xFF)
+
+static func rgba8_word_to_color(word: int) -> Color:
+	var rgba8 := word & 0xFFFFFFFF
+	return Color(
+		float((rgba8 >> 24) & 0xFF) / 255.0,
+		float((rgba8 >> 16) & 0xFF) / 255.0,
+		float((rgba8 >> 8) & 0xFF) / 255.0,
+		float(rgba8 & 0xFF) / 255.0
+	)
+
+static func rgba8_byte_count(voxel_count: int) -> int:
+	return maxi(voxel_count, 0) * COMPLEXITY_FIELD_STRIDE_BYTES
+
+static func r8_byte_count(voxel_count: int) -> int:
+	return maxi(voxel_count, 0) * COLLISION_FIELD_STRIDE_BYTES
+
+static func r8_word_byte_count(voxel_count: int) -> int:
+	return maxi(int(ceili(float(maxi(voxel_count, 0)) / 4.0)) * 4, 4)
+
+static func infer_scalar_voxel_count(values: PackedFloat32Array, expected_voxel_count: int = -1) -> int:
+	if expected_voxel_count > 0:
+		return expected_voxel_count
+	return values.size()
+
+static func infer_complexity_voxel_count(values: PackedFloat32Array, expected_voxel_count: int = -1) -> int:
+	if expected_voxel_count > 0:
+		return expected_voxel_count
+	if values.size() > 0 and values.size() % 4 == 0:
+		return int(values.size() / 4)
+	return values.size()
+
+static func pack_complexity_field_rgba8_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
+	var safe_count := infer_complexity_voxel_count(values, voxel_count)
+	var out := PackedByteArray()
+	out.resize(rgba8_byte_count(safe_count))
+	var is_vec4 := values.size() >= safe_count * 4
+	for i in range(safe_count):
+		var color := Color(0.0, 0.0, 0.0, 0.0)
+		if is_vec4:
+			var base := i * 4
+			color = Color(values[base + 0], values[base + 1], values[base + 2], values[base + 3])
+		elif i < values.size():
+			var value := values[i]
+			color = Color(1.0, 1.0, 1.0, value)
+		out.encode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES, pack_rgba8_word(color))
+	return out
+
+static func decode_complexity_field_rgba8_vec4_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
+	var safe_count := maxi(voxel_count, 0)
+	var out := PackedFloat32Array()
+	out.resize(safe_count * 4)
+	var available := mini(safe_count, int(bytes.size() / COMPLEXITY_FIELD_STRIDE_BYTES))
+	for i in range(available):
+		var color := rgba8_word_to_color(bytes.decode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES))
+		var base := i * 4
+		out[base + 0] = color.r
+		out[base + 1] = color.g
+		out[base + 2] = color.b
+		out[base + 3] = color.a
+	return out
+
+static func decode_complexity_field_rgba8_alpha_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
+	var safe_count := maxi(voxel_count, 0)
+	var out := PackedFloat32Array()
+	out.resize(safe_count)
+	var available := mini(safe_count, int(bytes.size() / COMPLEXITY_FIELD_STRIDE_BYTES))
+	for i in range(available):
+		out[i] = rgba8_word_to_color(bytes.decode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES)).a
+	return out
+
+static func pack_collision_field_r8_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
+	var safe_count := infer_scalar_voxel_count(values, voxel_count)
+	var out := PackedByteArray()
+	out.resize(r8_byte_count(safe_count))
+	for i in range(mini(safe_count, values.size())):
+		out[i] = quantize_unorm8(values[i])
+	return out
+
+static func pack_collision_field_r8_word_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
+	var safe_count := infer_scalar_voxel_count(values, voxel_count)
+	return r8_word_bytes_from_r8_bytes(pack_collision_field_r8_bytes(values, safe_count), safe_count)
+
+static func r8_word_bytes_from_r8_bytes(r8_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(r8_word_byte_count(voxel_count))
+	var byte_count := mini(r8_bytes.size(), r8_byte_count(voxel_count))
+	for i in range(byte_count):
+		out[i] = r8_bytes[i]
+	return out
+
+static func r8_bytes_from_word_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(r8_byte_count(voxel_count))
+	var byte_count := mini(out.size(), word_bytes.size())
+	for i in range(byte_count):
+		out[i] = word_bytes[i]
+	return out
+
+static func decode_collision_field_r8_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
+	var safe_count := maxi(voxel_count, 0)
+	var out := PackedFloat32Array()
+	out.resize(safe_count)
+	var available := mini(safe_count, bytes.size())
+	for i in range(available):
+		out[i] = float(bytes[i] & 0xFF) / 255.0
+	return out
+
+static func decode_collision_field_r8_word_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
+	return decode_collision_field_r8_bytes(r8_bytes_from_word_bytes(word_bytes, voxel_count), voxel_count)
 
 static func sorted_tile_ids(scene_voxel_tiles: Dictionary) -> Array[String]:
 	var ids: Array[String] = []
@@ -260,22 +386,10 @@ static func pack_record_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictio
 		var base_rect: Rect2i = tile.get("base_rect", Rect2i())
 		var dirty_flags: Dictionary = tile.get("dirty_flags", {})
 
-		bytes.encode_s32(base + 0, tile_coord.x)
-		bytes.encode_s32(base + 4, tile_coord.y)
-		bytes.encode_s32(base + 8, tile_coord.z)
-		bytes.encode_s32(base + 12, flags_to_bits(dirty_flags))
-		bytes.encode_s32(base + 16, tile_size.x)
-		bytes.encode_s32(base + 20, tile_size.y)
-		bytes.encode_s32(base + 24, tile_size.z)
-		bytes.encode_s32(base + 28, int(tile.get("epoch", 0)))
-		bytes.encode_s32(base + 32, voxel_min.x)
-		bytes.encode_s32(base + 36, voxel_min.y)
-		bytes.encode_s32(base + 40, voxel_min.z)
-		bytes.encode_s32(base + 44, int(tile.get("last_commit_tick", 0)))
-		bytes.encode_s32(base + 48, voxel_max.x)
-		bytes.encode_s32(base + 52, voxel_max.y)
-		bytes.encode_s32(base + 56, voxel_max.z)
-		bytes.encode_s32(base + 60, int(tile.get("write_tick", 0)))
+		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 0, tile_coord, flags_to_bits(dirty_flags))
+		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 16, tile_size, int(tile.get("epoch", 0)))
+		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 32, voxel_min, int(tile.get("last_commit_tick", 0)))
+		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 48, voxel_max, int(tile.get("write_tick", 0)))
 		bytes.encode_s32(base + 64, base_rect.position.x)
 		bytes.encode_s32(base + 68, base_rect.position.y)
 		bytes.encode_s32(base + 72, base_rect.size.x)
@@ -316,20 +430,13 @@ static func pack_summary_bytes(tile_ids: Array[String], scene_voxel_tiles: Dicti
 
 	return bytes
 
-static func pack_dirty_index_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictionary) -> Dictionary:
-	var dirty_indices := PackedInt32Array()
-	var dirty_tile_ids: Array[String] = []
-
+static func dirty_tile_ids(tile_ids: Array[String], scene_voxel_tiles: Dictionary) -> Array[String]:
+	var result: Array[String] = []
 	for i in range(tile_ids.size()):
 		var tile: Dictionary = scene_voxel_tiles.get(tile_ids[i], {})
 		if bool(tile.get("dirty", false)):
-			dirty_indices.append(i)
-			dirty_tile_ids.append(tile_ids[i])
-
-	return {
-		"bytes": dirty_indices.to_byte_array(),
-		"dirty_tile_ids": dirty_tile_ids,
-	}
+			result.append(tile_ids[i])
+	return result
 
 static func pack_ref_hash_bytes(values: Array[String]) -> PackedByteArray:
 	var bytes := PackedByteArray()
@@ -337,17 +444,6 @@ static func pack_ref_hash_bytes(values: Array[String]) -> PackedByteArray:
 	for i in range(values.size()):
 		bytes.encode_u32(i * REF_STRIDE_BYTES, stable_hash(str(values[i])))
 	return bytes
-
-static func decode_dirty_ids(bytes: PackedByteArray, tile_ids: Array[String]) -> Array[String]:
-	var result: Array[String] = []
-	var available_bytes := mini(bytes.size(), tile_ids.size() * INDEX_STRIDE_BYTES)
-	available_bytes -= available_bytes % INDEX_STRIDE_BYTES
-	var dirty_count := int(available_bytes / INDEX_STRIDE_BYTES)
-	for i in range(dirty_count):
-		var tile_index := bytes.decode_s32(i * INDEX_STRIDE_BYTES)
-		if tile_index >= 0 and tile_index < tile_ids.size():
-			result.append(tile_ids[tile_index])
-	return result
 
 static func decode_records(bytes: PackedByteArray, tile_ids: Array[String]) -> Array[Dictionary]:
 	var records: Array[Dictionary] = []
@@ -359,13 +455,13 @@ static func decode_records(bytes: PackedByteArray, tile_ids: Array[String]) -> A
 		var base := i * RECORD_STRIDE_BYTES
 		records.append({
 			"scene_voxel_tile_id": tile_ids[i],
-			"tile_coord": Vector3i(bytes.decode_s32(base + 0), bytes.decode_s32(base + 4), bytes.decode_s32(base + 8)),
+			"tile_coord": UtilsBufferUtils.decode_vec3i4(bytes, base + 0),
 			"dirty_flags": flags_from_bits(bytes.decode_s32(base + 12)),
-			"tile_size": Vector3i(bytes.decode_s32(base + 16), bytes.decode_s32(base + 20), bytes.decode_s32(base + 24)),
+			"tile_size": UtilsBufferUtils.decode_vec3i4(bytes, base + 16),
 			"epoch": bytes.decode_s32(base + 28),
-			"voxel_min": Vector3i(bytes.decode_s32(base + 32), bytes.decode_s32(base + 36), bytes.decode_s32(base + 40)),
+			"voxel_min": UtilsBufferUtils.decode_vec3i4(bytes, base + 32),
 			"last_commit_tick": bytes.decode_s32(base + 44),
-			"voxel_max": Vector3i(bytes.decode_s32(base + 48), bytes.decode_s32(base + 52), bytes.decode_s32(base + 56)),
+			"voxel_max": UtilsBufferUtils.decode_vec3i4(bytes, base + 48),
 			"write_tick": bytes.decode_s32(base + 60),
 			"base_rect": Rect2i(
 				Vector2i(bytes.decode_s32(base + 64), bytes.decode_s32(base + 68)),

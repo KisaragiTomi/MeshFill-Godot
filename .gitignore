@@ -38,3 +38,6 @@ tools/probe_ports.py
 tools/drive_editor_demo.py
 tools/focus_editor.ps1
 tools/godot-mcp-bridge/
+
+# Claude Code 本地 agent 工作树（isolation:worktree 生成，可再生，不入库）
+.claude/worktrees/

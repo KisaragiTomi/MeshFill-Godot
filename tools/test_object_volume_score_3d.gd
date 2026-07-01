@@ -11,8 +11,9 @@ extends SceneTree
 ## real acceptance requires --rendering-driver vulkan.
 
 const ObjectVolumeScoreGpuScript := preload("res://scripts/object_volume_score_gpu.gd")
-const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
-const CommonVolumeScore3D := preload("res://scripts/common_volume_score_3d.gd")
+const UtilsDemoAssets := preload("res://scripts/utils_demo_assets.gd")
+const UtilsVolumeScore3D := preload("res://scripts/utils_volume_score_3d.gd")
+const AutoVoxelProfileScript := preload("res://scripts/auto_voxel_profile.gd")
 
 const GRID_RES := 64
 const GRID_HEIGHT := 16
@@ -148,36 +149,40 @@ func _test_scene_voxel_scaled_sample_profile() -> bool:
 
 func _make_test_footprint(grid: Vector3i, pivot: Vector3i, coords: Array[Vector3i]) -> Dictionary:
 	var voxel_count := grid.x * grid.y * grid.z
-	var occ := PackedInt32Array()
-	occ.resize(voxel_count)
 	var props := PackedFloat32Array()
 	props.resize(voxel_count * 4)
+	# 采样来源为 descriptor voxel_profile.collision；每个 coord 烘成一条 point collision sample。
+	var collision_samples: Array[Dictionary] = []
 	for coord in coords:
 		var idx := coord.x + grid.x * (coord.z + grid.z * coord.y)
 		if idx < 0 or idx >= voxel_count:
 			continue
-		occ[idx] = 1
 		props[idx * 4] = 1.0
 		props[idx * 4 + 1] = 1.0
 		props[idx * 4 + 2] = 1.0
 		props[idx * 4 + 3] = 1.0
+		collision_samples.append(AutoVoxelProfileScript.make_collision_sample(coord, 1.0, 1.0))
+	var voxel_profile := AutoVoxelProfileScript.new()
+	voxel_profile.color = Color.WHITE
+	voxel_profile.complexity = 1.0
+	voxel_profile.collision = collision_samples
 	return {
 		"grid": grid,
 		"pivot": pivot,
-		"occupancy_bytes": occ.to_byte_array(),
 		"props_bytes": props.to_byte_array(),
 		"color": Color.WHITE,
 		"world_aabb_longest": 1.0,
+		"voxel_profile": voxel_profile,
 	}
 
 
 func _test_full_gpu_pipeline() -> bool:
 	print("[VolumeScore3D] test_full_gpu_pipeline...")
 
-	var scene_fields := CommonVolumeScore3D.build_scene_fields(
+	var scene_fields := UtilsVolumeScore3D.build_scene_fields(
 		GRID_RES,
 		GRID_HEIGHT,
-		CommonVolumeScore3D.procedural_terrain(GRID_RES, GRID_RES)
+		UtilsVolumeScore3D.procedural_terrain(GRID_RES, GRID_RES)
 	)
 	var assets := _load_and_voxelize(scene_fields.get("voxel_size", Vector3.ZERO))
 	if assets.is_empty():
@@ -189,7 +194,7 @@ func _test_full_gpu_pipeline() -> bool:
 		footprints.append(a["footprint"])
 
 	var terrain_height: PackedFloat32Array = scene_fields.get("terrain_height", PackedFloat32Array())
-	var anchors := CommonVolumeScore3D.generate_anchors(scene_fields, terrain_height, ANCHOR_SPACING)
+	var anchors := UtilsVolumeScore3D.generate_anchors(scene_fields, terrain_height, ANCHOR_SPACING)
 	print("[VolumeScore3D] anchors=%d spacing=%d" % [anchors.size(), ANCHOR_SPACING])
 	if anchors.is_empty():
 		push_error("  FAIL: no anchors generated")
@@ -235,7 +240,7 @@ func _test_full_gpu_pipeline() -> bool:
 				if s > max_score:
 					max_score = s
 		total_valid += valid_count
-		var name := CommonDemoAssets.asset_name(r_idx, str(r_idx))
+		var name := UtilsDemoAssets.asset_name(r_idx, str(r_idx))
 		print("  [%d] %-8s variants=%d groups=%d extent=%d valid=%d/%d max_score=%.4f" % [
 			r_idx, name, variant_count, group_count, int(r.get("sample_extent", -1)),
 			valid_count, per_anchor.size(), max_score])
@@ -255,7 +260,7 @@ func _test_full_gpu_pipeline() -> bool:
 
 
 func _load_and_voxelize(scene_voxel_size: Vector3 = Vector3.ZERO) -> Array[Dictionary]:
-	var loaded := CommonVolumeScore3D.voxelize_common_assets(
+	var loaded := UtilsVolumeScore3D.voxelize_utils_assets(
 		VOXEL_GRID_COUNT,
 		true,
 		scene_voxel_size
@@ -268,7 +273,7 @@ func _load_and_voxelize(scene_voxel_size: Vector3 = Vector3.ZERO) -> Array[Dicti
 		var idx := assets.size()
 		print("[VolumeScore3D] asset %d [%s] aabb=%.2fm voxels=%d fp_grid=%s%s" % [
 			idx,
-			str(a.get("name", CommonDemoAssets.asset_name(idx))),
+			str(a.get("name", UtilsDemoAssets.asset_name(idx))),
 			float(a.get("world_longest", 0.0)),
 			int(a.get("voxel_count", 0)),
 			str(a.get("fp_grid", Vector3i.ZERO)),

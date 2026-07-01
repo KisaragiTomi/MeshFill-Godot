@@ -64,7 +64,7 @@ MCP 测试脚本：`res://demos/core-SPA-scene-placement-actor/spa_test.gd`（9 
 - `register_asset()` 后 profile_id 有效且 GPU buffers resident。
 - GPU SVTile AutoObject 批量放置成功，HUD 报告 SVTile 压力测试 `PASS`，点云概览正确反映放置分布。
 - GPU AutoObject 点选与数据记录（SVTile / SV / Anchor / TargetSV）选择在各模式下均正常工作。
-- 地形双面渲染正常（使用 `common_terrain_material.tres`）。
+- 地形双面渲染正常（使用 `utils_terrain_material.tres`）。
 - `AutoVoxelRuntimeProfileContainer` 由 SPA 创建、管理和释放。
 - `GPUAutoObjectRuntime` 拥有 runtime object state、profile id、bounds / exclusion inputs 和 dirty object delta；per-voxel object refs 与 `SceneVoxelTile` dirty 仍归 SV owner。
 - `SceneVoxelCommitter` / SV owner 仍拥有 SV grid、commit、`SceneVoxelTile` dirty 和 resident buffers。

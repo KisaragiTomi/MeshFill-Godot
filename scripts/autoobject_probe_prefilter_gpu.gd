@@ -11,14 +11,18 @@ extends "res://scripts/godot_compute_shader_base.gd"
 ##   2. score_anchor_asset_probes — score each anchor×asset probe set (Pass A)
 ##   3. select_anchor_topk        — per-anchor top-K asset selection   (Pass B)
 ##   4. reduce_anchor_topk_to_voxel_regions — aggregate to per-asset voxel-region votes
-##   5. pack_candidate_route_records_from_votes — dense votes → schema-v1 record/range bytes (default enabled)
+##   5. pack_candidate_route_records_from_votes — dense votes → schema-v1 record/range bytes (always enabled)
 ##
-## CPU vote-decoding path is preserved as a debug-only fallback when GPU route
-## pack is explicitly disabled via target_read_buffers options or fails to execute.
+## The candidate route pack always runs on GPU; there is no CPU vote-decoding
+## fallback. Target read buffers must be a resident GPU handoff — when the
+## resident buffer cannot be borrowed the prefilter raises an error (push_error)
+## and returns a blocked result instead of uploading CPU bytes.
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
+const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
+const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
 
 const TILE_SIZE := 8
 const MAX_ASSETS := 256
@@ -30,7 +34,6 @@ const EMPTY_ASSET_ID := 0xffffffff
 const CANDIDATE_ROUTE_SCHEMA_VERSION := 1
 const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := 16
 const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := 16
-const CANDIDATE_ROUTE_CPU_PACK_SOURCE_LABEL := "gpu_vote_buffer_readback_cpu_pack"
 const CANDIDATE_ROUTE_GPU_PACK_SOURCE_LABEL := "gpu_vote_buffer_gpu_pack"
 const CANDIDATE_ROUTE_GPU_PACK_PASS := "pack_candidate_route_records_from_votes"
 const CANDIDATE_ROUTE_GPU_EXPAND_PASS := "expand_scene_voxel_tile_routes"
@@ -43,7 +46,6 @@ var min_support: float = 0.25               # required support below anchor
 var min_target_interest: float = 0.01       # minimum TargetSV_B demand
 var min_prefilter_score: float = 0.35       # minimum probe score accepted by shader
 var interpolation_guard_voxels: int = 1     # route expansion guard, at least 1 voxel
-var use_gpu_candidate_route_pack: bool = true  ## P0 #4: GPU route pack enabled by default; CPU vote decoding preserved as debug-only fallback (set target_read_buffers.use_gpu_candidate_route_pack=false to opt-out)
 
 # Shaders & pipelines
 var _shader_collect: RID
@@ -66,6 +68,7 @@ var _candidate_route_gpu_pack_range_buf: RID
 # Public API
 # ---------------------------------------------------------------------------
 
+## 执行 GPU 探针预过滤主入口，返回包含候选路由和锚点信息的结果字典。
 func run_probe_prefilter(
 	sv: Dictionary,
 	autoobjects: Array,
@@ -93,11 +96,10 @@ func run_probe_prefilter(
 	elif not ensure_device(true, true):
 		return _empty_result("missing_rendering_device")
 
-	var route_pack_requested := _candidate_route_gpu_pack_requested(target_read_buffers)
-	var use_expand_shader := tile_summaries_rid.is_valid() and route_pack_requested
-	_load_shaders(route_pack_requested, use_expand_shader)
-	if not _pipeline_rids_ready(route_pack_requested, use_expand_shader):
-		var pipeline_status := _pipeline_readiness(route_pack_requested, use_expand_shader)
+	var use_expand_shader := tile_summaries_rid.is_valid()
+	_load_shaders(use_expand_shader)
+	if not _pipeline_rids_ready(use_expand_shader):
+		var pipeline_status := _pipeline_readiness(use_expand_shader)
 		var blocked_result := _empty_result("prefilter_shader_pipeline_not_ready", {}, pipeline_status)
 		_free_gpu()
 		return blocked_result
@@ -114,12 +116,13 @@ func run_probe_prefilter(
 # GPU pipeline
 # ---------------------------------------------------------------------------
 
+## 执行完整的 GPU 计算管线（收集锚点→评分→Top-K→聚合→路由打包），返回解码后的结果字典。
 func _run_gpu_pipeline(
 	sv: Dictionary,
 	autoobjects: Array,
 	tile_ids: Array[int],
 	runtime_profile_container: Object = null,
-	target_field_bytes: PackedFloat32Array = PackedFloat32Array(),
+	_target_field_bytes: PackedFloat32Array = PackedFloat32Array(),  ## ignored: resident GPU target handoff required, no CPU upload
 	target_read_buffers: Dictionary = {},
 	tile_summaries_rid: RID = RID()
 ) -> Dictionary:
@@ -134,10 +137,7 @@ func _run_gpu_pipeline(
 	var tile_count := tile_grid.x * tile_grid.y * tile_grid.z
 	var safe_tile_ids := _sanitize_prefilter_tile_ids(tile_ids, tile_count)
 	if safe_tile_ids.is_empty():
-		var pipeline_status := _pipeline_readiness(
-			_candidate_route_gpu_pack_requested(target_read_buffers),
-			tile_summaries_rid.is_valid() and _candidate_route_gpu_pack_requested(target_read_buffers)
-		)
+		var pipeline_status := _pipeline_readiness(tile_summaries_rid.is_valid())
 		return _empty_result("no_valid_voxel_regions", {}, pipeline_status)
 
 	# ---- Normalize GPU buffer inputs ----
@@ -147,12 +147,11 @@ func _run_gpu_pipeline(
 		_ensure_float_array(sv.get("collision_field", PackedFloat32Array()), voxel_count),
 		voxel_count
 	)
-	var route_pack_requested := _candidate_route_gpu_pack_requested(target_read_buffers)
-	var use_expand_shader := tile_summaries_rid.is_valid() and route_pack_requested
-	var target_buffer_pack := _target_read_buffer_pack(target_read_buffers, target_field_bytes, voxel_count)
+	var use_expand_shader := tile_summaries_rid.is_valid()
+	var target_buffer_pack := _target_read_buffer_pack(target_read_buffers, PackedFloat32Array(), voxel_count)
 	if not bool(target_buffer_pack.get("ready", false)):
 		var blocked_reason := str(target_buffer_pack.get("reason", "target_read_buffer_not_ready"))
-		var blocked_result := _empty_result(blocked_reason, {}, _pipeline_readiness(route_pack_requested, use_expand_shader))
+		var blocked_result := _empty_result(blocked_reason, {}, _pipeline_readiness(use_expand_shader))
 		blocked_result["target_read_buffer_source"] = str(target_buffer_pack.get("target_read_buffer_source", "none"))
 		blocked_result["target_read_buffer_summary"] = _target_read_buffer_summary(target_buffer_pack)
 		blocked_result["target_read_buffer_blocked_reason"] = blocked_reason
@@ -167,12 +166,11 @@ func _run_gpu_pipeline(
 	# ---- Create GPU buffers ----
 
 	var complexity_collision_buf := storage_buffer_from_bytes(complexity_collision_bytes, SCOPE_FRAME, "complexity_collision_merged")
+	# Target read buffers must be a resident GPU handoff (borrowed); the CPU
+	# upload fallback was removed, so _target_read_buffer_pack only reaches here
+	# with a valid borrowed RID.
 	var target_field_buf: RID = target_buffer_pack.get("target_field_buffer", RID())
-	if bool(target_buffer_pack.get("target_read_buffers_borrowed", false)):
-		track_borrowed_rid(target_field_buf, KIND_BUFFER, SCOPE_FRAME, "scene_placement_actor:target_field")
-	else:
-		var target_field_data: PackedFloat32Array = target_buffer_pack.get("target_field_bytes", PackedFloat32Array())
-		target_field_buf = storage_buffer_from_floats(target_field_data, SCOPE_FRAME, "target_field_uploaded")
+	track_borrowed_rid(target_field_buf, KIND_BUFFER, SCOPE_FRAME, "scene_placement_actor:target_field")
 	var dirty_tile_buf := storage_buffer_from_bytes(_pack_u32_array_from_int(safe_tile_ids))
 	var anchor_buf := storage_buffer_zero(ANCHOR_CAPACITY * 16)  # uvec4(x, y, z, reserved) per anchor
 	var anchor_count_buf := storage_buffer_zero(4)
@@ -197,7 +195,7 @@ func _run_gpu_pipeline(
 		anchor_buf, anchor_count_buf,
 		grid_size, tile_grid, safe_tile_ids.size()
 	):
-		var pipeline_status := _pipeline_readiness(route_pack_requested, use_expand_shader)
+		var pipeline_status := _pipeline_readiness(use_expand_shader)
 		_free_gpu()
 		return _empty_result("collect_anchor_dispatch_bounds_exceeded", probe_pack, pipeline_status)
 	submit_and_sync(true)
@@ -206,7 +204,7 @@ func _run_gpu_pipeline(
 	var anchor_count_bytes := _rd.buffer_get_data(anchor_count_buf, 0, 4)
 	var actual_anchor_count := mini(_decode_u32_count(anchor_count_bytes), ANCHOR_CAPACITY)
 	if actual_anchor_count == 0:
-		var pipeline_status := _pipeline_readiness(route_pack_requested, use_expand_shader)
+		var pipeline_status := _pipeline_readiness(use_expand_shader)
 		_free_gpu()
 		return _empty_result("no_anchors_collected", probe_pack, pipeline_status)
 
@@ -219,21 +217,18 @@ func _run_gpu_pipeline(
 		grid_size, voxel_size,
 		tile_grid, tile_count, actual_anchor_count, asset_count
 	):
-		var pipeline_status := _pipeline_readiness(route_pack_requested, use_expand_shader)
+		var pipeline_status := _pipeline_readiness(use_expand_shader)
 		_free_gpu()
 		return _empty_result("score_topk_reduce_compute_list_begin_failed", probe_pack, pipeline_status)
 
-	var gpu_route_pack_payload := {}
-	if route_pack_requested:
-		gpu_route_pack_payload = _run_candidate_route_gpu_pack_pass(
-			voxel_sparse_votes_buf,
-			probe_pack.get("route_profiles", []),
-			tile_grid,
-			tile_count,
-			asset_count,
-			_candidate_route_cpu_debug_readback_requested(target_read_buffers),
-			tile_summaries_rid
-		)
+	var gpu_route_pack_payload := _run_candidate_route_gpu_pack_pass(
+		voxel_sparse_votes_buf,
+		probe_pack.get("route_profiles", []),
+		tile_grid,
+		tile_count,
+		asset_count,
+		tile_summaries_rid
+	)
 	if not bool(gpu_route_pack_payload.get("ok", false)):
 		submit_and_sync(true)
 
@@ -241,14 +236,7 @@ func _run_gpu_pipeline(
 
 	var anchors_bytes := _rd.buffer_get_data(anchor_buf, 0, actual_anchor_count * 16)
 	var resident_route_payload_ready := _candidate_route_payload_has_resident_rids(gpu_route_pack_payload)
-	var cpu_route_debug_readback_requested := _candidate_route_cpu_debug_readback_requested(target_read_buffers)
-	var votes_bytes := PackedByteArray()
-	if not resident_route_payload_ready or cpu_route_debug_readback_requested:
-		votes_bytes = _rd.buffer_get_data(voxel_sparse_votes_buf, 0, asset_count * tile_count * 4)
-	var topk_bytes := PackedByteArray()
-	if _debug_readback_topk_requested(target_read_buffers):
-		topk_bytes = _rd.buffer_get_data(topk_buf, 0, actual_anchor_count * TOPK * 8)
-	var pipeline_status := _pipeline_readiness(route_pack_requested, use_expand_shader)
+	var pipeline_status := _pipeline_readiness(use_expand_shader)
 
 	if resident_route_payload_ready:
 		gc_frame()
@@ -257,7 +245,6 @@ func _run_gpu_pipeline(
 
 	return _decode_results(
 		anchors_bytes,
-		votes_bytes,
 		actual_anchor_count,
 		asset_count,
 		tile_count,
@@ -267,9 +254,7 @@ func _run_gpu_pipeline(
 		probe_pack,
 		pipeline_status,
 		_target_read_buffer_summary(target_buffer_pack),
-		gpu_route_pack_payload,
-		cpu_route_debug_readback_requested,
-		topk_bytes
+		gpu_route_pack_payload
 	)
 
 
@@ -277,6 +262,7 @@ func _run_gpu_pipeline(
 # Dispatch helpers
 # ---------------------------------------------------------------------------
 
+## 调度 Pass 1：在脏 Tile 内收集满足阈值的 SV 锚点体素，写入 anchor_buf。
 func _dispatch_collect(
 	complexity_collision_buf: RID, target_field_buf: RID,
 	dirty_tile_buf: RID, anchor_buf: RID, anchor_count_buf: RID,
@@ -325,6 +311,7 @@ func _dispatch_collect(
 	return true
 
 
+## 在单个计算列表中连续调度评分→Top-K→聚合三个 Pass，含屏障隔离。
 func _dispatch_score_topk_reduce(
 	anchor_buf: RID, probe_range_buf: RID,
 	probe_data_buf: RID, complexity_collision_buf: RID,
@@ -420,6 +407,7 @@ func _dispatch_score_topk_reduce(
 	return true
 
 
+## 调度 Pass A：对每个锚点×资源的探针集进行打分，结果写入 asset_scores_buf。
 func _dispatch_score(
 	anchor_buf: RID, probe_range_buf: RID,
 	probe_data_buf: RID, complexity_collision_buf: RID,
@@ -465,6 +453,7 @@ func _dispatch_score(
 	end_compute_list()
 
 
+## 调度 Pass B：从每锚点的资源分数中选出 Top-K 候选资源，写入 topk_buf。
 func _dispatch_topk(
 	asset_scores_buf: RID, topk_buf: RID,
 	anchor_count: int, asset_count: int,
@@ -493,6 +482,7 @@ func _dispatch_topk(
 	end_compute_list()
 
 
+## 调度 Pass C：将 Top-K 结果聚合为每资源的稀疏体素区域投票，写入 voxel_sparse_votes_buf。
 func _dispatch_reduce(
 	anchor_buf: RID, topk_buf: RID, voxel_sparse_votes_buf: RID,
 	tile_grid: Vector3i, tile_count: int,
@@ -526,29 +516,27 @@ func _dispatch_reduce(
 	end_compute_list()
 
 
+## 执行 GPU 路由打包 Pass（pack 或 expand），将稀疏投票缓冲区转换为 schema-v1 记录/范围 RID，返回驻留载荷字典。
 func _run_candidate_route_gpu_pack_pass(
 	voxel_sparse_votes_buf: RID,
 	route_profiles: Array,
 	tile_grid: Vector3i,
 	tile_count: int,
 	asset_count: int,
-	debug_readback_bytes: bool = false,
 	tile_summaries_rid: RID = RID()
 ) -> Dictionary:
 	var use_expand := tile_summaries_rid.is_valid()
 	var shader_rid := _shader_route_expand if use_expand else _shader_route_pack
 	var pipeline_rid := _pipeline_route_expand if use_expand else _pipeline_route_pack
-	var pack_pass_label := CANDIDATE_ROUTE_GPU_EXPAND_PASS if use_expand else CANDIDATE_ROUTE_GPU_PACK_PASS
 
 	if not shader_rid.is_valid() or not pipeline_rid.is_valid():
 		return _candidate_route_gpu_pack_blocked(
-			"candidate_route_gpu_%s_shader_not_ready" % ("expand" if use_expand else "pack"),
-			asset_count, tile_grid, tile_count
+			"candidate_route_gpu_%s_shader_not_ready" % ("expand" if use_expand else "pack")
 		)
 	if not voxel_sparse_votes_buf.is_valid():
-		return _candidate_route_gpu_pack_blocked("missing_voxel_sparse_votes_buffer", asset_count, tile_grid, tile_count)
+		return _candidate_route_gpu_pack_blocked("missing_voxel_sparse_votes_buffer")
 	if asset_count <= 0 or tile_count <= 0 or tile_grid.x <= 0 or tile_grid.y <= 0 or tile_grid.z <= 0:
-		return _candidate_route_gpu_pack_blocked("invalid_route_pack_dimensions", asset_count, tile_grid, tile_count)
+		return _candidate_route_gpu_pack_blocked("invalid_route_pack_dimensions")
 
 	_release_candidate_route_gpu_pack_payload_buffers()
 	var record_capacity := maxi(asset_count * tile_count, 0)
@@ -564,7 +552,7 @@ func _run_candidate_route_gpu_pack_pass(
 		or not range_buf.is_valid()
 		or not debug_buf.is_valid()
 	):
-		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_storage_buffer_failed" % ("expand" if use_expand else "pack"), asset_count, tile_grid, tile_count)
+		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_storage_buffer_failed" % ("expand" if use_expand else "pack"))
 
 	var bindings := []
 	if use_expand:
@@ -588,7 +576,7 @@ func _run_candidate_route_gpu_pack_pass(
 		]
 	var set0 := create_uniform_set(bindings, shader_rid, 0, SCOPE_PASS, "candidate_route_gpu_%s" % ("expand" if use_expand else "pack"))
 	if not set0.is_valid():
-		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_uniform_set_failed" % ("expand" if use_expand else "pack"), asset_count, tile_grid, tile_count)
+		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_uniform_set_failed" % ("expand" if use_expand else "pack"))
 
 	var push := PackedByteArray()
 	if use_expand:
@@ -617,7 +605,7 @@ func _run_candidate_route_gpu_pack_pass(
 
 	var cl := begin_compute_list()
 	if cl < 0:
-		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_compute_list_begin_failed" % ("expand" if use_expand else "pack"), asset_count, tile_grid, tile_count)
+		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_compute_list_begin_failed" % ("expand" if use_expand else "pack"))
 	_rd.compute_list_bind_compute_pipeline(cl, pipeline_rid)
 	_rd.compute_list_bind_uniform_set(cl, set0, 0)
 	_rd.compute_list_set_push_constant(cl, push, push.size())
@@ -626,135 +614,60 @@ func _run_candidate_route_gpu_pack_pass(
 	submit_and_sync(true)
 
 	# ═══════════════════════════════════════════════════════════════════
-	# GPU-First path (expand shader with tile_summaries_rid):
-	#   Count buffer is NOT read back on CPU. Resident record/range
-	#   buffers are handed directly to the VPG adapter chain.
-	#   CPU debug readback is only performed when explicitly requested.
+	# GPU-First path:
+	#   Count buffer is NOT read back on CPU. The resident record/range
+	#   buffers are handed directly to the VPG adapter chain. The debug_buf
+	#   is still written by the shader but never read back here.
 	# ═══════════════════════════════════════════════════════════════════
-	var record_count := 0
-	var positive_vote_count := 0
-	var duplicate_tile_id_count := 0
-	var overflow_count := 0
-	var skipped_empty_tiles := 0
-	var record_bytes := PackedByteArray()
-	var range_bytes := PackedByteArray()
-	var per_asset_record_counts: Array[int] = []
-	var empty_range_count := -1
-	var readback_derived := false
-
-	if debug_readback_bytes:
-		var count_bytes := _rd.buffer_get_data(debug_buf, 0, 16)
-		if count_bytes.size() >= 16:
-			record_count = clampi(int(count_bytes.decode_u32(0)), 0, record_capacity)
-			positive_vote_count = int(count_bytes.decode_u32(4))
-			duplicate_tile_id_count = int(count_bytes.decode_u32(8))
-			overflow_count = int(count_bytes.decode_u32(12))
-		if use_expand and debug_readback_bytes:
-			var debug_count_bytes := _rd.buffer_get_data(debug_buf, 0, 64)
-			if debug_count_bytes.size() >= 40:
-				skipped_empty_tiles = int(debug_count_bytes.decode_u32(36))
-		if debug_readback_bytes and record_count > 0:
-			record_bytes = _rd.buffer_get_data(record_buf, 0, record_count * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES)
-		if debug_readback_bytes:
-			range_bytes = _rd.buffer_get_data(range_buf, 0, asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES)
-			if range_bytes.size() >= asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES:
-				empty_range_count = 0
-				for asset_index in range(asset_count):
-					var range_offset := asset_index * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES
-					var rc := int(range_bytes.decode_u32(range_offset + 4))
-					per_asset_record_counts.append(rc)
-					if rc <= 0:
-						empty_range_count += 1
-		readback_derived = true
-	else:
-		# GPU-First: no CPU count readback (unless expand)
-		if use_expand:
-			# Expand shader doesn't need readback either if no debug requested
-			readback_derived = false
-		else:
-			# Pack shader: still read count for safety, but don't mark readback_derived
-			var count_bytes := _rd.buffer_get_data(debug_buf, 0, 16)
-			if count_bytes.size() >= 16:
-				record_count = clampi(int(count_bytes.decode_u32(0)), 0, record_capacity)
-				positive_vote_count = int(count_bytes.decode_u32(4))
-				duplicate_tile_id_count = int(count_bytes.decode_u32(8))
-				overflow_count = int(count_bytes.decode_u32(12))
-			readback_derived = false
-
 	_candidate_route_gpu_pack_record_buf = record_buf
 	_candidate_route_gpu_pack_range_buf = range_buf
 
 	var source_label := CANDIDATE_ROUTE_GPU_PACK_SOURCE_LABEL
-	var producer_pack_pass := CANDIDATE_ROUTE_GPU_PACK_PASS
 	if use_expand:
 		source_label = "gpu_vote_buffer_gpu_expand"
-		producer_pack_pass = CANDIDATE_ROUTE_GPU_EXPAND_PASS
 
 	return {
+		# 状态 / 来源标签（被 SPA 的 contract/summary 与 _decode_results 透出）
 		"ok": true,
 		"reason": "ok",
-		"source": source_label,
 		"source_label": source_label,
-		"pack_input_source": "gpu_dense_vote_buffer",
-		"producer_pack_pass": producer_pack_pass,
-		"producer": "AutoObjectProbePrefilterGPU",
-		"record_layout": "uvec4(tile_id, 0, 0, 0)",
-		"range_layout": "uvec4(record_start, record_count, 0, 0)",
-		"record_order": "asset_range_tile_id_ascending",
-		"score_order_preserved": false,
+		"resident_route_source_label": source_label,
 		"ordering_contract": "candidate_set_equivalent_not_score_sorted",
+		"producer": "AutoObjectProbePrefilterGPU",
+		"resident_route_producer": "AutoObjectProbePrefilterGPU",
+		"resident_route_owner": "AutoObjectProbePrefilterGPU",
+		"resident_route_buffer_owner": "AutoObjectProbePrefilterGPU",
+		"resident_route_buffer_lifetime": "AutoObjectProbePrefilterGPU owned until next route pack, dispose, or explicit release",
+		"status": "gpu_%s_resident" % ("expand" if use_expand else "pack"),
+		"debug_status": "gpu_route_%s_resident_no_record_range_readback" % ("expand" if use_expand else "pack"),
+		"readback_derived": false,
+		# Schema / stride（VPG 合同与 SPA 借用门控会校验）
 		"schema_version": CANDIDATE_ROUTE_SCHEMA_VERSION,
-		"resident_route_schema_version": CANDIDATE_ROUTE_SCHEMA_VERSION,
 		"record_stride_bytes": CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
 		"range_stride_bytes": CANDIDATE_ROUTE_RANGE_STRIDE_BYTES,
 		"resident_route_record_stride_bytes": CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
 		"resident_route_range_stride_bytes": CANDIDATE_ROUTE_RANGE_STRIDE_BYTES,
+		# 交给 VPG 适配链的驻留 GPU 缓冲区
 		"resident_route_record_rid": record_buf,
 		"resident_route_range_rid": range_buf,
 		"resident_route_record_rid_valid": record_buf.is_valid(),
 		"resident_route_range_rid_valid": range_buf.is_valid(),
 		"resident_route_record_capacity": record_capacity,
-		"resident_route_record_count": record_count,
 		"resident_route_range_count": asset_count,
-		"resident_route_buffer_owner": "AutoObjectProbePrefilterGPU",
-		"resident_route_owner": "AutoObjectProbePrefilterGPU",
-		"resident_route_producer": "AutoObjectProbePrefilterGPU",
-		"resident_route_source_label": source_label,
-		"resident_route_buffer_lifetime": "AutoObjectProbePrefilterGPU owned until next route pack, dispose, or explicit release",
 		"same_rendering_device_as_vpg": true,
 		"rendering_device_matches_vpg": true,
-		"record_count": record_count,
+		# 计数 / CPU 上传回退入参（GPU-first 不回读计数，record_bytes 留空）
+		"record_count": 0,
 		"range_count": asset_count,
 		"asset_count": asset_count,
-		"tile_count": tile_count,
-		"tile_grid": tile_grid,
-		"record_bytes": record_bytes,
-		"range_bytes": range_bytes,
-		"has_records": record_count > 0 or not readback_derived,
-		"blocked": false,
-		"status": "gpu_%s_resident" % ("expand" if use_expand else "pack"),
-		"debug_status": "gpu_route_%s_debug_bytes_read_back" % ("expand" if use_expand else "pack") if debug_readback_bytes else "gpu_route_%s_resident_no_record_range_readback" % ("expand" if use_expand else "pack"),
-		"readback_derived": readback_derived,
-		"debug_readback_derived": debug_readback_bytes,
-		"resident_route_input_ready": true,
-		"resident_candidate_route_handoff": true,
-		"gpu_route_pack": true,
-		"gpu_route_expand": use_expand,
-		"gpu_route_pack_requested": true,
-		"gpu_route_pack_used": true,
-		"gpu_candidate_route_pack": true,
+		"has_records": true,
 		"cpu_expanded_route_input": false,
-		"positive_vote_count": positive_vote_count,
-		"duplicate_tile_id_count": duplicate_tile_id_count,
-		"invalid_tile_id_count": 0,
-		"empty_range_count": empty_range_count,
-		"overflow_count": overflow_count,
-		"skipped_empty_tiles": skipped_empty_tiles,
-		"per_asset_record_counts": per_asset_record_counts,
-		"record_capacity": record_capacity,
+		"record_bytes": PackedByteArray(),
+		"range_bytes": PackedByteArray(),
 	}
 
 
+## 释放上一帧 GPU 路由打包产生的驻留 record/range 缓冲区 RID，并清空 SCOPE_PASS 资源。
 func _release_candidate_route_gpu_pack_payload_buffers() -> void:
 	gc_scope(SCOPE_PASS)
 	if _candidate_route_gpu_pack_record_buf.is_valid():
@@ -765,38 +678,14 @@ func _release_candidate_route_gpu_pack_payload_buffers() -> void:
 	_candidate_route_gpu_pack_range_buf = RID()
 
 
-func _candidate_route_gpu_pack_blocked(
-	reason: String,
-	asset_count: int,
-	tile_grid: Vector3i,
-	tile_count: int
-) -> Dictionary:
+## 构造 GPU 路由打包被阻塞时的默认失败结果字典。
+func _candidate_route_gpu_pack_blocked(reason: String) -> Dictionary:
+	# ok=false 即可让所有消费方（_candidate_route_payload_has_resident_rids /
+	# SPA handoff / VPG 合同）走拒绝分支；其余键它们都有默认值兜底。
 	return {
 		"ok": false,
 		"reason": reason,
-		"source": "none",
-		"source_label": "none",
-		"pack_input_source": "gpu_dense_vote_buffer",
-		"producer_pack_pass": CANDIDATE_ROUTE_GPU_PACK_PASS,
-		"record_order": "none",
-		"score_order_preserved": false,
 		"ordering_contract": "blocked",
-		"schema_version": CANDIDATE_ROUTE_SCHEMA_VERSION,
-		"record_stride_bytes": CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
-		"range_stride_bytes": CANDIDATE_ROUTE_RANGE_STRIDE_BYTES,
-		"record_count": 0,
-		"range_count": maxi(asset_count, 0),
-		"asset_count": maxi(asset_count, 0),
-		"tile_count": maxi(tile_count, 0),
-		"tile_grid": tile_grid,
-		"record_bytes": PackedByteArray(),
-		"range_bytes": PackedByteArray(),
-		"has_records": false,
-		"readback_derived": false,
-		"debug_readback_derived": false,
-		"gpu_route_pack": false,
-		"gpu_candidate_route_pack": true,
-		"blocked": true,
 	}
 
 
@@ -804,6 +693,7 @@ func _candidate_route_gpu_pack_blocked(
 # Probe packing
 # ---------------------------------------------------------------------------
 
+## 将所有 autoobject 的语义探针打包为 GPU 所需的字节缓冲区和范围表，优先使用 runtime_profile_container 借用路径。
 func _pack_all_probes(
 	autoobjects: Array,
 	asset_count: int,
@@ -851,10 +741,7 @@ func _pack_all_probes(
 		var wc := _probe_metric_weights(p)
 
 		var base := i * 32
-		probe_bytes.encode_float(base + 0, offset.x)
-		probe_bytes.encode_float(base + 4, offset.y)
-		probe_bytes.encode_float(base + 8, offset.z)
-		probe_bytes.encode_float(base + 12, wc.z)      # w_collision
+		UtilsBufferUtils.encode_vec4(probe_bytes, base + 0, offset, wc.z) # w_collision
 		probe_bytes.encode_u32(base + 16, rgba8)        # floatBitsToUint on GPU side
 		probe_bytes.encode_float(base + 20, e_coll)
 		probe_bytes.encode_float(base + 24, wc.x)      # w_color
@@ -881,6 +768,7 @@ func _pack_all_probes(
 	}
 
 
+## 从 runtime_profile_container 借用已驻留的探针缓冲区和范围数据，构造 GPU 探针打包结果。
 func _pack_profile_container_probes(
 	autoobjects: Array,
 	asset_count: int,
@@ -929,6 +817,7 @@ func _pack_profile_container_probes(
 	}
 
 
+## 构造探针打包失败时的阻塞结果字典。
 func _blocked_probe_pack(reason: String, autoobjects: Array, asset_count: int, voxel_size: Vector3) -> Dictionary:
 	return {
 		"ok": false,
@@ -947,9 +836,9 @@ func _blocked_probe_pack(reason: String, autoobjects: Array, asset_count: int, v
 # Result decoding
 # ---------------------------------------------------------------------------
 
+## 将 GPU 回读的锚点字节解码为结构化结果字典，并交接 GPU 驻留路由载荷。
 func _decode_results(
 	anchors_bytes: PackedByteArray,
-	votes_bytes: PackedByteArray,
 	anchor_count: int,
 	asset_count: int,
 	tile_count: int,
@@ -959,106 +848,46 @@ func _decode_results(
 	probe_pack: Dictionary = {},
 	pipeline_status: Dictionary = {},
 	target_read_buffer_summary: Dictionary = {},
-	gpu_route_pack_payload: Dictionary = {},
-	cpu_route_debug_readback_requested: bool = false,
-	topk_bytes: PackedByteArray = PackedByteArray()
+	gpu_route_pack_payload: Dictionary = {}
 ) -> Dictionary:
 	# Decode anchors
 	var anchors: Array[Dictionary] = []
-	var anchor_stride_bytes := 16 # uvec4(x, y, z, reserved)
+	var anchor_stride_bytes := UtilsBufferUtils.IVEC4_BYTES # uvec4(x, y, z, reserved)
 	var available_anchor_bytes := mini(anchors_bytes.size(), anchor_count * anchor_stride_bytes)
 	available_anchor_bytes -= available_anchor_bytes % anchor_stride_bytes
 	var available_anchor_count := mini(anchor_count, int(available_anchor_bytes / anchor_stride_bytes))
 	for i in range(available_anchor_count):
 		var base := i * anchor_stride_bytes
-		var x := anchors_bytes.decode_s32(base + 0)
-		var y := anchors_bytes.decode_s32(base + 4)
-		var z := anchors_bytes.decode_s32(base + 8)
+		var voxel_pos := UtilsBufferUtils.decode_vec3i4(anchors_bytes, base)
 		anchors.append({
 			"id": i,                         # debug anchor index
-			"voxel_pos": Vector3i(x, y, z),  # position-only anchor voxel
+			"voxel_pos": voxel_pos,          # position-only anchor voxel
 		})
-
-	# Decode voxel-region votes - DEPRECATED CPU PATH (P0 #4): GPU route pack is now default.
-	# This O(asset×tile) CPU path is preserved as a debug-only fallback. It runs when:
-	#   1. GPU route pack failed (resident_route_payload_ready is false), or
-	#   2. CPU debug readback is explicitly requested via target_read_buffers options.
-	# To opt-out of GPU route pack per-call: set target_read_buffers.use_gpu_candidate_route_pack=false
-	var autoobject_candidate_voxel_sparses: Dictionary = {}
-	var candidate_route_vote_entries_by_asset: Dictionary = {}
-	var resident_route_payload_ready := _candidate_route_payload_has_resident_rids(gpu_route_pack_payload)
-	var decode_cpu_route_debug := not resident_route_payload_ready or cpu_route_debug_readback_requested
-	var expected_vote_count := asset_count * tile_count
-	var available_vote_bytes := mini(votes_bytes.size(), expected_vote_count * 4)
-	available_vote_bytes -= available_vote_bytes % 4
-	var available_vote_count := int(available_vote_bytes / 4)
-
-	# --- DEPRECATED CPU vote-decode path (P0 #4: GPU route pack is default) ---
-	# Only reached when GPU route pack failed or debug readback was explicitly requested.
-	# O(asset_count × tile_count) CPU iteration; preserved as debug-only fallback.
-	if decode_cpu_route_debug:
-		for asset_id in range(asset_count):
-			var entries: Array[Dictionary] = []
-			for tid in range(tile_count):
-				var vote_index := asset_id * tile_count + tid
-				var vote := votes_bytes.decode_float(vote_index * 4) if vote_index < available_vote_count else 0.0
-				if vote > 0.0001:
-					entries.append({"tile_id": tid, "score": vote}) # voted voxel region tile
-			if entries.is_empty():
-				continue
-			entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-				return float(a.get("score", 0.0)) > float(b.get("score", 0.0)))
-			var route_profile: Dictionary = route_profiles[asset_id] if asset_id < route_profiles.size() and route_profiles[asset_id] is Dictionary else {}
-			var voxel_sparses := _expand_vote_entries_to_voxel_sparses(entries, route_profile, tile_grid)
-			candidate_route_vote_entries_by_asset[asset_id] = entries
-			autoobject_candidate_voxel_sparses[asset_id] = voxel_sparses
 
 	var route_debug := _route_profile_debug(route_profiles, asset_count)
 	var readiness := pipeline_status.duplicate(true) if not pipeline_status.is_empty() else _pipeline_readiness()
-	var cpu_route_handoff_payload := {}
-	if decode_cpu_route_debug:
-		cpu_route_handoff_payload = build_candidate_route_handoff_payload_from_vote_entries(
-			candidate_route_vote_entries_by_asset,
-			route_profiles,
-			asset_count,
-			tile_grid,
-			tile_count
-		)
-	var route_handoff_payload := _select_candidate_route_handoff_payload(
-		gpu_route_pack_payload,
-		cpu_route_handoff_payload
-	)
-	var anchor_topk_readback := _decode_topk_readback(topk_bytes, anchor_count, asset_count)
+	var route_handoff_payload := gpu_route_pack_payload.duplicate(true)
 
-	var route_has_resident_rids := _candidate_route_payload_has_resident_rids(route_handoff_payload)
 	var route_contract := VoxelPlacementGeneratorScript._candidate_route_input_contract_from_settings({
 		"candidate_route_input_contract": route_handoff_payload,
 		"candidate_route_readback_source": "resident_route_snapshot",
 		"candidate_route_runtime_read_source": "resident",
-	} if route_has_resident_rids else {
-		"candidate_voxel_regions_by_asset": autoobject_candidate_voxel_sparses,
-		"candidate_route_readback_source": "gpu_vote_buffer_readback",
-		"candidate_route_runtime_read_source": "cpu_debug_bridge",
 	})
 	return {
 		"ok": true,
 		"anchors": anchors,                                           # position-only anchor readback
-		"anchor_autoobject_topk": anchor_topk_readback,                  # per-anchor top-K readback (empty if not requested)
-		"autoobject_candidate_voxel_sparses": autoobject_candidate_voxel_sparses, # per-asset regions
-		"candidate_voxel_regions_by_asset": autoobject_candidate_voxel_sparses,
-		"candidate_voxel_sparses_by_asset": autoobject_candidate_voxel_sparses,
+		"anchor_autoobject_topk": {},                                 # GPU internal, not read back
+		"autoobject_candidate_voxel_sparses": {},                     # per-asset regions live in resident GPU route buffers
+		"candidate_voxel_regions_by_asset": {},
+		"candidate_voxel_sparses_by_asset": {},
 		"candidate_route_profiles": route_debug,                       # route expansion debug
-		"candidate_route_readback_source": "resident_route_snapshot" if route_has_resident_rids else "gpu_vote_buffer_readback",
-		"candidate_route_runtime_read_source": "resident" if route_has_resident_rids else "cpu_debug_bridge",
+		"candidate_route_readback_source": "resident_route_snapshot",
+		"candidate_route_runtime_read_source": "resident",
 		"candidate_route_input_contract": route_contract,
 		"candidate_route_handoff_payload": route_handoff_payload,
-		"candidate_route_cpu_handoff_payload": cpu_route_handoff_payload,
-		"candidate_route_cpu_debug_readback_requested": cpu_route_debug_readback_requested,
-		"candidate_route_cpu_debug_readback_performed": decode_cpu_route_debug and not votes_bytes.is_empty(),
-		"candidate_route_cpu_debug_source": "gpu_vote_buffer_readback" if decode_cpu_route_debug and not votes_bytes.is_empty() else "disabled",
 		"candidate_route_gpu_pack_payload": gpu_route_pack_payload,
 		"candidate_route_payload_source_label": str(route_handoff_payload.get("source_label", "none")),
-		"candidate_route_payload_ordering_contract": str(route_handoff_payload.get("ordering_contract", "score_sorted_cpu_expansion")),
+		"candidate_route_payload_ordering_contract": str(route_handoff_payload.get("ordering_contract", "candidate_set_equivalent_not_score_sorted")),
 		"anchor_count": anchors.size(),                                # collected anchor count
 		"profile_probe_pack": _profile_probe_pack_summary(probe_pack),  # GPU-first probe pack contract/debug
 		"target_read_buffer_source": str(target_read_buffer_summary.get("target_read_buffer_source", "none")),
@@ -1071,129 +900,7 @@ func _decode_results(
 	}
 
 
-static func build_candidate_route_handoff_payload(
-	candidate_regions_by_asset: Dictionary,
-	asset_count: int,
-	tile_grid: Vector3i,
-	tile_count: int = -1
-) -> Dictionary:
-	var safe_asset_count := maxi(asset_count, 0)
-	var safe_tile_count := tile_count
-	if safe_tile_count < 0:
-		safe_tile_count = tile_grid.x * tile_grid.y * tile_grid.z
-	var valid_tile_space := tile_grid.x > 0 and tile_grid.y > 0 and tile_grid.z > 0 and safe_tile_count > 0
-
-	var per_asset_tile_ids: Array = []
-	var duplicate_tile_id_count := 0
-	var invalid_tile_id_count := 0
-
-	for asset_index in range(safe_asset_count):
-		var ids := PackedInt32Array()
-		var seen := {}
-		var raw_regions = _candidate_regions_for_asset(candidate_regions_by_asset, asset_index)
-		if valid_tile_space:
-			if raw_regions is Array:
-				for region in raw_regions:
-					var tile_id := _candidate_route_region_to_tile_id(region, tile_grid)
-					if tile_id < 0 or tile_id >= safe_tile_count:
-						invalid_tile_id_count += 1
-						continue
-					if seen.has(tile_id):
-						duplicate_tile_id_count += 1
-						continue
-					seen[tile_id] = true
-					ids.append(tile_id)
-			elif raw_regions is PackedInt32Array:
-				for tile_id in raw_regions:
-					var id := int(tile_id)
-					if id < 0 or id >= safe_tile_count:
-						invalid_tile_id_count += 1
-						continue
-					if seen.has(id):
-						duplicate_tile_id_count += 1
-						continue
-					seen[id] = true
-					ids.append(id)
-			elif raw_regions != null:
-				invalid_tile_id_count += 1
-		else:
-			invalid_tile_id_count += 1
-		per_asset_tile_ids.append(ids)
-	return _build_candidate_route_handoff_payload_from_tile_ids(
-		per_asset_tile_ids,
-		safe_asset_count,
-		tile_grid,
-		safe_tile_count,
-		duplicate_tile_id_count,
-		invalid_tile_id_count,
-		"candidate_voxel_regions_by_asset_debug"
-	)
-
-
-static func build_candidate_route_handoff_payload_from_vote_entries(
-	candidate_vote_entries_by_asset: Dictionary,
-	route_profiles: Array,
-	asset_count: int,
-	tile_grid: Vector3i,
-	tile_count: int = -1
-) -> Dictionary:
-	var safe_asset_count := maxi(asset_count, 0)
-	var safe_tile_count := tile_count
-	if safe_tile_count < 0:
-		safe_tile_count = tile_grid.x * tile_grid.y * tile_grid.z
-	var valid_tile_space := tile_grid.x > 0 and tile_grid.y > 0 and tile_grid.z > 0 and safe_tile_count > 0
-
-	var per_asset_tile_ids: Array = []
-	var duplicate_tile_id_count := 0
-	var invalid_tile_id_count := 0
-
-	for asset_index in range(safe_asset_count):
-		var ids := PackedInt32Array()
-		var raw_entries = _candidate_regions_for_asset(candidate_vote_entries_by_asset, asset_index)
-		if valid_tile_space:
-			if raw_entries is Array:
-				var route_profile: Dictionary = route_profiles[asset_index] if asset_index < route_profiles.size() and route_profiles[asset_index] is Dictionary else _empty_route_profile(asset_index)
-				var expanded := _expand_vote_entries_to_route_tile_ids(raw_entries as Array, route_profile, tile_grid, safe_tile_count)
-				ids = expanded.get("tile_ids", PackedInt32Array())
-				duplicate_tile_id_count += int(expanded.get("duplicate_tile_id_count", 0))
-				invalid_tile_id_count += int(expanded.get("invalid_tile_id_count", 0))
-			elif raw_entries != null:
-				invalid_tile_id_count += 1
-		else:
-			invalid_tile_id_count += 1
-		per_asset_tile_ids.append(ids)
-
-	return _build_candidate_route_handoff_payload_from_tile_ids(
-		per_asset_tile_ids,
-		safe_asset_count,
-		tile_grid,
-		safe_tile_count,
-		duplicate_tile_id_count,
-		invalid_tile_id_count,
-		"gpu_vote_buffer_readback_vote_entries"
-	)
-
-
-## Selects GPU route pack payload when available (default), falls back to CPU-packed payload.
-## GPU route pack produces schema-v1 record/range buffers with resident RID handoff.
-static func _select_candidate_route_handoff_payload(
-	gpu_route_pack_payload: Dictionary,
-	cpu_route_handoff_payload: Dictionary
-) -> Dictionary:
-	if bool(gpu_route_pack_payload.get("ok", false)):
-		return gpu_route_pack_payload.duplicate(true)
-	var payload := cpu_route_handoff_payload.duplicate(true)
-	if not gpu_route_pack_payload.is_empty():
-		payload["gpu_route_pack_requested"] = true
-		payload["gpu_route_pack_used"] = false
-		payload["gpu_route_pack_blocked_reason"] = str(gpu_route_pack_payload.get("reason", "gpu_route_pack_not_ready"))
-	else:
-		payload["gpu_route_pack_requested"] = false
-		payload["gpu_route_pack_used"] = false
-		payload["gpu_route_pack_blocked_reason"] = "not_requested"
-	return payload
-
-
+## 检查路由交接载荷是否持有有效的驻留 record/range RID。
 static func _candidate_route_payload_has_resident_rids(payload: Dictionary) -> bool:
 	var raw_record = payload.get("resident_route_record_rid", RID())
 	var raw_range = payload.get("resident_route_range_rid", RID())
@@ -1202,153 +909,19 @@ static func _candidate_route_payload_has_resident_rids(payload: Dictionary) -> b
 	return bool(payload.get("ok", false)) and record_rid.is_valid() and range_rid.is_valid()
 
 
+## 检查预过滤结果字典中的候选路由载荷是否持有驻留 RID。
 static func _result_has_resident_candidate_route_payload(result: Dictionary) -> bool:
 	var raw_payload = result.get("candidate_route_handoff_payload", {})
 	return raw_payload is Dictionary and _candidate_route_payload_has_resident_rids(raw_payload as Dictionary)
 
 
-static func _build_candidate_route_handoff_payload_from_tile_ids(
-	per_asset_tile_ids: Array,
-	asset_count: int,
-	tile_grid: Vector3i,
-	tile_count: int,
-	duplicate_tile_id_count: int,
-	invalid_tile_id_count: int,
-	pack_input_source: String
-) -> Dictionary:
-	var safe_asset_count := maxi(asset_count, 0)
-	var safe_tile_count := tile_count
-	if safe_tile_count < 0:
-		safe_tile_count = tile_grid.x * tile_grid.y * tile_grid.z
-	var valid_tile_space := tile_grid.x > 0 and tile_grid.y > 0 and tile_grid.z > 0 and safe_tile_count > 0
-
-	var per_asset_record_counts: Array[int] = []
-	var record_count := 0
-	var empty_range_count := 0
-	for asset_index in range(safe_asset_count):
-		var ids := PackedInt32Array()
-		if asset_index < per_asset_tile_ids.size() and per_asset_tile_ids[asset_index] is PackedInt32Array:
-			ids = per_asset_tile_ids[asset_index]
-		per_asset_record_counts.append(ids.size())
-		record_count += ids.size()
-		if ids.is_empty():
-			empty_range_count += 1
-
-	var record_bytes := PackedByteArray()
-	record_bytes.resize(record_count * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES)
-	var range_bytes := PackedByteArray()
-	range_bytes.resize(safe_asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES)
-
-	var record_cursor := 0
-	for asset_index in range(safe_asset_count):
-		var ids: PackedInt32Array = per_asset_tile_ids[asset_index]
-		var range_offset := asset_index * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES
-		range_bytes.encode_u32(range_offset + 0, record_cursor)
-		range_bytes.encode_u32(range_offset + 4, ids.size())
-		range_bytes.encode_u32(range_offset + 8, 0)
-		range_bytes.encode_u32(range_offset + 12, 0)
-		for tile_id in ids:
-			var record_offset := record_cursor * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES
-			record_bytes.encode_u32(record_offset + 0, int(tile_id))
-			record_bytes.encode_u32(record_offset + 4, 0)
-			record_bytes.encode_u32(record_offset + 8, 0)
-			record_bytes.encode_u32(record_offset + 12, 0)
-			record_cursor += 1
-
-	var status := "readback_derived_cpu_pack"
-	if not valid_tile_space:
-		status = "blocked_invalid_tile_grid"
-	elif safe_asset_count <= 0:
-		status = "blocked_no_assets"
-	elif record_count <= 0:
-		status = "blocked_no_valid_route_records"
-
-	return {
-		"ok": valid_tile_space and safe_asset_count > 0,
-		"schema_version": CANDIDATE_ROUTE_SCHEMA_VERSION,
-		"resident_route_schema_version": CANDIDATE_ROUTE_SCHEMA_VERSION,
-		"record_stride_bytes": CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
-		"range_stride_bytes": CANDIDATE_ROUTE_RANGE_STRIDE_BYTES,
-		"resident_route_record_stride_bytes": CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
-		"resident_route_range_stride_bytes": CANDIDATE_ROUTE_RANGE_STRIDE_BYTES,
-		"record_count": record_count,
-		"range_count": safe_asset_count,
-		"asset_count": safe_asset_count,
-		"tile_count": safe_tile_count,
-		"tile_grid": tile_grid,
-		"record_bytes": record_bytes,
-		"range_bytes": range_bytes,
-		"source": CANDIDATE_ROUTE_CPU_PACK_SOURCE_LABEL,
-		"source_label": CANDIDATE_ROUTE_CPU_PACK_SOURCE_LABEL,
-		"pack_input_source": pack_input_source,
-		"record_layout": "uvec4(tile_id, 0, 0, 0)",
-		"range_layout": "uvec4(record_start, record_count, 0, 0)",
-		"producer_pack_pass": "cpu_vote_entry_route_pack",
-		"record_order": "asset_range_score_desc_tile_id_ascending",
-		"score_order_preserved": true,
-		"ordering_contract": "score_sorted_cpu_expansion",
-		"gpu_route_pack": false,
-		"gpu_route_pack_requested": false,
-		"gpu_route_pack_used": false,
-		"producer": "AutoObjectProbePrefilterGPU",
-		"has_records": record_count > 0,
-		"blocked": not valid_tile_space or safe_asset_count <= 0,
-		"reason": status,
-		"readback_derived": true,
-		"debug_readback_derived": true,
-		"status": status,
-		"debug_status": "readback_derived_not_resident_until_scene_placement_actor_upload",
-		"duplicate_tile_id_count": duplicate_tile_id_count,
-		"invalid_tile_id_count": invalid_tile_id_count,
-		"empty_range_count": empty_range_count,
-		"per_asset_record_counts": per_asset_record_counts,
-	}
-
-
-static func _candidate_regions_for_asset(candidate_regions_by_asset: Dictionary, asset_index: int) -> Variant:
-	if candidate_regions_by_asset.has(asset_index):
-		return candidate_regions_by_asset.get(asset_index)
-	var asset_key := str(asset_index)
-	if candidate_regions_by_asset.has(asset_key):
-		return candidate_regions_by_asset.get(asset_key)
-	return null
-
-
-static func _candidate_route_region_to_tile_id(region: Variant, tile_grid: Vector3i) -> int:
-	if tile_grid.x <= 0 or tile_grid.y <= 0 or tile_grid.z <= 0:
-		return -1
-	if region is Vector3i:
-		var p := region as Vector3i
-		if not _tile_pos_in_bounds(p, tile_grid):
-			return -1
-		return _tile_pos_to_id(p, tile_grid)
-	if region is Vector3:
-		var v := region as Vector3
-		var p := Vector3i(int(v.x), int(v.y), int(v.z))
-		if not _tile_pos_in_bounds(p, tile_grid):
-			return -1
-		return _tile_pos_to_id(p, tile_grid)
-	if region is Dictionary:
-		var record := region as Dictionary
-		if record.has("tile_id"):
-			return int(record.get("tile_id", -1))
-		for key in ["voxel_sparse", "voxel_region", "region", "tile_pos"]:
-			if record.has(key):
-				return _candidate_route_region_to_tile_id(record.get(key), tile_grid)
-	if typeof(region) == TYPE_INT:
-		return int(region)
-	if typeof(region) == TYPE_FLOAT:
-		return int(region)
-	return -1
-
-
-func _load_shaders(load_route_pack: bool = false, load_route_expand: bool = false) -> void:
+## 加载并编译所有计算着色器，按需加载路由打包/展开 Shader，同时创建对应管线 RID。
+func _load_shaders(load_route_expand: bool = false) -> void:
 	_shader_collect = load_compute_shader("res://shaders/collect_sv_anchors.glsl")
 	_shader_score = load_compute_shader("res://shaders/score_anchor_asset_probes.glsl")
 	_shader_topk = load_compute_shader("res://shaders/select_anchor_topk.glsl")
 	_shader_reduce = load_compute_shader("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl")
-	if load_route_pack:
-		_shader_route_pack = load_compute_shader("res://shaders/pack_candidate_route_records_from_votes.glsl")
+	_shader_route_pack = load_compute_shader("res://shaders/pack_candidate_route_records_from_votes.glsl")
 	if load_route_expand:
 		_shader_route_expand = load_compute_shader("res://shaders/expand_scene_voxel_tile_routes.glsl")
 	if _shader_collect.is_valid():
@@ -1365,7 +938,8 @@ func _load_shaders(load_route_pack: bool = false, load_route_expand: bool = fals
 		_pipeline_route_expand = create_compute_pipeline(_shader_route_expand)
 
 
-func _pipeline_rids_ready(require_route_pack: bool = false, require_route_expand: bool = false) -> bool:
+## 检查核心四个管线 RID 是否全部有效，可选验证路由打包或展开管线。
+func _pipeline_rids_ready(require_route_expand: bool = false) -> bool:
 	var core_ready := (
 		_shader_collect.is_valid() and _pipeline_collect.is_valid()
 		and _shader_score.is_valid() and _pipeline_score.is_valid()
@@ -1376,18 +950,17 @@ func _pipeline_rids_ready(require_route_pack: bool = false, require_route_expand
 		return false
 	if require_route_expand:
 		return _shader_route_expand.is_valid() and _pipeline_route_expand.is_valid()
-	if require_route_pack:
-		return _shader_route_pack.is_valid() and _pipeline_route_pack.is_valid()
-	return true
+	return _shader_route_pack.is_valid() and _pipeline_route_pack.is_valid()
 
 
-func _pipeline_readiness(route_pack_requested: bool = false, route_expand_requested: bool = false) -> Dictionary:
+## 返回每个 Pass 的 shader/pipeline 有效性状态字典，用于调试和错误报告。
+func _pipeline_readiness(route_expand_requested: bool = false) -> Dictionary:
 	var collect := _pipeline_pass_readiness(_shader_collect, _pipeline_collect)
 	var score := _pipeline_pass_readiness(_shader_score, _pipeline_score)
 	var topk := _pipeline_pass_readiness(_shader_topk, _pipeline_topk)
 	var reduce := _pipeline_pass_readiness(_shader_reduce, _pipeline_reduce)
 	var route_pack := _pipeline_pass_readiness(_shader_route_pack, _pipeline_route_pack)
-	route_pack["requested"] = route_pack_requested
+	route_pack["requested"] = true
 	var route_expand := _pipeline_pass_readiness(_shader_route_expand, _pipeline_route_expand)
 	route_expand["requested"] = route_expand_requested
 	var all_ready := bool(collect.get("ready", false)) \
@@ -1396,7 +969,7 @@ func _pipeline_readiness(route_pack_requested: bool = false, route_expand_reques
 		and bool(reduce.get("ready", false))
 	if route_expand_requested:
 		all_ready = all_ready and bool(route_expand.get("ready", false))
-	elif route_pack_requested:
+	else:
 		all_ready = all_ready and bool(route_pack.get("ready", false))
 	return {
 		"collect": collect,
@@ -1409,6 +982,7 @@ func _pipeline_readiness(route_pack_requested: bool = false, route_expand_reques
 	}
 
 
+## 检查单个 Pass 的 shader 和 pipeline RID 是否均有效。
 func _pipeline_pass_readiness(shader: RID, pipeline: RID) -> Dictionary:
 	var shader_valid := shader.is_valid()
 	var pipeline_valid := pipeline.is_valid()
@@ -1419,6 +993,7 @@ func _pipeline_pass_readiness(shader: RID, pipeline: RID) -> Dictionary:
 	}
 
 
+## 释放所有 GPU 资源并将管线/着色器 RID 清零。
 func _free_gpu() -> void:
 	dispose()
 	_pipeline_collect = RID()
@@ -1435,6 +1010,7 @@ func _free_gpu() -> void:
 	_shader_route_expand = RID()
 
 
+## dispose 完成后清空驻留路由缓冲区的 RID 引用。
 func _on_after_dispose() -> void:
 	_candidate_route_gpu_pack_record_buf = RID()
 	_candidate_route_gpu_pack_range_buf = RID()
@@ -1444,6 +1020,7 @@ func _on_after_dispose() -> void:
 # Utility
 # ---------------------------------------------------------------------------
 
+## 构造预过滤失败或无结果时的空结果字典。
 func _empty_result(reason: String = "empty", probe_pack: Dictionary = {}, pipeline_status: Dictionary = {}) -> Dictionary:
 	var probe_pack_ready := true
 	if not probe_pack.is_empty():
@@ -1480,6 +1057,7 @@ func _empty_result(reason: String = "empty", probe_pack: Dictionary = {}, pipeli
 	}
 
 
+## 从探针打包结果中提取摘要信息，供结果字典的 profile_probe_pack 字段使用。
 func _profile_probe_pack_summary(probe_pack: Dictionary) -> Dictionary:
 	if probe_pack.is_empty():
 		return {
@@ -1521,6 +1099,7 @@ func _profile_probe_pack_summary(probe_pack: Dictionary) -> Dictionary:
 	}
 
 
+## 判断给定原因字符串是否属于合约阻塞级别的错误。
 func _is_contract_blocked_reason(reason: String) -> bool:
 	if reason in [
 		"missing_rendering_device",
@@ -1536,6 +1115,7 @@ func _is_contract_blocked_reason(reason: String) -> bool:
 		or reason.begins_with("target_read_buffer_")
 
 
+## 从探针打包字典中提取管线可用性状态，若无则重新查询。
 func _pipeline_readiness_from_probe_pack(probe_pack: Dictionary) -> Dictionary:
 	var raw_status = probe_pack.get("pipeline_readiness", {})
 	if raw_status is Dictionary and not (raw_status as Dictionary).is_empty():
@@ -1543,14 +1123,11 @@ func _pipeline_readiness_from_probe_pack(probe_pack: Dictionary) -> Dictionary:
 	return _pipeline_readiness()
 
 
+## 从 sv 字典的 dirty_scene_voxel_tiles(B)提取脏 Tile ID 列表。
+## 旧式 dirty_tiles(A) 在标记时与 B 双向同步、覆盖一致，经 TILE_SIZE 映射后产出的线性 ID 是 B 的子集，故不再单独读取。
 func _dirty_tile_ids_from_sv(sv: Dictionary) -> Array[int]:
 	var tile_grid: Vector3i = sv.get("tile_grid_size", Vector3i.ZERO)
 	var result: Array[int] = []
-	var dirty_tiles: Dictionary = sv.get("dirty_tiles", {})
-	for raw_key in dirty_tiles.keys():
-		var tile_id := _sv_tile_key_to_shader_tile_id(str(raw_key), tile_grid)
-		if tile_id >= 0 and result.find(tile_id) < 0:
-			result.append(tile_id)
 	var dirty_scene_voxel_tiles: Dictionary = sv.get("dirty_scene_voxel_tiles", {})
 	for raw_tile in dirty_scene_voxel_tiles.values():
 		if not raw_tile is Dictionary:
@@ -1559,36 +1136,12 @@ func _dirty_tile_ids_from_sv(sv: Dictionary) -> Array[int]:
 	return result
 
 
-func _sv_tile_key_to_shader_tile_id(tile_key: String, tile_grid: Vector3i) -> int:
-	if tile_grid.x <= 0 or tile_grid.y <= 0 or tile_grid.z <= 0:
-		return -1
-	var parts := tile_key.split(":")
-	var tile_x := -1
-	var tile_y := -1
-	var slice_index := 0
-	if parts.size() == 3:
-		slice_index = int(parts[0])
-		tile_x = int(parts[1])
-		tile_y = int(parts[2])
-	elif parts.size() == 4 and parts[1] == "collision":
-		slice_index = int(parts[0])
-		tile_x = int(parts[2])
-		tile_y = int(parts[3])
-	else:
-		return -1
-	var tile_z := tile_y
-	var tile_layer_y := clampi(int(slice_index / TILE_SIZE), 0, tile_grid.y - 1)
-	var tile_pos := Vector3i(tile_x, tile_layer_y, tile_z)
-	if not _tile_pos_in_bounds(tile_pos, tile_grid):
-		return -1
-	return _tile_pos_to_id(tile_pos, tile_grid)
-
-
+## 将 scene_voxel_tile 的体素范围映射为 Tile 坐标区间，追加到 result 列表。
 func _append_shader_tile_ids_for_scene_voxel_tile(tile: Dictionary, tile_grid: Vector3i, result: Array[int]) -> void:
 	if tile_grid.x <= 0 or tile_grid.y <= 0 or tile_grid.z <= 0:
 		return
-	var voxel_min := _vector3i_from_value(tile.get("voxel_min", tile.get("bounds_min", Vector3i.ZERO)), Vector3i.ZERO)
-	var voxel_max := _vector3i_from_value(tile.get("voxel_max", tile.get("bounds_max", voxel_min + Vector3i.ONE)), voxel_min + Vector3i.ONE)
+	var voxel_min := VoxelGeneral.vector3i_from_value(tile.get("voxel_min", tile.get("bounds_min", Vector3i.ZERO)), Vector3i.ZERO)
+	var voxel_max := VoxelGeneral.vector3i_from_value(tile.get("voxel_max", tile.get("bounds_max", voxel_min + Vector3i.ONE)), voxel_min + Vector3i.ONE)
 	voxel_max = Vector3i(
 		maxi(voxel_max.x, voxel_min.x + 1),
 		maxi(voxel_max.y, voxel_min.y + 1),
@@ -1612,6 +1165,7 @@ func _append_shader_tile_ids_for_scene_voxel_tile(tile: Dictionary, tile_grid: V
 					result.append(tile_id)
 
 
+## 返回 sv 中所有 Tile 的线性 ID 列表（全量扫描模式）。
 static func all_tile_ids(sv: Dictionary) -> Array[int]:
 	var total := int(sv.get("total_tiles", 0))
 	var result: Array[int] = []
@@ -1620,12 +1174,14 @@ static func all_tile_ids(sv: Dictionary) -> Array[int]:
 	return result
 
 
+## 对正整数执行向上取整除法，非正数返回 0。
 static func _ceil_div_positive(value: int, divisor: int) -> int:
 	if value <= 0 or divisor <= 0:
 		return 0
 	return int((value + divisor - 1) / divisor)
 
 
+## 将线性工作量映射为不超过轴限制的 2D dispatch 组数 (x, y, 1)。
 static func _linear_dispatch_groups(work_count: int) -> Vector3i:
 	if work_count <= 0:
 		return Vector3i.ZERO
@@ -1636,6 +1192,7 @@ static func _linear_dispatch_groups(work_count: int) -> Vector3i:
 	return Vector3i(groups_x, groups_y, 1)
 
 
+## 将锚点数量映射为近似平方根分布的 2D dispatch 组数。
 static func _anchor_dispatch_groups(anchor_count: int) -> Vector3i:
 	var safe_anchor_count := clampi(anchor_count, 0, ANCHOR_CAPACITY)
 	if safe_anchor_count <= 0:
@@ -1647,6 +1204,7 @@ static func _anchor_dispatch_groups(anchor_count: int) -> Vector3i:
 	return Vector3i(groups_x, groups_y, 1)
 
 
+## 计算评分 Pass 的 Z 轴 dispatch 组数（每 SCORE_ASSET_LANES 个资源一组）。
 static func _score_asset_block_dispatch_groups(asset_count: int) -> int:
 	var safe_asset_count := clampi(asset_count, 0, MAX_ASSETS)
 	var groups_z := _ceil_div_positive(safe_asset_count, SCORE_ASSET_LANES)
@@ -1655,6 +1213,7 @@ static func _score_asset_block_dispatch_groups(asset_count: int) -> int:
 	return groups_z
 
 
+## 过滤并去重 tile_id 列表，只保留 [0, tile_count) 范围内的有效 ID。
 static func _sanitize_prefilter_tile_ids(values: Array[int], tile_count: int) -> Array[int]:
 	var result: Array[int] = []
 	if tile_count <= 0:
@@ -1671,18 +1230,17 @@ static func _sanitize_prefilter_tile_ids(values: Array[int], tile_count: int) ->
 	return result
 
 
+## 从 runtime_profile_container 获取 RenderingDevice 并附加到本类。
 func _attach_runtime_profile_container_device(runtime_profile_container: Object) -> bool:
 	if not _profile_container_ready_to_borrow(runtime_profile_container):
 		return false
-	if not runtime_profile_container.has_method("get_rendering_device"):
-		return false
-	var raw_rd = runtime_profile_container.call("get_rendering_device")
-	var profile_rd: RenderingDevice = raw_rd as RenderingDevice
+	var profile_rd := rendering_device_of(runtime_profile_container)
 	if profile_rd == null:
 		return false
 	return attach_rendering_device(profile_rd, false)
 
 
+## 检查 runtime_profile_container 是否已就绪且持有有效的探针缓冲区 RID。
 func _profile_container_ready_to_borrow(runtime_profile_container: Object) -> bool:
 	if runtime_profile_container == null:
 		return false
@@ -1699,6 +1257,7 @@ func _profile_container_ready_to_borrow(runtime_profile_container: Object) -> bo
 	return probe_buffer.is_valid()
 
 
+## 从 autoobject 的元数据、属性或 voxel_descriptor 中解析 profile_id。
 func _profile_id_from_autoobject(autoobject: Object, runtime_profile_container: Object) -> int:
 	if autoobject == null:
 		return -1
@@ -1734,6 +1293,7 @@ func _profile_id_from_autoobject(autoobject: Object, runtime_profile_container: 
 	))
 
 
+## 从 runtime_profile_container 获取指定 profile_id 的探针起始/数量范围。
 func _profile_container_probe_range(runtime_profile_container: Object, profile_id: int) -> Dictionary:
 	if runtime_profile_container == null or not runtime_profile_container.has_method("get_probe_range_for_profile_id"):
 		return {}
@@ -1743,6 +1303,7 @@ func _profile_container_probe_range(runtime_profile_container: Object, profile_i
 	return {}
 
 
+## 从 runtime_profile_container 的 GPU 缓冲区摘要中获取探针记录总数。
 func _profile_container_probe_record_count(runtime_profile_container: Object) -> int:
 	if runtime_profile_container == null or not runtime_profile_container.has_method("get_gpu_buffer_summary"):
 		return 0
@@ -1755,6 +1316,7 @@ func _profile_container_probe_record_count(runtime_profile_container: Object) ->
 	return int(probe_summary.get("record_count", 0))
 
 
+## 确保 float 数组长度不低于 expected，不足时用零补齐后返回副本。
 func _ensure_float_array(arr: PackedFloat32Array, expected: int) -> PackedFloat32Array:
 	if arr.size() >= expected:
 		return arr
@@ -1763,6 +1325,7 @@ func _ensure_float_array(arr: PackedFloat32Array, expected: int) -> PackedFloat3
 	return result
 
 
+## 将 complexity 和 collision 字段逐体素交错打包为 GPU 字节流（每体素 8 字节）。
 func _pack_complexity_collision_float_bytes(scene_data: PackedFloat32Array, collision_data: PackedFloat32Array, voxel_count: int) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(voxel_count * 8)
@@ -1774,12 +1337,14 @@ func _pack_complexity_collision_float_bytes(scene_data: PackedFloat32Array, coll
 	return bytes
 
 
+## 从 4 字节缓冲区解码单个 uint32 计数值。
 func _decode_u32_count(bytes: PackedByteArray) -> int:
 	if bytes.size() < 4:
 		return 0
 	return int(bytes.decode_u32(0))
 
 
+## 将 int 数组打包为 PackedByteArray（u32 格式），空数组返回 4 字节零。
 func _pack_u32_array_from_int(values: Array[int]) -> PackedByteArray:
 	if values.is_empty():
 		var bytes := PackedByteArray()
@@ -1788,73 +1353,13 @@ func _pack_u32_array_from_int(values: Array[int]) -> PackedByteArray:
 	return PackedInt32Array(values).to_byte_array()
 
 
-## Returns true when GPU route pack is requested (default enabled per P0 #4).
-## Per-call override: set target_read_buffers.use_gpu_candidate_route_pack=false to opt-out.
-func _candidate_route_gpu_pack_requested(options: Dictionary = {}) -> bool:
-	for key in [
-		"use_gpu_candidate_route_pack",
-		"use_producer_gpu_candidate_route_pack",
-		"use_gpu_candidate_route_payload_pack",
-		"gpu_candidate_route_pack",
-	]:
-		if options.has(key):
-			return bool(options.get(key, false))
-	return use_gpu_candidate_route_pack
-
-
-func _debug_readback_topk_requested(options: Dictionary = {}) -> bool:
-	for key in ["debug_readback_topk", "readback_topk", "read_topk"]:
-		if options.has(key):
-			return bool(options.get(key, false))
-	return false
-
-
-static func _decode_topk_readback(topk_bytes: PackedByteArray, anchor_count: int, asset_count: int) -> Dictionary:
-	if topk_bytes.is_empty():
-		return {}
-	var result := {}
-	var stride := TOPK * 8
-	var available := mini(topk_bytes.size(), anchor_count * stride)
-	for anchor_id in range(mini(anchor_count, int(available / stride))):
-		var entries: Array[Dictionary] = []
-		for k in range(TOPK):
-			var offset := anchor_id * stride + k * 8
-			if offset + 8 > topk_bytes.size():
-				break
-			var aid := int(topk_bytes.decode_u32(offset))
-			var score_bits := topk_bytes.decode_u32(offset + 4)
-			var score_bytes := PackedByteArray()
-			score_bytes.resize(4)
-			score_bytes.encode_u32(0, score_bits)
-			var score := score_bytes.decode_float(0)
-			if aid != EMPTY_ASSET_ID and score >= 0.0:
-				entries.append({"asset_id": int(aid), "score": score, "rank": k})
-		result[anchor_id] = entries
-	return result
-
-
-## CPU debug readback of vote buffer bytes — only needed when GPU route pack is
-## explicitly disabled or debug inspection of raw vote bytes is requested.
-func _candidate_route_cpu_debug_readback_requested(options: Dictionary = {}) -> bool:
-	for key in [
-		"debug_read_candidate_route_cpu_handoff_payload",
-		"debug_read_candidate_route_cpu_expansion",
-		"read_candidate_route_cpu_debug",
-		"read_candidate_route_vote_buffer_debug",
-		"read_candidate_route_debug_bytes",
-		"debug_readback_bytes",
-	]:
-		if options.has(key):
-			return bool(options.get(key, false))
-	return false
-
-
+## 将每个资源的路由半径（tile_radius）打包为 GPU 所需的字节缓冲区（每资源 16 字节）。
 func _pack_route_profile_radius_bytes(route_profiles: Array, asset_count: int) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(maxi(asset_count, 1) * 16)
 	for asset_index in range(maxi(asset_count, 0)):
 		var route_profile: Dictionary = route_profiles[asset_index] if asset_index < route_profiles.size() and route_profiles[asset_index] is Dictionary else _empty_route_profile(asset_index)
-		var radius := _vector3i_from_value(route_profile.get("tile_radius", Vector3i.ONE), Vector3i.ONE)
+		var radius := VoxelGeneral.vector3i_from_value(route_profile.get("tile_radius", Vector3i.ONE), Vector3i.ONE)
 		radius = Vector3i(maxi(radius.x, 0), maxi(radius.y, 0), maxi(radius.z, 0))
 		var base := asset_index * 16
 		bytes.encode_u32(base + 0, radius.x)
@@ -1864,6 +1369,7 @@ func _pack_route_profile_radius_bytes(route_profiles: Array, asset_count: int) -
 	return bytes
 
 
+## 解析目标场 GPU 缓冲区来源：优先借用驻留 RID，否则上传字节数据。
 func _target_read_buffer_pack(
 	target_read_buffers: Dictionary,
 	target_field_bytes: PackedFloat32Array,
@@ -1907,6 +1413,7 @@ func _target_read_buffer_pack(
 	}
 
 
+## 尝试从 target_read_buffers 字典借用已驻留的目标场缓冲区 RID，校验设备和字节数。
 func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected_floats: int) -> Dictionary:
 	if target_read_buffers.is_empty():
 		return {"ready": false, "reason": "resident_handoff_absent"}
@@ -1959,6 +1466,7 @@ func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected
 	}
 
 
+## 检查 target_read_buffers 是否声明持有驻留目标缓冲区交接。
 func _target_read_buffers_claim_resident(target_read_buffers: Dictionary) -> bool:
 	if target_read_buffers.is_empty():
 		return false
@@ -1969,6 +1477,7 @@ func _target_read_buffers_claim_resident(target_read_buffers: Dictionary) -> boo
 	))
 
 
+## 构造目标场缓冲区不可用时的阻塞结果字典。
 func _blocked_target_read_buffer_pack(
 	borrow_reason: String,
 	expected_floats: int,
@@ -2001,6 +1510,7 @@ func _blocked_target_read_buffer_pack(
 	}
 
 
+## 从 target_buffer_pack 中提取摘要信息，供结果字典的 target_read_buffer_summary 字段使用。
 func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 	var raw_field = pack.get("target_field_buffer", RID())
 	var field_buffer: RID = raw_field if raw_field is RID else RID()
@@ -2028,6 +1538,7 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 	}
 
 
+## 返回恰好 voxel_count×4 个 float 的目标场数据，过长则截断，不足则补零。
 func _target_field_data(prepacked: PackedFloat32Array, voxel_count: int) -> PackedFloat32Array:
 	var expected_floats := maxi(voxel_count, 1) * 4
 	if prepacked.size() >= expected_floats:
@@ -2039,6 +1550,7 @@ func _target_field_data(prepacked: PackedFloat32Array, voxel_count: int) -> Pack
 	return result
 
 
+## 将 Color 打包为 RGBA8 格式的 uint32（R 在最高字节）。
 static func _pack_rgba8(c: Color) -> int:
 	var r := clampi(int(roundf(c.r * 255.0)), 0, 255)
 	var g := clampi(int(roundf(c.g * 255.0)), 0, 255)
@@ -2047,6 +1559,7 @@ static func _pack_rgba8(c: Color) -> int:
 	return (r << 24) | (g << 16) | (b << 8) | a
 
 
+## 从探针字典中提取颜色和复杂度，转换为 GPU 所需的 RGBA8 uint32。
 static func _shader_rgba8_from_probe(probe: Dictionary) -> int:
 	if probe.has("expected_color") or probe.has("color") or probe.has("expected_complexity") or probe.has("complexity"):
 		var color := SemanticProbeProfileScript.color_from_value(
@@ -2058,6 +1571,7 @@ static func _shader_rgba8_from_probe(probe: Dictionary) -> int:
 	return _semantic_rgba8_to_shader_rgba8(int(probe.get("expected_rgba8", 0)))
 
 
+## 将语义 RGBA8（R 在最低位）转换为 Shader RGBA8（R 在最高字节）。
 static func _semantic_rgba8_to_shader_rgba8(packed: int) -> int:
 	var r := packed & 0xff
 	var g := (packed >> 8) & 0xff
@@ -2066,12 +1580,14 @@ static func _semantic_rgba8_to_shader_rgba8(packed: int) -> int:
 	return (r << 24) | (g << 16) | (b << 8) | a
 
 
+## 将 Variant 安全转换为 Vector3，类型不匹配返回 Vector3.ZERO。
 func _vec3_from(value) -> Vector3:
 	if value is Vector3:
 		return value as Vector3
 	return Vector3.ZERO
 
 
+## 从探针字典中读取颜色、复杂度、碰撞三个权重，返回 Vector3。
 static func _probe_metric_weights(p: Dictionary) -> Vector3:
 	return Vector3(
 		float(p.get("w_color", 1.0)),
@@ -2080,6 +1596,7 @@ static func _probe_metric_weights(p: Dictionary) -> Vector3:
 	)
 
 
+## 为所有 autoobject 构建路由 Profile 数组（probe/footprint/tile_radius）。
 static func _build_route_profiles(autoobjects: Array, asset_count: int, voxel_size: Vector3) -> Array[Dictionary]:
 	var profiles: Array[Dictionary] = []
 	for obj_idx in range(asset_count):
@@ -2100,6 +1617,7 @@ static func _build_route_profiles(autoobjects: Array, asset_count: int, voxel_si
 	return profiles
 
 
+## 返回指定 asset_index 的空路由 Profile 默认值字典。
 static func _empty_route_profile(asset_index: int) -> Dictionary:
 	return {
 		"asset_index": asset_index,                 # asset index in current registry
@@ -2113,6 +1631,7 @@ static func _empty_route_profile(asset_index: int) -> Dictionary:
 	}
 
 
+## 根据探针偏移、碰撞脚印和上下文感知半径计算路由 Profile（tile_radius 等）。
 static func _build_route_profile_from_arrays(
 	probes: Array,
 	collision: Array,
@@ -2146,6 +1665,7 @@ static func _build_route_profile_from_arrays(
 	}
 
 
+## 计算探针偏移列表在体素坐标系下的 AABB（min/max）。
 static func _probe_offset_voxel_bounds(probes: Array, voxel_size: Vector3) -> Dictionary:
 	var has_probe := false
 	var min_v := Vector3i.ZERO
@@ -2166,6 +1686,7 @@ static func _probe_offset_voxel_bounds(probes: Array, voxel_size: Vector3) -> Di
 	return {"min": min_v, "max": max_v}
 
 
+## 计算碰撞脚印在体素坐标系下的 AABB（min/max）。
 static func _footprint_voxel_bounds(collision: Array, voxel_size: Vector3) -> Dictionary:
 	var footprint: Array = VoxelPlacementGeneratorScript.bake_footprint_from_collision(
 		collision,
@@ -2181,16 +1702,18 @@ static func _footprint_voxel_bounds(collision: Array, voxel_size: Vector3) -> Di
 		if not raw_entry is Dictionary:
 			continue
 		var entry := raw_entry as Dictionary
-		var p := _vector3i_from_value(entry.get("local_pos", Vector3i.ZERO), Vector3i.ZERO)
+		var p := VoxelGeneral.vector3i_from_value(entry.get("local_pos", Vector3i.ZERO), Vector3i.ZERO)
 		min_v = Vector3i(mini(min_v.x, p.x), mini(min_v.y, p.y), mini(min_v.z, p.z))
 		max_v = Vector3i(maxi(max_v.x, p.x), maxi(max_v.y, p.y), maxi(max_v.z, p.z))
 	return {"min": min_v, "max": max_v}
 
 
+## 将世界空间半径转换为体素空间半径 Vector3i（委托给 VoxelGeneral）。
 static func _radius_to_voxels(radius: float, voxel_size: Vector3) -> Vector3i:
 	return VoxelGeneral.radius_to_voxels(radius, voxel_size)
 
 
+## 将体素填充量转换为 Tile 半径（向上取整到 TILE_SIZE）。
 static func _padding_to_tile_radius(min_pad: Vector3i, max_pad: Vector3i) -> Vector3i:
 	return Vector3i(
 		ceili(float(maxi(abs(min_pad.x), abs(max_pad.x))) / float(TILE_SIZE)),
@@ -2199,87 +1722,7 @@ static func _padding_to_tile_radius(min_pad: Vector3i, max_pad: Vector3i) -> Vec
 	)
 
 
-static func _expand_vote_entries_to_voxel_sparses(
-	entries: Array,
-	route_profile: Dictionary,
-	tile_grid: Vector3i
-) -> Array[Vector3i]:
-	var expanded := _expand_vote_entries_to_route_tile_ids(entries, route_profile, tile_grid)
-	var tile_ids: PackedInt32Array = expanded.get("tile_ids", PackedInt32Array())
-	var voxel_sparses: Array[Vector3i] = []
-	for tile_id in tile_ids:
-		voxel_sparses.append(_tile_id_to_pos(int(tile_id), tile_grid))
-	return voxel_sparses
-
-
-static func _expand_vote_entries_to_route_tile_ids(
-	entries: Array,
-	route_profile: Dictionary,
-	tile_grid: Vector3i,
-	tile_count: int = -1
-) -> Dictionary:
-	var tile_ids := PackedInt32Array()
-	var safe_tile_count := tile_count
-	if safe_tile_count < 0:
-		safe_tile_count = tile_grid.x * tile_grid.y * tile_grid.z
-	if tile_grid.x <= 0 or tile_grid.y <= 0 or tile_grid.z <= 0 or safe_tile_count <= 0:
-		return {
-			"tile_ids": tile_ids,
-			"duplicate_tile_id_count": 0,
-			"invalid_tile_id_count": entries.size(),
-		}
-
-	var radius := _vector3i_from_value(route_profile.get("tile_radius", Vector3i.ONE), Vector3i.ONE)
-	radius = Vector3i(maxi(radius.x, 0), maxi(radius.y, 0), maxi(radius.z, 0))
-	var scored_by_tile := {}
-	var duplicate_tile_id_count := 0
-	var invalid_tile_id_count := 0
-	for raw_entry in entries:
-		if not raw_entry is Dictionary:
-			invalid_tile_id_count += 1
-			continue
-		var entry := raw_entry as Dictionary
-		var center_id := _candidate_route_region_to_tile_id(entry, tile_grid)
-		if center_id < 0 or center_id >= safe_tile_count:
-			invalid_tile_id_count += 1
-			continue
-		var center := _tile_id_to_pos(center_id, tile_grid)
-		if not _tile_pos_in_bounds(center, tile_grid):
-			invalid_tile_id_count += 1
-			continue
-		var score := float(entry.get("score", 0.0))
-		for dz in range(-radius.z, radius.z + 1):
-			for dy in range(-radius.y, radius.y + 1):
-				for dx in range(-radius.x, radius.x + 1):
-					var p := Vector3i(center.x + dx, center.y + dy, center.z + dz)
-					if not _tile_pos_in_bounds(p, tile_grid):
-						continue
-					var tid := _tile_pos_to_id(p, tile_grid)
-					if tid < 0 or tid >= safe_tile_count:
-						invalid_tile_id_count += 1
-						continue
-					if scored_by_tile.has(tid):
-						duplicate_tile_id_count += 1
-					scored_by_tile[tid] = maxf(float(scored_by_tile.get(tid, -INF)), score)
-	var expanded_entries: Array[Dictionary] = []
-	for tid in scored_by_tile:
-		expanded_entries.append({"tile_id": int(tid), "score": float(scored_by_tile[tid])})
-	expanded_entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		var score_a := float(a.get("score", 0.0))
-		var score_b := float(b.get("score", 0.0))
-		if not is_equal_approx(score_a, score_b):
-			return score_a > score_b
-		return int(a.get("tile_id", 0)) < int(b.get("tile_id", 0))
-	)
-	for entry in expanded_entries:
-		tile_ids.append(int(entry.get("tile_id", 0)))
-	return {
-		"tile_ids": tile_ids,
-		"duplicate_tile_id_count": duplicate_tile_id_count,
-		"invalid_tile_id_count": invalid_tile_id_count,
-	}
-
-
+## 检查 Tile 坐标 p 是否在 tile_grid 范围内。
 static func _tile_pos_in_bounds(p: Vector3i, tile_grid: Vector3i) -> bool:
 	return (
 		p.x >= 0 and p.x < tile_grid.x
@@ -2288,10 +1731,12 @@ static func _tile_pos_in_bounds(p: Vector3i, tile_grid: Vector3i) -> bool:
 	)
 
 
+## 将 Tile 三维坐标转换为线性 tile_id（X-major，Z 次之，Y 最高）。
 static func _tile_pos_to_id(p: Vector3i, tile_grid: Vector3i) -> int:
 	return p.x + tile_grid.x * (p.z + tile_grid.z * p.y)
 
 
+## 将线性 tile_id 还原为三维 Tile 坐标 Vector3i。
 static func _tile_id_to_pos(tile_id: int, tile_grid: Vector3i) -> Vector3i:
 	var tx := tile_id % tile_grid.x
 	var tz := (tile_id / tile_grid.x) % tile_grid.z
@@ -2299,26 +1744,12 @@ static func _tile_id_to_pos(tile_id: int, tile_grid: Vector3i) -> Vector3i:
 	return Vector3i(tx, ty, tz)
 
 
+## 将世界空间偏移转换为体素坐标（委托给 VoxelGeneral）。
 static func _world_offset_to_voxels(offset: Vector3, voxel_size: Vector3) -> Vector3i:
 	return VoxelGeneral.world_offset_to_voxels(offset, voxel_size)
 
 
-static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
-	if value is Vector3i:
-		return value as Vector3i
-	if value is Vector3:
-		var v := value as Vector3
-		return Vector3i(roundi(v.x), roundi(v.y), roundi(v.z))
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
-	if value is Dictionary:
-		var d := value as Dictionary
-		return Vector3i(int(d.get("x", fallback.x)), int(d.get("y", fallback.y)), int(d.get("z", fallback.z)))
-	return fallback
-
-
+## 从 autoobject 或其 voxel_descriptor 中读取 context_sensing_radius。
 static func _object_context_sensing_radius(autoobject: Object) -> float:
 	if autoobject == null:
 		return 0.0
@@ -2330,12 +1761,14 @@ static func _object_context_sensing_radius(autoobject: Object) -> float:
 	return 0.0
 
 
+## 从 autoobject 中读取 semantic_probe_density，默认返回 1.0。
 static func _semantic_probe_density(autoobject: Object) -> float:
 	if autoobject != null and _object_has_property(autoobject, "semantic_probe_density"):
 		return float(autoobject.get("semantic_probe_density"))
 	return 1.0
 
 
+## 检查 object 的属性列表中是否存在指定属性名。
 static func _object_has_property(object: Object, property_name: String) -> bool:
 	if object == null:
 		return false
@@ -2345,6 +1778,7 @@ static func _object_has_property(object: Object, property_name: String) -> bool:
 	return false
 
 
+## 构造路由 Profile 的调试副本数组，缺失条目用空 Profile 填充。
 static func _route_profile_debug(route_profiles: Array, asset_count: int) -> Array[Dictionary]:
 	var debug: Array[Dictionary] = []
 	for asset_id in range(asset_count):

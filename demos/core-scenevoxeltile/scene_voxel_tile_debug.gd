@@ -2,7 +2,7 @@
 extends "res://scripts/core_demo_contract_fixture.gd"
 
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
-const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
+const UtilsDemoUI := preload("res://scripts/utils_demo_ui.gd")
 
 # Dirty flag bit constants (mirroring SceneVoxelCommitter)
 const FLAG_SCENE := 1
@@ -349,7 +349,7 @@ func _full_refresh() -> void:
 	_metric_labels["clean_count"].text = "Clean: %d" % clean_count
 	_metric_labels["tile_size"].text = "Tile Size: %d x %d x %d voxels" % [ts.x, ts.y, ts.z]
 	_metric_labels["grid_size"].text = "Grid: %s voxels" % str(sv.get("grid_size", Vector3i.ZERO))
-	_metric_labels["voxel_size"].text = "Voxel Size: %.2f world" % _committer.voxel_size
+	_metric_labels["voxel_size"].text = "Voxel Size: %.2f x %.2f x %.2f world" % [_committer.voxel_size.x, _committer.voxel_size.y, _committer.voxel_size.z]
 	_metric_labels["sv_status"].text = "SV: committed tick=%d  gen=%d" % [
 		int(sv.get("commit_tick", -1)),
 		int(sv.get("generation_tick", 0)),
@@ -479,7 +479,7 @@ func _ray_pick_tile() -> void:
 
 
 func _get_camera() -> Camera3D:
-	return CommonDemoUI.find_any_camera(self, true, false)
+	return UtilsDemoUI.find_any_camera(self, true, false)
 
 
 func _update_selection_display() -> void:

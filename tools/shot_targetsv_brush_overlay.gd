@@ -5,7 +5,7 @@ const SHOT_DIR := "res://tools/_shots"
 const VP_SIZE := Vector2i(1152, 648)
 const MIN_PAINT_DIFF := 0.002
 const MIN_MODE_DIFF := 0.0005
-const CommonShotUtils := preload("res://scripts/common_shot_utils.gd")
+const UtilsShotUtils := preload("res://scripts/utils_shot_utils.gd")
 
 var _vp: SubViewport
 var _demo: Node
@@ -22,7 +22,7 @@ func _run() -> void:
 		quit(1)
 		return
 
-	CommonShotUtils.ensure_dir(SHOT_DIR)
+	UtilsShotUtils.ensure_dir(SHOT_DIR)
 
 	var packed := load(SCENE_PATH) as PackedScene
 	if packed == null:
@@ -41,7 +41,7 @@ func _run() -> void:
 	print("[BRUSH_SHOT] scene instanced: ", _demo.name)
 
 	await _settle(50)
-	_camera = CommonShotUtils.find_camera_recursive(_demo)
+	_camera = UtilsShotUtils.find_camera_recursive(_demo)
 	if _camera == null:
 		print("[BRUSH_SHOT] FAIL camera missing")
 		quit(1)
@@ -56,7 +56,7 @@ func _run() -> void:
 	var rgb := await _shot("brush_overlay_01_rgb")
 
 	var ok := paint_ok
-	var paint_diff := CommonShotUtils.image_diff_ratio(before.get("image", null), rgb.get("image", null))
+	var paint_diff := UtilsShotUtils.image_diff_ratio(before.get("image", null), rgb.get("image", null))
 	print("[BRUSH_SHOT] diff before->rgb=", "%.5f" % paint_diff)
 	if paint_diff < MIN_PAINT_DIFF:
 		print("[BRUSH_SHOT] FAIL painted screenshot is too close to baseline")
@@ -64,7 +64,7 @@ func _run() -> void:
 
 	ok = await _switch_mode(KEY_T, 1, "complexity") and ok
 	var complexity := await _shot("brush_overlay_02_complexity")
-	var complexity_diff := CommonShotUtils.image_diff_ratio(rgb.get("image", null), complexity.get("image", null))
+	var complexity_diff := UtilsShotUtils.image_diff_ratio(rgb.get("image", null), complexity.get("image", null))
 	print("[BRUSH_SHOT] diff rgb->complexity=", "%.5f" % complexity_diff)
 	if complexity_diff < MIN_MODE_DIFF:
 		print("[BRUSH_SHOT] FAIL complexity mode screenshot did not visibly change")
@@ -72,7 +72,7 @@ func _run() -> void:
 
 	ok = await _switch_mode(KEY_Y, 2, "collision") and ok
 	var collision := await _shot("brush_overlay_03_collision")
-	var collision_diff := CommonShotUtils.image_diff_ratio(complexity.get("image", null), collision.get("image", null))
+	var collision_diff := UtilsShotUtils.image_diff_ratio(complexity.get("image", null), collision.get("image", null))
 	print("[BRUSH_SHOT] diff complexity->collision=", "%.5f" % collision_diff)
 	if collision_diff < MIN_MODE_DIFF:
 		print("[BRUSH_SHOT] FAIL collision mode screenshot did not visibly change")
@@ -80,7 +80,7 @@ func _run() -> void:
 
 	ok = await _switch_mode(KEY_R, 0, "rgb") and ok
 	var rgb_again := await _shot("brush_overlay_04_rgb_again")
-	var rgb_return_diff := CommonShotUtils.image_diff_ratio(rgb.get("image", null), rgb_again.get("image", null))
+	var rgb_return_diff := UtilsShotUtils.image_diff_ratio(rgb.get("image", null), rgb_again.get("image", null))
 	print("[BRUSH_SHOT] diff rgb->rgb_again=", "%.5f" % rgb_return_diff)
 
 	print("[BRUSH_SHOT] RESULT ", "PASS" if ok else "FAIL")
@@ -177,7 +177,7 @@ func _settle(frames: int = 8) -> void:
 
 func _shot(tag: String) -> Dictionary:
 	await _settle(3)
-	var result := CommonShotUtils.save_viewport_png(_vp, "%s/%s.png" % [SHOT_DIR, tag], false, true)
+	var result := UtilsShotUtils.save_viewport_png(_vp, "%s/%s.png" % [SHOT_DIR, tag], false, true)
 	var img := result.get("image", null) as Image
 	if img == null:
 		print("[BRUSH_SHOT] FAIL empty image: ", tag, " reason=", result.get("reason", "image unavailable"))

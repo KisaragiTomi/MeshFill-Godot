@@ -8,11 +8,11 @@ layout(set = 0, binding = 0, std430) restrict readonly buffer TerrainHeight {
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer TargetVisual {
-    vec4 target_visual[];
+    uint target_visual_rgba8[];
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer TargetCollision {
-    float target_collision[];
+    uint target_collision_r8_words[];
 };
 
 layout(set = 0, binding = 3, std430) restrict writeonly buffer PickOutput {
@@ -57,6 +57,21 @@ layout(push_constant, std430) uniform Params {
 const int MODE_SCENE_VOXEL = 0;
 const int MODE_TARGETSV = 1;
 const float INF = 3.402823466e+38;
+
+vec4 unpack_rgba8(uint packed) {
+    return vec4(
+        float((packed >> 24u) & 0xFFu) / 255.0,
+        float((packed >> 16u) & 0xFFu) / 255.0,
+        float((packed >>  8u) & 0xFFu) / 255.0,
+        float((packed >>  0u) & 0xFFu) / 255.0
+    );
+}
+
+float load_target_collision_r8(uint index) {
+    uint word = target_collision_r8_words[index >> 2u];
+    uint shift = (index & 3u) * 8u;
+    return float((word >> shift) & 0xFFu) / 255.0;
+}
 
 vec3 ray_origin() {
     return vec3(ray_ox, ray_oy, ray_oz);
@@ -232,9 +247,8 @@ void pick_targetsv() {
             int x = clamp(base_x + dx, 0, ts - 1);
             for (int slice_index = 0; slice_index < slices; slice_index++) {
                 uint idx = uint((slice_index * ts + z) * ts + x);
-                int sample_idx = int(idx);
-                float complexity = clamp(target_visual[sample_idx].a, 0.0, 1.0);
-                float collision = clamp(target_collision[sample_idx], 0.0, 1.0);
+                float complexity = unpack_rgba8(target_visual_rgba8[idx]).a;
+                float collision = load_target_collision_r8(idx);
                 float occupancy = max(complexity, collision);
                 if (occupancy <= occupancy_threshold) continue;
 

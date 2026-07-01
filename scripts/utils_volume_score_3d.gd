@@ -1,15 +1,15 @@
 @tool
-class_name CommonVolumeScore3D
+class_name UtilsVolumeScore3D
 extends RefCounted
 
 const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
 const ObjectVolumeScoreGpuScript := preload("res://scripts/object_volume_score_gpu.gd")
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
-const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
+const UtilsDemoAssets := preload("res://scripts/utils_demo_assets.gd")
 
 
-static func voxelize_common_assets(
+static func voxelize_utils_assets(
 	voxel_grid_count: int,
 	fallback_to_box: bool = true,
 	scene_voxel_size: Vector3 = Vector3.ZERO
@@ -19,15 +19,15 @@ static func voxelize_common_assets(
 	var footprints: Array[Dictionary] = []
 	var voxelizer = MeshVoxelizerGpuScript.new()
 
-	for i in range(CommonDemoAssets.count()):
-		var asset_path := CommonDemoAssets.geo_path(i)
-		var mesh_info := CommonDemoAssets.load_mesh_info(asset_path)
+	for i in range(UtilsDemoAssets.count()):
+		var asset_path := UtilsDemoAssets.geo_path(i)
+		var mesh_info := UtilsDemoAssets.load_mesh_info(asset_path)
 		var raw_mesh: Mesh = mesh_info.get("mesh", null)
 		var mesh_xform: Transform3D = mesh_info.get("mesh_transform", Transform3D.IDENTITY)
-		# Bake mesh_transform + base-pivot so the placed AutoObject mesh has its
-		# bottom-center at local origin — coordinate axes zeroed at the placement point.
-		var mesh := CommonDemoAssets.bake_mesh_xform(
-			raw_mesh, CommonDemoAssets.base_pivot_xform(raw_mesh, mesh_xform))
+		# Bake only the import conversion (mesh_transform) into the mesh; keep the FBX's
+		# native pivot at the mesh origin. Scoring + placement both anchor at that pivot,
+		# so each asset embeds/stands exactly as authored in its FBX.
+		var mesh := UtilsDemoAssets.bake_mesh_xform(raw_mesh, mesh_xform)
 		var fallback := false
 		if mesh == null:
 			if not fallback_to_box:
@@ -37,7 +37,7 @@ static func voxelize_common_assets(
 		var aabb := mesh.get_aabb()
 		var volume := aabb.size.x * aabb.size.y * aabb.size.z
 		var longest := maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
-		var color := CommonDemoAssets.asset_color(i)
+		var color := UtilsDemoAssets.asset_color(i)
 		var vox_result := voxelizer.voxelize(mesh, voxel_grid_count, color, 0.9, 4)
 		var footprint := ObjectVolumeScoreGpuScript.footprint_from_voxelizer_result(
 			vox_result, color, longest)
@@ -47,7 +47,7 @@ static func voxelize_common_assets(
 			scene_voxel_size
 		)
 		var asset := {
-			"name": CommonDemoAssets.asset_name(i, asset_path.get_file()),
+			"name": UtilsDemoAssets.asset_name(i, asset_path.get_file()),
 			"path": asset_path,
 			"mesh": mesh,
 			"volume": volume,
@@ -100,6 +100,11 @@ static func procedural_terrain(gx: int, gz: int) -> PackedFloat32Array:
 	return field
 
 
+## 将 [0,1] 浮点量化为 8 位 UNORM 整数（0..255），供 8 位体素场打包使用。
+static func _to_unorm8(value: float) -> int:
+	return int(round(clampf(value, 0.0, 1.0) * 255.0))
+
+
 static func build_scene_fields(
 	grid_resolution: int,
 	grid_height_slices: int,
@@ -120,12 +125,17 @@ static func build_scene_fields(
 	if terrain.size() != gx * gz:
 		terrain = procedural_terrain(gx, gz)
 
-	var cx_floats := PackedFloat32Array()
-	cx_floats.resize(voxel_count * 4)
-	var coll_floats := PackedFloat32Array()
-	coll_floats.resize(voxel_count)
-	var target_floats := PackedFloat32Array()
-	target_floats.resize(voxel_count * 4)
+	# Scene fields are emitted 8-bit per component for the 3D score stage:
+	#   complexity -> RGBA8 (rgb = color placeholder, a = complexity),
+	#   collision  -> R8,
+	#   target     -> RGBA8 (rgb = color, a = coverage).
+	# PackedByteArray.resize() zero-fills, so only non-zero components are written.
+	var cx_bytes := PackedByteArray()
+	cx_bytes.resize(voxel_count * 4)
+	var coll_bytes := PackedByteArray()
+	coll_bytes.resize(voxel_count)
+	var target_bytes := PackedByteArray()
+	target_bytes.resize(voxel_count * 4)
 
 	for z in range(gz):
 		for x in range(gx):
@@ -138,30 +148,27 @@ static func build_scene_fields(
 			for y in range(gy):
 				var idx := VoxelGeneral.voxel_index(Vector3i(x, y, z), grid)
 				if y <= ground_slice:
-					cx_floats[idx * 4 + 3] = 0.8
-					coll_floats[idx] = 0.9
+					cx_bytes[idx * 4 + 3] = _to_unorm8(0.8)
+					coll_bytes[idx] = _to_unorm8(0.9)
 				elif y <= ground_slice + 1:
-					cx_floats[idx * 4 + 3] = 0.3
-					coll_floats[idx] = 0.1
-				else:
-					cx_floats[idx * 4 + 3] = 0.0
-					coll_floats[idx] = 0.0
+					cx_bytes[idx * 4 + 3] = _to_unorm8(0.3)
+					coll_bytes[idx] = _to_unorm8(0.1)
 
 				var above_ground := y - ground_slice
 				if above_ground >= min_above and above_ground <= max_above:
 					var frac := 1.0 - float(above_ground - min_above) / maxf(float(max_above - min_above), 1.0)
-					target_floats[idx * 4] = 0.45
-					target_floats[idx * 4 + 1] = 0.42
-					target_floats[idx * 4 + 2] = 0.35
-					target_floats[idx * 4 + 3] = clampf(frac * 0.7 + 0.1, 0.0, 1.0)
+					target_bytes[idx * 4] = _to_unorm8(0.45)
+					target_bytes[idx * 4 + 1] = _to_unorm8(0.42)
+					target_bytes[idx * 4 + 2] = _to_unorm8(0.35)
+					target_bytes[idx * 4 + 3] = _to_unorm8(clampf(frac * 0.7 + 0.1, 0.0, 1.0))
 
 	return {
 		"grid": grid,
 		"voxel_size": voxel_size,
 		"grid_origin": VoxelGeneral.default_grid_origin(capture_size),
-		"complexity_bytes": cx_floats.to_byte_array(),
-		"collision_bytes": coll_floats.to_byte_array(),
-		"target_bytes": target_floats.to_byte_array(),
+		"complexity_bytes": cx_bytes,
+		"collision_bytes": coll_bytes,
+		"target_bytes": target_bytes,
 		"terrain_height": terrain,
 	}
 

@@ -27,7 +27,7 @@ static func normalize_collision(source: Array, default_radius: float = 0.0) -> A
 			continue
 		var collision := (raw_collision as Dictionary).duplicate(true)
 		if _is_point_collision_sample(collision):
-			var voxel := _vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
+			var voxel := VoxelGeneral.vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
 			collision["voxel"] = voxel
 			collision["collision_strength"] = clampf(float(collision.get("collision_strength", 1.0)), 0.0, 1.0)
 			if not collision.has("weight"):
@@ -55,26 +55,6 @@ static func normalize_collision(source: Array, default_radius: float = 0.0) -> A
 
 static func _is_point_collision_sample(collision: Dictionary) -> bool:
 	return collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset")
-
-
-static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
-	if value is Vector3i:
-		return value as Vector3i
-	if value is Vector3:
-		var v := value as Vector3
-		return Vector3i(roundi(v.x), roundi(v.y), roundi(v.z))
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Vector3i(
-			int(dict.get("x", fallback.x)),
-			int(dict.get("y", fallback.y)),
-			int(dict.get("z", fallback.z))
-		)
-	return fallback
 
 
 static func create_profile(entry_color: Color, entry_complexity: float):

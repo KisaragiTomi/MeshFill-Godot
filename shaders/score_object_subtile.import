@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://ibudhmasfwf0"
+path="res://.godot/imported/score_object_subtile-冲突-又上医院_Win11.glsl-257194dbe2777dc47d5272194324e1bb.res"
+
+[deps]
+
+source_file="res://shaders/score_object_subtile-冲突-又上医院_Win11.glsl"
+dest_files=["res://.godot/imported/score_object_subtile-冲突-又上医院_Win11.glsl-257194dbe2777dc47d5272194324e1bb.res"]
+
+[params]
+

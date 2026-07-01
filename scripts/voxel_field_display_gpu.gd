@@ -14,6 +14,7 @@ extends RefCounted
 # resources on the render thread.
 
 const SHADER_PATH := "res://shaders/voxel_field_instances.glsl"
+const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const LOCAL_SIZE := 64
 const FLOATS_PER_INSTANCE := 16
 
@@ -90,8 +91,8 @@ func bind_multimesh(multimesh_rid: RID, voxel_count: int) -> bool:
 	return true
 
 
-# fields: { occupancy, collision, color_rgba (PackedFloat32Array, 4/voxel),
-#           terrain_height }. params: { xz_res, slice_count, view_mode,
+# fields: { occupancy, collision, color_rgba (float CPU views; uploaded as
+#           R8/R8/RGBA8), terrain_height }. params: { xz_res, slice_count, view_mode,
 #           capture_size, display_scale, vertical_span, height_span, threshold }.
 # Dispatches the field->instance compute write on the render thread. Zero readback.
 func write_field(fields: Dictionary, params: Dictionary) -> bool:
@@ -148,9 +149,9 @@ func _readback_write(
 	if not _ensure_pipeline():
 		return false
 
-	var occ_buf := _make_buffer(occupancy.to_byte_array())
-	var coll_buf := _make_buffer(collision.to_byte_array())
-	var color_buf := _make_buffer(color_rgba.to_byte_array())
+	var occ_buf := _make_buffer(SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(occupancy, _voxel_count))
+	var coll_buf := _make_buffer(SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(collision, _voxel_count))
+	var color_buf := _make_buffer(SceneVoxelTileCodecScript.pack_complexity_field_rgba8_bytes(color_rgba, _voxel_count))
 	var height_buf := _make_buffer(terrain_height.to_byte_array())
 	if not occ_buf.is_valid() or not coll_buf.is_valid() or not color_buf.is_valid() or not height_buf.is_valid():
 		_last_reason = "scratch_buffer_create_failed"
@@ -208,9 +209,9 @@ func _render_thread_write(
 	if not _ensure_pipeline():
 		return
 
-	var occ_buf := _make_buffer(occupancy.to_byte_array())
-	var coll_buf := _make_buffer(collision.to_byte_array())
-	var color_buf := _make_buffer(color_rgba.to_byte_array())
+	var occ_buf := _make_buffer(SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(occupancy, _voxel_count))
+	var coll_buf := _make_buffer(SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(collision, _voxel_count))
+	var color_buf := _make_buffer(SceneVoxelTileCodecScript.pack_complexity_field_rgba8_bytes(color_rgba, _voxel_count))
 	var height_buf := _make_buffer(terrain_height.to_byte_array())
 	if not occ_buf.is_valid() or not coll_buf.is_valid() or not color_buf.is_valid() or not height_buf.is_valid():
 		_last_reason = "scratch_buffer_create_failed"

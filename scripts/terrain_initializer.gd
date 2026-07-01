@@ -6,7 +6,7 @@ const DEFAULT_TEXTURE_SIZE := TerrainConfigScript.TEXTURE_SIZE
 const DEFAULT_CAPTURE_SIZE := TerrainConfigScript.CAPTURE_SIZE
 const DEFAULT_MAX_HEIGHT := TerrainConfigScript.MAX_HEIGHT
 const DEFAULT_TERRAIN_NAME := TerrainConfigScript.TERRAIN_NAME
-const TERRAIN_GROUP := "meshfill_common_terrain"
+const TERRAIN_GROUP := "meshfill_utils_terrain"
 const TERRAIN_VOXEL_COLOR := Color(0.45, 0.42, 0.35, 1.0)
 const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
 const HEIGHT_NORMAL_SHADER_PATH := "res://shaders/height_normal_from_height.glsl"
@@ -258,7 +258,7 @@ static func create_terrain_mesh_instance(target_height_texture: Texture2D, optio
 	terrain.material_override = mat
 	terrain.visible = bool(options.get("visible", true))
 	terrain.add_to_group(TERRAIN_GROUP)
-	terrain.set_meta("meshfill_common_terrain_initialized", true)
+	terrain.set_meta("meshfill_utils_terrain_initialized", true)
 	terrain.set_meta("terrain_height_stats", height_stats)
 	terrain.set_meta("terrain_capture_size", capture_size)
 	terrain.set_meta("terrain_resolution", res)
@@ -358,11 +358,6 @@ static func make_height_normal_image_gpu(height_img: Image, cell_size: float, st
 	if height_bytes.size() != pixel_count * 4 * 4:
 		return {}
 
-	var probe_rd := RenderingServer.create_local_rendering_device()
-	if probe_rd == null:
-		return {}
-	probe_rd.free()
-
 	var compute = ComputeShaderBaseScript.new()
 	compute.log_name = "TerrainInitializerHeightNormal"
 	if not compute.ensure_device(true, false):
@@ -449,11 +444,6 @@ static func make_height_normal_image_gpu(height_img: Image, cell_size: float, st
 
 static func generate_procedural_height_images_gpu(texture_size: int = DEFAULT_TEXTURE_SIZE, max_height: float = DEFAULT_MAX_HEIGHT) -> Dictionary:
 	var res := maxi(texture_size, 1)
-	var probe_rd := RenderingServer.create_local_rendering_device()
-	if probe_rd == null:
-		return {}
-	probe_rd.free()
-
 	var compute = ComputeShaderBaseScript.new()
 	compute.log_name = "ProceduralTerrainHeight"
 	if not compute.ensure_device(true, false):
@@ -536,11 +526,6 @@ static func get_height_stats(img: Image) -> Vector2:
 static func get_height_stats_gpu(img: Image) -> Dictionary:
 	if img == null or img.is_empty():
 		return {}
-	var probe_rd := RenderingServer.create_local_rendering_device()
-	if probe_rd == null:
-		return {}
-	probe_rd.free()
-
 	var compute = ComputeShaderBaseScript.new()
 	compute.log_name = "TerrainInitializerHeightStats"
 	if not compute.ensure_device(true, false):

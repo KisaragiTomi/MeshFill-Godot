@@ -39,6 +39,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 
 const VOXELIZE_SHADER := "res://shaders/voxelize_mesh_solid.glsl"
 const COLLISION_SHADER := "res://shaders/voxel_collision_erode.glsl"
+const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 
 const MAX_TRIANGLES := 20000
 const MAX_GRID_AXIS := 96
@@ -106,7 +107,7 @@ func _run_gpu(
 	var tri_buf := storage_buffer_from_floats(triangles, SCOPE_FRAME, "triangles")
 	var occupancy_buf := storage_buffer_zero(voxel_count * 4, SCOPE_FRAME, "occupancy")
 	var color_buf := storage_buffer_zero(voxel_count * 4, SCOPE_FRAME, "color_field")
-	var collision_buf := storage_buffer_zero(voxel_count * 4, SCOPE_FRAME, "collision_field")
+	var collision_buf := storage_buffer_zero(SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count), SCOPE_FRAME, "collision_field_r8_words")
 
 	var voxelize_set := create_uniform_set([
 		make_storage_uniform(0, tri_buf),
@@ -165,8 +166,8 @@ func _decode_voxels(
 	var voxels: Array[Dictionary] = []
 	var occupancy := occupancy_bytes.to_int32_array()
 	var color := color_bytes.to_int32_array()
-	var collision := collision_bytes.to_float32_array()
 	var voxel_count := VoxelGeneral.voxel_count(grid)
+	var collision := SceneVoxelTileCodecScript.decode_collision_field_r8_word_bytes(collision_bytes, voxel_count)
 	if occupancy.size() < voxel_count:
 		return voxels
 

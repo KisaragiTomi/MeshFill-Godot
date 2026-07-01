@@ -1,7 +1,7 @@
 [gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://demos/core-scenevoxeltile/scene_voxel_tile_debug.gd" id="1_contract"]
-[ext_resource type="PackedScene" path="res://demos/common_demo_setup.tscn" id="99_setup"]
+[ext_resource type="PackedScene" path="res://demos/utils_demo_setup.tscn" id="99_setup"]
 
 [node name="SceneVoxelTile3DDemo" type="Node3D" unique_id=258346124]
 script = ExtResource("1_contract")

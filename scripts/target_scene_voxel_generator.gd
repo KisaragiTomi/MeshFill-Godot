@@ -30,6 +30,14 @@ const TARGET_GENERATE_PUSH_DIRTY_Y_OFFSET := 32
 const TARGET_GENERATE_PUSH_DIRTY_W_OFFSET := 36
 const TARGET_GENERATE_PUSH_DIRTY_H_OFFSET := 40
 const TARGET_GENERATE_PUSH_PAD0_OFFSET := 44
+const TARGET_VISUAL_FORMAT_RGBA8 := "rgba8"
+const TARGET_VISUAL_FORMAT_RGBA32F := "rgba32f"
+const TARGET_SCALAR_FORMAT_R8 := "r8_unorm"
+const TARGET_SCALAR_FORMAT_R32F := "r32f"
+const TARGET_RGBA8_STRIDE_BYTES := 4
+const TARGET_R8_STRIDE_BYTES := 1
+const TARGET_LEGACY_RGBA32F_STRIDE_BYTES := 16
+const TARGET_LEGACY_R32F_STRIDE_BYTES := 4
 
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 
@@ -103,6 +111,162 @@ static func _target_field_vec4_from_color_and_completely(
 	return field
 
 
+static func _target_rgba8_byte_count(voxel_count: int) -> int:
+	return maxi(voxel_count, 0) * TARGET_RGBA8_STRIDE_BYTES
+
+
+static func _target_r8_byte_count(voxel_count: int) -> int:
+	return maxi(voxel_count, 0) * TARGET_R8_STRIDE_BYTES
+
+
+static func _target_r8_word_byte_count(voxel_count: int) -> int:
+	return maxi(int(ceili(float(maxi(voxel_count, 0)) / 4.0)) * 4, 4)
+
+
+static func _quantize_unorm8(value: float) -> int:
+	return clampi(int(round(clampf(value, 0.0, 1.0) * 255.0)), 0, 255)
+
+
+static func _pack_rgba8_word(color: Color) -> int:
+	var r := _quantize_unorm8(color.r)
+	var g := _quantize_unorm8(color.g)
+	var b := _quantize_unorm8(color.b)
+	var a := _quantize_unorm8(color.a)
+	return ((r & 0xFF) << 24) | ((g & 0xFF) << 16) | ((b & 0xFF) << 8) | (a & 0xFF)
+
+
+static func _visual_format_from_bytes(bytes: PackedByteArray, voxel_count: int, hint: String = "") -> String:
+	var hint_l := hint.to_lower()
+	var rgba8_bytes := _target_rgba8_byte_count(voxel_count)
+	var rgba32f_bytes := maxi(voxel_count, 0) * TARGET_LEGACY_RGBA32F_STRIDE_BYTES
+	if hint_l in [TARGET_VISUAL_FORMAT_RGBA8, "rgba8_u32", "rgba8_unorm"] and bytes.size() >= rgba8_bytes:
+		return TARGET_VISUAL_FORMAT_RGBA8
+	if hint_l in [TARGET_VISUAL_FORMAT_RGBA32F, "rgba32f_storage_buffer", "vec4"] and bytes.size() >= rgba32f_bytes:
+		return TARGET_VISUAL_FORMAT_RGBA32F
+	if bytes.size() == rgba8_bytes:
+		return TARGET_VISUAL_FORMAT_RGBA8
+	if bytes.size() >= rgba32f_bytes:
+		return TARGET_VISUAL_FORMAT_RGBA32F
+	if bytes.size() >= rgba8_bytes:
+		return TARGET_VISUAL_FORMAT_RGBA8
+	return ""
+
+
+static func _scalar_format_from_bytes(bytes: PackedByteArray, voxel_count: int, hint: String = "") -> String:
+	var hint_l := hint.to_lower()
+	var r8_bytes := _target_r8_byte_count(voxel_count)
+	var r32f_bytes := maxi(voxel_count, 0) * TARGET_LEGACY_R32F_STRIDE_BYTES
+	if hint_l in [TARGET_SCALAR_FORMAT_R8, "r8", "r8_unorm_storage_buffer"] and bytes.size() >= r8_bytes:
+		return TARGET_SCALAR_FORMAT_R8
+	if hint_l in [TARGET_SCALAR_FORMAT_R32F, "r32f_storage_buffer", "float"] and bytes.size() >= r32f_bytes:
+		return TARGET_SCALAR_FORMAT_R32F
+	if bytes.size() == r8_bytes:
+		return TARGET_SCALAR_FORMAT_R8
+	if bytes.size() >= r32f_bytes:
+		return TARGET_SCALAR_FORMAT_R32F
+	if bytes.size() >= r8_bytes:
+		return TARGET_SCALAR_FORMAT_R8
+	return ""
+
+
+static func _rgba8_bytes_from_visual_bytes(
+	visual_bytes: PackedByteArray,
+	voxel_count: int,
+	visual_format: String
+) -> PackedByteArray:
+	var out := PackedByteArray()
+	var rgba8_bytes := _target_rgba8_byte_count(voxel_count)
+	out.resize(rgba8_bytes)
+	if visual_format == TARGET_VISUAL_FORMAT_RGBA8:
+		var byte_count := mini(visual_bytes.size(), rgba8_bytes)
+		for i in range(byte_count):
+			out[i] = visual_bytes[i]
+		return out
+	if visual_format != TARGET_VISUAL_FORMAT_RGBA32F:
+		return out
+	var available := mini(voxel_count, int(visual_bytes.size() / TARGET_LEGACY_RGBA32F_STRIDE_BYTES))
+	for i in range(available):
+		var base := i * TARGET_LEGACY_RGBA32F_STRIDE_BYTES
+		var color := Color(
+			visual_bytes.decode_float(base + 0),
+			visual_bytes.decode_float(base + 4),
+			visual_bytes.decode_float(base + 8),
+			visual_bytes.decode_float(base + 12)
+		)
+		out.encode_u32(i * TARGET_RGBA8_STRIDE_BYTES, _pack_rgba8_word(color))
+	return out
+
+
+static func _r8_bytes_from_scalar_bytes(
+	scalar_bytes: PackedByteArray,
+	voxel_count: int,
+	scalar_format: String
+) -> PackedByteArray:
+	var out := PackedByteArray()
+	var r8_bytes := _target_r8_byte_count(voxel_count)
+	out.resize(r8_bytes)
+	if scalar_format == TARGET_SCALAR_FORMAT_R8:
+		var byte_count := mini(scalar_bytes.size(), r8_bytes)
+		for i in range(byte_count):
+			out[i] = scalar_bytes[i]
+		return out
+	if scalar_format != TARGET_SCALAR_FORMAT_R32F:
+		return out
+	var available := mini(voxel_count, int(scalar_bytes.size() / TARGET_LEGACY_R32F_STRIDE_BYTES))
+	for i in range(available):
+		out[i] = _quantize_unorm8(scalar_bytes.decode_float(i * TARGET_LEGACY_R32F_STRIDE_BYTES))
+	return out
+
+
+static func _r8_word_bytes_from_r8_bytes(r8_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(_target_r8_word_byte_count(voxel_count))
+	var byte_count := mini(r8_bytes.size(), _target_r8_byte_count(voxel_count))
+	for i in range(byte_count):
+		out[i] = r8_bytes[i]
+	return out
+
+
+static func _r8_bytes_from_word_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(_target_r8_byte_count(voxel_count))
+	var byte_count := mini(out.size(), word_bytes.size())
+	for i in range(byte_count):
+		out[i] = word_bytes[i]
+	return out
+
+
+static func _r8_value_at(r8_bytes: PackedByteArray, index: int) -> float:
+	if index < 0 or index >= r8_bytes.size():
+		return 0.0
+	return float(r8_bytes[index] & 0xFF) / 255.0
+
+
+static func _rgba8_color_at(rgba8_bytes: PackedByteArray, index: int) -> Color:
+	var offset := index * TARGET_RGBA8_STRIDE_BYTES
+	if offset + TARGET_RGBA8_STRIDE_BYTES > rgba8_bytes.size():
+		return Color(0.0, 0.0, 0.0, 0.0)
+	return _rgba8_word_to_color(rgba8_bytes.decode_u32(offset))
+
+
+static func _target_field_vec4_from_rgba8_and_r8(
+	color_rgba8_bytes: PackedByteArray,
+	completely_r8_bytes: PackedByteArray,
+	voxel_count: int
+) -> PackedFloat32Array:
+	var field := PackedFloat32Array()
+	var safe_count := maxi(voxel_count, 0)
+	field.resize(safe_count * 4)
+	for i in range(safe_count):
+		var color := _rgba8_color_at(color_rgba8_bytes, i)
+		var base := i * 4
+		field[base + 0] = color.r
+		field[base + 1] = color.g
+		field[base + 2] = color.b
+		field[base + 3] = _r8_value_at(completely_r8_bytes, i)
+	return field
+
+
 static func decode_target_read_buffers(
 	visual_bytes: PackedByteArray,
 	collision_bytes: PackedByteArray,
@@ -114,15 +278,22 @@ static func decode_target_read_buffers(
 	var tex_size := maxi(texture_size, 1)
 	var slices := maxi(slice_count, 1)
 	var voxel_count := tex_size * tex_size * slices
-	var expected_visual_bytes := voxel_count * 16
-	var expected_collision_bytes := voxel_count * 4
+	var expected_visual_bytes := _target_rgba8_byte_count(voxel_count)
+	var expected_collision_bytes := _target_r8_byte_count(voxel_count)
+	var legacy_expected_visual_bytes := voxel_count * TARGET_LEGACY_RGBA32F_STRIDE_BYTES
+	var legacy_expected_collision_bytes := voxel_count * TARGET_LEGACY_R32F_STRIDE_BYTES
 	var target_completely := PackedFloat32Array()
+	var target_collision := PackedFloat32Array()
 	var target_color := PackedColorArray()
 	target_completely.resize(voxel_count)
+	target_collision.resize(voxel_count)
 	target_color.resize(voxel_count)
-	var visual_valid := visual_bytes.size() >= expected_visual_bytes
-	var collision_valid := collision_bytes.size() >= expected_collision_bytes
-	var completely_valid := use_collision_as_completely and completely_bytes.size() >= expected_collision_bytes
+	var visual_format := _visual_format_from_bytes(visual_bytes, voxel_count)
+	var collision_format := _scalar_format_from_bytes(collision_bytes, voxel_count)
+	var completely_format := _scalar_format_from_bytes(completely_bytes, voxel_count)
+	var visual_valid := not visual_format.is_empty()
+	var collision_valid := not collision_format.is_empty()
+	var completely_valid := not completely_format.is_empty()
 	if not visual_valid and not collision_valid:
 		return {
 			"valid": false,
@@ -131,13 +302,19 @@ static func decode_target_read_buffers(
 			"slice_count": slices,
 			"voxel_count": voxel_count,
 			"expected_visual_bytes": expected_visual_bytes,
+			"legacy_expected_visual_bytes": legacy_expected_visual_bytes,
 			"actual_visual_bytes": visual_bytes.size(),
 			"expected_collision_bytes": expected_collision_bytes,
+			"legacy_expected_collision_bytes": legacy_expected_collision_bytes,
 			"actual_collision_bytes": collision_bytes.size(),
 			"target_completely": target_completely,
+			"target_collision": target_collision,
 			"target_field": target_completely,
 			"target_color": target_color,
 		}
+	var visual_rgba8 := _rgba8_bytes_from_visual_bytes(visual_bytes, voxel_count, visual_format)
+	var collision_r8 := _r8_bytes_from_scalar_bytes(collision_bytes, voxel_count, collision_format)
+	var completely_r8 := _r8_bytes_from_scalar_bytes(completely_bytes, voxel_count, completely_format) if completely_valid else PackedByteArray()
 
 	var max_completely := 0.0
 	var max_collision := 0.0
@@ -147,32 +324,22 @@ static func decode_target_read_buffers(
 	var min_active_completely := 0.0
 	var max_visual_complexity := 0.0
 	for i in range(voxel_count):
-		var r := 0.0
-		var g := 0.0
-		var b := 0.0
-		var complexity := 0.0
-		if visual_valid:
-			var visual_offset := i * 16
-			r = visual_bytes.decode_float(visual_offset + 0)
-			g = visual_bytes.decode_float(visual_offset + 4)
-			b = visual_bytes.decode_float(visual_offset + 8)
-			complexity = visual_bytes.decode_float(visual_offset + 12)
-		var collision := 0.0
-		var scalar_offset := i * 4
-		if collision_valid:
-			collision = collision_bytes.decode_float(scalar_offset)
+		var color := _rgba8_color_at(visual_rgba8, i) if visual_valid else Color(0.0, 0.0, 0.0, 0.0)
+		var complexity := color.a
+		var collision := _r8_value_at(collision_r8, i) if collision_valid else 0.0
 		complexity = clampf(complexity, 0.0, 1.0)
 		collision = clampf(collision, 0.0, 1.0)
+		target_collision[i] = collision
 		var completely := complexity
 		if completely_valid:
-			completely = clampf(completely_bytes.decode_float(scalar_offset), 0.0, 1.0)
+			completely = clampf(_r8_value_at(completely_r8, i), 0.0, 1.0)
 		elif use_collision_as_completely:
 			completely = maxf(complexity, collision)
 		target_completely[i] = completely
 		target_color[i] = Color(
-			clampf(r, 0.0, 1.0),
-			clampf(g, 0.0, 1.0),
-			clampf(b, 0.0, 1.0),
+			clampf(color.r, 0.0, 1.0),
+			clampf(color.g, 0.0, 1.0),
+			clampf(color.b, 0.0, 1.0),
 			complexity
 		)
 		max_completely = maxf(max_completely, completely)
@@ -194,10 +361,19 @@ static func decode_target_read_buffers(
 		"slice_count": slices,
 		"voxel_count": voxel_count,
 		"expected_visual_bytes": expected_visual_bytes,
+		"legacy_expected_visual_bytes": legacy_expected_visual_bytes,
 		"actual_visual_bytes": visual_bytes.size(),
 		"expected_collision_bytes": expected_collision_bytes,
+		"legacy_expected_collision_bytes": legacy_expected_collision_bytes,
 		"actual_collision_bytes": collision_bytes.size(),
+		"visual_format": visual_format,
+		"collision_format": collision_format,
+		"visual_stride_bytes": TARGET_RGBA8_STRIDE_BYTES if visual_format == TARGET_VISUAL_FORMAT_RGBA8 else TARGET_LEGACY_RGBA32F_STRIDE_BYTES,
+		"collision_stride_bytes": TARGET_R8_STRIDE_BYTES if collision_format == TARGET_SCALAR_FORMAT_R8 else TARGET_LEGACY_R32F_STRIDE_BYTES,
+		"canonical_visual_format": TARGET_VISUAL_FORMAT_RGBA8,
+		"canonical_collision_format": TARGET_SCALAR_FORMAT_R8,
 		"target_completely": target_completely,
+		"target_collision": target_collision,
 		"target_field": target_completely,
 		"target_color": target_color,
 		"max_completely": max_completely,
@@ -222,20 +398,26 @@ static func decode_target_read_buffers_gpu(
 	completely_bytes: PackedByteArray = PackedByteArray()
 ) -> Dictionary:
 	# GPU-only TargetSV_B decode for placement/readback buffers.
-	# Buffer layout: visual is RGBA32F (16 bytes/voxel), collision and completely are R32F
-	# (4 bytes/voxel), placement color is RGBA8 u32 (4 bytes/voxel), and legacy
-	# color-array decode reads GPU-clamped RGBA32F (16 bytes/voxel).
+	# Canonical layout is visual RGBA8 (4 bytes/voxel) plus scalar R8 fields
+	# (1 byte/voxel, packed four values per uint for compute). Legacy fp32 input
+	# is converted to the canonical 8bit layout before GPU dispatch.
 	var tex_size := maxi(texture_size, 1)
 	var slices := maxi(slice_count, 1)
 	var voxel_count := tex_size * tex_size * slices
-	var expected_visual_bytes := voxel_count * 16
-	var expected_collision_bytes := voxel_count * 4
+	var expected_visual_bytes := _target_rgba8_byte_count(voxel_count)
+	var expected_collision_bytes := _target_r8_byte_count(voxel_count)
+	var legacy_expected_visual_bytes := voxel_count * TARGET_LEGACY_RGBA32F_STRIDE_BYTES
+	var legacy_expected_collision_bytes := voxel_count * TARGET_LEGACY_R32F_STRIDE_BYTES
 	var target_completely := PackedFloat32Array()
+	var target_collision := PackedFloat32Array()
 	var target_color := PackedColorArray()
 	target_completely.resize(voxel_count)
+	target_collision.resize(voxel_count)
 	target_color.resize(voxel_count)
-	var visual_valid := visual_bytes.size() >= expected_visual_bytes
-	var collision_valid := collision_bytes.size() >= expected_collision_bytes
+	var visual_format := _visual_format_from_bytes(visual_bytes, voxel_count)
+	var collision_format := _scalar_format_from_bytes(collision_bytes, voxel_count)
+	var visual_valid := not visual_format.is_empty()
+	var collision_valid := not collision_format.is_empty()
 	if not visual_valid and not collision_valid:
 		return {
 			"valid": false,
@@ -246,10 +428,13 @@ static func decode_target_read_buffers_gpu(
 			"slice_count": slices,
 			"voxel_count": voxel_count,
 			"expected_visual_bytes": expected_visual_bytes,
+			"legacy_expected_visual_bytes": legacy_expected_visual_bytes,
 			"actual_visual_bytes": visual_bytes.size(),
 			"expected_collision_bytes": expected_collision_bytes,
+			"legacy_expected_collision_bytes": legacy_expected_collision_bytes,
 			"actual_collision_bytes": collision_bytes.size(),
 			"target_completely": target_completely,
+			"target_collision": target_collision,
 			"target_field": target_completely,
 			"target_color": target_color,
 		}
@@ -263,6 +448,7 @@ static func decode_target_read_buffers_gpu(
 			"gpu_first": true,
 			"cpu_fallback": false,
 			"target_completely": target_completely,
+			"target_collision": target_collision,
 			"target_field": target_completely,
 			"target_color": target_color,
 		}
@@ -279,43 +465,43 @@ static func decode_target_read_buffers_gpu(
 	if not bool(packed.get("ok", false)):
 		packed["valid"] = false
 		packed["target_completely"] = target_completely
+		packed["target_collision"] = target_collision
 		packed["target_field"] = target_completely
 		packed["target_color"] = target_color
 		return packed
 
 	var completely_out: PackedByteArray = packed.get("target_completely_bytes", PackedByteArray())
-	var color_out: PackedByteArray = packed.get("target_color_rgba32f_bytes", PackedByteArray())
+	var color_out: PackedByteArray = packed.get("target_color_rgba8_bytes", PackedByteArray())
 	if completely_out.size() < expected_collision_bytes or color_out.size() < expected_visual_bytes:
 		packed["valid"] = false
 		packed["reason"] = "target_gpu_readback_size_mismatch"
 		packed["target_completely"] = target_completely
+		packed["target_collision"] = target_collision
 		packed["target_color"] = target_color
 		return packed
 
-	target_completely = completely_out.slice(0, expected_collision_bytes).to_float32_array()
-	var color_values := color_out.slice(0, expected_visual_bytes).to_float32_array()
+	target_completely.resize(voxel_count)
+	target_collision.resize(voxel_count)
 	target_color.resize(voxel_count)
+	var collision_r8 := _r8_bytes_from_scalar_bytes(collision_bytes, voxel_count, collision_format)
 	for i in range(voxel_count):
-		var color_base := i * 4
-		target_color[i] = Color(
-			color_values[color_base + 0],
-			color_values[color_base + 1],
-			color_values[color_base + 2],
-			color_values[color_base + 3]
-		)
+		target_completely[i] = _r8_value_at(completely_out, i)
+		target_collision[i] = _r8_value_at(collision_r8, i)
+		target_color[i] = _rgba8_color_at(color_out, i)
 
 	packed["valid"] = visual_valid and collision_valid
 	packed["partial"] = not (visual_valid and collision_valid)
 	packed["reason"] = "ok" if visual_valid and collision_valid else "target_buffer_partial"
 	packed["target_completely"] = target_completely
+	packed["target_collision"] = target_collision
 	packed["target_field"] = target_completely
 	packed["target_color"] = target_color
 	packed["max_occupancy"] = packed.get("max_completely", 0.0)
 	packed["min_active_occupancy"] = packed.get("min_active_completely", 0.0)
 	packed["decode_source"] = "target_sv_pack_read_buffers_compute"
-	packed["target_color_decode_format"] = "rgba32f_storage_buffer"
-	packed["target_color_stride_bytes"] = 16
-	packed["target_completely_stride_bytes"] = 4
+	packed["target_color_decode_format"] = TARGET_VISUAL_FORMAT_RGBA8
+	packed["target_color_stride_bytes"] = TARGET_RGBA8_STRIDE_BYTES
+	packed["target_completely_stride_bytes"] = TARGET_R8_STRIDE_BYTES
 	return packed
 
 
@@ -341,10 +527,14 @@ func derive_target_packed_buffers(
 	var tex_size := maxi(texture_size, 1)
 	var slices := maxi(slice_count, 1)
 	var voxel_count := tex_size * tex_size * slices
-	var expected_visual_bytes := voxel_count * 16
-	var expected_collision_bytes := voxel_count * 4
-	var visual_valid := visual_bytes.size() >= expected_visual_bytes
-	var collision_valid := collision_bytes.size() >= expected_collision_bytes
+	var expected_visual_bytes := _target_rgba8_byte_count(voxel_count)
+	var expected_collision_bytes := _target_r8_byte_count(voxel_count)
+	var legacy_expected_visual_bytes := voxel_count * TARGET_LEGACY_RGBA32F_STRIDE_BYTES
+	var legacy_expected_collision_bytes := voxel_count * TARGET_LEGACY_R32F_STRIDE_BYTES
+	var visual_format := _visual_format_from_bytes(visual_bytes, voxel_count)
+	var collision_format := _scalar_format_from_bytes(collision_bytes, voxel_count)
+	var visual_valid := not visual_format.is_empty()
+	var collision_valid := not collision_format.is_empty()
 	if not visual_valid and not collision_valid:
 		return {
 			"ok": false,
@@ -353,8 +543,10 @@ func derive_target_packed_buffers(
 			"cpu_fallback": false,
 			"voxel_count": voxel_count,
 			"expected_visual_bytes": expected_visual_bytes,
+			"legacy_expected_visual_bytes": legacy_expected_visual_bytes,
 			"actual_visual_bytes": visual_bytes.size(),
 			"expected_collision_bytes": expected_collision_bytes,
+			"legacy_expected_collision_bytes": legacy_expected_collision_bytes,
 			"actual_collision_bytes": collision_bytes.size(),
 		}
 
@@ -382,38 +574,40 @@ func derive_target_packed_buffers(
 			"voxel_count": voxel_count,
 	}
 
-	var completely_valid := use_collision_as_completely and completely_bytes.size() >= expected_collision_bytes
+	var completely_format := _scalar_format_from_bytes(completely_bytes, voxel_count)
+	var completely_valid := not completely_format.is_empty()
+	var visual_rgba8 := _rgba8_bytes_from_visual_bytes(visual_bytes, voxel_count, visual_format)
+	var collision_r8 := _r8_bytes_from_scalar_bytes(collision_bytes, voxel_count, collision_format)
+	var completely_r8 := _r8_bytes_from_scalar_bytes(completely_bytes, voxel_count, completely_format) if completely_valid else PackedByteArray()
+	var collision_words := _r8_word_bytes_from_r8_bytes(collision_r8, voxel_count)
+	var completely_input_words := _r8_word_bytes_from_r8_bytes(completely_r8, voxel_count) if completely_valid else PackedByteArray()
+	var r8_word_byte_count := _target_r8_word_byte_count(voxel_count)
 	# Partial TargetSV_B decode stays GPU-only: missing visual/collision input is a full-size zero SSBO.
-	# Shader input layout is visual RGBA32F, 16 bytes/voxel, and collision R32F, 4 bytes/voxel.
+	# Shader input layout is canonical RGBA8 u32 plus R8 scalar values packed four voxels per uint.
 	var visual_buffer := storage_buffer_from_bytes(
-		visual_bytes.slice(0, expected_visual_bytes),
+		visual_rgba8.slice(0, expected_visual_bytes),
 		SCOPE_FRAME,
-		"target_visual_rgba32f"
-	) if visual_valid else storage_buffer_zero(expected_visual_bytes, SCOPE_FRAME, "target_visual_zero_rgba32f")
+		"target_visual_rgba8"
+	) if visual_valid else storage_buffer_zero(expected_visual_bytes, SCOPE_FRAME, "target_visual_zero_rgba8")
 	var collision_buffer := storage_buffer_from_bytes(
-		collision_bytes.slice(0, expected_collision_bytes),
+		collision_words.slice(0, r8_word_byte_count),
 		SCOPE_FRAME,
-		"target_collision_r32f"
-	) if collision_valid else storage_buffer_zero(expected_collision_bytes, SCOPE_FRAME, "target_collision_zero_r32f")
+		"target_collision_r8_words"
+	) if collision_valid else storage_buffer_zero(r8_word_byte_count, SCOPE_FRAME, "target_collision_zero_r8_words")
 	var completely_input_buffer := storage_buffer_from_bytes(
-		completely_bytes.slice(0, expected_collision_bytes),
+		completely_input_words.slice(0, r8_word_byte_count),
 		SCOPE_FRAME,
-		"target_completely_input_r32f"
-	) if completely_valid else storage_buffer_zero(4, SCOPE_FRAME, "target_completely_input_r32f")
+		"target_completely_input_r8_words"
+	) if completely_valid else storage_buffer_zero(4, SCOPE_FRAME, "target_completely_input_r8_words")
 	var completely_out_buffer := storage_buffer_zero(
-		expected_collision_bytes if readback_packed_buffers else 4,
+		r8_word_byte_count if readback_packed_buffers else 4,
 		SCOPE_FRAME,
-		"target_completely_out_r32f"
+		"target_completely_out_r8_words"
 	)
 	var color_rgba8_out_buffer := storage_buffer_zero(
 		voxel_count * 4 if readback_packed_buffers else 4,
 		SCOPE_FRAME,
 		"target_color_rgba8_out"
-	)
-	var color_rgba32f_out_buffer := storage_buffer_zero(
-		expected_visual_bytes if readback_packed_buffers else 16,
-		SCOPE_FRAME,
-		"target_color_rgba32f_out"
 	)
 	var stats_out_buffer := storage_buffer_zero(TARGET_STATS_BYTE_SIZE, SCOPE_FRAME, "target_pack_stats_u32")
 
@@ -424,7 +618,6 @@ func derive_target_packed_buffers(
 		make_storage_uniform(3, completely_out_buffer),
 		make_storage_uniform(4, color_rgba8_out_buffer),
 		make_storage_uniform(5, stats_out_buffer),
-		make_storage_uniform(6, color_rgba32f_out_buffer),
 	], _shader_pack, 0)
 
 	var push := PackedByteArray()
@@ -456,12 +649,11 @@ func derive_target_packed_buffers(
 
 	var packed_completely := PackedByteArray()
 	var packed_color := PackedByteArray()
-	var decoded_color := PackedByteArray()
 	if readback_packed_buffers:
-		packed_completely = _rd.buffer_get_data(completely_out_buffer, 0, expected_collision_bytes)
+		var completely_words := _rd.buffer_get_data(completely_out_buffer, 0, r8_word_byte_count)
+		packed_completely = _r8_bytes_from_word_bytes(completely_words, voxel_count)
 		packed_color = _rd.buffer_get_data(color_rgba8_out_buffer, 0, voxel_count * 4)
-		decoded_color = _rd.buffer_get_data(color_rgba32f_out_buffer, 0, expected_visual_bytes)
-	var target_field_bytes := _target_field_vec4_from_color_and_completely(decoded_color, packed_completely, voxel_count) if readback_packed_buffers else PackedFloat32Array()
+	var target_field_bytes := _target_field_vec4_from_rgba8_and_r8(packed_color, packed_completely, voxel_count) if readback_packed_buffers else PackedFloat32Array()
 	var stats_bytes := _rd.buffer_get_data(stats_out_buffer, 0, TARGET_STATS_BYTE_SIZE)
 	var stats := _decode_target_stats(stats_bytes)
 	_free_gpu()
@@ -479,20 +671,28 @@ func derive_target_packed_buffers(
 		"dispatch_groups": Vector3i(groups, 1, 1),
 		"readback_packed_buffers": readback_packed_buffers,
 		"write_packed_buffers": readback_packed_buffers,
-		"completely_format": "r32f",
-		"target_color_format": "rgba8_u32",
-		"target_color_decode_format": "rgba32f_storage_buffer",
+		"visual_format": TARGET_VISUAL_FORMAT_RGBA8,
+		"collision_format": TARGET_SCALAR_FORMAT_R8,
+		"completely_format": TARGET_SCALAR_FORMAT_R8,
+		"target_color_format": TARGET_VISUAL_FORMAT_RGBA8,
+		"target_color_decode_format": TARGET_VISUAL_FORMAT_RGBA8,
+		"target_color_stride_bytes": TARGET_RGBA8_STRIDE_BYTES,
+		"target_completely_stride_bytes": TARGET_R8_STRIDE_BYTES,
+		"input_visual_format": visual_format,
+		"input_collision_format": collision_format,
+		"input_completely_format": completely_format if completely_valid else "",
 		"visual_buffer_source": "visual_bytes" if visual_valid else "zero_filled",
 		"collision_buffer_source": "collision_bytes" if collision_valid else "zero_filled",
 		"expected_visual_bytes": expected_visual_bytes,
+		"legacy_expected_visual_bytes": legacy_expected_visual_bytes,
 		"actual_visual_bytes": visual_bytes.size(),
 		"expected_collision_bytes": expected_collision_bytes,
+		"legacy_expected_collision_bytes": legacy_expected_collision_bytes,
 		"actual_collision_bytes": collision_bytes.size(),
 		"target_completely_source": "gpu_target_completely_buffer" if completely_valid else "gpu_derived_visual_collision",
 		"target_completely_bytes": packed_completely,
 		"target_field_bytes": target_field_bytes,
 		"target_color_rgba8_bytes": packed_color,
-		"target_color_rgba32f_bytes": decoded_color,
 		"max_completely": stats.get("max_completely", 0.0),
 		"max_occupancy": stats.get("max_occupancy", stats.get("max_completely", 0.0)),
 		"max_collision": stats.get("max_collision", 0.0),
@@ -526,7 +726,6 @@ func derive_target_stats(
 	stats.erase("target_completely_bytes")
 	stats.erase("target_field_bytes")
 	stats.erase("target_color_rgba8_bytes")
-	stats.erase("target_color_rgba32f_bytes")
 	stats["stats_only"] = true
 	return stats
 
@@ -568,9 +767,10 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	var tex_rock := upload_texture_2d(rock_img)                 # rock mask 输入
 	var preview_tex := create_rw_texture_2d(texture_size, texture_size)  # TargetSV preview
 	var voxel_count := texture_size * texture_size * slice_count         # 3D flat buffer voxel 数
-	var visual_buffer := storage_buffer_zero(voxel_count * 16)           # vec4(color.rgb, complexity)
-	var collision_buffer := storage_buffer_zero(voxel_count * 4)         # collision_peak
-	var completely_buffer := storage_buffer_zero(voxel_count * 4)         # max(complexity, collision)
+	var r8_word_byte_count := _target_r8_word_byte_count(voxel_count)
+	var visual_buffer := storage_buffer_zero(voxel_count * TARGET_RGBA8_STRIDE_BYTES) # RGBA8 u32 color+complexity
+	var collision_buffer := storage_buffer_zero(r8_word_byte_count)       # collision R8, 4 voxels per uint
+	var completely_buffer := storage_buffer_zero(r8_word_byte_count)      # max(complexity, collision) R8, 4 voxels per uint
 	var color_rgba8_buffer := storage_buffer_zero(voxel_count * 4)       # uint RGBA8 for placement shaders
 	var stats_buffer := storage_buffer_zero(TARGET_STATS_BYTE_SIZE)       # u32 max completely/collision/count stats
 
@@ -622,11 +822,13 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	end_compute_list()
 	submit_and_sync(true)
 
-	var visual_bytes := _rd.buffer_get_data(visual_buffer)
-	var collision_bytes := _rd.buffer_get_data(collision_buffer)
-	var completely_bytes := _rd.buffer_get_data(completely_buffer)
+	var visual_bytes := _rd.buffer_get_data(visual_buffer, 0, voxel_count * TARGET_RGBA8_STRIDE_BYTES)
+	var collision_word_bytes := _rd.buffer_get_data(collision_buffer, 0, r8_word_byte_count)
+	var completely_word_bytes := _rd.buffer_get_data(completely_buffer, 0, r8_word_byte_count)
+	var collision_bytes := _r8_bytes_from_word_bytes(collision_word_bytes, voxel_count)
+	var completely_bytes := _r8_bytes_from_word_bytes(completely_word_bytes, voxel_count)
 	var color_rgba8_bytes := _rd.buffer_get_data(color_rgba8_buffer)
-	var target_field_bytes := _target_field_vec4_from_color_and_completely(visual_bytes, completely_bytes, voxel_count)
+	var target_field_bytes := _target_field_vec4_from_rgba8_and_r8(visual_bytes, completely_bytes, voxel_count)
 	var stats_bytes := _rd.buffer_get_data(stats_buffer, 0, TARGET_STATS_BYTE_SIZE)
 	var preview_data := _rd.texture_get_data(preview_tex, 0)
 	var preview_img := Image.create_from_data(texture_size, texture_size, false, Image.FORMAT_RGBAH, preview_data)
@@ -642,10 +844,13 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 		"max_height": max_height,            # 目标高度解码上限
 		"capture_size": capture_size,        # 俯视捕获场景范围
 		"vertical_span": vertical_span,      # TargetSV 高度跨度
-		"visual_format": "rgba32f",          # visual buffer 格式
-		"collision_format": "r32f",          # collision buffer 格式
-		"completely_format": "r32f",          # target completely buffer 格式
-		"target_color_format": "rgba8_u32",  # placement shader RGBA8 格式
+		"visual_format": TARGET_VISUAL_FORMAT_RGBA8, # visual buffer 格式
+		"collision_format": TARGET_SCALAR_FORMAT_R8, # collision buffer 格式
+		"completely_format": TARGET_SCALAR_FORMAT_R8, # target completely buffer 格式
+		"target_color_format": TARGET_VISUAL_FORMAT_RGBA8, # placement shader RGBA8 格式
+		"visual_stride_bytes": TARGET_RGBA8_STRIDE_BYTES,
+		"collision_stride_bytes": TARGET_R8_STRIDE_BYTES,
+		"target_completely_stride_bytes": TARGET_R8_STRIDE_BYTES,
 		"visual_bytes": visual_bytes,        # 源 visual buffer 字节
 		"collision_bytes": collision_bytes,  # 源 collision buffer 字节
 		"target_completely_bytes": completely_bytes,  # GPU 解码后的 max(complexity, collision)

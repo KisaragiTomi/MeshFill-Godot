@@ -109,7 +109,7 @@ Placer.run_multi_asset()         ← SPA 在 placement_settings 中注入 profil
 Profile container 规则：
 
 - `descriptor_hash_to_profile_id` 是 descriptor/profile 去重入口；`profile_id` 的持久化稳定性由 snapshot / load 流程维护，runtime 不把它当作资产默认语义。
-- descriptor / profile 热更新先标记 dirty profile，再把 `AutoVoxelRuntimeProfileContainer.get_dirty_profile_ids()` / `dirty_profile_ids` 交给 `GPUAutoObjectRuntime.mark_profile_objects_dirty()` 反查引用该 `profile_id` 的 object ids，最后由 SV owner 把 affected bounds 转成 `SceneVoxelTile` dirty。
+- descriptor / profile 热更新先由 `AutoVoxelRuntimeProfileContainer.get_dirty_profile_ids()` / `dirty_profile_ids` 标记 dirty profile；将 dirty profile 反查为受影响 object ids 的 runtime 路径当前未提供，由上层按对象重新提交命令 / dirty delta，最后由 SV owner 把 affected bounds 转成 `SceneVoxelTile` dirty。
 - `object_type` 不反推资产默认语义，也不替代 descriptor/profile；当前不新增 `object_subtype`。
 - 当前 `AutoVoxelRuntimeProfileContainer` 负责 descriptor/profile 归一化、去重、profile id、GPU resident storage buffer upload、`get_gpu_buffer_summary()` 和 `readback_debug_snapshot()`；不能用未上传状态或非 resident debug snapshot 当作通过条件。
 
@@ -124,7 +124,7 @@ SPA (ScenePlacementActor) 编排层  [顶层入口]
 
 CPU authoring / import
   -> register descriptors into profile container  [通过 SPA.register_asset()]
-  -> enqueue spawn/update/free commands
+  -> stage spawn/update/free commands
   -> GPU allocator assigns or reuses object_id
   -> update object buffers
   -> SV owner updates per-voxel + per-tile object refs from bounds

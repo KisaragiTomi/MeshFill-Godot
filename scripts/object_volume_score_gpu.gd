@@ -15,6 +15,10 @@ extends "res://scripts/godot_compute_shader_base.gd"
 
 const SCORE_SUBTILE_SHADER := "res://shaders/score_object_subtile.glsl"
 const REDUCE_SHADER := "res://shaders/reduce_object_rotation_scores.glsl"
+const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+
+## descriptor voxel-profile source. 评分采样点取自 profile.collision 的体素位置。
+const AutoVoxelProfileScript := preload("res://scripts/auto_voxel_profile.gd")
 
 const SUBTILE_SIZE := 8
 const SAMPLE_GROUP_SIZE := SUBTILE_SIZE * SUBTILE_SIZE * SUBTILE_SIZE
@@ -106,12 +110,25 @@ func score_all_assets(
 		dispose()
 		return results
 
-	var cx_buf := storage_buffer_from_bytes(
-		scene_fields["complexity_bytes"], SCOPE_FRAME, "scene_complexity")
-	var coll_buf := storage_buffer_from_bytes(
-		scene_fields["collision_bytes"], SCOPE_FRAME, "scene_collision")
-	var target_buf := storage_buffer_from_bytes(
-		scene_fields["target_bytes"], SCOPE_FRAME, "scene_target")
+	# Scene fields upload as 8-bit 3D textures sampled with hardware trilinear in
+	# the score shader. Texture dims (gx, gz, gy) make the byte order
+	# x + gx*(z + gz*y) match the shader's sv_idx layout. complexity/target are
+	# RGBA8 (a = complexity/coverage); collision is R8.
+	var field_sampler := _create_clamped_linear_sampler()
+	var field_usage := RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT
+	var cx_tex := upload_texture_3d(
+		grid.x, grid.z, grid.y, scene_fields["complexity_bytes"],
+		RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM, field_usage, SCOPE_FRAME, "scene_complexity")
+	var coll_tex := upload_texture_3d(
+		grid.x, grid.z, grid.y, scene_fields["collision_bytes"],
+		RenderingDevice.DATA_FORMAT_R8_UNORM, field_usage, SCOPE_FRAME, "scene_collision")
+	var target_tex := upload_texture_3d(
+		grid.x, grid.z, grid.y, scene_fields["target_bytes"],
+		RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM, field_usage, SCOPE_FRAME, "scene_target")
+	if not (field_sampler.is_valid() and cx_tex.is_valid() and coll_tex.is_valid() and target_tex.is_valid()):
+		push_error("[%s] Failed to create scene field 3D textures/sampler" % log_name)
+		dispose()
+		return results
 
 	var max_partial_count := anchor_count * MAX_SAMPLE_GROUPS * ROTATION_SLOTS
 	var partial_buf := storage_buffer_zero(
@@ -147,8 +164,9 @@ func score_all_assets(
 			continue
 
 		begin_scope(SCOPE_PASS)
+		# GPU 采样用连续偏移（frac_records）做 8 邻三线性插值；整数 records 仅供 CPU bounds。
 		var sample_records_buf := storage_buffer_from_bytes(
-			sample_profile["records_bytes"], SCOPE_PASS, "sample_records_%d" % asset_idx)
+			sample_profile["frac_records_bytes"], SCOPE_PASS, "sample_records_%d" % asset_idx)
 		var sample_counts_buf := storage_buffer_from_bytes(
 			sample_profile["counts_bytes"], SCOPE_PASS, "sample_counts_%d" % asset_idx)
 		var fp_props_buf := storage_buffer_from_bytes(
@@ -160,7 +178,7 @@ func score_all_assets(
 
 		var asset_color: Color = fp.get("color", Color(0.5, 0.5, 0.5, 0.5))
 		_dispatch_pass_a(
-			cx_buf, coll_buf, target_buf,
+			cx_tex, coll_tex, target_tex, field_sampler,
 			sample_records_buf, fp_props_buf, anchor_buf, sample_counts_buf, partial_buf,
 			grid, asset_color, anchor_count, variant_capacity, sample_group_count, max_sample_count)
 		_dispatch_pass_b(partial_buf, result_buf, anchor_count,
@@ -195,10 +213,25 @@ func _init_pipelines() -> bool:
 	return (_score_pipeline.is_valid() and _reduce_pipeline.is_valid())
 
 
+## 创建 CLAMP_TO_EDGE 的线性采样器，供场景场 3D 纹理在评分着色器中做硬件三线性采样。
+func _create_clamped_linear_sampler() -> RID:
+	var rd := get_rendering_device()
+	if rd == null:
+		return RID()
+	var state := RDSamplerState.new()
+	state.mag_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	state.min_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	state.mip_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
+	state.repeat_u = RenderingDevice.SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE
+	state.repeat_v = RenderingDevice.SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE
+	state.repeat_w = RenderingDevice.SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE
+	return track_rid(rd.sampler_create(state), KIND_SAMPLER, SCOPE_FRAME, "scene_field_sampler")
+
+
 ## 派发 Pass A：逐旋转累计有效采样点。绑定场景/采样/anchor 缓冲与推送常量，
 ## 以 (sample_group_count, anchor_count, 1) 网格分发，并加入计算屏障。
 func _dispatch_pass_a(
-	cx_buf: RID, coll_buf: RID, target_buf: RID,
+	cx_tex: RID, coll_tex: RID, target_tex: RID, field_sampler: RID,
 	sample_records_buf: RID, fp_props_buf: RID, anchor_buf: RID,
 	sample_counts_buf: RID, partial_buf: RID,
 	grid: Vector3i, asset_color: Color,
@@ -206,9 +239,9 @@ func _dispatch_pass_a(
 ) -> void:
 	var rd := get_rendering_device()
 	var set0 := create_uniform_set([
-		make_storage_uniform(0, cx_buf),
-		make_storage_uniform(1, coll_buf),
-		make_storage_uniform(2, target_buf),
+		make_sampler_uniform(0, field_sampler, cx_tex),
+		make_sampler_uniform(1, field_sampler, coll_tex),
+		make_sampler_uniform(2, field_sampler, target_tex),
 		make_storage_uniform(3, sample_records_buf),
 		make_storage_uniform(4, fp_props_buf),
 		make_storage_uniform(5, anchor_buf),
@@ -288,13 +321,10 @@ func _score_push_constant(
 ## 将 anchor 位置打包为 ivec4 字节数组（每个 anchor 存 x, y, z, 0）。
 func _pack_anchor_positions(anchors: PackedVector3Array) -> PackedByteArray:
 	var data := PackedByteArray()
-	data.resize(anchors.size() * 16)
+	data.resize(anchors.size() * UtilsBufferUtils.IVEC4_BYTES)
 	for i in range(anchors.size()):
 		var a := anchors[i]
-		data.encode_s32(i * 16, int(a.x))
-		data.encode_s32(i * 16 + 4, int(a.y))
-		data.encode_s32(i * 16 + 8, int(a.z))
-		data.encode_s32(i * 16 + 12, 0)
+		UtilsBufferUtils.encode_vec3i4(data, i * UtilsBufferUtils.IVEC4_BYTES, Vector3i(int(a.x), int(a.y), int(a.z)))
 	return data
 
 
@@ -353,12 +383,13 @@ static func build_rotation_sample_profile(
 		return _empty_rotation_sample_profile("empty_footprint")
 	if not _can_build_scene_voxel_profile(asset_footprint, scene_voxel_size):
 		return _empty_rotation_sample_profile("missing_scene_voxel_units")
-	var occupancy_bytes: PackedByteArray = asset_footprint.get("occupancy_bytes", PackedByteArray())
-	var occupancy := occupancy_bytes.to_int32_array()
-	if occupancy.size() < fp_voxel_count:
-		return _empty_rotation_sample_profile("occupancy_size_mismatch")
 	var props_bytes: PackedByteArray = asset_footprint.get("props_bytes", PackedByteArray())
 	var props := props_bytes.to_float32_array()
+	if props.size() < fp_voxel_count * 4:
+		return _empty_rotation_sample_profile("props_size_mismatch")
+	var profile_voxels := _profile_collision_voxels(asset_footprint)
+	if profile_voxels.is_empty():
+		return _empty_rotation_sample_profile("no_profile_samples")
 
 	var max_records_per_slot := _variant_capacity_for_grid(fp_grid)
 	var per_slot_records: Array = []
@@ -373,7 +404,7 @@ static func build_rotation_sample_profile(
 
 	for slot in range(ROTATION_SLOTS):
 		var raw_records := _build_slot_sample_records(
-			occupancy,
+			profile_voxels,
 			props,
 			fp_grid,
 			slot,
@@ -401,6 +432,8 @@ static func build_rotation_sample_profile(
 	var sample_group_count := clampi(
 		_ceili_div(max_sample_count, SAMPLE_GROUP_SIZE), 1, MAX_SAMPLE_GROUPS)
 	var packed_records := _pack_rotation_sample_records(per_slot_records, variant_capacity)
+	var packed_frac_records := _pack_rotation_frac_records(
+		packed_records, sample_counts, variant_capacity, asset_footprint, scene_voxel_size)
 	return {
 		"ok": true,
 		"reason": "ok",
@@ -416,16 +449,18 @@ static func build_rotation_sample_profile(
 		"bounds_by_slot": bounds_by_slot,
 		"records": packed_records,
 		"records_bytes": packed_records.to_byte_array(),
+		"frac_records": packed_frac_records,
+		"frac_records_bytes": packed_frac_records.to_byte_array(),
 		"max_variants_per_rotation": MAX_VARIANTS_PER_ROTATION,
 		"scene_voxel_units": true,
 		"scene_voxel_size": scene_voxel_size,
 	}
 
 
-## 为单个旋转槽构建去重后的采样记录：把每个被占用的足迹体素转换成「相对 pivot_local、
-## 经 yaw 旋转的场景体素偏移」，按偏移去重，同一偏移保留碰撞强度更高的足迹索引。
+## 为单个旋转槽构建去重后的采样记录：采样点取自 descriptor voxel_profile 的 collision
+## 体素位置（局部体素→世界→场景体素偏移）。按偏移去重，同一偏移保留碰撞强度更高的足迹索引。
 static func _build_slot_sample_records(
-	occupancy: PackedInt32Array,
+	profile_voxels: Array,
 	props: PackedFloat32Array,
 	fp_grid: Vector3i,
 	rotation_slot: int,
@@ -437,32 +472,82 @@ static func _build_slot_sample_records(
 	var angle := float(clampi(rotation_slot, 0, ROTATION_SLOTS - 1)) * TAU / float(ROTATION_SLOTS)
 	var ca := cos(angle)
 	var sa := sin(angle)
-	for y in range(fp_grid.y):
-		for z in range(fp_grid.z):
-			for x in range(fp_grid.x):
-				var fp_index := x + fp_grid.x * (z + fp_grid.z * y)
-				if occupancy[fp_index] == 0:
-					continue
-				var offset := _scene_voxel_offset_for_asset_voxel(
-					Vector3i(x, y, z),
-					asset_footprint,
-					scene_voxel_size,
-					ca,
-					sa
-				)
-				var key := "%d,%d,%d" % [offset.x, offset.y, offset.z]
-				if not offset_to_record.has(key):
-					offset_to_record[key] = records.size() / SAMPLE_RECORD_STRIDE_INTS
-					records.append(offset.x)
-					records.append(offset.y)
-					records.append(offset.z)
-					records.append(fp_index)
-				else:
-					var record_index := int(offset_to_record[key])
-					var old_fp_index := records[record_index * SAMPLE_RECORD_STRIDE_INTS + 3]
-					if _footprint_collision_strength(props, fp_index) > _footprint_collision_strength(props, old_fp_index):
-						records[record_index * SAMPLE_RECORD_STRIDE_INTS + 3] = fp_index
+	var voxel_count := props.size() / 4
+	for coord in profile_voxels:
+		var fp_index := VoxelGeneral.voxel_index(coord, fp_grid)
+		if fp_index < 0 or fp_index >= voxel_count:
+			continue
+		_accumulate_slot_sample_record(
+			records, offset_to_record, props, coord, fp_index,
+			asset_footprint, scene_voxel_size, ca, sa)
 	return records
+
+
+## 把一个足迹体素（局部体素坐标）转成场景体素偏移并累加到记录表：新偏移建记录，
+## 重复偏移保留碰撞强度更高的足迹索引（fp_index 供着色器查 props 颜色/碰撞）。
+static func _accumulate_slot_sample_record(
+	records: PackedInt32Array,
+	offset_to_record: Dictionary,
+	props: PackedFloat32Array,
+	coord: Vector3i,
+	fp_index: int,
+	asset_footprint: Dictionary,
+	scene_voxel_size: Vector3,
+	ca: float,
+	sa: float
+) -> void:
+	var offset := _scene_voxel_offset_for_asset_voxel(
+		coord, asset_footprint, scene_voxel_size, ca, sa)
+	var key := "%d,%d,%d" % [offset.x, offset.y, offset.z]
+	if not offset_to_record.has(key):
+		offset_to_record[key] = records.size() / SAMPLE_RECORD_STRIDE_INTS
+		records.append(offset.x)
+		records.append(offset.y)
+		records.append(offset.z)
+		records.append(fp_index)
+		return
+	var record_index := int(offset_to_record[key])
+	var old_fp_index := records[record_index * SAMPLE_RECORD_STRIDE_INTS + 3]
+	if _footprint_collision_strength(props, fp_index) > _footprint_collision_strength(props, old_fp_index):
+		records[record_index * SAMPLE_RECORD_STRIDE_INTS + 3] = fp_index
+
+
+## 读取 descriptor voxel_profile 的 collision 体素位置（asset 局部体素坐标）。
+## 无 profile 或无点采样时返回空数组，build_rotation_sample_profile 据此判定无有效采样。
+static func _profile_collision_voxels(asset_footprint: Dictionary) -> Array:
+	var voxels: Array = []
+	var profile = asset_footprint.get("voxel_profile", null)
+	var samples: Array = []
+	if profile != null and is_instance_valid(profile) and profile.has_method("get_collision"):
+		samples = profile.get_collision()
+	elif asset_footprint.has("collision_samples"):
+		samples = asset_footprint.get("collision_samples", [])
+	for raw in samples:
+		if not (raw is Dictionary):
+			continue
+		var entry := raw as Dictionary
+		if not (entry.has("voxel") or entry.has("local_pos") or entry.has("voxel_offset")):
+			continue
+		voxels.append(_sample_voxel_coord(
+			entry.get("voxel", entry.get("local_pos", entry.get("voxel_offset", Vector3i.ZERO)))))
+	return voxels
+
+
+## 把采样项里的体素坐标值解析为 Vector3i（兼容 Vector3i / Vector3 / Array / Dictionary）。
+static func _sample_voxel_coord(value) -> Vector3i:
+	if value is Vector3i:
+		return value as Vector3i
+	if value is Vector3:
+		var v := value as Vector3
+		return Vector3i(roundi(v.x), roundi(v.y), roundi(v.z))
+	if value is Array:
+		var arr := value as Array
+		if arr.size() >= 3:
+			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
+	if value is Dictionary:
+		var d := value as Dictionary
+		return Vector3i(int(d.get("x", 0)), int(d.get("y", 0)), int(d.get("z", 0)))
+	return Vector3i.ZERO
 
 
 ## 将记录数下采样到不超过 max_record_count（按均匀步长抽样保留）。
@@ -577,14 +662,16 @@ static func _profile_matches_scene_voxel_size(profile: Dictionary, scene_voxel_s
 		and is_equal_approx(cached.z, scene_voxel_size.z)
 
 
-## 将资产网格体素坐标转换为相对足迹中心（pivot）、经 yaw 旋转的场景体素偏移。
-static func _scene_voxel_offset_for_asset_voxel(
+## 将资产网格体素坐标转换为相对足迹中心（pivot）、经 yaw 旋转的**连续**场景体素偏移
+## （未量化，单位为场景体素）。GPU 用它在 anchor+offset 处做 8 邻体素三线性插值采样，
+## 而不是直接移动到体素中心。
+static func _scene_voxel_frac_offset_for_asset_voxel(
 	coord: Vector3i,
 	asset_footprint: Dictionary,
 	scene_voxel_size: Vector3,
 	ca: float,
 	sa: float
-) -> Vector3i:
+) -> Vector3:
 	var cell_size := float(asset_footprint.get("cell_size", 1.0))
 	var aabb_min: Vector3 = asset_footprint.get("aabb_min", Vector3.ZERO)
 	var fp_grid: Vector3i = asset_footprint.get("grid", Vector3i.ONE)
@@ -601,11 +688,65 @@ static func _scene_voxel_offset_for_asset_voxel(
 	var rel := local_center - pivot_local
 	var rx := ca * rel.x + sa * rel.z
 	var rz := -sa * rel.x + ca * rel.z
-	return Vector3i(
-		int(round(rx / scene_voxel_size.x)),
-		int(floor(rel.y / scene_voxel_size.y)),
-		int(round(rz / scene_voxel_size.z))
+	return Vector3(
+		rx / scene_voxel_size.x,
+		rel.y / scene_voxel_size.y,
+		rz / scene_voxel_size.z
 	)
+
+
+## 上面连续偏移的量化版（x/z round、y floor），用作去重键与场景体素 bounds 元数据。
+static func _scene_voxel_offset_for_asset_voxel(
+	coord: Vector3i,
+	asset_footprint: Dictionary,
+	scene_voxel_size: Vector3,
+	ca: float,
+	sa: float
+) -> Vector3i:
+	var f := _scene_voxel_frac_offset_for_asset_voxel(
+		coord, asset_footprint, scene_voxel_size, ca, sa)
+	return Vector3i(
+		int(round(f.x)),
+		int(floor(f.y)),
+		int(round(f.z))
+	)
+
+
+## 为 GPU 三线性采样打包每条保留样本的**连续**场景体素偏移（xyz）+ footprint props 索引
+## （w，存为 float）。布局与 packed_records 完全一致（按 variant_capacity 步长分槽）；偏移由
+## 该样本的 fp_index 反推体素坐标后用连续版重算，保证与去重/裁剪/排序后的整数记录逐条对应。
+static func _pack_rotation_frac_records(
+	packed_records: PackedInt32Array,
+	sample_counts: PackedInt32Array,
+	variant_capacity: int,
+	asset_footprint: Dictionary,
+	scene_voxel_size: Vector3
+) -> PackedFloat32Array:
+	var frac := PackedFloat32Array()
+	frac.resize(packed_records.size())
+	var fp_grid: Vector3i = asset_footprint.get("grid", Vector3i.ONE)
+	var safe_capacity := clampi(variant_capacity, 1, MAX_VARIANTS_PER_ROTATION)
+	for slot in range(ROTATION_SLOTS):
+		if slot >= sample_counts.size():
+			continue
+		var angle := float(slot) * TAU / float(ROTATION_SLOTS)
+		var ca := cos(angle)
+		var sa := sin(angle)
+		var count := sample_counts[slot]
+		var slot_base := slot * safe_capacity * SAMPLE_RECORD_STRIDE_INTS
+		for i in range(count):
+			var base := slot_base + i * SAMPLE_RECORD_STRIDE_INTS
+			if base + 3 >= packed_records.size():
+				break
+			var fp_index := packed_records[base + 3]
+			var coord := VoxelGeneral.voxel_from_index(fp_index, fp_grid)
+			var f := _scene_voxel_frac_offset_for_asset_voxel(
+				coord, asset_footprint, scene_voxel_size, ca, sa)
+			frac[base] = f.x
+			frac[base + 1] = f.y
+			frac[base + 2] = f.z
+			frac[base + 3] = float(fp_index)
+	return frac
 
 
 ## 由足迹网格尺寸（各轴钳制后相乘）计算每个旋转槽的最大采样记录数。
@@ -637,6 +778,8 @@ static func _empty_rotation_sample_profile(reason: String) -> Dictionary:
 	bounds.resize(ROTATION_SLOTS * SAMPLE_BOUNDS_STRIDE_INTS)
 	var records := PackedInt32Array()
 	records.resize(ROTATION_SLOTS * SAMPLE_RECORD_STRIDE_INTS)
+	var frac_records := PackedFloat32Array()
+	frac_records.resize(ROTATION_SLOTS * SAMPLE_RECORD_STRIDE_INTS)
 	return {
 		"ok": false,
 		"reason": reason,
@@ -651,6 +794,8 @@ static func _empty_rotation_sample_profile(reason: String) -> Dictionary:
 		"bounds_by_slot": [],
 		"records": records,
 		"records_bytes": records.to_byte_array(),
+		"frac_records": frac_records,
+		"frac_records_bytes": frac_records.to_byte_array(),
 		"max_variants_per_rotation": MAX_VARIANTS_PER_ROTATION,
 		"scene_voxel_units": false,
 		"scene_voxel_size": Vector3.ZERO,
@@ -784,9 +929,9 @@ static func anchor_result_for_asset(score_results: Array, asset_index: int, anch
 	return {}
 
 
-## 镜像 score_object_subtile.glsl，返回指定资产的场景体素单元包围盒。
-## 即使该资产在此 anchor 没有有效评分，仍会用其足迹采样剖面来确定
-## 包围盒与采样分配的元数据。
+## 返回指定资产在该 anchor 的 anchor bound（紧贴物体的世界 AABB，由 profile 体素世界
+## 位置算出，不做场景体素量化）。即使该资产在此 anchor 没有有效评分，仍会用其足迹采样
+## 剖面确定 anchor bound 与采样分配的元数据。
 static func anchor_sample_bounds_info(
 	score_results: Array,
 	assets: Array,
@@ -833,10 +978,31 @@ static func anchor_sample_bounds_info(
 
 	var min_voxel: Vector3i = voxel_bounds.get("min_voxel", Vector3i.ZERO)
 	var max_voxel: Vector3i = voxel_bounds.get("max_voxel", Vector3i.ZERO)
-	var span := max_voxel - min_voxel + Vector3i.ONE
 	var origin: Vector3 = scene_fields.get("grid_origin", Vector3.ZERO)
-	var min_corner := VoxelGeneral.voxel_to_world(min_voxel, origin, voxel_size)
-	var size := VoxelGeneral.voxel_span_to_world_size(span, voxel_size)
+	# anchor bound：用 profile 体素世界位置算紧贴物体的 AABB（局部体素→世界、按 yaw 旋转、
+	# 相对 pivot_local），不再用场景体素量化的 span——量化会把框按场景体素粒度放大。
+	var world_rel := _anchor_world_relative_bounds(footprint, rotation_slot)
+	var min_corner: Vector3
+	var size: Vector3
+	var obb_center := Vector3.ZERO
+	var obb_size := Vector3.ZERO
+	var obb_yaw := 0.0
+	var has_obb := false
+	if bool(world_rel.get("ok", false)):
+		var anchor_center := VoxelGeneral.voxel_to_world(
+			anchor_voxel_at(anchors, anchor_index), origin, voxel_size) + voxel_size * 0.5
+		var min_rel: Vector3 = world_rel.get("min_rel", Vector3.ZERO)
+		var max_rel: Vector3 = world_rel.get("max_rel", Vector3.ZERO)
+		min_corner = anchor_center + min_rel
+		size = max_rel - min_rel
+		obb_center = anchor_center + (world_rel.get("obb_center_rel", Vector3.ZERO) as Vector3)
+		obb_size = world_rel.get("obb_size", Vector3.ZERO)
+		obb_yaw = float(world_rel.get("obb_yaw", 0.0))
+		has_obb = true
+	else:
+		var span := max_voxel - min_voxel + Vector3i.ONE
+		min_corner = VoxelGeneral.voxel_to_world(min_voxel, origin, voxel_size)
+		size = VoxelGeneral.voxel_span_to_world_size(span, voxel_size)
 	return {
 		"bounds_kind": "score_footprint" if score_valid else "asset_footprint_no_score",
 		"asset_index": resolved_asset_index,
@@ -858,10 +1024,15 @@ static func anchor_sample_bounds_info(
 		"position": min_corner,
 		"size": size,
 		"aabb": AABB(min_corner, size),
+		"obb_center": obb_center,
+		"obb_size": obb_size,
+		"obb_yaw": obb_yaw,
+		"has_obb": has_obb,
 	}
 
 
-## 计算某旋转槽在指定 anchor 处、落在场景网格内的足迹采样点的世界体素 AABB。
+## 计算某旋转槽在指定 anchor 处、落在场景网格内的采样点的场景体素 AABB（仅用于采样
+## 计数/元数据；可视的 anchor bound 见 _anchor_world_relative_bounds，按物体精度贴合）。
 static func anchor_contributing_voxel_bounds(
 	asset_footprint: Dictionary,
 	scene_grid: Vector3i,
@@ -916,6 +1087,67 @@ static func anchor_contributing_voxel_bounds(
 	}
 
 
+## anchor bound 的世界相对范围：由 profile 体素位置算紧贴物体的框，单位为相对 anchor
+## (物体 pivot) 的世界米。取实心体素的局部 AABB（aabb_min + coord*cell_size，相对
+## pivot_local），不做场景体素量化。返回两套：min_rel/max_rel 是轴对齐 AABB（会被旋转撑大）；
+## obb_* 是 OBB（局部 AABB 尺寸 + 旋转中心 + yaw），渲染成带朝向的盒子，斜放也紧贴物体。
+## 无 profile 体素时返回 ok=false。
+static func _anchor_world_relative_bounds(
+	asset_footprint: Dictionary,
+	rotation_slot: int
+) -> Dictionary:
+	var profile_voxels := _profile_collision_voxels(asset_footprint)
+	if profile_voxels.is_empty():
+		return {"ok": false}
+	var cell_size := float(asset_footprint.get("cell_size", 1.0))
+	var aabb_min: Vector3 = asset_footprint.get("aabb_min", Vector3.ZERO)
+	var fp_grid: Vector3i = asset_footprint.get("grid", Vector3i.ONE)
+	var pivot_local: Vector3 = asset_footprint.get(
+		"pivot_local",
+		aabb_min + Vector3(float(fp_grid.x), 0.0, float(fp_grid.z)) * cell_size * 0.5)
+	var big := 1073741824
+	var min_c := Vector3i(big, big, big)
+	var max_c := Vector3i(-big, -big, -big)
+	for coord in profile_voxels:
+		min_c.x = mini(min_c.x, coord.x)
+		min_c.y = mini(min_c.y, coord.y)
+		min_c.z = mini(min_c.z, coord.z)
+		max_c.x = maxi(max_c.x, coord.x)
+		max_c.y = maxi(max_c.y, coord.y)
+		max_c.z = maxi(max_c.z, coord.z)
+	# Solid-voxel AABB in asset-local meters, relative to pivot (voxel-inclusive corners).
+	var lo := aabb_min + Vector3(min_c) * cell_size - pivot_local
+	var hi := aabb_min + Vector3(max_c + Vector3i.ONE) * cell_size - pivot_local
+	var angle := float(clampi(rotation_slot, 0, ROTATION_SLOTS - 1)) * TAU / float(ROTATION_SLOTS)
+	var ca := cos(angle)
+	var sa := sin(angle)
+	var min_rel := Vector3(INF, lo.y, INF)
+	var max_rel := Vector3(-INF, hi.y, -INF)
+	for corner in [Vector2(lo.x, lo.z), Vector2(lo.x, hi.z), Vector2(hi.x, lo.z), Vector2(hi.x, hi.z)]:
+		var c := corner as Vector2
+		var rx := ca * c.x + sa * c.y
+		var rz := -sa * c.x + ca * c.y
+		min_rel.x = minf(min_rel.x, rx)
+		max_rel.x = maxf(max_rel.x, rx)
+		min_rel.z = minf(min_rel.z, rz)
+		max_rel.z = maxf(max_rel.z, rz)
+	# OBB：未旋转的局部 AABB 尺寸 + 旋转后的中心 + yaw，渲染时按 yaw 朝向立方体，
+	# 框紧贴斜放的物体（不像 min_rel/max_rel 的轴对齐 AABB 会被旋转撑大）。
+	var center_local := (lo + hi) * 0.5
+	var obb_center_rel := Vector3(
+		ca * center_local.x + sa * center_local.z,
+		center_local.y,
+		-sa * center_local.x + ca * center_local.z)
+	return {
+		"ok": true,
+		"min_rel": min_rel,
+		"max_rel": max_rel,
+		"obb_center_rel": obb_center_rel,
+		"obb_size": hi - lo,
+		"obb_yaw": angle,
+	}
+
+
 ## 解析资产显示名（优先字典 "name"，其次对象的 name，否则回退为 "Asset{N}"）。
 static func _asset_name_for_topk(assets: Array, asset_index: int) -> String:
 	if asset_index < 0 or asset_index >= assets.size():
@@ -964,7 +1196,6 @@ static func footprint_from_voxelizer_result(
 ) -> Dictionary:
 	if not bool(result.get("ok", false)):
 		return {"grid": Vector3i.ZERO, "pivot": Vector3i.ZERO,
-				"occupancy_bytes": PackedByteArray(),
 				"props_bytes": PackedByteArray(),
 				"color": asset_color,
 				"world_aabb_longest": world_aabb_longest}
@@ -978,32 +1209,41 @@ static func footprint_from_voxelizer_result(
 		"aabb_size",
 		Vector3(float(grid.x), float(grid.y), float(grid.z)) * cell_size
 	)
-	var pivot_local := aabb_min + Vector3(aabb_size.x * 0.5, 0.0, aabb_size.z * 0.5)
+	# 锚点 = FBX 原始 pivot（网格局部原点），不按 AABB 计算。打分与放置都以此锚定，
+	# 故二者始终一致；每个资产嵌入/站立的方式完全由其 FBX pivot 决定。
+	var pivot_local := Vector3.ZERO
 
-	var occ := PackedInt32Array()
-	occ.resize(voxel_count)
 	var props := PackedFloat32Array()
 	props.resize(voxel_count * 4)
 
+	# descriptor voxel-profile：每个实心体素转成一条 point collision sample
+	# （canonical 局部 footprint sample 列表）。评分采样点只取自 profile.collision 的
+	# 体素位置（局部体素→世界→场景体素偏移），不再维护稠密 occupancy 网格。
+	var collision_samples: Array[Dictionary] = []
 	for v in voxels:
 		var coord: Vector3i = v["voxel"]
 		var idx := VoxelGeneral.voxel_index(coord, grid)
 		if idx < 0 or idx >= voxel_count:
 			continue
-		occ[idx] = 1
 		var c: Color = v.get("color", Color.WHITE)
 		var collision: float = v.get("collision", 0.0)
 		props[idx * 4] = c.r
 		props[idx * 4 + 1] = c.g
 		props[idx * 4 + 2] = c.b
 		props[idx * 4 + 3] = collision
+		collision_samples.append(
+			AutoVoxelProfileScript.make_collision_sample(coord, collision, 1.0))
 
-	var pivot := Vector3i(grid.x / 2, 0, grid.z / 2)
+	var pivot := Vector3i.ZERO
+
+	var voxel_profile := AutoVoxelProfileScript.new()
+	voxel_profile.color = asset_color
+	voxel_profile.complexity = clampf(asset_color.a, 0.0, 1.0)
+	voxel_profile.collision = collision_samples
 
 	var footprint := {
 		"grid": grid,
 		"pivot": pivot,
-		"occupancy_bytes": occ.to_byte_array(),
 		"props_bytes": props.to_byte_array(),
 		"color": asset_color,
 		"world_aabb_longest": world_aabb_longest,
@@ -1011,6 +1251,7 @@ static func footprint_from_voxelizer_result(
 		"aabb_min": aabb_min,
 		"aabb_size": aabb_size,
 		"pivot_local": pivot_local,
+		"voxel_profile": voxel_profile,
 	}
 	# 旋转采样剖面按需构建：需要场景体素尺寸，由 ensure_rotation_sample_profile() 在
 	# 评分/放置时用场景 voxel_size 生成（见 build_rotation_sample_profile）。

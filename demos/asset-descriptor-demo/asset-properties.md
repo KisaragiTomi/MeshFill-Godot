@@ -184,7 +184,7 @@ AutoVoxelRuntimeProfileContainer
 shader / SV 通过 profile_id 采样资产 profile
 ```
 
-热更新时，`AutoVoxelRuntimeProfileContainer.dirty_profile_ids` 交给 `GPUAutoObjectRuntime.mark_profile_objects_dirty()` 反查 GPU live object refs，并以 dirty delta 交给 `SceneVoxelCommitter.apply_gpu_autoobject_dirty_delta()` 映射为 `SceneVoxelTile` dirty。该路径仍只把 CPU 用作 control / debug plane，不恢复 CPU runtime fallback。
+热更新时，`AutoVoxelRuntimeProfileContainer.dirty_profile_ids` 标记受影响 profile；将其反查为 GPU live object refs 的 runtime 路径当前未提供，受影响对象以 dirty delta 交给 `SceneVoxelCommitter.apply_gpu_autoobject_dirty_delta()` 映射为 `SceneVoxelTile` dirty。该路径仍只把 CPU 用作 control / debug plane，不恢复 CPU runtime fallback。
 
 开放问题：
 

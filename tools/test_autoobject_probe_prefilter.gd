@@ -4,9 +4,9 @@ const Prefilter := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
 const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
-const CommonTestUtils := preload("res://scripts/common_test_utils.gd")
+const UtilsTestUtils := preload("res://scripts/utils_test_utils.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
-const CommonSceneVoxelFixture := preload("res://scripts/common_scene_voxel_fixture.gd")
+const UtilsSceneVoxelFixture := preload("res://scripts/utils_scene_voxel_fixture.gd")
 
 
 func _init() -> void:
@@ -15,12 +15,10 @@ func _init() -> void:
 	ok = ok and _test_candidate_routes_expand_for_probe_footprint_context_guard()
 	ok = ok and _test_candidate_route_profile_debug_schema()
 	ok = ok and _test_prefilter_dispatch_bounds_helpers()
-	ok = ok and _test_candidate_route_handoff_payload_schema()
 	ok = ok and _test_prefilter_decode_output_contract()
 	ok = ok and _test_scene_voxel_tile_dirty_bounds_feed_shader_tile_ids()
 	ok = ok and _test_probe_expected_rgba8_repacked_for_shader()
-	ok = ok and _test_prefilter_accepts_prepacked_target_field()
-	ok = ok and _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_uploads()
+	ok = ok and _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_blocks()
 	ok = ok and _test_prefilter_output_reports_gpu_profile_probe_contract()
 	ok = ok and _test_profile_pack_block_reasons_fail_contract()
 	ok = ok and _test_pipeline_readiness_contract()
@@ -35,12 +33,12 @@ func _init() -> void:
 
 func _test_position_only_anchor_layers() -> bool:
 	print("[AutoObjectProbePrefilter] test_position_only_anchor_layers...")
-	if not CommonTestUtils.has_rendering_device():
+	if not UtilsTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only anchor collection")
 		return true
 	var grid_size := Vector3i(16, 8, 16)
 	var voxel_size := Vector3.ONE
-	var sv := CommonSceneVoxelFixture.make_flat_ground_sv(grid_size, voxel_size)
+	var sv := UtilsSceneVoxelFixture.make_flat_ground_sv(grid_size, voxel_size)
 
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
 	var target_field := PackedFloat32Array()
@@ -80,7 +78,6 @@ func _test_position_only_anchor_layers() -> bool:
 		{"debug_read_candidate_route_cpu_expansion": true}
 	)
 	var anchors: Array = result.get("anchors", [])
-	var candidate_voxel_sparses: Dictionary = result.get("autoobject_candidate_voxel_sparses", {})
 	if anchors.is_empty():
 		prefilter.dispose()
 		supported_asset.free()
@@ -108,30 +105,8 @@ func _test_position_only_anchor_layers() -> bool:
 		push_error("  FAIL: expected supported position-only anchor candidates")
 		return false
 
-	# GPU-only prefilter does not read back per-anchor topK. The supported
-	# GDScript contract is per-asset routed voxel-region output.
-	for obj_idx in [0, 1]:
-		if not candidate_voxel_sparses.has(obj_idx):
-			prefilter.dispose()
-			supported_asset.free()
-			upper_asset.free()
-			push_error("  FAIL: expected routed candidate voxel regions for asset %d" % obj_idx)
-			return false
-		var routed_regions: Array = candidate_voxel_sparses.get(obj_idx, [])
-		if routed_regions.is_empty():
-			prefilter.dispose()
-			supported_asset.free()
-			upper_asset.free()
-			push_error("  FAIL: empty routed candidate voxel regions for asset %d" % obj_idx)
-			return false
-		for voxel_sparse_pos in routed_regions:
-			if not voxel_sparse_pos is Vector3i:
-				prefilter.dispose()
-				supported_asset.free()
-				upper_asset.free()
-				push_error("  FAIL: routed candidate voxel regions must be Vector3i region positions")
-				return false
-
+	# Candidate voxel regions now live in resident GPU route buffers (no CPU
+	# readback), so this test only validates the position-only anchor readback.
 	prefilter.dispose()
 	supported_asset.free()
 	upper_asset.free()
@@ -163,22 +138,7 @@ func _test_candidate_routes_expand_for_probe_footprint_context_guard() -> bool:
 		push_error("  FAIL: interpolation guard must be at least 1 voxel")
 		return false
 
-	var expanded := Prefilter._expand_vote_entries_to_voxel_sparses(
-		[{"tile_id": 37, "score": 1.0}],
-		profile,
-		Vector3i(5, 3, 5)
-	)
-	if expanded.find(Vector3i(2, 1, 2)) < 0:
-		push_error("  FAIL: expanded route should retain anchor voxel region")
-		return false
-	if expanded.find(Vector3i(0, 1, 2)) < 0:
-		push_error("  FAIL: expanded route should include probe-offset neighbor region")
-		return false
-	if expanded.find(Vector3i(2, 0, 2)) < 0:
-		push_error("  FAIL: expanded route should include interpolation guard neighbor region")
-		return false
-
-	print("  OK: tile_radius=%s expanded_regions=%d" % [str(tile_radius), expanded.size()])
+	print("  OK: tile_radius=%s interpolation_guard=%d" % [str(tile_radius), int(profile.get("interpolation_guard_voxels", 0))])
 	return true
 
 
@@ -259,73 +219,10 @@ func _test_prefilter_dispatch_bounds_helpers() -> bool:
 	])
 	return true
 
-func _test_candidate_route_handoff_payload_schema() -> bool:
-	print("[AutoObjectProbePrefilter] test_candidate_route_handoff_payload_schema...")
-	var payload := Prefilter.build_candidate_route_handoff_payload({
-		0: [
-			Vector3i(1, 0, 0),
-			Vector3i(1, 0, 0),
-			Vector3i(2, 0, 0),
-		],
-		1: [],
-		"2": [
-			3,
-			-1,
-		],
-	}, 3, Vector3i(2, 2, 2), 8)
-
-	if int(payload.get("schema_version", 0)) != 1 \
-	   or int(payload.get("record_stride_bytes", 0)) != 16 \
-	   or int(payload.get("range_stride_bytes", 0)) != 16:
-		push_error("  FAIL: resident route handoff payload should use schema v1 with 16-byte record/range strides: %s" % str(payload))
-		return false
-	if str(payload.get("source_label", "")) != "gpu_vote_buffer_readback_cpu_pack" \
-	   or not bool(payload.get("readback_derived", false)):
-		push_error("  FAIL: handoff payload should label readback-derived CPU pack source: %s" % str(payload))
-		return false
-	if str(payload.get("record_order", "")) != "asset_range_score_desc_tile_id_ascending" \
-	   or not bool(payload.get("score_order_preserved", false)) \
-	   or bool(payload.get("gpu_route_pack", true)):
-		push_error("  FAIL: default handoff payload should remain CPU score-sorted with GPU route pack disabled: %s" % str(payload))
-		return false
-	if int(payload.get("record_count", -1)) != 2 \
-	   or int(payload.get("range_count", -1)) != 3 \
-	   or int(payload.get("duplicate_tile_id_count", -1)) != 1 \
-	   or int(payload.get("invalid_tile_id_count", -1)) != 2 \
-	   or int(payload.get("empty_range_count", -1)) != 1:
-		push_error("  FAIL: handoff payload counts should reflect de-dupe/invalid/empty ranges: %s" % str(payload))
-		return false
-
-	var record_bytes: PackedByteArray = payload.get("record_bytes", PackedByteArray())
-	var range_bytes: PackedByteArray = payload.get("range_bytes", PackedByteArray())
-	if record_bytes.size() != 32 or range_bytes.size() != 48:
-		push_error("  FAIL: handoff payload byte sizes should match record/range counts")
-		return false
-	if int(record_bytes.decode_u32(0)) != 1 \
-	   or int(record_bytes.decode_u32(4)) != 0 \
-	   or int(record_bytes.decode_u32(16)) != 3:
-		push_error("  FAIL: handoff route records should pack tile id in x and bridge-debug score bits as 0")
-		return false
-	if int(range_bytes.decode_u32(0)) != 0 \
-	   or int(range_bytes.decode_u32(4)) != 1 \
-	   or int(range_bytes.decode_u32(8)) != 0:
-		push_error("  FAIL: asset 0 range should point to one record")
-		return false
-	if int(range_bytes.decode_u32(16)) != 1 \
-	   or int(range_bytes.decode_u32(20)) != 0 \
-	   or int(range_bytes.decode_u32(24)) != 0 \
-	   or int(range_bytes.decode_u32(28)) != 0:
-		push_error("  FAIL: empty asset 1 range should preserve start/count and zero reserved words without emitting a tile-0 record")
-		return false
-	if int(range_bytes.decode_u32(32)) != 1 \
-	   or int(range_bytes.decode_u32(36)) != 1 \
-	   or int(range_bytes.decode_u32(40)) != 0 \
-	   or int(range_bytes.decode_u32(44)) != 0:
-		push_error("  FAIL: asset 2 range should use string-keyed regions and zero reserved words")
-		return false
-
-	print("  OK: handoff records=%d ranges=%d" % [int(payload.get("record_count", 0)), int(payload.get("range_count", 0))])
-	return true
+# _test_candidate_route_handoff_payload_schema was removed: the CPU-side
+# build_candidate_route_handoff_payload packer no longer exists — candidate route
+# records/ranges are now packed into resident GPU route buffers, so there is no
+# CPU byte layout left to assert here.
 
 
 func _test_prefilter_decode_output_contract() -> bool:
@@ -340,14 +237,8 @@ func _test_prefilter_decode_output_contract() -> bool:
 
 	var asset_count := 2
 	var tile_count := 4
-	var votes_bytes := PackedByteArray()
-	votes_bytes.resize(asset_count * tile_count * 4)
-	votes_bytes.encode_float((0 * tile_count + 0) * 4, 1.0)
-	votes_bytes.encode_float((1 * tile_count + 3) * 4, 0.5)
-
 	var result := prefilter._decode_results(
 		anchors_bytes,
-		votes_bytes,
 		1,
 		asset_count,
 		tile_count,
@@ -359,79 +250,35 @@ func _test_prefilter_decode_output_contract() -> bool:
 		]
 	)
 
-	if not result.has("autoobject_candidate_voxel_sparses") \
-	   or not result.has("candidate_voxel_regions_by_asset") \
-	   or not result.has("candidate_voxel_sparses_by_asset"):
-		push_error("  FAIL: missing candidate voxel-region debug aliases")
-		return false
-	var autoobject_view: Dictionary = result.get("autoobject_candidate_voxel_sparses", {})
-	var regions_view: Dictionary = result.get("candidate_voxel_regions_by_asset", {})
-	var vpg_view: Dictionary = result.get("candidate_voxel_sparses_by_asset", {})
-	if str(result.get("candidate_route_readback_source", "")) != "gpu_vote_buffer_readback":
-		push_error("  FAIL: candidate route readback source should name the current GPU vote readback bridge")
-		return false
-	if str(result.get("candidate_route_runtime_read_source", "")) != "cpu_debug_bridge":
-		push_error("  FAIL: candidate route runtime source should remain cpu_debug_bridge until route buffers are resident")
-		return false
-	var handoff_payload: Dictionary = result.get("candidate_route_handoff_payload", {})
-	if handoff_payload.is_empty() \
-	   or int(handoff_payload.get("schema_version", 0)) != 1 \
-	   or str(handoff_payload.get("source_label", "")) != "gpu_vote_buffer_readback_cpu_pack":
-		push_error("  FAIL: decode output should include readback-derived candidate route handoff payload diagnostics")
-		return false
-	if str(result.get("candidate_route_payload_source_label", "")) != "gpu_vote_buffer_readback_cpu_pack" \
-	   or str(result.get("candidate_route_payload_ordering_contract", "")) != "score_sorted_cpu_expansion" \
-	   or bool(handoff_payload.get("gpu_route_pack_used", true)):
-		push_error("  FAIL: decode output should keep the default CPU-packed route payload selected")
-		return false
-	if not _assert_route_input_contract(
-		result,
-		"prefilter decode output",
-		"common_cpu_dictionary",
-		"gpu_vote_buffer_readback",
-		"cpu_debug_bridge"
-	):
-		return false
-	if autoobject_view != regions_view or autoobject_view != vpg_view:
-		push_error("  FAIL: candidate debug aliases should be synonymous")
-		return false
-	for asset_id in range(asset_count):
-		if not autoobject_view.has(asset_id) or not regions_view.has(asset_id) or not vpg_view.has(asset_id):
-			push_error("  FAIL: expected routed regions for asset %d" % asset_id)
+	# Candidate voxel regions now live in resident GPU route buffers, so the CPU
+	# decode exposes only empty debug aliases plus the resident route sources.
+	for key in [
+		"autoobject_candidate_voxel_sparses",
+		"candidate_voxel_regions_by_asset",
+		"candidate_voxel_sparses_by_asset",
+	]:
+		var alias = result.get(key, null)
+		if not alias is Dictionary or not (alias as Dictionary).is_empty():
+			push_error("  FAIL: %s should be an empty resident-route alias, got %s" % [key, str(alias)])
 			return false
-		var regions: Array = regions_view.get(asset_id, [])
-		if regions.is_empty():
-			push_error("  FAIL: routed regions empty for asset %d" % asset_id)
-			return false
-		for region in regions:
-			if not region is Vector3i:
-				push_error("  FAIL: routed regions should decode as Vector3i voxel-region coordinates")
-				return false
+	if str(result.get("candidate_route_readback_source", "")) != "resident_route_snapshot":
+		push_error("  FAIL: decode output should name the resident route snapshot readback source")
+		return false
+	if str(result.get("candidate_route_runtime_read_source", "")) != "resident":
+		push_error("  FAIL: decode output route runtime source should be resident")
+		return false
+	if bool(result.get("cpu_fallback", true)) or not bool(result.get("gpu_first", false)):
+		push_error("  FAIL: decode output must stay GPU-first with no CPU fallback")
+		return false
 
 	var profiles: Array = result.get("candidate_route_profiles", [])
 	if profiles.size() != asset_count:
 		push_error("  FAIL: expected one candidate_route_profiles entry per asset")
 		return false
 	for asset_id in range(asset_count):
-		if not profiles[asset_id] is Dictionary:
-			push_error("  FAIL: candidate_route_profiles[%d] should be a Dictionary" % asset_id)
-			return false
-		var profile: Dictionary = profiles[asset_id]
-		for key in [
-			"asset_index",
-			"probe_min",
-			"probe_max",
-			"footprint_min",
-			"footprint_max",
-			"context_radius_voxels",
-			"interpolation_guard_voxels",
-			"tile_radius",
-		]:
-			if not profile.has(key):
-				push_error("  FAIL: candidate route profile missing key %s" % key)
-				return false
-		if int(profile.get("asset_index", -1)) != asset_id:
-			push_error("  FAIL: route profile asset_index mismatch for asset %d" % asset_id)
+		if not profiles[asset_id] is Dictionary \
+		   or int((profiles[asset_id] as Dictionary).get("asset_index", -1)) != asset_id:
+			push_error("  FAIL: candidate_route_profiles[%d] should carry asset_index=%d" % [asset_id, asset_id])
 			return false
 
 	var anchors: Array = result.get("anchors", [])
@@ -442,11 +289,7 @@ func _test_prefilter_decode_output_contract() -> bool:
 		push_error("  FAIL: anchor debug readback should not expose anchor_kind")
 		return false
 
-	print("  OK: aliases=%d profiles=%d anchors=%d" % [
-		vpg_view.size(),
-		profiles.size(),
-		anchors.size(),
-	])
+	print("  OK: empty resident aliases profiles=%d anchors=%d" % [profiles.size(), anchors.size()])
 	prefilter.dispose()
 	return true
 
@@ -458,9 +301,9 @@ func _test_scene_voxel_tile_dirty_bounds_feed_shader_tile_ids() -> bool:
 	var sv := {
 		"tile_grid_size": tile_grid,
 		"total_tiles": tile_grid.x * tile_grid.y * tile_grid.z,
-		"dirty_tiles": {
-			"0:0:0": {},
-		},
+		# Tier 2: _dirty_tile_ids_from_sv reads only dirty_scene_voxel_tiles (B); the
+		# legacy dirty_tiles (A) map is no longer consumed, so all expected tile ids
+		# below come purely from these SceneVoxelTile voxel bounds.
 		"dirty_scene_voxel_tiles": {
 			"scene_a": {
 				"voxel_min": Vector3i(7, 0, 7),
@@ -518,44 +361,9 @@ func _test_probe_expected_rgba8_repacked_for_shader() -> bool:
 	return true
 
 
-func _test_prefilter_accepts_prepacked_target_field() -> bool:
-	print("[AutoObjectProbePrefilter] test_prefilter_accepts_prepacked_target_field...")
-	var voxel_count := 3
-	var field := PackedFloat32Array()
-	field.resize(voxel_count * 4 + 8)
-	# vec4 per voxel: .rgb = color, .a = occupancy
-	field[0] = 1.0; field[1] = 0.0; field[2] = 0.0; field[3] = 0.25
-	field[4] = 0.0; field[5] = 1.0; field[6] = 0.0; field[7] = 0.50
-	field[8] = 0.0; field[9] = 0.0; field[10] = 1.0; field[11] = 0.75
-	field[12] = 9.0; field[13] = 9.0; field[14] = 9.0; field[15] = 9.0
-
-	var prefilter := Prefilter.new()
-	var from_prepacked := prefilter._target_field_data(field, voxel_count)
-	if from_prepacked.size() != voxel_count * 4:
-		push_error("  FAIL: prepacked target field should trim to voxel_count * 4 floats, got %d" % from_prepacked.size())
-		return false
-	for i in range(voxel_count * 4):
-		if absf(from_prepacked[i] - field[i]) > 0.001:
-			push_error("  FAIL: prepacked target field mismatch at %d" % i)
-			return false
-
-	var fallback := prefilter._target_field_data(PackedFloat32Array(), voxel_count)
-	if fallback.size() != voxel_count * 4:
-		push_error("  FAIL: missing prepacked target field should allocate voxel_count * 4")
-		return false
-	for i in range(fallback.size()):
-		if absf(fallback[i]) > 0.001:
-			push_error("  FAIL: missing prepacked target field should stay zero at %d" % i)
-			return false
-
-	print("  OK: prefilter consumes TargetSV prepacked vec4 target field bytes (vec4 stride=16)")
-	prefilter.dispose()
-	return true
-
-
-func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_uploads() -> bool:
-	print("[AutoObjectProbePrefilter] test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_uploads...")
-	if not CommonTestUtils.has_rendering_device():
+func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_blocks() -> bool:
+	print("[AutoObjectProbePrefilter] test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_blocks...")
+	if not UtilsTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only TargetSV read-buffer borrowing")
 		return true
 
@@ -600,44 +408,30 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_upload
 		return false
 	prefilter.dispose()
 
-	var upload_field := PackedFloat32Array()
-	upload_field.resize(voxel_count * 4)
-	for i in range(voxel_count):
-		upload_field[i * 4 + 0] = 0.75
-		upload_field[i * 4 + 1] = 0.0
-		upload_field[i * 4 + 2] = 0.125
-		upload_field[i * 4 + 3] = 0.1 + float(i) * 0.05
-
+	# CPU upload fallback removed: a prefilter on a different RenderingDevice cannot
+	# borrow the resident buffer, so it must block explicitly (the pack also calls
+	# push_error) instead of uploading CPU bytes.
 	var mismatch_prefilter := Prefilter.new()
 	if not mismatch_prefilter.ensure_device(true, false):
 		mismatch_prefilter.dispose()
 		actor.dispose(true)
-		print("  SKIP: no second local RenderingDevice available for mismatch upload branch")
+		print("  SKIP: no second local RenderingDevice available for mismatch block branch")
 		return true
-	var uploaded: Dictionary = mismatch_prefilter._target_read_buffer_pack(target_buffers, upload_field, voxel_count)
-	if bool(uploaded.get("target_read_buffers_borrowed", true)) \
-			or not bool(uploaded.get("target_read_buffers_uploaded", false)) \
-			or str(uploaded.get("target_read_buffer_source", "")) != "uploaded_target_bytes" \
-			or str(uploaded.get("source_reason", "")) != "resident_target_read_buffer_rendering_device_mismatch" \
-			or bool(uploaded.get("cpu_fallback", true)):
-		mismatch_prefilter.dispose()
-		actor.dispose(true)
-		push_error("  FAIL: RD mismatch should preserve byte-upload compatibility: %s" % str(uploaded))
-		return false
 	var blocked: Dictionary = mismatch_prefilter._target_read_buffer_pack(target_buffers, PackedFloat32Array(), voxel_count)
 	if bool(blocked.get("ready", true)) \
 			or not bool(blocked.get("contract_blocked", false)) \
-			or str(blocked.get("reason", "")) != "resident_target_read_buffer_rendering_device_mismatch_no_debug_or_legacy_bytes" \
+			or str(blocked.get("reason", "")) != "resident_target_read_buffer_rendering_device_mismatch_gpu_resident_required" \
+			or bool(blocked.get("target_read_buffers_borrowed", true)) \
 			or bool(blocked.get("target_read_buffers_uploaded", true)) \
 			or bool(blocked.get("cpu_fallback", true)):
 		mismatch_prefilter.dispose()
 		actor.dispose(true)
-		push_error("  FAIL: RD mismatch without debug/legacy bytes should block explicitly: %s" % str(blocked))
+		push_error("  FAIL: RD mismatch must block explicitly with no CPU upload: %s" % str(blocked))
 		return false
 	mismatch_prefilter.dispose()
 	actor.dispose(true)
 
-	print("  OK: same-RD resident target_field buffers are borrowed; RD mismatch uploads only with explicit PackedFloat32Array bytes")
+	print("  OK: same-RD resident target_field buffers are borrowed; RD mismatch blocks (no CPU upload)")
 	return true
 
 
@@ -650,12 +444,8 @@ func _test_prefilter_output_reports_gpu_profile_probe_contract() -> bool:
 	anchors_bytes.encode_u32(4, 0)
 	anchors_bytes.encode_u32(8, 0)
 	anchors_bytes.encode_u32(12, 0)
-	var votes_bytes := PackedByteArray()
-	votes_bytes.resize(4)
-	votes_bytes.encode_float(0, 1.0)
 	var result := prefilter._decode_results(
 		anchors_bytes,
-		votes_bytes,
 		1,
 		1,
 		1,
@@ -881,7 +671,7 @@ func _assert_route_input_contract(
 
 func _test_prefilter_borrows_profile_container_probe_records_or_skip() -> bool:
 	print("[AutoObjectProbePrefilter] test_prefilter_borrows_profile_container_probe_records_or_skip...")
-	if not CommonTestUtils.has_rendering_device():
+	if not UtilsTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only profile probe buffer borrowing")
 		return true
 	var asset := AutoObjectScript.new()

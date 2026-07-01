@@ -9,10 +9,13 @@ extends "res://scripts/godot_compute_shader_base.gd"
 ## asset footprint, then receive compact placement records and stamped occupancy.
 
 const AutoObject := preload("res://scripts/auto_object.gd")
+const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const VoxelPlacementWritebackScript := preload("res://scripts/voxel_placement_writeback.gd")
+const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
 var _placement_writeback = null
 
-## 懒创建 placement 回写组件，借用生成器设备并设反向引用。
+## Lazily creates the delegated placement writeback helper.
+## 惰性创建（按需初始化）委托的放置写回（writeback）辅助对象。
 func _ensure_placement_writeback():
 	if _placement_writeback == null:
 		_placement_writeback = VoxelPlacementWritebackScript.new()
@@ -29,22 +32,13 @@ const FOOTPRINT_CAPACITY := 128
 const RECORD_STRIDE := 4
 const DELTA_STRIDE := 2
 const STAMP_BOUNDS_STRIDE := 2
-const FLAG_SUPPORT := 1
-const FLAG_CLEARANCE := 2
 const NUM_DEBUG_CHANNELS := 8
-const ACCEPTED_PLACEMENT_SOURCE_BUFFER_INCOMPLETE_REASON := "incomplete_source_candidate_handoff_missing_payload_and_group_index_buffers"
 const SCORE_CONTRACT_DEBUG_WORDS := 48
 const SCORE_CONTRACT_MAGIC := 0x4D465052 # MFPR: MeshFill placement runtime/profile.
 const CANDIDATE_ROUTE_BINDING_DEBUG_WORDS := 16
 const CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS := 4
 const CANDIDATE_ROUTE_INDIRECT_ARGS_BYTES := 12
 const CANDIDATE_ROUTE_SPARSE_ADAPTER_LOCAL_SIZE := 64
-const BOX_FOOTPRINT_BAKE_SHADER_PATH := "res://shaders/bake_box_footprint.glsl"
-const BOX_FOOTPRINT_BAKE_LOCAL_SIZE := 64
-const CYLINDER_FOOTPRINT_BAKE_SHADER_PATH := "res://shaders/bake_cylinder_footprint.glsl"
-const CYLINDER_FOOTPRINT_BAKE_LOCAL_SIZE := 64
-const ROTATE_FOOTPRINT_Y_SHADER_PATH := "res://shaders/rotate_footprint_y.glsl"
-const ROTATE_FOOTPRINT_Y_LOCAL_SIZE := 64
 const GPU_RUNTIME_PROVIDER_CONFIG_KEYS := [
 	"gpu_autoobject_runtime",
 	"autoobject_runtime",
@@ -54,11 +48,6 @@ const GPU_PROFILE_CONTAINER_CONFIG_KEYS := [
 	"auto_voxel_runtime_profile_container",
 	"runtime_profile_container",
 	"profile_container",
-]
-const SCENE_PLACEMENT_ACTOR_CONFIG_KEYS := [
-	"scene_placement_actor",
-	"placement_actor",
-	"spa",
 ]
 const CANDIDATE_REGION_BY_ASSET_CONFIG_KEYS := [
 	"candidate_voxel_regions_by_asset",
@@ -157,60 +146,6 @@ const SCENE_VOXEL_TILE_OBJECT_REF_BUFFER_NAME := "scene_voxel_tile_object_refs"
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
 const SCENE_VOXEL_TILE_OBJECT_REF_STRIDE_BYTES := 4
 const SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT := 8
-const PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY := "vegetation" + "_exclusion"
-const STAGE_SCENE_VOXEL_SOURCE_CANDIDATES_CONFIG_KEY := "stage_scene_voxel_source_candidates_to_resident_buffers"
-const VOXEL_WRITE_SPEC_CONFIG_KEYS := [
-	"asset",
-	"base_pixel",
-	"capture_size",
-	"create_voxel_write_spec",
-	"defer_blend",
-	"generation_tick",
-	"grid_origin",
-	"grid_size",
-	"group",
-	"groups",
-	"material",
-	"mesh",
-	"name",
-	"placement_mesh",
-	"record_id",
-	SCENE_VOXEL_COMMITTER_CONFIG_KEY,
-	"texture_resolution",
-	PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY,
-	"voxel_size",
-	"volume_xz_resolution",
-	AutoObject.INSTANCE_STAMP_WRITE_SPEC_META_KEY,
-	"voxel_write_spec",
-	"world_capture_size",
-]
-const SCENE_VOXEL_SOURCE_WRITE_DIAGNOSTIC_KEYS := [
-	"source_write_handoff_mode",
-	"source_write_batch_api",
-	"cpu_pending_source_candidate_bridge",
-	"pending_source_candidate_flush_api",
-	"source_candidate_resolve_api",
-	"resident_source_write_buffer",
-	"resident_source_write_buffer_owner",
-	"resident_source_write_buffer_rid",
-	"resident_source_write_buffer_lifetime",
-	"resident_source_write_buffer_stride_bytes",
-	"resident_source_write_buffer_range_count",
-	"resident_source_candidate_buffer_rid",
-	"resident_source_candidate_buffer_stride_bytes",
-	"resident_source_candidate_buffer_capacity",
-	"resident_source_candidate_buffer_count",
-	"resident_source_range_buffer_rid",
-	"resident_source_range_buffer_stride_bytes",
-	"resident_source_range_buffer_capacity",
-	"resident_source_range_buffer_count",
-	"resident_source_candidate_staging_epoch",
-	"runtime_read_source",
-	"final_source_stream_resident",
-	"final_source_stream_resident_source",
-	"resident_gpu_allocator_writeback",
-	"resident_gpu_allocator_writeback_mode",
-]
 
 var top_k: int = 4
 var result_capacity: int = 8
@@ -246,30 +181,7 @@ var _pipeline_candidate_route_sparse_adapter: RID
 var _pipeline_candidate_route_sparse_adapter_finalize: RID
 
 
-static func _get_config_voxel_write_spec(config: Dictionary) -> Dictionary:
-	for key in AutoObject.voxel_write_spec_meta_keys():
-		var raw_record = config.get(key, {})
-		if raw_record is Dictionary:
-			var record := raw_record as Dictionary
-			if not record.is_empty():
-				return record.duplicate(true)
-	return {}
-
-
-static func _scene_placement_actor_from_config(config: Dictionary) -> Object:
-	for key in SCENE_PLACEMENT_ACTOR_CONFIG_KEYS:
-		if not config.has(key):
-			continue
-		var value = config.get(key)
-		if value is Object:
-			return value as Object
-	return null
-
-
-static func _new_generator():
-	return load("res://scripts/voxel_placement_generator.gd").new()
-
-
+## 检查 settings 中是否包含“按资产分类”的候选体素区域配置（Dictionary 形式）。
 static func _has_candidate_regions_by_asset(settings: Dictionary) -> bool:
 	for key in CANDIDATE_REGION_BY_ASSET_CONFIG_KEYS:
 		if settings.get(key, null) is Dictionary:
@@ -277,6 +189,7 @@ static func _has_candidate_regions_by_asset(settings: Dictionary) -> bool:
 	return false
 
 
+## 从 settings 中提取“按资产分类”的候选体素区域字典（不存在则返回空字典）。
 static func _candidate_regions_by_asset_from_settings(settings: Dictionary) -> Dictionary:
 	for key in CANDIDATE_REGION_BY_ASSET_CONFIG_KEYS:
 		var value = settings.get(key, {})
@@ -285,6 +198,7 @@ static func _candidate_regions_by_asset_from_settings(settings: Dictionary) -> D
 	return {}
 
 
+## 根据 settings 推断候选路由（candidate route）的 GPU 回读来源标签。
 static func _candidate_route_readback_source_from_settings(settings: Dictionary) -> String:
 	if _has_candidate_regions_by_asset(settings):
 		return "gpu_vote_buffer_readback"
@@ -293,6 +207,7 @@ static func _candidate_route_readback_source_from_settings(settings: Dictionary)
 	return "none"
 
 
+## 根据 settings 推断候选路由在运行时的读取来源标签。
 static func _candidate_route_runtime_read_source_from_settings(settings: Dictionary) -> String:
 	if _has_candidate_regions_by_asset(settings):
 		return "cpu_debug_bridge"
@@ -301,6 +216,10 @@ static func _candidate_route_runtime_read_source_from_settings(settings: Diction
 	return "none"
 
 
+## 根据 settings 归纳候选路由（candidate route）输入契约（contract）：判断当前应使用
+## CPU 候选区域字典、GPU 常驻（resident）路由缓冲，还是两者都不可用（none），并对常驻
+## 路由所需的各项条件（RID 有效性、stride、schema 版本、稀疏适配器状态等）逐一核实，
+## 最终返回包含就绪状态、拒绝原因及大量调试/统计字段的字典。
 static func _candidate_route_input_contract_from_settings(settings: Dictionary) -> Dictionary:
 	var has_cpu_route := _has_candidate_regions_by_asset(settings)
 	var requested_readback := str(settings.get("candidate_route_readback_source", "none"))
@@ -436,6 +355,7 @@ static func _candidate_route_input_contract_from_settings(settings: Dictionary) 
 	}
 
 
+## 从契约（contract）字典中按 key_a、key_b 依次尝试取出 RID，取不到或类型不符时返回空 RID。
 static func _rid_from_contract(contract: Dictionary, key_a: String, key_b: String) -> RID:
 	var raw = contract.get(key_a, contract.get(key_b, RID()))
 	if raw is RID:
@@ -443,6 +363,7 @@ static func _rid_from_contract(contract: Dictionary, key_a: String, key_b: Strin
 	return RID()
 
 
+## 若传入值本身就是 RID 类型则原样返回，否则返回空 RID。
 static func _rid_from_value(value) -> RID:
 	if value is RID:
 		return value as RID
@@ -451,15 +372,23 @@ static func _rid_from_value(value) -> RID:
 
 ## Legacy debug-only: full-field CPU readback contract.
 ## Only used when `read_full_field_outputs` is explicitly set to `true`.
+## 旧版调试专用：完整体素场（full-field）CPU 回读契约，仅当显式设置
+## `read_full_field_outputs` 为 true 时才会使用。
 static func _full_field_readback_contract(voxel_count: int, output_source: String, is_gpu_readback: bool) -> Dictionary:
-	var byte_count := maxi(voxel_count, 0) * 4
+	var complexity_byte_count := SceneVoxelTileCodecScript.rgba8_byte_count(voxel_count)
+	var collision_byte_count := SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count)
 	return {
 		"complexity_field_out_source": output_source,
 		"collision_field_out_source": output_source,
 		"complexity_field_out_is_full_field": true,
 		"collision_field_out_is_full_field": true,
-		"complexity_field_out_byte_count": byte_count,
-		"collision_field_out_byte_count": byte_count,
+		"complexity_field_out_byte_count": complexity_byte_count,
+		"collision_field_out_byte_count": collision_byte_count,
+		"complexity_field_out_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8,
+		"collision_field_out_format": SceneVoxelTileCodecScript.COLLISION_FIELD_FORMAT_R8,
+		"complexity_field_out_stride_bytes": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES,
+		"collision_field_out_stride_bytes": SceneVoxelTileCodecScript.COLLISION_FIELD_STRIDE_BYTES,
+		"collision_field_out_upload_stride_bytes": 4,
 		"complexity_field_out_gpu_storage_buffer_readback": is_gpu_readback,
 		"collision_field_out_gpu_storage_buffer_readback": is_gpu_readback,
 		"cpu_state_chaining": true,
@@ -472,6 +401,8 @@ static func _full_field_readback_contract(voxel_count: int, output_source: Strin
 
 ## Legacy/debug: compact stamp-delta state chain contract.
 ## Kept for backward compatibility with tests and debug paths.
+## 旧版/调试用：紧凑戳记增量（compact stamp-delta）状态链契约，
+## 仅为测试与调试路径保留，以维持向后兼容。
 static func _compact_delta_state_chain_contract(
 	voxel_count: int,
 	stamp_delta_count: int,
@@ -484,6 +415,11 @@ static func _compact_delta_state_chain_contract(
 		"collision_field_out_is_full_field": false,
 		"complexity_field_out_byte_count": 0,
 		"collision_field_out_byte_count": 0,
+		"complexity_field_out_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8,
+		"collision_field_out_format": SceneVoxelTileCodecScript.COLLISION_FIELD_FORMAT_R8,
+		"complexity_field_out_stride_bytes": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES,
+		"collision_field_out_stride_bytes": SceneVoxelTileCodecScript.COLLISION_FIELD_STRIDE_BYTES,
+		"collision_field_out_upload_stride_bytes": 4,
 		"complexity_field_out_gpu_storage_buffer_readback": false,
 		"collision_field_out_gpu_storage_buffer_readback": false,
 		"cpu_state_chaining": true,
@@ -500,6 +436,8 @@ static func _compact_delta_state_chain_contract(
 
 ## GPU-resident state chain: scene/collision buffers live on GPU as borrowed RIDs.
 ## No full-field readback, no CPU array pass-through. This is the production default.
+## GPU 常驻状态链：场景/碰撞缓冲以借用的 RID 形式常驻显存，无需完整场回读，
+## 也无需 CPU 数组传递，是生产环境的默认路径。
 static func _gpu_resident_state_chain_contract(
 	voxel_count: int,
 	gpu_resident: bool,
@@ -517,6 +455,11 @@ static func _gpu_resident_state_chain_contract(
 		"collision_field_out_is_full_field": false,
 		"complexity_field_out_byte_count": 0,
 		"collision_field_out_byte_count": 0,
+		"complexity_field_out_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8,
+		"collision_field_out_format": SceneVoxelTileCodecScript.COLLISION_FIELD_FORMAT_R8,
+		"complexity_field_out_stride_bytes": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES,
+		"collision_field_out_stride_bytes": SceneVoxelTileCodecScript.COLLISION_FIELD_STRIDE_BYTES,
+		"collision_field_out_upload_stride_bytes": 4,
 		"complexity_field_out_gpu_storage_buffer_readback": false,
 		"collision_field_out_gpu_storage_buffer_readback": false,
 		"gpu_state_chaining": gpu_resident,
@@ -541,8 +484,10 @@ static func _gpu_resident_state_chain_contract(
 ## Legacy: compact stamp-delta state chaining check.
 ## GPU-resident state chain is now the primary path. This function is kept
 ## for backward compatibility with tests and debug paths.
+## 旧版：判断是否请求了紧凑戳记增量状态链。GPU 常驻状态链现为主路径，
+## 此函数仅为测试与调试路径保留兼容性。
 static func _compact_delta_state_chain_requested(settings: Dictionary) -> bool:
-	# Explicit opt-out flags 鈥?pass force_full_field_readback=true to fall back to
+	# Explicit opt-out flags — pass force_full_field_readback=true to fall back to
 	# the legacy full-voxel-field readback path (e.g. for debugging / compatibility).
 	if bool(settings.get("force_full_field_readback", false)):
 		return false
@@ -563,13 +508,15 @@ static func _compact_delta_state_chain_requested(settings: Dictionary) -> bool:
 	if mode == "compact_stamp_deltas" or mode == "compact_deltas" or mode == "stamp_deltas":
 		return true
 	# DEFAULT: compact stamp-delta state chaining is enabled.
-	# Reduces PCIe bandwidth by 90%+ (256鲁=67MB 鈫?stamp deltas only).
+	# Reduces PCIe bandwidth by 90%+ (256³=67MB → stamp deltas only).
 	return true
 
 
 ## GPU-resident state chain: scene/collision buffers live entirely on GPU.
 ## This is the production default path. No CPU arrays for state transfer.
 ## Disable via `force_cpu_state_chain=true` or `disable_gpu_state_chain=true`.
+## 判断是否启用 GPU 常驻状态链（生产环境默认路径），可通过
+## `force_cpu_state_chain` 或 `disable_gpu_state_chain` 关闭。
 static func _gpu_state_chain_enabled(settings: Dictionary) -> bool:
 	if bool(settings.get("force_cpu_state_chain", false)):
 		return false
@@ -582,6 +529,8 @@ static func _gpu_state_chain_enabled(settings: Dictionary) -> bool:
 	return true
 
 
+## 将戳记增量（stamp deltas）应用到 CPU 端的复杂度/碰撞场数组，
+## 并返回已应用、跳过的增量数量等统计信息。
 static func _apply_stamp_deltas_to_cpu_state(
 	current_complexity: PackedFloat32Array,
 	current_collision: PackedFloat32Array,
@@ -598,7 +547,7 @@ static func _apply_stamp_deltas_to_cpu_state(
 			skipped_count += 1
 			continue
 		var delta: Dictionary = raw_delta
-		var voxel := _vector3i_from_value(delta.get("voxel", Vector3i.ZERO), Vector3i.ZERO)
+		var voxel := VoxelGeneral.vector3i_from_value(delta.get("voxel", Vector3i.ZERO), Vector3i.ZERO)
 		if voxel.x < 0 or voxel.y < 0 or voxel.z < 0 \
 				or voxel.x >= grid_size.x or voxel.y >= grid_size.y or voxel.z >= grid_size.z:
 			skipped_count += 1
@@ -631,6 +580,7 @@ static func _apply_stamp_deltas_to_cpu_state(
 	}
 
 
+## 检查单个资产定义（asset_def）中是否包含候选体素区域配置。
 static func _has_asset_candidate_regions(asset_def: Dictionary) -> bool:
 	for key in ASSET_CANDIDATE_REGION_CONFIG_KEYS:
 		if asset_def.has(key):
@@ -638,6 +588,7 @@ static func _has_asset_candidate_regions(asset_def: Dictionary) -> bool:
 	return false
 
 
+## 从资产定义（asset_def）中提取候选体素区域数组（不存在则返回空数组）。
 static func _asset_candidate_regions(asset_def: Dictionary) -> Array:
 	for key in ASSET_CANDIDATE_REGION_CONFIG_KEYS:
 		var value = asset_def.get(key, [])
@@ -660,7 +611,12 @@ static func _asset_candidate_regions(asset_def: Dictionary) -> Array:
 #           complexity_field_out, collision_field_out, total_placed,
 #           processing_order: [original indices in execution order],
 #           gpu_autoobject_runtime_writeback: optional runtime writeback report}
-
+## 多资产序列化放置流水线的顶层入口。
+## 先按 priority/weight 对 asset_defs 排序，再逐个资产调用 run_minimal：对每个资产的
+## pivot_variants（锚点变体）逐一尝试放置并保留评分最高者；根据配置在 GPU 常驻、CPU 直接
+## 回写、紧凑 stamp-delta 三种状态链模式间传递更新后的 complexity/collision 场，并追踪
+## 全局配额 global_quota；最终可选择将已接受的放置结果写回 GPU AutoObject 运行时
+## 和/或场景体素瓦片提交器（scene voxel tile committer）。
 func run_multi_asset(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
@@ -837,7 +793,7 @@ func run_multi_asset(
 
 		var count := int(best_gpu_out.get("result_count", 0))
 		var raw_results: Array = best_gpu_out.get("results", [])
-		var world := results_to_world(raw_results, voxel_size, grid_origin, 24, best_pivot)
+		var world := VoxelPlacementOutputScript.results_to_world(raw_results, voxel_size, grid_origin, 24, best_pivot)
 
 		var compact_state_chain_report := {}
 		if compact_state_chain and not _gpu_state_chain_active:
@@ -979,8 +935,8 @@ func run_multi_asset(
 			if _rd != null:
 				var _scene_out := _rd.buffer_get_data(_gpu_complexity_buffer)
 				var _collision_out := _rd.buffer_get_data(_gpu_collision_buffer)
-				output["complexity_field_out"] = _decode_float_array(_scene_out, _voxel_count)
-				output["collision_field_out"] = _decode_float_array(_collision_out, _voxel_count)
+				output["complexity_field_out"] = SceneVoxelTileCodecScript.decode_complexity_field_rgba8_alpha_bytes(_scene_out, _voxel_count)
+				output["collision_field_out"] = SceneVoxelTileCodecScript.decode_collision_field_r8_word_bytes(_collision_out, _voxel_count)
 				output["gpu_state_chain"]["read_full_field_outputs"] = true
 				output["gpu_state_chain"]["complexity_field_out_source"] = "gpu_storage_buffer_full_field_readback_debug"
 				output["gpu_state_chain"]["collision_field_out_source"] = "gpu_storage_buffer_full_field_readback_debug"
@@ -1047,6 +1003,8 @@ func run_multi_asset(
 	return output
 
 
+## 按 priority（降序）对 asset_defs 分组排序；同一 priority 分组内使用带种子的随机数
+## 生成器做加权乱序（见 _weighted_shuffle），返回原始索引组成的执行顺序数组。
 static func _sort_asset_defs_by_priority_weight(
 	asset_defs: Array, common_settings: Dictionary
 ) -> Array[int]:
@@ -1094,6 +1052,8 @@ static func _sort_asset_defs_by_priority_weight(
 	return result
 
 
+## 对一组带权重的字典做加权随机乱序（不放回抽样）：每一步按剩余元素的权重比例抽取下一个，
+## 权重越高的元素越可能排在前面。
 static func _weighted_shuffle(
 	group: Array[Dictionary], rng: RandomNumberGenerator
 ) -> Array[Dictionary]:
@@ -1118,6 +1078,8 @@ static func _weighted_shuffle(
 	return result
 
 
+## 将 footprint 中每个体素条目的 local_pos 按 pivot_voxels 整体平移，用于应用不同的锚点
+## （pivot）变体；偏移量为零时仅做深拷贝，不做位移。
 static func apply_pivot_to_footprint(footprint: Array, pivot_voxels: Vector3i) -> Array[Dictionary]:
 	if pivot_voxels == Vector3i.ZERO:
 		var copied: Array[Dictionary] = []
@@ -1130,15 +1092,18 @@ static func apply_pivot_to_footprint(footprint: Array, pivot_voxels: Vector3i) -
 		if not e is Dictionary:
 			continue
 		var entry := (e as Dictionary).duplicate(true)
-		entry["local_pos"] = _vector3i_from_value(entry.get("local_pos", Vector3i.ZERO), Vector3i.ZERO) - pivot_voxels
+		entry["local_pos"] = VoxelGeneral.vector3i_from_value(entry.get("local_pos", Vector3i.ZERO), Vector3i.ZERO) - pivot_voxels
 		shifted.append(entry)
 	return shifted
 
 
+## 将世界坐标系下的偏移量按 voxel_size 转换为体素坐标系下的整数偏移（委托给 VoxelGeneral）。
 static func _world_offset_to_voxels(offset: Vector3, voxel_size: Vector3) -> Vector3i:
 	return VoxelGeneral.world_offset_to_voxels(offset, voxel_size)
 
 
+## 汇总 run_minimal 的 GPU 输出中所有有效（valid）放置结果的 score，用于比较不同 pivot
+## 变体的优劣；输出为空或结果数为 0 时返回 -INF。
 static func _placement_output_score(gpu_out: Dictionary) -> float:
 	if gpu_out.is_empty():
 		return -INF
@@ -1166,70 +1131,11 @@ static func _vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vect
 	return fallback
 
 
-static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
-	if value is Vector3i:
-		return value as Vector3i
-	if value is Vector3:
-		var v := value as Vector3
-		return Vector3i(roundi(v.x), roundi(v.y), roundi(v.z))
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
-	if value is Dictionary:
-		var d := value as Dictionary
-		return Vector3i(int(d.get("x", fallback.x)), int(d.get("y", fallback.y)), int(d.get("z", fallback.z)))
-	return fallback
-
-
-# ---------------------------------------------------------------------------
-# Instantiation - create AutoObject nodes from GPU placement results
-# ---------------------------------------------------------------------------
-# node_class: all classes create AutoObject (AutoObject for heightfield objects, AutoObject for generic objects).
-
-func instantiate_placement_autoobject(
-	world_result: Dictionary,
-	node_class: String,
-	placement_mesh: Mesh,
-	extra_config: Dictionary = {},
-	parent: Node = null
-):
-	return instantiate_placement(world_result, node_class, placement_mesh, extra_config, parent)
-
-
-func spawn_placement_autoobject(
-	parent: Node,
-	world_result: Dictionary,
-	node_class: String,
-	placement_mesh: Mesh,
-	extra_config: Dictionary = {}
-):
-	return instantiate_placement(world_result, node_class, placement_mesh, extra_config, parent)
-
-
-func attach_generated_placement_voxel_write_spec(node, record: Dictionary) -> Dictionary:
-	return attach_placement_voxel_write_spec(node, record)
-
-
-func placement_results_to_world(
-	results: Array[Dictionary],
-	voxel_size: Vector3,
-	grid_origin: Vector3,
-	rotation_count: int = 24,
-	pivot_variant: Dictionary = {}
-) -> Array[Dictionary]:
-	return results_to_world(results, voxel_size, grid_origin, rotation_count, pivot_variant)
-
-
-func placement_world_to_volume_pixel(
-	world_pos: Vector3,
-	resolution: int,
-	p_grid_origin: Vector3,
-	p_voxel_size: Vector3
-) -> Vector2i:
-	return world_to_volume_pixel(world_pos, resolution, p_grid_origin, p_voxel_size)
-
-
+## 单资产单 footprint 的 GPU 放置调度入口，由 run_multi_asset 针对每个 pivot 变体调用一次。
+## 校验 grid_size/footprint 等输入合法性，通过预筛选与候选路线绑定解析待测试的候选 tile 列表，
+## 确保 GPU 设备、着色器与管线就绪，并在需要时准备同类型物体间距排斥所需的 object ref 缓冲区。
+## 依次派发 score/reduce/stamp 计算着色器完成打分、归约与写回，
+## 最终解码并返回放置结果记录，以及 stamp 增量数据与包围盒等回读信息。
 func run_minimal(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
@@ -1292,7 +1198,7 @@ func run_minimal(
 
 	log_name = "VoxelPlacementGenerator"
 	sync_global_device = true
-	if not _ensure_placement_rendering_device():
+	if not ensure_device():
 		return _gpu_contract_blocked_minimal_output(
 			complexity_data,
 			collision_data,
@@ -1367,8 +1273,16 @@ func run_minimal(
 	if _complexity_field_gpu_borrowed_external:
 		track_borrowed_rid(_complexity_field_gpu_rid, KIND_BUFFER, SCOPE_FRAME, "%s:complexity_field" % _complexity_field_gpu_owner)
 		track_borrowed_rid(_collision_field_gpu_rid, KIND_BUFFER, SCOPE_FRAME, "%s:collision_field" % _complexity_field_gpu_owner)
-	var complexity_buffer: RID = _complexity_field_gpu_rid if _complexity_field_gpu_resident else storage_buffer_from_floats(complexity_data)
-	var collision_buffer: RID = _collision_field_gpu_rid if _complexity_field_gpu_resident else storage_buffer_from_floats(collision_data)
+	var complexity_buffer: RID = _complexity_field_gpu_rid if _complexity_field_gpu_resident else storage_buffer_from_bytes(
+		SceneVoxelTileCodecScript.pack_complexity_field_rgba8_bytes(complexity_data, voxel_count),
+		SCOPE_FRAME,
+		"placement_complexity_field_rgba8"
+	)
+	var collision_buffer: RID = _collision_field_gpu_rid if _complexity_field_gpu_resident else storage_buffer_from_bytes(
+		SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(collision_data, voxel_count),
+		SCOPE_FRAME,
+		"placement_collision_field_r8_words"
+	)
 	var footprint_pos_buffer := storage_buffer_from_bytes(footprint_buffers.pos_bytes)
 	var footprint_weight_buffer := storage_buffer_from_bytes(footprint_buffers.weight_bytes)
 	var candidate_voxel_sparse_buffer := storage_buffer_from_bytes(
@@ -1588,8 +1502,8 @@ func run_minimal(
 		"results": _decode_records(result_data, result_count),
 		"tile_topk": _decode_records(tile_topk_data, candidate_count) if read_tile_topk else [],
 		"tile_topk_readback_source": "score_shader_tile_topk_buffer" if read_tile_topk else "disabled",
-		"complexity_field_out": _decode_float_array(scene_out_data, voxel_count) if read_full_field_outputs else PackedFloat32Array(),
-		"collision_field_out": _decode_float_array(collision_out_data, voxel_count) if read_full_field_outputs else PackedFloat32Array(),
+		"complexity_field_out": SceneVoxelTileCodecScript.decode_complexity_field_rgba8_alpha_bytes(scene_out_data, voxel_count) if read_full_field_outputs else PackedFloat32Array(),
+		"collision_field_out": SceneVoxelTileCodecScript.decode_collision_field_r8_word_bytes(collision_out_data, voxel_count) if read_full_field_outputs else PackedFloat32Array(),
 		"complexity_field_out_source": _state_chain_contract.get("complexity_field_out_source", ""),
 		"collision_field_out_source": _state_chain_contract.get("collision_field_out_source", ""),
 		"complexity_field_out_byte_count": _state_chain_contract.get("complexity_field_out_byte_count", 0),
@@ -1632,6 +1546,8 @@ func run_minimal(
 	return output
 
 
+## 当 GPU 运行时契约校验失败时，为 run_multi_asset 构造统一的"已阻断"空结果：
+## 为每个资产生成占位失败结果，并原样返回输入的 complexity/collision 字段。
 func _gpu_contract_blocked_multi_asset_output(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
@@ -1674,6 +1590,8 @@ func _gpu_contract_blocked_multi_asset_output(
 	}
 
 
+## 当 GPU 运行时契约校验失败或设备/管线未就绪时，为 run_minimal 构造统一的"已阻断"空结果，
+## 包含空的放置结果与调试通道占位数据，并原样返回输入的 complexity/collision 字段。
 func _gpu_contract_blocked_minimal_output(
 	complexity_data: PackedFloat32Array,
 	collision_data: PackedFloat32Array,
@@ -1720,6 +1638,8 @@ func _gpu_contract_blocked_minimal_output(
 	}
 
 
+## 当候选 tile 预筛选结果为空时，为 run_minimal 构造空结果输出，
+## 跳过本次 GPU 派发，直接原样返回输入的 complexity/collision 字段。
 func _empty_prefilter_output(
 	complexity_data: PackedFloat32Array,
 	collision_data: PackedFloat32Array,
@@ -1758,18 +1678,8 @@ func _empty_prefilter_output(
 	}
 
 
-func _ensure_placement_rendering_device() -> bool:
-	if get_rendering_device() != null:
-		return true
-	var local_rd := RenderingServer.create_local_rendering_device()
-	if local_rd != null:
-		return attach_rendering_device(local_rd, true)
-	var global_rd := RenderingServer.get_rendering_device()
-	if global_rd != null:
-		return attach_rendering_device(global_rd, false)
-	return false
-
-
+## 将 settings 字典中的可选覆盖值应用到打分/放置相关成员变量（top_k、各类惩罚权重、资产索引等），
+## 并对 top_k、result_capacity 做取值范围钳制。
 func _apply_settings(settings: Dictionary) -> void:
 	top_k = int(settings.get("top_k", top_k))
 	result_capacity = int(settings.get("result_capacity", result_capacity))
@@ -1792,6 +1702,8 @@ func _apply_settings(settings: Dictionary) -> void:
 	result_capacity = maxi(result_capacity, 1)
 
 
+## 校验 GPU 自动物体运行时与体素画像容器是否就绪、渲染设备是否一致、
+## 所需 GPU 缓冲区是否齐全，构建并返回 gpu_runtime_profile_contract 校验结果。
 func _validate_gpu_runtime_profile_contract(settings: Dictionary) -> Dictionary:
 	var runtime_provider = _first_config_object(settings, GPU_RUNTIME_PROVIDER_CONFIG_KEYS)
 	var profile_container = _first_config_object(settings, GPU_PROFILE_CONTAINER_CONFIG_KEYS)
@@ -1812,8 +1724,8 @@ func _validate_gpu_runtime_profile_contract(settings: Dictionary) -> Dictionary:
 	if not profile_ready:
 		return _gpu_contract_result(false, "auto_voxel_runtime_profile_container_not_ready", runtime_provider, profile_container)
 
-	var runtime_rd: RenderingDevice = _object_rendering_device(runtime_provider)
-	var profile_rd: RenderingDevice = _object_rendering_device(profile_container)
+	var runtime_rd: RenderingDevice = rendering_device_of(runtime_provider)
+	var profile_rd: RenderingDevice = rendering_device_of(profile_container)
 	if runtime_rd == null or profile_rd == null:
 		return _gpu_contract_result(false, "missing_rendering_device", runtime_provider, profile_container)
 	if runtime_rd != profile_rd:
@@ -1850,6 +1762,10 @@ func _validate_gpu_runtime_profile_contract(settings: Dictionary) -> Dictionary:
 	return ok
 
 
+## 为"同类型物体最小间距"排斥检查准备 GPU 侧的 scene_voxel_tile_object_ref 缓冲区：
+## 依次校验该功能是否需要启用、SceneVoxelCommitter 是否可用、渲染设备是否匹配，
+## 以及 object ref 缓冲区的容量、步幅、tile 网格尺寸与编号 schema 等元数据是否自洽且未过期，
+## 校验全部通过后借用该 RID 缓冲区，返回可供 score 着色器使用的排斥上下文。
 func _prepare_scene_voxel_tile_object_ref_exclusion(
 	gpu_contract: Dictionary,
 	settings: Dictionary,
@@ -1865,7 +1781,7 @@ func _prepare_scene_voxel_tile_object_ref_exclusion(
 			or not committer.has_method("get_scene_voxel_tile_gpu_buffer_summary"):
 		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_gpu_buffer_api_missing", gpu_contract, settings)
 
-	var committer_rd: RenderingDevice = _object_rendering_device(committer)
+	var committer_rd: RenderingDevice = rendering_device_of(committer)
 	if committer_rd == null or _rd == null:
 		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_rendering_device_missing", gpu_contract, settings)
 	if committer_rd != _rd:
@@ -1886,11 +1802,11 @@ func _prepare_scene_voxel_tile_object_ref_exclusion(
 	var object_ref_capacity := int(summary.get("object_ref_capacity", 0))
 	var object_ref_stride := int(object_ref_summary.get("stride_bytes", 0))
 	var object_ref_record_count := int(object_ref_summary.get("record_count", 0))
-	var object_ref_tile_grid: Vector3i = _vector3i_from_value(
+	var object_ref_tile_grid: Vector3i = VoxelGeneral.vector3i_from_value(
 		summary.get("object_ref_tile_grid_size", tile_counts),
 		tile_counts
 	)
-	var object_ref_tile_size: Vector3i = _vector3i_from_value(
+	var object_ref_tile_size: Vector3i = VoxelGeneral.vector3i_from_value(
 		summary.get("object_ref_tile_size", Vector3i(TILE_SIZE, TILE_SIZE, TILE_SIZE)),
 		Vector3i(TILE_SIZE, TILE_SIZE, TILE_SIZE)
 	)
@@ -1946,6 +1862,8 @@ func _prepare_scene_voxel_tile_object_ref_exclusion(
 	return result
 
 
+## 判断本次放置是否需要启用"同类型物体间距"打分排斥：
+## 要求 GPU 运行时契约已就绪，settings 未关闭该功能，且 min_distance_voxels 大于 0。
 func _score_same_type_spacing_active(gpu_contract: Dictionary, settings: Dictionary) -> bool:
 	if str(gpu_contract.get("reason", "")) != "gpu_runtime_profile_buffers_ready":
 		return false
@@ -1954,6 +1872,8 @@ func _score_same_type_spacing_active(gpu_contract: Dictionary, settings: Diction
 	return maxf(float(settings.get("min_distance_voxels", min_distance_voxels)), 0.0) > 0.0
 
 
+## 处理 scene_voxel_tile_object_ref 缓冲区不可用的情况：若允许调试用的全量扫描回退
+## 且未强制要求 object ref 排斥，则返回可继续但已降级的结果，否则返回阻断结果。
 func _scene_voxel_tile_object_ref_unavailable(
 	reason: String,
 	gpu_contract: Dictionary,
@@ -1982,6 +1902,8 @@ func _scene_voxel_tile_object_ref_unavailable(
 	return blocked
 
 
+## 判断在 object ref 缓冲区不可用时，是否允许退化为调试用的全量扫描间距检测：
+## 需要 settings 显式开启该调试开关，且运行时物体数量未超过配置的上限。
 func _runtime_spacing_full_scan_debug_fallback_allowed(gpu_contract: Dictionary, settings: Dictionary) -> bool:
 	var requested := bool(settings.get(
 		"allow_runtime_spacing_full_scan_debug",
@@ -1997,6 +1919,8 @@ func _runtime_spacing_full_scan_debug_fallback_allowed(gpu_contract: Dictionary,
 	return int(runtime_summary.get("max_objects", 0)) <= maxi(max_debug_objects, 0)
 
 
+## 构造 scene_voxel_tile_object_ref 排斥检查结果的默认字典模板，
+## 包含 ok/reason 等状态字段以及各项缓冲区元数据的空值/默认值。
 func _scene_voxel_tile_object_ref_exclusion_result(ok: bool, reason: String) -> Dictionary:
 	return {
 		"ok": ok,
@@ -2023,6 +1947,8 @@ func _scene_voxel_tile_object_ref_exclusion_result(ok: bool, reason: String) -> 
 	}
 
 
+## 将 GPU 契约字典与场景体素分片对象引用契约合并：拷贝相关字段到结果中，
+## 若对象引用契约标记为被阻断，则同步阻断合并后的结果。
 func _merge_scene_voxel_tile_object_ref_contract(
 	gpu_contract: Dictionary,
 	object_ref_contract: Dictionary
@@ -2117,12 +2043,6 @@ func _object_bool(object: Object, primary_method: String, secondary_method: Stri
 	if not secondary_method.is_empty() and object.has_method(secondary_method):
 		return bool(object.call(secondary_method))
 	return false
-
-
-func _object_rendering_device(object: Object) -> RenderingDevice:
-	if object != null and object.has_method("get_rendering_device"):
-		return object.call("get_rendering_device")
-	return null
 
 
 func _object_summary(object: Object) -> Dictionary:
@@ -2614,59 +2534,6 @@ func _read_candidate_route_sparse_adapter_result(
 	}
 
 
-func _build_candidate_sparse_ids_from_resident_route_cpu_debug(route_binding: Dictionary, tile_count: int) -> Dictionary:
-	if not bool(route_binding.get("bindable", false)):
-		return {"ok": false, "reason": "route_binding_not_bindable"}
-	var range_buffer: RID = route_binding.get("range_buffer", RID())
-	var record_buffer: RID = route_binding.get("record_buffer", RID())
-	var range_count := int(route_binding.get("range_count", 0))
-	if not range_buffer.is_valid() or not record_buffer.is_valid() or range_count <= 0:
-		return {"ok": false, "reason": "missing_resident_route_buffers"}
-
-	var range_bytes := _rd.buffer_get_data(range_buffer, 0, range_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES)
-	if range_bytes.size() < range_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES:
-		return {"ok": false, "reason": "resident_route_range_readback_failed"}
-	var range_index := clampi(asset_index, 0, range_count - 1)
-	var range_offset := range_index * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES
-	var record_start := int(range_bytes.decode_u32(range_offset + 0))
-	var record_count := int(range_bytes.decode_u32(range_offset + 4))
-	if record_count <= 0:
-		return {"ok": false, "reason": "resident_route_range_empty"}
-
-	var record_bytes := _rd.buffer_get_data(
-		record_buffer,
-		record_start * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
-		record_count * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES
-	)
-	if record_bytes.size() < record_count * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES:
-		return {"ok": false, "reason": "resident_route_record_readback_failed"}
-
-	var ids := PackedInt32Array()
-	var seen := {}
-	for i in range(record_count):
-		var record_offset := i * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES
-		var tile_id := int(record_bytes.decode_u32(record_offset + 0))
-		if tile_id < 0 or tile_id >= tile_count or seen.has(tile_id):
-			continue
-		seen[tile_id] = true
-		ids.append(tile_id)
-	if ids.is_empty():
-		return {"ok": false, "reason": "resident_route_records_no_valid_tiles"}
-
-	return {
-		"ok": true,
-		"reason": "ok",
-		"candidate_voxel_sparse_ids": ids,
-		"range_index": range_index,
-		"range_start": record_start,
-		"range_count": record_count,
-		"record_reads": record_count,
-		"candidate_count": ids.size(),
-		"source": "resident_route_cpu_debug_sparse_adapter",
-		"adapter_mode": "cpu_debug_readback_fallback",
-	}
-
-
 func _mark_candidate_route_sparse_adapter_ready(route_settings: Dictionary, resident_route_sparse: Dictionary) -> void:
 	var raw_contract = route_settings.get("candidate_route_input_contract", {})
 	if not raw_contract is Dictionary:
@@ -2739,6 +2606,10 @@ func _mark_candidate_route_sparse_adapter_blocked(route_settings: Dictionary, re
 	route_settings["resident_candidate_route_contract"] = contract
 
 
+## 准备候选体素路由（candidate route）的 GPU 绑定信息。
+## 校验常驻路由契约中的 RID、步幅、schema 版本、渲染设备等是否满足直接绑定条件，
+## 判定该路由能否在 GPU 端直接绑定（bindable）而无需 CPU 回读，并给出不可绑定时的原因，
+## 同时生成调试缓冲区、更新 settings 中的契约字段，最终返回绑定结果字典。
 func _prepare_candidate_route_binding(settings: Dictionary, direct_all_tiles: bool) -> Dictionary:
 	var route_settings := settings.duplicate(true)
 	var raw_contract = route_settings.get("candidate_route_input_contract", {})
@@ -2828,6 +2699,8 @@ func _prepare_candidate_route_binding(settings: Dictionary, direct_all_tiles: bo
 	}
 
 
+## 根据路由绑定信息创建候选路由的 uniform set，供 score 着色器绑定使用。
+## 当 record/range 缓冲区无效时，使用占位（dummy）缓冲区填充对应槽位。
 func _create_candidate_route_binding_set(route_binding: Dictionary) -> RID:
 	var debug_buffer: RID = route_binding.get("debug_buffer", RID())
 	if not debug_buffer.is_valid():
@@ -2846,6 +2719,8 @@ func _create_candidate_route_binding_set(route_binding: Dictionary) -> RID:
 	], _shader_score, 2, SCOPE_PASS, "candidate_route_binding")
 
 
+## 读取候选路由绑定的调试缓冲区数据，解析为带命名字段的调试信息字典。
+## 若未启用调试快照或调试缓冲区无效，则返回不读取任何数据的默认结果。
 func _read_candidate_route_binding_debug(route_binding: Dictionary, read_debug_snapshot: bool = false) -> Dictionary:
 	var debug_buffer: RID = route_binding.get("debug_buffer", RID())
 	var words := PackedInt32Array()
@@ -2888,6 +2763,7 @@ func _read_candidate_route_binding_debug(route_binding: Dictionary, read_debug_s
 	}
 
 
+## 将候选路由绑定的调试计数信息合并写回 settings 中的候选路由契约字典。
 func _merge_candidate_route_binding_debug_into_settings(route_settings: Dictionary, route_binding_debug: Dictionary) -> void:
 	var raw_contract = route_settings.get("candidate_route_input_contract", {})
 	if not raw_contract is Dictionary:
@@ -2907,6 +2783,10 @@ func _merge_candidate_route_binding_debug_into_settings(route_settings: Dictiona
 	route_settings["resident_candidate_route_contract"] = contract
 
 
+## 根据 GPU 运行时/画像（profile）契约创建 score 着色器的运行时数据 uniform set。
+## 汇总运行时对象缓冲区（alive/generation/type/profile/bounds）、画像表、
+## 探针/枢轴记录及场景体素瓦片对象引用缓冲区等，对缺失或无效的 RID
+## 统一回退为占位缓冲区，避免绑定失败。
 func _create_score_runtime_profile_set(
 	gpu_contract: Dictionary,
 	score_contract_params_buffer: RID,
@@ -2946,6 +2826,7 @@ func _create_score_runtime_profile_set(
 	], _shader_score, 1, SCOPE_PASS, "score_runtime_profile_contract")
 
 
+## 从缓冲区字典中按名称取出 RID，若不存在或无效则返回占位（dummy）缓冲区。
 func _gpu_buffer_or_dummy(buffers: Dictionary, buffer_name: String, dummy_buffer: RID) -> RID:
 	var value = buffers.get(buffer_name, RID())
 	if value is RID:
@@ -2955,6 +2836,11 @@ func _gpu_buffer_or_dummy(buffers: Dictionary, buffer_name: String, dummy_buffer
 	return dummy_buffer
 
 
+## 将 score 运行时契约（gpu_contract）与 settings 中的相关参数打包为
+## 供 GPU 着色器读取的字节缓冲区（score contract params buffer）。
+## 内容包括运行时容量、画像数量、资产画像 ID、探针/枢轴记录数、
+## 最小间距，以及场景体素瓦片对象引用相关参数，按固定偏移量依次
+## 写入 112 字节的缓冲区布局。
 func _pack_score_contract_params(gpu_contract: Dictionary, settings: Dictionary) -> PackedByteArray:
 	var runtime_summary: Dictionary = gpu_contract.get("runtime_summary", {})
 	var profile_summary: Dictionary = gpu_contract.get("profile_summary", {})
@@ -3018,6 +2904,10 @@ func _pack_score_contract_params(gpu_contract: Dictionary, settings: Dictionary)
 	return bytes
 
 
+## 将 score 着色器写回的原始调试计数缓冲区字节解码为带命名字段的字典，
+## 字段名称对应 SCORE_CONTRACT_DEBUG_NAMES 中定义的布局（魔数、运行时/
+## 画像读取计数、重叠测试、间距排斥、场景体素瓦片对象引用等），
+## 同时提取各调试通道的最大值（debug_channel_max）供问题定位使用。
 func _decode_score_contract_debug(bytes: PackedByteArray) -> Dictionary:
 	var available_bytes := mini(bytes.size(), SCORE_CONTRACT_DEBUG_WORDS * 4)
 	available_bytes -= available_bytes % 4
@@ -3075,6 +2965,7 @@ func _decode_score_contract_debug(bytes: PackedByteArray) -> Dictionary:
 	}
 
 
+## 生成用于重置的 score 调试缓冲区字节数据，仅写入用于校验的魔数（magic）。
 func _pack_score_contract_debug_reset() -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(SCORE_CONTRACT_DEBUG_WORDS * 4)
@@ -3082,6 +2973,11 @@ func _pack_score_contract_debug_reset() -> PackedByteArray:
 	return bytes
 
 
+## 结合 score 着色器实际写回的调试计数，对 gpu_contract 进行事后标注：
+## 判断着色器是否真正绑定并消费了运行时/画像缓冲区、同类最小间距排斥、
+## 场景体素瓦片对象引用排斥等功能是否生效；若关键缓冲区未被实际消费，
+## 则将契约标记为不可用（ok = false）并给出对应 reason，
+## 最终返回附带 score_shader_debug 等标注字段的契约字典。
 func _annotate_score_contract_debug(gpu_contract: Dictionary, score_contract_debug: Dictionary) -> Dictionary:
 	var annotated := _with_same_type_exclusion_defaults(gpu_contract.duplicate(true))
 	if str(annotated.get("reason", "")) == "gpu_runtime_profile_buffers_ready":
@@ -3150,6 +3046,8 @@ func _annotate_score_contract_debug(gpu_contract: Dictionary, score_contract_deb
 	return annotated
 
 
+## 派发 reduce 计算着色器：将各 tile 的 top-K 候选结果规约为最终的
+## 放置结果列表，写入 result_buffer / result_count_buffer。
 func _dispatch_reduce(tile_topk_buffer: RID, result_buffer: RID, result_count_buffer: RID, candidate_count: int) -> void:
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, tile_topk_buffer),
@@ -3176,6 +3074,10 @@ func _dispatch_reduce(tile_topk_buffer: RID, result_buffer: RID, result_count_bu
 	end_compute_list()
 
 
+## 派发 stamp 计算着色器：先初始化 stamp_bounds 缓冲区（init pass），
+## 再根据已接受的放置结果与资产足迹（footprint）将增量写入
+## complexity/collision 场，同时生成紧凑的 stamp delta 数据，
+## 供 CPU 端 / 紧凑状态链（compact state-chain）路径读取使用。
 func _dispatch_stamp(
 	complexity_buffer: RID,
 	collision_buffer: RID,
@@ -3254,11 +3156,13 @@ func _dispatch_stamp(
 	end_compute_list()
 
 
+## 将资产的足迹（footprint，局部体素形状）数组打包为 GPU 可读取的
+## 位置字节缓冲区（含碰撞强度）与权重字节缓冲区（含 flags、半径）。
 func _pack_footprint(footprint: Array) -> Dictionary:
 	var pos_bytes := PackedByteArray()
 	var weight_bytes := PackedByteArray()
-	pos_bytes.resize(footprint.size() * 16)
-	weight_bytes.resize(footprint.size() * 16)
+	pos_bytes.resize(footprint.size() * UtilsBufferUtils.IVEC4_BYTES)
+	weight_bytes.resize(footprint.size() * UtilsBufferUtils.IVEC4_BYTES)
 
 	for i in range(footprint.size()):
 		var entry: Dictionary = footprint[i]
@@ -3266,11 +3170,8 @@ func _pack_footprint(footprint: Array) -> Dictionary:
 		var collision_q8 := clampi(roundi(clampf(float(entry.get("collision_strength", 0.0)), 0.0, 1.0) * 255.0), 0, 255)
 		var flags := int(entry.get("flags", 0))
 		var weight := maxf(float(entry.get("weight", 1.0)), 0.0)
-		var pos_offset := i * 16
-		pos_bytes.encode_s32(pos_offset + 0, local_pos.x)
-		pos_bytes.encode_s32(pos_offset + 4, local_pos.y)
-		pos_bytes.encode_s32(pos_offset + 8, local_pos.z)
-		pos_bytes.encode_s32(pos_offset + 12, collision_q8)
+		var pos_offset := i * UtilsBufferUtils.IVEC4_BYTES
+		UtilsBufferUtils.encode_vec3i4_with_w(pos_bytes, pos_offset, local_pos, collision_q8)
 		weight_bytes.encode_float(pos_offset + 0, weight)
 		weight_bytes.encode_float(pos_offset + 4, float(flags))
 		weight_bytes.encode_float(pos_offset + 8, float(entry.get("radius", 0.0)))
@@ -3281,12 +3182,14 @@ func _pack_footprint(footprint: Array) -> Dictionary:
 	}
 
 
+## 复制浮点数组并将其长度调整（补零或截断）为指定的期望大小。
 func _normalize_float_array(values: PackedFloat32Array, expected_size: int) -> PackedFloat32Array:
 	var result := values.duplicate()
 	result.resize(expected_size)
 	return result
 
 
+## 将原始字节数据解码为指定数量的 32 位浮点数组，容忍数据不足（不足部分补零）。
 func _decode_float_array(bytes: PackedByteArray, value_count: int) -> PackedFloat32Array:
 	var available_bytes := mini(bytes.size(), value_count * 4)
 	available_bytes -= available_bytes % 4
@@ -3295,12 +3198,17 @@ func _decode_float_array(bytes: PackedByteArray, value_count: int) -> PackedFloa
 	return values
 
 
+## 从字节缓冲区开头读取一个 32 位无符号整数，作为计数值返回。
 func _decode_u32_count(bytes: PackedByteArray) -> int:
 	if bytes.size() < 4:
 		return 0
 	return int(bytes.decode_u32(0))
 
 
+## 将 GPU 结果缓冲区中的原始字节解码为放置结果记录数组（Array[Dictionary]）。
+## 按 RECORD_STRIDE 定义的步幅依次解析每条记录的体素原点/分数、
+## tile/asset/旋转/缩放索引，以及支撑率、碰撞、复杂度与间隙重叠等调试字段，
+## 返回可供 CPU 端使用的记录列表。
 func _decode_records(bytes: PackedByteArray, record_count: int) -> Array[Dictionary]:
 	var records: Array[Dictionary] = []
 	var byte_stride := RECORD_STRIDE * 16
@@ -3352,6 +3260,8 @@ func _decode_records(bytes: PackedByteArray, record_count: int) -> Array[Diction
 	return records
 
 
+## 将 GPU stamp 着色器输出的原始字节解码为体素增量（stamp delta）记录数组。
+## 每条记录包含体素坐标、场景复杂度、碰撞强度及结果/footprint 索引，写入标记无效的条目会被跳过。
 func _decode_stamp_deltas(bytes: PackedByteArray, delta_count: int) -> Array[Dictionary]:
 	var deltas: Array[Dictionary] = []
 	var byte_stride := DELTA_STRIDE * 16
@@ -3384,6 +3294,8 @@ func _decode_stamp_deltas(bytes: PackedByteArray, delta_count: int) -> Array[Dic
 	return deltas
 
 
+## 将 GPU stamp bounds 缓冲区的原始字节解码为每次 stamp 写入的包围盒记录（voxel_min/voxel_max/written_count）。
+## 坐标会被裁剪到网格范围内，写入数量为 0 或退化的包围盒会被跳过。
 func _decode_stamp_bounds(bytes: PackedByteArray, bound_count: int, grid_size: Vector3i) -> Array[Dictionary]:
 	var bounds: Array[Dictionary] = []
 	var byte_stride := STAMP_BOUNDS_STRIDE * 16
@@ -3417,6 +3329,7 @@ func _decode_stamp_bounds(bytes: PackedByteArray, bound_count: int, grid_size: V
 	return bounds
 
 
+## 将 Color 颜色打包为单个 RGBA8 整数（各分量量化到 0-255 并按 R/G/B/A 顺序移位组合）。
 static func _pack_color_rgba8(c: Color) -> int:
 	var r := clampi(int(roundf(c.r * 255.0)), 0, 255)
 	var g := clampi(int(roundf(c.g * 255.0)), 0, 255)
@@ -3425,6 +3338,8 @@ static func _pack_color_rgba8(c: Color) -> int:
 	return (r << 24) | (g << 16) | (b << 8) | a
 
 
+## 从 settings 中取出预打包的 target_color_rgba8_bytes，并按 voxel_count 截断/校验长度。
+## 若数据不足则返回填零的字节数组。
 func _target_color_rgba8_bytes_from_settings(settings: Dictionary, voxel_count: int) -> PackedByteArray:
 	var expected_bytes := maxi(voxel_count, 1) * 4
 	var prepacked: PackedByteArray = settings.get("target_color_rgba8_bytes", PackedByteArray())
@@ -3437,6 +3352,8 @@ func _target_color_rgba8_bytes_from_settings(settings: Dictionary, voxel_count: 
 	return bytes
 
 
+## 从 settings 中提取 target_field_bytes（支持 float 数组或字节数组两种输入），
+## 归一化为按 voxel_count 匹配的 vec4 浮点数组，并返回包含 has_target 等元信息的字典。
 func _target_field_bytes_from_settings(settings: Dictionary, voxel_count: int) -> Dictionary:
 	var expected_floats := maxi(voxel_count, 1) * 4
 	var raw_field = settings.get("target_field_bytes", PackedFloat32Array())
@@ -3473,6 +3390,10 @@ func _target_field_bytes_from_settings(settings: Dictionary, voxel_count: int) -
 	}
 
 
+## 组装本帧用于目标（target）评分的 GPU 读取缓冲区数据包，是 target read buffer 的统一入口。
+## 优先尝试复用 ScenePlacementActor 提供的常驻 GPU 缓冲区（_borrowed_target_read_buffer_pack）；
+## 若不可用，则回退到 settings 中的旧版 target_field/target_color 字节数组并在此处上传；
+## 若声明了常驻交接但数据不足，则返回 blocked 包表示无法提供目标数据。
 func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Dictionary:
 	var expected_color_bytes := maxi(voxel_count, 1) * 4
 	var expected_field_floats := maxi(voxel_count, 1) * 4
@@ -3568,6 +3489,9 @@ func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Diction
 	}
 
 
+## 尝试直接复用外部（ScenePlacementActor）持有的常驻 GPU target_field 缓冲区，避免额外的 CPU 回读/上传。
+## 依次校验 RID 是否有效、RenderingDevice 是否与本对象一致、字节数是否匹配期望大小；
+## 全部通过则返回 ready=true 的"借用"数据包，否则返回 ready=false 并附带失败原因字符串。
 func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected_field_bytes: int) -> Dictionary:
 	if target_read_buffers.is_empty():
 		return {"ready": false, "reason": "resident_handoff_absent"}
@@ -3634,6 +3558,8 @@ func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected
 	}
 
 
+## 判断调用方是否声明了"常驻目标读取缓冲区交接"（resident_target_read_buffer_handoff）。
+## 该标记用于决定：当旧版字节数据缺失时，是否应视为错误并返回 blocked 结果。
 func _target_read_buffers_claim_resident(target_read_buffers: Dictionary) -> bool:
 	if target_read_buffers.is_empty():
 		return false
@@ -3644,6 +3570,8 @@ func _target_read_buffers_claim_resident(target_read_buffers: Dictionary) -> boo
 	))
 
 
+## 旧版回退路径：依次尝试从 settings、再从 target_read_buffers 交接字典中读取 target_field_bytes
+## （兼容 PackedFloat32Array 与 PackedByteArray 两种存储形式），都取不到则返回空数组。
 func _target_read_buffer_legacy_field(settings: Dictionary, target_read_buffers: Dictionary) -> PackedFloat32Array:
 	var raw = settings.get("target_field_bytes", PackedFloat32Array())
 	if raw is PackedFloat32Array:
@@ -3662,6 +3590,8 @@ func _target_read_buffer_legacy_field(settings: Dictionary, target_read_buffers:
 	return PackedFloat32Array()
 
 
+## 通用的旧版字节数组回退读取：先从 settings 按 key 取值，取不到再从 target_read_buffers 交接字典中取，
+## 都没有则返回空的 PackedByteArray。
 func _target_read_buffer_legacy_bytes(settings: Dictionary, target_read_buffers: Dictionary, key: String) -> PackedByteArray:
 	var raw = settings.get(key, PackedByteArray())
 	if raw is PackedByteArray:
@@ -3674,6 +3604,8 @@ func _target_read_buffer_legacy_bytes(settings: Dictionary, target_read_buffers:
 	return PackedByteArray()
 
 
+## 构造一个 ready=false 的"阻塞"目标读取缓冲区数据包：用于常驻交接已声明但既无 target_field
+## 也无合法旧版颜色字节可用的情况，携带失败原因及期望/实际字节数用于诊断。
 func _blocked_target_read_buffer_pack(
 	borrow_reason: String,
 	expected_field_bytes: int,
@@ -3715,6 +3647,8 @@ func _blocked_target_read_buffer_pack(
 	}
 
 
+## 将内部的目标读取缓冲区数据包（可能含原始 RID/字节数组）转换为轻量级摘要字典，
+## 便于日志输出与调试：仅保留 RID 是否有效等标志位，不包含原始字节负载。
 func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 	var raw_field = pack.get("target_field_buffer", RID())
 	var field_buffer: RID = raw_field if raw_field is RID else RID()
@@ -3752,6 +3686,8 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 	}
 
 
+## 通过 GPU 计算着色器（pack_target_field）将 target_color_rgba8、场景复杂度与碰撞字段
+## 合并为单个 vec4 target_field 缓冲区；输入无效或管线未就绪时返回全零缓冲区。
 func _ensure_combined_target_field_buffer(complexity_buffer: RID, collision_buffer: RID, target_color_buffer: RID, voxel_count: int) -> RID:
 	# Combines target_color_rgba8 (u32 RGBA8) with scene/collision fields into a single vec4 target_field buffer.
 	# target_field.a = completely = max(scene_complexity, collision); zero means the voxel is empty.
@@ -3790,10 +3726,13 @@ func _ensure_combined_target_field_buffer(complexity_buffer: RID, collision_buff
 
 	return output_buffer
 
+## 分配并清零一个与 target_field 同尺寸（voxel_count * 16 字节）的 GPU 临时缓冲区。
 func _create_zero_target_field_buffer(voxel_count: int) -> RID:
 	return storage_buffer_zero(voxel_count * 16, SCOPE_FRAME, "target_field_zero")
 
 
+## 在 CPU 端从交错排列的逐体素调试缓冲区中提取指定通道（channel）的数据。
+## 通道索引越界时返回全零数组。
 static func get_debug_channel(debug_voxel: PackedFloat32Array, channel: int, voxel_count: int) -> PackedFloat32Array:
 	var result := PackedFloat32Array()
 	result.resize(voxel_count)
@@ -3804,6 +3743,10 @@ static func get_debug_channel(debug_voxel: PackedFloat32Array, channel: int, vox
 	return result
 
 
+## get_debug_channel 的 GPU 计算版本：校验通道索引与缓冲区大小后，
+## 准备渲染设备/着色器/管线，将 debug_voxel 上传为存储缓冲区，
+## 派发 extract_debug_voxel_channel 计算着色器提取单一通道并回读结果；
+## 返回包含 ok/reason 及派发诊断信息的字典，成功或失败路径均会释放 GPU 资源。
 func get_debug_channel_gpu(debug_voxel: PackedFloat32Array, channel: int, voxel_count: int) -> Dictionary:
 	var safe_voxel_count := maxi(voxel_count, 0)
 	var result := PackedFloat32Array()
@@ -3946,6 +3889,7 @@ func get_debug_channel_gpu(debug_voxel: PackedFloat32Array, channel: int, voxel_
 # Footprint baking: collision -> GPU footprint array
 # ---------------------------------------------------------------------------
 
+## 委托给 VoxelFootprintBakerScript，从碰撞层烘焙出资产的本地体素 footprint 形状数组。
 static func bake_footprint_from_collision(
 	collision_layers: Array,
 	voxel_size: Vector3,
@@ -3955,6 +3899,7 @@ static func bake_footprint_from_collision(
 ) -> Array[Dictionary]:
 	return VoxelFootprintBakerScript.bake_footprint_from_collision(collision_layers, voxel_size, add_support, clearance_slices, prefer_gpu)
 
+## 委托给 VoxelFootprintBakerScript，将已烘焙的 footprint 绕 Y 轴旋转 yaw_degrees 度。
 static func rotate_footprint_y(
 	footprint: Array[Dictionary], yaw_degrees: float
 ) -> Array[Dictionary]:
@@ -3962,65 +3907,17 @@ static func rotate_footprint_y(
 
 
 
-## ===== VoxelPlacementOutput 静态委托桩 =====
-static func _placement_base_pixel(world_result: Dictionary,
-	record_config: Dictionary,
-	capture_size: float,
-	resolution: int) -> Vector2i:
-	return VoxelPlacementOutputScript._placement_base_pixel(world_result, record_config, capture_size, resolution)
-static func attach_placement_voxel_write_spec(node: AutoObject, record: Dictionary) -> Dictionary:
-	return VoxelPlacementOutputScript.attach_placement_voxel_write_spec(node, record)
-static func instantiate_placement(world_result: Dictionary,
-	node_class: String,
-	placement_mesh: Mesh,
-	extra_config: Dictionary = {},
-	parent: Node = null) -> AutoObject:
-	return VoxelPlacementOutputScript.instantiate_placement(world_result, node_class, placement_mesh, extra_config, parent)
-static func instantiate_placements(world_results: Array,
-	node_class: String,
-	placement_mesh: Mesh,
-	extra_config: Dictionary = {},
-	parent: Node = null) -> Array[AutoObject]:
-	return VoxelPlacementOutputScript.instantiate_placements(world_results, node_class, placement_mesh, extra_config, parent)
-static func make_placement_voxel_write_spec(node: AutoObject,
-	world_result: Dictionary,
-	node_class: String,
-	record_config: Dictionary = {}) -> Dictionary:
-	return VoxelPlacementOutputScript.make_placement_voxel_write_spec(node, world_result, node_class, record_config)
-static func make_voxel_write_spec(world_result: Dictionary,
-	node: AutoObject,
-	config: Dictionary = {}) -> Dictionary:
-	return VoxelPlacementOutputScript.make_voxel_write_spec(world_result, node, config)
-static func make_voxel_write_specs(world_results: Array,
-	nodes: Array,
-	config: Dictionary = {}) -> Array[Dictionary]:
-	return VoxelPlacementOutputScript.make_voxel_write_specs(world_results, nodes, config)
-static func results_to_world(results: Array[Dictionary],
-	voxel_size: Vector3,
-	grid_origin: Vector3,
-	rotation_count: int = 24,
-	pivot_variant: Dictionary = {}) -> Array[Dictionary]:
-	return VoxelPlacementOutputScript.results_to_world(results, voxel_size, grid_origin, rotation_count, pivot_variant)
-static func world_to_texture_pixel(world_pos: Vector3,
-	capture_size: float,
-	resolution: int) -> Vector2i:
-	return VoxelPlacementOutputScript.world_to_texture_pixel(world_pos, capture_size, resolution)
-static func world_to_volume_pixel(world_pos: Vector3,
-	resolution: int,
-	p_grid_origin: Vector3,
-	p_voxel_size: Vector3) -> Vector2i:
-	return VoxelPlacementOutputScript.world_to_volume_pixel(world_pos, resolution, p_grid_origin, p_voxel_size)
-
-
-
-## ===== VoxelPlacementWriteback 委托桩 =====
+## ===== VoxelPlacementWriteback delegates =====
+## 转发给 VoxelPlacementWriteback：合并 GPU AutoObject 运行时写回报告。
 func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: Dictionary) -> void:
 	_ensure_placement_writeback()._merge_gpu_autoobject_runtime_writeback_report(target, source)
+## 转发给 VoxelPlacementWriteback：创建新的 GPU AutoObject 运行时写回报告。
 func _new_gpu_autoobject_runtime_writeback_report(runtime_provider: Object,
 	profile_container: Object,
 	gpu_contract: Dictionary,
 	enabled: bool) -> Dictionary:
 	return _ensure_placement_writeback()._new_gpu_autoobject_runtime_writeback_report(runtime_provider, profile_container, gpu_contract, enabled)
+## 转发给 VoxelPlacementWriteback：将已接受的放置结果写入 GPU AutoObject 运行时。
 func _write_accepted_placements_to_gpu_runtime(runtime_provider: Object,
 	asset_index: int,
 	asset_def: Dictionary,
@@ -4031,6 +3928,7 @@ func _write_accepted_placements_to_gpu_runtime(runtime_provider: Object,
 	stamp_bounds: Array,
 	common_settings: Dictionary) -> Dictionary:
 	return _ensure_placement_writeback()._write_accepted_placements_to_gpu_runtime(runtime_provider, asset_index, asset_def, per_asset_settings, world_results, raw_results, stamp_deltas, stamp_bounds, common_settings)
+## 转发给 VoxelPlacementWriteback：将已接受的放置结果写入场景体素瓦片提交器（committer）。
 func _write_accepted_placements_to_scene_voxel_committer(asset_defs: Array,
 	result_by_index: Dictionary,
 	asset_results: Array[Dictionary],
@@ -4039,5 +3937,6 @@ func _write_accepted_placements_to_scene_voxel_committer(asset_defs: Array,
 	voxel_size: Vector3,
 	grid_origin: Vector3) -> Dictionary:
 	return _ensure_placement_writeback()._write_accepted_placements_to_scene_voxel_committer(asset_defs, result_by_index, asset_results, common_settings, grid_size, voxel_size, grid_origin)
+## 转发给 VoxelPlacementWriteback：校验 GPU 运行时 profile 契约是否满足。
 func validate_gpu_runtime_profile_contract(settings: Dictionary) -> Dictionary:
 	return _ensure_placement_writeback().validate_gpu_runtime_profile_contract(settings)

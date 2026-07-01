@@ -5,6 +5,8 @@ class_name VoxelFootprintBaker
 ## 自带 footprint compute shader，自洽(GPU 实例方法各自 ensure_device)，无生成器实例状态耦合。
 extends "res://scripts/godot_compute_shader_base.gd"
 
+const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+
 const FOOTPRINT_CAPACITY := 128
 const RECORD_STRIDE := 4
 const FLAG_SUPPORT := 1
@@ -35,22 +37,6 @@ static func _vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vect
 
 
 
-static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
-	if value is Vector3i:
-		return value as Vector3i
-	if value is Vector3:
-		var v := value as Vector3
-		return Vector3i(roundi(v.x), roundi(v.y), roundi(v.z))
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
-	if value is Dictionary:
-		var d := value as Dictionary
-		return Vector3i(int(d.get("x", fallback.x)), int(d.get("y", fallback.y)), int(d.get("z", fallback.z)))
-	return fallback
-
-
 # ---------------------------------------------------------------------------
 # Instantiation - create AutoObject nodes from GPU placement results
 # ---------------------------------------------------------------------------
@@ -62,8 +48,8 @@ static func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> V
 func _pack_footprint(footprint: Array) -> Dictionary:
 	var pos_bytes := PackedByteArray()
 	var weight_bytes := PackedByteArray()
-	pos_bytes.resize(footprint.size() * 16)
-	weight_bytes.resize(footprint.size() * 16)
+	pos_bytes.resize(footprint.size() * UtilsBufferUtils.IVEC4_BYTES)
+	weight_bytes.resize(footprint.size() * UtilsBufferUtils.IVEC4_BYTES)
 
 	for i in range(footprint.size()):
 		var entry: Dictionary = footprint[i]
@@ -71,11 +57,8 @@ func _pack_footprint(footprint: Array) -> Dictionary:
 		var collision_q8 := clampi(roundi(clampf(float(entry.get("collision_strength", 0.0)), 0.0, 1.0) * 255.0), 0, 255)
 		var flags := int(entry.get("flags", 0))
 		var weight := maxf(float(entry.get("weight", 1.0)), 0.0)
-		var pos_offset := i * 16
-		pos_bytes.encode_s32(pos_offset + 0, local_pos.x)
-		pos_bytes.encode_s32(pos_offset + 4, local_pos.y)
-		pos_bytes.encode_s32(pos_offset + 8, local_pos.z)
-		pos_bytes.encode_s32(pos_offset + 12, collision_q8)
+		var pos_offset := i * UtilsBufferUtils.IVEC4_BYTES
+		UtilsBufferUtils.encode_vec3i4_with_w(pos_bytes, pos_offset, local_pos, collision_q8)
 		weight_bytes.encode_float(pos_offset + 0, weight)
 		weight_bytes.encode_float(pos_offset + 4, float(flags))
 		weight_bytes.encode_float(pos_offset + 8, float(entry.get("radius", 0.0)))
@@ -533,7 +516,7 @@ static func _is_point_collision_sample(collision: Dictionary) -> bool:
 
 
 static func _collision_sample_position(collision: Dictionary) -> Vector3i:
-	return _vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
+	return VoxelGeneral.vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
 
 
 
@@ -728,16 +711,12 @@ static func _deduplicate_footprint(entries: Array[Dictionary]) -> Array[Dictiona
 
 static func _decode_gpu_footprint_buffers(pos_bytes: PackedByteArray, weight_bytes: PackedByteArray, count: int) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
-	var available := mini(count, mini(int(pos_bytes.size() / 16), int(weight_bytes.size() / 16)))
+	var available := mini(count, mini(int(pos_bytes.size() / UtilsBufferUtils.IVEC4_BYTES), int(weight_bytes.size() / UtilsBufferUtils.IVEC4_BYTES)))
 	for i in range(available):
-		var pos_offset := i * 16
-		var weight_offset := i * 16
+		var pos_offset := i * UtilsBufferUtils.IVEC4_BYTES
+		var weight_offset := i * UtilsBufferUtils.IVEC4_BYTES
 		result.append({
-			"local_pos": Vector3i(
-				pos_bytes.decode_s32(pos_offset + 0),
-				pos_bytes.decode_s32(pos_offset + 4),
-				pos_bytes.decode_s32(pos_offset + 8)
-			),
+			"local_pos": UtilsBufferUtils.decode_vec3i4(pos_bytes, pos_offset),
 			"collision_strength": clampf(float(pos_bytes.decode_s32(pos_offset + 12)) / 255.0, 0.0, 1.0),
 			"flags": roundi(weight_bytes.decode_float(weight_offset + 4)),
 			"weight": maxf(weight_bytes.decode_float(weight_offset + 0), 0.0),
@@ -746,7 +725,7 @@ static func _decode_gpu_footprint_buffers(pos_bytes: PackedByteArray, weight_byt
 
 
 # ---------------------------------------------------------------------------
-# Footprint rotation 鈥?pre-bake 24 yaw versions
+# Footprint rotation — pre-bake 24 yaw versions
 # ---------------------------------------------------------------------------
 
 
@@ -1013,9 +992,3 @@ static func _bake_rotated_footprints_gpu_blocked(
 		"rotations": [],
 		"readback_source": "none",
 	}
-
-
-# ---------------------------------------------------------------------------
-# GPU result 鈫?world-space placement data
-# ---------------------------------------------------------------------------
-

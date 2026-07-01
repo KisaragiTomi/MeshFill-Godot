@@ -12,7 +12,7 @@
 
 ## 用途
 
-该 demo 验证外部 Houdini 点云到 `TargetSceneVoxel` 的转换路径。转换工具读取点云中的 `Cd`、`complex`、`collision` 和 `P`，把 `P.y` 作为相对地形高度，采样 `scene_height_0_1.png` 生成可视化位置，同时输出 TargetSV 的 `rgba32f` visual buffer 与 `r32f` collision buffer。
+该 demo 验证外部 Houdini 点云到 `TargetSceneVoxel` 的转换路径。转换工具读取点云中的 `Cd`、`complex`、`collision` 和 `P`，把 `P.y` 作为相对地形高度，采样 `scene_height_0_1.png` 生成可视化位置，同时输出 TargetSV 的 `rgba8` visual buffer 与 `r8` collision buffer。
 
 Houdini 的 +Z 方向与高度纹理的行顺序相反，因此转换器默认在 Z 轴上翻转点云网格，使体素列与 `scene_height_0_1.png` 对齐（实测相关性 0.95+）。调试时可用 `--no-flip-z` 关闭该翻转。
 
@@ -28,8 +28,8 @@ python tools/convert_target_sv_point_cloud.py
 | File | Purpose |
 | --- | --- |
 | `target_sv_point_cloud.json` | TargetSV metadata、源属性映射、点数和 voxel 统计 |
-| `target_sv_point_cloud_visual.rgba32f` | `vec4(color.rgb, complexity)` flat buffer |
-| `target_sv_point_cloud_collision.r32f` | `collision` flat buffer |
+| `target_sv_point_cloud_visual.rgba8` | `rgba8(color.rgb, complexity)` flat buffer |
+| `target_sv_point_cloud_collision.r8` | `collision` r8 flat buffer |
 | `target_sv_point_cloud_preview.png` | XZ preview，用于场景中的半透明叠层 |
 
 ## 验收标准

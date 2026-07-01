@@ -4,7 +4,7 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
 const VoxelDisplay := preload("res://scripts/voxel_display.gd")
-const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
+const UtilsDemoAssets := preload("res://scripts/utils_demo_assets.gd")
 
 const VOXEL_DEBUG_NODE := "VoxelDebugGroup"
 const GEO_ASSET_ROOT := "Assets/Geo"
@@ -239,7 +239,7 @@ func _scan_geo_assets(full_rescan: bool) -> Dictionary:
 				(child as Node).free()
 
 	var existing := _geo_nodes_by_source_path(geo_root)
-	var files := CommonDemoAssets.discover_geo_files("res://geo", GEO_SCAN_EXTENSIONS)
+	var files := UtilsDemoAssets.discover_geo_files("res://geo", GEO_SCAN_EXTENSIONS)
 	var added := 0
 	var updated := 0
 	var unchanged := 0
@@ -298,7 +298,7 @@ func _get_or_create_geo_asset_root() -> Node3D:
 
 
 func _load_geo_mesh_info(path: String) -> Dictionary:
-	return CommonDemoAssets.load_mesh_info(path)
+	return UtilsDemoAssets.load_mesh_info(path)
 
 
 func _create_geo_asset_node(path: String, modified: int, info: Dictionary) -> Node3D:
@@ -314,7 +314,7 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 
 	var mesh: Mesh = info.get("mesh", null)
 	var mesh_transform: Transform3D = info.get("mesh_transform", Transform3D.IDENTITY)
-	var bounds := CommonDemoAssets.transformed_aabb(mesh.get_aabb(), mesh_transform) if mesh != null else AABB()
+	var bounds := UtilsDemoAssets.transformed_aabb(mesh.get_aabb(), mesh_transform) if mesh != null else AABB()
 	var kind := _classify_geo_asset(path)
 	var color := TREE_COLOR if kind == "tree" else ROCK_COLOR
 
@@ -323,7 +323,7 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 	node.set_meta(GEO_SOURCE_META, path)
 	node.set_meta(GEO_MTIME_META, modified)
 	node.set_meta(GEO_BOUND_SIZE_META, bounds.size)
-	node.set_meta(GEO_BOUND_LONGEST_META, CommonDemoAssets.aabb_longest_axis(bounds))
+	node.set_meta(GEO_BOUND_LONGEST_META, UtilsDemoAssets.aabb_longest_axis(bounds))
 	node.set_meta(GEO_KIND_META, kind)
 
 	var mesh_node := MeshInstance3D.new()
@@ -331,7 +331,7 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 	# Bake only the import conversion (mesh_transform) into geometry so the Mesh child
 	# stays at Transform3D.IDENTITY with clean axes. The mesh keeps its native FBX
 	# pivot (cliffs: geometric center), so the container origin sits at that pivot.
-	mesh_node.mesh = CommonDemoAssets.bake_mesh_xform(mesh, mesh_transform)
+	mesh_node.mesh = UtilsDemoAssets.bake_mesh_xform(mesh, mesh_transform)
 	mesh_node.transform = Transform3D.IDENTITY
 	mesh_node.material_override = _make_geo_asset_material(color)
 	node.add_child(mesh_node)
@@ -341,7 +341,7 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 	label.pixel_size = 0.01
 	label.font_size = 18
 	label.outline_size = 3
-	label.text = "%s\nbound %.2f" % [path.get_file().get_basename(), CommonDemoAssets.aabb_longest_axis(bounds)]
+	label.text = "%s\nbound %.2f" % [path.get_file().get_basename(), UtilsDemoAssets.aabb_longest_axis(bounds)]
 	# Float the label just above the mesh top (bounds follow the native pivot).
 	label.position = Vector3(0.0, bounds.position.y + bounds.size.y + 0.6, 0.0)
 	node.add_child(label)
@@ -416,7 +416,7 @@ func _geo_node_local_aabb(node: Node3D) -> AABB:
 	var mi := node.get_node_or_null("Mesh") as MeshInstance3D
 	if mi == null or mi.mesh == null:
 		return AABB(Vector3.ZERO, Vector3.ONE)
-	return CommonDemoAssets.transformed_aabb(mi.mesh.get_aabb(), mi.transform)
+	return UtilsDemoAssets.transformed_aabb(mi.mesh.get_aabb(), mi.transform)
 
 
 func _classify_geo_asset(path: String) -> String:

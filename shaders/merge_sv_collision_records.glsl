@@ -4,7 +4,7 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) restrict buffer CollisionField {
-    float collision_field[];
+    uint collision_field_r8_words[];
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionRecords {
@@ -14,6 +14,30 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionRecords {
 layout(push_constant, std430) uniform Params {
     ivec4 dims_counts; // xz_res, total_slices, voxel_count, record_count
 };
+
+uint quantize_unorm8(float value) {
+    return uint(round(clamp(value, 0.0, 1.0) * 255.0));
+}
+
+void atomic_max_r8(uint index, float value) {
+    uint word_index = index >> 2u;
+    uint shift = (index & 3u) * 8u;
+    uint mask = 0xFFu << shift;
+    uint q = quantize_unorm8(value);
+    uint old_word = collision_field_r8_words[word_index];
+    for (int attempt = 0; attempt < 32; attempt++) {
+        uint current = (old_word & mask) >> shift;
+        if (current >= q) {
+            return;
+        }
+        uint new_word = (old_word & ~mask) | (q << shift);
+        uint previous = atomicCompSwap(collision_field_r8_words[word_index], old_word, new_word);
+        if (previous == old_word) {
+            return;
+        }
+        old_word = previous;
+    }
+}
 
 void main() {
     uint record_index = gl_GlobalInvocationID.x;
@@ -38,5 +62,5 @@ void main() {
         return;
     }
 
-    collision_field[idx] = max(collision_field[idx], clamp(record.w, 0.0, 1.0));
+    atomic_max_r8(uint(idx), record.w);
 }

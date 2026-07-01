@@ -99,7 +99,7 @@
     <g id="targetsv-source-buffers">
     <rect class="node" x="85" y="335" width="265" height="125" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
     <text class="node-title" x="103" y="363">TargetSV source buffers</text>
-    <text class="small"><tspan x="103" y="385">visual rgba32f</tspan><tspan x="103" y="402">collision r32f</tspan><tspan x="103" y="419">color + complexity + solid intent</tspan></text>
+    <text class="small"><tspan x="103" y="385">visual rgba8</tspan><tspan x="103" y="402">collision r8</tspan><tspan x="103" y="419">color + complexity + solid intent</tspan></text>
     </g>
     <g id="future-sources">
     <rect class="node" x="85" y="535" width="265" height="110" rx="8" fill="#f5f3ff" stroke="#8b5cf6"/>

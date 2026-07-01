@@ -545,11 +545,9 @@ func _write_accepted_placements_to_scene_voxel_committer(
 	var source_ranges_rid := RID()
 
 	if target != null and target.has_method("apply_accepted_placement_source_buffer"):
-		var _committer_rd: Object = null
-		if target.has_method("get_rendering_device"):
-			_committer_rd = target.call("get_rendering_device")
-		if _rd == null and _committer_rd is RenderingDevice:
-			attach_rendering_device(_committer_rd as RenderingDevice, false)
+		var _committer_rd := rendering_device_of(target)
+		if _rd == null and _committer_rd != null:
+			attach_rendering_device(_committer_rd, false)
 		if _rd != null:
 			var candidate_count := candidate_priorities.size()
 			var range_count := int(ranges.size() / 2)
@@ -587,7 +585,7 @@ func _write_accepted_placements_to_scene_voxel_committer(
 				gpu_ok = bool(handoff_result.get("ok", false))
 				gpu_reason = str(handoff_result.get("reason", "gpu_handoff_returned_false"))
 
-	# ---- 3.  GPU path succeeded 鈥?emit RID-rich report -----------------------
+	# ---- 3.  GPU path succeeded — emit RID-rich report -----------------------
 	if gpu_ok:
 		var report := {
 			"ok": true,
@@ -633,7 +631,7 @@ func _write_accepted_placements_to_scene_voxel_committer(
 		}
 		return report
 
-	# ---- 4.  GPU path failed 鈥?release buffers and fall through to CPU --------
+	# ---- 4.  GPU path failed — release buffers and fall through to CPU --------
 	if source_records_rid.is_valid():
 		release_rid(source_records_rid, false)
 		source_records_rid = RID()
@@ -702,7 +700,7 @@ func _write_accepted_placements_to_scene_voxel_committer(
 			],
 		}
 
-	# ---- 5.  GPU handoff complete 鈥?no CPU fallback
+	# ---- 5.  GPU handoff complete — no CPU fallback
 	return {
 		"ok": false,
 		"reason": gpu_reason,

@@ -166,15 +166,14 @@ func _decode_channels() -> void:
 		)
 	_decoded_occupancy = decoded.get("target_completely", PackedFloat32Array())
 	_decoded_color = decoded.get("target_color", PackedColorArray())
+	var decoded_collision: PackedFloat32Array = decoded.get("target_collision", PackedFloat32Array())
 	if _decoded_occupancy.is_empty() or _decoded_color.is_empty():
 		push_error("[MeshFillBrush] TargetSV decode failed")
 		return
 	var voxel_count := _texture_size * _texture_size * _slice_count
 	_decoded_collision.resize(voxel_count)
 	for i in range(voxel_count):
-		var offset := i * 4
-		if offset + 4 <= _collision_bytes.size():
-			_decoded_collision[i] = clampf(_collision_bytes.decode_float(offset), 0.0, 1.0)
+		_decoded_collision[i] = clampf(decoded_collision[i], 0.0, 1.0) if i < decoded_collision.size() else 0.0
 
 
 # ---- Guidance voxels -------------------------------------------------------

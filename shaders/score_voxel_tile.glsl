@@ -23,11 +23,11 @@
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 
 layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityField {
-    vec4 complexity_field[];
+    uint complexity_field_rgba8[];
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
-    float collision_field[];
+    uint collision_field_r8_words[];
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer FootprintPos {
@@ -236,6 +236,12 @@ vec4 unpack_rgba8(uint packed) {
 
 vec4 unpack_asset_color() {
     return unpack_rgba8(uint(sample_min_pad.w));
+}
+
+float load_collision_r8(uint index) {
+    uint word = collision_field_r8_words[index >> 2u];
+    uint shift = (index & 3u) * 8u;
+    return float((word >> shift) & 0xFFu) / 255.0;
 }
 
 bool runtime_profile_contract_enabled() {
@@ -582,8 +588,8 @@ VoxelSample sample_voxel(ivec3 p) {
     }
 
     int i = voxel_index(p);
-    s.complexity = complexity_field[i].a;
-    s.collision = collision_field[i];
+    s.complexity = unpack_rgba8(complexity_field_rgba8[i]).a;
+    s.collision = load_collision_r8(uint(i));
     return s;
 }
 

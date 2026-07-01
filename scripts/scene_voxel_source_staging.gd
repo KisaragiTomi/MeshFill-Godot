@@ -16,14 +16,12 @@ const DEFAULT_SCENE_VOXEL_TILE_SIZE := Vector3i(4, 4, 4)
 
 const SCENE_VOXEL_TILE_RECORD_BUFFER := "scene_voxel_tile_records"
 const SCENE_VOXEL_TILE_SUMMARY_BUFFER := "scene_voxel_tile_summaries"
-const SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER := "scene_voxel_tile_dirty_indices"
 const SCENE_VOXEL_TILE_OBJECT_REF_BUFFER := "scene_voxel_tile_object_refs"
 const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER := "scene_voxel_tile_complexity_field"
 const SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER := "scene_voxel_tile_collision_field"
 const SCENE_VOXEL_TILE_GPU_BUFFER_NAMES := [
 	SCENE_VOXEL_TILE_RECORD_BUFFER,
 	SCENE_VOXEL_TILE_SUMMARY_BUFFER,
-	SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER,
 	SCENE_VOXEL_TILE_OBJECT_REF_BUFFER,
 	SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
 	SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER,
@@ -42,7 +40,7 @@ const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_SCENE_VOXEL_TILE := 0
 const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME := 1
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_LEGACY_HASH := "legacy_stable_hash_debug"
-const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := 16
+const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := 4
 const SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE := 6
 const SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE := 8
 const SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE := 1000000.0
@@ -186,14 +184,12 @@ func _gpu_dispatch_pipeline(cl: int, pipeline: RID, uniform_set: RID, push: Pack
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, groups.x, groups.y, groups.z)
 
-## 释放所有 GPU shader 与管线资源并重置 GPU 就绪状态
-
 ## --- 迁移自 committer 的 source 函数 ---
-func _dirty_scene_voxel_source_keys(current_scene_voxels: Dictionary, previous_scene_voxels: Dictionary, dirty_tiles: Dictionary) -> Dictionary:
+func _dirty_scene_voxel_source_keys(current_scene_voxels: Dictionary, previous_scene_voxels: Dictionary, dirty_scene_voxel_tiles: Dictionary) -> Dictionary:
 
 	var keys := {}
 
-	if dirty_tiles.is_empty():
+	if dirty_scene_voxel_tiles.is_empty():
 
 		return keys
 
@@ -201,7 +197,7 @@ func _dirty_scene_voxel_source_keys(current_scene_voxels: Dictionary, previous_s
 
 		var scene_voxel = current_scene_voxels[key]
 
-		if scene_voxel is Dictionary and _committer._scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel as Dictionary, dirty_tiles):
+		if scene_voxel is Dictionary and _committer._scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel as Dictionary, dirty_scene_voxel_tiles):
 
 			keys[key] = true
 
@@ -213,7 +209,7 @@ func _dirty_scene_voxel_source_keys(current_scene_voxels: Dictionary, previous_s
 
 		var scene_voxel = previous_scene_voxels[key]
 
-		if scene_voxel is Dictionary and _committer._scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel as Dictionary, dirty_tiles):
+		if scene_voxel is Dictionary and _committer._scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel as Dictionary, dirty_scene_voxel_tiles):
 
 			keys[key] = true
 
@@ -221,9 +217,9 @@ func _dirty_scene_voxel_source_keys(current_scene_voxels: Dictionary, previous_s
 
 ## 收集源流映射中落在脏 tile 内的场景体素键
 
-func _dirty_scene_voxel_source_stream_keys(previous_scene_voxels: Dictionary, dirty_tiles: Dictionary) -> Dictionary:
+func _dirty_scene_voxel_source_stream_keys(previous_scene_voxels: Dictionary, dirty_scene_voxel_tiles: Dictionary) -> Dictionary:
 
-	return _dirty_scene_voxel_source_keys(_scene_voxel_source_stream_map(), previous_scene_voxels, dirty_tiles)
+	return _dirty_scene_voxel_source_keys(_scene_voxel_source_stream_map(), previous_scene_voxels, dirty_scene_voxel_tiles)
 
 ## 上传场景体素 tile 的各类存储缓冲到 GPU,可选强制全量上传
 
@@ -546,7 +542,7 @@ func _try_make_sv_complexity_field_from_source_streams_gpu_result(
 			"complexity_field_committed_payload_projection": false,
 		}
 		if keep_output_buffer and _gpu_ready and _rd != null:
-			var empty_buffer := storage_buffer_zero(voxel_count * 16, output_buffer_scope, "blend_complexity_field_out_empty")
+			var empty_buffer := storage_buffer_zero(voxel_count * SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES, output_buffer_scope, "blend_complexity_field_out_empty")
 			if empty_buffer.is_valid():
 				empty_result["complexity_field_buffer"] = empty_buffer
 		return empty_result
@@ -597,7 +593,7 @@ func _try_make_sv_complexity_field_from_source_streams_gpu_result(
 
 	var output_scope := output_buffer_scope if keep_output_buffer else SCOPE_FRAME
 
-	var output_buffer := storage_buffer_zero(voxel_count * 16, output_scope, "blend_complexity_field_out")
+	var output_buffer := storage_buffer_zero(voxel_count * SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES, output_scope, "blend_complexity_field_out")
 
 	if not auto_buffer.is_valid() \
 			or not brush_buffer.is_valid() \
@@ -669,8 +665,8 @@ func _try_make_sv_complexity_field_from_source_streams_gpu_result(
 	# When keep_output_buffer is true, skip CPU readback entirely.
 	# The output_buffer RID is kept alive for the caller to use as primary state.
 	if not keep_output_buffer:
-		output_bytes = _rd.buffer_get_data(output_buffer, 0, voxel_count * 4)
-		field = SceneVoxelCommitPayloadScript.decode_float_buffer(output_bytes, voxel_count * 4)
+		output_bytes = _rd.buffer_get_data(output_buffer, 0, voxel_count * SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES)
+		field = SceneVoxelTileCodecScript.decode_complexity_field_rgba8_vec4_bytes(output_bytes, voxel_count)
 
 	gc_frame()
 

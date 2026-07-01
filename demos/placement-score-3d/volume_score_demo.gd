@@ -12,10 +12,10 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 
 const ObjectVolumeScoreGpuScript := preload("res://scripts/object_volume_score_gpu.gd")
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
-const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
-const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
-const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
-const CommonVolumeScore3D := preload("res://scripts/common_volume_score_3d.gd")
+const VoxelPlacementOutputScript := preload("res://scripts/voxel_placement_output.gd")
+const UtilsDemoAssets := preload("res://scripts/utils_demo_assets.gd")
+const UtilsDemoUI := preload("res://scripts/utils_demo_ui.gd")
+const UtilsVolumeScore3D := preload("res://scripts/utils_volume_score_3d.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 
 const VOXEL_DISPLAY_GPU_OBJECTS := SPAEditorContract.VOXEL_DISPLAY_GPU_OBJECTS
@@ -78,7 +78,6 @@ var _elapsed_voxelize_ms := 0.0
 var _elapsed_score_ms := 0.0
 var _total_anchors := 0
 var _total_dispatches := 0                  # GPU dispatch 次数（footprints.size() × 2）
-var _placement_generator                     # VoxelPlacementGenerator 惰性实例
 
 
 # ---- Public API — SPA Integration -----------------------------------------
@@ -405,12 +404,6 @@ func _volume_score_status(require_scored: bool) -> Dictionary:
 	}
 
 
-func _placement_generator_instance():
-	if _placement_generator == null:
-		_placement_generator = VoxelPlacementGeneratorScript.new()
-	return _placement_generator
-
-
 func _voxel_display_is_visible(display_key: String) -> bool:
 	var spa := _spa_display_host()
 	if spa != null and spa.has_method("is_voxel_display_visible"):
@@ -476,12 +469,18 @@ func _spa_display_host() -> Node:
 	return null
 
 
-func _exit_tree() -> void:
-	_unregister_spa_volume_score_provider()
+## 与 CoreSPADemo 一致：SPA 绑定的注销只在节点真正被释放(PREDELETE)时进行,而不是
+## 每次编辑器标签页切换。切走会触发 _exit_tree 但节点并未释放,切回来又不会重跑
+## _ready();旧实现把 CoreSPADemo 的 volume-score provider 注销后再也不补回 → 锚点
+## 点选 / Anchors / Score 工具栏失效。放到 PREDELETE 后,provider 注册跨标签页存活,
+## 选中的锚点也不会因切换场景而丢失。
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		_unregister_spa_volume_score_provider()
 
 
 # --- Asset Loading & Voxelization -----------------------------------------
-# 遍历 CommonDemoAssets 中的每个 FBX 网格，通过 GPU 体素化生成 footprint，
+# 遍历 UtilsDemoAssets 中的每个 FBX 网格，通过 GPU 体素化生成 footprint，
 # 同时预烘每个旋转槽的有效 sample records，用于后续评分。
 
 func _load_and_voxelize() -> void:
@@ -489,7 +488,7 @@ func _load_and_voxelize() -> void:
 		_build_scene_fields()
 	_assets.clear()
 	_footprints.clear()
-	var loaded := CommonVolumeScore3D.voxelize_common_assets(
+	var loaded := UtilsVolumeScore3D.voxelize_utils_assets(
 		voxel_grid_count,
 		true,
 		_scene_fields.get("voxel_size", Vector3.ZERO)
@@ -528,9 +527,9 @@ func _load_and_voxelize() -> void:
 #   target 带内 (min_above..max_above) → 有淡绿色目标权重，离地面越近权重越高
 
 func _build_scene_fields() -> void:
-	_terrain_height = CommonVolumeScore3D.sample_terrain_height_for_node(
+	_terrain_height = UtilsVolumeScore3D.sample_terrain_height_for_node(
 		self, grid_resolution, grid_resolution)
-	_scene_fields = CommonVolumeScore3D.build_scene_fields(
+	_scene_fields = UtilsVolumeScore3D.build_scene_fields(
 		grid_resolution,
 		grid_height_slices,
 		_terrain_height,
@@ -549,8 +548,8 @@ func _build_scene_fields() -> void:
 # 每个锚点的 Y 坐标 = 地形高度 + 1 层体素，即紧贴地面以上。
 
 func _generate_anchors() -> void:
-	_anchors = CommonVolumeScore3D.generate_anchors(_scene_fields, _terrain_height, anchor_spacing)
-	_anchor_world_positions = CommonVolumeScore3D.anchor_world_positions(
+	_anchors = UtilsVolumeScore3D.generate_anchors(_scene_fields, _terrain_height, anchor_spacing)
+	_anchor_world_positions = UtilsVolumeScore3D.anchor_world_positions(
 		_scene_fields, _terrain_height, _anchors)
 	if _anchors.is_empty():
 		_total_anchors = 0
@@ -764,13 +763,12 @@ func _build_winning_anchor_content() -> void:
 		var world_result := _world_result_for_winning_anchor(anchor_result, winner, i, pivot_variant)
 		if world_result.is_empty():
 			continue
-		var generator = _placement_generator_instance()
-		var placed = generator.spawn_placement_autoobject(
-			_display_root,
+		var placed = VoxelPlacementOutputScript.instantiate_placement(
 			world_result,
 			"AutoObject",
 			mesh,
-			_autoobject_config_for_winner(asset, winner, i, asset_name, world_result, pivot_variant)
+			_autoobject_config_for_winner(asset, winner, i, asset_name, world_result, pivot_variant),
+			_display_root
 		)
 		if not (placed is Node):
 			continue
@@ -793,7 +791,7 @@ func _anchor_pivot_variant_for_footprint(footprint: Dictionary) -> Dictionary:
 
 ## 体素坐标 → 世界坐标变换链
 ## 1. 根据锚点世界坐标反推 synthetic_origin（场景网格原点在世界空间的位置）
-## 2. 调用 VoxelPlacementGenerator.placement_results_to_world() 完成变换
+## 2. 调用 VoxelPlacementOutput.results_to_world() 完成变换
 ## 3. 根据 yaw 旋转角度修正 pivot_offset 后的位置
 func _world_result_for_winning_anchor(
 	anchor_result: Dictionary,
@@ -821,8 +819,7 @@ func _world_result_for_winning_anchor(
 		"asset_index": asset_index,
 	}
 	var raw_results: Array[Dictionary] = [raw_result]
-	var world_results = _placement_generator_instance().call(
-		"placement_results_to_world",
+	var world_results = VoxelPlacementOutputScript.results_to_world(
 		raw_results,
 		voxel_size,
 		synthetic_origin,
@@ -857,7 +854,7 @@ func _autoobject_config_for_winner(
 		"object_type": "object",
 		"auto_source": "volume_score_anchor_winner",
 		"source_voxel_type": "AutoSceneVoxel",
-		"source_mesh_path": CommonDemoAssets.geo_path(asset_index),
+		"source_mesh_path": UtilsDemoAssets.geo_path(asset_index),
 		"groups": [VOLUME_SCORE_WINNER_GROUP],
 		"selectable": true,
 		"color": color,
@@ -884,8 +881,7 @@ func _autoobject_config_for_winner(
 func _base_pixel_for_anchor(anchor_index: int) -> Vector2i:
 	if anchor_index < 0 or anchor_index >= _anchor_world_positions.size():
 		return Vector2i.ZERO
-	var pixel = _placement_generator_instance().call(
-		"placement_world_to_volume_pixel",
+	var pixel = VoxelPlacementOutputScript.world_to_volume_pixel(
 		_anchor_world_positions[anchor_index],
 		grid_resolution,
 		_scene_fields.get("grid_origin", Vector3.ZERO),
@@ -953,9 +949,9 @@ func _anchor_marker_radius() -> float:
 	return base_radius * radius_scale
 
 
-## Mirrors score_object_subtile.glsl and returns the scene-voxel cell bounds for
-## the currently selected top-k asset. If that asset has no valid score at this
-## anchor, the asset footprint sample profile still drives the bounds/variant info.
+## Returns the anchor bound (object-hugging world AABB from profile voxel positions)
+## for the currently selected top-k asset. If that asset has no valid score at this
+## anchor, the asset footprint sample profile still drives the anchor bound/variant info.
 func _selected_anchor_sample_bounds_info() -> Dictionary:
 	var selected_entry := _selected_anchor_topk_entry()
 	var asset_index := int(selected_entry.get("asset_index", -1))
@@ -971,11 +967,11 @@ func _selected_anchor_sample_bounds_info() -> Dictionary:
 	return _sample_bounds_to_anchor_world_frame(info)
 
 
-## anchor_sample_bounds_info 在原始体素网格系里算 bounds（grid_origin、格子角点）；
-## 放置的物体/锚点活在地形锚定世界系（synthetic_origin、格子中心 + 地形高度）。
-## 这里把 bounds 整体平移到物体坐标系：让 anchor 体素中心对齐到 anchor_world，
-## 与 _world_result_for_winning_anchor 的 synthetic_origin 放置保持同一参考点，
-## 这样评分足迹框与放置的胜出物体使用同一坐标系，能正确 bound 住物体。
+## anchor_sample_bounds_info 在 grid-origin 世界系里算 anchor bound（现按 profile 体素
+## 世界位置紧贴物体，不再是场景体素格子角点）；放置的物体/锚点活在地形锚定世界系
+## （synthetic_origin、格子中心 + 地形高度）。这里把 anchor bound 整体平移到物体坐标系：
+## 让 anchor 体素中心对齐到 anchor_world，与 _world_result_for_winning_anchor 的
+## synthetic_origin 放置保持同一参考点，这样 anchor bound 与放置的胜出物体使用同一坐标系。
 func _sample_bounds_to_anchor_world_frame(info: Dictionary) -> Dictionary:
 	if info.is_empty():
 		return info
@@ -991,11 +987,13 @@ func _sample_bounds_to_anchor_world_frame(info: Dictionary) -> Dictionary:
 	if info.get("aabb", null) is AABB:
 		var box: AABB = info["aabb"]
 		info["aabb"] = AABB(box.position + delta, box.size)
+	if info.get("obb_center", null) is Vector3:
+		info["obb_center"] = (info["obb_center"] as Vector3) + delta
 	return info
 
 
 func _frame_camera() -> void:
-	var cam := CommonDemoUI.find_camera(self, "DemoSetup/FlyCamera", "", false, false)
+	var cam := UtilsDemoUI.find_camera(self, "DemoSetup/FlyCamera", "", false, false)
 	if cam == null:
 		return
 	if not cam.is_inside_tree():
@@ -1011,7 +1009,7 @@ func _frame_camera() -> void:
 # 以及当前选中锚点的 Top-K 详情。由 _update_hud() 在每次管线步骤后刷新。
 
 func _setup_hud() -> void:
-	_hud_label = CommonDemoUI.setup_hud_label(self)
+	_hud_label = UtilsDemoUI.setup_hud_label(self)
 
 
 func _update_hud() -> void:

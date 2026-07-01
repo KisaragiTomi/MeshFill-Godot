@@ -68,22 +68,25 @@ candidate object (anchor voxel + asset footprint + descriptor)
 sample 坐标解码：
 
 ```text
-sample_index = group_id * 512 + local_index
-sample_record = rotation_records[rotation_slot][sample_index]
-world_voxel = anchor + sample_record.offset
+sample_index   = group_id * 512 + local_index
+sample_record  = rotation_records[rotation_slot][sample_index]   # vec4: xyz=连续场景体素偏移, w=float(footprint props 索引)
+sample_pos     = anchor + sample_record.xyz                      # 连续坐标，不取整到体素中心
+# 在 sample_pos 处对 SV / TargetSV_B 做 8 邻三线性插值采样
 ```
 
-越界 voxel（`< 0` 或 `>= grid`）在采样前按 guard 跳过，不直接当作空白，与 prefilter 越界规则一致。
+三线性采样的 8 个邻居体素中，越界角点（`< 0` 或 `>= grid`）权重计 0，再按命中权重和 `wsum` 归一化，因此贴边 sample 不会被网格边缘错误变暗；整条 sample 仅在 8 邻全部越界（`wsum == 0`）时跳过，与 prefilter 越界规则一致。
 
 ## Sample Record 预烘
 
 核心观察：**有效采样集合与 asset 旋转有关**。因此 CPU 侧对每个 asset footprint 预烘 `ROTATION_SLOTS` 份 sample records：
 
 ```text
-sample_record = ivec4(rotated_offset.xyz, footprint_props_index)
+# GPU 采样记录（frac_records）：连续偏移，供 8 邻三线性插值采样
+sample_record = vec4(rotated_frac_offset.xyz, float(footprint_props_index))
+# 整数记录（records）：上面偏移的量化版（x/z round、y floor），仅供 CPU 算 bounds 与去重键
 ```
 
-每个 rotation slot 都从 occupied footprint voxel 生成 sample，按旋转后的 offset 去重；如果某个 slot 的 sample 数超过 `32^3`，按稳定步长抽样保留覆盖。GPU Pass A 只读取这些 sample records，并对 scene 越界 sample 做 guard skip。
+每个 rotation slot 的 sample 取自 descriptor `voxel_profile.collision` 的体素位置（每个 occupied footprint voxel 烘成一条 collision sample），逐点做 局部体素 → 世界（`aabb_min + (coord+0.5)·cell_size`，相对 `pivot_local` 并按 yaw 旋转）→ ÷ 场景 `voxel_size` = 场景体素偏移。`voxel_profile.collision` 是唯一采样来源——缺失或无点采样时该 asset 视为无有效采样（`no_profile_samples`），不再维护或回退稠密 occupancy 网格。按旋转后的 offset 去重；如果某个 slot 的 sample 数超过 `32^3`，按稳定步长抽样保留覆盖。GPU Pass A 只读取这些 sample records，并对 scene 越界 sample 做 guard skip。
 
 ## 12 旋转评分
 
@@ -92,13 +95,12 @@ sample_record = ivec4(rotated_offset.xyz, footprint_props_index)
 ```text
 for slot in 0..11:
     yaw = slot * (360 / ROTATION_SLOTS)   # 默认 30° 步进
-    partial[slot( = 0
+    partial[slot] = 0
     for each sample_record in sample_group:
-        world_v = anchor + sample_record.offset
-        if world_v is inside scene grid:
-            s = SV[world_v]
-            t = TargetSV_B[world_v]
-            partial[slot( += weighted_fit(asset, s, t)
+        sample_pos = anchor + sample_record.xyz          # 连续坐标
+        (s, t, wsum) = trilinear_sample(SV, TargetSV_B, sample_pos)
+        if wsum > 0:                                     # 至少一个邻居在网格内
+            partial[slot] += weighted_fit(asset, s, t)   # 采样值已按 wsum 归一化
 ```
 
 `weighted_fit` 复用现有物理 + target fit 维度：target coverage、complexity fit、color fit、support、solid collision、clearance。具体权重沿用 `score_voxel_tile.glsl` 当前语义，本文不重新定义权重默认值。
@@ -112,12 +114,12 @@ Pass A 每个 workgroup 输出一条 partial 记录：`SAMPLE_GROUP_COUNT x ROTA
 汇总避免 float `atomicAdd`，改用独立 reduce pass：
 
 ```text
-partial_buffer[object_id([sample_group_id([slot(   # Pass A 写，slot 独占，无竞争
+partial_buffer[object_id][sample_group_id][slot]   # Pass A 写，slot 独占，无竞争
   -> reduce_object_rotation_scores.glsl
        每个 (object_id, slot) 求和 sample-group partial
-       得到 object_rotation_score[object_id([slot(
+       得到 object_rotation_score[object_id][slot]
   -> 组内比较 12 个 slot，选最大值
-  -> object_score_record[object_id( = (best_score, best_slot, channel_breakdown)
+  -> object_score_record[object_id] = (best_score, best_slot, channel_breakdown)
 ```
 
 写法约束：
@@ -136,7 +138,7 @@ per-object score record 字段含义维护在对应 GDScript owner 的 readback 
 	"best_score": 0.0,          # float, 12 旋转中最高分
 	"best_rotation_slot": 0,    # int, 0..11，最优 yaw slot
 	"best_yaw_degrees": 0.0,    # float, best_rotation_slot * 步进角
-	"channel_breakdown": [(,    # per-channel fit，调试用，对齐 score_voxel_tile 通道
+	"channel_breakdown": [],    # per-channel fit，调试用，对齐 score_voxel_tile 通道
 	"valid": true,              # bool, 是否有有效采样
 }
 ```

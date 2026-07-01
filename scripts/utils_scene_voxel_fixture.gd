@@ -2,16 +2,7 @@
 extends RefCounted
 
 
-const DEFAULT_TILE_SIZE := 8
-
-
-static func tile_grid_size_for_grid(grid_size: Vector3i, tile_size: int = DEFAULT_TILE_SIZE) -> Vector3i:
-	var safe_tile_size := maxi(tile_size, 1)
-	return Vector3i(
-		ceili(float(maxi(grid_size.x, 0)) / float(safe_tile_size)),
-		ceili(float(maxi(grid_size.y, 0)) / float(safe_tile_size)),
-		ceili(float(maxi(grid_size.z, 0)) / float(safe_tile_size))
-	)
+const DEFAULT_TILE_SIZE := VoxelGeneral.DEFAULT_TILE_SIZE
 
 
 static func make_sv(
@@ -23,7 +14,7 @@ static func make_sv(
 	tile_size: int = DEFAULT_TILE_SIZE,
 	dirty_tiles: Dictionary = {}
 ) -> Dictionary:
-	var tile_grid_size := tile_grid_size_for_grid(grid_size, tile_size)
+	var tile_grid_size := VoxelGeneral.tile_grid_size_for_grid(grid_size, tile_size)
 	return {
 		"type": "SV",
 		"grid_size": grid_size,

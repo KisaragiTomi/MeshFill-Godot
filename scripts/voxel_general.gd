@@ -4,9 +4,9 @@ extends RefCounted
 
 ## 通用体素工具集合（与场景体素 SV 系统无关的纯体素原语）。
 ## 包含：
-##   - 坐标空间换算（原 common_voxel_space.gd 内容，已合并于此）
+##   - 坐标空间换算（原 voxel space helper 内容，已合并于此）
 ##   - 通用体素常量与无状态原语（自 scene_voxel_committer.gd 抽取）
-## 注：旧 common_voxel_space.gd 兼容垫片（曾 extends 本类）已删除，全项目体素索引/坐标映射统一直接使用 VoxelGeneral。
+## 注：旧 voxel space helper 兼容垫片（曾 extends 本类）已删除，全项目体素索引/坐标映射统一直接使用 VoxelGeneral。
 
 const MIN_VOXEL_SIZE := 0.0001
 
@@ -16,9 +16,11 @@ const VOXEL_OCCUPIED_EPSILON := 0.01
 ## 每个体素单元承载的 RGBA 通道数。
 const CHANNEL_COUNT := 4
 
+const DEFAULT_TILE_SIZE := 8
+
 
 # ============================================================
-# 坐标空间换算（原 common_voxel_space.gd）
+# 坐标空间换算（原 voxel space helper）
 # ============================================================
 
 static func safe_voxel_size(voxel_size: Vector3) -> Vector3:
@@ -42,6 +44,15 @@ static func voxel_size_for_resolution(capture_size: float, resolution: int, y_si
 
 static func voxel_count(grid_size: Vector3i) -> int:
 	return maxi(grid_size.x, 0) * maxi(grid_size.y, 0) * maxi(grid_size.z, 0)
+
+
+static func tile_grid_size_for_grid(grid_size: Vector3i, tile_size: int = DEFAULT_TILE_SIZE) -> Vector3i:
+	var safe_tile_size := maxi(tile_size, 1)
+	return Vector3i(
+		ceili(float(maxi(grid_size.x, 0)) / float(safe_tile_size)),
+		ceili(float(maxi(grid_size.y, 0)) / float(safe_tile_size)),
+		ceili(float(maxi(grid_size.z, 0)) / float(safe_tile_size))
+	)
 
 
 static func voxel_index(voxel_pos: Vector3i, grid_size: Vector3i) -> int:

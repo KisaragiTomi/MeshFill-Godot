@@ -8,19 +8,19 @@
 
 layout(local_size_x = 64) in;
 
-// Per-voxel occupancy / complexity, linear idx = slice*xz*xz + z*xz + x.
+// Per-voxel occupancy / complexity, R8 packed four voxels per uint.
 layout(set = 0, binding = 0, std430) restrict readonly buffer Occupancy {
-	float occupancy[];
+	uint occupancy_r8_words[];
 };
 
-// Per-voxel collision strength, same indexing as occupancy.
+// Per-voxel collision strength, R8 packed four voxels per uint.
 layout(set = 0, binding = 1, std430) restrict readonly buffer Collision {
-	float collision[];
+	uint collision_r8_words[];
 };
 
-// Per-voxel color, 4 floats (rgba) per voxel, same indexing.
+// Per-voxel color, RGBA8 packed into one uint per voxel, same indexing.
 layout(set = 0, binding = 2, std430) restrict readonly buffer ColorField {
-	float color_rgba[];
+	uint color_rgba8[];
 };
 
 // Terrain world height, row-major size = xz_res * xz_res.
@@ -56,6 +56,28 @@ const int VIEW_PROJECT_COLOR = 1;
 const int VIEW_COMPLEXITY = 2;
 const int VIEW_COLLISION = 3;
 
+vec4 unpack_rgba8(uint packed) {
+	return vec4(
+		float((packed >> 24u) & 0xFFu) / 255.0,
+		float((packed >> 16u) & 0xFFu) / 255.0,
+		float((packed >>  8u) & 0xFFu) / 255.0,
+		float((packed >>  0u) & 0xFFu) / 255.0
+	);
+}
+
+float unpack_r8(uint packed_word, uint idx) {
+	uint shift = (idx & 3u) * 8u;
+	return float((packed_word >> shift) & 0xFFu) / 255.0;
+}
+
+float load_occupancy_r8(uint idx) {
+	return unpack_r8(occupancy_r8_words[idx >> 2u], idx);
+}
+
+float load_collision_r8(uint idx) {
+	return unpack_r8(collision_r8_words[idx >> 2u], idx);
+}
+
 void write_hidden(uint base) {
 	// Zero basis collapses the instance to a point; nothing rasterizes.
 	for (uint i = 0u; i < uint(FLOATS_PER_INSTANCE); i++) {
@@ -71,12 +93,12 @@ void main() {
 
 	uint base = idx * uint(FLOATS_PER_INSTANCE);
 
-	float occ = clamp(occupancy[idx], 0.0, 1.0);
-	float coll = clamp(collision[idx], 0.0, 1.0);
+	float occ = load_occupancy_r8(idx);
+	float coll = load_collision_r8(idx);
 
 	bool visible;
 	if (view_mode == VIEW_TARGET_COLOR) {
-		visible = occupancy[idx] > threshold;
+		visible = occ > threshold;
 	} else {
 		visible = max(occ, coll) > threshold;
 	}
@@ -104,8 +126,8 @@ void main() {
 	float local_y = (float(slice_index) + 0.5) / max(float(slice_count), 1.0) * vertical_span;
 	float wy = (terrain_y + local_y) * display_scale;
 
-	uint color_base = idx * 4u;
-	vec3 src_rgb = vec3(color_rgba[color_base + 0u], color_rgba[color_base + 1u], color_rgba[color_base + 2u]);
+	vec4 src_rgba = unpack_rgba8(color_rgba8[idx]);
+	vec3 src_rgb = src_rgba.rgb;
 
 	vec4 out_color;
 	if (view_mode == VIEW_TARGET_COLOR) {

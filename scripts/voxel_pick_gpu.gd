@@ -1,6 +1,7 @@
 class_name VoxelPickGPU
 extends "res://scripts/godot_compute_shader_base.gd"
 
+const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const SHADER_PATH := "res://shaders/pick_scene_voxel.glsl"
 const OUTPUT_BYTES := 64
 const MODE_SCENE_VOXEL := 0
@@ -93,8 +94,8 @@ func pick_targetsv(
 		return {"ok": false, "reason": "gpu_pick_pipeline_unavailable"}
 
 	var voxel_count := texture_size * texture_size * slice_count
-	var expected_visual := voxel_count * 16
-	var expected_collision := voxel_count * 4
+	var expected_visual := voxel_count * 4
+	var expected_collision := voxel_count
 	if visual_bytes.size() < expected_visual or collision_bytes.size() < expected_collision:
 		return {
 			"ok": false,
@@ -105,7 +106,8 @@ func pick_targetsv(
 			"actual_collision": collision_bytes.size(),
 		}
 
-	if not _ensure_target_buffers(visual_bytes.slice(0, expected_visual), collision_bytes.slice(0, expected_collision)):
+	var collision_word_bytes := SceneVoxelTileCodecScript.r8_word_bytes_from_r8_bytes(collision_bytes.slice(0, expected_collision), voxel_count)
+	if not _ensure_target_buffers(visual_bytes.slice(0, expected_visual), collision_word_bytes):
 		return {"ok": false, "reason": "targetsv_gpu_buffer_create_failed"}
 
 	var safe_terrain := terrain_height

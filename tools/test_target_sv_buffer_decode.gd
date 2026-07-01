@@ -2,13 +2,16 @@ extends SceneTree
 
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
-const CommonAutoVoxelFixture := preload("res://scripts/common_auto_voxel_fixture.gd")
-const CommonTargetSVBufferFixture := preload("res://scripts/common_targetsv_buffer_fixture.gd")
-const CommonTestUtils := preload("res://scripts/common_test_utils.gd")
+const UtilsAutoVoxelFixture := preload("res://scripts/utils_auto_voxel_fixture.gd")
+const UtilsTargetSVBufferFixture := preload("res://scripts/utils_targetsv_buffer_fixture.gd")
+const UtilsTestUtils := preload("res://scripts/utils_test_utils.gd")
+
+const Q8_EPSILON := (1.0 / 255.0) + 0.001
 
 
 func _init() -> void:
 	var ok := true
+	ok = ok and _test_decode_target_read_buffers()
 	ok = ok and _test_decode_target_read_buffers_gpu_or_skip()
 	ok = ok and _test_decode_rejects_missing_buffers()
 	ok = ok and _test_vpg_accepts_prepacked_target_field()
@@ -30,6 +33,22 @@ func _init() -> void:
 
 
 
+func _quantize_unorm8_value(value: float) -> float:
+	return float(clampi(int(round(clampf(value, 0.0, 1.0) * 255.0)), 0, 255)) / 255.0
+
+
+func _pack_rgba8_for_test(color: Color) -> int:
+	var r := int(round(clampf(color.r, 0.0, 1.0) * 255.0))
+	var g := int(round(clampf(color.g, 0.0, 1.0) * 255.0))
+	var b := int(round(clampf(color.b, 0.0, 1.0) * 255.0))
+	var a := int(round(clampf(color.a, 0.0, 1.0) * 255.0))
+	return ((r & 0xFF) << 24) | ((g & 0xFF) << 16) | ((b & 0xFF) << 8) | (a & 0xFF)
+
+
+func _close_q8(actual: float, expected: float) -> bool:
+	return absf(actual - _quantize_unorm8_value(expected)) <= Q8_EPSILON
+
+
 func _test_scene_placement_actor_prefers_prepacked_target_bytes() -> bool:
 	print("[TargetSVBufferDecode] test_scene_placement_actor_prefers_prepacked_target_bytes... SKIP (stub)")
 	return true
@@ -39,8 +58,8 @@ func _test_scene_placement_actor_keeps_brush_sv_control_metadata_only() -> bool:
 	print("[TargetSVBufferDecode] test_scene_placement_actor_keeps_brush_sv_control_metadata_only...")
 	var actor := ScenePlacementActorScript.new()
 	var stored := actor.set_brush_sv_persistence_metadata({
-		"visual_path": "user://target_scene_voxel/brush_visual.rgba32f",
-		"collision_path": "user://target_scene_voxel/brush_collision.r32f",
+		"visual_path": "user://target_scene_voxel/brush_visual.rgba8",
+		"collision_path": "user://target_scene_voxel/brush_collision.r8",
 		"metadata_path": "user://target_scene_voxel/brush_sv.json",
 		"dirty": true,
 		"readback_key": "brush:0:0:0",
@@ -90,7 +109,7 @@ func _test_scene_placement_actor_exposes_mesh_descriptions() -> bool:
 	var source_mesh := SphereMesh.new()
 	source_mesh.radius = 0.5
 	source_mesh.height = 1.0
-	var descriptor := CommonAutoVoxelFixture.make_mesh_description_descriptor(
+	var descriptor := UtilsAutoVoxelFixture.make_mesh_description_descriptor(
 		"mesh_description_test",
 		mesh,
 		source_mesh,
@@ -212,7 +231,7 @@ func _test_scene_placement_actor_exposes_mesh_descriptions() -> bool:
 
 func _test_decode_target_read_buffers() -> bool:
 	print("[TargetSVBufferDecode] test_decode_target_read_buffers...")
-	var fixture := CommonTargetSVBufferFixture.make_linear_read_buffers()
+	var fixture := UtilsTargetSVBufferFixture.make_linear_read_buffers()
 	var tex_size: int = fixture.get("tex_size", 0)
 	var slice_count: int = fixture.get("slice_count", 0)
 	var voxel_count: int = fixture.get("voxel_count", 0)
@@ -229,24 +248,24 @@ func _test_decode_target_read_buffers() -> bool:
 	if target_field.size() != voxel_count or target_color.size() != voxel_count:
 		push_error("  FAIL: decoded arrays have wrong size")
 		return false
-	if absf(target_field[strong_collision_idx] - 0.8) > 0.001:
+	if not _close_q8(target_field[strong_collision_idx], 0.8):
 		push_error("  FAIL: target_field should include collision intent")
 		return false
 	var color: Color = target_color[strong_collision_idx]
-	if absf(color.r - 0.5) > 0.001 or absf(color.g - 0.6) > 0.001 or absf(color.b - 0.7) > 0.001 or absf(color.a - 0.25) > 0.001:
-		push_error("  FAIL: target_color decoded rgba32f order incorrectly: %s" % str(color))
+	if not _close_q8(color.r, 0.5) or not _close_q8(color.g, 0.6) or not _close_q8(color.b, 0.7) or not _close_q8(color.a, 0.25):
+		push_error("  FAIL: target_color decoded rgba8 order incorrectly: %s" % str(color))
 		return false
 
 	var visual_only := TargetSceneVoxelGenerator.decode_target_read_buffers(visual, collision, tex_size, slice_count, false)
 	var visual_only_field: PackedFloat32Array = visual_only.get("target_field", PackedFloat32Array())
-	if absf(visual_only_field[strong_collision_idx] - 0.25) > 0.001:
+	if not _close_q8(visual_only_field[strong_collision_idx], 0.25):
 		push_error("  FAIL: visual-only target field should ignore collision buffer")
 		return false
 
 	var gpu_occupancy := PackedByteArray()
-	gpu_occupancy.resize(voxel_count * 4)
+	gpu_occupancy.resize(voxel_count)
 	for i in range(voxel_count):
-		gpu_occupancy.encode_float(i * 4, 0.9 if i == strong_collision_idx else 0.05)
+		gpu_occupancy[i] = clampi(int(round((0.9 if i == strong_collision_idx else 0.05) * 255.0)), 0, 255)
 	var decoded_gpu_occ := TargetSceneVoxelGenerator.decode_target_read_buffers(
 		visual,
 		collision,
@@ -256,7 +275,7 @@ func _test_decode_target_read_buffers() -> bool:
 		gpu_occupancy
 	)
 	var gpu_field_values: PackedFloat32Array = decoded_gpu_occ.get("target_field", PackedFloat32Array())
-	if absf(gpu_field_values[strong_collision_idx] - 0.9) > 0.001:
+	if not _close_q8(gpu_field_values[strong_collision_idx], 0.9):
 		push_error("  FAIL: decoded target field should consume GPU occupancy buffer")
 		return false
 	if int(decoded.get("active_voxel_count", -1)) != voxel_count:
@@ -268,19 +287,19 @@ func _test_decode_target_read_buffers() -> bool:
 	if int(decoded.get("visual_voxel_count", -1)) != voxel_count:
 		push_error("  FAIL: decoded visual_voxel_count should be %d" % voxel_count)
 		return false
-	if absf(float(decoded.get("min_active_occupancy", 0.0)) - 0.25) > 0.001:
+	if not _close_q8(float(decoded.get("min_active_occupancy", 0.0)), 0.25):
 		push_error("  FAIL: decoded min_active_occupancy should be 0.25")
 		return false
-	if absf(float(decoded.get("max_visual_complexity", 0.0)) - 0.25) > 0.001:
+	if not _close_q8(float(decoded.get("max_visual_complexity", 0.0)), 0.25):
 		push_error("  FAIL: decoded max_visual_complexity should be 0.25")
 		return false
 	if int(decoded_gpu_occ.get("active_voxel_count", -1)) != voxel_count:
 		push_error("  FAIL: decoded GPU occupancy active_voxel_count should be %d" % voxel_count)
 		return false
-	if absf(float(decoded_gpu_occ.get("min_active_occupancy", 0.0)) - 0.05) > 0.001:
+	if not _close_q8(float(decoded_gpu_occ.get("min_active_occupancy", 0.0)), 0.05):
 		push_error("  FAIL: decoded GPU occupancy min_active_occupancy should be 0.05")
 		return false
-	if absf(float(decoded_gpu_occ.get("max_visual_complexity", 0.0)) - 0.25) > 0.001:
+	if not _close_q8(float(decoded_gpu_occ.get("max_visual_complexity", 0.0)), 0.25):
 		push_error("  FAIL: decoded GPU occupancy max_visual_complexity should be 0.25")
 		return false
 
@@ -293,11 +312,11 @@ func _test_decode_target_read_buffers() -> bool:
 
 func _test_decode_target_read_buffers_gpu_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_decode_target_read_buffers_gpu_or_skip...")
-	if not CommonTestUtils.has_rendering_device():
+	if not UtilsTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU TargetSV read-buffer decode")
 		return true
 
-	var fixture := CommonTargetSVBufferFixture.make_linear_read_buffers()
+	var fixture := UtilsTargetSVBufferFixture.make_linear_read_buffers()
 	var tex_size: int = fixture.get("tex_size", 0)
 	var slice_count: int = fixture.get("slice_count", 0)
 	var voxel_count: int = fixture.get("voxel_count", 0)
@@ -320,8 +339,9 @@ func _test_decode_target_read_buffers_gpu_or_skip() -> bool:
 	if str(decoded.get("decode_source", "")) != "target_sv_pack_read_buffers_compute":
 		push_error("  FAIL: GPU decode should report compute source")
 		return false
-	if str(decoded.get("target_color_decode_format", "")) != "rgba32f_storage_buffer" \
-			or int(decoded.get("target_color_stride_bytes", 0)) != 16:
+	if str(decoded.get("target_color_decode_format", "")) != "rgba8" \
+			or int(decoded.get("target_color_stride_bytes", 0)) != 4 \
+			or int(decoded.get("target_completely_stride_bytes", 0)) != 1:
 		push_error("  FAIL: GPU decode format metadata mismatch: %s" % str(decoded))
 		return false
 
@@ -330,35 +350,35 @@ func _test_decode_target_read_buffers_gpu_or_skip() -> bool:
 	if target_field.size() != voxel_count or target_color.size() != voxel_count:
 		push_error("  FAIL: GPU decoded arrays have wrong size")
 		return false
-	if absf(target_field[strong_collision_idx] - 0.8) > 0.001:
+	if not _close_q8(target_field[strong_collision_idx], 0.8):
 		push_error("  FAIL: GPU decoded target field should include collision intent")
 		return false
 	var color: Color = target_color[strong_collision_idx]
-	if absf(color.r - 0.5) > 0.001 \
-			or absf(color.g - 0.6) > 0.001 \
-			or absf(color.b - 0.7) > 0.001 \
-			or absf(color.a - 0.25) > 0.001:
-		push_error("  FAIL: GPU decoded RGBA32F color mismatch: %s" % str(color))
+	if not _close_q8(color.r, 0.5) \
+			or not _close_q8(color.g, 0.6) \
+			or not _close_q8(color.b, 0.7) \
+			or not _close_q8(color.a, 0.25):
+		push_error("  FAIL: GPU decoded RGBA8 color mismatch: %s" % str(color))
 		return false
 
 	var field_bytes: PackedFloat32Array = decoded.get("target_field_bytes", PackedFloat32Array())
 	var color_bytes: PackedByteArray = decoded.get("target_color_rgba8_bytes", PackedByteArray())
-	var color_rgba32f_bytes: PackedByteArray = decoded.get("target_color_rgba32f_bytes", PackedByteArray())
+	var completely_bytes: PackedByteArray = decoded.get("target_completely_bytes", PackedByteArray())
 	if field_bytes.size() != voxel_count * 4 \
 			or color_bytes.size() != voxel_count * 4 \
-			or color_rgba32f_bytes.size() != voxel_count * 16:
+			or completely_bytes.size() != voxel_count:
 		push_error("  FAIL: GPU decoded byte buffers have wrong size")
 		return false
 	if str(decoded.get("target_stats_source", "")) != "target_sv_pack_read_buffers_compute":
 		push_error("  FAIL: GPU decoded stats should report compute source")
 		return false
-	if absf(float(decoded.get("max_occupancy", 0.0)) - 0.8) > 0.001 \
-			or absf(float(decoded.get("max_collision", 0.0)) - 0.8) > 0.001 \
+	if not _close_q8(float(decoded.get("max_occupancy", 0.0)), 0.8) \
+			or not _close_q8(float(decoded.get("max_collision", 0.0)), 0.8) \
 			or int(decoded.get("active_voxel_count", -1)) != voxel_count:
 		push_error("  FAIL: GPU decoded stats mismatch: %s" % str(decoded))
 		return false
 
-	print("  OK: GPU TargetSV decode produced legacy arrays plus packed bytes")
+	print("  OK: GPU TargetSV decode produced canonical 8bit packed bytes")
 	return true
 
 
@@ -464,7 +484,7 @@ func _test_vpg_accepts_prepacked_target_field() -> bool:
 
 func _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads() -> bool:
 	print("[TargetSVBufferDecode] test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads...")
-	if not CommonTestUtils.has_rendering_device():
+	if not UtilsTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for VPG TargetSV read-buffer borrowing")
 		return true
 
@@ -559,11 +579,11 @@ func _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads() ->
 
 func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_gpu_derive_target_packed_buffers_or_skip...")
-	if not CommonTestUtils.has_rendering_device():
+	if not UtilsTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU TargetSV read-buffer pack")
 		return true
 
-	var fixture := CommonTargetSVBufferFixture.make_linear_read_buffers()
+	var fixture := UtilsTargetSVBufferFixture.make_linear_read_buffers()
 	var tex_size: int = fixture.get("tex_size", 0)
 	var slice_count: int = fixture.get("slice_count", 0)
 	var voxel_count: int = fixture.get("voxel_count", 0)
@@ -578,20 +598,20 @@ func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 		return false
 	var field_bytes: PackedFloat32Array = packed.get("target_field_bytes", PackedFloat32Array())
 	var color_rgba8_bytes: PackedByteArray = packed.get("target_color_rgba8_bytes", PackedByteArray())
-	var color_rgba32f_bytes: PackedByteArray = packed.get("target_color_rgba32f_bytes", PackedByteArray())
+	var completely_bytes: PackedByteArray = packed.get("target_completely_bytes", PackedByteArray())
 	if field_bytes.size() != voxel_count * 4 \
 			or color_rgba8_bytes.size() != voxel_count * 4 \
-			or color_rgba32f_bytes.size() != voxel_count * 16:
+			or completely_bytes.size() != voxel_count:
 		push_error("  FAIL: GPU packed buffer sizes mismatch")
 		return false
 	var field_values := field_bytes
-	if absf(field_values[strong_collision_idx * 4 + 3] - 0.8) > 0.001:
+	if not _close_q8(field_values[strong_collision_idx * 4 + 3], 0.8):
 		push_error("  FAIL: GPU packed target field alpha should include collision intent")
 		return false
-	if absf(float(packed.get("max_occupancy", 0.0)) - 0.8) > 0.001:
+	if not _close_q8(float(packed.get("max_occupancy", 0.0)), 0.8):
 		push_error("  FAIL: GPU packed max_occupancy stat should be 0.8, got %.6f" % float(packed.get("max_occupancy", 0.0)))
 		return false
-	if absf(float(packed.get("max_collision", 0.0)) - 0.8) > 0.001:
+	if not _close_q8(float(packed.get("max_collision", 0.0)), 0.8):
 		push_error("  FAIL: GPU packed max_collision stat should be 0.8, got %.6f" % float(packed.get("max_collision", 0.0)))
 		return false
 	if int(packed.get("active_voxel_count", -1)) != voxel_count:
@@ -612,10 +632,10 @@ func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 			int(packed.get("visual_voxel_count", -1)),
 		])
 		return false
-	if absf(float(packed.get("min_active_occupancy", 0.0)) - 0.25) > 0.001:
+	if not _close_q8(float(packed.get("min_active_occupancy", 0.0)), 0.25):
 		push_error("  FAIL: GPU packed min_active_occupancy should be 0.25")
 		return false
-	if absf(float(packed.get("max_visual_complexity", 0.0)) - 0.25) > 0.001:
+	if not _close_q8(float(packed.get("max_visual_complexity", 0.0)), 0.25):
 		push_error("  FAIL: GPU packed max_visual_complexity should be 0.25")
 		return false
 	if str(packed.get("target_stats_source", "")) != "target_sv_pack_read_buffers_compute":
@@ -630,22 +650,17 @@ func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 	if color_rgba8_bytes.slice(strong_collision_idx * 4, (strong_collision_idx + 1) * 4) != expected_color_bytes:
 		push_error("  FAIL: GPU packed RGBA8 mismatch at strong collision voxel")
 		return false
-	var color_rgba32f_values := color_rgba32f_bytes.to_float32_array()
-	var color_base := strong_collision_idx * 4
-	if absf(color_rgba32f_values[color_base + 0] - 0.5) > 0.001 \
-			or absf(color_rgba32f_values[color_base + 1] - 0.6) > 0.001 \
-			or absf(color_rgba32f_values[color_base + 2] - 0.7) > 0.001 \
-			or absf(color_rgba32f_values[color_base + 3] - 0.25) > 0.001:
-		push_error("  FAIL: GPU packed RGBA32F decode buffer mismatch at strong collision voxel")
+	if not _close_q8(float(completely_bytes[strong_collision_idx]) / 255.0, 0.8):
+		push_error("  FAIL: GPU packed completely R8 mismatch at strong collision voxel")
 		return false
 
-	print("  OK: GPU read-buffer pack produced target field, RGBA8 bytes, and RGBA32F decode bytes")
+	print("  OK: GPU read-buffer pack produced target field plus canonical R8/RGBA8 bytes")
 	return true
 
 
 func _test_gpu_derive_target_stats_only_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_gpu_derive_target_stats_only_or_skip...")
-	if not CommonTestUtils.has_rendering_device():
+	if not UtilsTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU TargetSV stats-only pack")
 		return true
 
@@ -654,17 +669,13 @@ func _test_gpu_derive_target_stats_only_or_skip() -> bool:
 	var voxel_count := tex_size * tex_size * slice_count
 	var visual := PackedByteArray()
 	var collision := PackedByteArray()
-	visual.resize(voxel_count * 16)
-	collision.resize(voxel_count * 4)
+	visual.resize(voxel_count * 4)
+	collision.resize(voxel_count)
 	for i in range(voxel_count):
-		var base := i * 16
-		visual.encode_float(base + 0, 0.0)
-		visual.encode_float(base + 4, 0.0)
-		visual.encode_float(base + 8, 0.0)
-		visual.encode_float(base + 12, 0.0)
-		collision.encode_float(i * 4, 0.0)
-	visual.encode_float(2 * 16 + 12, 0.4)
-	collision.encode_float(5 * 4, 0.8)
+		visual.encode_u32(i * 4, _pack_rgba8_for_test(Color(0.0, 0.0, 0.0, 0.0)))
+		collision[i] = 0
+	visual.encode_u32(2 * 4, _pack_rgba8_for_test(Color(0.0, 0.0, 0.0, 0.4)))
+	collision[5] = int(round(0.8 * 255.0))
 
 	var generator := TargetSceneVoxelGenerator.new()
 	var packed := generator.derive_target_stats(
@@ -690,10 +701,10 @@ func _test_gpu_derive_target_stats_only_or_skip() -> bool:
 	if packed.has("target_field_bytes") or packed.has("target_color_rgba8_bytes") or packed.has("target_color_rgba32f_bytes"):
 		push_error("  FAIL: derive_target_stats should not expose packed readback keys")
 		return false
-	if absf(float(packed.get("max_occupancy", 0.0)) - 0.8) > 0.001:
+	if not _close_q8(float(packed.get("max_occupancy", 0.0)), 0.8):
 		push_error("  FAIL: stats-only max_occupancy should be 0.8")
 		return false
-	if absf(float(packed.get("max_collision", 0.0)) - 0.8) > 0.001:
+	if not _close_q8(float(packed.get("max_collision", 0.0)), 0.8):
 		push_error("  FAIL: stats-only max_collision should be 0.8")
 		return false
 	if int(packed.get("active_voxel_count", -1)) != 2:
@@ -705,10 +716,10 @@ func _test_gpu_derive_target_stats_only_or_skip() -> bool:
 	if int(packed.get("visual_voxel_count", -1)) != 1:
 		push_error("  FAIL: stats-only visual_voxel_count should be 1")
 		return false
-	if absf(float(packed.get("min_active_occupancy", 0.0)) - 0.4) > 0.001:
+	if not _close_q8(float(packed.get("min_active_occupancy", 0.0)), 0.4):
 		push_error("  FAIL: stats-only min_active_occupancy should be 0.4")
 		return false
-	if absf(float(packed.get("max_visual_complexity", 0.0)) - 0.4) > 0.001:
+	if not _close_q8(float(packed.get("max_visual_complexity", 0.0)), 0.4):
 		push_error("  FAIL: stats-only max_visual_complexity should be 0.4")
 		return false
 
@@ -718,7 +729,7 @@ func _test_gpu_derive_target_stats_only_or_skip() -> bool:
 
 func _test_gpu_generated_occupancy_buffer_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_gpu_generated_occupancy_buffer_or_skip...")
-	if not CommonTestUtils.has_rendering_device():
+	if not UtilsTestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only TargetSV occupancy buffer")
 		return true
 
@@ -752,9 +763,24 @@ func _test_gpu_generated_occupancy_buffer_or_skip() -> bool:
 	if color_rgba8_bytes.size() != voxel_count * 4:
 		push_error("  FAIL: GPU target color RGBA8 buffer size mismatch: got %d expected %d" % [color_rgba8_bytes.size(), voxel_count * 4])
 		return false
+	if visual_bytes.size() != voxel_count * 4:
+		push_error("  FAIL: GPU visual RGBA8 buffer size mismatch: got %d expected %d" % [visual_bytes.size(), voxel_count * 4])
+		return false
+	if collision_bytes.size() != voxel_count:
+		push_error("  FAIL: GPU collision R8 buffer size mismatch: got %d expected %d" % [collision_bytes.size(), voxel_count])
+		return false
 
-	var visual_values := visual_bytes.to_float32_array()
-	var collision_values := collision_bytes.to_float32_array()
+	var decoded_generated := TargetSceneVoxelGenerator.decode_target_read_buffers(
+		visual_bytes,
+		collision_bytes,
+		tex_size,
+		generator.slice_count
+	)
+	if not bool(decoded_generated.get("valid", false)):
+		push_error("  FAIL: generated RGBA8/R8 buffers did not decode: %s" % str(decoded_generated))
+		return false
+	var target_color: PackedColorArray = decoded_generated.get("target_color", PackedColorArray())
+	var target_collision: PackedFloat32Array = decoded_generated.get("target_collision", PackedFloat32Array())
 	var field_values := occupancy_bytes
 	var expected_max_occupancy := 0.0
 	var expected_max_collision := 0.0
@@ -764,9 +790,9 @@ func _test_gpu_generated_occupancy_buffer_or_skip() -> bool:
 	var expected_min_active_occupancy := 0.0
 	var expected_max_visual_complexity := 0.0
 	for i in range(voxel_count):
-		var visual_base := i * 4
-		var complexity := clampf(visual_values[visual_base + 3], 0.0, 1.0)
-		var collision := clampf(collision_values[i], 0.0, 1.0)
+		var decoded_color := target_color[i] if i < target_color.size() else Color(0.0, 0.0, 0.0, 0.0)
+		var complexity := clampf(decoded_color.a, 0.0, 1.0)
+		var collision := clampf(target_collision[i], 0.0, 1.0) if i < target_collision.size() else 0.0
 		var occupancy := field_values[i * 4 + 3]
 		expected_max_occupancy = maxf(expected_max_occupancy, occupancy)
 		expected_max_collision = maxf(expected_max_collision, collision)
@@ -779,12 +805,12 @@ func _test_gpu_generated_occupancy_buffer_or_skip() -> bool:
 		if complexity > 0.001:
 			expected_visual_voxel_count += 1
 		var color := Color(
-			clampf(visual_values[visual_base + 0], 0.0, 1.0),
-			clampf(visual_values[visual_base + 1], 0.0, 1.0),
-			clampf(visual_values[visual_base + 2], 0.0, 1.0),
+			clampf(decoded_color.r, 0.0, 1.0),
+			clampf(decoded_color.g, 0.0, 1.0),
+			clampf(decoded_color.b, 0.0, 1.0),
 			complexity
 		)
-		if absf(occupancy - maxf(complexity, collision)) > 0.001:
+		if absf(occupancy - maxf(complexity, collision)) > Q8_EPSILON:
 			push_error("  FAIL: GPU target field mismatch at %d: %.4f vs max(%.4f, %.4f)" % [i, occupancy, complexity, collision])
 			return false
 		var expected_rgba8 := VoxelPlacementGeneratorScript._pack_color_rgba8(color)
@@ -794,13 +820,13 @@ func _test_gpu_generated_occupancy_buffer_or_skip() -> bool:
 		if color_rgba8_bytes.slice(i * 4, (i + 1) * 4) != expected_color_bytes:
 			push_error("  FAIL: GPU target color RGBA8 mismatch at %d" % i)
 			return false
-	if absf(float(result.get("max_occupancy", 0.0)) - expected_max_occupancy) > 0.001:
+	if absf(float(result.get("max_occupancy", 0.0)) - expected_max_occupancy) > Q8_EPSILON:
 		push_error("  FAIL: GPU TargetSV max_occupancy stat mismatch: got %.6f expected %.6f" % [
 			float(result.get("max_occupancy", 0.0)),
 			expected_max_occupancy,
 		])
 		return false
-	if absf(float(result.get("max_collision", 0.0)) - expected_max_collision) > 0.001:
+	if absf(float(result.get("max_collision", 0.0)) - expected_max_collision) > Q8_EPSILON:
 		push_error("  FAIL: GPU TargetSV max_collision stat mismatch: got %.6f expected %.6f" % [
 			float(result.get("max_collision", 0.0)),
 			expected_max_collision,
@@ -824,13 +850,13 @@ func _test_gpu_generated_occupancy_buffer_or_skip() -> bool:
 			expected_visual_voxel_count,
 		])
 		return false
-	if absf(float(result.get("min_active_occupancy", 0.0)) - expected_min_active_occupancy) > 0.001:
+	if absf(float(result.get("min_active_occupancy", 0.0)) - expected_min_active_occupancy) > Q8_EPSILON:
 		push_error("  FAIL: GPU TargetSV min_active_occupancy mismatch: got %.6f expected %.6f" % [
 			float(result.get("min_active_occupancy", 0.0)),
 			expected_min_active_occupancy,
 		])
 		return false
-	if absf(float(result.get("max_visual_complexity", 0.0)) - expected_max_visual_complexity) > 0.001:
+	if absf(float(result.get("max_visual_complexity", 0.0)) - expected_max_visual_complexity) > Q8_EPSILON:
 		push_error("  FAIL: GPU TargetSV max_visual_complexity mismatch: got %.6f expected %.6f" % [
 			float(result.get("max_visual_complexity", 0.0)),
 			expected_max_visual_complexity,

@@ -8,15 +8,15 @@ layout(set = 0, binding = 1) uniform sampler2D t_target_height;
 layout(set = 0, binding = 2) uniform sampler2D t_object_mask;
 
 layout(set = 1, binding = 0, std430) restrict buffer TargetVisual {
-    vec4 target_visual[];
+    uint target_visual_rgba8[];
 };
 
 layout(set = 1, binding = 1, std430) restrict buffer TargetCollision {
-    float target_collision[];
+    uint target_collision_r8_words[];
 };
 
-layout(set = 1, binding = 2, std430) restrict buffer TargetOccupancy {
-    float target_occupancy[];
+layout(set = 1, binding = 2, std430) restrict buffer TargetCompletely {
+    uint target_completely_r8_words[];
 };
 
 layout(set = 1, binding = 3, std430) restrict buffer TargetColorRgba8 {
@@ -40,18 +40,18 @@ const float TARGET_STATS_ACTIVE_THRESHOLD = 0.001;
 layout(rgba16f, set = 2, binding = 0) uniform image2D rw_preview;
 
 layout(push_constant, std430) uniform Params {
-    float max_height;     // byte 0
-    float capture_size;   // byte 4
-    float vertical_span;  // byte 8
-    float slope_start;    // byte 12
-    float slope_full;     // byte 16
-    int texture_size;     // byte 20
-    int slice_count;      // byte 24
-    int dirty_x;          // byte 28
-    int dirty_y;          // byte 32
-    int dirty_w;          // byte 36
-    int dirty_h;          // byte 40
-    int _pad0;            // byte 44
+    float max_height;
+    float capture_size;
+    float vertical_span;
+    float slope_start;
+    float slope_full;
+    int texture_size;
+    int slice_count;
+    int dirty_x;
+    int dirty_y;
+    int dirty_w;
+    int dirty_h;
+    int _pad0;
 };
 
 struct TargetVoxel {
@@ -144,6 +144,22 @@ uint pack_rgba8(vec4 color) {
     return (bytes.r << 24u) | (bytes.g << 16u) | (bytes.b << 8u) | bytes.a;
 }
 
+uint pack_r8(float value) {
+    return uint(clamp(round(value * 255.0), 0.0, 255.0));
+}
+
+void store_collision_r8(uint idx, float value) {
+    uint word_index = idx >> 2u;
+    uint shift = (idx & 3u) * 8u;
+    atomicOr(target_collision_r8_words[word_index], pack_r8(value) << shift);
+}
+
+void store_completely_r8(uint idx, float value) {
+    uint word_index = idx >> 2u;
+    uint shift = (idx & 3u) * 8u;
+    atomicOr(target_completely_r8_words[word_index], pack_r8(value) << shift);
+}
+
 uint quantize_unit(float value) {
     return uint(clamp(round(value * 1000000.0), 0.0, 1000000.0));
 }
@@ -162,15 +178,20 @@ void main() {
 
     TargetVoxel voxel = evaluate_voxel(p, id.y);
     int idx = voxel_index(p, id.y);
-    target_visual[idx] = vec4(voxel.color, voxel.value);
-    target_collision[idx] = voxel.collision;
-    target_occupancy[idx] = max(voxel.value, voxel.collision);  // completely 表示体素完全度
-    target_color_rgba8[idx] = pack_rgba8(vec4(voxel.color, voxel.value));
-    atomicMax(target_stats[TARGET_STATS_MAX_OCCUPANCY], quantize_unit(target_occupancy[idx]));
+    uint idx_u = uint(idx);
+    float completely = max(voxel.value, voxel.collision);
+    uint rgba8 = pack_rgba8(vec4(voxel.color, voxel.value));
+
+    target_visual_rgba8[idx] = rgba8;
+    store_collision_r8(idx_u, voxel.collision);
+    store_completely_r8(idx_u, completely);
+    target_color_rgba8[idx] = rgba8;
+
+    atomicMax(target_stats[TARGET_STATS_MAX_OCCUPANCY], quantize_unit(completely));
     atomicMax(target_stats[TARGET_STATS_MAX_COLLISION], quantize_unit(voxel.collision));
-    if (target_occupancy[idx] > TARGET_STATS_ACTIVE_THRESHOLD) {
+    if (completely > TARGET_STATS_ACTIVE_THRESHOLD) {
         atomicAdd(target_stats[TARGET_STATS_ACTIVE_COUNT], 1u);
-        atomicMax(target_stats[TARGET_STATS_MIN_ACTIVE_PACKED], TARGET_STATS_MIN_PACK_BASE - quantize_unit(target_occupancy[idx]));
+        atomicMax(target_stats[TARGET_STATS_MIN_ACTIVE_PACKED], TARGET_STATS_MIN_PACK_BASE - quantize_unit(completely));
     }
     if (voxel.collision > TARGET_STATS_ACTIVE_THRESHOLD) {
         atomicAdd(target_stats[TARGET_STATS_COLLISION_COUNT], 1u);

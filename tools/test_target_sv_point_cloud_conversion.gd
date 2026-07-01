@@ -30,15 +30,24 @@ func _test_scene_loads() -> bool:
 		push_error("  FAIL: scene does not instantiate")
 		return false
 	var visualization: Node = instance.get_node_or_null("TargetSVVisualization")
-	if visualization == null:
-		push_error("  FAIL: scene does not contain TargetSVVisualization")
-		instance.free()
-		return false
 	var terrain := instance.find_child("Terrain", true, false) as MeshInstance3D
 	if terrain == null or terrain.mesh == null:
 		push_error("  FAIL: scene does not use edit-time common Terrain")
 		instance.free()
 		return false
+	if visualization == null:
+		var target_setup: Node = instance.get_node_or_null("DemoSetup/TargetSVSetup")
+		if target_setup == null:
+			push_error("  FAIL: scene contains neither TargetSVVisualization nor DemoSetup/TargetSVSetup")
+			instance.free()
+			return false
+		if not target_setup.has_method("rebuild_display"):
+			push_error("  FAIL: DemoSetup/TargetSVSetup does not expose rebuild_display")
+			instance.free()
+			return false
+		instance.free()
+		print("  OK: scene resource loads with common TargetSVSetup")
+		return true
 	var can_build_gpu_preview := RenderingServer.get_rendering_device() != null
 	visualization.set("build_project_voxels_on_ready", can_build_gpu_preview)
 	visualization.call("_rebuild_visualization")
@@ -169,11 +178,17 @@ func _test_fixture_buffers_decode() -> bool:
 	var visual_bytes := TargetSVLoader.visual_bytes()
 	var collision_bytes := TargetSVLoader.collision_bytes()
 	var ok := true
-	if visual_bytes.size() != voxel_count * 16:
+	if visual_bytes.size() != voxel_count * 4:
 		push_error("  FAIL: visual buffer size mismatch: %d" % visual_bytes.size())
 		ok = false
-	if collision_bytes.size() != voxel_count * 4:
+	if collision_bytes.size() != voxel_count:
 		push_error("  FAIL: collision buffer size mismatch: %d" % collision_bytes.size())
+		ok = false
+	if str(metadata.get("visual_format", "")) != "rgba8" and str(metadata.get("visual_format", "")) != "rgba8_unorm":
+		push_error("  FAIL: visual_format must be rgba8/rgba8_unorm, got %s" % str(metadata.get("visual_format", "")))
+		ok = false
+	if str(metadata.get("collision_format", "")) != "r8" and str(metadata.get("collision_format", "")) != "r8_unorm":
+		push_error("  FAIL: collision_format must be r8/r8_unorm, got %s" % str(metadata.get("collision_format", "")))
 		ok = false
 
 	var decoded := TargetSceneVoxelGeneratorScript.decode_target_read_buffers(visual_bytes, collision_bytes, texture_size, slice_count)

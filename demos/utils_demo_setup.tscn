@@ -2,9 +2,9 @@
 
 [ext_resource type="Script" path="res://scripts/fly_camera.gd" id="1_flycam"]
 [ext_resource type="Script" path="res://scripts/non_headless_scene_guard.gd" id="2_guard"]
-[ext_resource type="Mesh" path="res://assets/terrain/common_terrain_mesh.res" id="3_terrain"]
-[ext_resource type="Material" path="res://assets/terrain/common_terrain_material.tres" id="4_terrain_mat"]
-[ext_resource type="Script" path="res://scripts/common_targetsv_setup.gd" id="5_tsv"]
+[ext_resource type="Mesh" path="res://assets/terrain/utils_terrain_mesh.res" id="3_terrain"]
+[ext_resource type="Material" path="res://assets/terrain/utils_terrain_material.tres" id="4_terrain_mat"]
+[ext_resource type="Script" path="res://scripts/utils_targetsv_setup.gd" id="5_tsv"]
 
 [sub_resource type="Environment" id="env"]
 background_mode = 1
@@ -51,7 +51,7 @@ mesh = ExtResource("3_terrain")
 material_override = ExtResource("4_terrain_mat")
 cast_shadow = 0
 metadata/_edit_lock_ = true
-metadata/meshfill_common_terrain_initialized = true
+metadata/meshfill_utils_terrain_initialized = true
 metadata/terrain_capture_size = 1024.0
 metadata/terrain_resolution = 256
 metadata/terrain_height_stats = Vector2(0, 120)

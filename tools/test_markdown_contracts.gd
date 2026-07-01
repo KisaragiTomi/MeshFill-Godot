@@ -4,8 +4,8 @@ const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd
 const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
-const CommonTestUtils := preload("res://scripts/common_test_utils.gd")
-const CommonDemoContractUtils := preload("res://scripts/common_demo_contract_utils.gd")
+const UtilsTestUtils := preload("res://scripts/utils_test_utils.gd")
+const UtilsDemoContractUtils := preload("res://scripts/utils_demo_contract_utils.gd")
 const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
 
@@ -153,7 +153,7 @@ func _test_shared_field_collision_contract() -> bool:
 
 func _test_committed_scene_voxel_accepted_fields() -> bool:
 	print("[MarkdownContracts] test_committed_scene_voxel_accepted_fields...")
-	if not CommonTestUtils.has_rendering_device():
+	if not UtilsTestUtils.has_rendering_device():
 		_gpu_skip_count += 1
 		print("  SKIP: %s" % "no RenderingDevice available for committed SceneVoxel contract")
 		return true
@@ -207,7 +207,7 @@ func _test_committed_scene_voxel_accepted_fields() -> bool:
 
 func _test_terrain_collision_survives_zero_complexity_writes() -> bool:
 	print("[MarkdownContracts] test_terrain_collision_survives_zero_complexity_writes...")
-	if not CommonTestUtils.has_rendering_device():
+	if not UtilsTestUtils.has_rendering_device():
 		_gpu_skip_count += 1
 		print("  SKIP: %s" % "no RenderingDevice available for terrain collision SceneVoxel runtime")
 		return true
@@ -282,33 +282,33 @@ func _test_channel_stays_out_of_shared_semantics() -> bool:
 func _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() -> bool:
 	print("[MarkdownContracts] test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed...")
 	var ok := true
-	var prefilter_source := CommonTestUtils.read_text("res://scripts/autoobject_probe_prefilter_gpu.gd")
-	var score_probe_shader := CommonTestUtils.read_text("res://shaders/score_anchor_asset_probes.glsl")
-	var physical_score_shader := CommonTestUtils.read_text("res://shaders/score_voxel_tile.glsl")
+	var prefilter_source := UtilsTestUtils.read_text("res://scripts/autoobject_probe_prefilter_gpu.gd")
+	var score_probe_shader := UtilsTestUtils.read_text("res://shaders/score_anchor_asset_probes.glsl")
+	var physical_score_shader := UtilsTestUtils.read_text("res://shaders/score_voxel_tile.glsl")
 	var candidate_docs := {
-		"docs index": CommonTestUtils.read_text("res://demos/README.md"),
-		"graph index": CommonTestUtils.read_text("res://demos/README.md"),
-		"asset semantic probes": CommonTestUtils.read_text("res://demos/asset-descriptor-demo/asset-semantic-probes.md"),
-		"autoobject probe prefilter": CommonTestUtils.read_text("res://demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md"),
-		"target projection": CommonTestUtils.read_text("res://demos/target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md"),
-		"meshfill framework": CommonTestUtils.read_text("res://demos/core-meshfill-framework/meshfill-framework.md"),
+		"docs index": UtilsTestUtils.read_text("res://demos/README.md"),
+		"graph index": UtilsTestUtils.read_text("res://demos/README.md"),
+		"asset semantic probes": UtilsTestUtils.read_text("res://demos/asset-descriptor-demo/asset-semantic-probes.md"),
+		"autoobject probe prefilter": UtilsTestUtils.read_text("res://demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md"),
+		"target projection": UtilsTestUtils.read_text("res://demos/target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md"),
+		"meshfill framework": UtilsTestUtils.read_text("res://demos/core-meshfill-framework/meshfill-framework.md"),
 	}
 	var candidate_graphs := {
-		"runtime architecture graph": CommonTestUtils.read_text("res://demos/core-SPA-scene-placement-actor/diagrams/autoobject_gpu_runtime_architecture.svg"),
-		"prefilter graph": CommonTestUtils.read_text("res://demos/placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg"),
-		"framework graph": CommonTestUtils.read_text("res://demos/core-meshfill-framework/diagrams/meshfill_current_framework.svg"),
-		"routing graph": CommonTestUtils.read_text("res://demos/placement-voxel-semantic-routing/diagrams/voxel-semantic-routing.svg"),
+		"runtime architecture graph": UtilsTestUtils.read_text("res://demos/core-SPA-scene-placement-actor/diagrams/autoobject_gpu_runtime_architecture.svg"),
+		"prefilter graph": UtilsTestUtils.read_text("res://demos/placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg"),
+		"framework graph": UtilsTestUtils.read_text("res://demos/core-meshfill-framework/diagrams/meshfill_current_framework.svg"),
+		"routing graph": UtilsTestUtils.read_text("res://demos/placement-voxel-semantic-routing/diagrams/voxel-semantic-routing.svg"),
 	}
 
-	for missing in CommonDemoContractUtils.find_missing_terms(prefilter_source, ["sv.get(\"complexity_field\"", "sv.get(\"collision_field\"", "get_semantic_probes"]):
+	for missing in UtilsDemoContractUtils.find_missing_terms(prefilter_source, ["sv.get(\"complexity_field\"", "sv.get(\"collision_field\"", "get_semantic_probes"]):
 		push_error("  FAIL: probe prefilter source is missing '%s'" % missing)
 		ok = false
 
-	for missing in CommonDemoContractUtils.find_missing_terms(score_probe_shader, ["buffer ProbeData", "buffer ComplexityCollision", "buffer TargetField"]):
+	for missing in UtilsDemoContractUtils.find_missing_terms(score_probe_shader, ["buffer ProbeData", "buffer ComplexityCollision", "buffer TargetField"]):
 		push_error("  FAIL: probe scoring shader is missing '%s'" % missing)
 		ok = false
 
-	for present in CommonDemoContractUtils.find_present_terms(physical_score_shader, ["asset_embedding_buffer", "voxel_asset_topk_buffer", "tile_asset_topk_buffer", "semantic_score", "route_score"]):
+	for present in UtilsDemoContractUtils.find_present_terms(physical_score_shader, ["asset_embedding_buffer", "voxel_asset_topk_buffer", "tile_asset_topk_buffer", "semantic_score", "route_score"]):
 		push_error("  FAIL: physical score shader contains routing semantic term '%s'" % present)
 		ok = false
 
@@ -318,7 +318,7 @@ func _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() -
 			push_error("  FAIL: %s is missing docs-facing candidate_voxel_regions_by_asset wording" % doc_label)
 			ok = false
 		ok = _candidate_sparse_alias_lines_are_qualified(doc_label, doc_text) and ok
-		for present in CommonDemoContractUtils.find_present_terms(doc_text, [
+		for present in UtilsDemoContractUtils.find_present_terms(doc_text, [
 			"GPU spatial index",
 			"command queues, spatial index",
 			"-> candidate_voxel_sparses_by_asset",
@@ -342,18 +342,18 @@ func _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() -
 			ok = false
 
 	var target_projection_doc := str(candidate_docs.get("target projection", ""))
-	for missing in CommonDemoContractUtils.find_missing_terms(target_projection_doc, [
+	for missing in UtilsDemoContractUtils.find_missing_terms(target_projection_doc, [
 		"target-sv-point-cloud-conversion.md",
 		"target-sv-point-cloud-conversion.tscn",
 	]):
 		push_error("  FAIL: target projection doc is missing TargetSV point-cloud demo link '%s'" % missing)
 		ok = false
 	var target_point_cloud_contract := "\n".join([
-		CommonTestUtils.read_text("res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.md"),
-		CommonTestUtils.read_text("res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.tscn"),
-		CommonTestUtils.read_text("res://tools/test_target_sv_point_cloud_conversion.gd"),
+		UtilsTestUtils.read_text("res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.md"),
+		UtilsTestUtils.read_text("res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.tscn"),
+		UtilsTestUtils.read_text("res://tools/test_target_sv_point_cloud_conversion.gd"),
 	])
-	for missing in CommonDemoContractUtils.find_missing_terms(target_point_cloud_contract, [
+	for missing in UtilsDemoContractUtils.find_missing_terms(target_point_cloud_contract, [
 		"target_guidance_only",
 		"height_buffer_applied",
 		"collision_buffer_applied",
@@ -372,14 +372,14 @@ func _test_gpu_first_no_cpu_fallback_contracts() -> bool:
 	print("[MarkdownContracts] test_gpu_first_no_cpu_fallback_contracts...")
 	var ok := true
 	var docs_combined := "\n".join([
-		CommonTestUtils.read_text("res://demos/asset-descriptor-demo/asset-properties.md"),
-		CommonTestUtils.read_text("res://demos/asset-descriptor-demo/asset-semantic-probes.md"),
-		CommonTestUtils.read_text("res://demos/core-meshfill-framework/meshfill-framework.md"),
-		CommonTestUtils.read_text("res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"),
-		CommonTestUtils.read_text("res://demos/core-scenevoxeltile/scenevoxeltile.md"),
-		CommonTestUtils.read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md"),
+		UtilsTestUtils.read_text("res://demos/asset-descriptor-demo/asset-properties.md"),
+		UtilsTestUtils.read_text("res://demos/asset-descriptor-demo/asset-semantic-probes.md"),
+		UtilsTestUtils.read_text("res://demos/core-meshfill-framework/meshfill-framework.md"),
+		UtilsTestUtils.read_text("res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"),
+		UtilsTestUtils.read_text("res://demos/core-scenevoxeltile/scenevoxeltile.md"),
+		UtilsTestUtils.read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md"),
 	])
-	for missing in CommonDemoContractUtils.find_missing_terms(docs_combined, [
+	for missing in UtilsDemoContractUtils.find_missing_terms(docs_combined, [
 		"GPU-first",
 		"CPU 只负责",
 		"staging",
@@ -405,7 +405,7 @@ func _test_gpu_first_no_cpu_fallback_contracts() -> bool:
 		push_error("  FAIL: GPU-first docs are missing '%s'" % missing)
 		ok = false
 
-	for present in CommonDemoContractUtils.find_present_terms(docs_combined, [
+	for present in UtilsDemoContractUtils.find_present_terms(docs_combined, [
 		"cpu-only",
 		"cpu only",
 		"cpu fallback",
@@ -425,7 +425,7 @@ func _test_gpu_first_no_cpu_fallback_contracts() -> bool:
 		push_error("  FAIL: GPU-first docs still contain forbidden fallback wording '%s'" % present)
 		ok = false
 
-	for present in CommonDemoContractUtils.find_present_terms(docs_combined, [
+	for present in UtilsDemoContractUtils.find_present_terms(docs_combined, [
 		"`AutoVoxelRuntimeProfileContainer` 尚未实现",
 		"AutoVoxelRuntimeProfileContainer 尚未实现",
 		"后者仍未实现",
@@ -439,12 +439,12 @@ func _test_gpu_first_no_cpu_fallback_contracts() -> bool:
 		push_error("  FAIL: GPU-first docs keep stale profile-container wording '%s'" % present)
 		ok = false
 
-	var prefilter_source := CommonTestUtils.read_text("res://scripts/autoobject_probe_prefilter_gpu.gd")
+	var prefilter_source := UtilsTestUtils.read_text("res://scripts/autoobject_probe_prefilter_gpu.gd")
 	if prefilter_source.find("CPU fallback was removed") < 0:
 		push_error("  FAIL: GPU prefilter source no longer states the CPU fallback is removed")
 		ok = false
 
-	var committer_source := CommonTestUtils.read_text("res://scripts/scene_voxel_committer.gd")
+	var committer_source := UtilsTestUtils.read_text("res://scripts/scene_voxel_committer.gd")
 	if committer_source.find("ensure_device(true, false)") < 0 or committer_source.find("GPU compute required") < 0:
 		push_error("  FAIL: SceneVoxelCommitter should require GPU compute instead of falling back to CPU")
 		ok = false
@@ -460,20 +460,20 @@ func _test_gpu_first_no_cpu_fallback_contracts() -> bool:
 		},
 	]:
 		var path := str(test_spec.get("path", ""))
-		var test_text := CommonTestUtils.read_text(path)
+		var test_text := UtilsTestUtils.read_text(path)
 		var skip_text := str(test_spec.get("skip", ""))
 		if test_text.find(skip_text) < 0:
 			push_error("  FAIL: %s is missing no-RenderingDevice SKIP wording" % path)
 			ok = false
-		if CommonTestUtils.mentions_no_rd_cpu_success(test_text.to_lower()):
+		if UtilsTestUtils.mentions_no_rd_cpu_success(test_text.to_lower()):
 			push_error("  FAIL: %s treats missing RenderingDevice as CPU fallback success" % path)
 			ok = false
 
 	for demo_path in [
 		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md",
 	]:
-		var demo_text := CommonTestUtils.read_text(demo_path)
-		for missing in CommonDemoContractUtils.find_missing_terms(demo_text, ["--rendering-driver vulkan", "RenderingDevice"]):
+		var demo_text := UtilsTestUtils.read_text(demo_path)
+		for missing in UtilsDemoContractUtils.find_missing_terms(demo_text, ["--rendering-driver vulkan", "RenderingDevice"]):
 			push_error("  FAIL: %s is missing GPU validation command/wording '%s'" % [demo_path, missing])
 			ok = false
 
@@ -485,8 +485,8 @@ func _test_gpu_first_no_cpu_fallback_contracts() -> bool:
 func _test_legacy_scene_voxel_scatter_removed() -> bool:
 	print("[MarkdownContracts] test_legacy_scene_voxel_scatter_removed...")
 	var ok := true
-	var committer_source := CommonTestUtils.read_text("res://scripts/scene_voxel_committer.gd")
-	for present in CommonDemoContractUtils.find_present_terms(committer_source, [
+	var committer_source := UtilsTestUtils.read_text("res://scripts/scene_voxel_committer.gd")
+	for present in UtilsDemoContractUtils.find_present_terms(committer_source, [
 		"Poisson-disk placement",
 		"placed_positions",
 		"candidates.shuffle",
@@ -529,7 +529,7 @@ func _test_runtime_read_sources_reject_staging_success() -> bool:
 		push_error("  FAIL: profile debug snapshot must not be runtime success before GPU upload")
 		ok = false
 
-	if not CommonTestUtils.has_rendering_device():
+	if not UtilsTestUtils.has_rendering_device():
 		container.dispose()
 		if ok:
 			_gpu_skip_count += 1
@@ -572,12 +572,12 @@ func _test_runtime_read_sources_reject_staging_success() -> bool:
 func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 	print("[MarkdownContracts] test_vpg_and_scene_tile_gpu_binding_contracts...")
 	var ok := true
-	var vpg_source := CommonTestUtils.read_text("res://scripts/voxel_placement_generator.gd")
+	var vpg_source := UtilsTestUtils.read_text("res://scripts/voxel_placement_generator.gd")
 	# VPG 拆分后术语分布在抽出的子组件中(writeback/output/footprint baker);按子系统簇校验合约。
-	vpg_source += CommonTestUtils.read_text("res://scripts/voxel_placement_writeback.gd")
-	vpg_source += CommonTestUtils.read_text("res://scripts/voxel_placement_output.gd")
-	vpg_source += CommonTestUtils.read_text("res://scripts/voxel_footprint_baker.gd")
-	for missing in CommonDemoContractUtils.find_missing_terms(vpg_source, [
+	vpg_source += UtilsTestUtils.read_text("res://scripts/voxel_placement_writeback.gd")
+	vpg_source += UtilsTestUtils.read_text("res://scripts/voxel_placement_output.gd")
+	vpg_source += UtilsTestUtils.read_text("res://scripts/voxel_footprint_baker.gd")
+	for missing in UtilsDemoContractUtils.find_missing_terms(vpg_source, [
 		"REQUIRED_GPU_RUNTIME_BUFFERS",
 		"REQUIRED_GPU_PROFILE_BUFFERS",
 		"validate_gpu_runtime_profile_contract",
@@ -594,8 +594,8 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 		push_error("  FAIL: VPG source is missing GPU buffer binding contract term '%s'" % missing)
 		ok = false
 
-	var runtime_source := CommonTestUtils.read_text("res://scripts/gpu_autoobject_runtime.gd")
-	for missing in CommonDemoContractUtils.find_missing_terms(runtime_source, [
+	var runtime_source := UtilsTestUtils.read_text("res://scripts/gpu_autoobject_runtime.gd")
+	for missing in UtilsDemoContractUtils.find_missing_terms(runtime_source, [
 		"flush_to_scene_voxel_committer",
 		"runtime_not_ready",
 		"failed_commit_result_count",
@@ -604,8 +604,8 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 		push_error("  FAIL: GPUAutoObjectRuntime source is missing no-fallback flush contract term '%s'" % missing)
 		ok = false
 
-	var profile_container_source := CommonTestUtils.read_text("res://scripts/auto_voxel_runtime_profile_container.gd")
-	for missing in CommonDemoContractUtils.find_missing_terms(profile_container_source, [
+	var profile_container_source := UtilsTestUtils.read_text("res://scripts/auto_voxel_runtime_profile_container.gd")
+	for missing in UtilsDemoContractUtils.find_missing_terms(profile_container_source, [
 		"PROFILE_TABLE_BUFFER := \"profile_table\"",
 		"PROBE_RECORD_BUFFER := \"probe_records\"",
 		"PIVOT_RECORD_BUFFER := \"pivot_records\"",
@@ -618,13 +618,13 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 		push_error("  FAIL: AutoVoxelRuntimeProfileContainer source is missing GPU resident contract term '%s'" % missing)
 		ok = false
 
-	var committer_source := CommonTestUtils.read_text("res://scripts/scene_voxel_committer.gd")
+	var committer_source := UtilsTestUtils.read_text("res://scripts/scene_voxel_committer.gd")
 	# committer 拆分后 tile/source/collision/debug 术语分布在抽出的子系统中;按子系统簇校验合约。
-	committer_source += CommonTestUtils.read_text("res://scripts/scene_voxel_tile_store.gd")
-	committer_source += CommonTestUtils.read_text("res://scripts/scene_voxel_source_staging.gd")
-	committer_source += CommonTestUtils.read_text("res://scripts/scene_voxel_collision_field.gd")
-	committer_source += CommonTestUtils.read_text("res://scripts/scene_voxel_debug.gd")
-	for missing in CommonDemoContractUtils.find_missing_terms(committer_source, [
+	committer_source += UtilsTestUtils.read_text("res://scripts/scene_voxel_tile_store.gd")
+	committer_source += UtilsTestUtils.read_text("res://scripts/scene_voxel_source_staging.gd")
+	committer_source += UtilsTestUtils.read_text("res://scripts/scene_voxel_collision_field.gd")
+	committer_source += UtilsTestUtils.read_text("res://scripts/scene_voxel_debug.gd")
+	for missing in UtilsDemoContractUtils.find_missing_terms(committer_source, [
 		"ensure_scene_voxel_tile_buffers_uploaded",
 		"get_scene_voxel_tile_gpu_buffer_summary",
 		"readback_scene_voxel_tile_debug_snapshot",
@@ -645,14 +645,14 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 		vpg_source,
 		runtime_source,
 		committer_source,
-		CommonTestUtils.read_text("res://scripts/autoobject_probe_prefilter_gpu.gd"),
-		CommonTestUtils.read_text("res://shaders/collect_sv_anchors.glsl"),
-		CommonTestUtils.read_text("res://shaders/score_anchor_asset_probes.glsl"),
-		CommonTestUtils.read_text("res://shaders/select_anchor_topk.glsl"),
-		CommonTestUtils.read_text("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl"),
-		CommonTestUtils.read_text("res://shaders/score_voxel_tile.glsl"),
+		UtilsTestUtils.read_text("res://scripts/autoobject_probe_prefilter_gpu.gd"),
+		UtilsTestUtils.read_text("res://shaders/collect_sv_anchors.glsl"),
+		UtilsTestUtils.read_text("res://shaders/score_anchor_asset_probes.glsl"),
+		UtilsTestUtils.read_text("res://shaders/select_anchor_topk.glsl"),
+		UtilsTestUtils.read_text("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl"),
+		UtilsTestUtils.read_text("res://shaders/score_voxel_tile.glsl"),
 	])
-	for present in CommonDemoContractUtils.find_present_terms(active_spatial_sources, ["spatial_hash", "count_objects_per_cell", "sorted_object_id_buffer"]):
+	for present in UtilsDemoContractUtils.find_present_terms(active_spatial_sources, ["spatial_hash", "count_objects_per_cell", "sorted_object_id_buffer"]):
 		push_error("  FAIL: active runtime/shader source still contains retired spatial-hash term '%s'" % present)
 		ok = false
 
@@ -676,8 +676,8 @@ func _test_demo_doc_test_commands_match_driver_contract() -> bool:
 			ok = false
 
 	var seen := {}
-	for doc_path in CommonTestUtils.collect_files("res://demos", ".md", [], "  FAIL: cannot open demo doc root"):
-		var text := CommonTestUtils.read_text(doc_path)
+	for doc_path in UtilsTestUtils.collect_files("res://demos", ".md", [], "  FAIL: cannot open demo doc root"):
+		var text := UtilsTestUtils.read_text(doc_path)
 		for raw_line in text.split("\n"):
 			var line := str(raw_line)
 			var marker := "--script tools/"

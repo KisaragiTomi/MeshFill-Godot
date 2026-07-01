@@ -15,14 +15,12 @@ const DEFAULT_SCENE_VOXEL_TILE_SIZE := Vector3i(4, 4, 4)
 
 const SCENE_VOXEL_TILE_RECORD_BUFFER := "scene_voxel_tile_records"
 const SCENE_VOXEL_TILE_SUMMARY_BUFFER := "scene_voxel_tile_summaries"
-const SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER := "scene_voxel_tile_dirty_indices"
 const SCENE_VOXEL_TILE_OBJECT_REF_BUFFER := "scene_voxel_tile_object_refs"
 const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER := "scene_voxel_tile_complexity_field"
 const SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER := "scene_voxel_tile_collision_field"
 const SCENE_VOXEL_TILE_GPU_BUFFER_NAMES := [
 	SCENE_VOXEL_TILE_RECORD_BUFFER,
 	SCENE_VOXEL_TILE_SUMMARY_BUFFER,
-	SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER,
 	SCENE_VOXEL_TILE_OBJECT_REF_BUFFER,
 	SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
 	SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER,
@@ -41,7 +39,7 @@ const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_SCENE_VOXEL_TILE := 0
 const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME := 1
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_LEGACY_HASH := "legacy_stable_hash_debug"
-const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := 16
+const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := 4
 const SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE := 6
 const SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE := 8
 const SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE := 1000000.0
@@ -294,8 +292,6 @@ func _refresh_combined_collision_field() -> void:
 
 	_collision_field = _max_collision_images_gpu(_terrain_base_collision_field, _source_collision_field)
 
-## 返回指定切片在 Y 方向的体素尺寸
-
 func import_mask_channel(channel: int, mask_img: Image, complexity: float = 1.0) -> void:
 
 	assert(_gpu_ready, "[SceneVoxelCommitter] GPU not ready — cannot import mask")
@@ -358,12 +354,6 @@ func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
 	gc_frame()
 
 ## ─── Core Operations (GPU only) ───
-
-## Build a vec4 profile mask from a profile: 1.0 in channels this profile uses.
-
-## Convert world-meter radius to pixels at base resolution.
-
-## 将世界半径换算为底图分辨率下的像素半径
 
 func _stamp_scalar_image_disc(img: Image, center_px: Vector2i, radius_px: int, value: float, channel: int = 0) -> Image:
 
@@ -1308,7 +1298,11 @@ func _make_sv_collision_record_summary_gpu_buffer(
 	if not _gpu_ready or _rd == null:
 		return {}
 
-	var field_buffer := storage_buffer_zero(voxel_count * 4, output_buffer_scope, "sv_collision_record_summary")
+	var field_buffer := storage_buffer_zero(
+		SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count),
+		output_buffer_scope,
+		"sv_collision_record_summary_r8_words"
+	)
 	if not field_buffer.is_valid():
 		return {}
 
@@ -1425,7 +1419,11 @@ func _merge_sv_collision_records_gpu(base_field: PackedFloat32Array, collision: 
 
 		return PackedFloat32Array()
 
-	var field_buffer := storage_buffer_from_floats(base_field, SCOPE_FRAME, "sv_collision_field_merge")
+	var field_buffer := storage_buffer_from_bytes(
+		SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(base_field, voxel_count),
+		SCOPE_FRAME,
+		"sv_collision_field_merge_r8_words"
+	)
 
 	var record_buffer := storage_buffer_from_floats(collision_records, SCOPE_FRAME, "sv_collision_record_merge")
 
@@ -1460,9 +1458,9 @@ func _merge_sv_collision_records_gpu(base_field: PackedFloat32Array, collision: 
 		gc_frame()
 		return PackedFloat32Array()
 
-	var output_bytes := _rd.buffer_get_data(field_buffer, 0, voxel_count * 4)
+	var output_bytes := _rd.buffer_get_data(field_buffer, 0, SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count))
 
-	var merged_field := SceneVoxelCommitPayloadScript.decode_float_buffer(output_bytes, voxel_count)
+	var merged_field := SceneVoxelTileCodecScript.decode_collision_field_r8_word_bytes(output_bytes, voxel_count)
 
 	gc_frame()
 
@@ -1506,7 +1504,11 @@ func _make_terrain_base_collision_volume_field_gpu(terrain_base_img: Image, xz_r
 		SCOPE_FRAME,
 		"terrain_collision_volume_src_r32f"
 	)
-	var output_buffer := storage_buffer_zero(voxel_count * 4, SCOPE_FRAME, "terrain_collision_volume_out")
+	var output_buffer := storage_buffer_zero(
+		SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count),
+		SCOPE_FRAME,
+		"terrain_collision_volume_out_r8_words"
+	)
 	if not src_tex.is_valid() or not output_buffer.is_valid():
 		gc_frame()
 		return PackedFloat32Array()
@@ -1535,10 +1537,7 @@ func _make_terrain_base_collision_volume_field_gpu(terrain_base_img: Image, xz_r
 		gc_frame()
 		return PackedFloat32Array()
 
-	var output_bytes := _rd.buffer_get_data(output_buffer, 0, voxel_count * 4)
-	var field := SceneVoxelCommitPayloadScript.decode_float_buffer(output_bytes, voxel_count)
+	var output_bytes := _rd.buffer_get_data(output_buffer, 0, SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count))
+	var field := SceneVoxelTileCodecScript.decode_collision_field_r8_word_bytes(output_bytes, voxel_count)
 	gc_frame()
 	return field
-
-
-## 根据记录与图层构造场景体素源模板字典

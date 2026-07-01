@@ -28,9 +28,9 @@ const GPUAutoObjectRuntimeScript := preload("res://scripts/gpu_autoobject_runtim
 const VoxelPickGPUScript := preload("res://scripts/voxel_pick_gpu.gd")
 const VoxelDisplay := preload("res://scripts/voxel_display.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
-const CommonDemoAssets := preload("res://scripts/common_demo_assets.gd")
-const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
-const CommonTargetSVLookup := preload("res://scripts/common_targetsv_lookup.gd")
+const UtilsDemoAssets := preload("res://scripts/utils_demo_assets.gd")
+const UtilsDemoUI := preload("res://scripts/utils_demo_ui.gd")
+const UtilsTargetSVLookup := preload("res://scripts/utils_targetsv_lookup.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 const SELECT_COLOR := Color(1.0, 0.85, 0.0, 1.0)
 
@@ -620,16 +620,31 @@ func _update_anchor_sample_bounds_marker(record: Dictionary = {}) -> void:
 	if not _anchor_sample_bounds_visible(source):
 		_hide_node_if_valid(_anchor_sample_bounds_marker)
 		return
-	var aabb := _sample_bounds_aabb(source.get("sample_bounds", {}))
+	var raw_bounds = source.get("sample_bounds", {})
+	var aabb := _sample_bounds_aabb(raw_bounds)
 	if aabb.size.length_squared() <= 0.000001:
 		_hide_node_if_valid(_anchor_sample_bounds_marker)
 		return
 	_ensure_anchor_sample_bounds_marker()
 	if _anchor_sample_bounds_marker == null:
 		return
-	_anchor_sample_bounds_marker.position = aabb.position + aabb.size * 0.5
-	_anchor_sample_bounds_marker.scale = aabb.size
+	_anchor_sample_bounds_marker.transform = _sample_bounds_transform(raw_bounds, aabb)
 	_anchor_sample_bounds_marker.visible = true
+
+
+## Oriented-box transform when the provider supplies obb_center/obb_size/obb_yaw;
+## otherwise axis-aligned from the AABB. The marker mesh is a unit cube centered at
+## the origin, so the basis carries scale (and yaw for the OBB), origin is the center.
+func _sample_bounds_transform(raw_bounds, aabb: AABB) -> Transform3D:
+	if raw_bounds is Dictionary:
+		var b := raw_bounds as Dictionary
+		var obb_size: Vector3 = b.get("obb_size", Vector3.ZERO)
+		if bool(b.get("has_obb", false)) and obb_size.length_squared() > 0.000001:
+			var obb_center: Vector3 = b.get("obb_center", aabb.position + aabb.size * 0.5)
+			var obb_yaw := float(b.get("obb_yaw", 0.0))
+			var basis := Basis.from_euler(Vector3(0.0, obb_yaw, 0.0)) * Basis.from_scale(obb_size)
+			return Transform3D(basis, obb_center)
+	return Transform3D(Basis.from_scale(aabb.size), aabb.position + aabb.size * 0.5)
 
 
 ## Accept either a direct AABB or a provider dictionary with position/size.
@@ -770,7 +785,7 @@ func _register_all_assets() -> void:
 	_spa.clear_assets()
 	var t0 := Time.get_ticks_msec()
 	for i in range(_meshes.size()):
-		var color := CommonDemoAssets.asset_color(i)
+		var color := UtilsDemoAssets.asset_color(i)
 		var descriptor := AutoObjectScript.create_voxel_descriptor(
 			color, color.a, 1.0,
 			[{"shape": "cylinder", "radius": 1.0, "y_min": 0.0, "y_max": 2.0}])
@@ -778,7 +793,7 @@ func _register_all_assets() -> void:
 		var pid: int = _spa.register_asset(descriptor, _meshes[i])
 		_profile_ids.append(pid)
 		print("[SPA Demo] Registered [%d] %s → profile_id=%d" % [
-			i, CommonDemoAssets.asset_name(i, "?"), pid])
+			i, UtilsDemoAssets.asset_name(i, "?"), pid])
 	_register_time_ms = float(Time.get_ticks_msec() - t0)
 
 
@@ -1317,7 +1332,7 @@ func _find_targetsv_setup() -> Node:
 	if not is_inside_tree():
 		return null
 	var root := get_tree().edited_scene_root if get_tree() != null else null
-	return CommonTargetSVLookup.find_setup(self, root, true, false, true)
+	return UtilsTargetSVLookup.find_setup(self, root, true, false, true)
 
 
 ## 按网格索引选中GPU AutoObject（API入口）
@@ -1442,7 +1457,7 @@ func _safe_asset_index(object_index: int) -> int:
 
 ## 根据资产索引获取GPU点云颜色
 func _autoobject_color(asset_idx: int) -> Color:
-	var color := CommonDemoAssets.wire_color(asset_idx % maxi(CommonDemoAssets.count(), 1))
+	var color := UtilsDemoAssets.wire_color(asset_idx % maxi(UtilsDemoAssets.count(), 1))
 	color.a = 0.96
 	return color
 
@@ -2048,7 +2063,7 @@ func _make_autoobject_selection_record(object_index: int, screen_score: float) -
 		"object_index": object_index,
 		"object_id": _autoobject_id_for_index(object_index),
 		"asset_index": asset_idx,
-		"asset_name": CommonDemoAssets.asset_name(asset_idx, "unknown"),
+		"asset_name": UtilsDemoAssets.asset_name(asset_idx, "unknown"),
 		"profile_id": _profile_ids[asset_idx] if asset_idx >= 0 and asset_idx < _profile_ids.size() else -1,
 		"position": _autoobject_positions[object_index],
 		"voxel_min": voxel_min,
@@ -2210,7 +2225,7 @@ func _clear_autoobject_overlay_refs() -> void:
 ## 从配置路径加载网格资源
 func _load_meshes() -> void:
 	_meshes.clear()
-	for path in CommonDemoAssets.geo_paths():
+	for path in UtilsDemoAssets.geo_paths():
 		var m := AutoAssetFactory.load_mesh(path)
 		if m == null:
 			m = BoxMesh.new()
@@ -2389,7 +2404,7 @@ func _print_gpu_report() -> void:
 
 ## 创建HUD画布和标签
 func _setup_hud() -> void:
-	_hud_label = CommonDemoUI.setup_hud_label(self)
+	_hud_label = UtilsDemoUI.setup_hud_label(self)
 
 
 ## 更新HUD信息显示（GPU状态、选中信息等）
@@ -2500,7 +2515,7 @@ func _append_active_selection_hud_lines(lines: Array[String]) -> void:
 
 ## 将相机定位到地形框景位置
 func _frame_camera() -> void:
-	var cam := CommonDemoUI.find_camera(self, "", "FlyCamera", false, true)
+	var cam := UtilsDemoUI.find_camera(self, "", "FlyCamera", false, true)
 	if cam == null:
 		return
 	var half := TerrainConfigScript.CAPTURE_SIZE * 0.5
@@ -2515,7 +2530,7 @@ func _frame_camera() -> void:
 
 ## 获取当前激活的Camera3D
 func _get_camera() -> Camera3D:
-	return CommonDemoUI.find_camera(self, "", "FlyCamera", true, true)
+	return UtilsDemoUI.find_camera(self, "", "FlyCamera", true, true)
 
 
 ## 每帧更新（编辑器模式占位，当前无 per-frame 同步需求）
@@ -2526,6 +2541,12 @@ func _process(_delta: float) -> void:
 		return
 
 
-## 节点退出场景树时释放SPA资源
-func _exit_tree() -> void:
-	_dispose_spa_components(true)
+## GPU/SPA 资源只在节点真正被释放时清理,而不是每次编辑器标签页切换都清理。
+## 编辑器在场景标签页之间切换时,会对"离开的场景"触发 NOTIFICATION_EXIT_TREE,
+## 但节点并未释放;切回来时 Godot 也不会再次调用 _ready()(每个节点 _ready 只跑
+## 一次)。旧实现在 _exit_tree 里 dispose,导致切走后 _spa/GPU 组件被释放、切回来
+## 无法重建 → 点选 / 评分 / AutoObject 选择全部失效。改为仅在 PREDELETE(关闭标签
+## 页、关闭编辑器、场景被 free)时清理,GPU 资源与子节点一样跨标签页存活。
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		_dispose_spa_components(true)

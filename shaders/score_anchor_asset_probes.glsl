@@ -94,13 +94,14 @@ vec4 unpack_rgba8(uint packed) {
 // Samples both target_field (TargetSV_B) and complexity_coll (SV scene state).
 // target_field drives "what we want"; complexity_coll drives "what's already there".
 // The fit values blend both sources so probes can reason about existing scene content.
+//
+// Sampling uses trilinear interpolation over the 8 nearest voxel neighbors so that
+// probe positions between voxel centers produce smooth, continuous scores rather
+// than snapping to the nearest cell.
 
-float eval_probe(ivec3 sp, vec4 e_col, float e_coll,
+// Compute a single-voxel score contribution from pre-sampled field values.
+float eval_probe(vec4 tf, vec2 sv, vec4 e_col, float e_coll,
                  float w_color, float w_complexity, float w_collision) {
-    int idx = voxel_index(sp);
-    vec4 tf = target_field[idx];
-    vec2 sv = complexity_coll[idx];   // .x = scene_complexity, .y = scene_collision
-
     // Bipolar fit for color/complexity: match quality [0,1] is remapped to [-1,1].
     // A mismatch now casts a negative vote instead of merely contributing 0, so a
     // large probe count stops being a one-sided advantage — assets that match the
@@ -117,6 +118,34 @@ float eval_probe(ivec3 sp, vec4 e_col, float e_coll,
     float collision_fit    = 1.0 - abs(max(tf.a, sv.y) - e_coll);        // [0,1]
 
     return w_color * color_fit + w_complexity * complexity_fit + w_collision * collision_fit;
+}
+
+// Trilinearly sample target_field and complexity_coll at a continuous voxel-space
+// position, then evaluate the probe score.  Corners outside the grid are clamped.
+float eval_probe_trilinear(vec3 fsp, vec4 e_col, float e_coll,
+                           float w_color, float w_complexity, float w_collision) {
+    ivec3 p0  = ivec3(floor(fsp));
+    vec3  t   = fsp - vec3(p0);          // fractional part in [0,1]
+    ivec3 dim = grid_size_asset_count.xyz;
+
+    vec4 tf_acc = vec4(0.0);
+    vec2 sv_acc = vec2(0.0);
+
+    for (int dz = 0; dz <= 1; dz++) {
+        for (int dy = 0; dy <= 1; dy++) {
+            for (int dx = 0; dx <= 1; dx++) {
+                ivec3 sp  = clamp(p0 + ivec3(dx, dy, dz), ivec3(0), dim - ivec3(1));
+                int   idx = voxel_index(sp);
+                float w   = (dx == 0 ? (1.0 - t.x) : t.x)
+                          * (dy == 0 ? (1.0 - t.y) : t.y)
+                          * (dz == 0 ? (1.0 - t.z) : t.z);
+                tf_acc += target_field[idx]    * w;
+                sv_acc += complexity_coll[idx] * w;
+            }
+        }
+    }
+
+    return eval_probe(tf_acc, sv_acc, e_col, e_coll, w_color, w_complexity, w_collision);
 }
 
 // --- Main ---
@@ -151,11 +180,11 @@ void main() {
             float w_color      = d1.z;
             float w_complexity = d1.w;
 
-            ivec3 sp = anchor_pos + ivec3(round(offset * voxel_size_inv.xyz));
-            sp = clamp(sp, ivec3(0), grid_size_asset_count.xyz - ivec3(1));
+            // Continuous voxel-space position; trilinear sampling blends 8 neighbors.
+            vec3 fsp = vec3(anchor_pos) + offset * voxel_size_inv.xyz;
 
             vec4 e_col = unpack_rgba8(rgba8);
-            float ps = eval_probe(sp, e_col, e_coll, w_color, w_complexity, w_collision);
+            float ps = eval_probe_trilinear(fsp, e_col, e_coll, w_color, w_complexity, w_collision);
             lane_score += ps;
         }
     }

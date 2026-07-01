@@ -1,7 +1,7 @@
 extends SceneTree
 
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
-const CommonAutoVoxelFixture := preload("res://scripts/common_auto_voxel_fixture.gd")
+const UtilsAutoVoxelFixture := preload("res://scripts/utils_auto_voxel_fixture.gd")
 
 
 func _init() -> void:
@@ -26,7 +26,7 @@ func _init() -> void:
 
 func _test_descriptor_registration_stages_profile_data() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_descriptor_registration_stages_profile_data...")
-	var descriptor := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
+	var descriptor := UtilsAutoVoxelFixture.make_runtime_profile_descriptor()
 	var container = RuntimeProfileContainerScript.new()
 	var profile_id: int = container.register_descriptor(descriptor, 0.25)
 	if profile_id <= 0:
@@ -91,7 +91,7 @@ func _test_descriptor_registration_stages_profile_data() -> bool:
 
 func _test_gpu_upload_readback_or_skip() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_gpu_upload_readback_or_skip...")
-	var descriptor := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
+	var descriptor := UtilsAutoVoxelFixture.make_runtime_profile_descriptor()
 	var container = RuntimeProfileContainerScript.new()
 	var profile_id: int = container.register_descriptor(descriptor, 0.25)
 	if profile_id <= 0:
@@ -301,10 +301,10 @@ func _test_readback_byte_count_validation_contract() -> bool:
 func _test_equivalent_descriptors_reuse_profile_id() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_equivalent_descriptors_reuse_profile_id...")
 	var container = RuntimeProfileContainerScript.new()
-	var descriptor_a := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
+	var descriptor_a := UtilsAutoVoxelFixture.make_runtime_profile_descriptor()
 	descriptor_a.asset_id = "asset_a"
 	descriptor_a.object_type = "vegetation"
-	var descriptor_b := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
+	var descriptor_b := UtilsAutoVoxelFixture.make_runtime_profile_descriptor()
 	descriptor_b.asset_id = "asset_b"
 	descriptor_b.object_type = "rock"
 
@@ -322,8 +322,8 @@ func _test_equivalent_descriptors_reuse_profile_id() -> bool:
 
 func _test_profile_registration_is_stable() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_profile_registration_is_stable...")
-	var profile_a := CommonAutoVoxelFixture.make_runtime_profile()
-	var profile_b := CommonAutoVoxelFixture.make_runtime_profile()
+	var profile_a := UtilsAutoVoxelFixture.make_runtime_profile()
+	var profile_b := UtilsAutoVoxelFixture.make_runtime_profile()
 	var container_a = RuntimeProfileContainerScript.new()
 	var container_b = RuntimeProfileContainerScript.new()
 	var id_a: int = container_a.register_profile(profile_a, 0.25)
@@ -341,7 +341,7 @@ func _test_profile_registration_is_stable() -> bool:
 
 func _test_dirty_profile_marking() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_dirty_profile_marking...")
-	var descriptor := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
+	var descriptor := UtilsAutoVoxelFixture.make_runtime_profile_descriptor()
 	var container = RuntimeProfileContainerScript.new()
 	var profile_id: int = container.register_descriptor(descriptor, 0.25)
 	descriptor.set_color_and_complexity(Color(0.9, 0.1, 0.2, 1.0), 0.4)
@@ -445,7 +445,7 @@ func _test_container_stays_gpu_profile_control_plane() -> bool:
 
 func _test_descriptor_profile_id_and_probe_range_lookup() -> bool:
 	print("[AutoVoxelRuntimeProfileContainer] test_descriptor_profile_id_and_probe_range_lookup...")
-	var descriptor := CommonAutoVoxelFixture.make_runtime_profile_descriptor()
+	var descriptor := UtilsAutoVoxelFixture.make_runtime_profile_descriptor()
 	var container = RuntimeProfileContainerScript.new()
 	var profile_id: int = container.register_descriptor(
 		descriptor,

@@ -4,9 +4,9 @@
 // Dirty-range SceneVoxelTile resident summary update pass.
 //
 // Binding contract, set 0:
-//   binding 0: readonly vec4 complexity_field[] (.a = complexity, .rgb = color)
+//   binding 0: readonly uint complexity_field_rgba8[] (RGBA8 unorm, .a = complexity)
 //     Dense complexity occupancy volume.
-//   binding 1: readonly float collision_field[]
+//   binding 1: readonly uint collision_field_r8_words[] (R8 unorm, four voxels per uint)
 //     Dense collision occupancy volume.
 //   binding 2: writeonly uint tile_summaries[]
 //     Resident 32-byte SceneVoxelTile summary records, matching
@@ -51,11 +51,11 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityField {
-    vec4 complexity_field[];
+    uint complexity_field_rgba8[];
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
-    float collision_field[];
+    uint collision_field_r8_words[];
 };
 
 layout(set = 0, binding = 2, std430) restrict writeonly buffer TileSummaries {
@@ -100,6 +100,21 @@ uint quantize_unit(float value) {
 
 float dequantize_unit(uint value) {
     return float(value) / quant_scale();
+}
+
+vec4 unpack_rgba8(uint packed) {
+    return vec4(
+        float((packed >> 24u) & 0xFFu) / 255.0,
+        float((packed >> 16u) & 0xFFu) / 255.0,
+        float((packed >>  8u) & 0xFFu) / 255.0,
+        float((packed >>  0u) & 0xFFu) / 255.0
+    );
+}
+
+float load_r8(uint index) {
+    uint word = collision_field_r8_words[index >> 2u];
+    uint shift = (index & 3u) * 8u;
+    return float((word >> shift) & 0xFFu) / 255.0;
 }
 
 uint tile_record_stride() {
@@ -230,8 +245,8 @@ void main() {
             continue;
         }
 
-        scan_value(complexity_field[idx].a, complexity_count, complexity_min_q, complexity_max_q);
-        scan_value(collision_field[idx], collision_count, collision_min_q, collision_max_q);
+        scan_value(unpack_rgba8(complexity_field_rgba8[idx]).a, complexity_count, complexity_min_q, complexity_max_q);
+        scan_value(load_r8(uint(idx)), collision_count, collision_min_q, collision_max_q);
     }
 
     shared_complexity_count[local_index] = complexity_count;

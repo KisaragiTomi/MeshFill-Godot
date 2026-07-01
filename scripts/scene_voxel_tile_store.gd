@@ -17,14 +17,12 @@ const DEFAULT_SCENE_VOXEL_TILE_SIZE := Vector3i(4, 4, 4)
 
 const SCENE_VOXEL_TILE_RECORD_BUFFER := "scene_voxel_tile_records"
 const SCENE_VOXEL_TILE_SUMMARY_BUFFER := "scene_voxel_tile_summaries"
-const SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER := "scene_voxel_tile_dirty_indices"
 const SCENE_VOXEL_TILE_OBJECT_REF_BUFFER := "scene_voxel_tile_object_refs"
 const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER := "scene_voxel_tile_complexity_field"
 const SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER := "scene_voxel_tile_collision_field"
 const SCENE_VOXEL_TILE_GPU_BUFFER_NAMES := [
 	SCENE_VOXEL_TILE_RECORD_BUFFER,
 	SCENE_VOXEL_TILE_SUMMARY_BUFFER,
-	SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER,
 	SCENE_VOXEL_TILE_OBJECT_REF_BUFFER,
 	SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
 	SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER,
@@ -43,7 +41,12 @@ const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_SCENE_VOXEL_TILE := 0
 const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME := 1
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_LEGACY_HASH := "legacy_stable_hash_debug"
-const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := 16
+const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_FORMAT := "rgba8_unorm"
+const SCENE_VOXEL_TILE_COLLISION_FIELD_FORMAT := "r8_unorm"
+const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES := 4
+const SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES := 1
+const SCENE_VOXEL_TILE_COLLISION_FIELD_UPLOAD_STRIDE_BYTES := 4
+const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES
 const SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE := 6
 const SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE := 8
 const SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE := 1000000.0
@@ -82,6 +85,7 @@ const SceneVoxelSourceRecordScript := preload("res://scripts/scene_voxel_source_
 const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 const SceneVoxelCommitPayloadScript := preload("res://scripts/scene_voxel_commit_payload.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
+const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
 const SceneVoxelVolumeChannelsScript := preload("res://scripts/scene_voxel_volume_channels.gd")
 const SceneVoxelBrushScript := preload("res://scripts/scene_voxel_brush.gd")
 const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
@@ -133,6 +137,8 @@ var _scene_voxel_tile_gpu_last_upload_tick := -1
 var _scene_voxel_tile_gpu_auto_upload := false
 var _scene_voxel_tile_gpu_last_reused_buffers: Array[String] = []
 var _scene_voxel_tile_pending_resident_upload_tiles: Dictionary = {}
+# 旧式 SV 像素瓦片脏图（A 表示）：键为 _sv_tile_key 字符串，与 _scene_voxel_tiles 的 3D 脏标志(B)双向同步
+var _sv_dirty_tiles: Dictionary = {}
 var _scene_voxel_tile_last_upload_mode := "none"
 var _scene_voxel_tile_last_upload_tile_ids: Array[String] = []
 var _scene_voxel_tile_last_upload_resident_voxel_count := 0
@@ -826,11 +832,122 @@ func _dirty_scene_voxel_tile_snapshot() -> Dictionary:
 
 	return result
 
+## 返回当前所有脏 SV 像素瓦片(_sv_dirty_tiles)的快照字典；由 committer 提交路径调用，对应 _sv["dirty_tiles"]
+func _dirty_sv_pixel_tile_snapshot() -> Dictionary:
+
+	return _sv_dirty_tiles.duplicate(true)
+
+## 统一清除全部脏标记：SV 像素瓦片(_sv_dirty_tiles) + committer 脏矩形(_sv_dirty_rects) + SceneVoxelTile 脏标志(B)；由 committer 提交路径与 clear_sv_dirty 调用
+func clear_all_dirty() -> void:
+
+	_sv_dirty_tiles.clear()
+
+	_committer._sv_dirty_rects.clear()
+
+	_clear_scene_voxel_tile_dirty_flags()
+
+## 标记指定 SV 像素瓦片为脏(写入 _sv_dirty_tiles)并可选联动场景体素瓦片(B)；由 committer._mark_sv_tile_dirty 桩与本地 _mark_legacy_sv_tiles_for_scene_voxel_tile 调用
+func _mark_sv_tile_dirty(
+	slice_index: int,
+	voxel_xz: Vector2i,
+	layer: String = "scene",
+	tile_size: int = SV_RESIDENT_TILE_SIZE,
+	source_record: Dictionary = {},
+	update_scene_voxel_tile: bool = true
+) -> void:
+
+	if _committer._volume.is_empty():
+
+		return
+
+	var xz_res := int(_committer._volume.get("xz_res", _committer._base_res))
+
+	if xz_res <= 0:
+
+		return
+
+	var px := Vector2i(
+
+		clampi(voxel_xz.x, 0, xz_res - 1),
+
+		clampi(voxel_xz.y, 0, xz_res - 1)
+
+	)
+
+	var key := SceneVoxelTileCodecScript.sv_tile_key(slice_index, px, layer, tile_size)
+
+	_sv_dirty_tiles[key] = {
+
+		"tile_id": key,  # dirty tile storage key
+
+		"clip_level": 0,  # clipmap level; 0 in current SV
+
+		"layer": layer,  # scene or collision
+
+		"slice_index": slice_index,  # Y slice
+
+		"tile_size": tile_size,  # voxel tile edge size
+
+		"bounds": SceneVoxelTileCodecScript.sv_tile_bounds(px, tile_size),  # XZ bounds in volume pixels
+
+		"write_tick": _committer._generation_tick,  # generation tick that dirtied the tile
+
+		"commit_tick": _committer._committed_tick,  # committed SV snapshot epoch; not per-voxel provenance
+
+		"dirty": true,  # needs resident buffer refresh
+
+	}
+
+	if update_scene_voxel_tile:
+
+		_touch_scene_voxel_tile_from_voxel(slice_index, px, {layer: true}, source_record)
+
+	_committer._sv_dirty = true
+
+## 将 SceneVoxelTile 三维坐标反映射为旧式 SV 瓦片像素坐标并标记为脏(B→A 反向同步)；由 mark_scene_voxel_tile_dirty 调用
+func _mark_legacy_sv_tiles_for_scene_voxel_tile(tile_coord: Vector3i, dirty_flags: Dictionary) -> void:
+
+	if _committer._volume.is_empty():
+
+		return
+
+	var bounds := _scene_voxel_tile_bounds(tile_coord)
+
+	var voxel_min: Vector3i = bounds.voxel_min
+
+	var voxel_max: Vector3i = bounds.voxel_max
+
+	var layer_names: Array[String] = []
+
+	if bool(dirty_flags.get("scene", false)):
+
+		layer_names.append("scene")
+
+	if bool(dirty_flags.get("collision", false)):
+
+		layer_names.append("collision")
+
+	if layer_names.is_empty():
+
+		return
+
+	for slice_index in range(voxel_min.y, voxel_max.y):
+
+		for tile_z in range(int(voxel_min.z / SV_RESIDENT_TILE_SIZE), int((voxel_max.z - 1) / SV_RESIDENT_TILE_SIZE) + 1):
+
+			for tile_x in range(int(voxel_min.x / SV_RESIDENT_TILE_SIZE), int((voxel_max.x - 1) / SV_RESIDENT_TILE_SIZE) + 1):
+
+				var legacy_px := Vector2i(tile_x * SV_RESIDENT_TILE_SIZE, tile_z * SV_RESIDENT_TILE_SIZE)
+
+				for layer in layer_names:
+
+					_mark_sv_tile_dirty(slice_index, legacy_px, layer, SV_RESIDENT_TILE_SIZE, {}, false)
+
 ## 判断场景体素是否落在任一脏 tile 的体素边界内
 
-func _scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel: Dictionary, dirty_tiles: Dictionary) -> bool:
+func _scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel: Dictionary, dirty_scene_voxel_tiles: Dictionary) -> bool:
 
-	if dirty_tiles.is_empty():
+	if dirty_scene_voxel_tiles.is_empty():
 
 		return false
 
@@ -844,7 +961,7 @@ func _scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel: Dictionary, dirty_tile
 
 	var slice_index := int(scene_voxel.get("slice_index", 0))
 
-	for raw_tile in dirty_tiles.values():
+	for raw_tile in dirty_scene_voxel_tiles.values():
 
 		if not raw_tile is Dictionary:
 
@@ -870,7 +987,7 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 
 	_scene_voxel_tile_last_upload_error = ""
 
-	if not _ensure_scene_voxel_tile_rendering_device():
+	if not ensure_device(true, false):
 
 		_scene_voxel_tile_gpu_ready = false
 
@@ -892,19 +1009,20 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 
 	var collision_field := _scene_voxel_tile_collision_field_for_upload()
 
-	var resident_voxel_count := maxi(complexity_field.size(), collision_field.size())
+	var resident_voxel_count := _scene_voxel_tile_resident_voxel_count_for_upload(
+		complexity_field,
+		collision_field
+	)
 
-	if complexity_field.size() != resident_voxel_count:
+	var packed_complexity_field := _pack_scene_voxel_tile_complexity_field_bytes(
+		complexity_field,
+		resident_voxel_count
+	)
 
-		complexity_field.resize(resident_voxel_count)
-
-	if collision_field.size() != resident_voxel_count:
-
-		collision_field.resize(resident_voxel_count)
-
-	var packed_complexity_field := _pack_scene_voxel_tile_float_field_bytes(complexity_field)
-
-	var packed_collision_field := _pack_scene_voxel_tile_float_field_bytes(collision_field)
+	var packed_collision_field := _pack_scene_voxel_tile_collision_field_bytes(
+		collision_field,
+		resident_voxel_count
+	)
 
 	var tile_ids := _scene_voxel_tile_sorted_ids()
 
@@ -912,7 +1030,7 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 
 	var packed_summaries := _pack_scene_voxel_tile_summary_bytes(tile_ids)
 
-	var packed_dirty_indices := _pack_scene_voxel_tile_dirty_index_bytes(tile_ids)
+	_refresh_scene_voxel_tile_dirty_tile_ids(tile_ids)
 
 	var use_numeric_object_refs := not _scene_voxel_tile_gpu_autoobject_refs.is_empty()
 	var packed_object_refs := _pack_scene_voxel_tile_numeric_object_ref_bytes(
@@ -931,7 +1049,6 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 		tile_ids,
 		packed_records,
 		packed_summaries,
-		packed_dirty_indices,
 		packed_object_refs,
 		complexity_field,
 		collision_field,
@@ -943,9 +1060,9 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 
 	var reusable_resident_field_buffers := _scene_voxel_tile_reusable_resident_field_buffers(
 		packed_complexity_field,
-		complexity_field.size(),
+		resident_voxel_count,
 		packed_collision_field,
-		collision_field.size()
+		resident_voxel_count
 	)
 
 	_release_scene_voxel_tile_gpu_buffers(reusable_resident_field_buffers)
@@ -969,13 +1086,6 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 	) and ok
 
 	ok = _create_scene_voxel_tile_storage_buffer(
-		SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER,
-		packed_dirty_indices,
-		_scene_voxel_tile_gpu_dirty_tile_ids.size(),
-		SCENE_VOXEL_TILE_INDEX_STRIDE_BYTES
-	) and ok
-
-	ok = _create_scene_voxel_tile_storage_buffer(
 		SCENE_VOXEL_TILE_OBJECT_REF_BUFFER,
 		packed_object_refs,
 		int(packed_object_refs.size() / SCENE_VOXEL_TILE_REF_STRIDE_BYTES),
@@ -986,30 +1096,30 @@ func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 		ok = _reuse_scene_voxel_tile_storage_buffer(
 			SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
 			packed_complexity_field,
-			complexity_field.size(),
-			SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
+			resident_voxel_count,
+			SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES
 		) and ok
 	else:
 		ok = _create_scene_voxel_tile_storage_buffer(
 			SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
 			packed_complexity_field,
-			complexity_field.size(),
-			SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
+			resident_voxel_count,
+			SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES
 		) and ok
 
 	if reusable_resident_field_buffers.has(SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER):
 		ok = _reuse_scene_voxel_tile_storage_buffer(
 			SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER,
 			packed_collision_field,
-			collision_field.size(),
-			SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
+			resident_voxel_count,
+			SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES
 		) and ok
 	else:
 		ok = _create_scene_voxel_tile_storage_buffer(
 			SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER,
 			packed_collision_field,
-			collision_field.size(),
-			SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
+			resident_voxel_count,
+			SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES
 		) and ok
 
 	if not ok:
@@ -1060,7 +1170,6 @@ func _update_scene_voxel_tile_dirty_ranges(
 	tile_ids: Array[String],
 	packed_records: PackedByteArray,
 	_packed_summaries: PackedByteArray,
-	packed_dirty_indices: PackedByteArray,
 	packed_object_refs: PackedByteArray,
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
@@ -1073,6 +1182,12 @@ func _update_scene_voxel_tile_dirty_ranges(
 	if scoped_tile_ids.is_empty():
 
 		return false
+
+	# Resident fields are now GPU-native 8bit buffers. Collision stores four R8
+	# voxels in each uint word, so dirty row writes need word-aligned read/modify
+	# handling. Use the existing full upload path until that partial updater is
+	# specialized for packed R8.
+	return false
 
 	if not _scene_voxel_tile_can_update_existing_buffers(tile_ids, complexity_field.size(), collision_field.size()):
 
@@ -1095,13 +1210,6 @@ func _update_scene_voxel_tile_dirty_ranges(
 		SCENE_VOXEL_TILE_RECORD_STRIDE_BYTES,
 		tile_ids,
 		scoped_tile_ids
-	) and ok
-
-	ok = _update_scene_voxel_tile_whole_buffer(
-		SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER,
-		packed_dirty_indices,
-		_scene_voxel_tile_gpu_dirty_tile_ids.size(),
-		SCENE_VOXEL_TILE_INDEX_STRIDE_BYTES
 	) and ok
 
 	var scene_update := _update_scene_voxel_tile_field_ranges(
@@ -1296,35 +1404,6 @@ func _update_scene_voxel_tile_record_ranges(
 	_scene_voxel_tile_gpu_strides[buffer_name] = stride_bytes
 
 	_scene_voxel_tile_gpu_buffer_hashes[buffer_name] = 0
-
-	return true
-
-## 整体覆盖写入指定 tile 缓冲并记录大小与哈希
-
-func _update_scene_voxel_tile_whole_buffer(buffer_name: String, bytes: PackedByteArray, record_count: int, stride_bytes: int) -> bool:
-
-	var upload_bytes := bytes.duplicate()
-
-	if upload_bytes.is_empty():
-
-		upload_bytes.resize(maxi(stride_bytes, 4))
-
-	if not _update_scene_voxel_tile_buffer_bytes(buffer_name, 0, upload_bytes):
-
-		return false
-
-	_scene_voxel_tile_gpu_buffer_byte_sizes[buffer_name] = bytes.size()
-
-	_scene_voxel_tile_gpu_buffer_upload_byte_sizes[buffer_name] = maxi(
-		int(_scene_voxel_tile_gpu_buffer_upload_byte_sizes.get(buffer_name, 0)),
-		upload_bytes.size()
-	)
-
-	_scene_voxel_tile_gpu_record_counts[buffer_name] = record_count
-
-	_scene_voxel_tile_gpu_strides[buffer_name] = stride_bytes
-
-	_scene_voxel_tile_gpu_buffer_hashes[buffer_name] = _scene_voxel_tile_bytes_hash(bytes)
 
 	return true
 
@@ -1607,22 +1686,10 @@ func _pack_gpu_autoobject_dirty_delta_words(deltas: Array) -> PackedByteArray:
 		bytes.encode_s32(base + 4, object_type)
 		bytes.encode_s32(base + 8, profile_id)
 		bytes.encode_s32(base + 12, generation)
-		bytes.encode_s32(base + 16, old_min.x)
-		bytes.encode_s32(base + 20, old_min.y)
-		bytes.encode_s32(base + 24, old_min.z)
-		bytes.encode_s32(base + 28, 1 if removed else 0)
-		bytes.encode_s32(base + 32, old_max.x)
-		bytes.encode_s32(base + 36, old_max.y)
-		bytes.encode_s32(base + 40, old_max.z)
-		bytes.encode_s32(base + 44, 1 if alive_after else 0)
-		bytes.encode_s32(base + 48, new_min.x)
-		bytes.encode_s32(base + 52, new_min.y)
-		bytes.encode_s32(base + 56, new_min.z)
-		bytes.encode_s32(base + 60, SceneVoxelTileCodecScript.flags_to_bits(dirty_flags))
-		bytes.encode_s32(base + 64, new_max.x)
-		bytes.encode_s32(base + 68, new_max.y)
-		bytes.encode_s32(base + 72, new_max.z)
-		bytes.encode_s32(base + 76, int(delta.get("flush_epoch", 0)))
+		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 16, old_min, 1 if removed else 0)
+		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 32, old_max, 1 if alive_after else 0)
+		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 48, new_min, SceneVoxelTileCodecScript.flags_to_bits(dirty_flags))
+		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 64, new_max, int(delta.get("flush_epoch", 0)))
 	return bytes
 
 ## 打包对象引用更新Compute Shader的push constant字节
@@ -2024,28 +2091,6 @@ func _update_scene_voxel_tile_buffer_bytes(buffer_name: String, offset: int, byt
 
 	return true
 
-## 确保本地渲染设备已就绪
-
-func _ensure_scene_voxel_tile_rendering_device() -> bool:
-
-	if _rd != null:
-
-		return true
-
-	_rd = RenderingServer.create_local_rendering_device()
-
-	_owns_rendering_device = _rd != null
-
-	if _rd == null:
-
-		return false
-
-	_disposed = false
-
-	_on_device_ready()
-
-	return true
-
 ## 判断场景体素瓦片GPU缓冲是否就绪
 
 func is_scene_voxel_tile_gpu_ready() -> bool:
@@ -2154,6 +2199,14 @@ func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
 			"reuse_count": int(_scene_voxel_tile_gpu_buffer_reuse_counts.get(buffer_name, 0)),
 			"reused_last_upload": _scene_voxel_tile_gpu_last_reused_buffers.has(buffer_name),
 		}
+		if buffer_name == SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER:
+			buffers[buffer_name]["format"] = SCENE_VOXEL_TILE_COMPLEXITY_FIELD_FORMAT
+			buffers[buffer_name]["logical_byte_size"] = int(_scene_voxel_tile_gpu_record_counts.get(buffer_name, 0)) * SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES
+			buffers[buffer_name]["upload_stride_bytes"] = SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES
+		elif buffer_name == SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER:
+			buffers[buffer_name]["format"] = SCENE_VOXEL_TILE_COLLISION_FIELD_FORMAT
+			buffers[buffer_name]["logical_byte_size"] = int(_scene_voxel_tile_gpu_record_counts.get(buffer_name, 0)) * SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES
+			buffers[buffer_name]["upload_stride_bytes"] = SCENE_VOXEL_TILE_COLLISION_FIELD_UPLOAD_STRIDE_BYTES
 
 	var complexity_field_buffer: Dictionary = buffers.get(SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER, {})
 
@@ -2215,6 +2268,11 @@ func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
 		"resident_field_voxel_count": int(complexity_field_buffer.get("record_count", 0)),
 		"complexity_field_voxel_count": int(complexity_field_buffer.get("record_count", 0)),
 		"collision_field_voxel_count": int(collision_field_buffer.get("record_count", 0)),
+		"complexity_field_format": SCENE_VOXEL_TILE_COMPLEXITY_FIELD_FORMAT,
+		"collision_field_format": SCENE_VOXEL_TILE_COLLISION_FIELD_FORMAT,
+		"complexity_field_stride_bytes": SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES,
+		"collision_field_stride_bytes": SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES,
+		"collision_field_upload_stride_bytes": SCENE_VOXEL_TILE_COLLISION_FIELD_UPLOAD_STRIDE_BYTES,
 		"staging_revision": _scene_voxel_tile_staging_revision,
 		"uploaded_revision": _scene_voxel_tile_uploaded_revision,
 		"uploaded_revision_matches_staging": uploaded_revision_matches_staging,
@@ -2438,7 +2496,7 @@ func _scene_voxel_tile_reusable_resident_field_buffers(
 		SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
 		packed_complexity_field,
 		complexity_field_count,
-		SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
+		SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES
 	):
 
 		reusable.append(SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER)
@@ -2447,7 +2505,7 @@ func _scene_voxel_tile_reusable_resident_field_buffers(
 		SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER,
 		packed_collision_field,
 		collision_field_count,
-		SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES
+		SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES
 	):
 
 		reusable.append(SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER)
@@ -2607,12 +2665,33 @@ func _scene_voxel_tile_collision_field_for_upload() -> PackedFloat32Array:
 
 	return _committer._make_sv_collision_field(collision, xz_res, total_slices)
 
+func _scene_voxel_tile_resident_voxel_count_for_upload(
+	complexity_field: PackedFloat32Array,
+	collision_field: PackedFloat32Array
+) -> int:
+	if not _committer._volume.is_empty():
+		var xz_res := int(_committer._volume.get("xz_res", _committer._base_res))
+		var total_slices := int(_committer._volume.get("total_slices", _committer.grid_size.y))
+		var volume_count := maxi(xz_res, 0) * maxi(xz_res, 0) * maxi(total_slices, 0)
+		if volume_count > 0:
+			return volume_count
+	return maxi(
+		SceneVoxelTileCodecScript.infer_complexity_voxel_count(complexity_field),
+		SceneVoxelTileCodecScript.infer_scalar_voxel_count(collision_field)
+	)
+
 ## 将任意值转为打包浮点字段
 
 func _scene_voxel_tile_packed_float_field(value) -> PackedFloat32Array:
 	return SceneVoxelTileCodecScript.packed_float_field(value)
 
 ## 将浮点字段打包为字节
+
+func _pack_scene_voxel_tile_complexity_field_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
+	return SceneVoxelTileCodecScript.pack_complexity_field_rgba8_bytes(values, voxel_count)
+
+func _pack_scene_voxel_tile_collision_field_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
+	return SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(values, voxel_count)
 
 func _pack_scene_voxel_tile_float_field_bytes(values: PackedFloat32Array) -> PackedByteArray:
 	return SceneVoxelTileCodecScript.pack_float_field_bytes(values)
@@ -2621,6 +2700,12 @@ func _pack_scene_voxel_tile_float_field_bytes(values: PackedFloat32Array) -> Pac
 
 func _decode_scene_voxel_tile_float_field_bytes(bytes: PackedByteArray) -> PackedFloat32Array:
 	return SceneVoxelTileCodecScript.decode_float_field_bytes(bytes)
+
+func _decode_scene_voxel_tile_complexity_field_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
+	return SceneVoxelTileCodecScript.decode_complexity_field_rgba8_vec4_bytes(bytes, voxel_count)
+
+func _decode_scene_voxel_tile_collision_field_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
+	return SceneVoxelTileCodecScript.decode_collision_field_r8_word_bytes(bytes, voxel_count)
 
 ## 返回排序后的瓦片ID列表
 
@@ -2639,17 +2724,10 @@ func _pack_scene_voxel_tile_record_bytes(tile_ids: Array[String]) -> PackedByteA
 func _pack_scene_voxel_tile_summary_bytes(tile_ids: Array[String]) -> PackedByteArray:
 	return SceneVoxelTileCodecScript.pack_summary_bytes(tile_ids, _scene_voxel_tiles)
 
-## 打包脏瓦片索引为字节并记录脏ID
+## 刷新脏瓦片ID列表(由 codec 依据各 tile 的 dirty 标志计算)
 
-func _pack_scene_voxel_tile_dirty_index_bytes(tile_ids: Array[String]) -> PackedByteArray:
-	_scene_voxel_tile_gpu_dirty_tile_ids.clear()
-	var packed: Dictionary = SceneVoxelTileCodecScript.pack_dirty_index_bytes(tile_ids, _scene_voxel_tiles)
-	var dirty_tile_ids: Array[String] = []
-	for raw_id in packed.get("dirty_tile_ids", []):
-		dirty_tile_ids.append(str(raw_id))
-	_scene_voxel_tile_gpu_dirty_tile_ids = dirty_tile_ids
-	var bytes: PackedByteArray = packed.get("bytes", PackedByteArray())
-	return bytes
+func _refresh_scene_voxel_tile_dirty_tile_ids(tile_ids: Array[String]) -> void:
+	_scene_voxel_tile_gpu_dirty_tile_ids = SceneVoxelTileCodecScript.dirty_tile_ids(tile_ids, _scene_voxel_tiles)
 
 ## 按稳定哈希打包固定槽位对象引用字节
 
@@ -2764,11 +2842,6 @@ func _pack_scene_voxel_tile_numeric_object_ref_bytes(refs_per_tile: int = SCENE_
 
 	return bytes
 
-## 解码脏索引字节为脏瓦片ID列表
-
-func _decode_scene_voxel_tile_dirty_ids(bytes: PackedByteArray) -> Array[String]:
-	return SceneVoxelTileCodecScript.decode_dirty_ids(bytes, _scene_voxel_tile_gpu_tile_ids)
-
 ## 解码瓦片记录字节为字典数组
 
 func _decode_scene_voxel_tile_records(bytes: PackedByteArray, tile_ids: Array[String]) -> Array[Dictionary]:
@@ -2859,9 +2932,9 @@ func _reduce_scene_voxel_tile_summaries_gpu(
 	var prebound_collision_buffer: RID = buffer_contract.get("collision_field_buffer", buffer_contract.get("collision_buffer", RID()))
 	var use_prebound_complexity_buffer := prebound_complexity_buffer.is_valid() and contract_voxel_count == voxel_count
 	var use_prebound_collision_buffer := prebound_collision_buffer.is_valid() and contract_voxel_count == voxel_count
-	if not use_prebound_complexity_buffer and complexity_field.size() != voxel_count:
+	if not use_prebound_complexity_buffer and SceneVoxelTileCodecScript.infer_complexity_voxel_count(complexity_field, voxel_count) != voxel_count:
 		return {}
-	if not use_prebound_collision_buffer and collision_field.size() != voxel_count:
+	if not use_prebound_collision_buffer and SceneVoxelTileCodecScript.infer_scalar_voxel_count(collision_field, voxel_count) != voxel_count:
 		return {}
 	if not _gpu_ready or _rd == null:
 		return {}
@@ -2884,13 +2957,21 @@ func _reduce_scene_voxel_tile_summaries_gpu(
 	if use_prebound_complexity_buffer:
 		preserved_buffers.append(complexity_buffer)
 	else:
-		complexity_buffer = storage_buffer_from_floats(complexity_field, SCOPE_FRAME, "scene_voxel_tile_summary_complexity_field")
+		complexity_buffer = storage_buffer_from_bytes(
+			_pack_scene_voxel_tile_complexity_field_bytes(complexity_field, voxel_count),
+			SCOPE_FRAME,
+			"scene_voxel_tile_summary_complexity_rgba8"
+		)
 
 	var collision_buffer := prebound_collision_buffer
 	if use_prebound_collision_buffer:
 		preserved_buffers.append(collision_buffer)
 	else:
-		collision_buffer = storage_buffer_from_floats(collision_field, SCOPE_FRAME, "scene_voxel_tile_summary_collision_field")
+		collision_buffer = storage_buffer_from_bytes(
+			_pack_scene_voxel_tile_collision_field_bytes(collision_field, voxel_count),
+			SCOPE_FRAME,
+			"scene_voxel_tile_summary_collision_r8_words"
+		)
 
 	var summary_buffer := storage_buffer_zero(tile_count * SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE * 4, SCOPE_FRAME, "scene_voxel_tile_summary_counts")
 	var compact_buffer := storage_buffer_zero(tile_count * SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE * 4, SCOPE_FRAME, "scene_voxel_tile_summary_compact")
@@ -3077,7 +3158,7 @@ func mark_scene_voxel_tile_dirty(tile_coord: Vector3i, dirty_flags = {}, source_
 
 	_touch_scene_voxel_tile(tile_coord, flags, source_record)
 
-	_committer._mark_legacy_sv_tiles_for_scene_voxel_tile(tile_coord, flags)
+	_mark_legacy_sv_tiles_for_scene_voxel_tile(tile_coord, flags)
 
 ## 标记体素包围盒范围内所有瓦片为脏
 

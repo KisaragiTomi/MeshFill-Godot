@@ -5,7 +5,7 @@ const SPAScript := preload("res://scripts/scene_placement_actor.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
 const DescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
-const CommonAutoVoxelFixture := preload("res://scripts/common_auto_voxel_fixture.gd")
+const UtilsAutoVoxelFixture := preload("res://scripts/utils_auto_voxel_fixture.gd")
 
 var _result_label: Label3D
 var _test_results: Array[Dictionary] = []
@@ -89,7 +89,7 @@ func test_asset_registration() -> Dictionary:
 		spa.dispose()
 		return _fail("asset_registration", "asset count should be 0 before registration")
 
-	var desc := CommonAutoVoxelFixture.make_spa_test_descriptor("test_leaf_a")
+	var desc := UtilsAutoVoxelFixture.make_spa_test_descriptor("test_leaf_a")
 	var profile_id := spa.register_asset(desc)
 	if profile_id < 0:
 		spa.dispose()
@@ -109,7 +109,7 @@ func test_asset_registration() -> Dictionary:
 		spa.dispose()
 		return _fail("asset_registration", "profile_id mismatch: %d vs %d" % [pid, profile_id])
 
-	var desc2 := CommonAutoVoxelFixture.make_spa_test_descriptor("test_leaf_b")
+	var desc2 := UtilsAutoVoxelFixture.make_spa_test_descriptor("test_leaf_b")
 	spa.register_asset(desc2)
 	if spa.get_asset_count() != 2:
 		spa.dispose()
@@ -132,7 +132,7 @@ func test_autoobject_asset_entry() -> Dictionary:
 	var spa := SPAScript.new()
 	spa.initialize(true, true)
 
-	var desc := CommonAutoVoxelFixture.make_spa_test_descriptor("test_autoobject_asset")
+	var desc := UtilsAutoVoxelFixture.make_spa_test_descriptor("test_autoobject_asset")
 	desc.mesh = DescriptorScript.create_sample_autoobject_mesh()
 	var obj := AutoObjectScript.new()
 	obj.configure_auto_object({
@@ -189,13 +189,13 @@ func test_replace_all_autoobject_assets() -> Dictionary:
 	obj_a.configure_auto_object({
 		"id": "test_replace_a",
 		"name": "TestReplaceA",
-		"voxel_descriptor": CommonAutoVoxelFixture.make_spa_test_descriptor("test_replace_a"),
+		"voxel_descriptor": UtilsAutoVoxelFixture.make_spa_test_descriptor("test_replace_a"),
 	})
 	var obj_b := AutoObjectScript.new()
 	obj_b.configure_auto_object({
 		"id": "test_replace_b",
 		"name": "TestReplaceB",
-		"voxel_descriptor": CommonAutoVoxelFixture.make_spa_test_descriptor("test_replace_b"),
+		"voxel_descriptor": UtilsAutoVoxelFixture.make_spa_test_descriptor("test_replace_b"),
 	})
 	var assets := [obj_a, obj_b]
 
@@ -323,7 +323,7 @@ func test_gpu_readiness() -> Dictionary:
 		spa.dispose()
 		return _fail("gpu_readiness", "readiness report.ok should be false with 0 assets")
 
-	var desc := CommonAutoVoxelFixture.make_spa_test_descriptor("test_leaf_gpu")
+	var desc := UtilsAutoVoxelFixture.make_spa_test_descriptor("test_leaf_gpu")
 	spa.register_asset(desc)
 
 	if not spa.is_gpu_ready():
@@ -350,7 +350,7 @@ func test_gpu_readiness() -> Dictionary:
 func test_gpu_buffer_access() -> Dictionary:
 	var spa := SPAScript.new()
 	spa.initialize(true, true)
-	var desc := CommonAutoVoxelFixture.make_spa_test_descriptor("test_leaf_buf")
+	var desc := UtilsAutoVoxelFixture.make_spa_test_descriptor("test_leaf_buf")
 	spa.register_asset(desc)
 
 	var probe_rid := spa.get_probe_records_buffer()
@@ -380,7 +380,7 @@ func test_gpu_buffer_access() -> Dictionary:
 func test_mesh_description() -> Dictionary:
 	var spa := SPAScript.new()
 	spa.initialize(true, true)
-	var desc := CommonAutoVoxelFixture.make_spa_test_descriptor("test_leaf_mesh")
+	var desc := UtilsAutoVoxelFixture.make_spa_test_descriptor("test_leaf_mesh")
 	desc.mesh = DescriptorScript.create_sample_autoobject_mesh()
 	spa.register_asset(desc)
 
@@ -501,7 +501,7 @@ func test_pipeline_error_paths() -> Dictionary:
 		return _fail("pipeline_error_paths", "should fail with no registered assets")
 
 	# register then run with minimal sv — pipeline returns a result dict regardless
-	var desc := CommonAutoVoxelFixture.make_spa_test_descriptor("test_leaf_pipe")
+	var desc := UtilsAutoVoxelFixture.make_spa_test_descriptor("test_leaf_pipe")
 	spa.register_asset(desc)
 	result = spa.run_placement_pipeline({
 		"grid_size": Vector3i(16, 8, 16),
@@ -522,7 +522,7 @@ func test_pipeline_error_paths() -> Dictionary:
 func test_merged_gpu_summary() -> Dictionary:
 	var spa := SPAScript.new()
 	spa.initialize(true, true)
-	var desc := CommonAutoVoxelFixture.make_spa_test_descriptor("test_leaf_merge")
+	var desc := UtilsAutoVoxelFixture.make_spa_test_descriptor("test_leaf_merge")
 	spa.register_asset(desc)
 
 	var summary := spa.get_merged_gpu_buffer_summary()

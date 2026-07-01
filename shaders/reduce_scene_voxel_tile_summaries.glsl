@@ -4,11 +4,11 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityField {
-    vec4 complexity_field[];
+    uint complexity_field_rgba8[];
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
-    float collision_field[];
+    uint collision_field_r8_words[];
 };
 
 layout(set = 0, binding = 2, std430) restrict buffer TileSummaries {
@@ -24,6 +24,21 @@ layout(push_constant, std430) uniform Params {
 
 uint quantize_unit(float value) {
     return uint(round(clamp(value, 0.0, 1.0) * max(params.y, 1.0)));
+}
+
+vec4 unpack_rgba8(uint packed) {
+    return vec4(
+        float((packed >> 24u) & 0xFFu) / 255.0,
+        float((packed >> 16u) & 0xFFu) / 255.0,
+        float((packed >>  8u) & 0xFFu) / 255.0,
+        float((packed >>  0u) & 0xFFu) / 255.0
+    );
+}
+
+float load_r8(uint index) {
+    uint word = collision_field_r8_words[index >> 2u];
+    uint shift = (index & 3u) * 8u;
+    return float((word >> shift) & 0xFFu) / 255.0;
 }
 
 void reduce_value(int tile_index, int count_offset, int min_offset, int max_offset, float value) {
@@ -66,6 +81,6 @@ void main() {
     int tile_z = clamp(z / max(tile_size.z, 1), 0, max(tile_grid.z - 1, 0));
     int tile_index = tile_x + tile_grid.x * (tile_y + tile_grid.y * tile_z);
 
-    reduce_value(tile_index, 0, 1, 2, complexity_field[idx].a);
-    reduce_value(tile_index, 3, 4, 5, collision_field[idx]);
+    reduce_value(tile_index, 0, 1, 2, unpack_rgba8(complexity_field_rgba8[idx]).a);
+    reduce_value(tile_index, 3, 4, 5, load_r8(idx));
 }

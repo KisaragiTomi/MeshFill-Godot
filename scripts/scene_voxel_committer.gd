@@ -12,14 +12,12 @@ const DEFAULT_SCENE_VOXEL_TILE_SIZE := Vector3i(4, 4, 4)
 
 const SCENE_VOXEL_TILE_RECORD_BUFFER := "scene_voxel_tile_records"
 const SCENE_VOXEL_TILE_SUMMARY_BUFFER := "scene_voxel_tile_summaries"
-const SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER := "scene_voxel_tile_dirty_indices"
 const SCENE_VOXEL_TILE_OBJECT_REF_BUFFER := "scene_voxel_tile_object_refs"
 const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER := "scene_voxel_tile_complexity_field"
 const SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER := "scene_voxel_tile_collision_field"
 const SCENE_VOXEL_TILE_GPU_BUFFER_NAMES := [
 	SCENE_VOXEL_TILE_RECORD_BUFFER,
 	SCENE_VOXEL_TILE_SUMMARY_BUFFER,
-	SCENE_VOXEL_TILE_DIRTY_INDEX_BUFFER,
 	SCENE_VOXEL_TILE_OBJECT_REF_BUFFER,
 	SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
 	SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER,
@@ -38,7 +36,12 @@ const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_SCENE_VOXEL_TILE := 0
 const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME := 1
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_LEGACY_HASH := "legacy_stable_hash_debug"
-const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := 16
+const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_FORMAT := "rgba8_unorm"
+const SCENE_VOXEL_TILE_COLLISION_FIELD_FORMAT := "r8_unorm"
+const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES := 4
+const SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES := 1
+const SCENE_VOXEL_TILE_COLLISION_FIELD_UPLOAD_STRIDE_BYTES := 4
+const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES
 const SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE := 6
 const SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE := 8
 const SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE := 1000000.0
@@ -107,14 +110,6 @@ var grid_origin: Vector3  ## World-space origin for voxel index conversion
 ## GPU resources
 
 var _sampler: RID
-
-var _shader_score_scene_voxel_feedback: RID
-
-var _pipeline_score_scene_voxel_feedback: RID
-
-var _shader_reduce_scene_voxel_stats: RID
-
-var _pipeline_reduce_scene_voxel_stats: RID
 
 var _gpu_ready: bool = false
 
@@ -207,7 +202,7 @@ func _init(base_resolution: int, capture_size: float, _enable_gpu: bool = true) 
 
 	_field_builder.setup(self, _base_res)
 
-## 初始化 GPU 资源，加载全部 compute shader 并构建管线，校验资源完整性
+## 初始化 GPU 资源(仅创建 sampler；compute shader 已下沉至 tile/source/collision 三子系统)，校验资源完整性
 func _init_gpu() -> void:
 
 	log_name = "SceneVoxelCommitter"
@@ -220,41 +215,17 @@ func _init_gpu() -> void:
 
 	_sampler = create_linear_sampler()
 
-	_shader_score_scene_voxel_feedback = load_compute_shader("res://shaders/score_scene_voxel_feedback.glsl")
-
-	if _shader_score_scene_voxel_feedback.is_valid():
-
-		_pipeline_score_scene_voxel_feedback = create_compute_pipeline(_shader_score_scene_voxel_feedback)
-
-	_shader_reduce_scene_voxel_stats = load_compute_shader("res://shaders/reduce_scene_voxel_stats.glsl")
-
-	if _shader_reduce_scene_voxel_stats.is_valid():
-
-		_pipeline_reduce_scene_voxel_stats = create_compute_pipeline(_shader_reduce_scene_voxel_stats)
-
 	var missing_gpu_rids: Array[String] = []
 
 	if not _sampler.is_valid():
 
 		missing_gpu_rids.append("sampler")
-	if not _shader_score_scene_voxel_feedback.is_valid():
-
-		missing_gpu_rids.append("shader_score_scene_voxel_feedback")
-	if not _pipeline_score_scene_voxel_feedback.is_valid():
-
-		missing_gpu_rids.append("pipeline_score_scene_voxel_feedback")
-	if not _shader_reduce_scene_voxel_stats.is_valid():
-
-		missing_gpu_rids.append("shader_reduce_scene_voxel_stats")
-	if not _pipeline_reduce_scene_voxel_stats.is_valid():
-
-		missing_gpu_rids.append("pipeline_reduce_scene_voxel_stats")
 
 	_gpu_ready = missing_gpu_rids.is_empty()
 
 	if _gpu_ready:
 
-		print("[SceneVoxelCommitter] GPU compute ready (2 shaders; tile/source/collision → 3 subsystems)")
+		print("[SceneVoxelCommitter] GPU ready (coordinator: sampler only; tile/source/collision → 3 subsystems)")
 
 	else:
 
@@ -294,18 +265,10 @@ func _gpu_dispatch_pipeline(cl: int, pipeline: RID, uniform_set: RID, push: Pack
 	_rd.compute_list_set_push_constant(cl, push, push.size())
 	_rd.compute_list_dispatch(cl, groups.x, groups.y, groups.z)
 
-## 释放所有 GPU shader 与管线资源并重置 GPU 就绪状态
+## 释放 sampler 并重置 GPU 就绪状态(shader/pipeline 已下沉至三子系统)
 func _free_gpu() -> void:
 
 	dispose()
-
-	_pipeline_score_scene_voxel_feedback = RID()
-
-	_shader_score_scene_voxel_feedback = RID()
-
-	_pipeline_reduce_scene_voxel_stats = RID()
-
-	_shader_reduce_scene_voxel_stats = RID()
 
 	_sampler = RID()
 
@@ -377,29 +340,6 @@ func configure_scene_voxel_grid(
 
 		_mark_scene_voxel_tile_staging_dirty("grid_configured")
 
-## 从给定场景体素对象读取网格参数并应用配置
-func configure_from_sv(sv) -> void:
-
-	if sv == null:
-
-		return
-
-	var sv_grid_size: Vector3i = sv.get("grid_size", grid_size) if sv is Dictionary else sv.grid_size
-
-	var sv_voxel_size: Vector3 = sv.get("voxel_size", voxel_size) if sv is Dictionary else sv.voxel_size
-
-	var sv_grid_origin: Vector3 = sv.get("grid_origin", grid_origin) if sv is Dictionary else sv.grid_origin
-
-	configure_scene_voxel_grid(
-
-		sv_grid_size,
-
-		sv_voxel_size,
-
-		sv_grid_origin
-
-	)
-
 ## 根据体积分辨率与切片数应用网格元数据，更新尺寸并标记全量重建
 func _apply_volume_grid_metadata(xz_res: int, total_slices: int, y_min: float = 0.0, y_max: float = 1.0) -> void:
 
@@ -420,23 +360,6 @@ func _apply_volume_grid_metadata(xz_res: int, total_slices: int, y_min: float = 
 	grid_origin = Vector3(origin_x, y_min, origin_z)
 
 	_mark_scene_voxel_full_rebuild_dirty("volume_grid_metadata")
-
-## 创建指定分辨率的空白 R32 碰撞图像
-func _slice_voxel_size_y(slice_index: int = 0) -> float:
-
-	if _volume.is_empty():
-
-		return maxf(voxel_size.y, 0.0001)
-
-	var meta: Array = _volume.get("slice_meta", [])
-
-	if slice_index >= 0 and slice_index < meta.size() and meta[slice_index] is Dictionary:
-
-		var m := meta[slice_index] as Dictionary
-
-		return maxf(float(m.get("y_max", 1.0)) - float(m.get("y_min", 0.0)), 0.0001)
-
-	return maxf(voxel_size.y, 0.0001)
 
 ## 将世界坐标转换为体素索引坐标
 func world_to_voxel(world_pos: Vector3, resolution: int = -1) -> Vector3i:
@@ -483,32 +406,17 @@ func volume_pixel_to_world(voxel_xz: Vector2i, resolution: int = -1, y: float = 
 
 	return VoxelGeneralScript.volume_pixel_to_world(voxel_xz, grid_origin, size, y)
 
-## 静态方法：将体素中心坐标转换为世界坐标（XZ 平面）
-static func voxel_center_to_world_static(voxel_pos: Vector3i, p_grid_origin: Vector3, p_voxel_size: Vector3, y: float = 0.0) -> Vector3:
-
-	return VoxelGeneralScript.voxel_center_to_world_xz(voxel_pos, p_grid_origin, p_voxel_size, y)
-
-## 静态方法：将浮点体素中心坐标转换为世界坐标（XZ 平面）
-static func voxel_float_center_to_world_static(voxel_center: Vector3, p_grid_origin: Vector3, p_voxel_size: Vector3, y: float = 0.0) -> Vector3:
-
-	return VoxelGeneralScript.voxel_float_center_to_world_xz(voxel_center, p_grid_origin, p_voxel_size, y)
-
 ## 判断通道索引是否在有效范围内
 func _is_valid_channel(channel: int) -> bool:
 
 	return VoxelGeneralScript.is_valid_channel(channel)
 
-## 导入掩码图像到指定通道，按复杂度混合进 occupancy
+## 将世界半径（米）换算为基础分辨率下的像素半径；委托 VoxelGeneralScript；由 _record_radius_px 和 apply_voxel_write_spec 调用
 func _radius_to_px(radius_m: float) -> int:
 
 	return VoxelGeneralScript.world_radius_to_texture_radius(radius_m, _capture_size, _base_res)
 
-## 在图像上盖印一个圆形标量区域，失败时回退返回原图
-func _vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
-
-	return VoxelGeneralScript.vector3i_from_value(value, fallback)
-
-## 从碰撞记录中提取本地体素坐标
+## 返回全部已注册体素写入规格的深度副本；由 ScenePlacementActor、调试工具、_rebuild_scene_voxels_from_records 调用
 func get_voxel_write_specs() -> Array[Dictionary]:
 
 	var records: Array[Dictionary] = []
@@ -535,11 +443,6 @@ func get_voxel_write_spec(mesh_id: String) -> Dictionary:
 	var record: Dictionary = _voxel_write_specs[idx]
 
 	return record.duplicate(true)
-
-## 返回已注册体素写入规格的数量
-func get_voxel_write_spec_count() -> int:
-
-	return _voxel_write_specs.size()
 
 ## 从记录中读取有效通道索引，无效返回 -1
 func _record_channel(record: Dictionary) -> int:
@@ -617,46 +520,11 @@ func _slice_indices_for_channel_record(entry: Dictionary, channel: int) -> Array
 
 	return indices
 
-## 注册场景体素 tile 尺寸的项目设置
+## 将 SceneVoxelTile 三维坐标反映射为旧式 SV 瓦片像素坐标并标记为脏(B→A 反向同步)；实现现归 _tile_store，此处为委托桩
 func _mark_legacy_sv_tiles_for_scene_voxel_tile(tile_coord: Vector3i, dirty_flags: Dictionary) -> void:
+	_tile_store._mark_legacy_sv_tiles_for_scene_voxel_tile(tile_coord, dirty_flags)
 
-	if _volume.is_empty():
-
-		return
-
-	var bounds := _scene_voxel_tile_bounds(tile_coord)
-
-	var voxel_min: Vector3i = bounds.voxel_min
-
-	var voxel_max: Vector3i = bounds.voxel_max
-
-	var layer_names: Array[String] = []
-
-	if bool(dirty_flags.get("scene", false)):
-
-		layer_names.append("scene")
-
-	if bool(dirty_flags.get("collision", false)):
-
-		layer_names.append("collision")
-
-	if layer_names.is_empty():
-
-		return
-
-	for slice_index in range(voxel_min.y, voxel_max.y):
-
-		for tile_z in range(int(voxel_min.z / SV_RESIDENT_TILE_SIZE), int((voxel_max.z - 1) / SV_RESIDENT_TILE_SIZE) + 1):
-
-			for tile_x in range(int(voxel_min.x / SV_RESIDENT_TILE_SIZE), int((voxel_max.x - 1) / SV_RESIDENT_TILE_SIZE) + 1):
-
-				var legacy_px := Vector2i(tile_x * SV_RESIDENT_TILE_SIZE, tile_z * SV_RESIDENT_TILE_SIZE)
-
-				for layer in layer_names:
-
-					_mark_sv_tile_dirty(slice_index, legacy_px, layer, SV_RESIDENT_TILE_SIZE, {}, false)
-
-## 重置所有 tile 的摘要统计字段并标记暂存脏
+## 从 _tile_store 读取 GPU 缓冲摘要并将关键字段回写进 _sv 字典；由 _rebuild_sv、get_sv、clear_sv_dirty 调用
 func _publish_scene_voxel_tile_gpu_summary_to_sv() -> void:
 
 	if _sv.is_empty():
@@ -679,7 +547,7 @@ func _publish_scene_voxel_tile_gpu_summary_to_sv() -> void:
 
 	_sv["scene_voxel_tile_summary_gpu_rid"] = get_scene_voxel_tile_summary_gpu_buffer()
 
-## 设置GPU自动上传开关并可选立即上传
+## 构造 SV 瓦片的字符串存储键（slice/x/z/layer/size 组合）；委托 SceneVoxelTileCodecScript；由 _mark_sv_tile_dirty 调用
 func _sv_tile_key(slice_index: int, voxel_px: Vector2i, layer: String = "scene", tile_size: int = SV_RESIDENT_TILE_SIZE) -> String:
 	return SceneVoxelTileCodecScript.sv_tile_key(slice_index, voxel_px, layer, tile_size)
 
@@ -687,7 +555,7 @@ func _sv_tile_key(slice_index: int, voxel_px: Vector2i, layer: String = "scene",
 func _sv_tile_bounds(voxel_px: Vector2i, tile_size: int = SV_RESIDENT_TILE_SIZE) -> Rect2i:
 	return SceneVoxelTileCodecScript.sv_tile_bounds(voxel_px, tile_size)
 
-## 标记指定SV瓦片为脏并可选联动场景体素瓦片
+## 标记指定 SV 像素瓦片为脏；状态(_sv_dirty_tiles)现归 _tile_store 所有，此处为委托桩
 func _mark_sv_tile_dirty(
 	slice_index: int,
 	voxel_xz: Vector2i,
@@ -696,54 +564,7 @@ func _mark_sv_tile_dirty(
 	source_record: Dictionary = {},
 	update_scene_voxel_tile: bool = true
 ) -> void:
-
-	if _volume.is_empty():
-
-		return
-
-	var xz_res := int(_volume.get("xz_res", _base_res))
-
-	if xz_res <= 0:
-
-		return
-
-	var px := Vector2i(
-
-		clampi(voxel_xz.x, 0, xz_res - 1),
-
-		clampi(voxel_xz.y, 0, xz_res - 1)
-
-	)
-
-	var key := _sv_tile_key(slice_index, px, layer, tile_size)
-
-	_sv_dirty_tiles[key] = {
-
-		"tile_id": key,  # dirty tile storage key
-
-		"clip_level": 0,  # clipmap level; 0 in current SV
-
-		"layer": layer,  # scene or collision
-
-		"slice_index": slice_index,  # Y slice
-
-		"tile_size": tile_size,  # voxel tile edge size
-
-		"bounds": _sv_tile_bounds(px, tile_size),  # XZ bounds in volume pixels
-
-		"write_tick": _generation_tick,  # generation tick that dirtied the tile
-
-		"commit_tick": _committed_tick,  # committed SV snapshot epoch; not per-voxel provenance
-
-		"dirty": true,  # needs resident buffer refresh
-
-	}
-
-	if update_scene_voxel_tile:
-
-		_touch_scene_voxel_tile_from_voxel(slice_index, px, {layer: true}, source_record)
-
-	_sv_dirty = true
+	_tile_store._mark_sv_tile_dirty(slice_index, voxel_xz, layer, tile_size, source_record, update_scene_voxel_tile)
 
 ## 将矩形裁剪到基础分辨率范围内
 func _clip_base_rect(rect: Rect2i) -> Rect2i:
@@ -823,14 +644,7 @@ func _mark_sv_rect_dirty(base_rect: Rect2i, slice_indices: Array = [], include_c
 
 					_mark_sv_tile_dirty(si, tile_px, "collision")
 
-## 打包场景体素提交的源流数值
-func _mark_target_guidance_dirty(record: Dictionary) -> void:
-
-	var bounds := _scene_voxel_tile_bounds_from_record(record)
-
-	mark_scene_voxel_tile_bounds_dirty(bounds.voxel_min, bounds.voxel_max, SceneVoxelTargetScript.target_dirty_flags(), {})
-
-## 把线性索引转换为瓦片网格三维坐标
+## 在执行 gc_frame 时临时保留指定 RID 列表不被释放，帧结束后恢复原 scope；由需要跨帧持有中间 GPU 缓冲的 pass 调用
 func _gc_frame_preserving_rids(preserved_rids: Array) -> void:
 	if preserved_rids.is_empty():
 		gc_frame()
@@ -943,7 +757,7 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 	var total_tiles := tile_grid_size.x * tile_grid_size.y * tile_grid_size.z
 
-	var dirty_tiles_snapshot := _sv_dirty_tiles.duplicate(true)
+	var dirty_tiles_snapshot := _tile_store._dirty_sv_pixel_tile_snapshot()
 
 	var dirty_rects_snapshot := _sv_dirty_rects.duplicate(true)
 
@@ -1015,8 +829,13 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 		"complexity_field_buffer_resident": complexity_field_buffer.is_valid(),
 		"complexity_field_buffer_rid": str(complexity_field_buffer) if complexity_field_buffer.is_valid() else "none",
+		"complexity_field_format": SCENE_VOXEL_TILE_COMPLEXITY_FIELD_FORMAT,
+		"complexity_field_stride_bytes": SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES,
 
 		"collision_field_runtime_read_source": "resident_gpu_buffer" if collision_summary_buffer.is_valid() else "cpu_computed",
+		"collision_field_format": SCENE_VOXEL_TILE_COLLISION_FIELD_FORMAT,
+		"collision_field_stride_bytes": SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES,
+		"collision_field_upload_stride_bytes": SCENE_VOXEL_TILE_COLLISION_FIELD_UPLOAD_STRIDE_BYTES,
 
 		"complexity_field_staging_source": "sv_owner_control_snapshot",
 
@@ -1134,11 +953,7 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 	}
 
-	_sv_dirty_tiles.clear()
-
-	_sv_dirty_rects.clear()
-
-	_clear_scene_voxel_tile_dirty_flags()
+	_tile_store.clear_all_dirty()
 
 	_maybe_auto_upload_scene_voxel_tile_buffers("sv_publish")
 
@@ -1212,17 +1027,7 @@ func _stamp_volume_slices(
 
 	return voxel_px
 
-## Apply an actual placed mesh's ISWS (instance stamp write spec) into SceneVoxel and buffers.
-
-## This keeps runtime MeshInstance3D placement and the occupancy/voxel volume in sync.
-
-## 应用实例盖章写入规格并返回提交报告
-func apply_instance_stamp_write_spec(record: Dictionary, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
-	return apply_voxel_write_spec(record, defer_blend, generation_tick)
-
-## Deprecated: use apply_instance_stamp_write_spec() instead.
-
-## 应用单条体素写入规格并返回提交报告
+## 应用单条体素写入规格并返回提交报告(占位/实例盖章写入的统一入口)
 func apply_voxel_write_spec(record: Dictionary, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
 	if record.is_empty():
 		return {}
@@ -1318,10 +1123,6 @@ func apply_voxel_write_spec(record: Dictionary, defer_blend: bool = false, gener
 
 	return rec
 
-## 批量应用体素写入规格并返回综合报告
-func apply_voxel_write_specs(records: Array, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
-	return _apply_voxel_write_spec_batch(records, defer_blend, generation_tick, "apply_voxel_write_specs")
-
 ## GPU-resident entry point: directly ingest accepted placement source buffer from VPG.
 ## Called by VPG/GPUAutoObjectRuntime to hand off accepted placement buffer
 ## as resident scene voxel source candidate records without CPU readback.
@@ -1404,120 +1205,6 @@ func _accepted_placement_source_buffer_blocked_report(
 	report["failed_count"] = maxi(candidate_count, 0)
 	return report
 
-## 批量应用体素写入规格并汇总应用结果与脏诊断报告
-func _apply_voxel_write_spec_batch(records: Array, defer_blend: bool, generation_tick: int, batch_api: String) -> Dictionary:
-	var report := {
-		"ok": true,
-		"reason": "ok",
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"source_write_handoff_mode": "gpu_resident_source_write_buffer",
-		"source_write_batch_api": batch_api,
-		"cpu_pending_source_candidate_bridge": false,
-		"pending_source_candidate_flush_api": "blend_scene_voxels->_flush_pending_scene_voxel_source_candidates",
-		"source_candidate_resolve_api": "resolve_scene_voxel_sources.glsl",
-		"resident_source_write_buffer": true,
-		"resident_source_write_buffer_owner": "scene_voxel_committer",
-		"resident_source_write_buffer_rid": "resident_source_candidate_records",
-		"resident_source_write_buffer_lifetime": "persistent_pass_owned",
-		"resident_source_write_buffer_stride_bytes": SCENE_VOXEL_SOURCE_CANDIDATE_STRIDE_BYTES,
-		"resident_source_write_buffer_range_count": 0,
-		"source_record_count": 0,
-		"applied_count": 0,
-		"failed_count": 0,
-		"apply_results": [],
-	}
-	report.merge(_scene_voxel_source_candidate_resident_diagnostics(false), true)
-	if records.is_empty():
-		report["reason"] = "empty_records"
-		return report
-
-	var staging_epoch_before := _source_staging._scene_voxel_source_candidate_staging_epoch
-
-	var write_tick := begin_generation_tick(generation_tick)
-	for raw_record in records:
-		if not raw_record is Dictionary:
-			report["ok"] = false
-			report["reason"] = "invalid_instance_stamp_write_spec"
-			report["failed_count"] = int(report.get("failed_count", 0)) + 1
-			continue
-		var record := raw_record as Dictionary
-		report["source_record_count"] = int(report.get("source_record_count", 0)) + 1
-		var applied := apply_voxel_write_spec(record, true, write_tick)
-		if applied.is_empty():
-			report["ok"] = false
-			report["reason"] = "scene_voxel_committer_apply_failed"
-			report["failed_count"] = int(report.get("failed_count", 0)) + 1
-			continue
-		(report["apply_results"] as Array).append(applied.duplicate(true))
-		report["applied_count"] = int(report.get("applied_count", 0)) + 1
-
-	if not defer_blend and not _volume.is_empty() and int(report.get("applied_count", 0)) > 0:
-		blend_scene_voxels(write_tick)
-		report.merge(
-			_scene_voxel_source_candidate_resident_diagnostics(
-				_source_staging._scene_voxel_source_candidate_staging_epoch > staging_epoch_before
-			),
-			true
-		)
-
-	return report
-
-## 清空所有体素通道、源流、瓦片表与GPU缓冲并重置tick
-func clear_all() -> void:
-
-	occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
-
-	_volume = {}
-
-	_voxel_write_specs.clear()
-
-	_voxel_write_spec_index.clear()
-
-	_source_staging._scene_source_metadata.clear()
-
-	_clear_scene_voxel_source_streams()
-
-	_sv.clear()
-
-	_sv_dirty_tiles.clear()
-
-	_sv_dirty_rects.clear()
-
-	_tile_store._scene_voxel_tiles.clear()
-
-	_tile_store._scene_voxel_tile_gpu_autoobject_refs.clear()
-
-	_tile_store._scene_voxel_tile_object_ids_debug.clear()
-
-	_tile_store._scene_voxel_tile_object_ref_last_update_stats.clear()
-
-	_tile_store._scene_voxel_tile_object_ref_key_schema = SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_LEGACY_HASH
-
-	_tile_store._scene_voxel_tile_object_ref_numeric_schema_confirmed = false
-
-	_tile_store._scene_voxel_tile_fixed_object_ref_tile_count = 0
-
-	_tile_store._scene_voxel_tile_fixed_object_ref_slot_count = 0
-
-	_tile_store._scene_voxel_tile_object_ref_rebuild_required = false
-
-	_tile_store._scene_voxel_tile_object_ref_overflow_count = 0
-
-	_tile_store._scene_voxel_tile_object_ref_overflow_tile_ids.clear()
-
-	_tile_store._scene_voxel_tile_epoch = 0
-
-	_release_scene_voxel_tile_gpu_buffers()
-
-	_mark_scene_voxel_tile_staging_dirty("clear_all")
-
-	_generation_tick = 1
-
-	_committed_tick = 0
-
-	_sv_dirty = true
-
 ## ─── 3D Voxel Volume ───
 
 ##
@@ -1536,8 +1223,7 @@ var _voxel_write_spec_index: Dictionary = {}
 
 var _sv: Dictionary = {}
 
-var _sv_dirty_tiles: Dictionary = {}
-
+# _sv_dirty_tiles(A 表示)现归 _tile_store 所有，见 scene_voxel_tile_store.gd
 var _sv_dirty_rects: Array[Rect2i] = []
 
 var _generation_tick: int = 1
@@ -1545,80 +1231,6 @@ var _generation_tick: int = 1
 var _committed_tick: int = 0
 
 var _sv_dirty: bool = true
-
-## 根据网格放置信息构建体素写入规格记录
-func _make_mesh_voxel_write_spec(
-	mesh_id: String,
-	mesh_type: String,
-	base_px: Vector2i,
-	world_pos: Vector3,
-	inst_color: Color,
-	inst_complexity: float,
-	inst_channel_specs: Array[Dictionary],
-	instance_scale: float,
-	collision: Array[Dictionary] = []
-) -> Dictionary:
-	var channel_specs: Array[Dictionary] = []
-	for spec in inst_channel_specs:
-		var ch: int = int(spec.get("channel", -1))
-		if not _is_valid_channel(ch):
-			continue
-		var spec_color := SceneVoxelProfileScript.profile_entry_color(spec, inst_color)
-		var spec_complexity := SceneVoxelProfileScript.profile_entry_complexity(spec, spec_color.a)
-		spec_color.a = spec_complexity
-		var y_min := float(spec.get("y_min", 0.0))
-		var y_max := float(spec.get("y_max", y_min + 1.0))
-		if y_max <= y_min:
-			y_max = y_min + 1.0
-		channel_specs.append({
-			"channel": ch,
-			"base_pixel": base_px,
-			"radius": float(spec.get("radius", 0.0)),
-			"radius_px": _radius_to_px(float(spec.get("radius", 0.0))),
-			"y_min": y_min,
-			"y_max": y_max,
-			"color": spec_color,
-			"complexity": spec_complexity,
-			"subdivisions": maxi(int(spec.get("subdivisions", 1)), 1),
-			"slice_indices": [],
-		})
-
-	var record := {
-		"id": mesh_id,
-		"type": mesh_type,
-		"source_voxel_type": "AutoSceneVoxel",
-		"position": world_pos,
-		"base_pixel": base_px,
-		"voxel_xz": base_px,
-		"volume_xz_resolution": _base_res,
-		"scale": Vector3.ONE * instance_scale,
-		"color": inst_color,
-		"complexity": inst_complexity,
-		"collision": collision.duplicate(true),
-	}
-	if not channel_specs.is_empty():
-		var primary := channel_specs[0]
-		record["channel"] = int(primary.channel)
-		record["radius"] = float(primary.radius)
-		record["radius_px"] = int(primary.radius_px)
-		record["y_min"] = float(primary.y_min)
-		record["y_max"] = float(primary.y_max)
-		record["subdivisions"] = int(primary.subdivisions)
-		record["slice_indices"] = (primary.get("slice_indices", []) as Array).duplicate(true)
-	return record
-
-## 注册体素写入规格记录到规格表并返回记录
-func _register_voxel_write_spec(record: Dictionary) -> Dictionary:
-
-	var record_id: String = str(record.get("id", "mesh_%d" % _voxel_write_specs.size()))
-
-	record["id"] = record_id
-
-	_voxel_write_spec_index[record_id] = _voxel_write_specs.size()
-
-	_voxel_write_specs.append(record)
-
-	return record
 
 ## 根据当前体素体积刷新所有写入规格的体素坐标与切片索引
 func _update_voxel_write_specs_for_volume() -> void:
@@ -1862,156 +1474,6 @@ func blend_scene_voxels(tick: int = -1) -> Dictionary:
 
 	return SceneVoxelScript.accepted_map(final_scene_voxels)
 
-## 返回空的反馈评分结果字典
-func _empty_blendsv_feedback_result(target_role: String) -> Dictionary:
-	return {
-		"stage": "post_commit_blendsv_feedback",
-		"target_role": target_role,
-		"score": 0.0,
-		"sample_count": 0,
-		"scene_occupied_count": 0,
-		"target_occupied_count": 0,
-		"overlap_occupied_count": 0,
-	}
-
-## 对比目标体素场评估BlendSV反馈评分
-func score_blendsv_feedback_against_target(
-	target_field: PackedFloat32Array,
-	target_role: String = "TargetSV_B",
-	threshold: float = VOXEL_OCCUPIED_EPSILON
-) -> Dictionary:
-	var result := _score_blendsv_feedback_against_target_gpu(target_field, target_role, threshold)
-
-	if not result.is_empty():
-		return result
-
-	push_error("[SceneVoxelCommitter] BlendSV feedback score compute failed")
-
-	return _empty_blendsv_feedback_result(target_role)
-
-## GPU计算BlendSV与目标体素场的反馈评分
-func _score_blendsv_feedback_against_target_gpu(
-	target_field: PackedFloat32Array,
-	target_role: String,
-	threshold: float = VOXEL_OCCUPIED_EPSILON
-) -> Dictionary:
-	if _volume.is_empty() or target_field.is_empty():
-		return _empty_blendsv_feedback_result(target_role)
-
-	var xz_res := int(_volume.get("xz_res", grid_size.x))
-	var total_slices := int(_volume.get("total_slices", grid_size.y))
-	var voxel_count := xz_res * xz_res * total_slices
-	var sample_count := mini(voxel_count, target_field.size())
-
-	if sample_count <= 0:
-
-		return _empty_blendsv_feedback_result(target_role)
-
-	if not _gpu_ready or _rd == null or not _shader_score_scene_voxel_feedback.is_valid() or not _pipeline_score_scene_voxel_feedback.is_valid():
-
-		return {}
-
-	var complexity_field := _scene_voxel_tile_packed_float_field(_sv.get("complexity_field", PackedFloat32Array())) if not _sv.is_empty() else PackedFloat32Array()
-	var collision_field := _scene_voxel_tile_packed_float_field(_sv.get("collision_field", PackedFloat32Array())) if not _sv.is_empty() else PackedFloat32Array()
-
-	if complexity_field.size() < sample_count:
-
-		complexity_field = _try_make_sv_complexity_field_from_source_streams_gpu(xz_res, total_slices)
-
-	if complexity_field.size() < sample_count:
-
-		return {}
-
-	if collision_field.size() < sample_count:
-		collision_field.resize(sample_count)
-
-	var complexity_buffer := storage_buffer_from_floats(complexity_field, SCOPE_FRAME, "feedback_complexity_field")
-	var collision_buffer := storage_buffer_from_floats(collision_field, SCOPE_FRAME, "feedback_collision_field")
-	var target_buffer := storage_buffer_from_floats(target_field, SCOPE_FRAME, "feedback_target_field")
-	var stats_buffer := storage_buffer_zero(8 * 4, SCOPE_FRAME, "feedback_stats")
-
-	if not complexity_buffer.is_valid() or not collision_buffer.is_valid() or not target_buffer.is_valid() or not stats_buffer.is_valid():
-
-		gc_frame()
-
-		return {}
-
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, complexity_buffer),
-		make_storage_uniform(1, collision_buffer),
-		make_storage_uniform(2, target_buffer),
-		make_storage_uniform(3, stats_buffer),
-	], _shader_score_scene_voxel_feedback, 0, SCOPE_PASS, "score_scene_voxel_feedback")
-
-	if not set0.is_valid():
-
-		gc_frame()
-
-		return {}
-
-	var target_threshold := maxf(threshold, VOXEL_OCCUPIED_EPSILON)
-
-	var push := PackedByteArray()
-
-	push.resize(32)
-	push.encode_s32(0, sample_count)
-	push.encode_s32(4, 0)
-	push.encode_s32(8, 0)
-	push.encode_s32(12, 0)
-	push.encode_float(16, target_threshold)
-	push.encode_float(20, 0.0)
-	push.encode_float(24, 0.0)
-	push.encode_float(28, 0.0)
-
-	if not _gpu_dispatch_and_sync(_pipeline_score_scene_voxel_feedback, [set0], push, Vector3i(1, 1, 1)):
-		gc_frame()
-		return {}
-
-	var stats_bytes := _rd.buffer_get_data(stats_buffer, 0, 8 * 4)
-
-	gc_frame()
-
-	var error_sum := stats_bytes.decode_float(0) if stats_bytes.size() >= 4 else 0.0
-
-	var scene_occupied_count := int(roundf(stats_bytes.decode_float(4) if stats_bytes.size() >= 8 else 0.0))
-
-	var target_occupied_count := int(roundf(stats_bytes.decode_float(8) if stats_bytes.size() >= 12 else 0.0))
-
-	var overlap_occupied_count := int(roundf(stats_bytes.decode_float(12) if stats_bytes.size() >= 16 else 0.0))
-
-	var complexity_fit := clampf(1.0 - error_sum / float(sample_count), 0.0, 1.0)
-
-	var union_count := scene_occupied_count + target_occupied_count - overlap_occupied_count
-
-	var occupancy_iou := 1.0 if union_count <= 0 else float(overlap_occupied_count) / float(union_count)
-
-	var target_recall := 1.0 if target_occupied_count <= 0 else float(overlap_occupied_count) / float(target_occupied_count)
-
-	var result_precision := 1.0 if scene_occupied_count <= 0 else float(overlap_occupied_count) / float(scene_occupied_count)
-
-	var color_fit := 1.0
-
-	var score := clampf(complexity_fit * 0.6 + occupancy_iou * 0.4, 0.0, 1.0)
-
-	return {
-		"stage": "post_commit_blendsv_feedback",
-		"target_role": target_role,
-		"score": score,
-		"complexity_fit": complexity_fit,
-		"occupancy_iou": occupancy_iou,
-		"target_recall": target_recall,
-		"result_precision": result_precision,
-		"color_fit": color_fit,
-		"color_sample_count": 0,
-		"sample_count": sample_count,
-		"scene_occupied_count": scene_occupied_count,
-		"target_occupied_count": target_occupied_count,
-		"overlap_occupied_count": overlap_occupied_count,
-		"gpu_dispatched": true,
-		"cpu_fallback": false,
-		"score_source": "score_scene_voxel_feedback_compute",
-	}
-
 ## 构建体素体积并初始化切片与元数据
 func build_voxel_volume(
 
@@ -2237,81 +1699,33 @@ func _make_occupancy_slice_image_gpu(channel: int, xz_res: int) -> Image:
 
 ## 查询指定世界坐标处的体素信息
 func query_voxel(wx: float, wz: float, height_above_terrain: float) -> Dictionary:
-
 	if _volume.is_empty():
-
 		return {"complexity": 0.0, "color": Color.BLACK}
-
-	var xz_res: int = _volume.xz_res
-
-	var voxel_px := world_to_volume_pixel(Vector3(wx, height_above_terrain, wz), xz_res)
-
-	var px := voxel_px.x
-
-	var pz := voxel_px.y
-
+	var voxel_px := world_to_volume_pixel(Vector3(wx, height_above_terrain, wz), int(_volume.xz_res))
 	var slices: Array = _volume.slices
-
 	var meta: Array = _volume.slice_meta
-
+	var scene_voxels: Dictionary = _volume.get("scene_voxels", {})
 	for i in range(meta.size()):
-
 		var m: Dictionary = meta[i]
-
 		if height_above_terrain >= m.y_min and height_above_terrain < m.y_max:
-
-			var img: Image = slices[i]
-
-			var sample := _sample_scalar_image_pixel_gpu(img, Vector2i(px, pz))
-
+			var sample := _sample_scalar_image_pixel_gpu(slices[i] as Image, voxel_px)
 			if sample.is_empty():
-
 				push_error("[SceneVoxelCommitter] query_voxel GPU sample failed")
-
 				return {"complexity": 0.0, "color": Color.BLACK}
-
 			var v := clampf(float(sample.get("value", 0.0)), 0.0, 1.0)
-
-			var color: Color = m.color
-
-			color.a = v
-
-			var voxel_key := SceneVoxelSourceRecordScript.scene_voxel_key(i, Vector2i(px, pz))
-
-			var scene_voxels: Dictionary = _volume.get("scene_voxels", {})
-
-			if scene_voxels.has(voxel_key):
-
-				var scene_voxel = scene_voxels[voxel_key]
-
-				if scene_voxel is Dictionary:
-
-					var typed_scene_voxel := (scene_voxel as Dictionary).duplicate(true)
-
-					var committed_value := clampf(float(typed_scene_voxel.get("complexity", v)), 0.0, 1.0)
-
-					typed_scene_voxel["complexity"] = committed_value
-
-					typed_scene_voxel = SharedPropertyTypeScript.apply_to_scene_voxel(typed_scene_voxel, typed_scene_voxel, committed_value, SharedPropertyTypeScript.has_collision_fields(typed_scene_voxel))
-
-					typed_scene_voxel["slice_index"] = i
-
-					typed_scene_voxel["voxel_xz"] = Vector2i(px, pz)
-
-					return typed_scene_voxel
-
-			var query_scene_voxel := {
-
-				"complexity": v,
-
-				"slice_index": i,
-
-				"voxel_xz": Vector2i(px, pz),
-
-			}
-
-			return SharedPropertyTypeScript.apply_to_scene_voxel(query_scene_voxel, {"color": color, "complexity": v}, v, false)
-
+			# 命中已提交 scene_voxel 用其字段,否则用采样值 + meta 颜色;统一经 SceneVoxel.accepted_internal 规范化
+			var committed = scene_voxels.get(SceneVoxelSourceRecordScript.scene_voxel_key(i, voxel_px), {})
+			var source: Dictionary
+			if committed is Dictionary and not (committed as Dictionary).is_empty():
+				source = committed
+			else:
+				var color: Color = m.color
+				color.a = v
+				source = {"complexity": v, "color": color}
+			var rec := SceneVoxelScript.accepted_internal(source)
+			rec["slice_index"] = i
+			rec["voxel_xz"] = voxel_px
+			return rec
 	return {"complexity": 0.0, "color": Color.BLACK}
 
 ## 获取已提交的场景体素映射
@@ -2344,21 +1758,6 @@ func get_sv() -> Dictionary:
 
 	return _sv.duplicate(true)
 
-## 标记指定SV瓦片为脏
-func invalidate_sv_tile(slice_index: int, voxel_xz: Vector2i, layer: String = "scene") -> void:
-
-	_mark_sv_tile_dirty(slice_index, voxel_xz, layer)
-
-## 标记指定矩形区域内的SV瓦片为脏
-func invalidate_sv_rect(base_rect: Rect2i, slice_indices: Array = [], include_collision: bool = true) -> void:
-
-	_mark_sv_rect_dirty(base_rect, slice_indices, include_collision)
-
-## 获取脏SV瓦片的快照
-func get_sv_dirty_tiles() -> Dictionary:
-
-	return _sv_dirty_tiles.duplicate(true)
-
 ## 标记指定场景体素瓦片为脏
 func _mark_scene_voxel_full_rebuild_dirty(reason: String = "full_rebuild") -> Dictionary:
 
@@ -2379,11 +1778,7 @@ func _mark_scene_voxel_full_rebuild_dirty(reason: String = "full_rebuild") -> Di
 ## 标记全部场景体素瓦片为脏并返回快照
 func clear_sv_dirty() -> void:
 
-	_sv_dirty_tiles.clear()
-
-	_sv_dirty_rects.clear()
-
-	_clear_scene_voxel_tile_dirty_flags()
+	_tile_store.clear_all_dirty()
 
 	if not _sv.is_empty():
 
@@ -2402,16 +1797,6 @@ func clear_sv_dirty() -> void:
 	_maybe_auto_upload_scene_voxel_tile_buffers("clear_sv_dirty")
 
 	_publish_scene_voxel_tile_gpu_summary_to_sv()
-
-## 获取上次BlendSV提交摘要的副本
-func get_last_blend_scene_voxel_commit_summary() -> Dictionary:
-
-	return _source_staging._last_blend_scene_voxel_commit_summary.duplicate(true)
-
-## 获取上次场景体素源解析摘要的副本
-func get_last_scene_voxel_source_resolve_summary() -> Dictionary:
-
-	return _source_staging._last_scene_voxel_source_resolve_summary.duplicate(true)
 
 ## 获取指定切片与XZ坐标的场景体素记录
 func get_scene_voxel(slice_index: int, voxel_xz: Vector2i) -> Dictionary:
@@ -2434,460 +1819,31 @@ func get_scene_voxel(slice_index: int, voxel_xz: Vector2i) -> Dictionary:
 
 	return {}
 
-## Get a specific Y-slice Image from the volume.
-
-## 获取体积中指定Y切片的体素图像
-func get_voxel_slice(slice_index: int) -> Image:
-
-	if _volume.is_empty() or slice_index < 0 or slice_index >= _volume.total_slices:
-
-		return VoxelGeneralScript.create_r32_image(1)
-
-	return _volume.slices[slice_index]
-
-## Get metadata for a specific slice.
-
-## 获取指定切片的元数据
-func get_voxel_slice_meta(slice_index: int) -> Dictionary:
-
-	if _volume.is_empty() or slice_index < 0 or slice_index >= _volume.total_slices:
-
-		return {}
-
-	return _volume.slice_meta[slice_index]
-
-## Get total number of slices in the volume.
-
-## 获取体积的切片总数
-func get_voxel_slice_count() -> int:
-
-	if _volume.is_empty():
-
-		return 0
-
-	return _volume.total_slices
-
-## Get full volume stats for debug.
-
-## 构造1x1空白RF图像
-func _empty_rf_image() -> Image:
-	return VoxelGeneralScript.create_r32_image(1)
-
-## 归集并校验体积切片图像列表
-func _voxel_reduce_slice_images(xz_res: int, total_slices: int) -> Array:
-	if _volume.is_empty():
-		return []
-
-	var slices: Array = _volume.get("slices", [])
-	if slices.size() != total_slices:
-		return []
-
-	var out: Array = []
-	for raw_img in slices:
-		if not raw_img is Image:
-			return []
-		var img: Image = raw_img
-		if img == null or img.is_empty() or img.get_width() != xz_res or img.get_height() != xz_res:
-			return []
-		out.append(img)
-	return out
-
-## 归集体素碰撞场图像并按分辨率重采样
-func _voxel_reduce_collision_image(xz_res: int) -> Image:
-	var raw_collision = _volume.get("collision_field", null) if not _volume.is_empty() else null
-	var collision_img: Image = null
-	if raw_collision is Image:
-		collision_img = raw_collision
-	if collision_img == null or collision_img.is_empty():
-		collision_img = _resample_collision_field(_collision_field, xz_res)
-	if collision_img == null or collision_img.is_empty():
-		return _empty_rf_image()
-	if collision_img.get_width() != xz_res or collision_img.get_height() != xz_res:
-		collision_img = _resample_collision_field(collision_img, xz_res)
-	if collision_img == null or collision_img.is_empty():
-		return _empty_rf_image()
-	return collision_img
-
-## GPU归约场景体素统计信息
-func _reduce_scene_voxel_stats_gpu(xz_res: int, total_slices: int) -> Dictionary:
-	var voxel_count := xz_res * xz_res * total_slices
-	if voxel_count <= 0:
-		return {}
-	if not _gpu_ready or _rd == null or not _sampler.is_valid():
-		return {}
-	if not _shader_reduce_scene_voxel_stats.is_valid() or not _pipeline_reduce_scene_voxel_stats.is_valid():
-		return {}
-
-	var scene_voxels: Dictionary = _volume.get("scene_voxels", {})
-	var use_complexity_buffer := false
-	var scene_source := "volume_slice_texture"
-	var complexity_field := PackedFloat32Array()
-	if not scene_voxels.is_empty():
-		complexity_field = _scene_voxel_tile_packed_float_field(_sv.get("complexity_field", PackedFloat32Array())) if not _sv.is_empty() else PackedFloat32Array()
-		if complexity_field.size() != voxel_count:
-			complexity_field = _try_make_sv_complexity_field_from_source_streams_gpu(xz_res, total_slices)
-		if complexity_field.size() != voxel_count:
-			return {}
-		use_complexity_buffer = true
-		scene_source = "resident_complexity_field_buffer"
-
-	var scene_slices := _voxel_reduce_slice_images(xz_res, total_slices)
-	if use_complexity_buffer:
-		if scene_slices.is_empty():
-			scene_slices = [_empty_rf_image()]
-	else:
-		if scene_slices.is_empty():
-			return {}
-		complexity_field.resize(1)
-
-	var complexity_buffer := storage_buffer_from_floats(complexity_field, SCOPE_FRAME, "voxel_stats_complexity_field")
-	var scene_tex := upload_texture_3d_from_images(
-		scene_slices,
-		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
-		Image.FORMAT_RF,
-		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
-		SCOPE_FRAME,
-		"voxel_stats_scene_slices"
-	)
-	var collision_img := _voxel_reduce_collision_image(xz_res)
-	var collision_tex := upload_texture_2d(
-		collision_img,
-		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
-		Image.FORMAT_RF,
-		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
-		SCOPE_FRAME,
-		"voxel_stats_collision_field"
-	)
-	var count_slots := total_slices + 1
-	var counts_buffer := storage_buffer_zero(count_slots * 4, SCOPE_FRAME, "voxel_stats_counts")
-	if not complexity_buffer.is_valid() or not scene_tex.is_valid() or not collision_tex.is_valid() or not counts_buffer.is_valid():
-		gc_frame()
-		return {}
-
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, complexity_buffer),
-		make_sampler_uniform(1, _sampler, scene_tex),
-		make_sampler_uniform(2, _sampler, collision_tex),
-		make_storage_uniform(3, counts_buffer),
-	], _shader_reduce_scene_voxel_stats, 0, SCOPE_PASS, "reduce_scene_voxel_stats")
-	if not set0.is_valid():
-		gc_frame()
-		return {}
-
-	var push := PackedByteArray()
-	push.resize(48)
-	push.encode_s32(0, xz_res)
-	push.encode_s32(4, total_slices)
-	push.encode_s32(8, voxel_count)
-	push.encode_s32(12, count_slots)
-	push.encode_s32(16, 1 if use_complexity_buffer else 0)
-	push.encode_s32(20, collision_img.get_width())
-	push.encode_s32(24, collision_img.get_height())
-	push.encode_s32(28, 0)
-	push.encode_float(32, VOXEL_OCCUPIED_EPSILON)
-	push.encode_float(36, 0.0)
-	push.encode_float(40, 0.0)
-	push.encode_float(44, 0.0)
-
-	var groups := dispatch_groups_1d(voxel_count, 64)
-	if not _gpu_dispatch_and_sync(_pipeline_reduce_scene_voxel_stats, [set0], push, groups):
-		gc_frame()
-		return {}
-
-	var count_bytes := _rd.buffer_get_data(counts_buffer, 0, count_slots * 4)
-	gc_frame()
-
-	var per_slice_counts: Array[int] = []
-	var occupied_voxels := 0
-	for i in range(total_slices):
-		var offset := i * 4
-		var count := int(count_bytes.decode_u32(offset)) if offset + 4 <= count_bytes.size() else 0
-		per_slice_counts.append(count)
-		occupied_voxels += count
-	var collision_offset := total_slices * 4
-	var collision_count := int(count_bytes.decode_u32(collision_offset)) if collision_offset + 4 <= count_bytes.size() else 0
-
-	return {
-		"ok": true,
-		"per_slice_counts": per_slice_counts,
-		"occupied_voxels": occupied_voxels,
-		"collision": collision_count,
-		"stats_source": scene_source,
-		"gpu_dispatched": true,
-		"cpu_fallback": false,
-	}
-
-## 获取体素体积统计数据
-func get_voxel_stats() -> Dictionary:
-	if _volume.is_empty():
-		return {}
-
-	var xz_res: int = _volume.xz_res
-	var slices: Array = _volume.get("slices", [])
-	var meta: Array = _volume.get("slice_meta", [])
-	var total_slices := int(_volume.get("total_slices", slices.size()))
-	var reduced := _reduce_scene_voxel_stats_gpu(xz_res, total_slices)
-	if reduced.is_empty():
-		push_error("[SceneVoxelCommitter] Voxel stats GPU reduce failed")
-		return {}
-
-	var per_slice_counts: Array = reduced.get("per_slice_counts", [])
-	var total_voxels := xz_res * xz_res * total_slices
-	var occupied_voxels := int(reduced.get("occupied_voxels", 0))
-	var collision := int(reduced.get("collision", 0))
-	var per_slice: Array[Dictionary] = []
-	var slice_total := xz_res * xz_res
-	for i in range(total_slices):
-		var m: Dictionary = {}
-		if i < meta.size() and meta[i] is Dictionary:
-			m = meta[i]
-		var count := int(per_slice_counts[i]) if i < per_slice_counts.size() else 0
-		per_slice.append({
-			"slice": i,
-			"channel": int(m.get("channel", -1)),
-			"y_range": "%.2f-%.2fm" % [float(m.get("y_min", 0.0)), float(m.get("y_max", 0.0))],
-			"occupied": "%d/%d (%.1f%%)" % [count, slice_total, float(count) / float(slice_total) * 100.0] if slice_total > 0 else "0/0 (0.0%)",
-			"color": m.get("color", Color.WHITE),
-			"complexity": m.get("complexity", 0.0),
-		})
-
-	return {
-
-		"xz_resolution": xz_res,
-
-		"total_slices": total_slices,
-
-		"grid_size": grid_size,
-
-		"voxel_size": voxel_size,
-
-		"grid_origin": grid_origin,
-
-		"voxel_size_xz": "%.2fm" % [voxel_size.x],
-
-		"total_voxels": total_voxels,
-
-		"occupied_voxels": occupied_voxels,
-
-		"collision": collision,
-
-		"collision_field_pct": "%.1f%%" % [float(collision) / float(xz_res * xz_res) * 100.0] if xz_res > 0 else "0%",
-
-		"scene_voxels": int(_volume.get("scene_voxels", {}).size()),
-
-		"sv_tiles": int(get_sv().get("tile_count", 0)),
-
-		"generation_tick": _generation_tick,
-
-		"committed_tick": _committed_tick,
-
-		"occupancy_pct": "%.1f%%" % [float(occupied_voxels) / float(total_voxels) * 100.0] if total_voxels > 0 else "0%",
-
-		"per_slice": per_slice,
-
-		"gpu_dispatched": true,
-
-		"cpu_fallback": false,
-
-		"stats_source": str(reduced.get("stats_source", "unknown")),
-
-	}
-
-## 重置占位、体素体积与相关缓存状态
-func reset_occupancy() -> void:
-
-	occupancy.fill(Color(0.0, 0.0, 0.0, 0.0))
-
-	_collision_field.fill(Color(0.0, 0.0, 0.0, 0.0))
-
-	_volume = {}
-
-	_voxel_write_specs.clear()
-
-	_voxel_write_spec_index.clear()
-
-	_source_staging._scene_source_metadata.clear()
-
-	_clear_scene_voxel_source_streams()
-
-	_sv.clear()
-
-	_sv_dirty_tiles.clear()
-
-	_sv_dirty_rects.clear()
-
-	_tile_store._scene_voxel_tiles.clear()
-
-	_tile_store._scene_voxel_tile_gpu_autoobject_refs.clear()
-
-	_tile_store._scene_voxel_tile_object_ids_debug.clear()
-
-	_tile_store._scene_voxel_tile_object_ref_last_update_stats.clear()
-
-	_tile_store._scene_voxel_tile_object_ref_key_schema = SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_LEGACY_HASH
-
-	_tile_store._scene_voxel_tile_object_ref_numeric_schema_confirmed = false
-
-	_tile_store._scene_voxel_tile_fixed_object_ref_tile_count = 0
-
-	_tile_store._scene_voxel_tile_fixed_object_ref_slot_count = 0
-
-	_tile_store._scene_voxel_tile_object_ref_rebuild_required = false
-
-	_tile_store._scene_voxel_tile_object_ref_overflow_count = 0
-
-	_tile_store._scene_voxel_tile_object_ref_overflow_tile_ids.clear()
-
-	_tile_store._scene_voxel_tile_epoch = 0
-
-	_release_scene_voxel_tile_gpu_buffers()
-
-	_mark_scene_voxel_tile_staging_dirty("reset_occupancy")
-
-	_generation_tick = 1
-
-	_committed_tick = 0
-
-	_sv_dirty = true
-
-## 校验体素体积的通道占用与多样性
-func validate_voxel(params: Dictionary = {}) -> Dictionary:
-	if _volume.is_empty():
-		return {"passed": false, "reason": "No voxel volume built", "metrics": {}}
-
-	var min_channel_occupancy: Dictionary = params.get("min_channel_occupancy", {})
-	var max_channel_occupancy: Dictionary = params.get("max_channel_occupancy", {})
-	var min_diversity: int = params.get("min_diversity_score", 2)
-	var xz_res: int = _volume.xz_res
-	var slices: Array = _volume.get("slices", [])
-	var meta: Array = _volume.get("slice_meta", [])
-	var total_slices := int(_volume.get("total_slices", slices.size()))
-	var reduced := _reduce_scene_voxel_stats_gpu(xz_res, total_slices)
-	if reduced.is_empty():
-		return {
-			"passed": false,
-			"reason": "Voxel validation GPU reduce failed",
-			"metrics": {
-				"gpu_dispatched": false,
-				"cpu_fallback": false,
-			},
-		}
-
-	var channel_counts: Array[int] = []
-	var channel_totals: Array[int] = []
-	for _i in range(CHANNEL_COUNT):
-		channel_counts.append(0)
-		channel_totals.append(0)
-
-	var per_slice_counts: Array = reduced.get("per_slice_counts", [])
-	var slice_total := xz_res * xz_res
-	for i in range(total_slices):
-		var m: Dictionary = {}
-		if i < meta.size() and meta[i] is Dictionary:
-			m = meta[i]
-		var ch := int(m.get("channel", -1))
-		if not VoxelGeneralScript.is_valid_channel(ch):
-			continue
-		channel_totals[ch] += slice_total
-		channel_counts[ch] += int(per_slice_counts[i]) if i < per_slice_counts.size() else 0
-
-	var channel_occ: Array[float] = []
-	for ch in range(CHANNEL_COUNT):
-		var pct := float(channel_counts[ch]) / float(channel_totals[ch]) * 100.0 if channel_totals[ch] > 0 else 0.0
-		channel_occ.append(pct)
-
-	var diversity := 0
-	for pct in channel_occ:
-		if pct > 1.0:
-			diversity += 1
-
-	var metrics := {
-		"channel_occupancy_pct": channel_occ,
-		"channels": range(CHANNEL_COUNT),
-		"diversity_score": diversity,
-		"gpu_dispatched": true,
-		"cpu_fallback": false,
-		"stats_source": str(reduced.get("stats_source", "unknown")),
-	}
-
-	for raw_channel in min_channel_occupancy.keys():
-		var ch := int(raw_channel)
-		var min_occ := float(min_channel_occupancy[raw_channel])
-		var occ := channel_occ[ch] if ch >= 0 and ch < channel_occ.size() else 0.0
-		if occ < min_occ:
-			return {"passed": false, "reason": "Channel %d occupancy too low: %.1f%% < %.1f%%" % [ch, occ, min_occ], "metrics": metrics}
-
-	for raw_channel in max_channel_occupancy.keys():
-		var ch := int(raw_channel)
-		var max_occ := float(max_channel_occupancy[raw_channel])
-		var occ := channel_occ[ch] if ch >= 0 and ch < channel_occ.size() else 0.0
-		if occ > max_occ:
-			return {"passed": false, "reason": "Channel %d occupancy too high: %.1f%% > %.1f%%" % [ch, occ, max_occ], "metrics": metrics}
-
-	if diversity < min_diversity:
-		return {"passed": false, "reason": "Diversity too low: %d < %d channels active" % [diversity, min_diversity], "metrics": metrics}
-
-	return {"passed": true, "reason": "OK", "metrics": metrics}
-
-## Export the volume as a vertical column at pixel (px, pz) for debug.
-
-## Returns Array[Dictionary], one per slice from bottom to top.
-
-## 获取指定XZ像素列的体素记录数组
-func get_voxel_column(px: int, pz: int) -> Array[Dictionary]:
-	var column: Array[Dictionary] = []
-	if _volume.is_empty():
-		return column
-
-	_hydrate_scene_voxel_public_debug_cache_from_committed_buffers()
-
-	var xz_res: int = _volume.xz_res
-	px = clampi(px, 0, xz_res - 1)
-	pz = clampi(pz, 0, xz_res - 1)
-	var slices: Array = _volume.get("slices", [])
-	var meta: Array = _volume.get("slice_meta", [])
-	var scene_voxels: Dictionary = _volume.get("scene_voxels", {})
-
-	for i in range(slices.size()):
-		if i >= meta.size() or not meta[i] is Dictionary:
-			continue
-		var m: Dictionary = meta[i]
-		var entry := {
-			"slice": i,
-			"channel": int(m.get("channel", -1)),
-			"y_min": m.get("y_min", 0.0),
-			"y_max": m.get("y_max", 0.0),
-			"color": m.get("color", Color.TRANSPARENT),
-			"complexity": m.get("complexity", 0.0),
-			"collision": [],
-		}
-		var voxel_key := SceneVoxelSourceRecordScript.scene_voxel_key(i, Vector2i(px, pz))
-		var scene_voxel = scene_voxels.get(voxel_key, {})
-		if scene_voxel is Dictionary:
-			var accepted_fields: Dictionary = SceneVoxelScript.accepted(scene_voxel as Dictionary)
-			if accepted_fields.has("collision"):
-				entry["collision"] = accepted_fields.get("collision", [])
-		column.append(entry)
-
-	return column
-
 ## ===== SceneVoxelTileStore 委托桩(抽出后保持内部/外部调用兼容) =====
+## 将 GPU 归约出的 tile 摘要写入内部状态；由 _rebuild_sv 调用，委托 _tile_store
 func _apply_scene_voxel_tile_reduce_summaries(reduced: Dictionary) -> void:
 	_tile_store._apply_scene_voxel_tile_reduce_summaries(reduced)
+## 清除所有 SceneVoxelTile 的脏标记；由 _rebuild_sv 调用，委托 _tile_store
 func _clear_scene_voxel_tile_dirty_flags() -> void:
 	_tile_store._clear_scene_voxel_tile_dirty_flags()
+## 返回当前脏 SceneVoxelTile 字典快照；由 blend_scene_voxels、_rebuild_sv 调用，委托 _tile_store
 func _dirty_scene_voxel_tile_snapshot() -> Dictionary:
 	return _tile_store._dirty_scene_voxel_tile_snapshot()
+## 从归约摘要构建旧式 tile 摘要字典（供 _sv["tiles"] 使用）；由 _rebuild_sv 调用，委托 _tile_store
 func _legacy_sv_tiles_from_reduce_summaries(reduced: Dictionary,
 	tile_size: int,
 	dirty_tiles_snapshot: Dictionary) -> Dictionary:
 	return _tile_store._legacy_sv_tiles_from_reduce_summaries(reduced, tile_size, dirty_tiles_snapshot)
+## 标记 SceneVoxelTile 暂存为脏，触发下次上传；由 configure_scene_voxel_grid 等调用，委托 _tile_store
 func _mark_scene_voxel_tile_staging_dirty(reason: String = "staging_changed") -> void:
 	_tile_store._mark_scene_voxel_tile_staging_dirty(reason)
+## 若自动上传开启则将暂存 tile 数据上传至 GPU；由 _rebuild_sv、get_sv、clear_sv_dirty 调用，委托 _tile_store
 func _maybe_auto_upload_scene_voxel_tile_buffers(reason: String = "auto_upload") -> void:
 	_tile_store._maybe_auto_upload_scene_voxel_tile_buffers(reason)
+## 重建所有 SceneVoxelTile 的 source_ref 引用表；由 _rebuild_sv 调用，委托 _tile_store
 func _rebuild_scene_voxel_tile_source_refs() -> void:
 	_tile_store._rebuild_scene_voxel_tile_source_refs()
+## GPU 归约体素复杂度/碰撞场为 tile 级别摘要；由 _rebuild_sv 调用，委托 _tile_store
 func _reduce_scene_voxel_tile_summaries_gpu(complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
 	xz_res: int,
@@ -2895,60 +1851,82 @@ func _reduce_scene_voxel_tile_summaries_gpu(complexity_field: PackedFloat32Array
 	tile_size: Vector3i,
 	buffer_contract: Dictionary = {}) -> Dictionary:
 	return _tile_store._reduce_scene_voxel_tile_summaries_gpu(complexity_field, collision_field, xz_res, total_slices, tile_size, buffer_contract)
+## 注册场景体素 tile 尺寸的项目设置项；由 _init 调用，委托 _tile_store
 func _register_scene_voxel_tile_project_settings() -> void:
 	_tile_store._register_scene_voxel_tile_project_settings()
-func _release_scene_voxel_tile_gpu_buffers(preserve_buffer_names: Array = []) -> void:
-	_tile_store._release_scene_voxel_tile_gpu_buffers(preserve_buffer_names)
+## 重置所有 SceneVoxelTile 的摘要字段；由 _rebuild_sv 调用，委托 _tile_store
 func _reset_scene_voxel_tile_summaries() -> void:
 	_tile_store._reset_scene_voxel_tile_summaries()
-func _scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel: Dictionary, dirty_tiles: Dictionary) -> bool:
-	return _tile_store._scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel, dirty_tiles)
+## 判断指定体素是否属于脏 SceneVoxelTile；由 source stream 过滤路径调用，委托 _tile_store
+func _scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel: Dictionary, dirty_scene_voxel_tiles: Dictionary) -> bool:
+	return _tile_store._scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel, dirty_scene_voxel_tiles)
+## 返回 tile 坐标对应的体素包围盒字典；由 _mark_legacy_sv_tiles_for_scene_voxel_tile 调用，委托 _tile_store
 func _scene_voxel_tile_bounds(tile_coord: Vector3i) -> Dictionary:
 	return _tile_store._scene_voxel_tile_bounds(tile_coord)
+## 从写入规格记录推算 SceneVoxelTile 包围盒；由 apply_voxel_write_spec 调用，委托 _tile_store
 func _scene_voxel_tile_bounds_from_record(record: Dictionary) -> Dictionary:
 	return _tile_store._scene_voxel_tile_bounds_from_record(record)
-func _scene_voxel_tile_packed_float_field(value) -> PackedFloat32Array:
-	return _tile_store._scene_voxel_tile_packed_float_field(value)
+## 返回当前 SceneVoxelTile 的三维体素尺寸 Vector3i；由 _rebuild_sv 调用，委托 _tile_store
 func _scene_voxel_tile_size() -> Vector3i:
 	return _tile_store._scene_voxel_tile_size()
+## 标记指定体素所在的 SceneVoxelTile 为脏；由 _mark_sv_tile_dirty 调用，委托 _tile_store
 func _touch_scene_voxel_tile_from_voxel(slice_index: int, voxel_xz: Vector2i, dirty_flags = {}, source_record: Dictionary = {}) -> void:
 	_tile_store._touch_scene_voxel_tile_from_voxel(slice_index, voxel_xz, dirty_flags, source_record)
+## 应用单条 GPU autoobject 脏增量到 tile object_ref 缓冲；由 GPUAutoObjectRuntime 调用，委托 _tile_store
 func apply_gpu_autoobject_dirty_delta(delta: Dictionary, dispatch_object_ref_update: bool = false) -> Dictionary:
 	return _tile_store.apply_gpu_autoobject_dirty_delta(delta, dispatch_object_ref_update)
+## 批量应用 GPU autoobject 脏增量；由 GPUAutoObjectRuntime 批量更新时调用，委托 _tile_store
 func apply_gpu_autoobject_dirty_deltas(deltas: Array) -> Dictionary:
 	return _tile_store.apply_gpu_autoobject_dirty_deltas(deltas)
+## 确保 SceneVoxelTile GPU 缓冲已上传；由渲染前强制同步路径调用，委托 _tile_store
 func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:
 	return _tile_store.ensure_scene_voxel_tile_buffers_uploaded(force)
+## 返回当前脏 SceneVoxelTile 字典（外部查询）；由调试工具、ScenePlacementActor 调用，委托 _tile_store
 func get_dirty_scene_voxel_tiles() -> Dictionary:
 	return _tile_store.get_dirty_scene_voxel_tiles()
+## 返回 GPU autoobject object_ref 分配策略诊断信息；由调试工具调用，委托 _tile_store
 func get_gpu_autoobject_object_ref_range_policy_diagnostics(refs_per_tile: int = SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT) -> Dictionary:
 	return _tile_store.get_gpu_autoobject_object_ref_range_policy_diagnostics(refs_per_tile)
+## 返回指定 tile 坐标的 SceneVoxelTile 数据字典；由外部查询与调试工具调用，委托 _tile_store
 func get_scene_voxel_tile(tile_coord: Vector3i) -> Dictionary:
 	return _tile_store.get_scene_voxel_tile(tile_coord)
+## 返回指定名称的 SceneVoxelTile GPU 缓冲 RID；由 AutoObjectProbePrefilterGPU 等 GPU pass 调用，委托 _tile_store
 func get_scene_voxel_tile_gpu_buffer(buffer_name: String) -> RID:
 	return _tile_store.get_scene_voxel_tile_gpu_buffer(buffer_name)
+## 返回 SceneVoxelTile GPU 缓冲状态摘要字典；由 _publish_scene_voxel_tile_gpu_summary_to_sv 调用，委托 _tile_store
 func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
 	return _tile_store.get_scene_voxel_tile_gpu_buffer_summary()
+## 返回 SceneVoxelTile summary GPU 缓冲 RID；由 _publish_scene_voxel_tile_gpu_summary_to_sv 调用，委托 _tile_store
 func get_scene_voxel_tile_summary_gpu_buffer() -> RID:
 	return _tile_store.get_scene_voxel_tile_summary_gpu_buffer()
+## 返回所有 SceneVoxelTile 字典的副本；由外部查询与调试工具调用，委托 _tile_store
 func get_scene_voxel_tiles() -> Dictionary:
 	return _tile_store.get_scene_voxel_tiles()
+## 查询 SceneVoxelTile GPU 自动上传开关状态；由调试工具调用，委托 _tile_store
 func is_scene_voxel_tile_gpu_auto_upload_enabled() -> bool:
 	return _tile_store.is_scene_voxel_tile_gpu_auto_upload_enabled()
+## 返回 SceneVoxelTile GPU 缓冲是否就绪；由渲染路径前置检查调用，委托 _tile_store
 func is_scene_voxel_tile_gpu_ready() -> bool:
 	return _tile_store.is_scene_voxel_tile_gpu_ready()
+## 将所有 SceneVoxelTile 标记为脏；由 _mark_scene_voxel_full_rebuild_dirty 调用，委托 _tile_store
 func mark_all_scene_voxel_tiles_dirty(dirty_flags = {}, source_record: Dictionary = {}) -> Dictionary:
 	return _tile_store.mark_all_scene_voxel_tiles_dirty(dirty_flags, source_record)
+## 将指定体素包围盒内的 SceneVoxelTile 标记为脏；由 apply_voxel_write_spec 调用，委托 _tile_store
 func mark_scene_voxel_tile_bounds_dirty(voxel_min: Vector3i, voxel_max: Vector3i, dirty_flags = {}, source_record: Dictionary = {}) -> void:
 	_tile_store.mark_scene_voxel_tile_bounds_dirty(voxel_min, voxel_max, dirty_flags, source_record)
+## 标记指定 tile 坐标为脏；由外部直接调用路径使用，委托 _tile_store
 func mark_scene_voxel_tile_dirty(tile_coord: Vector3i, dirty_flags = {}, source_record: Dictionary = {}) -> void:
 	_tile_store.mark_scene_voxel_tile_dirty(tile_coord, dirty_flags, source_record)
+## CPU 回读 SceneVoxelTile GPU 缓冲内容用于调试；由调试工具调用，委托 _tile_store
 func readback_scene_voxel_tile_debug_snapshot() -> Dictionary:
 	return _tile_store.readback_scene_voxel_tile_debug_snapshot()
+## 设置 SceneVoxelTile GPU 自动上传开关并可选立即上传；由外部控制路径调用，委托 _tile_store
 func set_scene_voxel_tile_gpu_auto_upload(enabled: bool, upload_now: bool = false) -> bool:
 	return _tile_store.set_scene_voxel_tile_gpu_auto_upload(enabled, upload_now)
+## 尝试对 CPU 增量列表执行 GPU object_ref update pass；由 GPUAutoObjectRuntime 调用，委托 _tile_store
 func try_apply_gpu_autoobject_object_ref_update_pass(deltas: Array) -> Dictionary:
 	return _tile_store.try_apply_gpu_autoobject_object_ref_update_pass(deltas)
+## 尝试直接从 GPU 缓冲执行 object_ref update pass（零拷贝路径）；由 GPUAutoObjectRuntime 调用，委托 _tile_store
 func try_apply_gpu_autoobject_object_ref_update_pass_from_buffer(dirty_delta_buffer: RID,
 	dirty_delta_count: int,
 	dirty_delta_capacity: int = -1,
@@ -2956,23 +1934,28 @@ func try_apply_gpu_autoobject_object_ref_update_pass_from_buffer(dirty_delta_buf
 	return _tile_store.try_apply_gpu_autoobject_object_ref_update_pass_from_buffer(dirty_delta_buffer, dirty_delta_count, dirty_delta_capacity, dirty_delta_source)
 
 ## ===== SceneVoxelSourceStaging 委托桩(抽出后保持内部/外部调用兼容) =====
+## 清空所有场景体素 source stream；由 _rebuild_scene_voxels_from_records 调用，委托 _source_staging
 func _clear_scene_voxel_source_streams() -> void:
 	_source_staging._clear_scene_voxel_source_streams()
+## 将 GPU payload 数组写入最终 scene_voxels 字典；由 blend_scene_voxels 调用，委托 _source_staging
 func _commit_scene_voxel_sources_from_gpu_payloads(source_keys: Array,
 	payloads: PackedFloat32Array,
 	final_scene_voxels: Dictionary,
 	commit_tick: int) -> void:
 	_source_staging._commit_scene_voxel_sources_from_gpu_payloads(source_keys, payloads, final_scene_voxels, commit_tick)
+## 判断已提交 payload 的 dense GPU projection 是否就绪；由 blend_scene_voxels 调用，委托 _source_staging
 func _committed_scene_voxel_dense_projection_ready(expected_count: int = -1) -> bool:
 	return _source_staging._committed_scene_voxel_dense_projection_ready(expected_count)
-func _dirty_scene_voxel_source_stream_keys(previous_scene_voxels: Dictionary, dirty_tiles: Dictionary) -> Dictionary:
-	return _source_staging._dirty_scene_voxel_source_stream_keys(previous_scene_voxels, dirty_tiles)
+## 返回与脏 tile 相关联的 source stream 键集合；由 blend_scene_voxels 调用，委托 _source_staging
+func _dirty_scene_voxel_source_stream_keys(previous_scene_voxels: Dictionary, dirty_scene_voxel_tiles: Dictionary) -> Dictionary:
+	return _source_staging._dirty_scene_voxel_source_stream_keys(previous_scene_voxels, dirty_scene_voxel_tiles)
+## 将源体素记录入队等待 flush；由 _stamp_volume_slices 调用，委托 _source_staging
 func _enqueue_scene_voxel_source_record(source_voxel: Dictionary, source_tick: int = -1) -> void:
 	_source_staging._enqueue_scene_voxel_source_record(source_voxel, source_tick)
-func _flush_pending_scene_voxel_source_candidates() -> void:
-	_source_staging._flush_pending_scene_voxel_source_candidates()
+## 从已提交 GPU 缓冲回填 CPU 调试缓存 scene_voxels；由 get_scene_voxels、get_scene_voxel 等调用，委托 _source_staging
 func _hydrate_scene_voxel_public_debug_cache_from_committed_buffers() -> bool:
 	return _source_staging._hydrate_scene_voxel_public_debug_cache_from_committed_buffers()
+## 构建场景体素源记录模板字典；由 apply_voxel_write_spec 内的 stamp 路径调用，委托 _source_staging
 func _make_scene_voxel_source_record_template(record: Dictionary,
 
 	layer: Dictionary,
@@ -2981,70 +1964,92 @@ func _make_scene_voxel_source_record_template(record: Dictionary,
 
 	complexity: float) -> Dictionary:
 	return _source_staging._make_scene_voxel_source_record_template(record, layer, voxel_px, complexity)
+## 标记公共调试缓存已从 CPU committed map 更新；由 blend_scene_voxels 调用，委托 _source_staging
 func _mark_scene_voxel_public_debug_cache_from_committed_map(commit_tick: int, expected_count: int) -> void:
 	_source_staging._mark_scene_voxel_public_debug_cache_from_committed_map(commit_tick, expected_count)
+## 将调试缓存摘要回写进 _sv 字典；由 get_sv 调用，委托 _source_staging
 func _publish_scene_voxel_public_debug_cache_summary_to_sv() -> void:
 	_source_staging._publish_scene_voxel_public_debug_cache_summary_to_sv()
+## 释放已提交 payload GPU 缓冲 RID；由 blend_scene_voxels source_resolve 失败路径调用，委托 _source_staging
 func _release_committed_scene_voxel_payload_buffer() -> void:
 	_source_staging._release_committed_scene_voxel_payload_buffer()
-func _release_scene_voxel_source_candidate_resident_buffers() -> void:
-	_source_staging._release_scene_voxel_source_candidate_resident_buffers()
+## 从 source resolve 摘要提取 bridge 诊断字段；由 blend_scene_voxels 构建最终 commit 摘要时调用，委托 _source_staging
 func _scene_voxel_source_bridge_diagnostics_from_summary(summary: Dictionary) -> Dictionary:
 	return _source_staging._scene_voxel_source_bridge_diagnostics_from_summary(summary)
+## 返回 source candidate 常驻缓冲诊断信息；由 source candidate 批量报告路径调用，委托 _source_staging
 func _scene_voxel_source_candidate_resident_diagnostics(staged: bool) -> Dictionary:
 	return _source_staging._scene_voxel_source_candidate_resident_diagnostics(staged)
+## 判断 GPU source resolve dispatch 当前是否被阻断；由 blend_scene_voxels 前置检查调用，委托 _source_staging
 func _scene_voxel_source_resolve_blocked() -> bool:
 	return _source_staging._scene_voxel_source_resolve_blocked()
+## 返回所有激活 source stream 的键值映射；由 blend_scene_voxels 调用，委托 _source_staging
 func _scene_voxel_source_stream_map() -> Dictionary:
 	return _source_staging._scene_voxel_source_stream_map()
+## 从已提交 GPU 缓冲异步暂存公共调试缓存；由 blend_scene_voxels 在 dense projection 就绪时调用，委托 _source_staging
 func _stage_scene_voxel_public_debug_cache_from_committed_buffers(commit_tick: int, expected_count: int) -> void:
 	_source_staging._stage_scene_voxel_public_debug_cache_from_committed_buffers(commit_tick, expected_count)
+## 尝试在 GPU 上归并 source stream 为 commit payload；由 blend_scene_voxels 调用，委托 _source_staging
 func _try_blend_scene_voxel_commit_payloads_gpu(source_keys: Array, _commit_tick: int) -> Dictionary:
 	return _source_staging._try_blend_scene_voxel_commit_payloads_gpu(source_keys, _commit_tick)
+## 从 source stream 在 GPU 上构建 complexity field（PackedFloat32Array）；由 _rebuild_sv 调用，委托 _source_staging
 func _try_make_sv_complexity_field_from_source_streams_gpu(xz_res: int, total_slices: int) -> PackedFloat32Array:
 	return _source_staging._try_make_sv_complexity_field_from_source_streams_gpu(xz_res, total_slices)
+## 同上并返回含 RID 与元数据的完整结果字典；由 _rebuild_sv 调用，委托 _source_staging
 func _try_make_sv_complexity_field_from_source_streams_gpu_result(xz_res: int,
 	total_slices: int,
 	output_buffer_scope: String = "") -> Dictionary:
 	return _source_staging._try_make_sv_complexity_field_from_source_streams_gpu_result(xz_res, total_slices, output_buffer_scope)
-func get_committed_scene_voxel_key_coord_buffer_summary() -> Dictionary:
-	return _source_staging.get_committed_scene_voxel_key_coord_buffer_summary()
+## 返回已提交 payload GPU 缓冲摘要；由 blend_scene_voxels 与 _rebuild_sv 调用，委托 _source_staging
 func get_committed_scene_voxel_payload_buffer_summary() -> Dictionary:
 	return _source_staging.get_committed_scene_voxel_payload_buffer_summary()
+## 将待处理 source candidate 上传到 GPU resident 缓冲（外部手动 flush 入口）；由 ScenePlacementActor 调用，委托 _source_staging
 func stage_pending_scene_voxel_source_candidates_to_resident_buffers() -> Dictionary:
 	return _source_staging.stage_pending_scene_voxel_source_candidates_to_resident_buffers()
 
 ## ===== SceneVoxelCollisionField 委托桩 =====
+## 创建指定分辨率的空白 R32F 碰撞图像；由 _init 初始化碰撞场时调用，委托 _field_builder
 func _create_collision_image(resolution: int) -> Image:
 	return _field_builder._create_collision_image(resolution)
+## 将 collision_layers 盖印到 source 碰撞场并返回更新后的层列表；由 apply_voxel_write_spec 调用，委托 _field_builder
 func _make_source_collision(base_px: Vector2i, collision_layers: Array, rec: Dictionary = {}) -> Array[Dictionary]:
 	return _field_builder._make_source_collision(base_px, collision_layers, rec)
+## 从 collision 字典构建体素级别碰撞 float field；由 _rebuild_sv 调用，委托 _field_builder
 func _make_sv_collision_field(collision: Dictionary, xz_res: int, total_slices: int) -> PackedFloat32Array:
 	return _field_builder._make_sv_collision_field(collision, xz_res, total_slices)
+## CPU 路径：从碰撞记录汇总构建 collision summary float field；由 _rebuild_sv GPU 路径失败时回退调用，委托 _field_builder
 func _make_sv_collision_record_summary_field(collision: Dictionary, xz_res: int, total_slices: int) -> PackedFloat32Array:
 	return _field_builder._make_sv_collision_record_summary_field(collision, xz_res, total_slices)
+## GPU 路径：将碰撞记录摘要上传为 GPU storage buffer；由 _rebuild_sv 调用，委托 _field_builder
 func _make_sv_collision_record_summary_gpu_buffer(collision: Dictionary,
 	xz_res: int,
 	total_slices: int,
 	output_buffer_scope: String) -> Dictionary:
 	return _field_builder._make_sv_collision_record_summary_gpu_buffer(collision, xz_res, total_slices, output_buffer_scope)
+## 从已提交 scene_voxels 重建共享碰撞场缓存；由 blend_scene_voxels 提交完成后调用，委托 _field_builder
 func _rebuild_shared_field_cache_from_scene_voxels(scene_voxels: Dictionary) -> void:
 	_field_builder._rebuild_shared_field_cache_from_scene_voxels(scene_voxels)
+## 将碰撞场图像双线性重采样到目标分辨率；由 build_voxel_volume 等需要分辨率对齐时调用，委托 _field_builder
 func _resample_collision_field(source_img: Image, xz_res: int) -> Image:
 	return _field_builder._resample_collision_field(source_img, xz_res)
+## 在 GPU 上采样 R32F 图像指定像素值；由 query_voxel 调用，委托 _field_builder
 func _sample_scalar_image_pixel_gpu(img: Image, px: Vector2i) -> Dictionary:
 	return _field_builder._sample_scalar_image_pixel_gpu(img, px)
+## GPU 圆形盖印：在多个 slice 上同时写入体素值并收集被修改的体素坐标；由 _stamp_volume_slices 调用，委托 _field_builder
 func _stamp_collect_voxel_disc_gpu(slice_images: Array,
 	center_px: Vector2i,
 	radius_px: int,
 	value: float,
 	compare_mode: int) -> Dictionary:
 	return _field_builder._stamp_collect_voxel_disc_gpu(slice_images, center_px, radius_px, value, compare_mode)
+## 将复杂度值盖印到 occupancy RGBA 图像的指定通道；由 apply_voxel_write_spec 调用，委托 _field_builder
 func _stamp_occupancy_channel(base_px: Vector2i, channel: int, radius_px: int, complexity: float) -> void:
 	_field_builder._stamp_occupancy_channel(base_px, channel, radius_px, complexity)
+## 将 collision_layers 盖印到共享碰撞场并返回成功应用的层列表；由 apply_voxel_write_spec 调用，委托 _field_builder
 func _stamp_shared_field_layers(base_px: Vector2i, field_layers: Array, rec: Dictionary = {}) -> Array[Dictionary]:
 	return _field_builder._stamp_shared_field_layers(base_px, field_layers, rec)
+## 将外部掩码图像导入到指定 occupancy 通道，按 complexity 混合；由 ScenePlacementActor 导入地形遮罩时调用，委托 _field_builder
 func import_mask_channel(channel: int, mask_img: Image, complexity: float = 1.0) -> void:
 	_field_builder.import_mask_channel(channel, mask_img, complexity)
+## 设置地形基础碰撞场（TerrainBase 层）；由 ScenePlacementActor 更新地形时调用，委托 _field_builder
 func set_terrain_base_collision_field(base_collision: Image) -> void:
 	_field_builder.set_terrain_base_collision_field(base_collision)

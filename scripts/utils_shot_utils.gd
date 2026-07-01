@@ -1,7 +1,7 @@
 @tool
 extends RefCounted
 
-const CommonDemoUI := preload("res://scripts/common_demo_ui.gd")
+const UtilsDemoUI := preload("res://scripts/utils_demo_ui.gd")
 
 
 static func ensure_dir(path: String) -> void:
@@ -70,7 +70,7 @@ static func save_viewport_png(
 
 
 static func find_camera_recursive(root_node: Node) -> Camera3D:
-	return CommonDemoUI.find_any_camera(root_node, false, false)
+	return UtilsDemoUI.find_any_camera(root_node, false, false)
 
 
 static func image_diff_ratio(a, b, step: int = 2, threshold: float = 0.08) -> float:
