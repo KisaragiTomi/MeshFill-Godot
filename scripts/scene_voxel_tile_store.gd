@@ -85,7 +85,7 @@ const SceneVoxelSourceRecordScript := preload("res://scripts/scene_voxel_source_
 const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 const SceneVoxelCommitPayloadScript := preload("res://scripts/scene_voxel_commit_payload.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
-const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const SceneVoxelVolumeChannelsScript := preload("res://scripts/scene_voxel_volume_channels.gd")
 const SceneVoxelBrushScript := preload("res://scripts/scene_voxel_brush.gd")
 const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
@@ -1686,10 +1686,10 @@ func _pack_gpu_autoobject_dirty_delta_words(deltas: Array) -> PackedByteArray:
 		bytes.encode_s32(base + 4, object_type)
 		bytes.encode_s32(base + 8, profile_id)
 		bytes.encode_s32(base + 12, generation)
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 16, old_min, 1 if removed else 0)
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 32, old_max, 1 if alive_after else 0)
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 48, new_min, SceneVoxelTileCodecScript.flags_to_bits(dirty_flags))
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 64, new_max, int(delta.get("flush_epoch", 0)))
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 16, old_min, 1 if removed else 0)
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 32, old_max, 1 if alive_after else 0)
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 48, new_min, SceneVoxelTileCodecScript.flags_to_bits(dirty_flags))
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 64, new_max, int(delta.get("flush_epoch", 0)))
 	return bytes
 
 ## 打包对象引用更新Compute Shader的push constant字节

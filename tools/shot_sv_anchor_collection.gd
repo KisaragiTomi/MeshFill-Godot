@@ -3,7 +3,7 @@ extends SceneTree
 const SCENE_PATH := "res://demos/core-sv-anchor-collection/core-sv-anchor-collection.tscn"
 const SHOT_DIR := "res://tools/_shots"
 const SHOT_NAME := "sv_anchor_collection_anchor_arrows.png"
-const UtilsShotUtils := preload("res://scripts/utils_shot_utils.gd")
+const ShotUtils := preload("res://scripts/utils/shot_utils.gd")
 
 
 func _initialize() -> void:
@@ -31,7 +31,7 @@ func _run() -> void:
 
 func _verify_and_capture(inst: Node) -> bool:
 	var ok := true
-	UtilsShotUtils.ensure_dir(SHOT_DIR)
+	ShotUtils.ensure_dir(SHOT_DIR)
 
 	var terrain := inst.find_child("Terrain", true, false)
 	if terrain is MeshInstance3D:
@@ -114,7 +114,7 @@ func _verify_and_capture(inst: Node) -> bool:
 	for i in range(4):
 		await process_frame
 
-	var result := UtilsShotUtils.save_viewport_png(root, "%s/%s" % [SHOT_DIR, SHOT_NAME])
+	var result := ShotUtils.save_viewport_png(root, "%s/%s" % [SHOT_DIR, SHOT_NAME])
 	if not bool(result.get("ok", false)):
 		var err := int(result.get("error", FAILED))
 		print("[ANCHOR_SHOT] FAIL save screenshot err=", error_string(err))

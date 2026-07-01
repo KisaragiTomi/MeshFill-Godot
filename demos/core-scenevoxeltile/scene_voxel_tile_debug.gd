@@ -2,7 +2,7 @@
 extends "res://scripts/core_demo_contract_fixture.gd"
 
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
-const UtilsDemoUI := preload("res://scripts/utils_demo_ui.gd")
+const DemoUI := preload("res://scripts/utils/demo_ui.gd")
 
 # Dirty flag bit constants (mirroring SceneVoxelCommitter)
 const FLAG_SCENE := 1
@@ -479,7 +479,7 @@ func _ray_pick_tile() -> void:
 
 
 func _get_camera() -> Camera3D:
-	return UtilsDemoUI.find_any_camera(self, true, false)
+	return DemoUI.find_any_camera(self, true, false)
 
 
 func _update_selection_display() -> void:

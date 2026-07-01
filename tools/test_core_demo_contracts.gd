@@ -1,7 +1,7 @@
 extends SceneTree
 
-const UtilsTestUtils := preload("res://scripts/utils_test_utils.gd")
-const UtilsDemoContractUtils := preload("res://scripts/utils_demo_contract_utils.gd")
+const TestUtils := preload("res://scripts/utils/test_utils.gd")
+const DemoContractUtils := preload("res://scripts/utils/demo_contract_utils.gd")
 const CORE_DOC_DIR := "res://demos"  # archive: docs migrated into demos/ subdirs
 const DEMO_ROOTS := [
 	"res://demos/core-",
@@ -37,7 +37,7 @@ func _collect_core_demo_entries(entries: Array) -> bool:
 
 	var ok := true
 	for doc_path in docs:
-		var doc_text := UtilsTestUtils.read_text(doc_path)
+		var doc_text := TestUtils.read_text(doc_path)
 		if doc_text.is_empty():
 			push_error("  FAIL: cannot read %s" % doc_path)
 			ok = false
@@ -68,7 +68,7 @@ func _test_demo_links_and_metadata(entries: Array) -> bool:
 		if not FileAccess.file_exists(demo_doc) or not FileAccess.file_exists(scene_path):
 			continue
 
-		var demo_text := UtilsTestUtils.read_text(demo_doc)
+		var demo_text := TestUtils.read_text(demo_doc)
 		if demo_text.find(source_doc) < 0:
 			push_error("  FAIL: %s does not mention source doc %s" % [demo_doc, source_doc])
 			ok = false
@@ -76,8 +76,8 @@ func _test_demo_links_and_metadata(entries: Array) -> bool:
 			push_error("  FAIL: %s does not mention scene %s" % [demo_doc, scene_path])
 			ok = false
 
-		var metadata := UtilsDemoContractUtils.parse_tscn_metadata(UtilsTestUtils.read_text(scene_path))
-		var metadata_sources := UtilsDemoContractUtils.source_docs_from_metadata(metadata)
+		var metadata := DemoContractUtils.parse_tscn_metadata(TestUtils.read_text(scene_path))
+		var metadata_sources := DemoContractUtils.source_docs_from_metadata(metadata)
 		if not metadata_sources.has(source_doc):
 			push_error("  FAIL: %s metadata source docs do not include %s: %s" % [scene_path, source_doc, str(metadata_sources)])
 			ok = false
@@ -198,9 +198,9 @@ func _test_gpu_first_fixture_wording(entries: Array) -> bool:
 		var scene_path: String = entry.get("scene_path", "")
 		var label := "%s -> %s" % [demo_doc, scene_path]
 		if FileAccess.file_exists(demo_doc):
-			ok = _assert_no_cpu_fallback_acceptance(label, UtilsDemoContractUtils.extract_section(UtilsTestUtils.read_text(demo_doc), "## 验收标准"), demo_doc) and ok
+			ok = _assert_no_cpu_fallback_acceptance(label, DemoContractUtils.extract_section(TestUtils.read_text(demo_doc), "## 验收标准"), demo_doc) and ok
 		if FileAccess.file_exists(scene_path):
-			ok = _assert_no_cpu_fallback_acceptance(label, UtilsTestUtils.read_text(scene_path), scene_path) and ok
+			ok = _assert_no_cpu_fallback_acceptance(label, TestUtils.read_text(scene_path), scene_path) and ok
 	if ok:
 		print("  OK: demo fixtures do not accept CPU-only or no-RD CPU fallback paths")
 	return ok
@@ -228,13 +228,13 @@ func _test_gpu_runtime_and_tile_deep_contracts() -> bool:
 	print("[CoreDemoContracts] test_gpu_runtime_and_tile_deep_contracts...")
 	var ok := true
 	var runtime_contract := "\n".join([
-		UtilsTestUtils.read_text("res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"),
-		UtilsTestUtils.read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md"),
-		UtilsTestUtils.read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn"),
-		UtilsTestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md"),
-		UtilsTestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn"),
+		TestUtils.read_text("res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"),
+		TestUtils.read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md"),
+		TestUtils.read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn"),
+		TestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md"),
+		TestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn"),
 	])
-	for missing in UtilsDemoContractUtils.find_missing_terms(runtime_contract, [
+	for missing in DemoContractUtils.find_missing_terms(runtime_contract, [
 		"VPG",
 		"contract validation",
 		"bound",
@@ -251,13 +251,13 @@ func _test_gpu_runtime_and_tile_deep_contracts() -> bool:
 		ok = false
 
 	var tile_contract := "\n".join([
-		UtilsTestUtils.read_text("res://demos/core-scenevoxeltile/scenevoxeltile.md"),
-		UtilsTestUtils.read_text("res://demos/core-scenevoxeltile/core-scenevoxeltile.md"),
-		UtilsTestUtils.read_text("res://demos/core-scenevoxeltile/core-scenevoxeltile.tscn"),
-		UtilsTestUtils.read_text("res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md"),
-		UtilsTestUtils.read_text("res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn"),
+		TestUtils.read_text("res://demos/core-scenevoxeltile/scenevoxeltile.md"),
+		TestUtils.read_text("res://demos/core-scenevoxeltile/core-scenevoxeltile.md"),
+		TestUtils.read_text("res://demos/core-scenevoxeltile/core-scenevoxeltile.tscn"),
+		TestUtils.read_text("res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md"),
+		TestUtils.read_text("res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn"),
 	])
-	for missing in UtilsDemoContractUtils.find_missing_terms(tile_contract, [
+	for missing in DemoContractUtils.find_missing_terms(tile_contract, [
 		"ensure_scene_voxel_tile_buffers_uploaded()",
 		"get_scene_voxel_tile_gpu_buffer_summary()",
 		"readback_scene_voxel_tile_debug_snapshot()",
@@ -285,7 +285,7 @@ func _test_gpu_runtime_and_tile_deep_contracts() -> bool:
 		"res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md",
 		"res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn",
 	]:
-		ok = _assert_no_deep_stale_contract_wording(source, UtilsTestUtils.read_text(source)) and ok
+		ok = _assert_no_deep_stale_contract_wording(source, TestUtils.read_text(source)) and ok
 
 	if ok:
 		print("  OK: VPG buffer binding and SceneVoxelTile resident contracts are explicit")
@@ -307,12 +307,12 @@ func _assert_demo_path(path: String, extension: String, label: String) -> bool:
 
 func _assert_fixture_acceptance(label: String, demo_doc: String, scene_path: String, required_terms: Array) -> bool:
 	var ok := true
-	var demo_acceptance := UtilsDemoContractUtils.extract_section(UtilsTestUtils.read_text(demo_doc), "## 验收标准")
-	var scene_text := UtilsTestUtils.read_text(scene_path)
-	for missing in UtilsDemoContractUtils.find_missing_terms(demo_acceptance, required_terms, false):
+	var demo_acceptance := DemoContractUtils.extract_section(TestUtils.read_text(demo_doc), "## 验收标准")
+	var scene_text := TestUtils.read_text(scene_path)
+	for missing in DemoContractUtils.find_missing_terms(demo_acceptance, required_terms, false):
 		push_error("  FAIL: %s demo acceptance is missing '%s'" % [label, missing])
 		ok = false
-	for missing in UtilsDemoContractUtils.find_missing_terms(scene_text, required_terms, false):
+	for missing in DemoContractUtils.find_missing_terms(scene_text, required_terms, false):
 		push_error("  FAIL: %s scene fixture text is missing '%s'" % [label, missing])
 		ok = false
 	return ok
@@ -320,9 +320,9 @@ func _assert_fixture_acceptance(label: String, demo_doc: String, scene_path: Str
 
 func _assert_gpu_validation_fixture(label: String, demo_doc: String, scene_path: String) -> bool:
 	var ok := true
-	var demo_text := UtilsTestUtils.read_text(demo_doc)
-	var scene_text := UtilsTestUtils.read_text(scene_path)
-	for missing in UtilsDemoContractUtils.find_missing_terms(demo_text, [
+	var demo_text := TestUtils.read_text(demo_doc)
+	var scene_text := TestUtils.read_text(scene_path)
+	for missing in DemoContractUtils.find_missing_terms(demo_text, [
 		"--headless",
 		"--rendering-driver vulkan",
 		"非 headless Vulkan",
@@ -331,7 +331,7 @@ func _assert_gpu_validation_fixture(label: String, demo_doc: String, scene_path:
 	]):
 		push_error("  FAIL: %s demo doc is missing GPU validation wording '%s'" % [label, missing])
 		ok = false
-	for missing in UtilsDemoContractUtils.find_missing_terms(scene_text, ["Vulkan", "RD", "readback"]):
+	for missing in DemoContractUtils.find_missing_terms(scene_text, ["Vulkan", "RD", "readback"]):
 		push_error("  FAIL: %s scene fixture is missing GPU validation label '%s'" % [label, missing])
 		ok = false
 	return ok
@@ -340,7 +340,7 @@ func _assert_gpu_validation_fixture(label: String, demo_doc: String, scene_path:
 func _assert_no_cpu_fallback_acceptance(label: String, text: String, source_path: String) -> bool:
 	var ok := true
 	var lower := text.to_lower()
-	for present in UtilsDemoContractUtils.find_present_terms(text, [
+	for present in DemoContractUtils.find_present_terms(text, [
 		"cpu-only",
 		"cpu only",
 		"cpu fallback",
@@ -352,7 +352,7 @@ func _assert_no_cpu_fallback_acceptance(label: String, text: String, source_path
 	], false):
 		push_error("  FAIL: %s contains forbidden GPU-first fixture wording '%s' in %s" % [label, present, source_path])
 		ok = false
-	if UtilsTestUtils.mentions_no_rd_cpu_success(lower):
+	if TestUtils.mentions_no_rd_cpu_success(lower):
 		push_error("  FAIL: %s treats missing RenderingDevice as a CPU fallback success in %s" % [label, source_path])
 		ok = false
 	return ok
@@ -360,7 +360,7 @@ func _assert_no_cpu_fallback_acceptance(label: String, text: String, source_path
 
 func _assert_no_deep_stale_contract_wording(source_path: String, text: String) -> bool:
 	var ok := true
-	for present in UtilsDemoContractUtils.find_present_terms(text, [
+	for present in DemoContractUtils.find_present_terms(text, [
 		"cpu-only implementation landed",
 		"cpu fallback pass",
 		"`AutoVoxelRuntimeProfileContainer` 尚未实现",
@@ -385,11 +385,11 @@ func _assert_no_deep_stale_contract_wording(source_path: String, text: String) -
 func _assert_runtime_plan_gpu_first_boundaries() -> bool:
 	var ok := true
 	var combined := "\n".join([
-		UtilsTestUtils.read_text("res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"),
-		UtilsTestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md"),
-		UtilsTestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn"),
+		TestUtils.read_text("res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"),
+		TestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md"),
+		TestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn"),
 	])
-	for missing in UtilsDemoContractUtils.find_missing_terms(combined, [
+	for missing in DemoContractUtils.find_missing_terms(combined, [
 		"GPU-first",
 		"CPU 只负责",
 		"staging",
@@ -405,7 +405,7 @@ func _assert_runtime_plan_gpu_first_boundaries() -> bool:
 	]):
 		push_error("  FAIL: runtime plan boundary text is missing '%s'" % missing)
 		ok = false
-	for present in UtilsDemoContractUtils.find_present_terms(combined, [
+	for present in DemoContractUtils.find_present_terms(combined, [
 		"`AutoVoxelRuntimeProfileContainer` 尚未实现",
 		"AutoVoxelRuntimeProfileContainer 尚未实现",
 		"后者仍未实现",
@@ -460,11 +460,11 @@ func _parse_test_scene_entries(source_doc: String, doc_text: String) -> Array:
 		if not line.begins_with("|") or line.find("demos/") < 0:
 			continue
 
-		var targets := UtilsDemoContractUtils.extract_markdown_link_targets(line, [".md", ".tscn"])
+		var targets := DemoContractUtils.extract_markdown_link_targets(line, [".md", ".tscn"])
 		var demo_doc := ""
 		var scene_path := ""
 		for target in targets:
-			var resolved := UtilsDemoContractUtils.resolve_relative(source_doc, target)
+			var resolved := DemoContractUtils.resolve_relative(source_doc, target)
 			if resolved.ends_with(".md") and resolved.find("/demos/") >= 0:
 				demo_doc = resolved
 			elif resolved.ends_with(".tscn") and resolved.find("/demos/") >= 0:

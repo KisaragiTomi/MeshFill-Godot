@@ -22,7 +22,7 @@ const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profil
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
-const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 const TILE_SIZE := 8
 const MAX_ASSETS := 256
@@ -741,7 +741,7 @@ func _pack_all_probes(
 		var wc := _probe_metric_weights(p)
 
 		var base := i * 32
-		UtilsBufferUtils.encode_vec4(probe_bytes, base + 0, offset, wc.z) # w_collision
+		BufferUtils.encode_vec4(probe_bytes, base + 0, offset, wc.z) # w_collision
 		probe_bytes.encode_u32(base + 16, rgba8)        # floatBitsToUint on GPU side
 		probe_bytes.encode_float(base + 20, e_coll)
 		probe_bytes.encode_float(base + 24, wc.x)      # w_color
@@ -852,13 +852,13 @@ func _decode_results(
 ) -> Dictionary:
 	# Decode anchors
 	var anchors: Array[Dictionary] = []
-	var anchor_stride_bytes := UtilsBufferUtils.IVEC4_BYTES # uvec4(x, y, z, reserved)
+	var anchor_stride_bytes := BufferUtils.IVEC4_BYTES # uvec4(x, y, z, reserved)
 	var available_anchor_bytes := mini(anchors_bytes.size(), anchor_count * anchor_stride_bytes)
 	available_anchor_bytes -= available_anchor_bytes % anchor_stride_bytes
 	var available_anchor_count := mini(anchor_count, int(available_anchor_bytes / anchor_stride_bytes))
 	for i in range(available_anchor_count):
 		var base := i * anchor_stride_bytes
-		var voxel_pos := UtilsBufferUtils.decode_vec3i4(anchors_bytes, base)
+		var voxel_pos := BufferUtils.decode_vec3i4(anchors_bytes, base)
 		anchors.append({
 			"id": i,                         # debug anchor index
 			"voxel_pos": voxel_pos,          # position-only anchor voxel

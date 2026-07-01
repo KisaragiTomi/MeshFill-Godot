@@ -5,8 +5,8 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 # and displays them with visual markers for inspection.
 
 const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
-const UtilsDemoUI := preload("res://scripts/utils_demo_ui.gd")
-const UtilsDemoAssets := preload("res://scripts/utils_demo_assets.gd")
+const DemoUI := preload("res://scripts/utils/demo_ui.gd")
+const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
 
 var _entries: Array[Dictionary] = []
 var _selected_idx := -1
@@ -64,11 +64,11 @@ func _setup_materials() -> void:
 
 
 func _setup_hud() -> void:
-	_hud_label = UtilsDemoUI.setup_hud_label(self)
+	_hud_label = DemoUI.setup_hud_label(self)
 
 
 func _load_and_display() -> void:
-	_entries = UtilsDemoAssets.load_mesh_entries()
+	_entries = DemoAssets.load_mesh_entries()
 	_entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return float(a.volume) < float(b.volume))
 
@@ -101,7 +101,7 @@ func _load_and_display() -> void:
 
 
 func _frame_camera(total_width: float) -> void:
-	var cam := UtilsDemoUI.find_camera(self, "DemoSetup/FlyCamera", "", true, false)
+	var cam := DemoUI.find_camera(self, "DemoSetup/FlyCamera", "", true, false)
 	if cam == null:
 		return
 	var cx := total_width * 0.5

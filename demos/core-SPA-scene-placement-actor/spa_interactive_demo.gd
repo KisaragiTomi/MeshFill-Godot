@@ -28,9 +28,9 @@ const GPUAutoObjectRuntimeScript := preload("res://scripts/gpu_autoobject_runtim
 const VoxelPickGPUScript := preload("res://scripts/voxel_pick_gpu.gd")
 const VoxelDisplay := preload("res://scripts/voxel_display.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
-const UtilsDemoAssets := preload("res://scripts/utils_demo_assets.gd")
-const UtilsDemoUI := preload("res://scripts/utils_demo_ui.gd")
-const UtilsTargetSVLookup := preload("res://scripts/utils_targetsv_lookup.gd")
+const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
+const DemoUI := preload("res://scripts/utils/demo_ui.gd")
+const TargetSVLookup := preload("res://scripts/utils/target_sv_lookup.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 const SELECT_COLOR := Color(1.0, 0.85, 0.0, 1.0)
 
@@ -785,7 +785,7 @@ func _register_all_assets() -> void:
 	_spa.clear_assets()
 	var t0 := Time.get_ticks_msec()
 	for i in range(_meshes.size()):
-		var color := UtilsDemoAssets.asset_color(i)
+		var color := DemoAssets.asset_color(i)
 		var descriptor := AutoObjectScript.create_voxel_descriptor(
 			color, color.a, 1.0,
 			[{"shape": "cylinder", "radius": 1.0, "y_min": 0.0, "y_max": 2.0}])
@@ -793,7 +793,7 @@ func _register_all_assets() -> void:
 		var pid: int = _spa.register_asset(descriptor, _meshes[i])
 		_profile_ids.append(pid)
 		print("[SPA Demo] Registered [%d] %s → profile_id=%d" % [
-			i, UtilsDemoAssets.asset_name(i, "?"), pid])
+			i, DemoAssets.asset_name(i, "?"), pid])
 	_register_time_ms = float(Time.get_ticks_msec() - t0)
 
 
@@ -1332,7 +1332,7 @@ func _find_targetsv_setup() -> Node:
 	if not is_inside_tree():
 		return null
 	var root := get_tree().edited_scene_root if get_tree() != null else null
-	return UtilsTargetSVLookup.find_setup(self, root, true, false, true)
+	return TargetSVLookup.find_setup(self, root, true, false, true)
 
 
 ## 按网格索引选中GPU AutoObject（API入口）
@@ -1457,7 +1457,7 @@ func _safe_asset_index(object_index: int) -> int:
 
 ## 根据资产索引获取GPU点云颜色
 func _autoobject_color(asset_idx: int) -> Color:
-	var color := UtilsDemoAssets.wire_color(asset_idx % maxi(UtilsDemoAssets.count(), 1))
+	var color := DemoAssets.wire_color(asset_idx % maxi(DemoAssets.count(), 1))
 	color.a = 0.96
 	return color
 
@@ -2063,7 +2063,7 @@ func _make_autoobject_selection_record(object_index: int, screen_score: float) -
 		"object_index": object_index,
 		"object_id": _autoobject_id_for_index(object_index),
 		"asset_index": asset_idx,
-		"asset_name": UtilsDemoAssets.asset_name(asset_idx, "unknown"),
+		"asset_name": DemoAssets.asset_name(asset_idx, "unknown"),
 		"profile_id": _profile_ids[asset_idx] if asset_idx >= 0 and asset_idx < _profile_ids.size() else -1,
 		"position": _autoobject_positions[object_index],
 		"voxel_min": voxel_min,
@@ -2225,7 +2225,7 @@ func _clear_autoobject_overlay_refs() -> void:
 ## 从配置路径加载网格资源
 func _load_meshes() -> void:
 	_meshes.clear()
-	for path in UtilsDemoAssets.geo_paths():
+	for path in DemoAssets.geo_paths():
 		var m := AutoAssetFactory.load_mesh(path)
 		if m == null:
 			m = BoxMesh.new()
@@ -2404,7 +2404,7 @@ func _print_gpu_report() -> void:
 
 ## 创建HUD画布和标签
 func _setup_hud() -> void:
-	_hud_label = UtilsDemoUI.setup_hud_label(self)
+	_hud_label = DemoUI.setup_hud_label(self)
 
 
 ## 更新HUD信息显示（GPU状态、选中信息等）
@@ -2515,7 +2515,7 @@ func _append_active_selection_hud_lines(lines: Array[String]) -> void:
 
 ## 将相机定位到地形框景位置
 func _frame_camera() -> void:
-	var cam := UtilsDemoUI.find_camera(self, "", "FlyCamera", false, true)
+	var cam := DemoUI.find_camera(self, "", "FlyCamera", false, true)
 	if cam == null:
 		return
 	var half := TerrainConfigScript.CAPTURE_SIZE * 0.5
@@ -2530,7 +2530,7 @@ func _frame_camera() -> void:
 
 ## 获取当前激活的Camera3D
 func _get_camera() -> Camera3D:
-	return UtilsDemoUI.find_camera(self, "", "FlyCamera", true, true)
+	return DemoUI.find_camera(self, "", "FlyCamera", true, true)
 
 
 ## 每帧更新（编辑器模式占位，当前无 per-frame 同步需求）

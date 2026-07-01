@@ -13,9 +13,9 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 const ObjectVolumeScoreGpuScript := preload("res://scripts/object_volume_score_gpu.gd")
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const VoxelPlacementOutputScript := preload("res://scripts/voxel_placement_output.gd")
-const UtilsDemoAssets := preload("res://scripts/utils_demo_assets.gd")
-const UtilsDemoUI := preload("res://scripts/utils_demo_ui.gd")
-const UtilsVolumeScore3D := preload("res://scripts/utils_volume_score_3d.gd")
+const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
+const DemoUI := preload("res://scripts/utils/demo_ui.gd")
+const VolumeScore3D := preload("res://scripts/utils/volume_score_3d.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 
 const VOXEL_DISPLAY_GPU_OBJECTS := SPAEditorContract.VOXEL_DISPLAY_GPU_OBJECTS
@@ -480,7 +480,7 @@ func _notification(what: int) -> void:
 
 
 # --- Asset Loading & Voxelization -----------------------------------------
-# 遍历 UtilsDemoAssets 中的每个 FBX 网格，通过 GPU 体素化生成 footprint，
+# 遍历 DemoAssets 中的每个 FBX 网格，通过 GPU 体素化生成 footprint，
 # 同时预烘每个旋转槽的有效 sample records，用于后续评分。
 
 func _load_and_voxelize() -> void:
@@ -488,7 +488,7 @@ func _load_and_voxelize() -> void:
 		_build_scene_fields()
 	_assets.clear()
 	_footprints.clear()
-	var loaded := UtilsVolumeScore3D.voxelize_utils_assets(
+	var loaded := VolumeScore3D.voxelize_demo_assets(
 		voxel_grid_count,
 		true,
 		_scene_fields.get("voxel_size", Vector3.ZERO)
@@ -527,9 +527,9 @@ func _load_and_voxelize() -> void:
 #   target 带内 (min_above..max_above) → 有淡绿色目标权重，离地面越近权重越高
 
 func _build_scene_fields() -> void:
-	_terrain_height = UtilsVolumeScore3D.sample_terrain_height_for_node(
+	_terrain_height = VolumeScore3D.sample_terrain_height_for_node(
 		self, grid_resolution, grid_resolution)
-	_scene_fields = UtilsVolumeScore3D.build_scene_fields(
+	_scene_fields = VolumeScore3D.build_scene_fields(
 		grid_resolution,
 		grid_height_slices,
 		_terrain_height,
@@ -548,8 +548,8 @@ func _build_scene_fields() -> void:
 # 每个锚点的 Y 坐标 = 地形高度 + 1 层体素，即紧贴地面以上。
 
 func _generate_anchors() -> void:
-	_anchors = UtilsVolumeScore3D.generate_anchors(_scene_fields, _terrain_height, anchor_spacing)
-	_anchor_world_positions = UtilsVolumeScore3D.anchor_world_positions(
+	_anchors = VolumeScore3D.generate_anchors(_scene_fields, _terrain_height, anchor_spacing)
+	_anchor_world_positions = VolumeScore3D.anchor_world_positions(
 		_scene_fields, _terrain_height, _anchors)
 	if _anchors.is_empty():
 		_total_anchors = 0
@@ -854,7 +854,7 @@ func _autoobject_config_for_winner(
 		"object_type": "object",
 		"auto_source": "volume_score_anchor_winner",
 		"source_voxel_type": "AutoSceneVoxel",
-		"source_mesh_path": UtilsDemoAssets.geo_path(asset_index),
+		"source_mesh_path": DemoAssets.geo_path(asset_index),
 		"groups": [VOLUME_SCORE_WINNER_GROUP],
 		"selectable": true,
 		"color": color,
@@ -993,7 +993,7 @@ func _sample_bounds_to_anchor_world_frame(info: Dictionary) -> Dictionary:
 
 
 func _frame_camera() -> void:
-	var cam := UtilsDemoUI.find_camera(self, "DemoSetup/FlyCamera", "", false, false)
+	var cam := DemoUI.find_camera(self, "DemoSetup/FlyCamera", "", false, false)
 	if cam == null:
 		return
 	if not cam.is_inside_tree():
@@ -1009,7 +1009,7 @@ func _frame_camera() -> void:
 # 以及当前选中锚点的 Top-K 详情。由 _update_hud() 在每次管线步骤后刷新。
 
 func _setup_hud() -> void:
-	_hud_label = UtilsDemoUI.setup_hud_label(self)
+	_hud_label = DemoUI.setup_hud_label(self)
 
 
 func _update_hud() -> void:

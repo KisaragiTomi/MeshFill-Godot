@@ -204,6 +204,7 @@ const SCENE_VOXEL_SOURCE_WRITE_DIAGNOSTIC_KEYS := [
 ## --- 复制自 generator 的辅助 ---
 
 
+## 按已知 meta key 依次在配置字典中查找已有的 voxel write spec 记录，返回第一个非空记录的副本；找不到则返回空字典。
 static func _get_config_voxel_write_spec(config: Dictionary) -> Dictionary:
 	for key in AutoObject.voxel_write_spec_meta_keys():
 		var raw_record = config.get(key, {})
@@ -216,6 +217,7 @@ static func _get_config_voxel_write_spec(config: Dictionary) -> Dictionary:
 
 
 ## --- 迁移自 generator 的 writeback 函数 ---
+## 探测 runtime_provider 支持的写回 API：优先批处理命令队列，其次 spawn_from_bounds，再次 spawn，都不支持则返回 "none"。
 static func _runtime_writeback_spawn_api(runtime_provider: Object) -> String:
 	if runtime_provider == null:
 		return "none"
@@ -229,6 +231,7 @@ static func _runtime_writeback_spawn_api(runtime_provider: Object) -> String:
 
 
 
+## 根据 spawn_api 与是否启用，映射出对应的写回模式标签字符串。
 static func _runtime_writeback_mode_from_api(spawn_api: String, enabled: bool) -> String:
 	if not enabled:
 		return "not_requested"
@@ -238,6 +241,7 @@ static func _runtime_writeback_mode_from_api(spawn_api: String, enabled: bool) -
 
 
 
+## 将 flush_result 中 GPU 常驻分配器写回相关的字段拷贝进 report，并在 shader 未消费记录时推导 blocked_reason。
 static func _copy_gpu_autoobject_runtime_flush_contract(report: Dictionary, flush_result: Dictionary) -> void:
 	if flush_result.is_empty():
 		return

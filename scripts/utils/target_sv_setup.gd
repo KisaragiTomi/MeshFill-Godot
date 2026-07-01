@@ -1,5 +1,5 @@
 @tool
-class_name UtilsTargetSVSetup
+class_name TargetSVSetup
 extends Node3D
 
 ## Preloads TargetSV data from res://assets/target_sv/ at scene init.
@@ -60,7 +60,7 @@ func _ensure_loaded() -> void:
 	_visual_bytes = TargetSVLoaderScript.visual_bytes()
 	_collision_bytes = TargetSVLoaderScript.collision_bytes()
 	if _metadata.is_empty():
-		push_warning("[UtilsTargetSVSetup] TargetSV metadata not found")
+		push_warning("[TargetSVSetup] TargetSV metadata not found")
 		return
 	_texture_size = int(_metadata.get("texture_size", 256))
 	_slice_count = int(_metadata.get("slice_count", 16))
@@ -84,14 +84,14 @@ func rebuild_display() -> void:
 	if not _ready_ok or not display_visible:
 		return
 	if not _prepare_display_fields():
-		push_warning("[UtilsTargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
+		push_warning("[TargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
 		return
 
 	var node := _build_gpu_display() if prefer_gpu_display else null
 	if node == null:
 		node = _build_cpu_display()
 	if node == null:
-		push_warning("[UtilsTargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
+		push_warning("[TargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
 		return
 	node.visible = display_visible
 	node.add_to_group(GENERATED_GROUP)

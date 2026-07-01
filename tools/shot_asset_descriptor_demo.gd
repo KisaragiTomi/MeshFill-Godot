@@ -2,7 +2,7 @@ extends SceneTree
 
 const SCENE_PATH := "res://demos/asset-descriptor-demo/asset-descriptor-demo.tscn"
 const SHOT_DIR := "res://tools/_shots"
-const UtilsShotUtils := preload("res://scripts/utils_shot_utils.gd")
+const ShotUtils := preload("res://scripts/utils/shot_utils.gd")
 
 
 func _initialize() -> void:
@@ -32,7 +32,7 @@ func _run() -> void:
 func _capture_and_check(inst: Node) -> bool:
 	var ok := true
 
-	UtilsShotUtils.ensure_dir(SHOT_DIR)
+	ShotUtils.ensure_dir(SHOT_DIR)
 
 	# Force camera to look at the scene from above
 	var cam := root.get_node_or_null("AssetDescriptorDemo/DemoSetup/FlyCamera") as Camera3D
@@ -130,7 +130,7 @@ func _capture_and_check(inst: Node) -> bool:
 
 
 func _shot(tag: String) -> bool:
-	var result := UtilsShotUtils.save_viewport_png(root, "%s/%s.png" % [SHOT_DIR, tag], true)
+	var result := ShotUtils.save_viewport_png(root, "%s/%s.png" % [SHOT_DIR, tag], true)
 	if bool(result.get("skipped", false)):
 		print("[SHOT] SKIP ", tag, " ", result.get("reason", "image unavailable"))
 		return true

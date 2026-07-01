@@ -4,7 +4,7 @@
 [ext_resource type="Script" path="res://scripts/non_headless_scene_guard.gd" id="2_guard"]
 [ext_resource type="Mesh" path="res://assets/terrain/utils_terrain_mesh.res" id="3_terrain"]
 [ext_resource type="Material" path="res://assets/terrain/utils_terrain_material.tres" id="4_terrain_mat"]
-[ext_resource type="Script" path="res://scripts/utils_targetsv_setup.gd" id="5_tsv"]
+[ext_resource type="Script" path="res://scripts/utils/target_sv_setup.gd" id="5_tsv"]
 
 [sub_resource type="Environment" id="env"]
 background_mode = 1

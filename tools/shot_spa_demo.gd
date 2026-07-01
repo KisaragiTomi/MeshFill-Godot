@@ -2,7 +2,7 @@ extends SceneTree
 
 const SETUP_PATH := "res://demos/utils_demo_setup.tscn"
 const SHOT_DIR := "res://_shots"
-const UtilsShotUtils := preload("res://scripts/utils_shot_utils.gd")
+const ShotUtils := preload("res://scripts/utils/shot_utils.gd")
 
 func _initialize() -> void:
 	_run()
@@ -23,7 +23,7 @@ func _run() -> void:
 		var mi := terrain as MeshInstance3D
 		print("[SHOT] terrain aabb=", mi.get_aabb(), " mesh=", mi.mesh != null)
 
-	UtilsShotUtils.ensure_dir(SHOT_DIR)
+	ShotUtils.ensure_dir(SHOT_DIR)
 	var cam := inst.find_child("FlyCamera", true, false) as Camera3D
 
 	for i in range(60):
@@ -41,7 +41,7 @@ func _run() -> void:
 	await process_frame
 	await process_frame
 
-	var shot1 := UtilsShotUtils.save_viewport_png(root, SHOT_DIR + "/spa_cam_default.png", true)
+	var shot1 := ShotUtils.save_viewport_png(root, SHOT_DIR + "/spa_cam_default.png", true)
 	if bool(shot1.get("ok", false)) and not bool(shot1.get("skipped", false)):
 		print("[SHOT] saved default view: cam=", cam.global_position if cam else "null")
 
@@ -56,7 +56,7 @@ func _run() -> void:
 	await process_frame
 	await process_frame
 
-	var shot2 := UtilsShotUtils.save_viewport_png(root, SHOT_DIR + "/spa_cam_spa.png", true)
+	var shot2 := ShotUtils.save_viewport_png(root, SHOT_DIR + "/spa_cam_spa.png", true)
 	if bool(shot2.get("ok", false)) and not bool(shot2.get("skipped", false)):
 		print("[SHOT] saved SPA view: cam=", cam.global_position if cam else "null")
 
@@ -70,7 +70,7 @@ func _run() -> void:
 	await process_frame
 	await process_frame
 
-	var shot3 := UtilsShotUtils.save_viewport_png(root, SHOT_DIR + "/spa_cam_topdown.png", true)
+	var shot3 := ShotUtils.save_viewport_png(root, SHOT_DIR + "/spa_cam_topdown.png", true)
 	if bool(shot3.get("ok", false)) and not bool(shot3.get("skipped", false)):
 		print("[SHOT] saved top-down view")
 

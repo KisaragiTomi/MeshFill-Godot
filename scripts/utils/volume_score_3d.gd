@@ -1,15 +1,15 @@
 @tool
-class_name UtilsVolumeScore3D
+class_name VolumeScore3D
 extends RefCounted
 
 const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
 const ObjectVolumeScoreGpuScript := preload("res://scripts/object_volume_score_gpu.gd")
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
-const UtilsDemoAssets := preload("res://scripts/utils_demo_assets.gd")
+const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
 
 
-static func voxelize_utils_assets(
+static func voxelize_demo_assets(
 	voxel_grid_count: int,
 	fallback_to_box: bool = true,
 	scene_voxel_size: Vector3 = Vector3.ZERO
@@ -19,15 +19,15 @@ static func voxelize_utils_assets(
 	var footprints: Array[Dictionary] = []
 	var voxelizer = MeshVoxelizerGpuScript.new()
 
-	for i in range(UtilsDemoAssets.count()):
-		var asset_path := UtilsDemoAssets.geo_path(i)
-		var mesh_info := UtilsDemoAssets.load_mesh_info(asset_path)
+	for i in range(DemoAssets.count()):
+		var asset_path := DemoAssets.geo_path(i)
+		var mesh_info := DemoAssets.load_mesh_info(asset_path)
 		var raw_mesh: Mesh = mesh_info.get("mesh", null)
 		var mesh_xform: Transform3D = mesh_info.get("mesh_transform", Transform3D.IDENTITY)
 		# Bake only the import conversion (mesh_transform) into the mesh; keep the FBX's
 		# native pivot at the mesh origin. Scoring + placement both anchor at that pivot,
 		# so each asset embeds/stands exactly as authored in its FBX.
-		var mesh := UtilsDemoAssets.bake_mesh_xform(raw_mesh, mesh_xform)
+		var mesh := DemoAssets.bake_mesh_xform(raw_mesh, mesh_xform)
 		var fallback := false
 		if mesh == null:
 			if not fallback_to_box:
@@ -37,7 +37,7 @@ static func voxelize_utils_assets(
 		var aabb := mesh.get_aabb()
 		var volume := aabb.size.x * aabb.size.y * aabb.size.z
 		var longest := maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
-		var color := UtilsDemoAssets.asset_color(i)
+		var color := DemoAssets.asset_color(i)
 		var vox_result := voxelizer.voxelize(mesh, voxel_grid_count, color, 0.9, 4)
 		var footprint := ObjectVolumeScoreGpuScript.footprint_from_voxelizer_result(
 			vox_result, color, longest)
@@ -47,7 +47,7 @@ static func voxelize_utils_assets(
 			scene_voxel_size
 		)
 		var asset := {
-			"name": UtilsDemoAssets.asset_name(i, asset_path.get_file()),
+			"name": DemoAssets.asset_name(i, asset_path.get_file()),
 			"path": asset_path,
 			"mesh": mesh,
 			"volume": volume,

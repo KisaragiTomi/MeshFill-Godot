@@ -3,7 +3,7 @@ extends EditorPlugin
 
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 const MeshFillBrushScript := preload("res://addons/meshfill_editor/meshfill_brush.gd")
-const UtilsTargetSVLookup := preload("res://scripts/utils_targetsv_lookup.gd")
+const TargetSVLookup := preload("res://scripts/utils/target_sv_lookup.gd")
 
 var _last_viewport_camera: Camera3D
 
@@ -271,7 +271,7 @@ func _find_targetsv_setup() -> Node:
 	if _brush == null:
 		return null
 	var root := get_editor_interface().get_edited_scene_root()
-	return UtilsTargetSVLookup.find_setup(_brush, root, false, true, false)
+	return TargetSVLookup.find_setup(_brush, root, false, true, false)
 
 
 func _set_targetsv_channel(channel: int) -> void:

@@ -28,7 +28,7 @@ const AutoVoxelRuntimeProfileContainer := preload("res://scripts/auto_voxel_runt
 const GPUAutoObjectRuntime := preload("res://scripts/gpu_autoobject_runtime.gd")
 const SceneVoxelCommitter := preload("res://scripts/scene_voxel_committer.gd")
 const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generator.gd")
-const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 const MESH_DESCRIPTION_BUFFER := "mesh_description"
 const MESH_DESCRIPTION_STRIDE_BYTES := 128
@@ -905,8 +905,8 @@ func _pack_mesh_description_bytes() -> PackedByteArray:
 
 
 static func _encode_aabb(bytes: PackedByteArray, base: int, aabb: AABB) -> void:
-	UtilsBufferUtils.encode_vec4(bytes, base + 0, aabb.position, 0.0)
-	UtilsBufferUtils.encode_vec4(bytes, base + 16, aabb.size, 0.0)
+	BufferUtils.encode_vec4(bytes, base + 0, aabb.position, 0.0)
+	BufferUtils.encode_vec4(bytes, base + 16, aabb.size, 0.0)
 
 
 static func _decode_mesh_description_bytes(bytes: PackedByteArray, record_count: int) -> Array[Dictionary]:
@@ -917,12 +917,12 @@ static func _decode_mesh_description_bytes(bytes: PackedByteArray, record_count:
 	for i in range(available):
 		var base := i * MESH_DESCRIPTION_STRIDE_BYTES
 		var mesh_aabb := AABB(
-			UtilsBufferUtils.decode_vec4_xyz(bytes, base + 32),
-			UtilsBufferUtils.decode_vec4_xyz(bytes, base + 48)
+			BufferUtils.decode_vec4_xyz(bytes, base + 32),
+			BufferUtils.decode_vec4_xyz(bytes, base + 48)
 		)
 		var source_mesh_aabb := AABB(
-			UtilsBufferUtils.decode_vec4_xyz(bytes, base + 64),
-			UtilsBufferUtils.decode_vec4_xyz(bytes, base + 80)
+			BufferUtils.decode_vec4_xyz(bytes, base + 64),
+			BufferUtils.decode_vec4_xyz(bytes, base + 80)
 		)
 		result.append({
 			"asset_id": bytes.decode_s32(base + 0),

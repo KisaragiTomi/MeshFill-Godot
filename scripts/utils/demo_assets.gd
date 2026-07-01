@@ -1,5 +1,5 @@
 @tool
-class_name UtilsDemoAssets
+class_name DemoAssets
 extends RefCounted
 
 const GEO_PATHS := [
@@ -93,7 +93,7 @@ static func load_mesh_entries(use_asset_names: bool = false) -> Array[Dictionary
 		var path := geo_path(i)
 		var mesh := load_mesh(path)
 		if mesh == null:
-			push_warning("[UtilsDemoAssets] Cannot load mesh: %s" % path)
+			push_warning("[DemoAssets] Cannot load mesh: %s" % path)
 			continue
 		var aabb := mesh.get_aabb()
 		var volume := aabb.size.x * aabb.size.y * aabb.size.z

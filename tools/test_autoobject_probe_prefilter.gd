@@ -4,9 +4,9 @@ const Prefilter := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
 const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
-const UtilsTestUtils := preload("res://scripts/utils_test_utils.gd")
+const TestUtils := preload("res://scripts/utils/test_utils.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
-const UtilsSceneVoxelFixture := preload("res://scripts/utils_scene_voxel_fixture.gd")
+const SceneVoxelFixture := preload("res://scripts/utils/scene_voxel_fixture.gd")
 
 
 func _init() -> void:
@@ -33,12 +33,12 @@ func _init() -> void:
 
 func _test_position_only_anchor_layers() -> bool:
 	print("[AutoObjectProbePrefilter] test_position_only_anchor_layers...")
-	if not UtilsTestUtils.has_rendering_device():
+	if not TestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only anchor collection")
 		return true
 	var grid_size := Vector3i(16, 8, 16)
 	var voxel_size := Vector3.ONE
-	var sv := UtilsSceneVoxelFixture.make_flat_ground_sv(grid_size, voxel_size)
+	var sv := SceneVoxelFixture.make_flat_ground_sv(grid_size, voxel_size)
 
 	var voxel_count := grid_size.x * grid_size.y * grid_size.z
 	var target_field := PackedFloat32Array()
@@ -363,7 +363,7 @@ func _test_probe_expected_rgba8_repacked_for_shader() -> bool:
 
 func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_blocks() -> bool:
 	print("[AutoObjectProbePrefilter] test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_blocks...")
-	if not UtilsTestUtils.has_rendering_device():
+	if not TestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only TargetSV read-buffer borrowing")
 		return true
 
@@ -671,7 +671,7 @@ func _assert_route_input_contract(
 
 func _test_prefilter_borrows_profile_container_probe_records_or_skip() -> bool:
 	print("[AutoObjectProbePrefilter] test_prefilter_borrows_profile_container_probe_records_or_skip...")
-	if not UtilsTestUtils.has_rendering_device():
+	if not TestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only profile probe buffer borrowing")
 		return true
 	var asset := AutoObjectScript.new()

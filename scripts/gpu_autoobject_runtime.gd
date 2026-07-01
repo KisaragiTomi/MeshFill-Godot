@@ -1,7 +1,7 @@
 class_name GPUAutoObjectRuntime
 extends "res://scripts/godot_compute_shader_base.gd"
 
-const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 const DEFAULT_DIRTY_FLAGS := {"auto": true, "object_refs": true}
 
@@ -1224,9 +1224,9 @@ func _pack_accepted_placement_spawn_records(records: Array[Dictionary]) -> Packe
 		bytes.encode_s32(base + ACCEPTED_PLACEMENT_RECORD_PROFILE_ID_OFFSET, int(record.get("profile_id", -1)))
 		bytes.encode_s32(base + ACCEPTED_PLACEMENT_RECORD_OBJECT_TYPE_OFFSET, int(record.get("object_type", 0)))
 		bytes.encode_s32(base + ACCEPTED_PLACEMENT_RECORD_OBJECT_FLAGS_OFFSET, int(record.get("object_flags", 0)))
-		UtilsBufferUtils.encode_vec3i4(bytes, base + ACCEPTED_PLACEMENT_RECORD_VOXEL_MIN_OFFSET, voxel_min)
-		UtilsBufferUtils.encode_vec3i4(bytes, base + ACCEPTED_PLACEMENT_RECORD_VOXEL_MAX_OFFSET, voxel_max)
-		UtilsBufferUtils.encode_transform_mat4(bytes, base + ACCEPTED_PLACEMENT_RECORD_TRANSFORM_OFFSET, transform)
+		BufferUtils.encode_vec3i4(bytes, base + ACCEPTED_PLACEMENT_RECORD_VOXEL_MIN_OFFSET, voxel_min)
+		BufferUtils.encode_vec3i4(bytes, base + ACCEPTED_PLACEMENT_RECORD_VOXEL_MAX_OFFSET, voxel_max)
+		BufferUtils.encode_transform_mat4(bytes, base + ACCEPTED_PLACEMENT_RECORD_TRANSFORM_OFFSET, transform)
 		bytes.encode_s32(base + ACCEPTED_PLACEMENT_RECORD_DIRTY_FLAGS_OFFSET, int(record.get("dirty_flag_bits", _dirty_flags_to_bits(record.get("dirty_flags", {})))))
 		bytes.encode_s32(base + ACCEPTED_PLACEMENT_RECORD_ASSET_INDEX_OFFSET, int(record.get("asset_index", -1)))
 		bytes.encode_s32(base + ACCEPTED_PLACEMENT_RECORD_RESULT_INDEX_OFFSET, int(record.get("result_index", i)))
@@ -1279,7 +1279,7 @@ func _write_bulk_scalar_buffer(buffer: RID, records: Array[Dictionary], value_ke
 func _write_bulk_bounds_buffer(buffer: RID, records: Array[Dictionary], value_key: String) -> bool:
 	return _write_bulk_record_ranges(buffer, records, OBJECT_BOUNDS_STRIDE_BYTES, func(bytes: PackedByteArray, offset: int, record: Dictionary) -> void:
 		var value: Vector3i = record.get(value_key, Vector3i.ZERO)
-		UtilsBufferUtils.encode_vec3i4(bytes, offset, value)
+		BufferUtils.encode_vec3i4(bytes, offset, value)
 	)
 
 
@@ -1287,7 +1287,7 @@ func _write_bulk_bounds_buffer(buffer: RID, records: Array[Dictionary], value_ke
 func _write_bulk_transform_buffer(records: Array[Dictionary]) -> bool:
 	return _write_bulk_record_ranges(_transform_buffer, records, OBJECT_TRANSFORM_STRIDE_BYTES, func(bytes: PackedByteArray, offset: int, record: Dictionary) -> void:
 		var transform: Transform3D = record.get("transform", Transform3D.IDENTITY)
-		UtilsBufferUtils.encode_transform_mat4(bytes, offset, transform)
+		BufferUtils.encode_transform_mat4(bytes, offset, transform)
 	)
 
 
@@ -1347,10 +1347,10 @@ func _write_bulk_spawn_dirty_deltas(records: Array[Dictionary]) -> bool:
 		bytes.encode_s32(base + 4, int(record.get("object_type", 0)))
 		bytes.encode_s32(base + 8, int(record.get("profile_id", -1)))
 		bytes.encode_s32(base + 12, int(record.get("generation", 0)))
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 16, old_min, 0)
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 32, old_max, 1)
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 48, new_min, _dirty_flags_to_bits(record.get("dirty_flags", {})))
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 64, new_max, _flush_epoch)
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 16, old_min, 0)
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 32, old_max, 1)
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 48, new_min, _dirty_flags_to_bits(record.get("dirty_flags", {})))
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 64, new_max, _flush_epoch)
 	return _write_buffer(_dirty_delta_buffer, _dirty_delta_count * DIRTY_DELTA_STRIDE_BYTES, bytes, false)
 
 
@@ -2094,8 +2094,8 @@ func _collect_live_object_refs_for_profiles(profile_lookup: Dictionary) -> Array
 			"profile_id": profile_id,
 			"object_type": type_bytes.decode_s32(scalar_offset),
 			"generation": generation_bytes.decode_s32(scalar_offset),
-			"voxel_min": UtilsBufferUtils.decode_vec3i4(bounds_min_bytes, bounds_offset),
-			"voxel_max": UtilsBufferUtils.decode_vec3i4(bounds_max_bytes, bounds_offset),
+			"voxel_min": BufferUtils.decode_vec3i4(bounds_min_bytes, bounds_offset),
+			"voxel_max": BufferUtils.decode_vec3i4(bounds_max_bytes, bounds_offset),
 			"runtime_ready": true,
 			"gpu_first": true,
 			"cpu_fallback": false,
@@ -2305,16 +2305,16 @@ func _write_object_state(
 	var bounds_offset := object_id * OBJECT_BOUNDS_STRIDE_BYTES
 	var transform_offset := object_id * OBJECT_TRANSFORM_STRIDE_BYTES
 	var ok := true
-	ok = _write_buffer(_alive_buffer, scalar_offset, UtilsBufferUtils.pack_s32(1 if alive else 0), false) and ok
-	ok = _write_buffer(_generation_buffer, scalar_offset, UtilsBufferUtils.pack_s32(generation), false) and ok
-	ok = _write_buffer(_type_buffer, scalar_offset, UtilsBufferUtils.pack_s32(object_type), false) and ok
-	ok = _write_buffer(_profile_buffer, scalar_offset, UtilsBufferUtils.pack_s32(profile_id), false) and ok
-	ok = _write_buffer(_flags_buffer, scalar_offset, UtilsBufferUtils.pack_s32(object_flags), false) and ok
-	ok = _write_buffer(_bounds_min_buffer, bounds_offset, UtilsBufferUtils.pack_vec3i4(voxel_min), false) and ok
-	ok = _write_buffer(_bounds_max_buffer, bounds_offset, UtilsBufferUtils.pack_vec3i4(voxel_max), false) and ok
-	ok = _write_buffer(_previous_bounds_min_buffer, bounds_offset, UtilsBufferUtils.pack_vec3i4(previous_voxel_min), false) and ok
-	ok = _write_buffer(_previous_bounds_max_buffer, bounds_offset, UtilsBufferUtils.pack_vec3i4(previous_voxel_max), false) and ok
-	ok = _write_buffer(_transform_buffer, transform_offset, UtilsBufferUtils.pack_transform_mat4(transform), false) and ok
+	ok = _write_buffer(_alive_buffer, scalar_offset, BufferUtils.pack_s32(1 if alive else 0), false) and ok
+	ok = _write_buffer(_generation_buffer, scalar_offset, BufferUtils.pack_s32(generation), false) and ok
+	ok = _write_buffer(_type_buffer, scalar_offset, BufferUtils.pack_s32(object_type), false) and ok
+	ok = _write_buffer(_profile_buffer, scalar_offset, BufferUtils.pack_s32(profile_id), false) and ok
+	ok = _write_buffer(_flags_buffer, scalar_offset, BufferUtils.pack_s32(object_flags), false) and ok
+	ok = _write_buffer(_bounds_min_buffer, bounds_offset, BufferUtils.pack_vec3i4(voxel_min), false) and ok
+	ok = _write_buffer(_bounds_max_buffer, bounds_offset, BufferUtils.pack_vec3i4(voxel_max), false) and ok
+	ok = _write_buffer(_previous_bounds_min_buffer, bounds_offset, BufferUtils.pack_vec3i4(previous_voxel_min), false) and ok
+	ok = _write_buffer(_previous_bounds_max_buffer, bounds_offset, BufferUtils.pack_vec3i4(previous_voxel_max), false) and ok
+	ok = _write_buffer(_transform_buffer, transform_offset, BufferUtils.pack_transform_mat4(transform), false) and ok
 	submit_and_sync()
 	return ok
 
@@ -2342,10 +2342,10 @@ func _append_dirty_delta(
 	bytes.encode_s32(4, object_type)
 	bytes.encode_s32(8, profile_id)
 	bytes.encode_s32(12, generation)
-	UtilsBufferUtils.encode_vec3i4_with_w(bytes, 16, old_min, 1 if removed else 0)
-	UtilsBufferUtils.encode_vec3i4_with_w(bytes, 32, old_max, 1 if alive_after else 0)
-	UtilsBufferUtils.encode_vec3i4_with_w(bytes, 48, new_min, _dirty_flags_to_bits(dirty_flags))
-	UtilsBufferUtils.encode_vec3i4_with_w(bytes, 64, new_max, _flush_epoch)
+	BufferUtils.encode_vec3i4_with_w(bytes, 16, old_min, 1 if removed else 0)
+	BufferUtils.encode_vec3i4_with_w(bytes, 32, old_max, 1 if alive_after else 0)
+	BufferUtils.encode_vec3i4_with_w(bytes, 48, new_min, _dirty_flags_to_bits(dirty_flags))
+	BufferUtils.encode_vec3i4_with_w(bytes, 64, new_max, _flush_epoch)
 
 	var offset := _dirty_delta_count * DIRTY_DELTA_STRIDE_BYTES
 	if not _write_buffer(_dirty_delta_buffer, offset, bytes, false):
@@ -2374,7 +2374,7 @@ func _read_object_state(object_id: int) -> Dictionary:
 	var voxel_max := _read_vec3i4(_bounds_max_buffer, bounds_offset)
 	var previous_voxel_min := _read_vec3i4(_previous_bounds_min_buffer, bounds_offset)
 	var previous_voxel_max := _read_vec3i4(_previous_bounds_max_buffer, bounds_offset)
-	var transform := UtilsBufferUtils.decode_transform_mat4(_read_buffer_bytes(_transform_buffer, transform_offset, OBJECT_TRANSFORM_STRIDE_BYTES))
+	var transform := BufferUtils.decode_transform_mat4(_read_buffer_bytes(_transform_buffer, transform_offset, OBJECT_TRANSFORM_STRIDE_BYTES))
 
 	return {
 		"object_id": object_id,
@@ -2401,7 +2401,7 @@ func _read_object_state(object_id: int) -> Dictionary:
 ## 将 dirty delta 计数写入 GPU 计数缓冲区并同步 CPU 侧缓存。
 func _write_dirty_count(count: int, sync_after: bool = true) -> bool:
 	var clamped_count := clampi(count, 0, dirty_delta_capacity)
-	if not _write_buffer(_dirty_count_buffer, 0, UtilsBufferUtils.pack_s32(clamped_count), sync_after):
+	if not _write_buffer(_dirty_count_buffer, 0, BufferUtils.pack_s32(clamped_count), sync_after):
 		return false
 	_dirty_delta_count = clamped_count
 	return true
@@ -2487,7 +2487,7 @@ func _read_s32(buffer: RID, offset: int) -> int:
 ## 从 GPU 缓冲区读取 ivec4 前三分量，返回 Vector3i。
 func _read_vec3i4(buffer: RID, offset: int) -> Vector3i:
 	var bytes := _read_buffer_bytes(buffer, offset, OBJECT_BOUNDS_STRIDE_BYTES)
-	return UtilsBufferUtils.decode_vec3i4(bytes)
+	return BufferUtils.decode_vec3i4(bytes)
 
 
 ## 从 GPU 变换缓冲区读取 mat4 并还原为 Transform3D。

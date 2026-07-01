@@ -5,7 +5,7 @@ class_name VoxelFootprintBaker
 ## 自带 footprint compute shader，自洽(GPU 实例方法各自 ensure_device)，无生成器实例状态耦合。
 extends "res://scripts/godot_compute_shader_base.gd"
 
-const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 const FOOTPRINT_CAPACITY := 128
 const RECORD_STRIDE := 4
@@ -48,8 +48,8 @@ static func _vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vect
 func _pack_footprint(footprint: Array) -> Dictionary:
 	var pos_bytes := PackedByteArray()
 	var weight_bytes := PackedByteArray()
-	pos_bytes.resize(footprint.size() * UtilsBufferUtils.IVEC4_BYTES)
-	weight_bytes.resize(footprint.size() * UtilsBufferUtils.IVEC4_BYTES)
+	pos_bytes.resize(footprint.size() * BufferUtils.IVEC4_BYTES)
+	weight_bytes.resize(footprint.size() * BufferUtils.IVEC4_BYTES)
 
 	for i in range(footprint.size()):
 		var entry: Dictionary = footprint[i]
@@ -57,8 +57,8 @@ func _pack_footprint(footprint: Array) -> Dictionary:
 		var collision_q8 := clampi(roundi(clampf(float(entry.get("collision_strength", 0.0)), 0.0, 1.0) * 255.0), 0, 255)
 		var flags := int(entry.get("flags", 0))
 		var weight := maxf(float(entry.get("weight", 1.0)), 0.0)
-		var pos_offset := i * UtilsBufferUtils.IVEC4_BYTES
-		UtilsBufferUtils.encode_vec3i4_with_w(pos_bytes, pos_offset, local_pos, collision_q8)
+		var pos_offset := i * BufferUtils.IVEC4_BYTES
+		BufferUtils.encode_vec3i4_with_w(pos_bytes, pos_offset, local_pos, collision_q8)
 		weight_bytes.encode_float(pos_offset + 0, weight)
 		weight_bytes.encode_float(pos_offset + 4, float(flags))
 		weight_bytes.encode_float(pos_offset + 8, float(entry.get("radius", 0.0)))
@@ -711,12 +711,12 @@ static func _deduplicate_footprint(entries: Array[Dictionary]) -> Array[Dictiona
 
 static func _decode_gpu_footprint_buffers(pos_bytes: PackedByteArray, weight_bytes: PackedByteArray, count: int) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
-	var available := mini(count, mini(int(pos_bytes.size() / UtilsBufferUtils.IVEC4_BYTES), int(weight_bytes.size() / UtilsBufferUtils.IVEC4_BYTES)))
+	var available := mini(count, mini(int(pos_bytes.size() / BufferUtils.IVEC4_BYTES), int(weight_bytes.size() / BufferUtils.IVEC4_BYTES)))
 	for i in range(available):
-		var pos_offset := i * UtilsBufferUtils.IVEC4_BYTES
-		var weight_offset := i * UtilsBufferUtils.IVEC4_BYTES
+		var pos_offset := i * BufferUtils.IVEC4_BYTES
+		var weight_offset := i * BufferUtils.IVEC4_BYTES
 		result.append({
-			"local_pos": UtilsBufferUtils.decode_vec3i4(pos_bytes, pos_offset),
+			"local_pos": BufferUtils.decode_vec3i4(pos_bytes, pos_offset),
 			"collision_strength": clampf(float(pos_bytes.decode_s32(pos_offset + 12)) / 255.0, 0.0, 1.0),
 			"flags": roundi(weight_bytes.decode_float(weight_offset + 4)),
 			"weight": maxf(weight_bytes.decode_float(weight_offset + 0), 0.0),

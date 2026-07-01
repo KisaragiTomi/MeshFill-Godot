@@ -15,7 +15,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 
 const SCORE_SUBTILE_SHADER := "res://shaders/score_object_subtile.glsl"
 const REDUCE_SHADER := "res://shaders/reduce_object_rotation_scores.glsl"
-const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 ## descriptor voxel-profile source. 评分采样点取自 profile.collision 的体素位置。
 const AutoVoxelProfileScript := preload("res://scripts/auto_voxel_profile.gd")
@@ -321,10 +321,10 @@ func _score_push_constant(
 ## 将 anchor 位置打包为 ivec4 字节数组（每个 anchor 存 x, y, z, 0）。
 func _pack_anchor_positions(anchors: PackedVector3Array) -> PackedByteArray:
 	var data := PackedByteArray()
-	data.resize(anchors.size() * UtilsBufferUtils.IVEC4_BYTES)
+	data.resize(anchors.size() * BufferUtils.IVEC4_BYTES)
 	for i in range(anchors.size()):
 		var a := anchors[i]
-		UtilsBufferUtils.encode_vec3i4(data, i * UtilsBufferUtils.IVEC4_BYTES, Vector3i(int(a.x), int(a.y), int(a.z)))
+		BufferUtils.encode_vec3i4(data, i * BufferUtils.IVEC4_BYTES, Vector3i(int(a.x), int(a.y), int(a.z)))
 	return data
 
 

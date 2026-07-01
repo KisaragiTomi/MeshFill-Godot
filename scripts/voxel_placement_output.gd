@@ -197,6 +197,7 @@ const SCENE_VOXEL_SOURCE_WRITE_DIAGNOSTIC_KEYS := [
 ## --- 复制自 generator 的辅助 ---
 
 
+## 按已知 meta key 依次在配置字典中查找已有的 voxel write spec 记录，返回第一个非空记录的副本；找不到则返回空字典。
 static func _get_config_voxel_write_spec(config: Dictionary) -> Dictionary:
 	for key in AutoObject.voxel_write_spec_meta_keys():
 		var raw_record = config.get(key, {})
@@ -210,6 +211,7 @@ static func _get_config_voxel_write_spec(config: Dictionary) -> Dictionary:
 
 
 
+## 将 Vector3 / Array / Dictionary 等宽松类型的值统一转换为 Vector3；无法识别时返回 fallback。
 static func _vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vector3:
 	if value is Vector3:
 		return value as Vector3
@@ -226,6 +228,7 @@ static func _vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vect
 
 
 
+## 按候选 key 列表在配置字典中查找场景放置执行者(Scene Placement Actor)对象，找不到则返回 null。
 static func _scene_placement_actor_from_config(config: Dictionary) -> Object:
 	for key in SCENE_PLACEMENT_ACTOR_CONFIG_KEYS:
 		if not config.has(key):
@@ -238,6 +241,9 @@ static func _scene_placement_actor_from_config(config: Dictionary) -> Object:
 
 
 ## --- 迁移自 generator 的 placement 输出/实例化函数 ---
+## 依据单条 world_result 放置结果创建并配置一个 AutoObject 节点：设置位置/旋转/缩放/网格并挂载到父节点下，
+## 按需生成并绑定 voxel write spec 记录、提交给场景体素委交器(committer)，
+## 若配置中提供了场景放置执行者(SPA)则登记归属关系。返回创建好的节点。
 static func instantiate_placement(
 	world_result: Dictionary,
 	node_class: String,
@@ -295,6 +301,7 @@ static func instantiate_placement(
 
 
 
+## 批量调用 instantiate_placement，为每个 world_result 创建一个节点，返回节点数组。
 static func instantiate_placements(
 	world_results: Array,
 	node_class: String,
@@ -312,6 +319,8 @@ static func instantiate_placements(
 
 
 
+## 为已放置的节点构造 voxel write spec 记录：解析捕获分辨率与基准像素坐标，
+## 收集附加字段后调用 node.make_instance_stamp_write_spec 生成记录，并补充旋转与网格名信息。
 static func make_placement_voxel_write_spec(
 	node: AutoObject,
 	world_result: Dictionary,
@@ -344,6 +353,8 @@ static func make_placement_voxel_write_spec(
 
 
 
+## 将 voxel write spec 记录与节点绑定：刷新节点间距与实例 ID，补全 id/位置/缩放/旋转/auto_id/node_path
+## 等字段后写回节点，返回节点上最终保存的记录。
 static func attach_placement_voxel_write_spec(node: AutoObject, record: Dictionary) -> Dictionary:
 	if node == null or record.is_empty():
 		return {}
@@ -377,6 +388,7 @@ static func attach_placement_voxel_write_spec(node: AutoObject, record: Dictiona
 
 
 
+## 委托 VoxelGeneral.world_to_texture_pixel：将世界坐标换算为纹理像素坐标。
 static func world_to_texture_pixel(
 	world_pos: Vector3,
 	capture_size: float,
@@ -386,6 +398,7 @@ static func world_to_texture_pixel(
 
 
 
+## 委托 VoxelGeneral.world_to_volume_pixel：将世界坐标换算为体积纹理像素坐标。
 static func world_to_volume_pixel(
 	world_pos: Vector3,
 	resolution: int,
@@ -396,6 +409,8 @@ static func world_to_volume_pixel(
 
 
 
+## 解析放置记录的基准像素坐标：优先使用配置/结果中显式给出的 base_pixel，
+## 否则询问 committer 目标，或按 grid_origin/voxel_size 换算，最后退回纹理像素换算。
 static func _placement_base_pixel(
 	world_result: Dictionary,
 	record_config: Dictionary,
@@ -429,6 +444,8 @@ static func _placement_base_pixel(
 
 
 
+## 组装 voxel write spec 记录的附加字段：透传配置中未被保留 key 占用的自定义字段，
+## 并补充来源类型/资产索引/调试分数等标准字段。
 static func _placement_record_extra_fields(
 	node: AutoObject,
 	world_result: Dictionary,
@@ -466,6 +483,7 @@ static func _placement_record_extra_fields(
 
 
 
+## 根据 node_class 创建对应的 AutoObject 节点实例(当前所有分支均返回 AutoObject.new())。
 static func _create_node_for_class(node_class: String) -> AutoObject:
 	match node_class:
 		"rock", "cliff":
@@ -475,6 +493,7 @@ static func _create_node_for_class(node_class: String) -> AutoObject:
 
 
 
+## 根据 node_class 选择合适的方法(configure_object 或 configure_auto_object)配置节点。
 static func _configure_node(node: AutoObject, node_class: String, cfg: Dictionary) -> void:
 	match node_class:
 		"rock", "cliff":
@@ -484,6 +503,8 @@ static func _configure_node(node: AutoObject, node_class: String, cfg: Dictionar
 
 
 
+## 将 GPU 输出的体素空间放置记录批量转换为世界空间结果：过滤无效记录，按旋转索引换算世界坐标与偏航角，
+## 应用 pivot 偏移旋转得到实例位置，并保留分数/支撑率/碰撞等调试字段。
 static func results_to_world(
 	results: Array[Dictionary],
 	voxel_size: Vector3,
@@ -530,6 +551,8 @@ static func results_to_world(
 # ---------------------------------------------------------------------------
 
 
+## 构造单条 voxel write spec 记录：若提供了节点，则通过 node.make_instance_stamp_write_spec 生成；
+## 否则直接拼装一个不依赖节点的记录字典(可含 channel/radius/y_min/y_max 等可选字段)。
 static func make_voxel_write_spec(
 	world_result: Dictionary,
 	node: AutoObject,
@@ -594,6 +617,7 @@ static func make_voxel_write_spec(
 
 
 
+## 批量调用 make_voxel_write_spec，为每个 world_result/node 对生成 write spec 记录并返回数组。
 static func make_voxel_write_specs(
 	world_results: Array,
 	nodes: Array,

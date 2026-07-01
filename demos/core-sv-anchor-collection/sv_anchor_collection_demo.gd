@@ -14,9 +14,9 @@ const VoxelFieldDisplayGPU := preload("res://scripts/voxel_field_display_gpu.gd"
 const AutoObject := preload("res://scripts/auto_object.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
 const VoxelDisplay := preload("res://scripts/voxel_display.gd")
-const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
-const UtilsDemoUI := preload("res://scripts/utils_demo_ui.gd")
-const UtilsSceneVoxelFixture := preload("res://scripts/utils_scene_voxel_fixture.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+const DemoUI := preload("res://scripts/utils/demo_ui.gd")
+const SceneVoxelFixture := preload("res://scripts/utils/scene_voxel_fixture.gd")
 
 const TILE_SIZE := 8
 
@@ -86,7 +86,7 @@ func _deferred_init() -> void:
 
 
 func _frame_camera() -> void:
-	var cam := UtilsDemoUI.find_camera(self, "DemoSetup/FlyCamera", "", false, false)
+	var cam := DemoUI.find_camera(self, "DemoSetup/FlyCamera", "", false, false)
 	if cam == null:
 		return
 	var cx := _grid_origin.x + float(_grid.x) * _voxel_size.x * 0.5
@@ -278,7 +278,7 @@ func _run_collection() -> void:
 	if not _sync_assets_with_spa():
 		return
 
-	var sv := UtilsSceneVoxelFixture.make_sv(
+	var sv := SceneVoxelFixture.make_sv(
 		_grid,
 		_voxel_size,
 		_grid_origin,
@@ -465,7 +465,7 @@ func _iterate_grid_sampled(callback: Callable) -> void:
 # --- HUD & input -----------------------------------------------------------
 
 func _setup_hud() -> void:
-	_hud_label = UtilsDemoUI.setup_hud_label(self)
+	_hud_label = DemoUI.setup_hud_label(self)
 
 
 func _update_hud() -> void:

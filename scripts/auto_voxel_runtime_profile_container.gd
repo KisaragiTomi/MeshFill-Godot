@@ -5,7 +5,7 @@ const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
 const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
-const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 const PROFILE_TABLE_BUFFER := "profile_table"
 const PROBE_RECORD_BUFFER := "probe_records"
@@ -686,7 +686,7 @@ func _pack_probe_record_bytes() -> PackedByteArray:
 		var wc := _probe_metric_weights(probe)
 
 		var base := i * PROBE_RECORD_STRIDE_BYTES
-		UtilsBufferUtils.encode_vec4(bytes, base + 0, offset, wc.z) # w_collision
+		BufferUtils.encode_vec4(bytes, base + 0, offset, wc.z) # w_collision
 		bytes.encode_u32(base + 16, rgba8)
 		bytes.encode_float(base + 20, expected_collision)
 		bytes.encode_float(base + 24, wc.x)       # w_color
@@ -702,7 +702,7 @@ func _pack_pivot_record_bytes() -> PackedByteArray:
 		var pivot: Dictionary = _staging_pivot_records[i]
 		var offset := _vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
 		var base := i * PIVOT_RECORD_STRIDE_BYTES
-		UtilsBufferUtils.encode_vec4(bytes, base + 0, offset, float(pivot.get("score_bias", 0.0)))
+		BufferUtils.encode_vec4(bytes, base + 0, offset, float(pivot.get("score_bias", 0.0)))
 		bytes.encode_u32(base + 16, _stable_u32_hash(str(pivot.get("name", ""))))
 		bytes.encode_u32(base + 20, 0)
 		bytes.encode_u32(base + 24, 0)

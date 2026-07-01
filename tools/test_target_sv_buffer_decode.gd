@@ -2,9 +2,9 @@ extends SceneTree
 
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
-const UtilsAutoVoxelFixture := preload("res://scripts/utils_auto_voxel_fixture.gd")
-const UtilsTargetSVBufferFixture := preload("res://scripts/utils_targetsv_buffer_fixture.gd")
-const UtilsTestUtils := preload("res://scripts/utils_test_utils.gd")
+const AutoVoxelFixture := preload("res://scripts/utils/auto_voxel_fixture.gd")
+const TargetSVBufferFixture := preload("res://scripts/utils/target_sv_buffer_fixture.gd")
+const TestUtils := preload("res://scripts/utils/test_utils.gd")
 
 const Q8_EPSILON := (1.0 / 255.0) + 0.001
 
@@ -109,7 +109,7 @@ func _test_scene_placement_actor_exposes_mesh_descriptions() -> bool:
 	var source_mesh := SphereMesh.new()
 	source_mesh.radius = 0.5
 	source_mesh.height = 1.0
-	var descriptor := UtilsAutoVoxelFixture.make_mesh_description_descriptor(
+	var descriptor := AutoVoxelFixture.make_mesh_description_descriptor(
 		"mesh_description_test",
 		mesh,
 		source_mesh,
@@ -231,7 +231,7 @@ func _test_scene_placement_actor_exposes_mesh_descriptions() -> bool:
 
 func _test_decode_target_read_buffers() -> bool:
 	print("[TargetSVBufferDecode] test_decode_target_read_buffers...")
-	var fixture := UtilsTargetSVBufferFixture.make_linear_read_buffers()
+	var fixture := TargetSVBufferFixture.make_linear_read_buffers()
 	var tex_size: int = fixture.get("tex_size", 0)
 	var slice_count: int = fixture.get("slice_count", 0)
 	var voxel_count: int = fixture.get("voxel_count", 0)
@@ -312,11 +312,11 @@ func _test_decode_target_read_buffers() -> bool:
 
 func _test_decode_target_read_buffers_gpu_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_decode_target_read_buffers_gpu_or_skip...")
-	if not UtilsTestUtils.has_rendering_device():
+	if not TestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU TargetSV read-buffer decode")
 		return true
 
-	var fixture := UtilsTargetSVBufferFixture.make_linear_read_buffers()
+	var fixture := TargetSVBufferFixture.make_linear_read_buffers()
 	var tex_size: int = fixture.get("tex_size", 0)
 	var slice_count: int = fixture.get("slice_count", 0)
 	var voxel_count: int = fixture.get("voxel_count", 0)
@@ -484,7 +484,7 @@ func _test_vpg_accepts_prepacked_target_field() -> bool:
 
 func _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads() -> bool:
 	print("[TargetSVBufferDecode] test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads...")
-	if not UtilsTestUtils.has_rendering_device():
+	if not TestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for VPG TargetSV read-buffer borrowing")
 		return true
 
@@ -579,11 +579,11 @@ func _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads() ->
 
 func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_gpu_derive_target_packed_buffers_or_skip...")
-	if not UtilsTestUtils.has_rendering_device():
+	if not TestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU TargetSV read-buffer pack")
 		return true
 
-	var fixture := UtilsTargetSVBufferFixture.make_linear_read_buffers()
+	var fixture := TargetSVBufferFixture.make_linear_read_buffers()
 	var tex_size: int = fixture.get("tex_size", 0)
 	var slice_count: int = fixture.get("slice_count", 0)
 	var voxel_count: int = fixture.get("voxel_count", 0)
@@ -660,7 +660,7 @@ func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 
 func _test_gpu_derive_target_stats_only_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_gpu_derive_target_stats_only_or_skip...")
-	if not UtilsTestUtils.has_rendering_device():
+	if not TestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU TargetSV stats-only pack")
 		return true
 
@@ -729,7 +729,7 @@ func _test_gpu_derive_target_stats_only_or_skip() -> bool:
 
 func _test_gpu_generated_occupancy_buffer_or_skip() -> bool:
 	print("[TargetSVBufferDecode] test_gpu_generated_occupancy_buffer_or_skip...")
-	if not UtilsTestUtils.has_rendering_device():
+	if not TestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for GPU-only TargetSV occupancy buffer")
 		return true
 

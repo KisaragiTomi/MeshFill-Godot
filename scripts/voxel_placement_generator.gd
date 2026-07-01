@@ -11,7 +11,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 const AutoObject := preload("res://scripts/auto_object.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const VoxelPlacementWritebackScript := preload("res://scripts/voxel_placement_writeback.gd")
-const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 var _placement_writeback = null
 
 ## Lazily creates the delegated placement writeback helper.
@@ -611,12 +611,11 @@ static func _asset_candidate_regions(asset_def: Dictionary) -> Array:
 #           complexity_field_out, collision_field_out, total_placed,
 #           processing_order: [original indices in execution order],
 #           gpu_autoobject_runtime_writeback: optional runtime writeback report}
-## 多资产序列化放置流水线的顶层入口。
-## 先按 priority/weight 对 asset_defs 排序，再逐个资产调用 run_minimal：对每个资产的
-## pivot_variants（锚点变体）逐一尝试放置并保留评分最高者；根据配置在 GPU 常驻、CPU 直接
-## 回写、紧凑 stamp-delta 三种状态链模式间传递更新后的 complexity/collision 场，并追踪
-## 全局配额 global_quota；最终可选择将已接受的放置结果写回 GPU AutoObject 运行时
-## 和/或场景体素瓦片提交器（scene voxel tile committer）。
+## 多资产序列化放置流水线的顶层入口：先按 priority/weight 对 asset_defs 排序，再逐个资产
+## 调用 run_minimal，对 pivot_variants（锚点变体）逐一尝试放置并保留评分最高者；根据配置
+## 在 GPU 常驻、CPU 直接回写、紧凑 stamp-delta 三种状态链模式间传递更新后的
+## complexity/collision 场，并追踪全局配额 global_quota；最终可选择将已接受的放置结果写回
+## GPU AutoObject 运行时和/或场景体素瓦片提交器（scene voxel tile committer）。
 func run_multi_asset(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
@@ -1118,6 +1117,8 @@ static func _placement_output_score(gpu_out: Dictionary) -> float:
 	return score
 
 
+## 将 Vector3 / 至少含 3 个元素的 Array / 含 x、y、z 键的 Dictionary 等多种形式的值统一
+## 转换为 Vector3；无法识别时返回 fallback。
 static func _vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vector3:
 	if value is Vector3:
 		return value as Vector3
@@ -1979,6 +1980,8 @@ func _merge_scene_voxel_tile_object_ref_contract(
 	return merged
 
 
+## 构造标准化的 GPU 契约结果字典（ok/reason/gpu_first 等字段），
+## 可选附加运行时提供者与 profile 容器的调试摘要信息。
 func _gpu_contract_result(
 	ok: bool,
 	reason: String,
@@ -2002,6 +2005,7 @@ func _gpu_contract_result(
 	return _with_same_type_exclusion_defaults(result)
 
 
+## 为结果字典补全同类型排斥（same-type exclusion）相关字段的默认值，仅填充缺失的键。
 static func _with_same_type_exclusion_defaults(result: Dictionary) -> Dictionary:
 	if not result.has("score_shader_same_type_min_spacing_exclusion"):
 		result["score_shader_same_type_min_spacing_exclusion"] = false
@@ -2026,6 +2030,7 @@ static func _with_same_type_exclusion_defaults(result: Dictionary) -> Dictionary
 	return result
 
 
+## 按顺序在 settings 中查找 keys 列表对应的值，返回第一个类型为 Object 的值；找不到则返回 null。
 func _first_config_object(settings: Dictionary, keys: Array) -> Object:
 	for key in keys:
 		if settings.has(key):
@@ -2035,6 +2040,7 @@ func _first_config_object(settings: Dictionary, keys: Array) -> Object:
 	return null
 
 
+## 调用 object 上的 primary_method（缺失则尝试 secondary_method）并返回其布尔结果；object 为空时返回 false。
 func _object_bool(object: Object, primary_method: String, secondary_method: String = "") -> bool:
 	if object == null:
 		return false
@@ -2045,6 +2051,7 @@ func _object_bool(object: Object, primary_method: String, secondary_method: Stri
 	return false
 
 
+## 优先调用 object 的 get_gpu_buffer_summary，其次 get_debug_summary，取得其调试摘要字典的副本。
 func _object_summary(object: Object) -> Dictionary:
 	if object == null:
 		return {}
@@ -2059,6 +2066,7 @@ func _object_summary(object: Object) -> Dictionary:
 	return {}
 
 
+## 从 provider 按名称批量获取 GPU 缓冲区 RID，返回已获取的缓冲区字典与缺失名称列表。
 func _collect_gpu_buffers(provider: Object, buffer_names: Array) -> Dictionary:
 	var buffers := {}
 	var missing: Array[String] = []
@@ -2076,6 +2084,7 @@ func _collect_gpu_buffers(provider: Object, buffer_names: Array) -> Dictionary:
 	return {"buffers": buffers, "missing": missing}
 
 
+## 将 buffers 中每个有效 RID 登记为本帧借用的 GPU 缓冲区，用于生命周期追踪。
 func _track_borrowed_gpu_buffers(buffers: Dictionary, label_prefix: String) -> void:
 	for buffer_name in buffers.keys():
 		var rid: RID = buffers[buffer_name]
@@ -2083,6 +2092,7 @@ func _track_borrowed_gpu_buffers(buffers: Dictionary, label_prefix: String) -> v
 			track_borrowed_rid(rid, KIND_BUFFER, SCOPE_FRAME, "%s:%s" % [label_prefix, str(buffer_name)])
 
 
+## 加载各计算着色器（打分/规约/印制边界初始化/印制/目标场打包/候选路由稀疏适配器及其 finalize）并创建对应的计算管线。
 func _load_shaders() -> void:
 	_shader_score = load_compute_shader("res://shaders/score_voxel_tile.glsl")
 	_shader_reduce = load_compute_shader("res://shaders/reduce_voxel_tiles.glsl")
@@ -2107,6 +2117,7 @@ func _load_shaders() -> void:
 		_pipeline_candidate_route_sparse_adapter_finalize = create_compute_pipeline(_shader_candidate_route_sparse_adapter_finalize)
 
 
+## 检查放置流程所需的全部着色器与计算管线是否均已有效创建，用于判断放置管线是否就绪。
 func _placement_pipeline_ready() -> bool:
 	return _shader_score.is_valid() \
 		and _shader_reduce.is_valid() \
@@ -2120,6 +2131,7 @@ func _placement_pipeline_ready() -> bool:
 		and _pipeline_pack_target_field.is_valid()
 
 
+## 释放本生成器持有的 GPU 资源（各计算管线与着色器 RID 全部重置），并调用 dispose 清理其余借用资源。
 func _free_gpu() -> void:
 	dispose()
 	_pipeline_score = RID()
@@ -2138,6 +2150,8 @@ func _free_gpu() -> void:
 	_shader_candidate_route_sparse_adapter_finalize = RID()
 
 
+## 根据资产配置中的候选体素区域（CPU 侧配置项）转换为去重后的稀疏分片 ID 列表；
+## 未配置候选区域或区域非法时返回空数组并给出警告。
 func _build_candidate_voxel_sparse_ids(settings: Dictionary, tile_counts: Vector3i, tile_count: int) -> PackedInt32Array:
 	var ids := PackedInt32Array()
 	var raw_regions: Variant = null
@@ -2164,6 +2178,7 @@ func _build_candidate_voxel_sparse_ids(settings: Dictionary, tile_counts: Vector
 	return ids
 
 
+## 判断 settings 是否未配置任何候选体素区域键；若是，则应采用“直接测试全部分片”模式。
 func _uses_direct_all_tile_candidates(settings: Dictionary) -> bool:
 	for key in ASSET_CANDIDATE_REGION_CONFIG_KEYS:
 		if settings.has(key):
@@ -2171,6 +2186,7 @@ func _uses_direct_all_tile_candidates(settings: Dictionary) -> bool:
 	return true
 
 
+## 将 region（Vector3i/Vector3/整数索引）转换为按 tile_counts 展开的一维分片 ID。
 static func _voxel_sparse_to_tile_id(region: Variant, tile_counts: Vector3i) -> int:
 	if region is Vector3i:
 		return region.x + tile_counts.x * (region.y + tile_counts.y * region.z)
@@ -2180,6 +2196,7 @@ static func _voxel_sparse_to_tile_id(region: Variant, tile_counts: Vector3i) -> 
 	return int(region)
 
 
+## 将 search_radius 配置值（标量或向量）归一化为 Vector3i，并将各分量夹紧到 [0, 4] 范围内。
 static func _normalize_search_radius(value: Variant) -> Vector3i:
 	if value is Vector3i:
 		return Vector3i(
@@ -2197,6 +2214,10 @@ static func _normalize_search_radius(value: Variant) -> Vector3i:
 	return Vector3i(radius, radius, radius)
 
 
+## 打分计算着色器的调度入口：构建 3 组 uniform set（场体缓冲区、GPU 运行时 profile 契约、候选路由绑定），
+## 并填充 128 字节 push constant（网格/分片尺寸、top_k、采样范围、资产颜色、各类阈值与惩罚系数、搜索半径等）。
+## 根据 _score_dispatch_indirect_decision 的判定结果，选择直接 dispatch 还是通过间接参数缓冲区 dispatch，
+## 最终返回本次调度所使用的决策信息字典。
 func _dispatch_score(
 	complexity_buffer: RID,
 	collision_buffer: RID,
@@ -2301,6 +2322,7 @@ func _dispatch_score(
 	return dispatch_result
 
 
+## 判断打分调度是否可以使用间接 dispatch（indirect dispatch），并在无法使用时给出具体的阻断原因。
 func _score_dispatch_indirect_decision(
 	candidate_route_indirect_args_buffer: RID,
 	candidate_voxel_sparse_count: int,
@@ -2338,6 +2360,8 @@ func _score_dispatch_indirect_decision(
 	}
 
 
+## 校验常驻路由 GPU 稀疏适配器所需的前置条件（管线/着色器就绪、分片计数、路由缓冲区与容量等），
+## 并预构建结果契约（占位候选 ID 数组与容量信息），整个过程不进行任何 CPU 回读。
 func _prepare_candidate_sparse_ids_from_resident_route_gpu(route_binding: Dictionary, tile_count: int) -> Dictionary:
 	if not bool(route_binding.get("bindable", false)):
 		return {"ok": false, "reason": "route_binding_not_bindable"}
@@ -2389,6 +2413,8 @@ func _prepare_candidate_sparse_ids_from_resident_route_gpu(route_binding: Dictio
 	}
 
 
+## 调度候选路由稀疏适配器计算通道：先展开常驻路由的 record/range 缓冲区，生成稀疏分片 ID 与计数，
+## 再执行 finalize 通道生成间接 dispatch 参数；整个过程完全在 GPU 上完成，不做 CPU 回读。
 func _dispatch_candidate_route_sparse_adapter(
 	route_binding: Dictionary,
 	candidate_voxel_sparse_buffer: RID,
@@ -2442,6 +2468,9 @@ func _dispatch_candidate_route_sparse_adapter(
 	end_compute_list()
 
 
+## 将候选路由稀疏适配器的调度结果汇总为契约字典（候选数量、range/record 读取信息、间接参数状态等）。
+## 当 read_debug_snapshot 为 true 时，才会从 GPU 回读计数缓冲区、间接参数缓冲区与稀疏 ID 缓冲区生成调试快照；
+## 默认（非调试）情况下不进行任何 CPU 回读，候选数量在语义上完全由 GPU 端间接参数缓冲区持有。
 func _read_candidate_route_sparse_adapter_result(
 	candidate_voxel_sparse_buffer: RID,
 	candidate_route_adapter_count_buffer: RID,
@@ -2534,6 +2563,7 @@ func _read_candidate_route_sparse_adapter_result(
 	}
 
 
+## 将常驻路由稀疏适配器的运行结果写入 candidate_route_input_contract 契约，标记适配器已就绪（未被阻断）。
 func _mark_candidate_route_sparse_adapter_ready(route_settings: Dictionary, resident_route_sparse: Dictionary) -> void:
 	var raw_contract = route_settings.get("candidate_route_input_contract", {})
 	if not raw_contract is Dictionary:
@@ -2577,6 +2607,7 @@ func _mark_candidate_route_sparse_adapter_ready(route_settings: Dictionary, resi
 	route_settings["resident_candidate_route_contract"] = contract
 
 
+## 将 candidate_route_input_contract 契约标记为适配器被阻断：把相关字段重置为默认值/false，并记录阻断原因。
 func _mark_candidate_route_sparse_adapter_blocked(route_settings: Dictionary, reason: String) -> void:
 	var raw_contract = route_settings.get("candidate_route_input_contract", {})
 	if not raw_contract is Dictionary:
@@ -3161,8 +3192,8 @@ func _dispatch_stamp(
 func _pack_footprint(footprint: Array) -> Dictionary:
 	var pos_bytes := PackedByteArray()
 	var weight_bytes := PackedByteArray()
-	pos_bytes.resize(footprint.size() * UtilsBufferUtils.IVEC4_BYTES)
-	weight_bytes.resize(footprint.size() * UtilsBufferUtils.IVEC4_BYTES)
+	pos_bytes.resize(footprint.size() * BufferUtils.IVEC4_BYTES)
+	weight_bytes.resize(footprint.size() * BufferUtils.IVEC4_BYTES)
 
 	for i in range(footprint.size()):
 		var entry: Dictionary = footprint[i]
@@ -3170,8 +3201,8 @@ func _pack_footprint(footprint: Array) -> Dictionary:
 		var collision_q8 := clampi(roundi(clampf(float(entry.get("collision_strength", 0.0)), 0.0, 1.0) * 255.0), 0, 255)
 		var flags := int(entry.get("flags", 0))
 		var weight := maxf(float(entry.get("weight", 1.0)), 0.0)
-		var pos_offset := i * UtilsBufferUtils.IVEC4_BYTES
-		UtilsBufferUtils.encode_vec3i4_with_w(pos_bytes, pos_offset, local_pos, collision_q8)
+		var pos_offset := i * BufferUtils.IVEC4_BYTES
+		BufferUtils.encode_vec3i4_with_w(pos_bytes, pos_offset, local_pos, collision_q8)
 		weight_bytes.encode_float(pos_offset + 0, weight)
 		weight_bytes.encode_float(pos_offset + 4, float(flags))
 		weight_bytes.encode_float(pos_offset + 8, float(entry.get("radius", 0.0)))

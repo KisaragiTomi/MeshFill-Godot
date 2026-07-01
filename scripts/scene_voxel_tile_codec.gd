@@ -1,6 +1,6 @@
 extends RefCounted
 
-const UtilsBufferUtils := preload("res://scripts/utils_buffer_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 const RECORD_STRIDE_BYTES := 128
 const SUMMARY_STRIDE_BYTES := 32
@@ -386,10 +386,10 @@ static func pack_record_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictio
 		var base_rect: Rect2i = tile.get("base_rect", Rect2i())
 		var dirty_flags: Dictionary = tile.get("dirty_flags", {})
 
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 0, tile_coord, flags_to_bits(dirty_flags))
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 16, tile_size, int(tile.get("epoch", 0)))
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 32, voxel_min, int(tile.get("last_commit_tick", 0)))
-		UtilsBufferUtils.encode_vec3i4_with_w(bytes, base + 48, voxel_max, int(tile.get("write_tick", 0)))
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 0, tile_coord, flags_to_bits(dirty_flags))
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 16, tile_size, int(tile.get("epoch", 0)))
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 32, voxel_min, int(tile.get("last_commit_tick", 0)))
+		BufferUtils.encode_vec3i4_with_w(bytes, base + 48, voxel_max, int(tile.get("write_tick", 0)))
 		bytes.encode_s32(base + 64, base_rect.position.x)
 		bytes.encode_s32(base + 68, base_rect.position.y)
 		bytes.encode_s32(base + 72, base_rect.size.x)
@@ -455,13 +455,13 @@ static func decode_records(bytes: PackedByteArray, tile_ids: Array[String]) -> A
 		var base := i * RECORD_STRIDE_BYTES
 		records.append({
 			"scene_voxel_tile_id": tile_ids[i],
-			"tile_coord": UtilsBufferUtils.decode_vec3i4(bytes, base + 0),
+			"tile_coord": BufferUtils.decode_vec3i4(bytes, base + 0),
 			"dirty_flags": flags_from_bits(bytes.decode_s32(base + 12)),
-			"tile_size": UtilsBufferUtils.decode_vec3i4(bytes, base + 16),
+			"tile_size": BufferUtils.decode_vec3i4(bytes, base + 16),
 			"epoch": bytes.decode_s32(base + 28),
-			"voxel_min": UtilsBufferUtils.decode_vec3i4(bytes, base + 32),
+			"voxel_min": BufferUtils.decode_vec3i4(bytes, base + 32),
 			"last_commit_tick": bytes.decode_s32(base + 44),
-			"voxel_max": UtilsBufferUtils.decode_vec3i4(bytes, base + 48),
+			"voxel_max": BufferUtils.decode_vec3i4(bytes, base + 48),
 			"write_tick": bytes.decode_s32(base + 60),
 			"base_rect": Rect2i(
 				Vector2i(bytes.decode_s32(base + 64), bytes.decode_s32(base + 68)),

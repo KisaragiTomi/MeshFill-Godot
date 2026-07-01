@@ -3,8 +3,8 @@ extends Node3D
 
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
 const NonHeadlessSceneGuardScript := preload("res://scripts/non_headless_scene_guard.gd")
-const UtilsTestUtilsScript := preload("res://scripts/utils_test_utils.gd")
-const UtilsDemoContractUtils := preload("res://scripts/utils_demo_contract_utils.gd")
+const TestUtilsScript := preload("res://scripts/utils/test_utils.gd")
+const DemoContractUtils := preload("res://scripts/utils/demo_contract_utils.gd")
 
 const STATUS_PASS := "PASS"
 const STATUS_SKIP := "SKIP"
@@ -121,7 +121,7 @@ func ensure_test_terrain_initialized() -> Dictionary:
 
 
 func get_contract_source_docs() -> Array:
-	return UtilsDemoContractUtils.source_docs_from_values(
+	return DemoContractUtils.source_docs_from_values(
 		get_meta("source_doc", ""),
 		get_meta("source_docs", "")
 	)
@@ -201,14 +201,14 @@ func _cpu_fallback_failures(text: String) -> Array:
 		if lower.find(forbidden) >= 0:
 			failures.append("forbidden wording: %s" % forbidden)
 
-	if UtilsTestUtilsScript.mentions_no_rd_cpu_success(lower):
+	if TestUtilsScript.mentions_no_rd_cpu_success(lower):
 		failures.append("missing RenderingDevice is described as CPU fallback success")
 
 	return failures
 
 
 static func mentions_no_rd_cpu_success(lower_text: String) -> bool:
-	return UtilsTestUtilsScript.mentions_no_rd_cpu_success(lower_text)
+	return TestUtilsScript.mentions_no_rd_cpu_success(lower_text)
 
 
 func _meta_bool(key: String, fallback: bool) -> bool:
