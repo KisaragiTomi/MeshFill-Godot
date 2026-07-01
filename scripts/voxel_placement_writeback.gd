@@ -288,6 +288,7 @@ static func _copy_gpu_autoobject_runtime_flush_contract(report: Dictionary, flus
 
 
 
+## 合并两个 shader 统计字典：数值字段相加，非数值字段直接覆盖。
 static func _merge_gpu_autoobject_runtime_shader_stats(target: Dictionary, source: Dictionary) -> Dictionary:
 	var merged := {}
 	for key in target.keys():
@@ -302,6 +303,8 @@ static func _merge_gpu_autoobject_runtime_shader_stats(target: Dictionary, sourc
 
 
 
+## 将多次(资产/批次)GPU flush 写回结果的契约字段累加/合并进 target：记录数与字节数累加，
+## schema/stride/shader 名称等信息仅在首次写入，多种模式不一致时标记为 "mixed"。
 static func _merge_gpu_autoobject_runtime_flush_contract(target: Dictionary, source: Dictionary) -> void:
 	if source.is_empty():
 		return
@@ -368,6 +371,8 @@ static func _merge_gpu_autoobject_runtime_flush_contract(target: Dictionary, sou
 
 
 
+## 创建一份初始的 GPU AutoObject 运行时写回报告(所有计数/数组字段先置空或置零)，
+## 依据 runtime_provider/profile_container 摘要与 enabled 开关填充初始状态。
 func _new_gpu_autoobject_runtime_writeback_report(
 	runtime_provider: Object,
 	profile_container: Object,
@@ -424,6 +429,8 @@ func _new_gpu_autoobject_runtime_writeback_report(
 
 
 
+## 将单个资产的写回报告(source)累加合并进总报告(target)：合并成功标志/原因、各类计数、
+## 对象 ID 与摘要数组、flush 契约字段，并据此更新 readback_source/runtime_read_source。
 func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: Dictionary) -> void:
 	if target.is_empty() or source.is_empty():
 		return
@@ -481,6 +488,10 @@ func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: 
 ## calls apply_accepted_placement_source_buffer() on the first available committer,
 ## and exposes the RIDs so the actor can hand them off without CPU readback.
 
+## 遍历所有资产的放置结果，收集"源候选"记录(优先级/复杂度/来源类型等)并按资产分段打包为交错浮点数组，
+## 找到第一个支持 apply_accepted_placement_source_buffer 的场景体素委交器(committer)目标，
+## 将候选记录/区间上传为 GPU 常驻存储缓冲区并整体交接给该 committer(全程无需 CPU 回读)；
+## 若交接不完整则返回被阻塞的报告并释放已分配的缓冲区，交接失败时同样不做 CPU 回退。
 func _write_accepted_placements_to_scene_voxel_committer(
 	asset_defs: Array,
 	result_by_index: Dictionary,
@@ -722,6 +733,8 @@ func _write_accepted_placements_to_scene_voxel_committer(
 
 
 
+## 确定某资产应写入源候选缓冲区的 world_result 索引：若无 GPU AutoObject 写回报告则写入全部索引，
+## 否则仅取该报告中实际生成对象的 spawned_result_indices(缺失时退化为前 spawned_count 个)。
 static func _scene_voxel_source_write_result_indices(asset_result: Dictionary, world_result_count: int) -> Array[int]:
 	var indices: Array[int] = []
 	var writeback: Dictionary = asset_result.get("gpu_autoobject_runtime_writeback", {})
@@ -743,6 +756,8 @@ static func _scene_voxel_source_write_result_indices(asset_result: Dictionary, w
 
 
 
+## 合并 common_settings 与 asset_def(含其 settings 覆盖项)为单个资产级配置字典，
+## 并填充网格/体素尺寸、资产索引及默认的分辨率/捕获尺寸/id 前缀。
 static func _runtime_voxel_write_spec_config(
 	asset_def: Dictionary,
 	common_settings: Dictionary,
@@ -773,6 +788,8 @@ static func _runtime_voxel_write_spec_config(
 
 
 
+## 为单条放置结果构造(或复用已提供的)voxel write spec 记录：调用 make_voxel_write_spec 生成基础记录后，
+## 补充 id/资产索引/来源类型/位置缩放旋转/分数/基准像素/碰撞层等字段。
 static func _runtime_placement_voxel_write_spec(
 	world_result: Dictionary,
 	asset_def: Dictionary,
@@ -812,6 +829,10 @@ static func _runtime_placement_voxel_write_spec(
 
 
 
+## 将一批已接受的放置结果写回 GPU AutoObject 运行时：探测可用的 spawn API(若命令队列已有待处理
+## 命令则放弃批处理队列)，计算每条结果的体素包围盒/脏标记/变换后，优先走批处理命令队列(可选对象
+## ID 预留/终结/回滚)或 GPU 批量生成方法，都不可用时退回逐条调用 spawn_from_bounds/spawn；
+## 最终核对 live_count 与 spawned_count 是否一致，并据此更新写回报告的成功状态与 readback_source。
 func _write_accepted_placements_to_gpu_runtime(
 	runtime_provider: Object,
 	asset_index: int,
@@ -1153,6 +1174,7 @@ func _write_accepted_placements_to_gpu_runtime(
 
 
 
+## 按优先级(common_settings → asset_def → per_asset_settings)解析写回用的数值 object_type，都未设置则返回 0。
 static func _runtime_writeback_object_type(asset_def: Dictionary, per_asset_settings: Dictionary, common_settings: Dictionary) -> int:
 	if common_settings.has("runtime_writeback_object_type"):
 		return int(common_settings.get("runtime_writeback_object_type", 0))
@@ -1166,6 +1188,7 @@ static func _runtime_writeback_object_type(asset_def: Dictionary, per_asset_sett
 
 
 
+## 构造脏标记(dirty_flags)字典，默认 auto/object_refs 均为 true，并依次合并 common/asset/per-asset 三层覆盖。
 static func _runtime_writeback_dirty_flags(asset_def: Dictionary, per_asset_settings: Dictionary, common_settings: Dictionary) -> Dictionary:
 	var flags := {"auto": true, "object_refs": true}
 	_runtime_writeback_merge_flags(flags, common_settings.get("runtime_writeback_dirty_flags", {}))
@@ -1175,6 +1198,7 @@ static func _runtime_writeback_dirty_flags(asset_def: Dictionary, per_asset_sett
 
 
 
+## 若 source 是字典，则将其每个键值转换为 bool 后合并进 target。
 static func _runtime_writeback_merge_flags(target: Dictionary, source) -> void:
 	if not (source is Dictionary):
 		return
@@ -1183,6 +1207,8 @@ static func _runtime_writeback_merge_flags(target: Dictionary, source) -> void:
 
 
 
+## 按 result_index 构建体素包围盒映射：优先使用 stamp_bounds 中的显式记录，
+## 若为空则退化为逐个累加 stamp_deltas 的体素坐标得到每个结果的最小/最大包围盒。
 static func _runtime_writeback_bounds_by_result(stamp_deltas: Array, stamp_bounds: Array = []) -> Dictionary:
 	var bounds_by_result: Dictionary = {}
 	for raw_bounds in stamp_bounds:
@@ -1235,6 +1261,7 @@ static func _runtime_writeback_bounds_by_result(stamp_deltas: Array, stamp_bound
 
 
 
+## 取出指定 result_index 的体素包围盒；缺失或非法时退化为以 voxel_origin 为中心的单体素包围盒。
 static func _runtime_writeback_bounds_for_result(result_index: int, raw_result: Dictionary, world_result: Dictionary, bounds_by_result: Dictionary) -> Dictionary:
 	var entry: Dictionary = bounds_by_result.get(result_index, {})
 	var voxel_min: Vector3i = entry.get("voxel_min", raw_result.get("voxel_origin", world_result.get("voxel_origin", Vector3i.ZERO)))
@@ -1249,6 +1276,7 @@ static func _runtime_writeback_bounds_for_result(result_index: int, raw_result: 
 
 
 
+## 根据 world_result 的 position 与 rotation_degrees(仅偏航角)构造 Transform3D。
 static func _runtime_writeback_transform(world_result: Dictionary) -> Transform3D:
 	var position: Vector3 = world_result.get("position", Vector3.ZERO)
 	var rotation_degrees: Vector3 = world_result.get("rotation_degrees", Vector3.ZERO)
@@ -1257,6 +1285,7 @@ static func _runtime_writeback_transform(world_result: Dictionary) -> Transform3
 
 
 
+## 委托调用 _generator._validate_gpu_runtime_profile_contract 校验 GPU 运行时 profile 契约。
 func validate_gpu_runtime_profile_contract(settings: Dictionary) -> Dictionary:
 	return _generator._validate_gpu_runtime_profile_contract(settings)
 
