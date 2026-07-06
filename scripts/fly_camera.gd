@@ -44,6 +44,11 @@ func frame_visible_content() -> bool:
 
 
 func _auto_frame_when_scene_ready() -> void:
+	# 该函数经 call_deferred 触发；延迟执行时节点可能已被移出场景树
+	# （编辑器切换/重载场景）。先判 is_inside_tree()，避免 get_tree() 在
+	# 不在树中的节点上打印 "Parameter data.tree is null" 引擎错误。
+	if not is_inside_tree():
+		return
 	var tree := get_tree()
 	if tree == null:
 		return
@@ -71,9 +76,11 @@ func _auto_frame_root() -> Node:
 	if tree != null and tree.current_scene != null:
 		return tree.current_scene
 	# Walk up to the topmost scene root so sibling content (terrain, voxels)
-	# is included in the framing bounds.
+	# is included in the framing bounds.（tree 可能为 null——例如未在树中时——
+	# 此时无 SceneTree.root 可比较，直接一路走到最顶层父节点。）
+	var scene_tree_root: Node = tree.root if tree != null else null
 	var node: Node = self
-	while node.get_parent() != null and node.get_parent() != tree.root:
+	while node.get_parent() != null and node.get_parent() != scene_tree_root:
 		node = node.get_parent()
 	if node != self:
 		return node

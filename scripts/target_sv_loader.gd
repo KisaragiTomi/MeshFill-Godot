@@ -67,12 +67,19 @@ static func _read_file_bytes(path: String) -> PackedByteArray:
 static func _read_image(path: String) -> Image:
 	if path.is_empty():
 		return null
+	# res:// 资源导出后只保留被导入的纹理（.ctex），原始 PNG 不随包发布：
+	# 必须经资源加载器读取。直接对 res:// 调 Image.load_from_file 会打印
+	# "will not work on export" 警告，且导出版本会加载失败。
+	if path.begins_with("res://"):
+		var texture := load(path) as Texture2D
+		if texture != null:
+			return texture.get_image()
+		push_error("[TargetSVLoader] 无法加载预览图: %s" % path)
+		return null
+	# user:// / 绝对路径：运行时生成、未被导入的图像文件，按文件直接读取。
 	var img := Image.load_from_file(path)
 	if img != null:
 		return img
-	var texture := load(path) as Texture2D
-	if texture != null:
-		return texture.get_image()
 	push_error("[TargetSVLoader] 无法加载预览图: %s" % path)
 	return null
 
