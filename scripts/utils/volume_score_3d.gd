@@ -2,78 +2,13 @@
 class_name VolumeScore3D
 extends RefCounted
 
-const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
-const ObjectVolumeScoreGpuScript := preload("res://scripts/object_volume_score_gpu.gd")
+## Terrain-derived scene-field + anchor helpers for the placement-score-3d demo.
+## Asset voxelization / volume-scorer footprints were retired together with
+## ObjectVolumeScoreGpu when volume scoring merged into VoxelPlacementGenerator.
+
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
-const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
-
-
-static func voxelize_demo_assets(
-	voxel_grid_count: int,
-	fallback_to_box: bool = true,
-	scene_voxel_size: Vector3 = Vector3.ZERO
-) -> Dictionary:
-	var t0 := Time.get_ticks_msec()
-	var assets: Array[Dictionary] = []
-	var footprints: Array[Dictionary] = []
-	var voxelizer = MeshVoxelizerGpuScript.new()
-
-	for i in range(DemoAssets.count()):
-		var asset_path := DemoAssets.geo_path(i)
-		var mesh_info := DemoAssets.load_mesh_info(asset_path)
-		var raw_mesh: Mesh = mesh_info.get("mesh", null)
-		var mesh_xform: Transform3D = mesh_info.get("mesh_transform", Transform3D.IDENTITY)
-		# Bake only the import conversion (mesh_transform) into the mesh; keep the FBX's
-		# native pivot at the mesh origin. Scoring + placement both anchor at that pivot,
-		# so each asset embeds/stands exactly as authored in its FBX.
-		var mesh := DemoAssets.bake_mesh_xform(raw_mesh, mesh_xform)
-		var fallback := false
-		if mesh == null:
-			if not fallback_to_box:
-				continue
-			mesh = BoxMesh.new()
-			fallback = true
-		var aabb := mesh.get_aabb()
-		var volume := aabb.size.x * aabb.size.y * aabb.size.z
-		var longest := maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
-		var color := DemoAssets.asset_color(i)
-		var vox_result := voxelizer.voxelize(mesh, voxel_grid_count, color, 0.9, 4)
-		var footprint := ObjectVolumeScoreGpuScript.footprint_from_voxelizer_result(
-			vox_result, color, longest)
-		var ext := ObjectVolumeScoreGpuScript.compute_extent_params(longest)
-		var sample_profile := ObjectVolumeScoreGpuScript.ensure_rotation_sample_profile(
-			footprint,
-			scene_voxel_size
-		)
-		var asset := {
-			"name": DemoAssets.asset_name(i, asset_path.get_file()),
-			"path": asset_path,
-			"mesh": mesh,
-			"volume": volume,
-			"aabb": aabb,
-			"color": color,
-			"voxelized": bool(vox_result.get("ok", false)),
-			"voxel_count": vox_result.get("voxels", []).size(),
-			"fp_grid": footprint.get("grid", Vector3i.ZERO),
-			"world_longest": longest,
-			"tier": ext["tier"],
-			"sample_extent": sample_profile.get("sample_extent", ext["sample_extent"]),
-			"sample_variant_count": sample_profile.get("max_sample_count", 0),
-			"sample_group_count": sample_profile.get("sample_group_count", 0),
-			"subtile_count": sample_profile.get("sample_group_count", 0),
-			"footprint": footprint,
-			"fallback": fallback,
-		}
-		assets.append(asset)
-		footprints.append(footprint)
-
-	voxelizer.dispose()
-	return {
-		"assets": assets,
-		"footprints": footprints,
-		"elapsed_ms": float(Time.get_ticks_msec() - t0),
-	}
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 
 static func sample_terrain_height_for_node(owner: Node, gx: int, gz: int) -> PackedFloat32Array:
@@ -98,11 +33,6 @@ static func procedural_terrain(gx: int, gz: int) -> PackedFloat32Array:
 			var v := float(z) / maxf(float(gz - 1), 1.0) - 0.5
 			field[z * gx + x] = (sin(u * 6.28) * cos(v * 6.28) * 0.5 + 0.5) * max_h
 	return field
-
-
-## 将 [0,1] 浮点量化为 8 位 UNORM 整数（0..255），供 8 位体素场打包使用。
-static func _to_unorm8(value: float) -> int:
-	return int(round(clampf(value, 0.0, 1.0) * 255.0))
 
 
 static func build_scene_fields(
@@ -148,19 +78,19 @@ static func build_scene_fields(
 			for y in range(gy):
 				var idx := VoxelGeneral.voxel_index(Vector3i(x, y, z), grid)
 				if y <= ground_slice:
-					cx_bytes[idx * 4 + 3] = _to_unorm8(0.8)
-					coll_bytes[idx] = _to_unorm8(0.9)
+					cx_bytes[idx * 4 + 3] = BufferUtils.quantize_unorm8(0.8)
+					coll_bytes[idx] = BufferUtils.quantize_unorm8(0.9)
 				elif y <= ground_slice + 1:
-					cx_bytes[idx * 4 + 3] = _to_unorm8(0.3)
-					coll_bytes[idx] = _to_unorm8(0.1)
+					cx_bytes[idx * 4 + 3] = BufferUtils.quantize_unorm8(0.3)
+					coll_bytes[idx] = BufferUtils.quantize_unorm8(0.1)
 
 				var above_ground := y - ground_slice
 				if above_ground >= min_above and above_ground <= max_above:
 					var frac := 1.0 - float(above_ground - min_above) / maxf(float(max_above - min_above), 1.0)
-					target_bytes[idx * 4] = _to_unorm8(0.45)
-					target_bytes[idx * 4 + 1] = _to_unorm8(0.42)
-					target_bytes[idx * 4 + 2] = _to_unorm8(0.35)
-					target_bytes[idx * 4 + 3] = _to_unorm8(clampf(frac * 0.7 + 0.1, 0.0, 1.0))
+					target_bytes[idx * 4] = BufferUtils.quantize_unorm8(0.45)
+					target_bytes[idx * 4 + 1] = BufferUtils.quantize_unorm8(0.42)
+					target_bytes[idx * 4 + 2] = BufferUtils.quantize_unorm8(0.35)
+					target_bytes[idx * 4 + 3] = BufferUtils.quantize_unorm8(clampf(frac * 0.7 + 0.1, 0.0, 1.0))
 
 	return {
 		"grid": grid,
@@ -206,6 +136,9 @@ static func anchor_world_positions(
 		var world := VoxelGeneral.voxel_float_center_to_world(anchor + Vector3.ONE * 0.5, origin, voxel_size)
 		var hi := int(anchor.z) * grid.x + int(anchor.x)
 		var terrain_y := terrain_height[hi] if hi >= 0 and hi < terrain_height.size() else world.y
-		world.y = terrain_y + voxel_size.y * 0.5
+		# 锚点落在地形表面。胜出 mesh 按其原生 FBX 轴心对齐到这个世界 Y
+		# （volume_score_demo._winner_placement），锚点小球也画在这里。此前加了
+		# voxel_size.y * 0.5（锚点体素中心），会把整个放置基准抬高半个体素。
+		world.y = terrain_y
 		positions.append(world)
 	return positions

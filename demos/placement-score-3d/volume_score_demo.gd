@@ -1,88 +1,76 @@
 @tool
 extends "res://scripts/core_demo_contract_fixture.gd"
 
-## 3D Object Volume Score Demo
+## placement-score-3d — Volume-Score Provider (VPG-backed)
 ##
-## Loads all geo meshes, voxelizes them, generates a scene field from terrain,
-## distributes anchors across the surface, then scores every asset at every
-## anchor with 12 rotation slots via GPU compute.
+## Generates surface anchors over the scene field, then for every anchor scores every
+## prepared AssetDescriptor asset (12-rotation best-fit) via VoxelPlacementGenerator's
+## in-shader scorer, keeping per-anchor top-k asset rankings. Registers itself with the
+## sibling CoreSPADemo (ScenePlacementActor) so the editor toolbar "Anchors"/"Score"
+## buttons and Anchor-mode click-select delegate here.
 ##
-## Every anchor evaluates all assets so their scores can be compared
-## head-to-head.
+## Scoring backend note: the old standalone ObjectVolumeScoreGpu two-pass pipeline was
+## retired when volume scoring merged into VoxelPlacementGenerator. This provider drives
+## VPG.run_minimal per asset over the anchors' tiles with read_tile_topk, reading the
+## per-tile best {voxel, score, rotation} record — no retired code.
+##
+## Placed winners are the REAL descriptor mesh (never proxy boxes) — see the project
+## CLAUDE.md rule "Placement / Score Demos: Render Real AssetDescriptor Assets".
 
-const ObjectVolumeScoreGpuScript := preload("res://scripts/object_volume_score_gpu.gd")
-const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
-const VoxelPlacementOutputScript := preload("res://scripts/voxel_placement_output.gd")
-const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
-const DemoUI := preload("res://scripts/utils/demo_ui.gd")
+const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generator.gd")
 const VolumeScore3D := preload("res://scripts/utils/volume_score_3d.gd")
+const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
+const DemoUI := preload("res://scripts/utils/demo_ui.gd")
+const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 
 const VOXEL_DISPLAY_GPU_OBJECTS := SPAEditorContract.VOXEL_DISPLAY_GPU_OBJECTS
 const VOXEL_DISPLAY_ANCHOR := SPAEditorContract.VOXEL_DISPLAY_ANCHOR
 const VOLUME_SCORE_DISPLAY_OWNER := "volume_score"
-const VOLUME_SCORE_WINNER_GROUP := "volume_score_winner"
 const SELECTION_DOMAIN_ANCHOR := SPAEditorContract.SELECTION_DOMAIN_ANCHOR
 const SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR := SPAEditorContract.SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR
-const ANCHOR_RADIUS_PX_BASE := 18.0
-const ANCHOR_RADIUS_VOXEL_SCALE := 0.10
+const TILE_SIZE := 8   # 与 VoxelPlacementGenerator.TILE_SIZE 对齐：VPG 以 tile 为评分单元
 const ANCHOR_RADIUS_MIN := 0.06
+## 选中锚点高亮色，与 SPA canonical SELECTION_DOMAIN_ANCHOR 保持一致
+const SELECTED_ANCHOR_COLOR := Color(1.0, 0.64, 0.1, 0.95)
 
 # ---- Exported Tunables -----------------------------------------------------
-# 以下参数均可在编辑器中直接调整，无需重新编译
-
-@export_range(16, 128, 1) var grid_resolution: int = 64       # 场景场 XZ 分辨率（每个方向上的体素数量）
-@export_range(4, 32, 1) var grid_height_slices: int = 16      # 场景场 Y 层数（垂直方向切片数）
-@export_range(2, 16, 1) var anchor_spacing: int = 4           # 锚点之间的体素间距（步长）
-@export_range(1, 16, 1) var selected_anchor_top_k: int = 4    # 选中锚点时显示的 Top-K 资产数
-@export_range(4, 64, 1) var anchor_pick_radius_px: int = 18   # 锚点显示/点选半径缩放；18 为默认尺寸
-@export_range(8, 48, 1) var voxel_grid_count: int = 24        # 资产体素化时的网格分辨率（资产侧）
-@export_range(0.0, 1.0, 0.05) var target_min_height_frac: float = 0.0    # 目标放置区的最小高度比例（相对 grid_height_slices）
-@export_range(0.0, 1.0, 0.05) var target_max_height_frac: float = 0.25   # 目标放置区的最大高度比例
-@export var auto_run_on_start := true                          # 场景加载后是否自动执行完整管线
+@export_range(16, 128, 1) var grid_resolution: int = 64        # 场景场 XZ 分辨率
+@export_range(4, 32, 1) var grid_height_slices: int = 16       # 场景场 Y 层数
+@export_range(2, 16, 1) var anchor_spacing: int = 8            # 锚点体素间距（默认 = TILE_SIZE，1 锚点/tile）
+@export_range(1, 8, 1) var selected_anchor_top_k: int = 4      # 选中锚点显示的 Top-K 资产数
+@export_range(1, 24, 1) var rotation_slots: int = 12           # 每候选原点扫描的 yaw 档数
+@export_range(1, 8, 1) var asset_footprint_voxels: int = 4     # 资产 footprint 最长轴的体素跨度
+## 要评分/放置的真实资产（AssetDescriptor `.tres`）。场景显式声明为首选来源。
+@export var placement_assets: Array[AssetDescriptor] = []
+@export_dir var asset_descriptor_dir: String = "res://assets"  # 回退扫描目录
+@export var auto_run_on_start := true
 
 # ---- State -----------------------------------------------------------------
-# 数据流：资产加载 → 体素化 → 场景场 → 锚点 → GPU评分 → 可视化
-
-## 资产元数据：每项包含 name/mesh/volume/aabb/color/sample_variant_count 等
+## 每资产：{descriptor, name, mesh, color, footprint_shape, aabb, material}
 var _assets: Array[Dictionary] = []
-## 资产体素足迹：ObjectVolumeScoreGpuScript.footprint_from_voxelizer_result() 的产物
-var _footprints: Array[Dictionary] = []
-## 锚点体素坐标（场景场网格坐标系）
-var _anchors := PackedVector3Array()
-## 锚点世界坐标（由体素坐标 + 地形高度换算）
+## 每资产的已烘 footprint（供 VPG run_minimal）
+var _footprints: Array = []
+var _anchors := PackedVector3Array()             # 锚点体素坐标
 var _anchor_world_positions := PackedVector3Array()
-## 场景场：grid/voxel_size/grid_origin/complexity_bytes/collision_bytes/target_bytes
 var _scene_fields: Dictionary = {}
-## GPU评分结果：每个资产一个字典，包含 anchor_results 数组
-var _results: Array[Dictionary] = []
-## 每个锚点的最佳资产索引（-1 表示无胜者）
-var _winner_per_anchor: PackedInt32Array = PackedInt32Array()
-## 地形高度采样：每 XZ 格一个值，用于锚点 Y 坐标计算
+var _complexity_field := PackedFloat32Array()
+var _collision_field := PackedFloat32Array()
 var _terrain_height := PackedFloat32Array()
-## 当前选中的锚点索引（-1 = 无选中）
+## 每资产一条：{ok, asset_index, anchor_results:[{score, valid, rotation_slot, voxel}]}
+var _results: Array[Dictionary] = []
+var _winner_per_anchor := PackedInt32Array()     # 每锚点最佳资产索引（-1 = 无）
 var _selected_anchor_idx := -1
 var _selected_anchor_topk_index := 0
-
-# ---- Display Nodes ---------------------------------------------------------
-# 所有可视化内容挂在 _display_root 下，通过 SPA 注册到 CoreSPADemo 的可见性管理
-
-var _hud_label: Label                        # 左上角统计面板
-var _display_root: Node3D                    # 所有可视化节点的父节点
-var _anchor_point_display: MultiMeshInstance3D   # 所有锚点的球体标记（GPU实例化）
-var _selected_anchor_marker: Node3D          # 当前选中锚点的高亮球体
-var _anchor_detail_label: Label3D            # 选中锚点上方浮动的评分详情
-var _voxelized := false                      # 是否已完成资产体素化
-var _scored := false                         # 是否已完成 GPU 评分
-var _elapsed_voxelize_ms := 0.0
+var _scored := false
 var _elapsed_score_ms := 0.0
 var _total_anchors := 0
-var _total_dispatches := 0                  # GPU dispatch 次数（footprints.size() × 2）
 
+# ---- Display Nodes ---------------------------------------------------------
+var _hud_label: Label
+var _display_root: Node3D
+var _anchor_point_display: MultiMeshInstance3D
 
-# ---- Public API — SPA Integration -----------------------------------------
-# CoreSPADemo 通过 register_volume_score_provider 获取此脚本的引用，然后
-# 调用以下方法驱动整个体积评分管线。所有返回值均为 Dictionary {\"ok\": bool, ...}
 
 func _ready() -> void:
 	super._ready()
@@ -91,114 +79,70 @@ func _ready() -> void:
 	_setup_hud()
 	_display_root = Node3D.new()
 	_display_root.name = "VolumeScoreDisplay"
-	## SPA 绑定需要重复调用：编辑器刚打开组合场景时子场景可能未同步完成
+	# SPA 绑定需重复：编辑器刚打开组合场景时子场景可能未同步完成
 	_sync_spa_bindings()
 	_sync_spa_bindings.call_deferred()
 	if auto_run_on_start:
 		run_volume_score_pipeline.call_deferred()
 
 
-## 完整管线：加载 → 体素化 → 场景场 → 锚点 → GPU评分 → 可视化
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		_unregister_spa_volume_score_provider()
+
+
+# ---- Public API — SPA provider interface -----------------------------------
+
+## 完整管线：场景场 → 资产 footprint → 锚点 → VPG 评分 → 可视化
 func run_volume_score_pipeline() -> Dictionary:
 	if not Engine.is_editor_hint():
 		return {"ok": false, "reason": "not_editor_hint"}
 	_sync_spa_bindings()
-	_build_scene_fields()
-	_load_and_voxelize()
+	_ensure_scene_fields_ready()
+	_ensure_assets_ready()
 	_generate_anchors()
-	_run_gpu_scoring()
+	_run_scoring()
 	_build_visualization()
 	_sync_spa_bindings()
-	_frame_camera()
 	_update_hud()
-	return _volume_score_status(true)
+	return _status(true)
 
 
-## 仅生成锚点（不重新评分），调用后锚点可视化即显示
+## 仅生成锚点（不评分）
 func generate_anchors() -> Dictionary:
 	if not Engine.is_editor_hint():
 		return {"ok": false, "reason": "not_editor_hint"}
 	if not _ensure_scene_fields_ready():
 		return {"ok": false, "reason": "scene_fields_not_ready"}
 	_generate_anchors()
-	_clear_score_results()
+	_clear_scores()
 	_build_visualization()
 	_update_hud()
-	return _volume_score_status(false)
+	return _status(false)
 
 
-## 仅运行 GPU 评分（需已有锚点），不重新体素化
+## 评分（需锚点，缺则先生成）；名字对齐 SPA 的 _call_volume_score_provider("calculate_voxel_scores")
 func calculate_voxel_scores() -> Dictionary:
 	if not Engine.is_editor_hint():
 		return {"ok": false, "reason": "not_editor_hint"}
-	if not _ensure_scoring_inputs_ready():
-		return {"ok": false, "reason": "scoring_inputs_not_ready"}
+	if not _ensure_scene_fields_ready():
+		return {"ok": false, "reason": "scene_fields_not_ready"}
+	_ensure_assets_ready()
 	if _anchors.is_empty():
 		_generate_anchors()
-	_run_gpu_scoring()
+	_run_scoring()
 	_build_visualization()
 	_update_hud()
 	_notify_spa_selected_anchor_changed()
-	return _volume_score_status(true)
+	return _status(true)
 
 
-## 获取指定锚点的 Top-K 评分条目（按分数降序）
-func get_anchor_topk_entries(anchor_index: int, top_k: int = -1) -> Array[Dictionary]:
-	var limit := selected_anchor_top_k if top_k <= 0 else top_k
-	return ObjectVolumeScoreGpuScript.build_anchor_asset_topk(
-		_results, _assets, anchor_index, limit)
+func has_volume_score_anchors() -> bool:
+	return not _anchor_world_positions.is_empty()
 
 
-func get_selected_anchor_topk_entries() -> Array[Dictionary]:
-	var entries := get_anchor_topk_entries(_selected_anchor_idx, selected_anchor_top_k)
-	if not entries.is_empty():
-		_selected_anchor_topk_index = clampi(_selected_anchor_topk_index, 0, entries.size() - 1)
-	for i in range(entries.size()):
-		entries[i]["selected_bounds"] = i == _selected_anchor_topk_index
-	return entries
-
-
-func get_selected_anchor_topk_index() -> int:
-	return _selected_anchor_topk_index
-
-
-func cycle_selected_anchor_topk(delta: int) -> Dictionary:
-	if _selected_anchor_idx < 0:
-		return {"ok": false, "reason": "no_selected_anchor"}
-	var entries := get_anchor_topk_entries(_selected_anchor_idx, selected_anchor_top_k)
-	if entries.is_empty():
-		return {"ok": false, "reason": "no_topk_entries"}
-	var count := entries.size()
-	var next_index := (_selected_anchor_topk_index + int(delta)) % count
-	if next_index < 0:
-		next_index += count
-	_selected_anchor_topk_index = next_index
-	_refresh_selected_anchor_overlay()
-	_update_hud()
-	_notify_spa_selected_anchor_changed()
-	return {
-		"ok": true,
-		"anchor_index": _selected_anchor_idx,
-		"selected_topk_index": _selected_anchor_topk_index,
-		"selected_topk_entry": _selected_anchor_topk_entry(),
-		"topk": get_selected_anchor_topk_entries(),
-	}
-
-
-func _selected_anchor_topk_entry() -> Dictionary:
-	var entries := get_anchor_topk_entries(_selected_anchor_idx, selected_anchor_top_k)
-	if entries.is_empty():
-		return {}
-	_selected_anchor_topk_index = clampi(_selected_anchor_topk_index, 0, entries.size() - 1)
-	var entry := entries[_selected_anchor_topk_index].duplicate(true)
-	entry["selected_bounds"] = true
-	return entry
-
-
-func _refresh_selected_anchor_overlay() -> void:
-	if _selected_anchor_idx < 0:
-		return
-	_build_selected_anchor_overlay()
+func has_selected_anchor() -> bool:
+	return _selected_anchor_idx >= 0
 
 
 func get_selected_anchor_summary_text() -> String:
@@ -207,19 +151,16 @@ func get_selected_anchor_summary_text() -> String:
 	if _selected_anchor_idx < 0:
 		return "Anchor scores: select an anchor"
 	var parts: Array[String] = ["Anchor #%d" % _selected_anchor_idx]
-	for entry in get_selected_anchor_topk_entries():
-		var name := str(entry.get("asset_name", "?"))
+	for entry in _selected_anchor_topk_entries():
 		var score := float(entry.get("score", -INF))
-		var score_text := "n/a"
-		if score > -1.0e20:
-			score_text = "%.2f" % score
-		var valid_suffix := "" if bool(entry.get("valid", false)) else " invalid"
-		parts.append("%s %s%s" % [name, score_text, valid_suffix])
+		var score_text := "%.2f" % score if score > -1.0e20 else "n/a"
+		var suffix := "" if bool(entry.get("valid", false)) else " invalid"
+		parts.append("%s %s%s" % [str(entry.get("asset_name", "?")), score_text, suffix])
 	return " | ".join(parts)
 
 
 func get_selected_anchor_tooltip_text() -> String:
-	return "\n".join(_build_selected_anchor_hud_lines())
+	return "\n".join(_selected_anchor_hud_lines())
 
 
 func get_selected_anchor_record() -> Dictionary:
@@ -230,21 +171,23 @@ func get_selected_anchor_record() -> Dictionary:
 		"geometry": SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR,
 		"id": "volume_score_anchor:%d" % _selected_anchor_idx,
 		"anchor_index": _selected_anchor_idx,
-		"voxel_coord": _selected_anchor_voxel(),
+		"voxel_coord": _anchor_voxel(_selected_anchor_idx),
 		"world_position": _anchor_world_positions[_selected_anchor_idx],
-		"topk": get_selected_anchor_topk_entries(),
+		"marker_size": _scene_fields.get("voxel_size", Vector3.ONE),
+		"topk": _selected_anchor_topk_entries(),
 		"selected_topk_index": _selected_anchor_topk_index,
-		"selected_topk_entry": _selected_anchor_topk_entry(),
 		"summary": get_selected_anchor_summary_text(),
 		"tooltip": get_selected_anchor_tooltip_text(),
 	}
-	var sample_bounds := _selected_anchor_sample_bounds_info()
+	# 胜出物体的红色定向包围盒（SPA 据此画 ANCHOR_SAMPLE_BOUNDS 红框）
+	var sample_bounds := _selected_anchor_sample_bounds()
 	if not sample_bounds.is_empty():
 		record["sample_bounds"] = sample_bounds
 	return record
 
 
-## 选中指定锚点并高亮显示，返回 Top-K 评分条目
+## 选中锚点（仅置状态，不自绘）。点选与反馈由 SPA 拥有（CoreSPADemo._select_volume_score_anchor_at_position），
+## provider 只出数据；SPA 拿到 record 后经其 canonical selection visual 画高亮/标签/红框。
 func select_anchor(anchor_index: int) -> Dictionary:
 	if not _scored:
 		return {"ok": false, "reason": "scoring_not_complete"}
@@ -253,69 +196,64 @@ func select_anchor(anchor_index: int) -> Dictionary:
 	_sync_spa_bindings()
 	_selected_anchor_idx = anchor_index
 	_selected_anchor_topk_index = 0
-	_build_selected_anchor_overlay()
 	_update_hud()
 	_notify_spa_selected_anchor_changed()
 	return {
 		"ok": true,
 		"anchor_index": _selected_anchor_idx,
 		"selected_topk_index": _selected_anchor_topk_index,
-		"selected_topk_entry": _selected_anchor_topk_entry(),
-		"topk": get_selected_anchor_topk_entries(),
+		"topk": _selected_anchor_topk_entries(),
 	}
 
 
 func clear_selected_anchor() -> Dictionary:
 	_selected_anchor_idx = -1
 	_selected_anchor_topk_index = 0
-	_remove_selected_anchor_overlay()
 	_update_hud()
 	_notify_spa_selected_anchor_changed()
 	return {"ok": true}
 
 
-func has_selected_anchor() -> bool:
-	return _selected_anchor_idx >= 0
+# ---- Data source for SPA-owned pick ---------------------------------------
+# SPA 用这些数据做射线点选（胜出物体 AABB 优先，锚点小球回退），点中后调 select_anchor。
+
+func get_anchor_world_positions() -> PackedVector3Array:
+	return _anchor_world_positions
 
 
-func has_volume_score_anchors() -> bool:
-	return not _anchor_world_positions.is_empty()
+func get_anchor_marker_radius() -> float:
+	return _anchor_marker_radius()
 
 
-## 通过相机射线 + 屏幕坐标点选最近的锚点
-func select_anchor_at_viewport_position(viewport_camera: Camera3D, screen_pos: Vector2) -> Dictionary:
-	var anchor_index := _pick_anchor_index_from_camera(viewport_camera, screen_pos)
-	if anchor_index < 0:
-		return {"ok": false, "reason": "no_anchor_hit"}
-	return select_anchor(anchor_index)
-
-
-func _pick_anchor_index_from_camera(camera: Camera3D, screen_pos: Vector2) -> int:
-	if not _scored or camera == null or _anchor_world_positions.is_empty():
-		return -1
-	var best_idx := -1
-	var best_score := INF
-	var best_ray_t := INF
-	var ray_origin := camera.project_ray_origin(screen_pos)
-	var ray_dir := camera.project_ray_normal(screen_pos).normalized()
-	var hit_radius := _anchor_marker_radius()
-	var hit_radius_sq := hit_radius * hit_radius
+## [{anchor_index, aabb}]：每个有有效胜出物体的锚点及其世界 AABB（SPA 射线点选目标）。
+func get_selectable_anchor_bounds() -> Array:
+	var out: Array = []
 	for i in range(_anchor_world_positions.size()):
-		var world_pos := _anchor_world_positions[i]
-		if camera.is_position_behind(world_pos):
-			continue
-		var to_anchor := world_pos - ray_origin
-		var ray_t := to_anchor.dot(ray_dir)
-		if ray_t < 0.0:
-			continue
-		var closest := ray_origin + ray_dir * ray_t
-		var score := closest.distance_squared_to(world_pos)
-		if score <= hit_radius_sq and (score < best_score or (is_equal_approx(score, best_score) and ray_t < best_ray_t)):
-			best_score = score
-			best_ray_t = ray_t
-			best_idx = i
-	return best_idx
+		var aabb := _winner_world_aabb(i)
+		if aabb.size.length_squared() > 0.000001:
+			out.append({"anchor_index": i, "aabb": aabb})
+	return out
 
+
+func cycle_selected_anchor_topk(delta: int) -> Dictionary:
+	if _selected_anchor_idx < 0:
+		return {"ok": false, "reason": "no_selected_anchor"}
+	var entries := _selected_anchor_topk_entries()
+	if entries.is_empty():
+		return {"ok": false, "reason": "no_topk_entries"}
+	var count := entries.size()
+	_selected_anchor_topk_index = ((_selected_anchor_topk_index + int(delta)) % count + count) % count
+	_update_hud()
+	_notify_spa_selected_anchor_changed()
+	return {
+		"ok": true,
+		"anchor_index": _selected_anchor_idx,
+		"selected_topk_index": _selected_anchor_topk_index,
+		"topk": entries,
+	}
+
+
+# ---- Scene field / assets / anchors ----------------------------------------
 
 func _ensure_scene_fields_ready() -> bool:
 	if _scene_fields.is_empty() or _terrain_height.is_empty():
@@ -323,371 +261,281 @@ func _ensure_scene_fields_ready() -> bool:
 	return not _scene_fields.is_empty()
 
 
-func _ensure_scoring_inputs_ready() -> bool:
-	if not _ensure_scene_fields_ready():
-		return false
-	if not _voxelized or _footprints.is_empty():
-		_load_and_voxelize()
-	elif not _ensure_footprints_scene_voxel_profile_ready():
-		print("[VolumeScore] Revoxelizing assets: stale footprint sample metadata")
-		_load_and_voxelize()
-	return not _footprints.is_empty()
+func _build_scene_fields() -> void:
+	_terrain_height = VolumeScore3D.sample_terrain_height_for_node(self, grid_resolution, grid_resolution)
+	_scene_fields = VolumeScore3D.build_scene_fields(grid_resolution, grid_height_slices, _terrain_height)
+	_terrain_height = _scene_fields.get("terrain_height", _terrain_height)
+	var grid: Vector3i = _scene_fields.get("grid", Vector3i.ZERO)
+	var voxel_size: Vector3 = _scene_fields.get("voxel_size", Vector3.ONE)
+	var ground := _build_ground_fields(grid, _terrain_height, voxel_size)
+	_complexity_field = ground[0]
+	_collision_field = ground[1]
 
 
-func _ensure_footprints_scene_voxel_profile_ready() -> bool:
-	var voxel_size: Vector3 = _scene_fields.get("voxel_size", Vector3.ZERO)
-	if not _valid_scene_voxel_size(voxel_size):
-		return false
-	for i in range(_footprints.size()):
-		var footprint: Dictionary = _footprints[i]
-		if not _footprint_has_asset_bounds_metadata(footprint):
-			return false
-		var profile := ObjectVolumeScoreGpuScript.ensure_rotation_sample_profile(
-			footprint,
-			voxel_size
-		)
-		if not _scene_sample_profile_matches(profile, voxel_size):
-			return false
-		_footprints[i] = footprint
-	return true
+## 每列填实到地形高度（complexity+collision=1），其上留空——干净表面。
+func _build_ground_fields(grid: Vector3i, terrain_height: PackedFloat32Array, voxel_size: Vector3) -> Array:
+	var voxel_count := VoxelGeneral.voxel_count(grid)
+	var complexity := PackedFloat32Array()
+	complexity.resize(voxel_count)
+	var collision := PackedFloat32Array()
+	collision.resize(voxel_count)
+	for z in range(grid.z):
+		for x in range(grid.x):
+			var hi := z * grid.x + x
+			var terrain_y := terrain_height[hi] if hi < terrain_height.size() else 0.0
+			var ground_slice := clampi(int(terrain_y / maxf(voxel_size.y, 0.0001)), 0, grid.y - 1)
+			for y in range(ground_slice + 1):
+				var idx := VoxelGeneral.voxel_index(Vector3i(x, y, z), grid)
+				complexity[idx] = 1.0
+				collision[idx] = 1.0
+	return [complexity, collision]
 
 
-func _footprint_has_asset_bounds_metadata(footprint: Dictionary) -> bool:
-	if float(footprint.get("cell_size", 0.0)) <= 0.000001:
-		return false
-	if not footprint.has("aabb_min") or not (footprint["aabb_min"] is Vector3):
-		return false
-	if not footprint.has("aabb_size") or not (footprint["aabb_size"] is Vector3):
-		return false
-	if not footprint.has("pivot_local") or not (footprint["pivot_local"] is Vector3):
-		return false
-	return true
+func _ensure_assets_ready() -> void:
+	if not _assets.is_empty() and not _footprints.is_empty():
+		return
+	_assets.clear()
+	_footprints.clear()
+	for d in _load_descriptors():
+		var mesh: Mesh = d.get_mesh()
+		if mesh == null:
+			continue
+		var shape := _footprint_shape_for(mesh)
+		var aabb := mesh.get_aabb()
+		# 打分 footprint 沿 mesh 原生 FBX 轴心（local y=0）居中，与 _winner_placement 的半埋放置对齐：
+		# 轴心以下的层代表「埋入地形」的部分（cliff 轴心在几何中心 → 约一半埋入；植物轴心在底部 → 0 层埋入）。
+		var below := 0
+		if aabb.size.y > 0.0001:
+			below = clampi(int(round(float(shape.y) * (-aabb.position.y) / aabb.size.y)), 0, shape.y)
+		var footprint := _build_centered_footprint(shape, below)
+		if footprint.is_empty():
+			continue
+		_assets.append({
+			"descriptor": d,
+			"name": str(d.asset_id) if str(d.asset_id) != "" else "Asset%d" % _assets.size(),
+			"mesh": mesh,
+			"color": d.get_color(),
+			"footprint_shape": shape,
+			"aabb": aabb,
+			"material": d.material,
+		})
+		_footprints.append(footprint)
 
 
-func _scene_sample_profile_matches(profile: Dictionary, voxel_size: Vector3) -> bool:
-	if not bool(profile.get("ok", false)):
-		return false
-	if not bool(profile.get("scene_voxel_units", false)):
-		return false
-	var cached: Vector3 = profile.get("scene_voxel_size", Vector3.ZERO)
-	return is_equal_approx(cached.x, voxel_size.x) \
-		and is_equal_approx(cached.y, voxel_size.y) \
-		and is_equal_approx(cached.z, voxel_size.z)
+## 沿原生轴心居中的打分 footprint（与 _winner_placement 的半埋放置对齐）。
+## - 轴心（y=0）以下的体素 = 埋入地形：collision_strength=1（标记为 collision 体素）但 weight=0
+##   →「只采样到 collision，其余权重都为 0」：在 score_voxel_tile.glsl 里 weight 缩放所有通道，
+##   weight=0 使其对 solid_collision / support / complexity / clearance / target 皆零贡献，
+##   因此埋入既不判无效也不扣分（允许埋入），也不干扰打分。
+## - 轴心及以上的体素正常参与（weight=1）；support 标在 y=0（贴地层，检查其正下方地形是否实体），
+##   地表以上撞到地形仍会累加 solid_collision → 保留 collision_limit 的原有淘汰作用（窄物体更易通过）。
+## - 每列顶层上方加一层 clearance 检查净空。
+func _build_centered_footprint(shape: Vector3i, below: int) -> Array[Dictionary]:
+	var samples: Array[Dictionary] = []
+	var top_y := shape.y - 1 - below
+	for z in range(shape.z):
+		for x in range(shape.x):
+			for yi in range(shape.y):
+				var y := yi - below
+				samples.append({
+					"local_pos": Vector3i(x - shape.x / 2, y, z - shape.z / 2),
+					"collision_strength": 1.0,
+					"flags": AssetDescriptorScript.FLAG_SUPPORT if y == 0 else 0,
+					"weight": 0.0 if y < 0 else 1.0,
+				})
+			samples.append({
+				"local_pos": Vector3i(x - shape.x / 2, top_y + 1, z - shape.z / 2),
+				"collision_strength": 0.0,
+				"flags": AssetDescriptorScript.FLAG_CLEARANCE,
+				"weight": 0.5,
+			})
+	return samples
 
 
-func _valid_scene_voxel_size(voxel_size: Vector3) -> bool:
-	return voxel_size.x > 0.000001 \
-		and voxel_size.y > 0.000001 \
-		and voxel_size.z > 0.000001
+func _generate_anchors() -> void:
+	_anchors = VolumeScore3D.generate_anchors(_scene_fields, _terrain_height, anchor_spacing)
+	_anchor_world_positions = VolumeScore3D.anchor_world_positions(_scene_fields, _terrain_height, _anchors)
+	_total_anchors = _anchors.size()
 
 
-func _clear_score_results() -> void:
+# ---- VPG scoring -----------------------------------------------------------
+
+## 对每个资产用 VPG run_minimal 评分 anchors 所属的 tile，读取 tile_topk 的每 tile 最佳
+## {voxel, score, rotation}，映射回锚点。VPG 以 8³ tile 为评分单元，故锚点按 tile 聚合。
+func _run_scoring() -> void:
+	_clear_scores()
+	if _anchors.is_empty() or _footprints.is_empty():
+		push_warning("[VolumeScore] Cannot score: anchors or footprints empty")
+		return
+	if RenderingServer.get_rendering_device() == null:
+		push_warning("[VolumeScore] No RenderingDevice — GPU scoring skipped")
+		return
+
+	var grid: Vector3i = _scene_fields.get("grid", Vector3i.ZERO)
+	var tile_counts := Vector3i(
+		ceili(float(grid.x) / float(TILE_SIZE)),
+		ceili(float(grid.y) / float(TILE_SIZE)),
+		ceili(float(grid.z) / float(TILE_SIZE)))
+	var voxel_count := VoxelGeneral.voxel_count(grid)
+	var target_field := PackedFloat32Array()
+	target_field.resize(voxel_count * 4)
+	for ti in range(voxel_count):
+		target_field[ti * 4 + 3] = 1.0   # uniform target coverage → 评分归约为物理拟合
+
+	var candidate_tiles := _anchor_candidate_tiles(tile_counts)
+	var t0 := Time.get_ticks_msec()
+	var placer := VoxelPlacementGenerator.new()
+	for asset_index in range(_footprints.size()):
+		var settings := {
+			"rotation_slots": rotation_slots,
+			"top_k": 1,
+			"read_tile_topk": true,
+			"result_capacity": maxi(candidate_tiles.size(), 1),
+			"min_distance_voxels": 0.0,
+			"min_support_ratio": 1.0,
+			"collision_limit": 0.5,  # 埋入体素 weight=0 不累加 solid_collision；此处只约束地表以上撞地形
+			"clearance_limit": 2.0,
+			"collision_penalty": 1.0,
+			"target_field_bytes": target_field,
+			"asset_index": asset_index,
+		}
+		var out := placer.run_minimal(_complexity_field, _collision_field, _footprints[asset_index], grid, settings)
+		var records: Array = out.get("tile_topk", [])
+		var best_by_tile := {}
+		for rec in records:
+			if not (rec is Dictionary):
+				continue
+			var tid := int(rec.get("tile_id", -1))
+			if tid < 0:
+				continue
+			if not best_by_tile.has(tid) or float(rec.get("score", -INF)) > float(best_by_tile[tid].get("score", -INF)):
+				best_by_tile[tid] = rec
+		var anchor_results: Array[Dictionary] = []
+		for anchor_index in range(_anchors.size()):
+			var tid := _anchor_tile_id(anchor_index, tile_counts)
+			var rec: Dictionary = best_by_tile.get(tid, {})
+			anchor_results.append({
+				"score": float(rec.get("score", -INF)),
+				"valid": bool(rec.get("valid", false)),
+				"rotation_slot": int(rec.get("rotation_index", 0)),
+				"voxel": rec.get("voxel_origin", _anchor_voxel(anchor_index)),
+			})
+		_results.append({"ok": true, "asset_index": asset_index, "anchor_results": anchor_results})
+
+	_elapsed_score_ms = float(Time.get_ticks_msec() - t0)
+	_winner_per_anchor = _compute_winners()
+	_scored = true
+	print("[VolumeScore] Scored %d assets × %d anchors in %.0f ms" % [
+		_assets.size(), _total_anchors, _elapsed_score_ms])
+
+
+func _anchor_candidate_tiles(tile_counts: Vector3i) -> Array:
+	var seen := {}
+	var tiles: Array = []
+	for i in range(_anchors.size()):
+		var tile := _anchor_tile(i)
+		var tid := tile.x + tile_counts.x * (tile.y + tile_counts.y * tile.z)
+		if seen.has(tid):
+			continue
+		seen[tid] = true
+		tiles.append(tile)
+	return tiles
+
+
+func _anchor_tile(anchor_index: int) -> Vector3i:
+	var v := _anchor_voxel(anchor_index)
+	return Vector3i(v.x / TILE_SIZE, v.y / TILE_SIZE, v.z / TILE_SIZE)
+
+
+func _anchor_tile_id(anchor_index: int, tile_counts: Vector3i) -> int:
+	var tile := _anchor_tile(anchor_index)
+	return tile.x + tile_counts.x * (tile.y + tile_counts.y * tile.z)
+
+
+func _anchor_voxel(anchor_index: int) -> Vector3i:
+	if anchor_index < 0 or anchor_index >= _anchors.size():
+		return Vector3i(-1, -1, -1)
+	var v := _anchors[anchor_index]
+	return Vector3i(int(roundf(v.x)), int(roundf(v.y)), int(roundf(v.z)))
+
+
+func _compute_winners() -> PackedInt32Array:
+	var winners := PackedInt32Array()
+	winners.resize(_total_anchors)
+	for anchor_index in range(_total_anchors):
+		var best_asset := -1
+		var best_score := -INF
+		for asset_index in range(_results.size()):
+			var ar := _anchor_result(asset_index, anchor_index)
+			if bool(ar.get("valid", false)) and float(ar.get("score", -INF)) > best_score:
+				best_score = float(ar.get("score", -INF))
+				best_asset = asset_index
+		winners[anchor_index] = best_asset
+	return winners
+
+
+func _anchor_result(asset_index: int, anchor_index: int) -> Dictionary:
+	if asset_index < 0 or asset_index >= _results.size():
+		return {}
+	var ars: Array = _results[asset_index].get("anchor_results", [])
+	if anchor_index < 0 or anchor_index >= ars.size():
+		return {}
+	return ars[anchor_index]
+
+
+## 某锚点上所有资产按分数降序（valid 优先）的 Top-K 条目
+func _anchor_topk_entries(anchor_index: int, limit: int) -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	for asset_index in range(_results.size()):
+		var ar := _anchor_result(asset_index, anchor_index)
+		if ar.is_empty():
+			continue
+		var slot := int(ar.get("rotation_slot", 0))
+		entries.append({
+			"asset_index": asset_index,
+			"asset_name": str(_assets[asset_index].get("name", "Asset%d" % asset_index)) if asset_index < _assets.size() else "Asset%d" % asset_index,
+			"score": float(ar.get("score", -INF)),
+			"valid": bool(ar.get("valid", false)),
+			"rotation_slot": slot,
+			"yaw": float(slot) * (360.0 / float(maxi(rotation_slots, 1))),
+		})
+	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if bool(a.valid) != bool(b.valid):
+			return bool(a.valid)
+		return float(a.score) > float(b.score))
+	var out: Array[Dictionary] = []
+	for i in range(mini(limit, entries.size())):
+		var e := entries[i].duplicate()
+		e["rank"] = i + 1
+		out.append(e)
+	return out
+
+
+func _selected_anchor_topk_entries() -> Array[Dictionary]:
+	var entries := _anchor_topk_entries(_selected_anchor_idx, selected_anchor_top_k)
+	if not entries.is_empty():
+		_selected_anchor_topk_index = clampi(_selected_anchor_topk_index, 0, entries.size() - 1)
+	for i in range(entries.size()):
+		entries[i]["selected"] = i == _selected_anchor_topk_index
+	return entries
+
+
+func _clear_scores() -> void:
 	_results.clear()
 	_winner_per_anchor = PackedInt32Array()
 	_scored = false
 	_elapsed_score_ms = 0.0
-	_total_dispatches = 0
 	_selected_anchor_topk_index = 0
-	_remove_selected_anchor_overlay()
 
 
-func _volume_score_status(require_scored: bool) -> Dictionary:
+func _status(require_scored: bool) -> Dictionary:
 	var ok := _total_anchors > 0
 	if require_scored:
 		ok = ok and _scored
-	return {
-		"ok": ok,
-		"anchors": _total_anchors,
-		"scored": _scored,
-		"asset_count": _assets.size(),
-		"score_ms": _elapsed_score_ms,
-	}
+	return {"ok": ok, "anchors": _total_anchors, "scored": _scored, "asset_count": _assets.size(), "score_ms": _elapsed_score_ms}
 
 
-func _voxel_display_is_visible(display_key: String) -> bool:
-	var spa := _spa_display_host()
-	if spa != null and spa.has_method("is_voxel_display_visible"):
-		return bool(spa.call("is_voxel_display_visible", display_key))
-	return true
-
-
-func _attach_display_root_to_spa() -> void:
-	var spa := _spa_display_host()
-	if spa != null and spa.has_method("attach_voxel_display_root"):
-		spa.call("attach_voxel_display_root", _display_root, VOLUME_SCORE_DISPLAY_OWNER)
-		return
-	push_warning("[VolumeScore] Missing CoreSPADemo; voxel display root was not attached.")
-
-
-## 编辑器刚打开组合场景时 edited_scene_root/子场景可能还没同步完成；
-## 这些 SPA 绑定都是幂等的，所以 _ready() 会立即执行一次并延迟补一次。
-func _sync_spa_bindings() -> void:
-	_attach_display_root_to_spa()
-	_register_spa_volume_score_provider()
-
-
-func _register_spa_voxel_display_node(display_key: String, node: Node3D) -> void:
-	if node == null:
-		return
-	var spa := _spa_display_host()
-	if spa != null and spa.has_method("register_voxel_display_node"):
-		spa.call("register_voxel_display_node", display_key, node, VOLUME_SCORE_DISPLAY_OWNER)
-	node.visible = _voxel_display_is_visible(display_key)
-
-
-func _register_spa_volume_score_provider() -> void:
-	var spa := _spa_display_host()
-	if spa != null and spa.has_method("register_volume_score_provider"):
-		spa.call("register_volume_score_provider", self)
-
-
-func _notify_spa_selected_anchor_changed() -> void:
-	var spa := _spa_display_host()
-	if spa != null and spa.has_method("refresh_volume_score_anchor_selection"):
-		spa.call("refresh_volume_score_anchor_selection")
-
-
-func _unregister_spa_volume_score_provider() -> void:
-	var spa := _spa_display_host()
-	if spa != null and spa.has_method("unregister_volume_score_provider"):
-		spa.call("unregister_volume_score_provider", self)
-
-
-func _spa_display_host() -> Node:
-	if not is_inside_tree():
-		return null
-	var tree := get_tree()
-	var root := tree.edited_scene_root if tree != null else null
-	# @tool 场景脚本里 edited_scene_root 可能暂时为空；组合场景 root 自身也能找到 CoreSPADemo。
-	if root == null:
-		root = self
-	if root.name == "CoreSPADemo" and root.has_method("set_voxel_display_visible"):
-		return root
-	var core := root.find_child("CoreSPADemo", true, false)
-	if core != null and core.has_method("set_voxel_display_visible"):
-		return core
-	return null
-
-
-## 与 CoreSPADemo 一致：SPA 绑定的注销只在节点真正被释放(PREDELETE)时进行,而不是
-## 每次编辑器标签页切换。切走会触发 _exit_tree 但节点并未释放,切回来又不会重跑
-## _ready();旧实现把 CoreSPADemo 的 volume-score provider 注销后再也不补回 → 锚点
-## 点选 / Anchors / Score 工具栏失效。放到 PREDELETE 后,provider 注册跨标签页存活,
-## 选中的锚点也不会因切换场景而丢失。
-func _notification(what: int) -> void:
-	if what == NOTIFICATION_PREDELETE:
-		_unregister_spa_volume_score_provider()
-
-
-# --- Asset Loading & Voxelization -----------------------------------------
-# 遍历 DemoAssets 中的每个 FBX 网格，通过 GPU 体素化生成 footprint，
-# 同时预烘每个旋转槽的有效 sample records，用于后续评分。
-
-func _load_and_voxelize() -> void:
-	if _scene_fields.is_empty():
-		_build_scene_fields()
-	_assets.clear()
-	_footprints.clear()
-	var loaded := VolumeScore3D.voxelize_demo_assets(
-		voxel_grid_count,
-		true,
-		_scene_fields.get("voxel_size", Vector3.ZERO)
-	)
-	for asset in loaded.get("assets", []):
-		if asset is Dictionary:
-			_assets.append(asset)
-	for footprint in loaded.get("footprints", []):
-		if footprint is Dictionary:
-			_footprints.append(footprint)
-
-	for i in range(_assets.size()):
-		print("[VolumeScore] Asset %d [%s] aabb=%.2fm tier=%d variants=%d groups=%d ext=%d voxels=%d fp_grid=%s" % [
-			i, _assets[i].name, _assets[i].get("world_longest", 0.0), _assets[i].get("tier", -1),
-			_assets[i].sample_variant_count, _assets[i].sample_group_count,
-			_assets[i].sample_extent, _assets[i].voxel_count, str(_assets[i].fp_grid)])
-
-	_voxelized = true
-	_elapsed_voxelize_ms = float(loaded.get("elapsed_ms", 0.0))
-	print("[VolumeScore] Voxelized %d assets in %.0f ms" % [
-		_assets.size(), _elapsed_voxelize_ms])
-
-
-# --- Scene Field Construction ---------------------------------------------
-# 构建三层体素场（complexity / collision / target），作为 GPU 评分的场景输入。
-#
-# 每层语义：
-#   complexity (RGBA32)  — R=地形类型 G=坡度 B=曲率 A=复杂度强度
-#   collision  (float)   — 0.0=空气 >0=地下（资产不能穿透）
-#   target     (RGBA32)  — 目标放置区色彩 + 权重（资产倾向放置于此）
-#
-# Y 轴分层逻辑：
-#   地面以下 (y <= ground_slice)       → complexity.a=0.8  collision=0.9
-#   紧贴地面 (y <= ground_slice+1)     → complexity.a=0.3  collision=0.1
-#   地面以上                            → complexity.a=0.0  collision=0.0
-#   target 带内 (min_above..max_above) → 有淡绿色目标权重，离地面越近权重越高
-
-func _build_scene_fields() -> void:
-	_terrain_height = VolumeScore3D.sample_terrain_height_for_node(
-		self, grid_resolution, grid_resolution)
-	_scene_fields = VolumeScore3D.build_scene_fields(
-		grid_resolution,
-		grid_height_slices,
-		_terrain_height,
-		target_min_height_frac,
-		target_max_height_frac
-	)
-	_terrain_height = _scene_fields.get("terrain_height", _terrain_height)
-	var grid: Vector3i = _scene_fields.get("grid", Vector3i.ZERO)
-	var voxel_count := VoxelGeneral.voxel_count(grid)
-	print("[VolumeScore] Scene field: grid=%s voxels=%d" % [
-		str(_scene_fields.grid), voxel_count])
-
-
-# --- Anchor Generation ----------------------------------------------------
-# 在场景场表面以 anchor_spacing 为步长生成锚点网格。
-# 每个锚点的 Y 坐标 = 地形高度 + 1 层体素，即紧贴地面以上。
-
-func _generate_anchors() -> void:
-	_anchors = VolumeScore3D.generate_anchors(_scene_fields, _terrain_height, anchor_spacing)
-	_anchor_world_positions = VolumeScore3D.anchor_world_positions(
-		_scene_fields, _terrain_height, _anchors)
-	if _anchors.is_empty():
-		_total_anchors = 0
-		return
-	_total_anchors = _anchors.size()
-	print("[VolumeScore] Generated %d anchors (spacing=%d)" % [_total_anchors, anchor_spacing])
-
-
-# --- GPU Scoring -----------------------------------------------------------
-# 核心压力测试：对所有锚点 × 所有资产 × 12 个旋转槽位同时评分。
-# 每个资产触发两次 GPU dispatch（写入目标 + 读取得分），
-# 总 dispatch 次数 = footprints.size() × 2。
-
-func _run_gpu_scoring() -> bool:
-	_clear_score_results()
-
-	if _anchors.is_empty() or _footprints.is_empty():
-		push_warning("[VolumeScore] Cannot score: anchors or footprints are empty")
-		return false
-	if RenderingServer.get_rendering_device() == null:
-		push_warning("[VolumeScore] No RenderingDevice — GPU scoring skipped")
-		return false
-
-	var t0 := Time.get_ticks_msec()
-	var scorer = ObjectVolumeScoreGpuScript.new()
-	_results = scorer.score_all_assets(_scene_fields, _footprints, _anchors)
-	scorer.dispose()
-	_elapsed_score_ms = float(Time.get_ticks_msec() - t0)
-	_total_dispatches = _footprints.size() * 2
-
-	_winner_per_anchor = ObjectVolumeScoreGpuScript.best_asset_per_anchor(_results, _total_anchors)
-	_sync_asset_sample_metadata_from_results()
-	_scored = true
-	print("[VolumeScore] GPU scoring: %d assets × %d anchors in %.0f ms (%d dispatches)" % [
-		_footprints.size(), _total_anchors, _elapsed_score_ms, _total_dispatches])
-	return true
-
-
-func _sync_asset_sample_metadata_from_results() -> void:
-	for result in _results:
-		if not (result is Dictionary):
-			continue
-		var result_dict := result as Dictionary
-		var asset_index := int(result_dict.get("asset_index", -1))
-		if asset_index < 0 or asset_index >= _assets.size():
-			continue
-		var asset: Dictionary = _assets[asset_index]
-		asset["sample_extent"] = int(result_dict.get("sample_extent", asset.get("sample_extent", 1)))
-		asset["sample_variant_count"] = int(result_dict.get(
-			"sample_variant_count",
-			asset.get("sample_variant_count", 0)
-		))
-		asset["sample_group_count"] = int(result_dict.get(
-			"sample_group_count",
-			asset.get("sample_group_count", 0)
-		))
-		asset["subtile_count"] = int(result_dict.get("subtile_count", asset.get("subtile_count", 0)))
-		_assets[asset_index] = asset
-
-
-func _selected_anchor_voxel() -> Vector3i:
-	return ObjectVolumeScoreGpuScript.anchor_voxel_at(
-		_anchors, _selected_anchor_idx, Vector3i(-1, -1, -1))
-
-
-func _build_selected_anchor_hud_lines() -> Array[String]:
-	var lines: Array[String] = []
-	if not _scored:
-		lines.append("Selected anchor: scoring not complete")
-		return lines
-	if _selected_anchor_idx < 0:
-		lines.append("Selected anchor: none (click a placed winner)")
-		return lines
-	lines.append("Selected anchor #%d voxel=%s world=%s top-%d:" % [
-		_selected_anchor_idx,
-		str(_selected_anchor_voxel()),
-		str(_anchor_world_positions[_selected_anchor_idx].snapped(Vector3(0.01, 0.01, 0.01))),
-		selected_anchor_top_k,
-	])
-	var entries := get_selected_anchor_topk_entries()
-	if entries.is_empty():
-		lines.append("  (no score entries)")
-		return lines
-	for entry in entries:
-		lines.append("  %s" % _format_topk_entry(entry))
-	return lines
-
-
-func _build_selected_anchor_label_lines() -> Array[String]:
-	var lines: Array[String] = []
-	if _selected_anchor_idx < 0:
-		return lines
-	lines.append("Anchor #%d  %s" % [_selected_anchor_idx, str(_selected_anchor_voxel())])
-	var selected_entry := _selected_anchor_topk_entry()
-	if not selected_entry.is_empty():
-		lines.append("Bounds target: #%d %s" % [
-			int(selected_entry.get("rank", _selected_anchor_topk_index + 1)),
-			str(selected_entry.get("asset_name", "Asset")),
-		])
-	var sample_bounds := _selected_anchor_sample_bounds_info()
-	if not sample_bounds.is_empty():
-		var bounds_label := "Score bbox" if bool(sample_bounds.get("score_valid", false)) else "Asset bbox"
-		lines.append("%s: %s  groups=%d  cap=%d  samples=%d  hit=%d  spanVol=%d  slot=%d" % [
-			bounds_label,
-			str(sample_bounds.get("asset_name", "Asset")),
-			int(sample_bounds.get("sample_group_count", 0)),
-			int(sample_bounds.get("sample_variant_capacity", 0)),
-			int(sample_bounds.get("sample_variant_count", 0)),
-			int(sample_bounds.get("contributing_voxel_count", 0)),
-			int(sample_bounds.get("sample_bounds_volume", 0)),
-			int(sample_bounds.get("rotation_slot", -1)),
-		])
-	for entry in get_selected_anchor_topk_entries():
-		lines.append(_format_topk_entry(entry))
-	return lines
-
-
-func _format_topk_entry(entry: Dictionary) -> String:
-	var rank := int(entry.get("rank", 0))
-	var asset_index := int(entry.get("asset_index", -1))
-	var asset_name := str(entry.get("asset_name", "Asset%d" % asset_index))
-	var score := float(entry.get("score", -INF))
-	var score_text := "n/a"
-	if score > -1.0e20:
-		score_text = "%.4f" % score
-	var yaw := float(entry.get("yaw", 0.0))
-	var slot := int(entry.get("rotation_slot", -1))
-	var valid_text := "valid" if bool(entry.get("valid", false)) else "invalid"
-	var marker := "*" if bool(entry.get("selected_bounds", false)) else " "
-	return "%s#%d [%d] %s  score=%s  yaw=%.0f  slot=%d  %s" % [
-		marker, rank, asset_index, asset_name, score_text, yaw, slot, valid_text]
-
-
-# --- Visualization ---------------------------------------------------------
-# 可视化分为三层：
-#   1. _anchor_point_display   — MultiMeshInstance3D：所有锚点的小球体（GPU 实例化）
-#   2. 胜出资产实例              — 每个锚点放置其得分最高的资产 mesh
-#   3. _selected_anchor_marker  — 选中锚点的高亮球体 + 浮动 Label3D 详情
+# ---- Visualization ---------------------------------------------------------
 
 func _build_visualization() -> void:
 	if _display_root == null:
@@ -697,319 +545,300 @@ func _build_visualization() -> void:
 	for child in _display_root.get_children():
 		child.queue_free()
 	_anchor_point_display = null
-	_selected_anchor_marker = null
-	_anchor_detail_label = null
-
 	if _anchor_world_positions.is_empty():
 		return
 	if _selected_anchor_idx >= _anchor_world_positions.size():
 		_selected_anchor_idx = -1
-
 	_build_anchor_point_display()
 	_build_winning_anchor_content()
-	_build_selected_anchor_overlay()
 
 
 func _build_anchor_point_display() -> void:
-	if _display_root == null or _anchor_world_positions.is_empty():
-		return
-	var marker_radius := _anchor_marker_radius()
+	var radius := _anchor_marker_radius()
 	var marker_mesh := SphereMesh.new()
-	marker_mesh.radius = marker_radius
-	marker_mesh.height = marker_radius * 2.0
+	marker_mesh.radius = radius
+	marker_mesh.height = radius * 2.0
 	marker_mesh.radial_segments = 8
 	marker_mesh.rings = 4
-
-	var marker_mat := StandardMaterial3D.new()
-	marker_mat.albedo_color = Color(0.20, 0.85, 1.0, 0.82)
-	marker_mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
-	marker_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	marker_mat.no_depth_test = true
-
-	var multimesh := MultiMesh.new()
-	multimesh.transform_format = MultiMesh.TRANSFORM_3D
-	multimesh.mesh = marker_mesh
-	multimesh.instance_count = _anchor_world_positions.size()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.20, 0.85, 1.0, 0.82)
+	mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.no_depth_test = true
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = marker_mesh
+	mm.instance_count = _anchor_world_positions.size()
 	for i in range(_anchor_world_positions.size()):
-		multimesh.set_instance_transform(i, Transform3D(Basis(), _anchor_world_positions[i]))
-
+		mm.set_instance_transform(i, Transform3D(Basis(), _anchor_world_positions[i]))
 	var points := MultiMeshInstance3D.new()
 	points.name = "AnchorPoints"
-	points.multimesh = multimesh
-	points.material_override = marker_mat
+	points.multimesh = mm
+	points.material_override = mat
 	_anchor_point_display = points
 	_display_root.add_child(points)
 	_register_spa_voxel_display_node(VOXEL_DISPLAY_ANCHOR, points)
 
 
-## 为每个锚点生成得分最高的资产实例。
-## 流程：获取胜出资产 → 查阅锚点评分结果 → 体素坐标→世界坐标变换 → 生成 AutoObject
+## 某锚点胜出资产的放置信息（transform/winner/yaw/aabb/fit_scale）——渲染、红框 bound、
+## 点选三处共用同一变换，保证「红框恰好包住放置的树」且「点树身即选中该锚点」。
+## 缩放贴合 footprint box、按最优 yaw 旋转、原生 FBX 轴心贴地（cliff 半埋、植物立于地面）。无有效胜者返回空字典。
+func _winner_placement(anchor_index: int) -> Dictionary:
+	var winner := _winner_per_anchor[anchor_index] if anchor_index >= 0 and anchor_index < _winner_per_anchor.size() else -1
+	if winner < 0 or winner >= _assets.size():
+		return {}
+	var ar := _anchor_result(winner, anchor_index)
+	if not bool(ar.get("valid", false)):
+		return {}
+	var mesh: Mesh = _assets[winner].get("mesh", null)
+	if mesh == null:
+		return {}
+	var voxel_size: Vector3 = _scene_fields.get("voxel_size", Vector3.ONE)
+	var shape: Vector3i = _assets[winner].get("footprint_shape", Vector3i.ONE)
+	var box_size := Vector3(shape.x, shape.y, shape.z) * voxel_size
+	var aabb: AABB = _assets[winner].get("aabb", mesh.get_aabb())
+	var fit_scale := _contain_scale(aabb.size, box_size)
+	# 垂直对齐 mesh 的原生 FBX 轴心（local y=0）而非 AABB 底面：每个资产按作者轴心就位——
+	# cliff 轴心在几何中心 → 一半埋入地面；叶片/植物轴心在底部 → 立于地面。与
+	# asset-descriptor-demo 摆放一致（容器原点=FBX 轴心，置于地面基线）。水平仍取 AABB 中心，
+	# 使 footprint 居中于锚点体素。
+	var pivot_local := Vector3(aabb.position.x + aabb.size.x * 0.5, 0.0, aabb.position.z + aabb.size.z * 0.5)
+	var yaw := deg_to_rad(float(int(ar.get("rotation_slot", 0))) * (360.0 / float(maxi(rotation_slots, 1))))
+	var basis := Basis(Vector3.UP, yaw) * Basis.IDENTITY.scaled(Vector3(fit_scale, fit_scale, fit_scale))
+	var origin := _anchor_world_positions[anchor_index] - basis * pivot_local
+	return {
+		"ok": true, "winner": winner, "mesh": mesh, "yaw": yaw,
+		"transform": Transform3D(basis, origin), "aabb": aabb, "fit_scale": fit_scale,
+	}
+
+
+## 胜出物体的世界 AABB（点选用：射线命中它 = 选中该锚点）。
+func _winner_world_aabb(anchor_index: int) -> AABB:
+	var pl := _winner_placement(anchor_index)
+	if pl.is_empty():
+		return AABB()
+	return (pl.transform as Transform3D) * (pl.aabb as AABB)
+
+
+## 每锚点放置其得分最高资产的真实 mesh，统一经 _winner_placement 变换。
 func _build_winning_anchor_content() -> void:
 	if not _scored:
 		return
-	for i in range(_anchor_world_positions.size()):
-		var winner := _winner_per_anchor[i] if i < _winner_per_anchor.size() else -1
-		if winner < 0 or winner >= _assets.size():
+	# 按资产分组，每组一个 MultiMesh（同 mesh 批量实例化）
+	var transforms_by_asset := {}
+	for anchor_index in range(_anchor_world_positions.size()):
+		var pl := _winner_placement(anchor_index)
+		if pl.is_empty():
 			continue
-		var anchor_result := ObjectVolumeScoreGpuScript.anchor_result_for_asset(_results, winner, i)
-		if anchor_result.is_empty() or not bool(anchor_result.get("valid", false)):
+		var winner: int = pl.winner
+		if not transforms_by_asset.has(winner):
+			transforms_by_asset[winner] = []
+		transforms_by_asset[winner].append(pl.transform)
+	for winner in transforms_by_asset.keys():
+		var node := _build_mesh_multimesh(
+			_assets[winner].get("mesh", null),
+			transforms_by_asset[winner],
+			"Winner_%d_%s" % [winner, str(_assets[winner].get("name", ""))])
+		if node == null:
 			continue
-		var asset: Dictionary = _assets[winner]
-		var mesh := asset.get("mesh", null) as Mesh
-		if mesh == null or winner >= _footprints.size():
-			continue
-		var asset_name := str(asset.get("name", "Asset%d" % winner))
-		var pivot_variant := _anchor_pivot_variant_for_footprint(_footprints[winner])
-		var world_result := _world_result_for_winning_anchor(anchor_result, winner, i, pivot_variant)
-		if world_result.is_empty():
-			continue
-		var placed = VoxelPlacementOutputScript.instantiate_placement(
-			world_result,
-			"AutoObject",
-			mesh,
-			_autoobject_config_for_winner(asset, winner, i, asset_name, world_result, pivot_variant),
-			_display_root
-		)
-		if not (placed is Node):
-			continue
-		var placed_node := placed as Node
-		if placed_node is Node3D:
-			_register_spa_voxel_display_node(VOXEL_DISPLAY_GPU_OBJECTS, placed_node as Node3D)
+		var mat: Material = _assets[winner].get("material", null)
+		if mat != null:
+			node.material_override = mat
+		_display_root.add_child(node)
+		# 胜出「结果 mesh」属 anchor 域内容：注册到 ANCHOR 显示组（Anchor 模式可见）。
+		# 注册到 GPU_OBJECTS 会在 Anchor 模式被 mode-focus 隐藏 → 结果 mesh 不渲染。
+		_register_spa_voxel_display_node(VOXEL_DISPLAY_ANCHOR, node)
 
 
-# Single source of truth for the pivot: the exact point the scorer anchored the
-# footprint at (footprint.pivot_local, from footprint_from_voxelizer_result). The
-# placement reads the SAME value, so the placed pose always matches the scored
-# footprint — wherever the pivot sits, scoring and placement cannot diverge.
-func _anchor_pivot_variant_for_footprint(footprint: Dictionary) -> Dictionary:
+## 选中锚点胜出物体的定向包围盒（供 SPA 画红色 sample-bounds 框）。
+func _selected_anchor_sample_bounds() -> Dictionary:
+	var pl := _winner_placement(_selected_anchor_idx)
+	if pl.is_empty():
+		return {}
+	var aabb: AABB = pl.aabb
+	var t: Transform3D = pl.transform
+	var obb_size: Vector3 = aabb.size * float(pl.fit_scale)
+	var obb_center: Vector3 = t * (aabb.position + aabb.size * 0.5)
 	return {
-		"name": "anchor",
-		"offset": footprint.get("pivot_local", Vector3.ZERO),
-		"score_bias": 0.0,
+		"has_obb": true,
+		"obb_center": obb_center,
+		"obb_size": obb_size,
+		"obb_yaw": float(pl.yaw),
+		"aabb": AABB(obb_center - obb_size * 0.5, obb_size),
 	}
-
-
-## 体素坐标 → 世界坐标变换链
-## 1. 根据锚点世界坐标反推 synthetic_origin（场景网格原点在世界空间的位置）
-## 2. 调用 VoxelPlacementOutput.results_to_world() 完成变换
-## 3. 根据 yaw 旋转角度修正 pivot_offset 后的位置
-func _world_result_for_winning_anchor(
-	anchor_result: Dictionary,
-	asset_index: int,
-	anchor_index: int,
-	pivot_variant: Dictionary
-) -> Dictionary:
-	if anchor_index < 0 or anchor_index >= _anchor_world_positions.size():
-		return {}
-	var anchor_voxel := ObjectVolumeScoreGpuScript.anchor_voxel_at(_anchors, anchor_index)
-	var voxel_size: Vector3 = _scene_fields.get("voxel_size", Vector3.ONE)
-	var anchor_world := _anchor_world_positions[anchor_index]
-	var synthetic_origin := anchor_world - VoxelGeneral.voxel_to_world(anchor_voxel, Vector3.ZERO, voxel_size)
-	var rotation_slot := clampi(
-		int(anchor_result.get("rotation_slot", 0)),
-		0,
-		ObjectVolumeScoreGpuScript.ROTATION_SLOTS - 1
-	)
-	var raw_result := {
-		"valid": true,
-		"voxel_origin": anchor_voxel,
-		"rotation_index": rotation_slot,  # 使用评分选中的旋转槽，放置姿态与打分 footprint 一致
-		"scale_index": 0,
-		"score": float(anchor_result.get("score", 0.0)),
-		"asset_index": asset_index,
-	}
-	var raw_results: Array[Dictionary] = [raw_result]
-	var world_results = VoxelPlacementOutputScript.results_to_world(
-		raw_results,
-		voxel_size,
-		synthetic_origin,
-		ObjectVolumeScoreGpuScript.ROTATION_SLOTS,
-		pivot_variant
-	)
-	if world_results.is_empty():
-		return {}
-	var world_result: Dictionary = world_results[0]
-	world_result["anchor_index"] = anchor_index
-	world_result["anchor_position"] = anchor_world
-	world_result["rotation_slot"] = rotation_slot
-	return world_result
-
-
-func _autoobject_config_for_winner(
-	asset: Dictionary,
-	asset_index: int,
-	anchor_index: int,
-	asset_name: String,
-	world_result: Dictionary,
-	pivot_variant: Dictionary
-) -> Dictionary:
-	var color: Color = asset.get("color", Color.WHITE)
-	var record_id := "volume_score_%04d_%s" % [anchor_index, asset_name]
-	var config := {
-		"name": "Placed_%04d_%s" % [anchor_index, asset_name],
-		"id": record_id,
-		"record_id": record_id,
-		"asset_id": asset_name,
-		"mesh_index": asset_index,
-		"object_type": "object",
-		"auto_source": "volume_score_anchor_winner",
-		"source_voxel_type": "AutoSceneVoxel",
-		"source_mesh_path": DemoAssets.geo_path(asset_index),
-		"groups": [VOLUME_SCORE_WINNER_GROUP],
-		"selectable": true,
-		"color": color,
-		"complexity": clampf(color.a, 0.0, 1.0),
-		"pivot_variants": [pivot_variant],
-		"auto_generate_vertical_pivots": false,
-		"create_voxel_write_spec": true,
-		"volume_xz_resolution": grid_resolution,
-		"capture_size": TerrainConfigScript.CAPTURE_SIZE,
-		"grid_origin": _scene_fields.get("grid_origin", Vector3.ZERO),
-		"voxel_size": _scene_fields.get("voxel_size", Vector3.ONE),
-		"base_pixel": _base_pixel_for_anchor(anchor_index),
-		"anchor_index": anchor_index,
-		"anchor_position": world_result.get("anchor_position", Vector3.ZERO),
-		"pivot_variant": str(world_result.get("pivot_variant", "anchor")),
-		"pivot_offset": world_result.get("pivot_offset", Vector3.ZERO),
-	}
-	var spa := _spa_display_host()
-	if spa != null:
-		config["scene_placement_actor"] = spa
-	return config
-
-
-func _base_pixel_for_anchor(anchor_index: int) -> Vector2i:
-	if anchor_index < 0 or anchor_index >= _anchor_world_positions.size():
-		return Vector2i.ZERO
-	var pixel = VoxelPlacementOutputScript.world_to_volume_pixel(
-		_anchor_world_positions[anchor_index],
-		grid_resolution,
-		_scene_fields.get("grid_origin", Vector3.ZERO),
-		_scene_fields.get("voxel_size", Vector3.ONE)
-	)
-	if pixel is Vector2i:
-		return pixel
-	return Vector2i.ZERO
-
-
-func _build_selected_anchor_overlay() -> void:
-	if _display_root == null:
-		return
-	_remove_selected_anchor_overlay()
-	if not _scored or _selected_anchor_idx < 0 or _selected_anchor_idx >= _anchor_world_positions.size():
-		return
-
-	var voxel_size: Vector3 = _scene_fields.get("voxel_size", Vector3.ONE)
-	var anchor_pos := _anchor_world_positions[_selected_anchor_idx]
-	var marker_mesh := SphereMesh.new()
-	var marker_radius := _anchor_marker_radius()
-	marker_mesh.radius = marker_radius
-	marker_mesh.height = marker_radius * 2.0
-	var marker_mat := StandardMaterial3D.new()
-	marker_mat.albedo_color = Color(1.0, 0.96, 0.20, 0.95)
-	marker_mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
-	marker_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	marker_mat.no_depth_test = true
-	var marker := MeshInstance3D.new()
-	marker.name = "SelectedAnchorMarker"
-	marker.mesh = marker_mesh
-	marker.material_override = marker_mat
-	marker.position = anchor_pos
-	_selected_anchor_marker = marker
-	_display_root.add_child(marker)
-	_register_spa_voxel_display_node(VOXEL_DISPLAY_ANCHOR, marker)
-
-	var label := Label3D.new()
-	label.name = "SelectedAnchorScores"
-	label.text = "\n".join(_build_selected_anchor_label_lines())
-	label.position = anchor_pos + Vector3(voxel_size.x * 1.5, voxel_size.y * 3.0, voxel_size.z * 1.5)
-	label.font_size = 24
-	label.pixel_size = 0.035
-	label.outline_size = 8
-	label.modulate = Color(1.0, 0.96, 0.25, 1.0)
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	_anchor_detail_label = label
-	_display_root.add_child(label)
-	_register_spa_voxel_display_node(VOXEL_DISPLAY_ANCHOR, label)
-
-
-func _remove_selected_anchor_overlay() -> void:
-	if _selected_anchor_marker != null and is_instance_valid(_selected_anchor_marker):
-		_selected_anchor_marker.queue_free()
-	if _anchor_detail_label != null and is_instance_valid(_anchor_detail_label):
-		_anchor_detail_label.queue_free()
-	_selected_anchor_marker = null
-	_anchor_detail_label = null
 
 
 func _anchor_marker_radius() -> float:
 	var voxel_size: Vector3 = _scene_fields.get("voxel_size", Vector3.ONE)
-	var base_radius := maxf(minf(voxel_size.x, voxel_size.z) * ANCHOR_RADIUS_VOXEL_SCALE, ANCHOR_RADIUS_MIN)
-	var radius_scale := clampf(float(anchor_pick_radius_px) / ANCHOR_RADIUS_PX_BASE, 0.25, 4.0)
-	return base_radius * radius_scale
+	return maxf(minf(voxel_size.x, voxel_size.z) * 0.12, ANCHOR_RADIUS_MIN)
 
 
-## Returns the anchor bound (object-hugging world AABB from profile voxel positions)
-## for the currently selected top-k asset. If that asset has no valid score at this
-## anchor, the asset footprint sample profile still drives the anchor bound/variant info.
-func _selected_anchor_sample_bounds_info() -> Dictionary:
-	var selected_entry := _selected_anchor_topk_entry()
-	var asset_index := int(selected_entry.get("asset_index", -1))
-	var info := ObjectVolumeScoreGpuScript.anchor_sample_bounds_info(
-		_results,
-		_assets,
-		_footprints,
-		_scene_fields,
-		_anchors,
-		_selected_anchor_idx,
-		asset_index
-	)
-	return _sample_bounds_to_anchor_world_frame(info)
+func _build_mesh_multimesh(mesh: Mesh, transforms: Array, node_name: String) -> MultiMeshInstance3D:
+	if mesh == null or transforms.is_empty():
+		return null
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = mesh
+	mm.instance_count = transforms.size()
+	for i in range(transforms.size()):
+		mm.set_instance_transform(i, transforms[i])
+	var node := MultiMeshInstance3D.new()
+	node.name = node_name
+	node.multimesh = mm
+	return node
 
 
-## anchor_sample_bounds_info 在 grid-origin 世界系里算 anchor bound（现按 profile 体素
-## 世界位置紧贴物体，不再是场景体素格子角点）；放置的物体/锚点活在地形锚定世界系
-## （synthetic_origin、格子中心 + 地形高度）。这里把 anchor bound 整体平移到物体坐标系：
-## 让 anchor 体素中心对齐到 anchor_world，与 _world_result_for_winning_anchor 的
-## synthetic_origin 放置保持同一参考点，这样 anchor bound 与放置的胜出物体使用同一坐标系。
-func _sample_bounds_to_anchor_world_frame(info: Dictionary) -> Dictionary:
-	if info.is_empty():
-		return info
-	if _selected_anchor_idx < 0 or _selected_anchor_idx >= _anchor_world_positions.size():
-		return info
-	var voxel_size: Vector3 = _scene_fields.get("voxel_size", Vector3.ONE)
-	var grid_origin: Vector3 = _scene_fields.get("grid_origin", Vector3.ZERO)
-	var anchor_voxel := ObjectVolumeScoreGpuScript.anchor_voxel_at(_anchors, _selected_anchor_idx)
-	var anchor_world := _anchor_world_positions[_selected_anchor_idx]
-	var delta := anchor_world - VoxelGeneral.voxel_to_world(anchor_voxel, grid_origin, voxel_size) - voxel_size * 0.5
-	if info.get("position", null) is Vector3:
-		info["position"] = (info["position"] as Vector3) + delta
-	if info.get("aabb", null) is AABB:
-		var box: AABB = info["aabb"]
-		info["aabb"] = AABB(box.position + delta, box.size)
-	if info.get("obb_center", null) is Vector3:
-		info["obb_center"] = (info["obb_center"] as Vector3) + delta
-	return info
+# ---- Descriptor loading ----------------------------------------------------
+
+func _load_descriptors() -> Array:
+	var result: Array = []
+	for d in placement_assets:
+		if _is_asset_descriptor(d) and d.get_mesh() != null:
+			result.append(d)
+	if not result.is_empty():
+		return result
+	var root := asset_descriptor_dir.strip_edges()
+	if root.is_empty():
+		root = "res://assets"
+	for path in _scan_descriptor_paths(root):
+		var res := load(path)
+		if _is_asset_descriptor(res) and res.get_mesh() != null:
+			result.append(res)
+	return result
 
 
-func _frame_camera() -> void:
-	var cam := DemoUI.find_camera(self, "DemoSetup/FlyCamera", "", false, false)
-	if cam == null:
+func _is_asset_descriptor(res) -> bool:
+	return res != null and res is Resource and res.has_method("get_mesh") and res.has_method("get_collision")
+
+
+func _scan_descriptor_paths(root: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	var dir := DirAccess.open(root)
+	if dir == null:
+		return out
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if dir.current_is_dir():
+			if not entry.begins_with("."):
+				out.append_array(_scan_descriptor_paths(root.path_join(entry)))
+		elif entry.get_extension().to_lower() == "tres":
+			out.append(root.path_join(entry))
+		entry = dir.get_next()
+	dir.list_dir_end()
+	return out
+
+
+func _footprint_shape_for(mesh: Mesh) -> Vector3i:
+	if mesh == null:
+		return Vector3i.ONE
+	var size := mesh.get_aabb().size
+	var longest := maxf(maxf(size.x, size.y), maxf(size.z, 0.0001))
+	var target := float(asset_footprint_voxels)
+	return Vector3i(
+		clampi(int(round(size.x / longest * target)), 1, asset_footprint_voxels),
+		clampi(int(round(size.y / longest * target)), 1, asset_footprint_voxels),
+		clampi(int(round(size.z / longest * target)), 1, asset_footprint_voxels))
+
+
+func _contain_scale(mesh_size: Vector3, box_size: Vector3) -> float:
+	var sx := box_size.x / maxf(mesh_size.x, 0.0001)
+	var sy := box_size.y / maxf(mesh_size.y, 0.0001)
+	var sz := box_size.z / maxf(mesh_size.z, 0.0001)
+	return maxf(minf(sx, minf(sy, sz)), 0.0001)
+
+
+# ---- SPA binding -----------------------------------------------------------
+
+func _sync_spa_bindings() -> void:
+	_attach_display_root_to_spa()
+	_register_spa_volume_score_provider()
+
+
+func _spa_display_host() -> Node:
+	if not is_inside_tree():
+		return null
+	var tree := get_tree()
+	var root := tree.edited_scene_root if tree != null else null
+	if root == null:
+		root = self
+	if root.name == "CoreSPADemo" and root.has_method("register_volume_score_provider"):
+		return root
+	var core := root.find_child("CoreSPADemo", true, false)
+	if core != null and core.has_method("register_volume_score_provider"):
+		return core
+	return null
+
+
+func _attach_display_root_to_spa() -> void:
+	var spa := _spa_display_host()
+	if spa != null and spa.has_method("attach_voxel_display_root"):
+		spa.call("attach_voxel_display_root", _display_root, VOLUME_SCORE_DISPLAY_OWNER)
+	elif _display_root != null and _display_root.get_parent() == null:
+		add_child(_display_root)
+
+
+func _register_spa_volume_score_provider() -> void:
+	var spa := _spa_display_host()
+	if spa != null and spa.has_method("register_volume_score_provider"):
+		spa.call("register_volume_score_provider", self)
+
+
+func _unregister_spa_volume_score_provider() -> void:
+	var spa := _spa_display_host()
+	if spa != null and spa.has_method("unregister_volume_score_provider"):
+		spa.call("unregister_volume_score_provider", self)
+
+
+func _notify_spa_selected_anchor_changed() -> void:
+	var spa := _spa_display_host()
+	if spa != null and spa.has_method("refresh_volume_score_anchor_selection"):
+		spa.call("refresh_volume_score_anchor_selection")
+
+
+func _register_spa_voxel_display_node(display_key: String, node: Node3D) -> void:
+	if node == null:
 		return
-	if not cam.is_inside_tree():
-		return
-	var capture_size := TerrainConfigScript.CAPTURE_SIZE
-	var cam_pos := Vector3(0.0, capture_size * 0.4, capture_size * 0.45)
-	cam.look_at_from_position(cam_pos, Vector3.ZERO, Vector3.UP)
-	cam.fov = 55.0
+	var spa := _spa_display_host()
+	if spa != null and spa.has_method("register_voxel_display_node"):
+		spa.call("register_voxel_display_node", display_key, node, VOLUME_SCORE_DISPLAY_OWNER)
+	if spa != null and spa.has_method("is_voxel_display_visible"):
+		node.visible = bool(spa.call("is_voxel_display_visible", display_key))
 
 
-# --- HUD -------------------------------------------------------------------
-# 左上角统计面板，显示 GPU 状态、管线耗时、每资产胜出数/平均分/最高分、
-# 以及当前选中锚点的 Top-K 详情。由 _update_hud() 在每次管线步骤后刷新。
+# ---- HUD -------------------------------------------------------------------
 
 func _setup_hud() -> void:
 	_hud_label = DemoUI.setup_hud_label(self)
+
+
+func _selected_anchor_hud_lines() -> Array[String]:
+	var lines: Array[String] = []
+	if not _scored:
+		lines.append("Selected anchor: run Score first")
+		return lines
+	if _selected_anchor_idx < 0:
+		lines.append("Selected anchor: click an anchor")
+		return lines
+	lines.append("Selected anchor #%d voxel=%s top-%d:" % [
+		_selected_anchor_idx, str(_anchor_voxel(_selected_anchor_idx)), selected_anchor_top_k])
+	var entries := _selected_anchor_topk_entries()
+	if entries.is_empty():
+		lines.append("  (no score entries)")
+		return lines
+	for entry in entries:
+		lines.append("  %s" % _format_topk_entry(entry))
+	return lines
+
+
+func _format_topk_entry(entry: Dictionary) -> String:
+	var score := float(entry.get("score", -INF))
+	var score_text := "%.3f" % score if score > -1.0e20 else "n/a"
+	var marker := "*" if bool(entry.get("selected", false)) else " "
+	return "%s#%d %s score=%s yaw=%.0f %s" % [
+		marker, int(entry.get("rank", 0)), str(entry.get("asset_name", "?")),
+		score_text, float(entry.get("yaw", 0.0)),
+		"valid" if bool(entry.get("valid", false)) else "invalid"]
 
 
 func _update_hud() -> void:
@@ -1017,50 +846,22 @@ func _update_hud() -> void:
 		return
 	var rd_status := "ready" if RenderingServer.get_rendering_device() != null else "NO GPU"
 	var lines: Array[String] = [
-		"3D Object Volume Score",
-		"GPU: %s   grid=%dx%dx%d   voxel_grid_count=%d" % [
-			rd_status, grid_resolution, grid_height_slices, grid_resolution, voxel_grid_count],
-		"Assets: %d   Anchors: %d (spacing=%d)   Rotations: %d" % [
-			_assets.size(), _total_anchors, anchor_spacing,
-			ObjectVolumeScoreGpuScript.ROTATION_SLOTS],
-		"Voxelize: %.0f ms   Score: %.0f ms   Dispatches: %d" % [
-			_elapsed_voxelize_ms, _elapsed_score_ms, _total_dispatches],
-		"",
-		"SPA Anchor mode: click anchor to inspect top-%d; use toolbar Anchors/Score" % selected_anchor_top_k,
+		"placement-score-3d (volume score / VPG)",
+		"GPU: %s   grid=%dx%dx%d   assets=%d" % [rd_status, grid_resolution, grid_height_slices, grid_resolution, _assets.size()],
+		"Anchors: %d (spacing=%d)   Rotations: %d   Score: %.0f ms" % [_total_anchors, anchor_spacing, rotation_slots, _elapsed_score_ms],
+		"Toolbar: Anchors → generate, Score → rank assets; click an anchor to inspect top-%d" % selected_anchor_top_k,
 		"",
 	]
-
 	for i in range(_assets.size()):
-		var a: Dictionary = _assets[i]
-		var win_count := 0
-		var max_score := -1.0
-		var avg_score := 0.0
-		var valid_count := 0
-		if i < _results.size() and bool(_results[i].get("ok", false)):
-			var per_anchor: Array = _results[i].get("anchor_results", [])
-			for ar in per_anchor:
-				if ar is Dictionary:
-					var score: float = ar.get("score", -1.0)
-					if score > max_score:
-						max_score = score
-					if bool(ar.get("valid", false)):
-						avg_score += score
-						valid_count += 1
-			if valid_count > 0:
-				avg_score /= float(valid_count)
+		var wins := 0
 		for w in _winner_per_anchor:
 			if w == i:
-				win_count += 1
-		lines.append("[%d] %s  aabb=%.2fm  T%d variants=%d groups=%d  voxels=%d  wins=%d  avg=%.3f  max=%.3f" % [
-			i, a.name, a.get("world_longest", 0.0),
-			a.get("tier", -1), a.get("sample_variant_count", -1), a.get("sample_group_count", -1),
-			a.voxel_count, win_count, avg_score, max_score])
-
+				wins += 1
+		lines.append("[%d] %s  wins=%d" % [i, str(_assets[i].get("name", "?")), wins])
 	if not _scored:
 		lines.append("")
-		lines.append("(scoring not complete)")
+		lines.append("(scoring not complete — press Score)")
 	else:
 		lines.append("")
-		lines.append_array(_build_selected_anchor_hud_lines())
-
+		lines.append_array(_selected_anchor_hud_lines())
 	_hud_label.text = "\n".join(lines)
