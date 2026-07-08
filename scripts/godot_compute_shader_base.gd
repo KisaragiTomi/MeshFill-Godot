@@ -270,6 +270,41 @@ func gc_frame() -> void:
 	gc_scope(SCOPE_FRAME)
 
 
+## 执行 gc_frame，但临时把 preserved_rids 中的 frame/pass 作用域 RID 移入私有保留作用域，
+## 使其不被本帧回收，帧结束后再恢复原作用域。供需要跨帧持有中间 GPU 缓冲的 pass 调用。
+## 原 SceneVoxelCommitter / SceneVoxelTileStore 各自复制了一份，现上移到计算基类共享。
+func _gc_frame_preserving_rids(preserved_rids: Array) -> void:
+	if preserved_rids.is_empty():
+		gc_frame()
+		return
+
+	var preserved_entries: Array[Dictionary] = []
+	var preserve_scope := "_scene_voxel_summary_prebound_preserve"
+	for entry in _resources:
+		if not bool(entry.get("alive", false)):
+			continue
+		var rid: RID = entry.get("rid", RID())
+		if not rid.is_valid() or not preserved_rids.has(rid):
+			continue
+		var scope := str(entry.get("scope", ""))
+		if scope != SCOPE_FRAME and scope != SCOPE_PASS:
+			continue
+		preserved_entries.append({
+			"entry": entry,
+			"scope": scope,
+		})
+		entry["scope"] = preserve_scope
+
+	gc_frame()
+
+	for preserved in preserved_entries:
+		var entry: Dictionary = preserved.get("entry", {})
+		if not bool(entry.get("alive", false)):
+			continue
+		if str(entry.get("scope", "")) == preserve_scope:
+			entry["scope"] = str(preserved.get("scope", SCOPE_FRAME))
+
+
 func gc_all(defer_if_busy: bool = true) -> void:
 	if _compute_list_active and defer_if_busy:
 		for entry in _resources:
@@ -309,6 +344,42 @@ func end_compute_list() -> void:
 	_rd.compute_list_end()
 	_compute_list_active = false
 	flush_deferred_gc()
+
+
+func _gpu_dispatch_and_sync(pipeline: RID, uniform_sets: Array, push: PackedByteArray, groups: Vector3i) -> bool:
+	var cl := begin_compute_list()
+	if cl < 0:
+		return false
+	_gpu_dispatch_pipeline_sets(cl, pipeline, uniform_sets, push, groups)
+	end_compute_list()
+	submit_and_sync()
+	return true
+
+
+func _gpu_dispatch_pipeline(cl: int, pipeline: RID, uniform_set: RID, push: PackedByteArray, groups: Vector3i) -> void:
+	_gpu_dispatch_pipeline_sets(cl, pipeline, [uniform_set], push, groups)
+
+
+func _gpu_dispatch_pipeline_sets(cl: int, pipeline: RID, uniform_sets: Array, push: PackedByteArray, groups: Vector3i) -> void:
+	if _rd == null:
+		return
+	_rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	for set_index in range(uniform_sets.size()):
+		_rd.compute_list_bind_uniform_set(cl, uniform_sets[set_index], set_index)
+	_rd.compute_list_set_push_constant(cl, push, push.size())
+	_rd.compute_list_dispatch(cl, groups.x, groups.y, groups.z)
+
+
+## _gpu_dispatch_pipeline_sets 的 indirect 变体:组数由 indirect_args 缓冲(GPU 写入)决定。
+## 多段链中的 barrier 仍由调用方显式插入(compute_list_add_barrier)。
+func _gpu_dispatch_pipeline_sets_indirect(cl: int, pipeline: RID, uniform_sets: Array, push: PackedByteArray, indirect_args: RID, args_offset: int = 0) -> void:
+	if _rd == null:
+		return
+	_rd.compute_list_bind_compute_pipeline(cl, pipeline)
+	for set_index in range(uniform_sets.size()):
+		_rd.compute_list_bind_uniform_set(cl, uniform_sets[set_index], set_index)
+	_rd.compute_list_set_push_constant(cl, push, push.size())
+	_rd.compute_list_dispatch_indirect(cl, indirect_args, args_offset)
 
 
 func load_compute_shader(path: String, scope: String = SCOPE_PERSISTENT, label: String = "") -> RID:
@@ -597,6 +668,14 @@ func pack_float_array(values: PackedFloat32Array) -> PackedByteArray:
 
 func pack_u32_array(values: PackedInt32Array) -> PackedByteArray:
 	return values.to_byte_array()
+
+
+## 通过 buffer_get_data 从 GPU 缓冲区回读字节；无 device / RID 无效 / 字节数<=0 时返回空数组。
+## 供各子类的调试/测试回读路径共用（生产路径用常驻 GPU→GPU 交接，不回读）。原多处 _read_buffer_bytes/_readback_buffer_bytes。
+func read_buffer_bytes(buffer: RID, offset: int = 0, byte_count: int = -1) -> PackedByteArray:
+	if _rd == null or not buffer.is_valid() or byte_count <= 0:
+		return PackedByteArray()
+	return _rd.buffer_get_data(buffer, offset, byte_count)
 
 
 func ceil_div(value: int, divisor: int) -> int:

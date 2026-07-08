@@ -3,9 +3,9 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 
 const SPAScript := preload("res://scripts/scene_placement_actor.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
-const DescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const DescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
-const AutoVoxelFixture := preload("res://scripts/utils/auto_voxel_fixture.gd")
+const AutoVoxelFixture := preload("res://scripts/utils/voxel_fixtures.gd")
 
 var _result_label: Label3D
 var _test_results: Array[Dictionary] = []
@@ -37,6 +37,7 @@ func run_all_tests() -> Dictionary:
 	_run(test_brush_sv_metadata)
 	_run(test_pipeline_error_paths)
 	_run(test_merged_gpu_summary)
+	_run(test_resident_placement_writeback)
 
 	var passed := _test_results.filter(func(r): return r["ok"]).size()
 	var total := _test_results.size()
@@ -356,7 +357,6 @@ func test_gpu_buffer_access() -> Dictionary:
 	var probe_rid := spa.get_probe_records_buffer()
 	var profile_rid := spa.get_profile_table_buffer()
 	var pivot_rid := spa.get_pivot_records_buffer()
-	var collision_rid := spa.get_collision_records_buffer()
 
 	var details := []
 	if not probe_rid.is_valid():
@@ -370,7 +370,7 @@ func test_gpu_buffer_access() -> Dictionary:
 
 	if not details.is_empty():
 		return _fail("gpu_buffer_access", "; ".join(details))
-	return _pass("gpu_buffer_access", "probe/profile/pivot/collision RIDs valid")
+	return _pass("gpu_buffer_access", "probe/profile/pivot RIDs valid")
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +538,274 @@ func test_merged_gpu_summary() -> Dictionary:
 
 	spa.dispose()
 	return _pass("merged_gpu_summary", "ok, asset_count=1, mesh_description present")
+
+
+# ---------------------------------------------------------------------------
+# Test: Resident Placement Writeback (VPG → GPU runtime, no CPU readback)
+# ---------------------------------------------------------------------------
+
+func test_resident_placement_writeback() -> Dictionary:
+	var check := check_resident_placement_writeback()
+	if bool(check.get("ok", false)):
+		return _pass("resident_placement_writeback", str(check.get("detail", "ok")))
+	return _fail("resident_placement_writeback", str(check.get("detail", "failed")))
+
+
+## 端到端驱动 GPU 常驻直连写回：全真 SPA 环境（committer + runtime + profile
+## container 同一 RD、满足 GPU 契约），直接调 VPG.run_multi_asset 并断言常驻
+## spawn 契约（无 CPU 字典回读、RID 已释放、shader stats applied==spawned）。
+## 供编辑器桥经 spa_interactive_demo.run_resident_placement_writeback_check() 远程调用。
+static func check_resident_placement_writeback() -> Dictionary:
+	var grid := Vector3i(32, 8, 32)
+	var voxel_size := Vector3.ONE
+	var grid_origin := Vector3.ZERO
+	var voxel_count := grid.x * grid.y * grid.z
+
+	var committer = SceneVoxelCommitterScript.new(grid.x, float(grid.x) * voxel_size.x, true)
+	# Single-device wiring: SPA adopts the committer's RenderingDevice BEFORE
+	# initialize (ensure_device short-circuits when _rd is set), so profile
+	# container / runtime / placer / committer all share one device and the
+	# GPU runtime-profile contract passes.
+	var committer_rd: RenderingDevice = GodotComputeShaderBase.rendering_device_of(committer)
+	if committer_rd == null:
+		committer.dispose(false)
+		return {"ok": false, "detail": "committer has no RenderingDevice (run in editor with Vulkan)"}
+	var spa := SPAScript.new()
+	spa.set_autoobject_runtime_capacity(64)
+	spa.attach_rendering_device(committer_rd, false)
+	spa.initialize(true, true, committer)
+	if not spa.is_initialized():
+		spa.dispose()
+		committer.dispose(false)
+		return {"ok": false, "detail": "spa initialize failed (RenderingDevice unavailable?)"}
+
+	var collision_samples: Array = []
+	for z in range(2):
+		collision_samples.append({"voxel": Vector3i(0, 0, z), "collision_strength": 1.0})
+	var descriptor = AutoObjectScript.create_voxel_descriptor(Color(0.3, 0.8, 0.4, 1.0), 1.0, 1.0, collision_samples)
+	var profile_id: int = spa.register_asset(descriptor)
+	# SVTile object-ref buffers must be resident for the same-type-exclusion
+	# contract (score shader binds them); a fresh committer starts unuploaded.
+	if not committer.ensure_scene_voxel_tile_buffers_uploaded(true):
+		spa.dispose()
+		committer.dispose(false)
+		return {"ok": false, "detail": "committer tile buffer upload failed"}
+	var runtime = spa.get_gpu_runtime()
+	if profile_id < 0 or runtime == null or not runtime.is_ready():
+		var runtime_reason: String = runtime.get_not_ready_reason() if runtime != null else "runtime_null"
+		spa.dispose()
+		committer.dispose(false)
+		return {"ok": false, "detail": "setup failed: profile_id=%d runtime_reason=%s" % [profile_id, runtime_reason]}
+	var live_before: int = runtime.get_live_count()
+
+	# Ground slab at y=0: seeds collision/complexity field content the penalty-only scorer reads
+	# (overlap/clearance/target-fit). Support is no longer scored, so this is field content, not a support prop.
+	var complexity := PackedFloat32Array()
+	complexity.resize(voxel_count)
+	var collision := PackedFloat32Array()
+	collision.resize(voxel_count)
+	for z in range(grid.z):
+		for x in range(grid.x):
+			var idx := VoxelGeneral.voxel_index(Vector3i(x, 0, z), grid)
+			complexity[idx] = 1.0
+			collision[idx] = 1.0
+	# Uniform target coverage (alpha=1) so the coverage gate always passes.
+	var target_field := PackedFloat32Array()
+	target_field.resize(voxel_count * 4)
+	for ti in range(voxel_count):
+		target_field[ti * 4 + 3] = 1.0
+
+	var asset_defs: Array = spa._build_placement_asset_defs()
+	var settings := {
+		"rotation_slots": 4,
+		"result_capacity": 8,
+		"min_distance_voxels": 2.0,
+		"min_support_ratio": 0.5,
+		"collision_limit": 0.5,
+		"clearance_limit": 2.0,
+		"collision_penalty": 1.0,
+		"target_field_bytes": target_field,
+		"seed": 20260702,
+		"gpu_autoobject_runtime": runtime,
+		"write_accepted_placements_to_gpu_runtime": true,
+		"auto_voxel_runtime_profile_container": spa.get_runtime_profile_container(),
+		"scene_voxel_committer": committer,
+		"mesh_description_buffer": spa.get_mesh_description_buffer(),
+		"runtime_writeback_options": {"readback_stats": true},
+		# Fresh-world bootstrap: SVTile numeric object refs are only confirmed
+		# after the first object-ref update pass; allow the documented debug
+		# fallback so the same-type-exclusion contract does not block this
+		# writeback-focused check (orthogonal to what it verifies).
+		"allow_runtime_spacing_full_scan_debug": true,
+	}
+	var placer = spa._get_placer()
+	var out: Dictionary = placer.run_multi_asset(complexity, collision, asset_defs, grid, voxel_size, grid_origin, settings)
+
+	var failures := PackedStringArray()
+	var contract: Dictionary = out.get("gpu_runtime_profile_contract", {})
+	if not bool(contract.get("ok", false)):
+		failures.append("gpu contract blocked: %s" % str(contract.get("reason", "?")))
+	var total_placed := int(out.get("total_placed", 0))
+	if total_placed <= 0:
+		failures.append("total_placed=0 (expected >0)")
+	var wb: Dictionary = out.get("gpu_autoobject_runtime_writeback", {})
+	if not bool(wb.get("ok", false)):
+		failures.append("writeback not ok: %s / %s" % [str(wb.get("reason", "?")), str(wb.get("writeback_detail_reason", ""))])
+	if str(wb.get("accepted_placement_spawn_api", "")) != "spawn_batch_from_accepted_placement_gpu_buffers":
+		failures.append("spawn_api=%s" % str(wb.get("accepted_placement_spawn_api", "none")))
+	if not bool(wb.get("accepted_placement_record_shader_consumed", false)):
+		failures.append("record shader not consumed")
+	var spawned := int(wb.get("spawned_count", 0))
+	if spawned != total_placed:
+		failures.append("spawned_count=%d != total_placed=%d" % [spawned, total_placed])
+	var stats: Dictionary = wb.get("accepted_placement_record_shader_stats", {})
+	if int(stats.get("applied", -1)) != spawned or int(stats.get("skipped", -1)) != 0:
+		failures.append("shader stats applied=%s skipped=%s (expected %d/0)" % [str(stats.get("applied", "?")), str(stats.get("skipped", "?")), spawned])
+	var live_after: int = runtime.get_live_count()
+	if live_after - live_before != spawned:
+		failures.append("live_count delta=%d != spawned=%d" % [live_after - live_before, spawned])
+	var asset_results: Array = out.get("asset_results", [])
+	if asset_results.is_empty():
+		failures.append("asset_results empty")
+	else:
+		var ar: Dictionary = asset_results[0]
+		if not (ar.get("world_results", []) as Array).is_empty():
+			failures.append("world_results not empty (CPU dict readback still active)")
+		if not (ar.get("results", []) as Array).is_empty():
+			failures.append("raw results not empty (CPU dict readback still active)")
+		if not (ar.get("placement_result_buffers", {}) as Dictionary).is_empty():
+			failures.append("placement_result_buffers not released (RID leak)")
+		if total_placed > 0 and float(ar.get("placement_score_sum", 0.0)) <= 0.0:
+			failures.append("placement_score_sum=%s (score-sum pass not effective)" % str(ar.get("placement_score_sum", 0.0)))
+
+	var detail := "spawned=%d live=%d->%d api=%s shader_consumed=%s stats_applied=%s" % [
+		spawned, live_before, live_after,
+		str(wb.get("accepted_placement_spawn_api", "none")),
+		str(wb.get("accepted_placement_record_shader_consumed", false)),
+		str(stats.get("applied", "?")),
+	]
+	spa.dispose(true)
+	committer.dispose(true)
+	if failures.is_empty():
+		return {"ok": true, "detail": detail}
+	return {"ok": false, "detail": "%s | FAIL: %s" % [detail, "; ".join(failures)]}
+
+
+## 编辑器桥静态检查：stamp-only 提交链 + BrushSV/BlendSV/feedback 端到端。
+## A：CPU 入口盖章 → commit_scene_voxels → 常驻 field debug 回读验证内容落场且提交摘要为 stamp_only_commit。
+## B：BrushSV 常驻层写入 → BlendSV 按需合成（brush 覆盖优先、committed SV 保持纯 auto）→
+##    score_blendsv_feedback_against_target 与 target 对比后临时体素释放。
+static func check_stamp_only_commit_and_blend_sv() -> Dictionary:
+	var failures := PackedStringArray()
+	var base_res := 16
+	var volume_res := 8
+
+	# --- A. stamp-only commit ---
+	var committer = SceneVoxelCommitterScript.new(base_res, 16.0, true)
+	var committer_rd: RenderingDevice = GodotComputeShaderBase.rendering_device_of(committer)
+	if committer_rd == null:
+		committer.dispose(false)
+		return {"ok": false, "detail": "committer has no RenderingDevice (run in editor with Vulkan)"}
+	var record := {
+		"id": "stamp_only_check",
+		"type": "rock",
+		"source_voxel_type": "AutoSceneVoxel",
+		"position": Vector3.ZERO,
+		"base_pixel": Vector2i(8, 8),
+		"voxel_xz": Vector2i(8, 8),
+		"volume_xz_resolution": base_res,
+		"scale": Vector3.ONE,
+		"color": Color(0.2, 0.6, 0.8, 0.7),
+		"complexity": 0.7,
+		"channel": 0,
+		"radius": 2.0,
+	}
+	committer.apply_voxel_write_spec(record)
+	committer.build_voxel_volume(volume_res, [
+		{"channel": 0, "color": Color(0.2, 0.6, 0.8, 0.7), "complexity": 0.7, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
+	])
+	var commit_summary: Dictionary = committer.get_last_scene_voxel_commit_summary()
+	if not bool(commit_summary.get("ok", false)):
+		failures.append("commit summary not ok: %s" % str(commit_summary.get("field_scatter_reason", "?")))
+	if str(commit_summary.get("mode", "")) != "stamp_only_commit":
+		failures.append("commit mode=%s" % str(commit_summary.get("mode", "?")))
+	if int(commit_summary.get("scattered_field_record_count", 0)) <= 0:
+		failures.append("no field records scattered")
+	var projection: Dictionary = committer.readback_sv_field_debug_projection()
+	var committed_complexity: PackedFloat32Array = projection.get("complexity_field", PackedFloat32Array())
+	var committed_max := 0.0
+	for value in committed_complexity:
+		committed_max = maxf(committed_max, value)
+	if committed_max < 0.5:
+		failures.append("stamped complexity missing from resident field (max=%.3f)" % committed_max)
+	if committer.get_scene_voxels().is_empty():
+		failures.append("public scene_voxels projection empty")
+
+	# --- B. BrushSV / BlendSV / feedback ---
+	var spa := SPAScript.new()
+	spa.attach_rendering_device(committer_rd, false)
+	spa.initialize(true, true, committer)
+	var grid: Vector3i = committer.grid_size
+	var voxel_count := grid.x * grid.y * grid.z
+	var brush_voxel := Vector2i(2, 2)
+	var brush_result: Dictionary = spa.stamp_brush_sv_records([
+		{"voxel_xz": brush_voxel, "slice_index": 0, "complexity": 0.9, "color": Color(1.0, 0.2, 0.1, 1.0), "collision_strength": 0.8},
+	])
+	if not bool(brush_result.get("ok", false)):
+		failures.append("brush stamp failed: %s" % str(brush_result.get("reason", "?")))
+	if not spa.has_brush_sv_content():
+		failures.append("brush content flag not set")
+	# brush stamp 标记 tile 脏；先 get_sv 让 rebuild 完成，再确保 tile 缓冲上传就绪（真实调用方模式）
+	var committed_sv: Dictionary = committer.get_sv()
+	if not committer.ensure_scene_voxel_tile_buffers_uploaded(true):
+		failures.append("tile buffer upload failed")
+
+	var handoff: Dictionary = spa._build_resident_complexity_field_handoff(committed_sv)
+	if not bool(handoff.get("ok", false)):
+		failures.append("resident field handoff failed: %s" % str(handoff.get("reason", "?")))
+	else:
+		var sv_complexity: RID = handoff.get("complexity_field_buffer_rid", RID())
+		var sv_collision: RID = handoff.get("collision_field_buffer_rid", RID())
+		var blend: Dictionary = spa.compose_blend_sv_fields(sv_complexity, sv_collision)
+		if blend.is_empty():
+			failures.append("blend compose failed")
+		else:
+			var blend_rid: RID = blend.get("complexity_field_buffer", RID())
+			var brush_index := brush_voxel.x + grid.x * (brush_voxel.y + grid.z * 0)
+			var blend_bytes := committer_rd.buffer_get_data(blend_rid, brush_index * 4, 4)
+			var blend_alpha := float(blend_bytes.decode_u32(0) & 0xFF) / 255.0
+			if absf(blend_alpha - 0.9) > 0.02:
+				failures.append("blend voxel alpha=%.3f (expected ~0.9 brush override)" % blend_alpha)
+			var committed_at_brush := committed_complexity[brush_index] if brush_index < committed_complexity.size() else -1.0
+			if committed_at_brush > 0.001:
+				failures.append("committed SV contains brush content (%.3f) — should stay pure auto" % committed_at_brush)
+			spa.release_blend_sv_fields()
+
+	var target_bytes := PackedByteArray()
+	target_bytes.resize(voxel_count * 4)
+	var target_index := brush_voxel.x + grid.x * (brush_voxel.y + grid.z * 0)
+	target_bytes.encode_u32(target_index * 4, 0xFF)  # alpha byte = target completeness 1.0
+	var feedback: Dictionary = spa.score_blendsv_feedback_against_target(target_bytes)
+	if not bool(feedback.get("ok", false)):
+		failures.append("feedback failed: %s" % str(feedback.get("reason", "?")))
+	else:
+		if str(feedback.get("blend_source", "")) != "blend_sv_composed":
+			failures.append("feedback blend_source=%s" % str(feedback.get("blend_source", "?")))
+		if int(feedback.get("overlap_count", 0)) < 1:
+			failures.append("feedback overlap=%d (brush voxel should overlap target)" % int(feedback.get("overlap_count", 0)))
+
+	var detail := "commit=%s scattered=%d field_max=%.2f brush=%s feedback_overlap=%s" % [
+		str(commit_summary.get("mode", "?")),
+		int(commit_summary.get("scattered_field_record_count", 0)),
+		committed_max,
+		str(brush_result.get("gpu_dispatched", false)),
+		str(feedback.get("overlap_count", "?")),
+	]
+	spa.dispose(true)
+	committer.dispose(true)
+	if failures.is_empty():
+		return {"ok": true, "detail": detail}
+	return {"ok": false, "detail": "%s | FAIL: %s" % [detail, "; ".join(failures)]}
 
 
 # ---------------------------------------------------------------------------

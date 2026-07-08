@@ -1,27 +1,27 @@
 class_name AutoVoxelRuntimeProfileContainer
 extends RefCounted
 
-const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+const HashUtils := preload("res://scripts/utils/hash_utils.gd")
+const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
+const CanonicalHash := preload("res://scripts/utils/canonical_hash.gd")
 
 const PROFILE_TABLE_BUFFER := "profile_table"
 const PROBE_RECORD_BUFFER := "probe_records"
 const PIVOT_RECORD_BUFFER := "pivot_records"
-const COLLISION_RECORD_BUFFER := "collision_records"
 const GPU_BUFFER_NAMES := [
 	PROFILE_TABLE_BUFFER,
 	PROBE_RECORD_BUFFER,
 	PIVOT_RECORD_BUFFER,
-	COLLISION_RECORD_BUFFER,
 ]
 
 const PROFILE_TABLE_STRIDE_BYTES := 64
 const PROBE_RECORD_STRIDE_BYTES := 32
 const PIVOT_RECORD_STRIDE_BYTES := 32
-const COLLISION_RECORD_STRIDE_BYTES := 32
 
 var descriptor_hash_to_profile_id: Dictionary = {}
 var dirty_profile_ids: Array[int] = []
@@ -151,7 +151,6 @@ func upload_profiles(force: bool = false) -> bool:
 	var packed_profile_table := _pack_profile_table_bytes()
 	var packed_probes := _pack_probe_record_bytes()
 	var packed_pivots := _pack_pivot_record_bytes()
-	var packed_collisions := _pack_collision_record_bytes()
 
 	_release_gpu_buffers()
 	var ok := true
@@ -172,12 +171,6 @@ func upload_profiles(force: bool = false) -> bool:
 		packed_pivots,
 		_staging_pivot_records.size(),
 		PIVOT_RECORD_STRIDE_BYTES
-	)
-	ok = ok and _create_storage_buffer(
-		COLLISION_RECORD_BUFFER,
-		packed_collisions,
-		_staging_collision_records.size(),
-		COLLISION_RECORD_STRIDE_BYTES
 	)
 
 	if not ok:
@@ -226,11 +219,6 @@ func get_probe_buffer() -> RID:
 ## 返回 pivot record GPU buffer 的 RID。
 func get_pivot_buffer() -> RID:
 	return get_gpu_buffer(PIVOT_RECORD_BUFFER)
-
-
-## 返回 collision record GPU buffer 的 RID。
-func get_collision_records_buffer() -> RID:
-	return get_gpu_buffer(COLLISION_RECORD_BUFFER)
 
 
 ## 返回 GPU buffer 与 runtime 状态的诊断摘要（各 buffer 的 RID 有效性/record_count/stride/逻辑与实际字节数，以及 revision、dirty、last_upload_error 等控制面信息）。
@@ -318,7 +306,6 @@ func readback_debug_snapshot() -> Dictionary:
 		"profile_table_bytes": profile_table_bytes,
 		"probe_record_bytes": buffer_bytes.get(PROBE_RECORD_BUFFER, PackedByteArray()),
 		"pivot_record_bytes": buffer_bytes.get(PIVOT_RECORD_BUFFER, PackedByteArray()),
-		"collision_record_bytes": buffer_bytes.get(COLLISION_RECORD_BUFFER, PackedByteArray()),
 		"decoded_profile_table": _decode_profile_table_bytes(
 			profile_table_bytes,
 			int(_gpu_record_counts.get(PROFILE_TABLE_BUFFER, 0))
@@ -500,7 +487,7 @@ func get_normalized_profile_data(profile_id: int) -> Dictionary:
 
 ## 返回 staging profile table 的深拷贝数组。
 func export_profile_table() -> Array[Dictionary]:
-	return _duplicate_dictionary_array(_staging_profile_table)
+	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_profile_table)
 
 
 ## export_profile_table 的别名，返回 staging profile table 深拷贝。
@@ -510,7 +497,7 @@ func get_profile_table() -> Array[Dictionary]:
 
 ## 返回 staging probe range 列表的深拷贝数组。
 func export_probe_ranges() -> Array[Dictionary]:
-	return _duplicate_dictionary_array(_staging_probe_ranges)
+	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_probe_ranges)
 
 
 ## export_probe_ranges 的别名，返回 probe range 列表深拷贝。
@@ -520,7 +507,7 @@ func get_probe_ranges() -> Array[Dictionary]:
 
 ## 返回 staging pivot range 列表的深拷贝数组。
 func export_pivot_ranges() -> Array[Dictionary]:
-	return _duplicate_dictionary_array(_staging_pivot_ranges)
+	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_pivot_ranges)
 
 
 ## export_pivot_ranges 的别名，返回 pivot range 列表深拷贝。
@@ -530,7 +517,7 @@ func get_pivot_ranges() -> Array[Dictionary]:
 
 ## 返回 staging probe 记录列表的深拷贝数组。
 func export_probe_records() -> Array[Dictionary]:
-	return _duplicate_dictionary_array(_staging_probe_records)
+	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_probe_records)
 
 
 ## export_probe_records 的别名，返回 probe 记录列表深拷贝。
@@ -540,7 +527,7 @@ func get_probe_records() -> Array[Dictionary]:
 
 ## 返回 staging pivot 记录列表的深拷贝数组。
 func export_pivot_records() -> Array[Dictionary]:
-	return _duplicate_dictionary_array(_staging_pivot_records)
+	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_pivot_records)
 
 
 ## export_pivot_records 的别名，返回 pivot 记录列表深拷贝。
@@ -650,7 +637,7 @@ func _pack_profile_table_bytes() -> PackedByteArray:
 		var probe_range: Dictionary = entry.get("probe_range", {})
 		var pivot_range: Dictionary = entry.get("pivot_range", {})
 		var collision_range: Dictionary = entry.get("collision_range", {})
-		var color := SharedPropertyTypeScript.color_from_value(entry.get("color", Color.WHITE), Color.WHITE)
+		var color := VariantUtils.color_from_value(entry.get("color", Color.WHITE), Color.WHITE)
 		var complexity := clampf(float(entry.get("complexity", color.a)), 0.0, 1.0)
 		color.a = complexity
 
@@ -668,7 +655,7 @@ func _pack_profile_table_bytes() -> PackedByteArray:
 		bytes.encode_float(base + 44, complexity)
 		bytes.encode_float(base + 48, float(entry.get("semantic_probe_density", 1.0)))
 		bytes.encode_float(base + 52, float(entry.get("context_sensing_radius", 0.0)))
-		bytes.encode_u32(base + 56, _hex_to_u32(str(entry.get("profile_hash", ""))))
+		bytes.encode_u32(base + 56, HashUtils.u32_from_hex(str(entry.get("profile_hash", ""))))
 		bytes.encode_u32(base + 60, 0)
 	return bytes
 
@@ -679,7 +666,7 @@ func _pack_probe_record_bytes() -> PackedByteArray:
 	bytes.resize(_staging_probe_records.size() * PROBE_RECORD_STRIDE_BYTES)
 	for i in range(_staging_probe_records.size()):
 		var probe: Dictionary = _staging_probe_records[i]
-		var offset := _vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
+		var offset := VariantUtils.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
 		var weight := maxf(float(probe.get("weight", 1.0)), 0.0)
 		var rgba8 := _shader_rgba8_from_probe(probe)
 		var expected_collision := clampf(float(probe.get("expected_collision", 0.0)), 0.0, 1.0)
@@ -700,43 +687,13 @@ func _pack_pivot_record_bytes() -> PackedByteArray:
 	bytes.resize(_staging_pivot_records.size() * PIVOT_RECORD_STRIDE_BYTES)
 	for i in range(_staging_pivot_records.size()):
 		var pivot: Dictionary = _staging_pivot_records[i]
-		var offset := _vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
+		var offset := VariantUtils.vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
 		var base := i * PIVOT_RECORD_STRIDE_BYTES
 		BufferUtils.encode_vec4(bytes, base + 0, offset, float(pivot.get("score_bias", 0.0)))
-		bytes.encode_u32(base + 16, _stable_u32_hash(str(pivot.get("name", ""))))
+		bytes.encode_u32(base + 16, HashUtils.stable_u32_from_string(str(pivot.get("name", ""))))
 		bytes.encode_u32(base + 20, 0)
 		bytes.encode_u32(base + 24, 0)
 		bytes.encode_u32(base + 28, 0)
-	return bytes
-
-
-## 将 staging collision 记录按 COLLISION_RECORD_STRIDE_BYTES 打包为 GPU 字节流：每条编码 center、shape 种类（cylinder=1/box=2）、radius、y_min/y_max 及 collision_strength。
-func _pack_collision_record_bytes() -> PackedByteArray:
-	var bytes := PackedByteArray()
-	bytes.resize(_staging_collision_records.size() * COLLISION_RECORD_STRIDE_BYTES)
-	for i in range(_staging_collision_records.size()):
-		var entry: Dictionary = _staging_collision_records[i]
-		var center := _vector3_from_value(entry.get("offset", entry.get("center", entry.get("position", Vector3.ZERO))), Vector3.ZERO)
-		var shape := str(entry.get("shape", "cylinder"))
-		var kind := 0
-		if shape == "cylinder":
-			kind = 1
-		elif shape == "box":
-			kind = 2
-		var radius := maxf(float(entry.get("radius", 1.0)), 0.01)
-		var y_min := float(entry.get("y_min", 0.0))
-		var y_max := maxf(float(entry.get("y_max", 2.0)), y_min + 0.01)
-		var strength := clampf(float(entry.get("collision_strength", 1.0)), 0.0, 1.0)
-
-		var base := i * COLLISION_RECORD_STRIDE_BYTES
-		bytes.encode_float(base + 0, center.x)
-		bytes.encode_float(base + 4, center.y)
-		bytes.encode_float(base + 8, center.z)
-		bytes.encode_u32(base + 12, kind)
-		bytes.encode_float(base + 16, radius)
-		bytes.encode_float(base + 20, y_min)
-		bytes.encode_float(base + 24, y_max)
-		bytes.encode_float(base + 28, strength)
 	return bytes
 
 
@@ -780,60 +737,18 @@ func _stride_for_buffer(buffer_name: String) -> int:
 			return PROBE_RECORD_STRIDE_BYTES
 		PIVOT_RECORD_BUFFER:
 			return PIVOT_RECORD_STRIDE_BYTES
-		COLLISION_RECORD_BUFFER:
-			return COLLISION_RECORD_STRIDE_BYTES
 		_:
 			return 0
-
-
-## 将任意值（Vector3/Vector3i/长度>=3 的 Array/含 x,y,z 的 Dictionary）宽松转换为 Vector3，无法识别时返回 fallback。
-static func _vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vector3:
-	if value is Vector3:
-		return value as Vector3
-	if value is Vector3i:
-		var vi := value as Vector3i
-		return Vector3(float(vi.x), float(vi.y), float(vi.z))
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Vector3(
-			float(dict.get("x", fallback.x)),
-			float(dict.get("y", fallback.y)),
-			float(dict.get("z", fallback.z))
-		)
-	return fallback
 
 
 ## 从 probe 推导 shader 用的 rgba8：优先用 expected_color/color（complexity 写入 alpha），否则回退由 expected_rgba8 解出的颜色，最终统一打包为 shader rgba8 布局。
 static func _shader_rgba8_from_probe(probe: Dictionary) -> int:
 	if probe.has("expected_color") or probe.has("color"):
-		var color := SemanticProbeProfileScript.color_from_value(probe.get("expected_color", probe.get("color", Color.WHITE)), Color.WHITE)
+		var color := VariantUtils.color_from_value(probe.get("expected_color", probe.get("color", Color.WHITE)), Color.WHITE)
 		color.a = clampf(float(probe.get("expected_complexity", probe.get("complexity", color.a))), 0.0, 1.0)
-		return _pack_shader_rgba8(color)
-	var semantic_packed := int(probe.get("expected_rgba8", SemanticProbeProfileScript.pack_rgba8(Color.WHITE)))
-	return _pack_shader_rgba8(_color_from_semantic_rgba8(semantic_packed))
-
-
-## 将 Color 量化到 0-255 并按 shader 约定的 R<<24|G<<16|B<<8|A 顺序打包为 u32。
-static func _pack_shader_rgba8(color: Color) -> int:
-	var r := clampi(roundi(color.r * 255.0), 0, 255)
-	var g := clampi(roundi(color.g * 255.0), 0, 255)
-	var b := clampi(roundi(color.b * 255.0), 0, 255)
-	var a := clampi(roundi(color.a * 255.0), 0, 255)
-	return (r << 24) | (g << 16) | (b << 8) | a
-
-
-## 将 semantic 约定的 rgba8 u32（R 在低字节）解包回 Color。
-static func _color_from_semantic_rgba8(packed: int) -> Color:
-	return Color(
-		float(packed & 0xff) / 255.0,
-		float((packed >> 8) & 0xff) / 255.0,
-		float((packed >> 16) & 0xff) / 255.0,
-		float((packed >> 24) & 0xff) / 255.0
-	)
+		return BufferUtils.pack_shader_rgba8_word(color)
+	var semantic_packed := int(probe.get("expected_rgba8", BufferUtils.pack_semantic_rgba8_word(Color.WHITE)))
+	return BufferUtils.pack_shader_rgba8_word(BufferUtils.semantic_rgba8_word_to_color(semantic_packed))
 
 
 ## 从 probe 取出度量权重并组成 Vector3(w_color, w_complexity, w_collision)，缺省均为 1.0。
@@ -843,24 +758,6 @@ static func _probe_metric_weights(p: Dictionary) -> Vector3:
 		float(p.get("w_complexity", 1.0)),
 		float(p.get("w_collision", 1.0)),
 	)
-
-
-## 将十六进制字符串逐字符解析为 u32（忽略非 hex 字符），用于把 profile_hash 串折叠为 u32 写入 GPU。
-static func _hex_to_u32(hex_value: String) -> int:
-	var result := 0
-	for i in range(hex_value.length()):
-		var c := hex_value.unicode_at(i)
-		var nibble := -1
-		if c >= 48 and c <= 57:
-			nibble = c - 48
-		elif c >= 65 and c <= 70:
-			nibble = c - 65 + 10
-		elif c >= 97 and c <= 102:
-			nibble = c - 97 + 10
-		if nibble < 0:
-			continue
-		result = ((result << 4) | nibble) & 0xffffffff
-	return result
 
 
 ## 将 descriptor 资源归一化为统一的 profile 记录：提取共享字段（color/complexity/collision）、按 density（受 density_override 影响并 clamp 到 0.1-8.0）采样 semantic probes（有 mesh 时传 mesh/world_scale/collision）、取 pivot variants 与 context_sensing_radius；descriptor 为 null 时返回空记录。
@@ -876,7 +773,7 @@ static func normalize_descriptor(
 	var shared_fields := SharedPropertyTypeScript.from_descriptor(descriptor, default_radius)
 	var collision := SharedPropertyTypeScript.duplicate_dictionary_array(shared_fields.get("collision", []))
 	var semantic_probe_density := clampf(
-		density_override if density_override > 0.0 else _float_property(descriptor, "semantic_probe_density", 1.0),
+		density_override if density_override > 0.0 else VariantUtils.float_property(descriptor, "semantic_probe_density", 1.0),
 		0.1,
 		8.0
 	)
@@ -886,7 +783,7 @@ static func normalize_descriptor(
 			probes = descriptor.call("get_semantic_probes", mesh, semantic_probe_density, world_scale, collision)
 		else:
 			probes = descriptor.call("get_semantic_probes", semantic_probe_density)
-	elif _object_has_property(descriptor, "semantic_probe_profile"):
+	elif VariantUtils.has_property(descriptor, "semantic_probe_profile"):
 		var probe_profile = descriptor.get("semantic_probe_profile")
 		if probe_profile != null and probe_profile.has_method("get_probes"):
 			probes = probe_profile.call("get_probes")
@@ -894,7 +791,7 @@ static func normalize_descriptor(
 	var pivots: Array = []
 	if descriptor.has_method("get_pivot_variants"):
 		pivots = descriptor.call("get_pivot_variants")
-	elif _object_has_property(descriptor, "pivot_variants"):
+	elif VariantUtils.has_property(descriptor, "pivot_variants"):
 		var raw_pivots = descriptor.get("pivot_variants")
 		if raw_pivots is Array:
 			pivots = raw_pivots
@@ -902,15 +799,15 @@ static func normalize_descriptor(
 	return _normalize_profile_record({
 		"source_kind": "descriptor",
 		"source_path": descriptor.resource_path,
-		"asset_id": str(_property_or_default(descriptor, "asset_id", "")),
-		"object_type": str(_property_or_default(descriptor, "object_type", "")),
+		"asset_id": str(VariantUtils.property_or_default(descriptor, "asset_id", "")),
+		"object_type": str(VariantUtils.property_or_default(descriptor, "object_type", "")),
 		"color": shared_fields.get("color", Color.WHITE),
 		"complexity": float(shared_fields.get("complexity", 1.0)),
 		"collision": collision,
 		"pivot_variants": pivots,
 		"semantic_probes": probes,
 		"semantic_probe_density": semantic_probe_density,
-		"context_sensing_radius": _float_property(descriptor, "context_sensing_radius", 0.0),
+		"context_sensing_radius": VariantUtils.float_property(descriptor, "context_sensing_radius", 0.0),
 	})
 
 
@@ -934,11 +831,11 @@ static func normalize_profile(profile: AutoVoxelProfile, default_radius: float =
 
 ## 把任意 raw_profile 字典规整为标准 profile 记录：clamp complexity 并写入 color.a、归一化 collision/pivot/probes、clamp 密度与感知半径，并据规范字段计算稳定的 profile_hash。
 static func _normalize_profile_record(raw_profile: Dictionary) -> Dictionary:
-	var color := SharedPropertyTypeScript.color_from_value(raw_profile.get("color", Color.WHITE), Color.WHITE)
+	var color := VariantUtils.color_from_value(raw_profile.get("color", Color.WHITE), Color.WHITE)
 	var complexity := clampf(float(raw_profile.get("complexity", color.a)), 0.0, 1.0)
 	color.a = complexity
 
-	var collision := AssetDescriptorScript.normalize_collision(_array_from_value(raw_profile.get("collision", [])), 0.0)
+	var collision := VoxelGeneral.normalize_collision_samples(_array_from_value(raw_profile.get("collision", [])), 0.0)
 	var pivots := AssetDescriptorScript.normalize_pivot_variants(_array_from_value(raw_profile.get("pivot_variants", [])))
 	var probes := SemanticProbeProfileScript.duplicate_probe_array(_array_from_value(raw_profile.get("semantic_probes", [])))
 
@@ -955,7 +852,7 @@ static func _normalize_profile_record(raw_profile: Dictionary) -> Dictionary:
 		"semantic_probe_density": clampf(float(raw_profile.get("semantic_probe_density", 1.0)), 0.1, 8.0),
 		"context_sensing_radius": maxf(float(raw_profile.get("context_sensing_radius", 0.0)), 0.0),
 	}
-	normalized["profile_hash"] = _stable_hash_hex(_canonical_string(_profile_hash_source(normalized)))
+	normalized["profile_hash"] = HashUtils.stable_hex_from_string(CanonicalHash.canonical_string(_profile_hash_source(normalized)))
 	return normalized
 
 
@@ -964,9 +861,9 @@ static func _profile_hash_source(normalized: Dictionary) -> Dictionary:
 	return {
 		"color": normalized.get("color", Color.WHITE),
 		"complexity": float(normalized.get("complexity", 1.0)),
-		"collision": _sorted_canonical_entries(normalized.get("collision", [])),
-		"pivot_variants": _sorted_canonical_entries(normalized.get("pivot_variants", [])),
-		"semantic_probes": _sorted_canonical_entries(normalized.get("semantic_probes", [])),
+		"collision": CanonicalHash.sorted_canonical_entries(normalized.get("collision", [])),
+		"pivot_variants": CanonicalHash.sorted_canonical_entries(normalized.get("pivot_variants", [])),
+		"semantic_probes": CanonicalHash.sorted_canonical_entries(normalized.get("semantic_probes", [])),
 		"semantic_probe_density": float(normalized.get("semantic_probe_density", 1.0)),
 		"context_sensing_radius": float(normalized.get("context_sensing_radius", 0.0)),
 	}
@@ -974,7 +871,7 @@ static func _profile_hash_source(normalized: Dictionary) -> Dictionary:
 
 ## 由 profile_hash 派生稳定正整数 profile_id（u31 hash，<=0 时取 1），并线性探测解决与不同 hash 的 id 冲突。
 func _profile_id_from_hash(profile_hash: String) -> int:
-	var profile_id := _stable_u31_hash("profile_id:" + profile_hash)
+	var profile_id := HashUtils.stable_u31_from_string("profile_id:" + profile_hash)
 	if profile_id <= 0:
 		profile_id = 1
 	while _profile_id_to_hash.has(profile_id) and str(_profile_id_to_hash[profile_id]) != profile_hash:
@@ -1009,108 +906,11 @@ static func _make_range_entry(profile_id: int, profile_index: int, range_data: D
 	}
 
 
-## 深拷贝 source 中的所有 Dictionary 条目（跳过非字典项）并返回新的 Array[Dictionary]。
-static func _duplicate_dictionary_array(source: Array) -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
-	for raw_entry in source:
-		if raw_entry is Dictionary:
-			result.append((raw_entry as Dictionary).duplicate(true))
-	return result
-
-
 ## 若 value 是 Array 则返回其深拷贝，否则返回空数组。
 static func _array_from_value(value) -> Array:
 	if value is Array:
 		return (value as Array).duplicate(true)
 	return []
-
-
-## 将数组中每个条目转为 canonical 字符串并排序返回，使哈希来源不受条目顺序影响。
-static func _sorted_canonical_entries(value) -> Array[String]:
-	var result: Array[String] = []
-	if value is Array:
-		for raw_entry in value:
-			result.append(_canonical_string(raw_entry))
-	result.sort()
-	return result
-
-
-## 将任意值递归序列化为带类型前缀的确定性 canonical 字符串（float 经 _format_float 量化、Dictionary 按 key 排序），作为稳定哈希输入。
-static func _canonical_string(value) -> String:
-	match typeof(value):
-		TYPE_NIL:
-			return "nil"
-		TYPE_BOOL:
-			return "b:%s" % str(value)
-		TYPE_INT:
-			return "i:%d" % int(value)
-		TYPE_FLOAT:
-			return "f:%s" % _format_float(float(value))
-		TYPE_STRING:
-			var s := str(value)
-			return "s:%d:%s" % [s.length(), s]
-		TYPE_VECTOR2:
-			var v2: Vector2 = value
-			return "v2:%s,%s" % [_format_float(v2.x), _format_float(v2.y)]
-		TYPE_VECTOR2I:
-			var v2i: Vector2i = value
-			return "v2i:%d,%d" % [v2i.x, v2i.y]
-		TYPE_VECTOR3:
-			var v3: Vector3 = value
-			return "v3:%s,%s,%s" % [_format_float(v3.x), _format_float(v3.y), _format_float(v3.z)]
-		TYPE_VECTOR3I:
-			var v3i: Vector3i = value
-			return "v3i:%d,%d,%d" % [v3i.x, v3i.y, v3i.z]
-		TYPE_COLOR:
-			var c: Color = value
-			return "color:%s,%s,%s,%s" % [
-				_format_float(c.r),
-				_format_float(c.g),
-				_format_float(c.b),
-				_format_float(c.a),
-			]
-		TYPE_ARRAY:
-			var parts: Array[String] = []
-			for entry in value:
-				parts.append(_canonical_string(entry))
-			return "a:[%s]" % ",".join(parts)
-		TYPE_DICTIONARY:
-			var keys := (value as Dictionary).keys()
-			keys.sort()
-			var dict_parts: Array[String] = []
-			for key in keys:
-				dict_parts.append("%s=%s" % [_canonical_string(key), _canonical_string((value as Dictionary)[key])])
-			return "d:{%s}" % ",".join(dict_parts)
-		_:
-			return "v:%s" % str(value)
-
-
-## 将 float 格式化为固定 6 位小数字符串，并把极小值（绝对值<=5e-7）归零以避免 ±0 等抖动影响哈希。
-static func _format_float(value: float) -> String:
-	var v := value
-	if absf(v) <= 0.0000005:
-		v = 0.0
-	return "%.6f" % v
-
-
-## 返回字符串的稳定 u32 hash 的 8 位十六进制表示。
-static func _stable_hash_hex(value: String) -> String:
-	return "%08x" % _stable_u32_hash(value)
-
-
-## 返回字符串的稳定正整数 hash（u32 hash 取低 31 位，结果<=0 时返回 1）。
-static func _stable_u31_hash(value: String) -> int:
-	var h := _stable_u32_hash(value) & 0x7fffffff
-	return h if h > 0 else 1
-
-
-## 用 FNV-1a 算法对字符串逐 unicode 码点计算稳定的 32 位 hash。
-static func _stable_u32_hash(value: String) -> int:
-	var h := 2166136261
-	for i in range(value.length()):
-		h = (h ^ value.unicode_at(i)) & 0xffffffff
-		h = (h * 16777619) & 0xffffffff
-	return h
 
 
 ## 为 descriptor 生成稳定的 source_key：有 resource_path 用 "path:..."，否则用 "instance:实例id"；descriptor 为 null 返回空串。
@@ -1120,28 +920,3 @@ static func _descriptor_source_key(descriptor: Resource) -> String:
 	if not descriptor.resource_path.is_empty():
 		return "path:%s" % descriptor.resource_path
 	return "instance:%d" % descriptor.get_instance_id()
-
-
-## 读取 object 上指定属性并转为 float，属性不存在或为 null 时返回 fallback。
-static func _float_property(object: Object, property_name: String, fallback: float) -> float:
-	var value = _property_or_default(object, property_name, fallback)
-	if value == null:
-		return fallback
-	return float(value)
-
-
-## 若 object 拥有指定属性则返回其值，否则返回 fallback。
-static func _property_or_default(object: Object, property_name: String, fallback):
-	if not _object_has_property(object, property_name):
-		return fallback
-	return object.get(property_name)
-
-
-## 遍历 object 的 property list 判断是否存在指定名称的属性，object 为 null 返回 false。
-static func _object_has_property(object: Object, property_name: String) -> bool:
-	if object == null:
-		return false
-	for property in object.get_property_list():
-		if str((property as Dictionary).get("name", "")) == property_name:
-			return true
-	return false

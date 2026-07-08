@@ -1,7 +1,9 @@
-extends SceneTree
+extends "res://scripts/utils/scene_tree_test.gd"
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
-const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
+const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 const TEST_LEAF_ASSET_PATH := "res://assets/vegetation/sm_test_leaf_test2_asset.tres"
 const TEST_LEAF_COLOR := Color(0.35, 0.58, 0.24, 0.45)
@@ -9,20 +11,14 @@ const TEST_LEAF_COMPLEXITY := 0.45
 
 
 func _init() -> void:
-	var ok := true
-	ok = ok and _test_leaf_asset_probe_generation()
-	ok = ok and _test_probe_density_scaling()
-	ok = ok and _test_convex_probe_generation()
-	ok = ok and _test_collision_sample_probe_generation()
-	ok = ok and _test_world_min_distance_constant()
-	ok = ok and _test_asset_instance_probe_transfer()
-
-	if ok:
-		print("[SemanticProbeGeneration] ALL TESTS PASSED")
-		quit(0)
-	else:
-		push_error("[SemanticProbeGeneration] SOME TESTS FAILED")
-		quit(1)
+	run_suite("SemanticProbeGeneration", [
+		_test_leaf_asset_probe_generation,
+		_test_probe_density_scaling,
+		_test_convex_probe_generation,
+		_test_collision_sample_probe_generation,
+		_test_world_min_distance_constant,
+		_test_asset_instance_probe_transfer,
+	], true)  # 保留原 `ok = ok and _test()` 的短路语义
 
 
 func _test_leaf_asset_probe_generation() -> bool:
@@ -88,7 +84,7 @@ func _test_convex_probe_generation() -> bool:
 	var aabb := mesh.get_aabb()
 	for i in range(probes.size()):
 		var probe := probes[i] as Dictionary
-		var offset := SemanticProbeProfileScript.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
+		var offset := VariantUtils.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
 		if not _aabb_has_point(aabb, offset, 0.001):
 			push_error("  FAIL: convex probe %d offset %s outside mesh aabb %s" % [i, str(offset), str(aabb)])
 			return false
@@ -208,7 +204,7 @@ func _validate_leaf_probe(asset: Resource, probe: Dictionary, index: int) -> boo
 			push_error("  FAIL: probe %d missing key %s" % [index, key])
 			return false
 
-	var offset := SemanticProbeProfileScript.vector3_from_value(probe.offset, Vector3.ZERO)
+	var offset := VariantUtils.vector3_from_value(probe.offset, Vector3.ZERO)
 	var mesh = asset.call("get_mesh")
 	var aabb: AABB = mesh.get_aabb() if mesh is Mesh else AABB()
 	if not _aabb_has_point(aabb, offset, 0.001):
@@ -222,7 +218,7 @@ func _validate_leaf_probe(asset: Resource, probe: Dictionary, index: int) -> boo
 	if not _approx(float(probe.expected_complexity), TEST_LEAF_COMPLEXITY, 0.001):
 		push_error("  FAIL: probe %d complexity %.3f != %.3f" % [index, float(probe.expected_complexity), TEST_LEAF_COMPLEXITY])
 		return false
-	if int(probe.expected_rgba8) != SemanticProbeProfileScript.pack_rgba8(TEST_LEAF_COLOR):
+	if int(probe.expected_rgba8) != BufferUtils.pack_semantic_rgba8_word(TEST_LEAF_COLOR):
 		push_error("  FAIL: probe %d expected_rgba8 mismatch" % index)
 		return false
 	if not _approx(float(probe.expected_collision), 0.0, 0.001):
@@ -260,7 +256,7 @@ func _probe_signature(probes: Array) -> String:
 		if not raw_probe is Dictionary:
 			continue
 		var probe := raw_probe as Dictionary
-		var offset := SemanticProbeProfileScript.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
+		var offset := VariantUtils.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
 		parts.append("%d,%d,%d:%d:%.2f,%.2f,%.2f" % [
 			roundi(offset.x * 1000.0),
 			roundi(offset.y * 1000.0),

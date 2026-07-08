@@ -3,7 +3,8 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
 const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
-const VoxelDisplay := preload("res://scripts/voxel_display.gd")
+const VoxelDisplay := preload("res://scripts/utils/voxel_display.gd")
+const VoxelDebugLabel := preload("res://scripts/utils/voxel_debug_label.gd")
 const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
 
 const VOXEL_DEBUG_NODE := "VoxelDebugGroup"
@@ -14,6 +15,12 @@ const GEO_BOUND_SIZE_META := "geo_bound_size"
 const GEO_BOUND_LONGEST_META := "geo_bound_longest"
 const GEO_KIND_META := "geo_asset_kind"
 const GEO_SCAN_EXTENSIONS := ["fbx"]
+
+# ---- Bake AssetDescriptor per displayed mesh (editor tool) ----------------
+# Output folder for descriptors baked from the meshes shown in the scene. Kept
+# under the demo (not the curated res://assets/vegetation) so a bake never
+# clobbers hand-authored assets.
+const BAKED_DESCRIPTOR_DIR := "res://demos/asset-descriptor-demo/baked_descriptors"
 
 # ---- Bake transform -> source FBX (editor tool) ---------------------------
 const BAKE_SCRIPT_PATH := "res://tools/bake_fbx_transform.py"
@@ -314,7 +321,7 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 
 	var mesh: Mesh = info.get("mesh", null)
 	var mesh_transform: Transform3D = info.get("mesh_transform", Transform3D.IDENTITY)
-	var bounds := DemoAssets.transformed_aabb(mesh.get_aabb(), mesh_transform) if mesh != null else AABB()
+	var bounds := VoxelGeneral.transformed_aabb(mesh.get_aabb(), mesh_transform) if mesh != null else AABB()
 	var kind := _classify_geo_asset(path)
 	var color := TREE_COLOR if kind == "tree" else ROCK_COLOR
 
@@ -323,7 +330,7 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 	node.set_meta(GEO_SOURCE_META, path)
 	node.set_meta(GEO_MTIME_META, modified)
 	node.set_meta(GEO_BOUND_SIZE_META, bounds.size)
-	node.set_meta(GEO_BOUND_LONGEST_META, DemoAssets.aabb_longest_axis(bounds))
+	node.set_meta(GEO_BOUND_LONGEST_META, VoxelGeneral.aabb_longest_axis(bounds))
 	node.set_meta(GEO_KIND_META, kind)
 
 	var mesh_node := MeshInstance3D.new()
@@ -336,12 +343,12 @@ func _rebuild_geo_asset_node(node: Node3D, path: String, modified: int, info: Di
 	mesh_node.material_override = _make_geo_asset_material(color)
 	node.add_child(mesh_node)
 
-	var label := Label3D.new()
+	# 静态贴标（非 billboard、小缩放）；样式统一走 VoxelDebugLabel，保留原有 18 / 0.01 / 3 观感
+	var label := VoxelDebugLabel.make(
+		"%s\nbound %.2f" % [path.get_file().get_basename(), VoxelGeneral.aabb_longest_axis(bounds)],
+		Color.WHITE, 18, 0.0, 0.01, 3, false
+	)
 	label.name = "AssetLabel"
-	label.pixel_size = 0.01
-	label.font_size = 18
-	label.outline_size = 3
-	label.text = "%s\nbound %.2f" % [path.get_file().get_basename(), DemoAssets.aabb_longest_axis(bounds)]
 	# Float the label just above the mesh top (bounds follow the native pivot).
 	label.position = Vector3(0.0, bounds.position.y + bounds.size.y + 0.6, 0.0)
 	node.add_child(label)
@@ -416,7 +423,7 @@ func _geo_node_local_aabb(node: Node3D) -> AABB:
 	var mi := node.get_node_or_null("Mesh") as MeshInstance3D
 	if mi == null or mi.mesh == null:
 		return AABB(Vector3.ZERO, Vector3.ONE)
-	return DemoAssets.transformed_aabb(mi.mesh.get_aabb(), mi.transform)
+	return VoxelGeneral.transformed_aabb(mi.mesh.get_aabb(), mi.transform)
 
 
 func _classify_geo_asset(path: String) -> String:
@@ -827,7 +834,7 @@ func _build_probes_for_node(node: Node3D) -> void:
 
 	for j in range(mini(_probes.size(), max_probe_markers)):
 		var marker := _make_probe_marker(_probes[j], j)
-		var local_offset := SemanticProbeProfileScript.vector3_from_value(
+		var local_offset := VariantUtils.vector3_from_value(
 			_probes[j].get("offset", Vector3.ZERO), Vector3.ZERO
 		)
 		# Mesh-local offset -> world via the Mesh node (carries import + pivot offset)
@@ -835,13 +842,12 @@ func _build_probes_for_node(node: Node3D) -> void:
 		group.add_child(marker)
 
 	# Summary label above the selected asset in world space
-	var sum_label := Label3D.new()
+	var sum_label := VoxelDebugLabel.make(
+		"%s\nprobes=%d" % [node.name, mini(_probes.size(), max_probe_markers)],
+		Color.WHITE, 20, 0.0, 0.01, 4, false
+	)
 	sum_label.name = "ProbeCount"
-	sum_label.text = "%s\nprobes=%d" % [node.name, mini(_probes.size(), max_probe_markers)]
 	sum_label.position = node.position + Vector3(0.0, 2.5, 0.0)
-	sum_label.font_size = 20
-	sum_label.pixel_size = 0.01
-	sum_label.outline_size = 4
 	group.add_child(sum_label)
 
 
@@ -941,15 +947,14 @@ func _build_voxel_channel_display(channel: String) -> void:
 		if display != null:
 			root.add_child(display)
 
-	var label := Label3D.new()
+	var label := VoxelDebugLabel.make(
+		"Voxel channel: %s\nvoxels shown=%d / solid=%d  grid_count=%d" % [
+			channel, shown_voxels, total_voxels, voxel_grid_count
+		],
+		Color.WHITE, 28, 0.0, 0.01, 5, false
+	)
 	label.name = "VoxelChannelLabel"
-	label.text = "Voxel channel: %s\nvoxels shown=%d / solid=%d  grid_count=%d" % [
-		channel, shown_voxels, total_voxels, voxel_grid_count
-	]
 	label.position = Vector3(0.0, 3.2, 2.0)
-	label.font_size = 28
-	label.pixel_size = 0.01
-	label.outline_size = 5
 	root.add_child(label)
 
 
@@ -972,6 +977,158 @@ func _voxel_channel_color(voxel: Dictionary, channel: String) -> Color:
 			return Color(1.0, 1.0 - s * 0.7, 0.15, 0.92)
 		_:
 			return Color(0, 0, 0, 0.0)
+
+
+# ─── Bake AssetDescriptor per displayed mesh ──────────────────
+#
+# Toolbar entry point: for every asset shown in the scene (each tree / rock /
+# geo container holding a "Mesh" MeshInstance3D), voxelize the mesh on the GPU
+# and bake a full AssetDescriptor — color / complexity, per-voxel collision
+# footprint, semantic probe profile and matching voxel profile — then save one
+# .tres per mesh under BAKED_DESCRIPTOR_DIR. Returns a summary the plugin
+# toolbar displays.
+
+func bake_scene_descriptors() -> Dictionary:
+	if not Engine.is_editor_hint():
+		return {"ok": false, "reason": "editor_only", "baked": 0, "failed": 0, "total": 0}
+	_collect_static_assets()
+	var nodes: Array[Node3D] = []
+	nodes.append_array(_tree_nodes)
+	nodes.append_array(_rock_nodes)
+	if nodes.is_empty():
+		push_warning("[AssetDescriptorDemo] No displayed asset meshes to bake — scan geo or add tree/rock assets first.")
+		return {"ok": false, "reason": "no_assets", "baked": 0, "failed": 0, "total": 0}
+
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(BAKED_DESCRIPTOR_DIR))
+	var voxelizer = MeshVoxelizerGpuScript.new()
+	var baked := 0
+	var failed := 0
+	var saved_paths: Array[String] = []
+	for node in nodes:
+		var descriptor := _bake_descriptor_for_node(node, voxelizer)
+		if descriptor == null:
+			failed += 1
+			push_warning("[AssetDescriptorDemo] Bake skipped (no mesh): %s" % node.name)
+			continue
+		var path := "%s/%s_descriptor.tres" % [BAKED_DESCRIPTOR_DIR, node.name]
+		var save_err := ResourceSaver.save(descriptor, path)
+		if save_err != OK:
+			failed += 1
+			push_error("[AssetDescriptorDemo] Failed to save descriptor for %s (err %d)" % [node.name, save_err])
+			continue
+		baked += 1
+		saved_paths.append(path)
+	_refresh_editor_filesystem()
+	var summary := {
+		"ok": failed == 0 and baked > 0,
+		"baked": baked,
+		"failed": failed,
+		"total": nodes.size(),
+		"dir": BAKED_DESCRIPTOR_DIR,
+		"paths": saved_paths,
+	}
+	print("[AssetDescriptorDemo] Baked %d/%d descriptors (failed %d) -> %s" % [
+		baked, nodes.size(), failed, BAKED_DESCRIPTOR_DIR])
+	return summary
+
+
+func get_asset_descriptor_bake_state() -> Dictionary:
+	_collect_static_assets()
+	return {
+		"ok": true,
+		"asset_count": _tree_nodes.size() + _rock_nodes.size(),
+		"dir": BAKED_DESCRIPTOR_DIR,
+	}
+
+
+# Build a full AssetDescriptor from a single displayed asset node's mesh.
+# Returns null when the node has no usable mesh.
+func _bake_descriptor_for_node(node: Node3D, voxelizer) -> AssetDescriptor:
+	var mi := node.get_node_or_null("Mesh") as MeshInstance3D
+	if mi == null or mi.mesh == null:
+		return null
+	var mesh := mi.mesh
+	var color := _node_color(node)
+	var complexity := _node_complexity(node)
+
+	# GPU solid voxelize -> per-voxel collision footprint + interior samples.
+	var collision_samples: Array[Dictionary] = []
+	var interior_samples: Array = []
+	var vres: Dictionary = voxelizer.voxelize(
+		mesh, voxel_grid_count, color, voxel_collision_strength, _node_min_neighbors(node))
+	if bool(vres.get("ok", false)):
+		collision_samples = _collision_samples_from_voxels(vres)
+		interior_samples = _interior_samples_from_voxels(vres)
+	else:
+		push_warning("[AssetDescriptorDemo] voxelize failed for %s: %s" % [
+			node.name, str(vres.get("reason", "unknown"))])
+
+	var descriptor := AssetDescriptor.new()
+	descriptor.mesh = mesh
+	descriptor.set_color_and_complexity(color, complexity)  # keeps color.a == complexity
+	descriptor.set_collision(collision_samples)
+	descriptor.asset_id = str(node.name).to_lower()
+	descriptor.object_type = "vegetation" if _node_is_tree(node) else "rock"
+	var src_path := str(node.get_meta(GEO_SOURCE_META, ""))
+	if not src_path.is_empty():
+		descriptor.source_mesh_path = src_path
+
+	# Voxel profile mirrors the canonical color / complexity / collision.
+	var profile: AutoVoxelProfile = AutoVoxelProfile.create_profile(color, complexity)
+	profile.collision = collision_samples.duplicate(true)
+	descriptor.voxel_profile = profile
+
+	# Semantic probe profile generated from the mesh + voxel interior samples.
+	var probe_profile := SemanticProbeProfileScript.new()
+	probe_profile.density = probe_density
+	probe_profile.probes = SemanticProbeProfileScript.generate_from_mesh(
+		mesh, interior_samples, color, complexity, probe_density, probe_profile.max_probe_count)
+	descriptor.semantic_probe_profile = probe_profile
+	descriptor.semantic_probe_density = probe_density
+	return descriptor
+
+
+# Coarse-core voxels (collision > 0) -> descriptor collision samples. Grid
+# coordinates are recentred so the footprint is centered in X/Z and based at
+# y=0 (the placement-footprint convention).
+func _collision_samples_from_voxels(vres: Dictionary) -> Array[Dictionary]:
+	var samples: Array[Dictionary] = []
+	var voxels: Array = vres.get("voxels", [])
+	var grid: Vector3i = vres.get("grid", Vector3i.ZERO)
+	var min_y := 0x7FFFFFFF
+	for v in voxels:
+		if float(v["collision"]) <= 0.0:
+			continue
+		min_y = mini(min_y, int((v["voxel"] as Vector3i).y))
+	if min_y == 0x7FFFFFFF:
+		return samples
+	var half_x := grid.x / 2
+	var half_z := grid.z / 2
+	for v in voxels:
+		var strength := float(v["collision"])
+		if strength <= 0.0:
+			continue
+		var g: Vector3i = v["voxel"]
+		var local := Vector3i(g.x - half_x, g.y - min_y, g.z - half_z)
+		samples.append(AutoVoxelProfile.make_collision_sample(local, strength, 1.0))
+	return samples
+
+
+# Solid voxels -> semantic-probe interior samples (mesh-local position plus the
+# same-level color / complexity / collision channels), matching the shape the
+# probe generator's voxel-interior layer consumes.
+func _interior_samples_from_voxels(vres: Dictionary) -> Array:
+	var samples := []
+	for v in vres.get("voxels", []):
+		if float(v["collision"]) <= 0.0:
+			continue
+		samples.append({
+			"local_pos": v["local_center"],
+			"color": v["color"],
+			"complexity": v["complexity"],
+			"collision": v["collision"],
+		})
+	return samples
 
 
 # ─── Clear ────────────────────────────────────────────────────

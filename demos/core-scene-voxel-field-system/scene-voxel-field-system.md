@@ -1,15 +1,15 @@
 # Complexity Field System
 
-本文维护 MeshFill 中 `SceneVoxel`、source write、`collision` 和 SV 常驻显存状态的契约。跨模块总览见 [`meshfill-framework.md`](../core-meshfill-framework/meshfill-framework.md)；`AssetDescriptor` 定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，资产字段归属见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；粗粒度 SV cell 管理见 [`scenevoxeltile.md`](../core-scenevoxeltile/scenevoxeltile.md)；AutoObject GPU-first 方向见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)；TargetSV 见 [`target-scene-voxel-projection.md`](../target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md)。**SPA**（`ScenePlacementActor`）是 MeshFill 运行时编排器，借用 `SceneVoxelCommitter` 引用并在 commit 阶段调用 `apply_voxel_write_spec()`；详见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
+本文维护 MeshFill 中 `SceneVoxel`、source write、`collision` 和 SV 常驻显存状态的契约。跨模块总览见 [`meshfill-framework.md`](../core-meshfill-framework/meshfill-framework.md)；`AssetDescriptor` 定义见 [`asset-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，资产字段归属见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；粗粒度 SV cell 管理见 [`scenevoxeltile.md`](../core-scenevoxeltile/scenevoxeltile.md)；AutoObject GPU-first 方向见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)；TargetSV 见 [`target-scene-voxel-projection.md`](../target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md)。**SPA**（`ScenePlacementActor`）是 MeshFill 运行时编排器，借用 `SceneVoxelCommitter` 引用并在 commit 阶段调用 `apply_voxel_write_spec()`；详见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
 
-**SceneVoxel Source Fusion**（**SVSF**）是 `AutoSV` + `BrushSV` + `LandscapeSV`（terrain base collision / target guidance）合成为 `BlendSV` / committed `SceneVoxel` 的正式命名。SVSF 包含 `resolve_scene_voxel_sources.glsl`（同 stream source candidate 仲裁 + 多源合并）和 `blend_scene_voxel_fields.glsl`（compact source records → dense field）两个 GPU pass，由 `blend_scene_voxels()` 统一编排。
+committed `SceneVoxel` 采用 **stamp-only commit**：常驻 complexity/collision field buffer 对是持久 stamp 写入目标，VPG 的 GPU state-chain stamp（`stamp_voxel_field.glsl`）在 placement 期间原位提交，CPU 入口（`apply_voxel_write_spec()`）的盖章记录由 `commit_scene_voxels()` 一次稀疏散射（`scatter_sv_field_records.glsl`）落入同一常驻 field。不存在 per-voxel source-candidate 裁决/blend 提交管线。`BrushSV`（场景笔刷层）常驻挂在 SPA 上、不进提交；`BlendSV` 是 committed SV + `BrushSV` 的按需合成读取产物（`compose_blend_sv_fields.glsl`），供 3D score 物理采样与 TargetSV 对比使用，用完即删。
 
 ![SceneVoxel / SV source commit and resident GPU field flow](diagrams/scene-voxel-flow.svg)
 
 ## 本文范围
 
-- `instance_stamp_write_spec`（`ISWS`）如何进入 `AutoSceneVoxel` / `BrushSceneVoxel` source write path。
-- `blend_scene_voxels()` 如何发布 committed `SceneVoxel` public read model。
+- `instance_stamp_write_spec`（`ISWS`）如何经 `apply_voxel_write_spec()` 盖章进入常驻 field 与公共投影。
+- `commit_scene_voxels()` 如何完成 stamp-only 提交发布（散射 pending 记录 + tile 摘要）。
 - committed per-voxel payload、source-only 字段和 debug buffer/readback 边界。
 - canonical `collision` 字段、placement footprint `collision` record/API、terrain base collision 与 `collision_field` 的归属。
 - SV resident buffers、dirty voxel regions / dirty tiles 的所有权。
@@ -23,9 +23,9 @@
 - `occupied`、`type`、`source_type`、`source_voxel_type`、`commit_tick` 不作为 committed per-voxel payload；占用由 completely（即 `max(complexity, collision)`）是否非 0 推导，source provenance 放在 source/debug buffer，commit tick 只作为当前 SV snapshot 的全局 epoch。
 - `TargetSceneVoxel` record 只作为 target / guidance metadata；写入阶段会跳过它，不进入 `AutoSceneVoxel` / `BrushSceneVoxel` source stream，也不进入 committed `SceneVoxel`。
 - `TargetSceneVoxelGenerator.decode_target_read_buffers()` 可把 `TargetSV_B` raw `rgba8/r8` cache 解码成 `target_completely`（即 `max(complexity, collision)`） / `target_color`；这是 routing / scoring read input，不是 source write。
-- source write 只接受归一化后的 `AutoSceneVoxel` / `BrushSceneVoxel` record；`TargetSceneVoxel` / `TargetSV_B` 在 `apply_voxel_write_spec()` 和 `_enqueue_scene_voxel_source_record()` 边界保持 guidance-only / skip，不参与 source priority 或 committed key。
-- `SceneVoxelCommitter` 内部可以保留 source staging / debug label 供同 tick 合成、debug buffer 打包和 dirty update 使用；这些 staging Dictionary 不是公开查询路径。
-- SV 自持 `complexity_field`、`collision_field`、grid metadata 和 dirty regions；`SV[t - 1]` 是本轮稳定读取输入，`SV[tick]` 是本轮提交结果。
+- committed stamp 只接受归一化后的 auto record；`TargetSceneVoxel` / `TargetSV_B` 在 `apply_voxel_write_spec()` 边界保持 guidance-only / skip。brush 内容写 SPA 的 `BrushSV` 常驻层（`stamp_brush_sv_records()`），不进 committed `SceneVoxel`。
+- `SceneVoxelCommitter` 的 `_voxel_write_specs` 是逐对象盖章记录集（脏区/全量重放的依据）；`_volume.scene_voxels` 是盖章时直写的调试/查询投影，不是运行时权威状态。
+- SV 自持一对持久 complexity/collision 常驻 field buffer（stamp 直写目标；碰撞场以 terrain base 为种子）、grid metadata 和 dirty regions；读取侧经 `BlendSV` 按需合成（brush 为空时直通）。
 - `_rebuild_sv()` 发布的 SV resident state 是 committed `SceneVoxel`、terrain base collision、grid metadata 和 dirty index 的读取快照；它不是 source write buffer，也不是第二套 committed payload。
 - AutoObject、brush、profile 和 placement 变更影响 committed SV 时，正常入口是 `SceneVoxelTile` dirty；`SVBrush` / source stamp 是 dirty tile 重建出的 source write intent，不是 direct SV update path。
 - `TargetSV_B` / target guidance 变化只触发 routing、prefilter、scoring 或 feedback 侧 dirty，不写入 source stream，也不直接更新 committed `SceneVoxel`。
@@ -37,10 +37,12 @@
 
 | 类型 / 阶段 | 责任 | 输入 | 输出 | Source of truth |
 | --- | --- | --- | --- | --- |
-| `AssetDescriptor` / `AutoVoxelProfile` | 资产默认语义。 | authoring config、imported profile。 | descriptor-backed shared fields、probe / pivot defaults。 | descriptor/profile 资源；定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)。 |
+| `AssetDescriptor` / `AutoVoxelProfile` | 资产默认语义。 | authoring config、imported profile。 | descriptor-backed shared fields、probe / pivot defaults。 | descriptor/profile 资源；定义见 [`asset-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)。 |
 | `instance_stamp_write_spec` / `ISWS` | 描述本轮实例 stamp 的 source write context。 | `AutoObject` descriptor-backed getters、placement result、extra write fields。 | 归一化前的 per-instance write record；legacy 名称是 `voxel_write_spec`。 | 当前 tick 的 `AutoObject` / placement builder 输出。 |
-| `AutoSceneVoxel` / `BrushSceneVoxel` source stream | 保存当前 tick 的 auto / brush 写入意图。 | `_prepare_source_record()` 归一化后的 `ISWS` / brush stamp。 | source records、priority、brush scope、collision samples、debug labels。 | `SceneVoxelCommitter` 的 source stream；不是 committed `SceneVoxel` 字段。 |
-| `SceneVoxel` / `BlendSV` | 发布 committed per-voxel read model。 | 同 tick `AutoSceneVoxel` / `BrushSceneVoxel`，以及 terrain base collision。 | SV accepted fields：`complexity`、`color`、`collision`，可选 `auto_mix`。 | `SceneVoxelCommitter.blend_scene_voxels()` 的 committed result。 |
+| Auto stamp records | CPU 入口逐对象盖章记录，供脏区/全量重放。 | `prepare_source_record()` 归一化后的 `ISWS`。 | `_voxel_write_specs` 记录 + pending field 散射记录。 | `SceneVoxelCommitter._voxel_write_specs`；不是 committed per-voxel 字段。 |
+| `BrushSV` overlay | 场景笔刷常驻旁路层，不进提交。 | 笔刷体素记录（`stamp_brush_sv_records()`）。 | SPA 常驻 brush field 对（RGBA8 + R8）。 | `ScenePlacementActor`；生命周期/持久化元数据见 brush control metadata。 |
+| committed `SceneVoxel` | 发布 committed per-voxel read model（纯 auto）。 | VPG state-chain stamp + CPU 入口散射记录 + terrain base collision 种子。 | SV accepted fields：`complexity`、`color`、`collision`，可选 `auto_mix`。 | 常驻 field buffer 对；`commit_scene_voxels()` 是发布点。 |
+| `BlendSV` read product | 按需合成的临时读取对（3D score / TargetSV 对比）。 | committed SV 常驻对 + `BrushSV` 常驻对。 | 临时 blend field 对（brush 覆盖优先 / collision max），用完即删。 | `ScenePlacementActor.compose_blend_sv_fields()`；不落地、不提交。 |
 | SV resident state | 提供 placement、prefilter、validation 和 debug 的稳定读取输入。 | committed `SceneVoxel`、terrain collision、grid metadata、dirty tile state。 | `complexity_field`、`collision_field`、grid metadata、dirty snapshots、debug ranges。 | `SceneVoxelCommitter._rebuild_sv()` 发布的 `_sv` snapshot。 |
 | `SceneVoxelTile` + per-voxel object refs | 记录两级（voxel + tile）object refs、粗粒度 dirty、bounds、source ranges 和 summary。 | affected voxel bounds、source write、GPU AutoObject dirty delta bridge。 | `dirty_scene_voxel_tiles`、per-voxel object refs、tile 级 object/source debug ranges、summary。 | `SceneVoxelCommitter._scene_voxel_tiles` staging table + per-voxel object-ref GPU buffer；详见 [`scenevoxeltile.md`](../core-scenevoxeltile/scenevoxeltile.md)。 |
 | `TargetSceneVoxel` / `TargetSV_B` | target / guidance read input。 | target generator、BrushSV 合成、persisted target buffers。 | `target_completely`（即 `max(complexity, collision)`，值为 0 表示体素为空）、`target_color`、feedback target。 | TargetSV / BrushSV 持久化缓存；不进入 source write。 |
@@ -51,18 +53,18 @@
 AssetDescriptor / AutoVoxelProfile
   -> AutoObject / placement result builds ISWS
   -> affected bounds mark SceneVoxelTile dirty
-  -> _prepare_source_record() normalizes shared fields
-  -> AutoSceneVoxel[tick] / BrushSceneVoxel[tick] source stream
-  -> blend_scene_voxels(tick)
-  -> committed SceneVoxel / BlendSV[tick]
-  -> _rebuild_sv() publishes complexity_field / collision_field and tile snapshots
-  -> next tick reads SV[t - 1] as stable input
+  -> prepare_source_record() normalizes shared fields
+  -> apply_voxel_write_spec(): 盖章 slices + 直写 scene_voxels 投影 + 排队 field 散射记录
+  -> commit_scene_voxels(tick): 散射 pending 记录进常驻 field + tick + tile 摘要
+  -> committed SceneVoxel[tick]（常驻 field 对，纯 auto）
+  -> _rebuild_sv() publishes grid metadata / tile snapshots（field 即常驻 buffer 本体）
+  -> next tick: BlendSV = compose(committed SV, BrushSV) 作为稳定读取输入
 ```
 
 生命周期规则：
 
-- `SV[t - 1]` / `BlendSV[t - 1]` 是 placement 和 probe 本 tick 的稳定读取输入。
-- `ISWS` 和 source streams 只属于当前 tick；提交后由 `blend_scene_voxels()` 发布只含 SV accepted fields 的 committed `SceneVoxel`。
+- placement 和 probe 本 tick 的稳定读取输入是 `BlendSV` 读取场（committed SV + `BrushSV` 按需合成；brush 为空时直通 committed SV RID）。
+- `ISWS` 只属于当前 tick；`commit_scene_voxels()` 发布只含 SV accepted fields 的 committed `SceneVoxel` 投影。
 - `SceneVoxelTile` dirty flags 在 SV snapshot 成功发布后清理；object/source debug ranges 可随下一次 `_rebuild_sv()` 重建。
 - `TargetSV_B` 可以跨 tick 持久化为 guidance cache，但它的生命周期不等同于 committed `SceneVoxel`。
 
@@ -70,17 +72,17 @@ AssetDescriptor / AutoVoxelProfile
 
 | 侧 | 当前职责 | 不拥有 |
 | --- | --- | --- |
-| CPU / GDScript | descriptor / `ISWS` 归一化、source candidate staging、`SceneVoxelTile` command staging、`blend_scene_voxels()` 编排、debug buffer readback 解码和 persisted target decode。 | GPU object pool hot state、同 stream source candidate winner 仲裁、Auto / Brush committed payload 数值合成、shader 内临时 same-batch duplicate buffers。 |
-| GPU compute | `resolve_scene_voxel_sources.glsl` 同 stream source candidate winner 仲裁 + Auto / Brush committed payload 合并合成、`blend_scene_voxel_fields.glsl` 从 compact Auto / Brush source records 直接写 resident complexity field、probe prefilter、candidate voxel-region routing、`score_voxel_tile.glsl` physical scoring、VPG temporary `complexity_field_out` / `collision_field_out`。 | `SceneVoxelTile` source of truth、TargetSV source write、GDScript staging/debug Dictionary 投影。 |
+| CPU / GDScript | descriptor / `ISWS` 归一化、pending field 散射记录收集、`SceneVoxelTile` command staging、`commit_scene_voxels()` 编排、debug buffer readback 解码和 persisted target decode。 | GPU object pool hot state、field 数值写入（stamp/散射在 GPU 上完成）、shader 内临时 same-batch duplicate buffers。 |
+| GPU compute | `stamp_voxel_field.glsl` state-chain stamp（读 BlendSV 工作场时双写 committed SV）、`scatter_sv_field_records.glsl` CPU 入口记录散射、`compose_blend_sv_fields.glsl` BlendSV 合成、`score_blendsv_feedback.glsl` 结果级对比、probe prefilter（`pack_prefilter_field_pair.glsl` 常驻场转换）、candidate voxel-region routing、`score_voxel_tile.glsl` physical scoring。 | `SceneVoxelTile` source of truth、TargetSV source write、GDScript staging/debug Dictionary 投影。 |
 | Boundary buffer | `complexity_field` / `collision_field`、`target_completely` / `target_color`、candidate voxel-region ids、placement result buffers。 | `collision_field` 不是第二套 collision source of truth；它由 committed `SceneVoxel.collision` 与 terrain base collision 发布。 |
 
-GPU pass 可以读取 `SV[t - 1]` resident buffers 并生成候选或临时输出；被接受的 placement 必须回到 source write / commit 边界，才能成为 `SceneVoxel[tick]`。
+GPU pass 读取 `BlendSV` 读取场生成候选；被接受的 placement 由 stamp pass 原位提交进 committed SV 常驻 field（stamp 即提交）。
 
 ## Committed SceneVoxel
 
 Committed `SceneVoxel` 只接受自己的 per-voxel 字段：
 
-逐项字段集合维护在 `SceneVoxel.PUBLIC_FIELD_KEYS` / `SceneVoxel.INTERNAL_FIELD_KEYS`，GPU 数值输出由 `resolve_scene_voxel_sources.glsl` 合并生成。
+逐项字段集合维护在 `SceneVoxel.PUBLIC_FIELD_KEYS` / `SceneVoxel.INTERNAL_FIELD_KEYS`；GPU 数值状态即常驻 field buffer 对（stamp/散射直写）。
 
 以下字段不属于 committed `SceneVoxel`：
 
@@ -88,7 +90,7 @@ Committed `SceneVoxel` 只接受自己的 per-voxel 字段：
 | --- | --- |
 | `occupied` | query 派生状态，由 `complexity` 非 0 推导。 |
 | `type` | storage schema / container metadata。 |
-| `source_type` / `source_voxel_type` | source stream、resolve/debug buffer 或 debug provenance。 |
+| `source_type` / `source_voxel_type` | 盖章记录/公共投影上的 debug provenance 元数据（无提交语义）。 |
 | `commit_tick` | 当前 committed SV snapshot 的全局 epoch；不表达 per-voxel provenance。 |
 | `record_id`、`auto_id`、`object_type`、`mesh_instance_id`、per-voxel `object_ids` 等 | record、runtime debug metadata、asset metadata 或 debug handle。per-voxel object refs 是独立 object-ref index，不进入 committed `SceneVoxel`。 |
 
@@ -98,11 +100,11 @@ Committed `SceneVoxel` 只接受自己的 per-voxel 字段：
 
 `instance_stamp_write_spec`（`ISWS`）由 AutoObject / placement builder 生成。当前代码中的 `AutoObject.make_voxel_write_spec()`、`AutoObject.make_profile_voxel_write_spec()` 是 legacy API name，语义上返回 `ISWS`。进入写入路径前，`SharedPropertyType` 会把 `color`、`complexity`、`collision` 归一化。
 
-常用 source-only 字段的逐项含义维护在 `SceneVoxelCommitter._prepare_source_record()`、`_make_scene_voxel_source_record_template()` 和 `_source_priority()` 中。
+常用 source-only 字段的逐项含义维护在 `SceneVoxelSourceRecord.prepare_source_record()` 与 `SceneVoxelCommitter._make_stamped_scene_voxel_template()` 中。
 
-硬边界：可提交 source record 只来自 `AutoSceneVoxel` / `BrushSceneVoxel`。`TargetSceneVoxel` record 会被标记为 `target_guidance_only` 或在 `_enqueue_scene_voxel_source_record()` 中直接跳过；即使 `TargetSV_B` 已解码为 `target_completely` / `target_color`，这些 buffer 也只能作为 read input 或 target-side dirty trigger。
+硬边界：可提交 stamp record 只来自 auto 路径。`TargetSceneVoxel` record 会被标记为 `target_guidance_only` 并在 `apply_voxel_write_spec()` 中提前返回；即使 `TargetSV_B` 已解码为 `target_completely` / `target_color`，这些 buffer 也只能作为 read input 或 target-side dirty trigger。brush 内容经 SPA `stamp_brush_sv_records()` 写常驻 `BrushSV` 层。
 
-`SceneVoxelCommitter` 内部的 `_pending_auto_scene_voxel_source_candidates` / `_pending_brush_scene_voxel_source_candidates` 收集同 tick source candidate。`resolve_scene_voxel_sources.glsl` 按 `priority`、`complexity`、后写入顺序返回每组 winner index，合并自动完成 Auto / Brush committed payload 合成并物化到 `_auto_scene_voxel_sources` / `_brush_scene_voxel_sources`。`_scene_source_metadata` 只用于 dirty update、debug range 打包和 readback 标注，不是公开 per-voxel read payload。GPU dispatch 失败报告 `compute_dispatch_failed`，不静默回退 CPU。
+`SceneVoxelCommitter` 内部的 `_pending_sv_field_records` 收集 CPU 入口盖章产生的 field 散射记录（x, z, slice, complexity, rgb, collision；complexity < 0 表示仅写碰撞）。`commit_scene_voxels()` 把它们一次稀疏散射进常驻 field（`scatter_sv_field_records.glsl`：复杂度覆盖写、碰撞 atomic max）。GPU dispatch 失败在提交摘要中报告 `field_scatter_reason`，不静默回退 CPU。
 
 Source write 的刷新来源应由 dirty `SceneVoxelTile` 决定；Target guidance 只触发 routing / scoring / feedback dirty，不进入 source stream：
 
@@ -110,15 +112,16 @@ Source write 的刷新来源应由 dirty `SceneVoxelTile` 决定；Target guidan
 AutoObject / brush / profile / placement delta
   -> mark affected SceneVoxelTile dirty
   -> rebuild dirty tile source ranges / object ranges / summaries
-  -> AutoSceneVoxel[tick] / BrushSceneVoxel[tick] source write
-  -> blend_scene_voxels(tick)
+  -> auto: apply_voxel_write_spec() 盖章 / VPG state-chain stamp
+  -> brush: SPA.stamp_brush_sv_records()（常驻 BrushSV 层）
+  -> commit_scene_voxels(tick)
 ```
 
 `SVBrush` / source stamp 可以和 AutoObject 的覆盖 tile 绑定，用来重建 source intent；但它不是绕过 `SceneVoxelTile` dirty 的第二入口，也不能直接修改 committed `SceneVoxel` 或 SV resident `complexity_field` / `collision_field`。
 
-当前实现中，source write 会通过 `_enqueue_scene_voxel_source_record()` 写入 Auto / Brush pending candidate、标记 `_mark_sv_tile_dirty()`，并同步 `_scene_voxel_tiles` command staging；source candidate 由 `resolve_scene_voxel_sources.glsl` 批量仲裁并合并完成 Auto / Brush committed payload 合成。`_volume["scene_voxels"]` 只由 `blend_scene_voxels()` 写入 committed result。`_rebuild_sv()` 会把 object/source debug ranges、tile summary 和 resident fields 发布到 SV snapshot，并由 `ensure_scene_voxel_tile_buffers_uploaded()` 压入 GPU storage buffers。外部 named 入口是 `mark_scene_voxel_tile_dirty()` / `mark_scene_voxel_tile_bounds_dirty()`；兼容入口是 `invalidate_sv_tile()` / `invalidate_sv_rect()`。文档层仍应写作 `SceneVoxelTile` dirty，只有说明源码兼容层时才写 legacy storage 字段。
+当前实现中，`apply_voxel_write_spec()` 盖章时直接写 `_volume["scene_voxels"]` 公共投影、排队 `_pending_sv_field_records`，并标记 `_mark_sv_tile_dirty()` 同步 `_scene_voxel_tiles` command staging。`_rebuild_sv()` 把 object/source debug ranges、tile summary 发布到 SV snapshot；常驻 field buffer 由 `ensure_resident_field_buffers()` 保证存在（仅缺失/体素数变化时重建，上传路径不覆盖 stamp 内容）。外部 named 入口是 `mark_scene_voxel_tile_dirty()` / `mark_scene_voxel_tile_bounds_dirty()`；兼容入口是 `invalidate_sv_tile()` / `invalidate_sv_rect()`。文档层仍应写作 `SceneVoxelTile` dirty，只有说明源码兼容层时才写 legacy storage 字段。
 
-`blend_scene_voxels()` 在存在 dirty `SceneVoxelTile` scope 时，会从上一版 committed `SceneVoxel` map 复制未触碰 tile，只把 dirty tile 覆盖到的 Auto / Brush source keys 交给 `resolve_scene_voxel_sources.glsl` 合并合成；无 dirty scope 或首次提交时才走 full source stream scan。`_rebuild_sv()` 生成 resident `complexity_field` 时上传 compact Auto / Brush source record buffers，由 `blend_scene_voxel_fields.glsl` 直接按 key 写最终 dense field，不再在 CPU 侧先铺 auto / brush 临时 dense field。
+剔除/擦除的自洽性由重放保证：`_rebuild_scene_voxels_from_records()` 清空常驻 field（复杂度清零、碰撞重播 terrain base 种子）后逐记录重放盖章。移动/删除 autoobject 时，其 auto 侧按 dirty 剔除重放，其手动内容转入 `BrushSV` 常驻层——两边各自干净，无幽灵体素。
 
 ## Debug Buffer Query
 
@@ -126,16 +129,16 @@ AutoObject / brush / profile / placement delta
 
 工具点选一个 voxel 时，用同一个 voxel 坐标分别读取当前层：
 
-- committed result：`get_scene_voxel()` 或 SV `complexity_field`。
-- brush layer：本轮持续存在的 `BrushSV` / brush source debug buffer。
-- auto layer：`AutoSV` source/debug readback buffer。
+- committed result：`get_scene_voxel()`（盖章直写投影）或 `readback_sv_field_debug_projection()`（常驻 field 显式 debug 回读）。
+- brush layer：SPA 常驻 `BrushSV` field 对（`get_brush_sv_field_summary()`）。
+- auto layer：committed SV 常驻 field（纯 auto，即上一项）。
 - tile debug：`SceneVoxelTile` 由 `floor(Vector3i(x, y, z) / scene_voxel_tile_size)` 推导；tile record、summary、dirty index、object/source refs 通过 `readback_scene_voxel_tile_debug_snapshot()` 读取。
 
 查询规则：
 
 - 不再提供 `get_scene_voxel_sidecar()` / `SceneVoxelLocal` 这类 CPU Dictionary 聚合查询。
 - CPU 侧不再为了 debug 长期保留 `BrushSV` / `AutoSV` 的完整内容镜像；只保留资源句柄、生命周期、dirty、序列化入口和 readback 定位键等控制面元数据。
-- 工具需要 debug 信息时读稳定 debug buffers / readback decoder，不直接读取 `_scene_source_metadata`、`_scene_voxel_tiles` 或 `_volume["scene_voxels"]`。
+- 工具需要 debug 信息时读稳定 debug buffers / readback decoder（`readback_sv_field_debug_projection()` / `readback_scene_voxel_tile_debug_snapshot()`），不直接读取 `_scene_voxel_tiles` 或 `_volume["scene_voxels"]`。
 - `commit_tick` 只作为 SV snapshot 全局 epoch 出现在 snapshot/header 级信息中，不作为 per-voxel source provenance。
 - committed `SceneVoxel` 仍必须只接受 SV-owned fields；`source_voxel_type`、record id、object refs 和 tile debug 只存在于 source/debug buffers 或 tile readback 中。
 
@@ -143,32 +146,32 @@ AutoObject / brush / profile / placement delta
 
 ```text
 AssetDescriptor / brush edit
-  -> read existing BlendSV[t - 1] / SV[t - 1] complexity_field / collision_field
+  -> BlendSV 读取场 = compose(committed SV, BrushSV)（brush 为空时直通 SV RID）
      stable physical sampling input
-  -> instance_stamp_write_spec (ISWS)
-  -> AutoSceneVoxel[tick] / BrushSceneVoxel[tick] source write
+  -> auto: instance_stamp_write_spec (ISWS) -> apply_voxel_write_spec() 盖章
      TargetSceneVoxel guidance record is skipped
-  -> VPG temporary duplicated buffers for same-batch avoidance
-  -> blend_scene_voxels(tick): AutoSceneVoxel[tick] + BrushSceneVoxel[tick]
-  -> BlendSV[tick] / SceneVoxel[tick] accepted fields:
+  -> brush: SPA.stamp_brush_sv_records() -> 常驻 BrushSV 层（不进提交）
+  -> VPG state-chain stamp：读 BlendSV 工作场，双写 committed SV（stamp 即提交）
+  -> commit_scene_voxels(tick)：散射 pending CPU 入口记录 + tick + tile 摘要
+  -> committed SceneVoxel[tick] accepted fields:
        complexity
        color
        collision
        optional auto_mix
-  -> result feedback score:
-       score_blendsv_feedback_against_target(BlendSV[tick], TargetSV_B / TargetSV)
-  -> SV[tick] complexity_field / collision_field / dirty regions
-  -> next tick: BlendSV[tick] / SV[tick] becomes BlendSV[t - 1] / SV[t - 1]
+  -> result feedback score（低频检测）:
+       SPA.score_blendsv_feedback_against_target(TargetSV_B / TargetSV)
+       临时合成 BlendSV 对比，读回统计后立即删除临时体素
+  -> BlendSV 临时对释放；BrushSV 常驻保留
+  -> next tick: committed SV 常驻 fields 即下一轮读取基底
 ```
 
 提交规则：
 
-- `AutoSceneVoxel` 和 `BrushSceneVoxel` 都是本 tick source stream；二者只有投影到同一 committed key 时才进入 merge / resolve。
-- brush 可以用 `modified_voxels` 限定接管范围；为空时表示本次 stamp footprint 全接管。
-- 0 强度 brush / erase 仍要写 source，用 `complexity = 0.0` 发布未占用结果；`complexity = 0.0` 是空写入强度。
-- `blend_scene_voxels()` 是对外 committed read model 发布点；它读取 Auto / Brush source streams 和 GPU commit payload，不发布 CPU sidecar 查询对象。
-- placement 物理采样读取的是已发布的 `BlendSV[t - 1]` / `SV[t - 1]`，不是同 tick 尚未合成的 `AutoSceneVoxel` / `BrushSceneVoxel`。
-- placement stamp 之后必须再次执行 `blend_scene_voxels(tick)`，把本 tick `AutoSceneVoxel` 与 `BrushSceneVoxel` 合成为新的 `BlendSV[tick]`，再通过 `score_blendsv_feedback_against_target()` 与 `TargetSV_B` / `TargetSV` 计算结果级 target feedback score，并作为下一 tick resident read input。
+- committed `SceneVoxel` 纯 auto；brush 内容永不进提交，`BrushSV` 与 committed SV 只在 `BlendSV` 读取合成时相遇（brush 覆盖优先 / collision max），无裁决优先级表。
+- 手动操控/移动 autoobject 时该对象转为提供 `BrushSV`；其 auto 侧按 dirty 剔除重放（`_rebuild_scene_voxels_from_records()`），SV 剔除后自洽干净。
+- `commit_scene_voxels()` 是对外 committed read model 发布点：散射 pending 记录、推进 tick、重建 tile 摘要；提交是幂等的（重放同一记录集输出恒等）。
+- placement 物理采样读取 `BlendSV` 读取场；stamp 双写保证同批次避让看得到本批已放置对象，而提交只落 auto。
+- 结果级 feedback 是低频检测：`SPA.score_blendsv_feedback_against_target()` 临时合成 `BlendSV`、与 `TargetSV_B` / `TargetSV` 对比 completely / color 重合度，读回统计后立即删除临时体素。
 
 ## 数据格式
 
@@ -221,7 +224,7 @@ committed SceneVoxel
 
 Footprint authoring 仍可用局部 sample 列表描述形状：
 
-局部 collision sample 字段含义维护在 [`AssetDescriptor.normalize_collision()`](../asset-descriptor-demo/asset-descriptor.md)、`SharedPropertyType.collision_from_fields()` 和 `VoxelPlacementGenerator.bake_footprint_from_collision()` 附近；`SceneVoxelCommitter` 只复用共享 field stamp 路径发布 resident field。
+局部 collision sample 字段含义维护在 [`VoxelGeneral.normalize_collision_samples()`](../asset-descriptor-demo/asset-descriptor.md)、`SharedPropertyType.collision_from_fields()` 和 `AssetDescriptor.bake_footprint()` 附近；`SceneVoxelCommitter` 只复用共享 field stamp 路径发布 resident field。
 
 `collision_field` 是 SV resident GPU collision read channel，由 committed `SceneVoxel.collision` 与 terrain base collision 发布得到。它不改变 `collision` 的语义归属，也不是第二套权威数据。
 
@@ -248,16 +251,17 @@ SV resident state 字段含义维护在 `SceneVoxelCommitter._rebuild_sv()` 的 
 
 | 规则 | 代码入口 |
 | --- | --- |
-| `instance_stamp_write_spec`（`ISWS`）归一化为 source record | `_prepare_source_record()`、`SharedPropertyType.normalize_shared_fields()` |
-| source record template 构造 | `_make_scene_voxel_source_record_template()` |
-| target guidance 跳过 source write | `_source_type_from_record()`、`_enqueue_scene_voxel_source_record()` |
-| Auto / Brush source candidate staging | `_pending_auto_scene_voxel_source_candidates`、`_pending_brush_scene_voxel_source_candidates`、`_enqueue_scene_voxel_source_record()` |
-| 同 stream source candidate CS 仲裁 | `resolve_scene_voxel_sources.glsl`、`_flush_pending_scene_voxel_source_candidates()` |
-| Auto / Brush current source stream | `_auto_scene_voxel_sources`、`_brush_scene_voxel_sources` |
-| committed `SceneVoxel` accepted fields | `SceneVoxel.accepted()` / `accepted_map()`、`resolve_scene_voxel_sources.glsl` |
-| auto / brush merge | `resolve_scene_voxel_sources.glsl`、`_try_blend_scene_voxel_commit_payloads_gpu()` |
-| resident `complexity_field` GPU direct write | `blend_scene_voxel_fields.glsl`、`_try_make_sv_complexity_field_from_source_streams_gpu()` |
-| public commit | `blend_scene_voxels()` |
+| `instance_stamp_write_spec`（`ISWS`）归一化为 stamp record | `SceneVoxelSourceRecord.prepare_source_record()`、`SharedPropertyType.normalize_shared_fields()` |
+| stamp 公共投影模板构造 | `_make_stamped_scene_voxel_template()` |
+| target guidance 跳过 stamp | `apply_voxel_write_spec()` 的 `target_guidance_only` 提前返回 |
+| CPU 入口 field 散射记录 | `_pending_sv_field_records`、`_queue_sv_field_record()`、`scatter_sv_field_records.glsl` |
+| VPG state-chain stamp（stamp 即提交） | `stamp_voxel_field.glsl`（双写 binding 9/10 + dual_commit flag） |
+| BrushSV 常驻层 | `ScenePlacementActor.stamp_brush_sv_records()` / `clear_brush_sv()` / `has_brush_sv_content()` |
+| BlendSV 按需合成 | `ScenePlacementActor.compose_blend_sv_fields()`、`compose_blend_sv_fields.glsl`、`release_blend_sv_fields()` |
+| committed `SceneVoxel` accepted fields | `SceneVoxel.accepted()` / `accepted_map()`（盖章直写投影） |
+| 常驻 field buffer 生命周期 | `ensure_resident_field_buffers()` / `reset_resident_field_buffers()`（tile store） |
+| public commit | `commit_scene_voxels()` |
+| 结果级 feedback | `ScenePlacementActor.score_blendsv_feedback_against_target()`、`score_blendsv_feedback.glsl` |
 | terrain collision 保护 | `set_terrain_base_collision_field()` 标记全量 `SceneVoxelTile` dirty；`SceneVoxelCommitter` 发布 `SV.collision_field`，保留 terrain base collision |
 | dirty region tracking | `SceneVoxelTile` CPU staging table；legacy `_sv_dirty_tiles` / `_sv_dirty_rects` snapshot 仍供 resident buffer 路径使用 |
 | CPU tile debug ranges | `_rebuild_sv()` 发布 `scene_voxel_tile_object_ids_debug` 和 per-tile range start/count |
@@ -282,27 +286,24 @@ SV resident state 字段含义维护在 `SceneVoxelCommitter._rebuild_sv()` 的 
 2. 运行 SceneVoxel 主契约测试：
 
 ```bash
-<godot> --path . --rendering-driver vulkan --script tools/test_scene_voxel_field.gd
-<godot> --headless --path . --script tools/test_voxel_placement_record_commit.gd
-<godot> --path . --rendering-driver vulkan --script tools/test_blendsv_feedback_score.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_stamp_collect_voxel_disc.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
 ```
 
 #### 禁止 `--headless`
 
 所有 GPU 测试均依赖 RenderingDevice，使用 --headless 会导致测试无法访问 GPU。GPU 测试必须在 Vulkan 驱动下运行，且不得以非 GPU 路径作为通过条件。
 
-3. 对照 `scripts/scene_voxel_committer.gd`，检查 `_write_source_scene_voxel()`、`blend_scene_voxels()`、`_rebuild_sv()` 的职责没有互相越界。
+3. 对照 `scripts/scene_voxel_committer.gd`，检查 `apply_voxel_write_spec()`、`commit_scene_voxels()`、`_rebuild_sv()` 的职责没有互相越界。
 
 ## Demo 验收标准
 
-- 可提交 source record 只来自 `AutoSceneVoxel` / `BrushSceneVoxel`，`TargetSceneVoxel` guidance record 被跳过。
+- 可提交 stamp record 只来自 auto 路径，`TargetSceneVoxel` guidance record 被跳过；brush 内容只进 SPA 常驻 `BrushSV` 层。
 - committed `SceneVoxel` 公开 payload 只保留最小读取字段，不暴露 source-only sidecar。
-- `complexity_field` / `collision_field` 由 committed state 和 terrain collision 重建，不成为第二套权威输入。
+- 常驻 `complexity_field` / `collision_field` buffer 是唯一 committed field 状态（stamp 直写 + terrain base 种子），`BlendSV` 只是临时读取产物。
 
 ## 测试场景
 
 | 场景 | 说明 | Godot 场景 |
 | --- | --- | --- |
-| [SceneVoxel Commit](../../demos/modules/scene-voxel-commit/scene-voxel-commit.md) | 测试方法与验收标准 | [`../../demos/modules/scene-voxel-commit/scene-voxel-commit.tscn`](../../demos/modules/scene-voxel-commit/scene-voxel-commit.tscn) |
-| [Target Canvas Guidance](../../demos/modules/target-canvas-guidance/target-canvas-guidance.md) | 测试方法与验收标准 | [`../../demos/modules/target-canvas-guidance/target-canvas-guidance.tscn`](../../demos/modules/target-canvas-guidance/target-canvas-guidance.tscn) |
-| [SceneVoxelTile Dirty](../../demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md) | 测试方法与验收标准 | [`../../demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn`](../../demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn) |
+| [SceneVoxel Field System Demo](res://demos/core-scene-voxel-field-system/scene-voxel-field-system.md) | 本文即该 demo 的测试文档 | [`core-scene-voxel-field-system.tscn`](res://demos/core-scene-voxel-field-system/core-scene-voxel-field-system.tscn) |

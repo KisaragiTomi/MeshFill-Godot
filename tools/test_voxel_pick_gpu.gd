@@ -1,14 +1,7 @@
-extends SceneTree
+extends "res://scripts/utils/scene_tree_test.gd"
 
 const VoxelPickGPUScript := preload("res://scripts/voxel_pick_gpu.gd")
-
-
-func _pack_rgba8_for_test(color: Color) -> int:
-	var r := int(round(clampf(color.r, 0.0, 1.0) * 255.0))
-	var g := int(round(clampf(color.g, 0.0, 1.0) * 255.0))
-	var b := int(round(clampf(color.b, 0.0, 1.0) * 255.0))
-	var a := int(round(clampf(color.a, 0.0, 1.0) * 255.0))
-	return ((r & 0xFF) << 24) | ((g & 0xFF) << 16) | ((b & 0xFF) << 8) | (a & 0xFF)
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 
 func _init() -> void:
@@ -20,16 +13,10 @@ func _init() -> void:
 		quit(1)
 		return
 
-	var ok := true
-	ok = _test_scene_voxel_pick() and ok
-	ok = _test_targetsv_pick() and ok
-
-	if ok:
-		print("[VoxelPickGPU] ALL TESTS PASSED")
-		quit(0)
-	else:
-		push_error("[VoxelPickGPU] SOME TESTS FAILED")
-		quit(1)
+	run_suite("VoxelPickGPU", [
+		_test_scene_voxel_pick,
+		_test_targetsv_pick,
+	])
 
 
 func _test_scene_voxel_pick() -> bool:
@@ -74,7 +61,7 @@ func _test_targetsv_pick() -> bool:
 	var hit_z := 2
 	var hit_slice := 0
 	var hit_idx := (hit_slice * texture_size + hit_z) * texture_size + hit_x
-	visual.encode_u32(hit_idx * 4, _pack_rgba8_for_test(Color(0.25, 0.50, 0.75, 1.0)))
+	visual.encode_u32(hit_idx * 4, BufferUtils.pack_shader_rgba8_word(Color(0.25, 0.50, 0.75, 1.0)))
 	collision[hit_idx] = 0
 
 	var terrain := PackedFloat32Array()

@@ -2,7 +2,7 @@
 
 可视化 `shaders/collect_sv_anchors.glsl` 的「位置型 anchor」判定规则。在一个完全受控的 SV 场上跑真实的 GPU prefilter 管线（`AutoObjectProbePrefilterGPU.run_probe_prefilter`），读回 `anchors` 并与四条判定规则逐一对照。
 
-- 源文档：`res://demos/core-autoobject-gpu-runtime-architecture/autoobject-gpu-runtime-architecture.md`
+- 源文档：`res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md`
 - 场景：`res://demos/core-sv-anchor-collection/core-sv-anchor-collection.tscn`
 - 脚本：`res://demos/core-sv-anchor-collection/sv_anchor_collection_demo.gd`（继承 `core_demo_contract_fixture.gd`）
 

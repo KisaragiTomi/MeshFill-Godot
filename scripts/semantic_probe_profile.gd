@@ -1,6 +1,9 @@
 class_name SemanticProbeProfile
 extends Resource
 
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
+
 const PROBE_LAYER_COUNT := 5
 const PROBE_WORLD_MIN_DISTANCE := 0.35
 
@@ -197,7 +200,7 @@ static func _make_voxel_interior_candidates(
 	var min_y := INF
 	for raw_voxel in collision:
 		if raw_voxel is Dictionary:
-			var pos := vector3_from_value((raw_voxel as Dictionary).get("local_pos", (raw_voxel as Dictionary).get("voxel", (raw_voxel as Dictionary).get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
+			var pos := VariantUtils.vector3_from_value((raw_voxel as Dictionary).get("local_pos", (raw_voxel as Dictionary).get("voxel", (raw_voxel as Dictionary).get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
 			min_y = minf(min_y, pos.y)
 
 	for raw_voxel in collision:
@@ -206,8 +209,8 @@ static func _make_voxel_interior_candidates(
 		var voxel_entry := raw_voxel as Dictionary
 		if not bool(voxel_entry.get("enabled", true)):
 			continue
-		var point := vector3_from_value(voxel_entry.get("local_pos", voxel_entry.get("voxel", voxel_entry.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
-		var color := color_from_value(voxel_entry.get("color", fallback_color), fallback_color) if voxel_entry.has("color") else fallback_color
+		var point := VariantUtils.vector3_from_value(voxel_entry.get("local_pos", voxel_entry.get("voxel", voxel_entry.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
+		var color := VariantUtils.color_from_value(voxel_entry.get("color", fallback_color), fallback_color) if voxel_entry.has("color") else fallback_color
 		var complexity := clampf(float(voxel_entry.get("complexity", fallback_complexity)), 0.0, 1.0)
 		color.a = complexity
 		var collision_strength := clampf(float(voxel_entry.get("collision", 1.0)), 0.0, 1.0)
@@ -388,14 +391,14 @@ static func select_layered_topk(
 	var min_y := INF
 	var max_y := -INF
 	for candidate in candidates:
-		var offset := vector3_from_value(candidate.get("offset", Vector3.ZERO), Vector3.ZERO)
+		var offset := VariantUtils.vector3_from_value(candidate.get("offset", Vector3.ZERO), Vector3.ZERO)
 		min_y = minf(min_y, offset.y)
 		max_y = maxf(max_y, offset.y)
 	var buckets: Array = []
 	for i in range(PROBE_LAYER_COUNT):
 		buckets.append([])
 	for candidate in candidates:
-		var offset := vector3_from_value(candidate.get("offset", Vector3.ZERO), Vector3.ZERO)
+		var offset := VariantUtils.vector3_from_value(candidate.get("offset", Vector3.ZERO), Vector3.ZERO)
 		var layer_index := probe_layer_index(offset.y, min_y, max_y)
 		candidate["_layer_index"] = layer_index
 		var target_bucket := buckets[layer_index] as Array
@@ -507,10 +510,10 @@ static func pick_next_candidate(bucket: Array, selected: Array[Dictionary], sele
 static func candidate_nearest_distance(candidate: Dictionary, selected: Array[Dictionary]) -> float:
 	if selected.is_empty():
 		return INF
-	var offset := vector3_from_value(candidate.get("_world_offset", candidate.get("offset", Vector3.ZERO)), Vector3.ZERO)
+	var offset := VariantUtils.vector3_from_value(candidate.get("_world_offset", candidate.get("offset", Vector3.ZERO)), Vector3.ZERO)
 	var nearest := INF
 	for other in selected:
-		var other_offset := vector3_from_value(other.get("_world_offset", other.get("offset", Vector3.ZERO)), Vector3.ZERO)
+		var other_offset := VariantUtils.vector3_from_value(other.get("_world_offset", other.get("offset", Vector3.ZERO)), Vector3.ZERO)
 		nearest = minf(nearest, offset.distance_to(other_offset))
 	return nearest
 
@@ -518,9 +521,9 @@ static func candidate_nearest_distance(candidate: Dictionary, selected: Array[Di
 static func candidate_too_close(candidate: Dictionary, selected: Array[Dictionary], min_distance: float) -> bool:
 	if min_distance <= 0.0:
 		return false
-	var offset := vector3_from_value(candidate.get("_world_offset", candidate.get("offset", Vector3.ZERO)), Vector3.ZERO)
+	var offset := VariantUtils.vector3_from_value(candidate.get("_world_offset", candidate.get("offset", Vector3.ZERO)), Vector3.ZERO)
 	for other in selected:
-		var other_offset := vector3_from_value(other.get("_world_offset", other.get("offset", Vector3.ZERO)), Vector3.ZERO)
+		var other_offset := VariantUtils.vector3_from_value(other.get("_world_offset", other.get("offset", Vector3.ZERO)), Vector3.ZERO)
 		if offset.distance_to(other_offset) < min_distance:
 			return true
 	return false
@@ -553,12 +556,12 @@ static func probe_min_distance(_candidates: Array[Dictionary], density_value: fl
 static func _apply_candidate_world_offsets(candidates: Array[Dictionary], world_scale: Vector3) -> void:
 	var scale_abs := Vector3(maxf(absf(world_scale.x), 0.0001), maxf(absf(world_scale.y), 0.0001), maxf(absf(world_scale.z), 0.0001))
 	for candidate in candidates:
-		var offset := vector3_from_value(candidate.get("offset", Vector3.ZERO), Vector3.ZERO)
+		var offset := VariantUtils.vector3_from_value(candidate.get("offset", Vector3.ZERO), Vector3.ZERO)
 		candidate["_world_offset"] = Vector3(offset.x * scale_abs.x, offset.y * scale_abs.y, offset.z * scale_abs.z)
 
 
 static func probe_candidate_key(candidate: Dictionary) -> String:
-	var offset := vector3_from_value(candidate.get("offset", Vector3.ZERO), Vector3.ZERO)
+	var offset := VariantUtils.vector3_from_value(candidate.get("offset", Vector3.ZERO), Vector3.ZERO)
 	return "%d,%d,%d" % [roundi(offset.x * 1000.0), roundi(offset.y * 1000.0), roundi(offset.z * 1000.0)]
 
 
@@ -580,14 +583,14 @@ static func probe_from_candidate(candidate: Dictionary) -> Dictionary:
 
 static func normalize_probe(raw_probe: Dictionary) -> Dictionary:
 	var probe := raw_probe.duplicate(true)
-	var offset := vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
-	var color := color_from_value(probe.get("expected_color", probe.get("color", Color.WHITE)), Color.WHITE)
+	var offset := VariantUtils.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
+	var color := VariantUtils.color_from_value(probe.get("expected_color", probe.get("color", Color.WHITE)), Color.WHITE)
 	var complexity := clampf(float(probe.get("expected_complexity", probe.get("complexity", color.a))), 0.0, 1.0)
 	color.a = complexity
 	probe["offset"] = offset
 	probe["expected_color"] = color
 	probe["expected_complexity"] = complexity
-	probe["expected_rgba8"] = int(probe.get("expected_rgba8", pack_rgba8(color)))
+	probe["expected_rgba8"] = int(probe.get("expected_rgba8", BufferUtils.pack_semantic_rgba8_word(color)))
 	probe["expected_collision"] = clampf(float(probe.get("expected_collision", probe.get("collision", 0.0))), 0.0, 1.0)
 	probe["source"] = str(probe.get("source", "manual"))
 
@@ -604,61 +607,12 @@ static func make_probe(offset: Vector3, color: Color, collision: float, w_color:
 		"offset": offset,
 		"expected_color": c,
 		"expected_complexity": c.a,
-		"expected_rgba8": pack_rgba8(c),
+		"expected_rgba8": BufferUtils.pack_semantic_rgba8_word(c),
 		"expected_collision": clampf(collision, 0.0, 1.0),
 		"w_color": w_color,
 		"w_complexity": w_complexity,
 		"w_collision": w_collision,
 		"source": source,
 	}
-
-
-static func pack_rgba8(color: Color) -> int:
-	var r := clampi(roundi(color.r * 255.0), 0, 255)
-	var g := clampi(roundi(color.g * 255.0), 0, 255)
-	var b := clampi(roundi(color.b * 255.0), 0, 255)
-	var a := clampi(roundi(color.a * 255.0), 0, 255)
-	return r | (g << 8) | (b << 16) | (a << 24)
-
-
-static func color_from_value(value, fallback: Color = Color.WHITE) -> Color:
-	if value is Color:
-		return value as Color
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			var alpha := float(arr[3]) if arr.size() >= 4 else fallback.a
-			return Color(float(arr[0]), float(arr[1]), float(arr[2]), alpha)
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Color(
-			float(dict.get("r", fallback.r)),
-			float(dict.get("g", fallback.g)),
-			float(dict.get("b", fallback.b)),
-			float(dict.get("a", fallback.a))
-		)
-	if value is String:
-		return Color.from_string(str(value), fallback)
-	return fallback
-
-
-static func vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vector3:
-	if value is Vector3:
-		return value as Vector3
-	if value is Vector3i:
-		var vi := value as Vector3i
-		return Vector3(float(vi.x), float(vi.y), float(vi.z))
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Vector3(
-			float(dict.get("x", fallback.x)),
-			float(dict.get("y", fallback.y)),
-			float(dict.get("z", fallback.z))
-		)
-	return fallback
 
 

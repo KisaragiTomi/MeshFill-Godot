@@ -1,6 +1,6 @@
 # Auto Asset Scripting
 
-这份文档把新增通用物体 / 新增植被的手工步骤收拢到脚本入口，并同步当前字段契约。所有资产种类的默认语义定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。
+这份文档把新增通用物体 / 新增植被的手工步骤收拢到脚本入口，并同步当前字段契约。所有资产种类的默认语义定义见 [`asset-descriptor.md`](asset-descriptor.md)。
 
 ![AutoObject asset properties map](diagrams/autoobject_asset_properties.svg)
 
@@ -9,11 +9,11 @@
 | File | Purpose |
 | --- | --- |
 | `scripts/auto_asset_factory.gd` | 脚手架 / 导入 helper；创建和保存 `AutoObject` asset、`AssetDescriptor`，并提供 ISWS wrapper。 |
-| `scripts/auto_voxel_descriptor.gd` | 持久化 descriptor-backed `AutoObject` 资产默认语义，并保存 mesh / scatter / visual helper。 |
+| `scripts/asset_descriptor.gd` | 持久化 descriptor-backed `AutoObject` 资产默认语义，并保存 mesh / scatter / visual helper。 |
 
 ## 核心契约
 
-- [`AssetDescriptor`](auto-voxel-descriptor.md) 是资产默认体素语义的 canonical source；脚本化资产不要把 profile 或 metadata 当成第二套权威。
+- [`AssetDescriptor`](asset-descriptor.md) 是资产默认体素语义的 canonical source；脚本化资产不要把 profile 或 metadata 当成第二套权威。
 - `AutoVoxelProfile` 只作为已有资产 / 导入 preset fallback；新脚手架不再输出单独的 profile 产物。
 - 物体和植被都走 descriptor-backed `AutoObject` / `AssetDescriptor` 路径；旧 typed 子类不再作为资产定义入口。
 - 运行时写入 payload 统一称为 `instance_stamp_write_spec` / `ISWS`；当前 helper 同时提供 canonical wrapper 和 legacy `make_*_voxel_write_spec()` 名称。
@@ -131,7 +131,7 @@ AutoAssetFactory.save_resource(descriptor, "res://assets/vegetation/flower_descr
 
 | Output | Meaning |
 | --- | --- |
-| `asset_path` | `AssetDescriptor` 资源；字段分组见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。 |
+| `asset_path` | `AssetDescriptor` 资源；字段分组见 [`asset-descriptor.md`](asset-descriptor.md)。 |
 
 `subtype` 是当前脚手架的 specialize 输入：它生成默认 `group`，并写入 descriptor 的 `object_subtype` 兼容字段。它不是新的核心语义来源；新的 GPU runtime object schema 仍不应把 `object_subtype` 当成语义门。更细资产身份优先使用 `asset_id`、descriptor path 或未来 `profile_id`。
 
@@ -155,11 +155,17 @@ register_brush_autoobject(flower_asset.make_instance_config())
 
 ## Metadata Rule
 
-脚手架和运行时代码不把 metadata 当作第二套配置面。新增资产语义写入 [`AssetDescriptor`](auto-voxel-descriptor.md) 或 descriptor-backed `AutoObject` 字段；实例落地后的颜色、collision、像素和 slice 写入 `instance_stamp_write_spec` / `ISWS`。metadata 只保留 id、来源、`object_type`、实例 id 和 `ISWS` 查询入口；`instance_stamp_write_spec` 是 preferred metadata key，旧 `voxel_write_spec` metadata key 只作为兼容别名。
+脚手架和运行时代码不把 metadata 当作第二套配置面。新增资产语义写入 [`AssetDescriptor`](asset-descriptor.md) 或 descriptor-backed `AutoObject` 字段；实例落地后的颜色、collision、像素和 slice 写入 `instance_stamp_write_spec` / `ISWS`。metadata 只保留 id、来源、`object_type`、实例 id 和 `ISWS` 查询入口；`instance_stamp_write_spec` 是 preferred metadata key，旧 `voxel_write_spec` metadata key 只作为兼容别名。
+
+## 测试场景
+
+| 场景 | 说明 | Godot 场景 |
+| --- | --- | --- |
+| [AssetDescriptor 统一 Demo](res://demos/asset-descriptor-demo/asset-descriptor.md) | 脚手架产物的 descriptor 语义在统一 demo 中验收 | [`asset-descriptor-demo.tscn`](res://demos/asset-descriptor-demo/asset-descriptor-demo.tscn) |
 
 ## 相关文档
 
-- `auto-voxel-descriptor.md`：所有资产种类的 descriptor 定义、字段分组和 authoring 规则。
+- `asset-descriptor.md`：所有资产种类的 descriptor 定义、字段分组和 authoring 规则。
 - `asset-properties.md`：descriptor、shared fields、metadata 和 `ISWS` 边界。
 - `asset-semantic-probes.md`：descriptor-backed probes 的生成来源和 prefilter 交接。
 - `scene-voxel-field-system.md`：`ISWS` 写入到 source voxel / committed `SceneVoxel` 的数据流。

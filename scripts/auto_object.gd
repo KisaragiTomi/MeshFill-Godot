@@ -3,9 +3,10 @@ class_name AutoObject
 extends MeshInstance3D
 
 const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
-const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
+const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 const ANCHOR_KIND := "anchor"
 const INSTANCE_STAMP_WRITE_SPEC_META_KEY := "instance_stamp_write_spec"
 const VOXEL_WRITE_SPEC_META_KEY := "voxel_write_spec"  ## Deprecated: use INSTANCE_STAMP_WRITE_SPEC_META_KEY
@@ -53,43 +54,14 @@ static func voxel_write_spec_meta_keys() -> Array:
 	return [INSTANCE_STAMP_WRITE_SPEC_META_KEY, VOXEL_WRITE_SPEC_META_KEY]
 
 
-static func vector2_from_value(value, fallback: Vector2) -> Vector2:
-	if value is Vector2:
-		return value as Vector2
-	if value is Vector2i:
-		var vi := value as Vector2i
-		return Vector2(float(vi.x), float(vi.y))
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 2:
-			return Vector2(float(arr[0]), float(arr[1]))
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Vector2(
-			float(dict.get("x", fallback.x)),
-			float(dict.get("y", fallback.y))
-		)
-	return fallback
-
-
-static func vector3_from_value(value, fallback: Vector3) -> Vector3:
-	if value is Vector3:
-		return value as Vector3
-	if value is Vector3i:
-		var vi := value as Vector3i
-		return Vector3(float(vi.x), float(vi.y), float(vi.z))
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Vector3(
-			float(dict.get("x", fallback.x)),
-			float(dict.get("y", fallback.y)),
-			float(dict.get("z", fallback.z))
-		)
-	return fallback
+static func voxel_write_spec_from_config(config: Dictionary) -> Dictionary:
+	for key in voxel_write_spec_meta_keys():
+		var raw_record = config.get(key, {})
+		if raw_record is Dictionary:
+			var record := raw_record as Dictionary
+			if not record.is_empty():
+				return record.duplicate(true)
+	return {}
 
 
 static func create_voxel_profile(
@@ -101,7 +73,7 @@ static func create_voxel_profile(
 	var profile := AutoVoxelProfile.new()
 	profile.color = entry_color
 	profile.complexity = clampf(entry_complexity, 0.0, 1.0)
-	profile.collision = AssetDescriptorScript.normalize_collision(collision, default_radius)
+	profile.collision = VoxelGeneral.normalize_collision_samples(collision, default_radius)
 	return profile
 
 
@@ -171,7 +143,7 @@ static func make_profile_voxel_write_spec(
 
 func _ensure_voxel_descriptor():
 	if voxel_descriptor == null:
-		voxel_descriptor = load("res://scripts/auto_voxel_descriptor.gd").new()
+		voxel_descriptor = load("res://scripts/asset_descriptor.gd").new()
 		_sync_descriptor_from_exported_fields()
 	return voxel_descriptor
 
@@ -223,11 +195,11 @@ func _apply_config_rotation(config: Dictionary) -> void:
 	var mode := _rotation_mode_from_config(config)
 	if mode == "XYZ":
 		if config.has("rotation_degrees"):
-			rotation_degrees = vector3_from_value(config.rotation_degrees, rotation_degrees)
+			rotation_degrees = VariantUtils.vector3_from_value(config.rotation_degrees, rotation_degrees)
 	else:
 		var y_rotation := rotation_degrees.y
 		if config.has("rotation_degrees"):
-			y_rotation = vector3_from_value(config.rotation_degrees, rotation_degrees).y
+			y_rotation = VariantUtils.vector3_from_value(config.rotation_degrees, rotation_degrees).y
 		rotation_degrees = Vector3(0.0, y_rotation, 0.0)
 
 
@@ -245,11 +217,11 @@ func configure_object(config: Dictionary) -> void:
 	if cfg.has("mesh_size"):
 		mesh_size = maxf(float(cfg.mesh_size), 0.0)
 	if cfg.has("random_rotate"):
-		random_rotate = vector2_from_value(cfg.random_rotate, random_rotate)
+		random_rotate = VariantUtils.vector2_from_value(cfg.random_rotate, random_rotate)
 	if cfg.has("random_scale"):
-		random_scale = vector2_from_value(cfg.random_scale, random_scale)
+		random_scale = VariantUtils.vector2_from_value(cfg.random_scale, random_scale)
 	if cfg.has("random_height_offset"):
-		random_height_offset = vector2_from_value(cfg.random_height_offset, random_height_offset)
+		random_height_offset = VariantUtils.vector2_from_value(cfg.random_height_offset, random_height_offset)
 
 	if not cfg.has("auto_generate_vertical_pivots") and not cfg.has("pivot_variants"):
 		cfg["auto_generate_vertical_pivots"] = true
@@ -775,7 +747,7 @@ func make_voxel_write_spec(
 
 
 func set_pivot_variants(variants: Array) -> void:
-	pivot_variants = load("res://scripts/auto_voxel_descriptor.gd").normalize_pivot_variants(variants)
+	pivot_variants = load("res://scripts/asset_descriptor.gd").normalize_pivot_variants(variants)
 	var descriptor = _ensure_voxel_descriptor()
 	descriptor.set_pivot_variants(pivot_variants)
 	_sync_auto_metadata()
@@ -819,7 +791,7 @@ func get_anchor_pivot_variant(anchor_kind: String = ANCHOR_KIND) -> Dictionary:
 	var best_y := INF
 	for raw_pivot in pivots:
 		var pivot := raw_pivot as Dictionary
-		var offset := vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
+		var offset := VariantUtils.vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
 		if offset.y < best_y:
 			best_y = offset.y
 			best = pivot
@@ -828,7 +800,7 @@ func get_anchor_pivot_variant(anchor_kind: String = ANCHOR_KIND) -> Dictionary:
 
 func get_anchor_pivot_offset(anchor_kind: String = ANCHOR_KIND) -> Vector3:
 	var pivot := get_anchor_pivot_variant(anchor_kind)
-	return vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
+	return VariantUtils.vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
 
 
 func get_anchor_relative_footprint_aabb(anchor_kind: String = ANCHOR_KIND) -> AABB:
@@ -840,7 +812,7 @@ func get_anchor_relative_footprint_aabb(anchor_kind: String = ANCHOR_KIND) -> AA
 
 
 func set_collision(voxels: Array) -> void:
-	collision = AssetDescriptorScript.normalize_collision(voxels)
+	collision = VoxelGeneral.normalize_collision_samples(voxels)
 	var descriptor = _ensure_voxel_descriptor()
 	descriptor.set_collision(collision)
 	_sync_auto_metadata()
@@ -890,7 +862,7 @@ func get_semantic_probes(density_override: float = -1.0, anchor_kind: String = A
 	var remapped: Array[Dictionary] = []
 	for raw_probe in probes:
 		var probe = raw_probe.duplicate(true)
-		var offset := SemanticProbeProfileScript.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
+		var offset := VariantUtils.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
 		probe["offset"] = offset - pivot_offset
 		remapped.append(SemanticProbeProfileScript.normalize_probe(probe))
 	return remapped
@@ -1070,31 +1042,9 @@ func _collision_local_aabb() -> AABB:
 
 
 func _collision_bounds(collision: Dictionary) -> AABB:
+	# Only per-voxel point collision samples are supported; box/cylinder
+	# primitives are no longer recognised and contribute no bounds.
 	if collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset"):
-		var voxel_pos := vector3_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
+		var voxel_pos := VariantUtils.vector3_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
 		return AABB(voxel_pos - Vector3(0.5, 0.5, 0.5), Vector3.ONE)
-	var shape := str(collision.get("shape", collision.get("collision_shape", "cylinder"))).to_lower()
-	var center := vector3_from_value(collision.get("offset", collision.get("center", collision.get("position", Vector3.ZERO))), Vector3.ZERO)
-	if shape == "box" or shape == "cube":
-		var half_extents := vector3_from_value(collision.get("half_extents", Vector3.ZERO), Vector3.ZERO)
-		if half_extents.length_squared() <= 0.0001:
-			var size := vector3_from_value(collision.get("size", Vector3.ZERO), Vector3.ZERO)
-			if size.length_squared() > 0.0001:
-				half_extents = size * 0.5
-		if half_extents.length_squared() <= 0.0001:
-			var radius := maxf(float(collision.get("radius", 0.0)), 0.0)
-			var y_min := float(collision.get("y_min", 0.0))
-			var y_max := float(collision.get("y_max", 0.0))
-			half_extents = Vector3(radius, maxf(y_max - y_min, 0.0) * 0.5, radius)
-		var min_p := center - half_extents
-		var max_p := center + half_extents
-		if collision.has("y_min") or collision.has("y_max"):
-			min_p.y = center.y + float(collision.get("y_min", min_p.y - center.y))
-			max_p.y = center.y + float(collision.get("y_max", max_p.y - center.y))
-		return AABB(min_p, max_p - min_p)
-	var r := maxf(float(collision.get("radius", 0.0)), 0.0)
-	var ymin := float(collision.get("y_min", 0.0))
-	var ymax := float(collision.get("y_max", 0.0))
-	var cyl_min := center + Vector3(-r, ymin, -r)
-	var cyl_max := center + Vector3(r, ymax, r)
-	return AABB(cyl_min, cyl_max - cyl_min)
+	return AABB()

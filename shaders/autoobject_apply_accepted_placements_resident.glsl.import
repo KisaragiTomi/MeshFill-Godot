@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bwtdcii5vl75a"
+path="res://.godot/imported/autoobject_apply_accepted_placements_resident.glsl-29d3e9dd91a1f017dc6b86f55b7b3386.res"
+
+[deps]
+
+source_file="res://shaders/autoobject_apply_accepted_placements_resident.glsl"
+dest_files=["res://.godot/imported/autoobject_apply_accepted_placements_resident.glsl-29d3e9dd91a1f017dc6b86f55b7b3386.res"]
+
+[params]
+

@@ -5,16 +5,16 @@
 
 [node name="CoreMeshfillFrameworkDemo" type="Node3D" unique_id=1527987221]
 script = ExtResource("1_contract")
-
-[node name="DemoSetup" type="Node3D" parent="." unique_id=194250368 instance=ExtResource("99_setup")]
 metadata/source_doc = "res://demos/core-meshfill-framework/meshfill-framework.md"
 metadata/test_doc = "res://demos/core-meshfill-framework/meshfill-framework.md"
 metadata/focus = "End-to-end MeshFill ownership, routing, placement, commit, and feedback flow"
 
+[node name="DemoSetup" type="Node3D" parent="." unique_id=194250368 instance=ExtResource("99_setup")]
+
 [node name="Title" type="Label3D" parent="." unique_id=1421041813]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.6, 0)
 pixel_size = 0.01
-text = "core/meshfill-framework.md
+text = "core-meshfill-framework/meshfill-framework.md
 Framework Flow Fixture"
 font_size = 38
 outline_size = 6
@@ -33,6 +33,6 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.8, 0)
 pixel_size = 0.01
 text = "Acceptance
 - TargetSV stays guidance-only
-- BlendSV is public committed read model"
+- BlendSV is a temporary on-demand read product"
 font_size = 28
 outline_size = 4

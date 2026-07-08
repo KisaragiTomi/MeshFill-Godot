@@ -1,7 +1,7 @@
 extends RefCounted
 
 const CHANNEL_COUNT := 4
-const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
+const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 
 static func profile_channel(
 	channel: int,
@@ -29,7 +29,7 @@ static func profile_custom(entries: Array[Dictionary]) -> Array[Dictionary]:
 	return entries
 
 static func profile_entry_color(entry: Dictionary, fallback: Color = Color.WHITE) -> Color:
-	var color := SharedPropertyTypeScript.color_from_value(entry.get("color", fallback), fallback)
+	var color := VariantUtils.color_from_value(entry.get("color", fallback), fallback)
 	var complexity := clampf(float(entry.get("complexity", color.a)), 0.0, 1.0)
 	color.a = complexity
 	return color

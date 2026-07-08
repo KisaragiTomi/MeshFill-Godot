@@ -6,7 +6,8 @@ const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
 const TestUtils := preload("res://scripts/utils/test_utils.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
-const SceneVoxelFixture := preload("res://scripts/utils/scene_voxel_fixture.gd")
+const SceneVoxelFixture := preload("res://scripts/utils/voxel_fixtures.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 
 func _init() -> void:
@@ -69,14 +70,32 @@ func _test_position_only_anchor_layers() -> bool:
 
 	var prefilter := Prefilter.new()
 	prefilter.min_prefilter_score = 0.9
+	prefilter.debug_read_anchors = true  # this test asserts on result["anchors"]
+	# GPU-resident-only：目标场以测试自建的常驻 GPU 缓冲交接（CPU 字节上传路径已删除）。
+	if not prefilter.ensure_device(true, true):
+		prefilter.dispose()
+		supported_asset.free()
+		upper_asset.free()
+		print("  SKIP: no RenderingDevice for resident target handoff fixture")
+		return true
+	var rd: RenderingDevice = prefilter.get_rendering_device()
+	var target_field_bytes := target_field.to_byte_array()
+	var target_field_buf := rd.storage_buffer_create(target_field_bytes.size(), target_field_bytes)
 	var result: Dictionary = prefilter.run_probe_prefilter(
 		sv,
 		[supported_asset, upper_asset],
 		Prefilter.all_tile_ids(sv),
 		null,
-		target_field,
-		{"debug_read_candidate_route_cpu_expansion": true}
+		{
+			"target_field_buffer": target_field_buf,
+			"rendering_device": rd,
+			"target_field_byte_count": target_field_bytes.size(),
+			"resident_target_read_buffer_handoff": true,
+			"resident_target_read_buffer_owner": "test_fixture",
+			"debug_read_candidate_route_cpu_expansion": true,
+		}
 	)
+	rd.free_rid(target_field_buf)
 	var anchors: Array = result.get("anchors", [])
 	if anchors.is_empty():
 		prefilter.dispose()
@@ -121,7 +140,7 @@ func _test_candidate_routes_expand_for_probe_footprint_context_guard() -> bool:
 			ProbeProfile.make_probe(Vector3(9.0, 0.0, 0.0), Color.WHITE, 0.0, 1.0, 0.0, 0.0, "test"),
 		],
 		[
-			{"shape": "box", "size": Vector3(1.0, 1.0, 1.0), "collision_strength": 1.0},
+			{"voxel": Vector3i(0, 0, 0), "collision_strength": 1.0},
 		],
 		Vector3.ONE,
 		2.0,
@@ -149,7 +168,8 @@ func _test_candidate_route_profile_debug_schema() -> bool:
 			ProbeProfile.make_probe(Vector3(0.0, 2.0, -3.0), Color.WHITE, 0.0, 1.0, 0.0, 0.0, "schema"),
 		],
 		[
-			{"shape": "box", "size": Vector3(2.0, 1.0, 2.0), "collision_strength": 1.0},
+			{"voxel": Vector3i(-1, 0, -1), "collision_strength": 1.0},
+			{"voxel": Vector3i(1, 0, 1), "collision_strength": 1.0},
 		],
 		Vector3.ONE,
 		1.5,
@@ -196,12 +216,14 @@ func _test_prefilter_dispatch_bounds_helpers() -> bool:
 	if dispatch_groups != Vector3i(Prefilter.PREFILTER_DISPATCH_AXIS_LIMIT, 2, 1):
 		push_error("  FAIL: linear dispatch should split oversized work over X/Y, got %s" % str(dispatch_groups))
 		return false
-	var anchor_dispatch := Prefilter._anchor_dispatch_groups(Prefilter.ANCHOR_CAPACITY + 4096)
+	# 容量 clamp 已移到 run_probe_prefilter 读回处（mini(..., ANCHOR_CAPACITY)），
+	# dispatch 辅助只需在容量级工作量下保持轴限制内全覆盖。
+	var anchor_dispatch := Prefilter._linear_dispatch_groups(Prefilter.ANCHOR_CAPACITY)
 	if anchor_dispatch == Vector3i.ZERO \
 			or anchor_dispatch.x * anchor_dispatch.y < Prefilter.ANCHOR_CAPACITY \
 			or anchor_dispatch.x > Prefilter.PREFILTER_DISPATCH_AXIS_LIMIT \
 			or anchor_dispatch.y > Prefilter.PREFILTER_DISPATCH_AXIS_LIMIT:
-		push_error("  FAIL: anchor dispatch should clamp to buffer capacity and stay within axis limits: %s" % str(anchor_dispatch))
+		push_error("  FAIL: anchor dispatch should cover anchor capacity within axis limits: %s" % str(anchor_dispatch))
 		return false
 	var asset_blocks := Prefilter._score_asset_block_dispatch_groups(Prefilter.MAX_ASSETS + 1)
 	if asset_blocks != 16:
@@ -339,7 +361,7 @@ func _test_scene_voxel_tile_dirty_bounds_feed_shader_tile_ids() -> bool:
 func _test_probe_expected_rgba8_repacked_for_shader() -> bool:
 	print("[AutoObjectProbePrefilter] test_probe_expected_rgba8_repacked_for_shader...")
 	var color := Color(0.1, 0.4, 0.7, 0.25)
-	var semantic_packed := ProbeProfile.pack_rgba8(color)
+	var semantic_packed := BufferUtils.pack_semantic_rgba8_word(color)
 	var shader_from_color := Prefilter._shader_rgba8_from_probe({
 		"expected_color": color,
 		"expected_complexity": color.a,
@@ -347,7 +369,7 @@ func _test_probe_expected_rgba8_repacked_for_shader() -> bool:
 	var shader_from_semantic := Prefilter._shader_rgba8_from_probe({
 		"expected_rgba8": semantic_packed,
 	})
-	var expected_shader := Prefilter._pack_rgba8(color)
+	var expected_shader := BufferUtils.pack_shader_rgba8_word(color)
 	if shader_from_color != expected_shader:
 		push_error("  FAIL: expected_color did not pack to shader byte order")
 		return false
@@ -389,7 +411,7 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_blocks
 		actor.dispose(true)
 		push_error("  FAIL: prefilter should attach actor RenderingDevice for same-RD borrow")
 		return false
-	var borrowed: Dictionary = prefilter._target_read_buffer_pack(target_buffers, PackedFloat32Array(), voxel_count)
+	var borrowed: Dictionary = prefilter._target_read_buffer_pack(target_buffers, voxel_count)
 	if not bool(borrowed.get("target_read_buffers_borrowed", false)) \
 			or str(borrowed.get("target_read_buffer_source", "")) != "borrowed_scene_placement_actor_resident" \
 			or str(borrowed.get("target_read_buffer_ownership", "")) != "borrowed_external" \
@@ -417,7 +439,7 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_blocks
 		actor.dispose(true)
 		print("  SKIP: no second local RenderingDevice available for mismatch block branch")
 		return true
-	var blocked: Dictionary = mismatch_prefilter._target_read_buffer_pack(target_buffers, PackedFloat32Array(), voxel_count)
+	var blocked: Dictionary = mismatch_prefilter._target_read_buffer_pack(target_buffers, voxel_count)
 	if bool(blocked.get("ready", true)) \
 			or not bool(blocked.get("contract_blocked", false)) \
 			or str(blocked.get("reason", "")) != "resident_target_read_buffer_rendering_device_mismatch_gpu_resident_required" \

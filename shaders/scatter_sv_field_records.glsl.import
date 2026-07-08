@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://brslf6cqoxvbm"
+path="res://.godot/imported/scatter_sv_field_records.glsl-43b238e941e2d19effd90e93b34e6c74.res"
+
+[deps]
+
+source_file="res://shaders/scatter_sv_field_records.glsl"
+dest_files=["res://.godot/imported/scatter_sv_field_records.glsl-43b238e941e2d19effd90e93b34e6c74.res"]
+
+[params]
+

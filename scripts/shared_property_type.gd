@@ -2,6 +2,8 @@ class_name SharedPropertyType
 extends RefCounted
 
 const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
+const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
+const VoxelGeneralScript := preload("res://scripts/utils/voxel_general.gd")
 const COLOR_KEY := "color"                         # shared visual color; alpha mirrors complexity
 const COMPLEXITY_KEY := "complexity"               # shared occupancy/strength
 const COLLISION_KEY := "collision"                 # canonical shared collision field
@@ -10,27 +12,6 @@ const SHARED_FIELD_KEYS := [
 	COMPLEXITY_KEY,                                # propagated to records and SceneVoxel
 	COLLISION_KEY,                                 # propagated to records and SceneVoxel
 ]
-
-
-static func color_from_value(value, fallback: Color = Color.WHITE) -> Color:
-	if value is Color:
-		return value as Color
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			var alpha := float(arr[3]) if arr.size() >= 4 else fallback.a
-			return Color(float(arr[0]), float(arr[1]), float(arr[2]), alpha)
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return Color(
-			float(dict.get("r", fallback.r)),
-			float(dict.get("g", fallback.g)),
-			float(dict.get("b", fallback.b)),
-			float(dict.get("a", fallback.a))
-		)
-	if value is String:
-		return Color.from_string(str(value), fallback)
-	return fallback
 
 
 static func duplicate_dictionary_array(source: Array) -> Array[Dictionary]:
@@ -42,7 +23,7 @@ static func duplicate_dictionary_array(source: Array) -> Array[Dictionary]:
 
 
 static func normalize_shared_fields(source: Dictionary, fallback: Dictionary = {}, complexity_override: float = -1.0) -> Dictionary:
-	var source_color := color_from_value(source.get(COLOR_KEY, fallback.get(COLOR_KEY, Color.WHITE)), Color.WHITE)
+	var source_color := VariantUtils.color_from_value(source.get(COLOR_KEY, fallback.get(COLOR_KEY, Color.WHITE)), Color.WHITE)
 	var source_complexity = source.get(COMPLEXITY_KEY, fallback.get(COMPLEXITY_KEY, source_color.a))
 	var complexity := clampf(complexity_override if complexity_override >= 0.0 else float(source_complexity), 0.0, 1.0)
 	var color := source_color
@@ -53,7 +34,7 @@ static func normalize_shared_fields(source: Dictionary, fallback: Dictionary = {
 	}
 	var raw_collision = source.get(COLLISION_KEY, fallback.get(COLLISION_KEY, []))
 	if raw_collision is Array:
-		result[COLLISION_KEY] = _normalize_collision(raw_collision, 0.0)
+		result[COLLISION_KEY] = VoxelGeneralScript.normalize_collision_samples(raw_collision, 0.0)
 	elif raw_collision is float or raw_collision is int:
 		result[COLLISION_KEY] = clampf(float(raw_collision), 0.0, 1.0)
 	return result
@@ -70,7 +51,7 @@ static func from_descriptor(descriptor: Resource, default_radius: float = 0.0) -
 	else:
 		var raw_color = descriptor.get("color")
 		if raw_color != null:
-			color = color_from_value(raw_color, Color.WHITE)
+			color = VariantUtils.color_from_value(raw_color, Color.WHITE)
 	if descriptor.has_method("get_complexity"):
 		complexity = float(descriptor.call("get_complexity"))
 	else:
@@ -82,7 +63,7 @@ static func from_descriptor(descriptor: Resource, default_radius: float = 0.0) -
 	else:
 		var raw_collision = descriptor.get(COLLISION_KEY)
 		if raw_collision is Array:
-			collision = _normalize_collision(raw_collision, default_radius)
+			collision = VoxelGeneralScript.normalize_collision_samples(raw_collision, default_radius)
 	return normalize_shared_fields({
 		COLOR_KEY: color,
 		COMPLEXITY_KEY: complexity,
@@ -95,7 +76,7 @@ static func from_profile(profile: AutoVoxelProfile, default_radius: float = 0.0,
 		return normalize_shared_fields({})
 	var collision := profile.get_collision(default_radius)
 	if not collision_override.is_empty():
-		collision = _normalize_collision(collision_override, default_radius)
+		collision = VoxelGeneralScript.normalize_collision_samples(collision_override, default_radius)
 	return normalize_shared_fields({
 		COLOR_KEY: profile.get_color(),
 		COMPLEXITY_KEY: profile.get_complexity(),
@@ -135,7 +116,7 @@ static func apply_to_scene_voxel(scene_voxel: Dictionary, source_fields: Diction
 static func collision_from_fields(fields: Dictionary, fallback: Dictionary = {}) -> Array[Dictionary]:
 	var raw_collision = fields.get(COLLISION_KEY, fallback.get(COLLISION_KEY, []))
 	if raw_collision is Array:
-		return _normalize_collision(raw_collision, 0.0)
+		return VoxelGeneralScript.normalize_collision_samples(raw_collision, 0.0)
 	return []
 
 
@@ -146,39 +127,6 @@ static func has_collision_fields(fields: Dictionary) -> bool:
 	if collision_value is Array:
 		return not (collision_value as Array).is_empty()
 	return true
-
-
-static func _normalize_collision(source: Array, default_radius: float = 0.0) -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
-	for raw_collision in source:
-		if not raw_collision is Dictionary:
-			continue
-		var collision := (raw_collision as Dictionary).duplicate(true)
-		if collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset"):
-			var voxel := VoxelGeneral.vector3i_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3i.ZERO))), Vector3i.ZERO)
-			collision["voxel"] = voxel
-			collision["collision_strength"] = clampf(float(collision.get("collision_strength", 1.0)), 0.0, 1.0)
-			if not collision.has("weight"):
-				collision["weight"] = 1.0
-			result.append(collision)
-			continue
-		if not collision.has("shape"):
-			collision["shape"] = "cylinder"
-		if not collision.has("radius") or float(collision.radius) <= 0.0:
-			collision["radius"] = default_radius
-		if not collision.has("y_min"):
-			collision["y_min"] = 0.0
-		if not collision.has("y_max"):
-			collision["y_max"] = 2.0
-		if not collision.has("erosion_radius"):
-			collision["erosion_radius"] = 0.0
-		if not collision.has("dilation_radius"):
-			collision["dilation_radius"] = 0.0
-		if not collision.has("collision_strength"):
-			collision["collision_strength"] = 1.0
-		collision["collision_strength"] = clampf(float(collision.get("collision_strength", 1.0)), 0.0, 1.0)
-		result.append(collision)
-	return result
 
 
 static func _duplicate_collision_value(raw_collision):

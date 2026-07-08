@@ -5,6 +5,7 @@ const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd"
 const NonHeadlessSceneGuardScript := preload("res://scripts/non_headless_scene_guard.gd")
 const TestUtilsScript := preload("res://scripts/utils/test_utils.gd")
 const DemoContractUtils := preload("res://scripts/utils/demo_contract_utils.gd")
+const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 
 const STATUS_PASS := "PASS"
 const STATUS_SKIP := "SKIP"
@@ -161,21 +162,21 @@ func _gpu_subitems(text: String, gpu_required: bool, rd_available: bool) -> Arra
 	var items := []
 	if not configured.is_empty():
 		for part in configured.split(";"):
-			_append_unique(items, String(part).strip_edges())
+			DemoContractUtils.append_unique(items, String(part).strip_edges())
 
 	var lower := text.to_lower()
 	if lower.find("profile") >= 0:
-		_append_unique(items, "profile_buffers")
+		DemoContractUtils.append_unique(items, "profile_buffers")
 	if lower.find("runtime") >= 0:
-		_append_unique(items, "runtime_buffers")
+		DemoContractUtils.append_unique(items, "runtime_buffers")
 	if lower.find("upload") >= 0:
-		_append_unique(items, "gpu_upload")
+		DemoContractUtils.append_unique(items, "gpu_upload")
 	if lower.find("placement") >= 0:
-		_append_unique(items, "gpu_placement")
+		DemoContractUtils.append_unique(items, "gpu_placement")
 	if lower.find("readback") >= 0:
-		_append_unique(items, "gpu_readback")
+		DemoContractUtils.append_unique(items, "gpu_readback")
 	if lower.find("scenevoxeltile") >= 0 or lower.find("scene voxel tile") >= 0:
-		_append_unique(items, "scene_voxel_tile_buffers")
+		DemoContractUtils.append_unique(items, "scene_voxel_tile_buffers")
 	if items.is_empty():
 		items.append("gpu_contract")
 
@@ -214,18 +215,6 @@ static func mentions_no_rd_cpu_success(lower_text: String) -> bool:
 func _meta_bool(key: String, fallback: bool) -> bool:
 	if not has_meta(key):
 		return fallback
-	var raw = get_meta(key)
-	if raw is bool:
-		return raw
-	var text := str(raw).strip_edges().to_lower()
-	if text in ["true", "yes", "1", "on"]:
-		return true
-	if text in ["false", "no", "0", "off"]:
-		return false
-	return fallback
+	return VariantUtils.bool_from_value(get_meta(key), fallback)
 
 
-func _append_unique(values: Array, value: String) -> void:
-	if value.is_empty() or values.has(value):
-		return
-	values.append(value)

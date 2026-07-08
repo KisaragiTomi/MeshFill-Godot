@@ -1,25 +1,19 @@
-extends SceneTree
+extends "res://scripts/utils/scene_tree_test.gd"
 
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 
 func _init() -> void:
-	var ok := true
-	ok = _test_pack_s32_layout() and ok
-	ok = _test_pack_vec3i4_layout() and ok
-	ok = _test_encode_vec3i4_writes_at_offset() and ok
-	ok = _test_encode_vec3i4_with_w_and_decode() and ok
-	ok = _test_decode_vec4_xyz() and ok
-	ok = _test_pack_transform_mat4_layout() and ok
-	ok = _test_encode_transform_mat4_writes_at_offset() and ok
-	ok = _test_decode_transform_mat4_short_buffer_fallback() and ok
-
-	if ok:
-		print("[BufferUtils] ALL TESTS PASSED")
-		quit(0)
-	else:
-		push_error("[BufferUtils] SOME TESTS FAILED")
-		quit(1)
+	run_suite("BufferUtils", [
+		_test_pack_s32_layout,
+		_test_pack_vec3i4_layout,
+		_test_encode_vec3i4_writes_at_offset,
+		_test_encode_vec3i4_with_w_and_decode,
+		_test_decode_vec4_xyz,
+		_test_pack_transform_mat4_layout,
+		_test_encode_transform_mat4_writes_at_offset,
+		_test_decode_transform_mat4_short_buffer_fallback,
+	])
 
 
 func _test_pack_s32_layout() -> bool:

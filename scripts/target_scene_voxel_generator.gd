@@ -1,6 +1,8 @@
 class_name TargetSceneVoxelGenerator
 extends "res://scripts/godot_compute_shader_base.gd"
 
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+
 const TARGET_STATS_BYTE_SIZE := 28
 const TARGET_STATS_QUANT_SCALE := 1000000.0
 const TARGET_STATS_MIN_PACK_BASE := 1000001.0
@@ -123,18 +125,6 @@ static func _target_r8_word_byte_count(voxel_count: int) -> int:
 	return maxi(int(ceili(float(maxi(voxel_count, 0)) / 4.0)) * 4, 4)
 
 
-static func _quantize_unorm8(value: float) -> int:
-	return clampi(int(round(clampf(value, 0.0, 1.0) * 255.0)), 0, 255)
-
-
-static func _pack_rgba8_word(color: Color) -> int:
-	var r := _quantize_unorm8(color.r)
-	var g := _quantize_unorm8(color.g)
-	var b := _quantize_unorm8(color.b)
-	var a := _quantize_unorm8(color.a)
-	return ((r & 0xFF) << 24) | ((g & 0xFF) << 16) | ((b & 0xFF) << 8) | (a & 0xFF)
-
-
 static func _visual_format_from_bytes(bytes: PackedByteArray, voxel_count: int, hint: String = "") -> String:
 	var hint_l := hint.to_lower()
 	var rgba8_bytes := _target_rgba8_byte_count(voxel_count)
@@ -193,7 +183,7 @@ static func _rgba8_bytes_from_visual_bytes(
 			visual_bytes.decode_float(base + 8),
 			visual_bytes.decode_float(base + 12)
 		)
-		out.encode_u32(i * TARGET_RGBA8_STRIDE_BYTES, _pack_rgba8_word(color))
+		out.encode_u32(i * TARGET_RGBA8_STRIDE_BYTES, BufferUtils.pack_shader_rgba8_word(color))
 	return out
 
 
@@ -214,7 +204,7 @@ static func _r8_bytes_from_scalar_bytes(
 		return out
 	var available := mini(voxel_count, int(scalar_bytes.size() / TARGET_LEGACY_R32F_STRIDE_BYTES))
 	for i in range(available):
-		out[i] = _quantize_unorm8(scalar_bytes.decode_float(i * TARGET_LEGACY_R32F_STRIDE_BYTES))
+		out[i] = BufferUtils.quantize_unorm8(scalar_bytes.decode_float(i * TARGET_LEGACY_R32F_STRIDE_BYTES))
 	return out
 
 
@@ -246,7 +236,7 @@ static func _rgba8_color_at(rgba8_bytes: PackedByteArray, index: int) -> Color:
 	var offset := index * TARGET_RGBA8_STRIDE_BYTES
 	if offset + TARGET_RGBA8_STRIDE_BYTES > rgba8_bytes.size():
 		return Color(0.0, 0.0, 0.0, 0.0)
-	return _rgba8_word_to_color(rgba8_bytes.decode_u32(offset))
+	return BufferUtils.shader_rgba8_word_to_color(rgba8_bytes.decode_u32(offset))
 
 
 static func _target_field_vec4_from_rgba8_and_r8(
@@ -505,16 +495,6 @@ static func decode_target_read_buffers_gpu(
 	return packed
 
 
-static func _rgba8_word_to_color(word: int) -> Color:
-	var rgba8 := word & 0xFFFFFFFF
-	return Color(
-		float((rgba8 >> 24) & 0xFF) / 255.0,
-		float((rgba8 >> 16) & 0xFF) / 255.0,
-		float((rgba8 >> 8) & 0xFF) / 255.0,
-		float(rgba8 & 0xFF) / 255.0
-	)
-
-
 func derive_target_packed_buffers(
 	visual_bytes: PackedByteArray,
 	collision_bytes: PackedByteArray,
@@ -627,7 +607,7 @@ func derive_target_packed_buffers(
 	push.encode_s32(TARGET_PACK_PUSH_COMPLETELY_VALID_OFFSET, 1 if completely_valid else 0)
 	push.encode_s32(TARGET_PACK_PUSH_WRITE_PACKED_OFFSET, 1 if readback_packed_buffers else 0)
 
-	var groups := ceili(float(voxel_count) / 64.0)
+	var groups := ceil_div(voxel_count, 64)
 	var cl := begin_compute_list()
 	if cl < 0:
 		_free_gpu()
@@ -640,10 +620,7 @@ func derive_target_packed_buffers(
 			"texture_size": tex_size,
 			"slice_count": slices,
 		}
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_pack)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, groups, 1, 1)
+	_gpu_dispatch_pipeline_sets(cl, _pipeline_pack, [set0], push, Vector3i(groups, 1, 1))
 	end_compute_list()
 	submit_and_sync(true)
 
@@ -813,12 +790,7 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 		push_error("[TargetSV] Compute list begin failed")
 		_free_gpu()
 		return {}
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_bind_uniform_set(cl, set1, 1)
-	_rd.compute_list_bind_uniform_set(cl, set2, 2)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, groups_x, groups_y, groups_z)
+	_gpu_dispatch_pipeline_sets(cl, _pipeline, [set0, set1, set2], push, Vector3i(groups_x, groups_y, groups_z))
 	end_compute_list()
 	submit_and_sync(true)
 

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1660" height="1040" viewBox="0 0 1660 1040" role="img" aria-labelledby="title desc">
   <title id="title">Voxel Semantic Routing</title>
-  <desc id="desc">Candidate voxel-region routing diagram from voxel-semantic-routing.md and todo baseline.</desc>
+  <desc id="desc">Candidate voxel-region routing diagram (routing contract baseline; source doc retired).</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
@@ -157,7 +157,7 @@
     <g id="score_voxel_tile.glsl">
     <rect class="node" x="1270" y="530" width="300" height="125" rx="8" fill="#ffedd5" stroke="#ea580c"/>
     <text class="node-title" x="1288" y="558">score_voxel_tile.glsl</text>
-    <text class="small"><tspan x="1288" y="580">scene/collision fields</tspan><tspan x="1288" y="597">target fit</tspan><tspan x="1288" y="614">footprint/support/clearance</tspan><tspan x="1288" y="631">physical score only</tspan></text>
+    <text class="small"><tspan x="1288" y="580">scene/collision fields</tspan><tspan x="1288" y="597">target fit</tspan><tspan x="1288" y="614">footprint/clearance</tspan><tspan x="1288" y="631">physical score only</tspan></text>
     </g>
     <g id="future-rerank-/-validation">
     <rect class="node" x="1270" y="730" width="300" height="100" rx="8" fill="#f5f3ff" stroke="#8b5cf6"/>

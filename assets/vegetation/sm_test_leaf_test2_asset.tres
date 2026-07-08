@@ -1,6 +1,6 @@
 [gd_resource type="Resource" script_class="AssetDescriptor" format=4]
 
-[ext_resource type="Script" path="res://scripts/auto_voxel_descriptor.gd" id="1_pd6xb"]
+[ext_resource type="Script" path="res://scripts/asset_descriptor.gd" id="1_pd6xb"]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_14f01"]
 resource_name = "Fbx Default Material"

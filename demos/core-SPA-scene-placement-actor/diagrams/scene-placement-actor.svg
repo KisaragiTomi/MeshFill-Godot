@@ -142,7 +142,7 @@
     <g id="runtime-profile-container">
       <rect class="node" x="480" y="340" width="275" height="145" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>
       <text class="node-title" x="498" y="368">RuntimeProfileContainer</text>
-      <text class="small"><tspan x="498" y="390">profile_table buffer</tspan><tspan x="498" y="407">probe_records buffer</tspan><tspan x="498" y="424">collision_records buffer</tspan><tspan x="498" y="441">pivot_records buffer</tspan><tspan x="498" y="458">GPU resident after upload</tspan></text>
+      <text class="small"><tspan x="498" y="390">profile_table buffer</tspan><tspan x="498" y="407">probe_records buffer</tspan><tspan x="498" y="424">pivot_records buffer</tspan><tspan x="498" y="441">GPU resident after upload</tspan></text>
     </g>
 
     <g id="gpu-readiness-api">

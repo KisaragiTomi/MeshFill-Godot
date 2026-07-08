@@ -1,6 +1,6 @@
 # SceneVoxelTile 粗粒度 SV Cell 管理系统
 
-本文定义 `SceneVoxelTile`：由 `SceneVoxelCommitter` / SV owner 持有的粗粒度 cell index / dirty record，用来统一管理 dirty、局部 voxel 范围、AutoObject 引用和增量更新边界。点选 voxel 时，所属 `SceneVoxelTile` 由 voxel 坐标和 `scene_voxel_tile_size` 直接推导，不从 provenance 或公开 sidecar 查询。`SceneVoxel` / SV committed payload 见 [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)；资产默认语义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，字段归属边界见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；GPU-first AutoObject 方向见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)。SPA（`ScenePlacementActor`）借用 `SceneVoxelCommitter` 引用编排 commit，不直接管理 tile dirty sidecar；详见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
+本文定义 `SceneVoxelTile`：由 `SceneVoxelCommitter` / SV owner 持有的粗粒度 cell index / dirty record，用来统一管理 dirty、局部 voxel 范围、AutoObject 引用和增量更新边界。点选 voxel 时，所属 `SceneVoxelTile` 由 voxel 坐标和 `scene_voxel_tile_size` 直接推导，不从 provenance 或公开 sidecar 查询。`SceneVoxel` / SV committed payload 见 [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)；资产默认语义见 [`asset-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，字段归属边界见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；GPU-first AutoObject 方向见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)。SPA（`ScenePlacementActor`）借用 `SceneVoxelCommitter` 引用编排 commit，不直接管理 tile dirty sidecar；详见 [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)。
 
 ![SceneVoxelTile coarse SV cell index](diagrams/scenevoxeltile.svg)
 
@@ -89,7 +89,7 @@ Grid initialized / resized
 | --- | --- | --- |
 | CPU / GDScript | `_scene_voxel_tiles` command staging、named dirty API、legacy dirty sync、debug label map、upload preparation 和 readback display；只作为 SV owner control/debug plane。 | CPU runtime fallback、GPU object SoA buffers、placement shader 的 temporary output。 |
 | GPU storage buffers | `scene_voxel_tile_records`、`scene_voxel_tile_summaries`、`scene_voxel_tile_object_refs`、`scene_voxel_tile_complexity_field`、`scene_voxel_tile_collision_field`；有 RD 时作为 tile metadata 和 resident scene/collision runtime read source。 | AutoObject descriptor defaults、完整对象状态、source authoring history。 |
-| GPU compute | probe prefilter、candidate voxel-region scoring、dirty-tile-limited resident upload；dirty-tile-limited source finalize 由 `SceneVoxelCommitter.blend_scene_voxels()` 的 dirty `SceneVoxelTile` scope 驱动，不是 GPU source-of-truth。 | `SceneVoxelTile` 的 runtime 替代路径、committed `SceneVoxel` payload、AutoObject descriptor defaults。 |
+| GPU compute | probe prefilter、candidate voxel-region scoring、dirty-tile-limited resident upload；dirty-tile-limited 提交发布由 `SceneVoxelCommitter.commit_scene_voxels()` 的 dirty `SceneVoxelTile` scope 驱动，不是 GPU source-of-truth。 | `SceneVoxelTile` 的 runtime 替代路径、committed `SceneVoxel` payload、AutoObject descriptor defaults。 |
 | 兼容 storage | `_sv_dirty_tiles` / `_sv_dirty_rects`、`SV_RESIDENT_TILE_SIZE = 8`。 | 新 semantic concept；它们只是 resident buffer / shader path 的 legacy storage。 |
 
 ## 数据模型
@@ -189,7 +189,7 @@ AutoObject / brush / profile / placement dirty producer
 | 更新方式 | 结论 | 说明 |
 | --- | --- | --- |
 | `SceneVoxelTile` dirty | 正常入口 | 所有局部更新统一进入 tile dirty 和 dirty flags。 |
-| Brush / manual edit | dirty producer | 保留 brush/source stream，但不直接改 committed `SceneVoxel`。 |
+| Brush / manual edit | dirty producer | 笔刷内容写 SPA 常驻 `BrushSV` 旁路层（`stamp_brush_sv_records()`），不进 committed `SceneVoxel`；仅触发 tile 的 brush/scoring dirty。 |
 | TargetSV / guidance | guidance dirty producer | 只更新 routing / scoring / prefilter，不标记 committed SV source dirty。 |
 | Profile hot update | dirty producer | 从 profile 引用反查 objects，再映射到 affected tiles。 |
 | Full invalidate | 维护入口 | load、grid 参数变化、repair、migration 时使用；等价于 dirty all tiles。 |
@@ -217,7 +217,7 @@ SceneVoxelTile
 - AutoObject dirty delta handoff 通过 `apply_gpu_autoobject_dirty_delta()` 同时更新 voxel 和 tile 两级 refs。
 - debug 查询可以从 `SceneVoxelTile` 追到 object id，但不会复制对象状态。
 
-资产默认语义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，字段和 `ISWS` 归属见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；GPU-first object pool 边界见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)。
+资产默认语义见 [`asset-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)，字段和 `ISWS` 归属见 [`asset-properties.md`](../asset-descriptor-demo/asset-properties.md)；GPU-first object pool 边界见 [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)。
 
 ## 与 SceneVoxel 的关系
 
@@ -247,7 +247,7 @@ placement/exclusion 的邻域查询走 per-voxel object refs（直接通过 voxe
 | 对象查询 | 读取 per-voxel object refs + tile 级粗过滤 | 不持有 object refs，由 caller 自行查询 |
 | 数据流 | dirty producer -> SV commit boundary | `TargetSV_B` + `SV[t - 1]` -> candidate regions -> VPG |
 
-被接受的 placement 结果需要生成 `ISWS` / source record，再通过 `SceneVoxelTile` dirty 和 `blend_scene_voxels()` 发布到 committed `SceneVoxel`；placement shader 的 temporary `complexity_field_out` / `collision_field_out` 不直接成为 SV source of truth。
+被接受的 placement 结果由 VPG state-chain stamp 原位提交进常驻 SV field（stamp 即提交），并通过 `SceneVoxelTile` dirty 与 `commit_scene_voxels()` 发布 tile 摘要；CPU 入口结果生成 `ISWS` 盖章记录后同样经 `commit_scene_voxels()` 散射落场。
 
 
 以下功能均已实现并通过测试验证，详见各测试文件入口。
@@ -268,7 +268,8 @@ placement/exclusion 的邻域查询走 per-voxel object refs（直接通过 voxe
 2. 运行 Vulkan GPU 验收，确认真实 `RenderingDevice`、GPU storage buffers 和 readback 路径：
 
 ```bash
-<godot> --path . --rendering-driver vulkan --script tools/test_scene_voxel_field.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_core_demo_contracts.gd
+<godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
 ```
 
 #### 禁止 `--headless`
@@ -289,5 +290,4 @@ placement/exclusion 的邻域查询走 per-voxel object refs（直接通过 voxe
 
 | 场景 | 说明 | Godot 场景 |
 | --- | --- | --- |
-| [SceneVoxelTile Dirty](../../demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md) | 测试方法与验收标准 | [`../../demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn`](../../demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn) |
-| [GPU AutoObject Runtime Plan](../../demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md) | 测试方法与验收标准 | [`../../demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn`](../../demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn) |
+| [SceneVoxelTile Demo](res://demos/core-scenevoxeltile/scenevoxeltile.md) | 本文即该 demo 的测试文档 | [`core-scenevoxeltile.tscn`](res://demos/core-scenevoxeltile/core-scenevoxeltile.tscn) |

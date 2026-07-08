@@ -20,18 +20,22 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 
 const AutoAssetFactory := preload("res://scripts/auto_asset_factory.gd")
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
-const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const GPUAutoObjectRuntimeScript := preload("res://scripts/gpu_autoobject_runtime.gd")
 const VoxelPickGPUScript := preload("res://scripts/voxel_pick_gpu.gd")
-const VoxelDisplay := preload("res://scripts/voxel_display.gd")
+const VoxelDisplay := preload("res://scripts/utils/voxel_display.gd")
+const VoxelDebugLabel := preload("res://scripts/utils/voxel_debug_label.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
+const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
+const AutoVoxelProfileScript := preload("res://scripts/auto_voxel_profile.gd")
 const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
 const DemoUI := preload("res://scripts/utils/demo_ui.gd")
 const TargetSVLookup := preload("res://scripts/utils/target_sv_lookup.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
+const SPATestScript := preload("res://demos/core-SPA-scene-placement-actor/spa_test.gd")
 const SELECT_COLOR := Color(1.0, 0.85, 0.0, 1.0)
 
 ## Selection mode contract:
@@ -86,6 +90,10 @@ const GENERATED_EDITOR_NODE_NAMES := [
 
 @export var autoobject_count := 65536
 @export var autoobject_grid_resolution := 512
+@export_range(8, 48, 1) var asset_voxel_grid_count: int = 16
+## 启动时是否 GPU 批量 spawn AutoObject。以 volume-score provider 为主的场景（如
+## placement-score-3d）关掉它，避免默认铺满 autoobject；Space 手动重跑仍可触发。
+@export var spawn_autoobjects_on_start := true
 @export var voxel_display_host_only := false
 @export var show_svtile_autoobject_overlay := true
 @export var show_anchor_sample_bounds := true
@@ -159,6 +167,7 @@ func _ready() -> void:
 		return
 	if is_scene_startup_blocked():
 		return
+	_validate_selection_bindings()
 	if voxel_display_host_only:
 		_cleanup_editor_nodes()
 		_ensure_external_voxel_display_root()
@@ -178,7 +187,8 @@ func _editor_init() -> void:
 	_cache_terrain_field()
 	_init_spa()
 	_register_all_assets()
-	_run_gpu_autoobject_batch()
+	if spawn_autoobjects_on_start:
+		_run_gpu_autoobject_batch()
 	_setup_hud()
 	_frame_camera()
 	_apply_selection_mode_visuals()
@@ -186,6 +196,25 @@ func _editor_init() -> void:
 	if _initialized:
 		print("[SPA Editor] SPA initialized: gpu_ready=%s, assets=%d" % [
 			str(_spa.is_gpu_ready()), _descriptors.size()])
+
+
+## 启动自检：合同表里的 pick_method/record_method 都是字符串方法名，靠 callv 动态派发，
+## 没有编译期链接。任何改名/手误会让对应模式变成"静默死点击"（点了没反应、也不报错）。
+## 这里在编辑器加载时逐条校验，缺失即 push_error，让 -e 加载立刻暴露断掉的绑定。
+func _validate_selection_bindings() -> void:
+	for raw_binding in SPAEditorContract.VOXEL_DOMAIN_BINDINGS:
+		var binding: Dictionary = raw_binding
+		for method_key in ["pick_method", "record_method"]:
+			var method_name := str(binding.get(method_key, ""))
+			if method_name.is_empty():
+				continue
+			if not has_method(method_name):
+				push_error("[SPA Selection] 合同绑定失效：mode=%s domain=%s 的 %s=\"%s\" 在本节点上不存在——该模式会静默点不中" % [
+					str(binding.get("mode", -1)),
+					str(binding.get("domain", "")),
+					method_key,
+					method_name,
+				])
 
 
 ## 设置选择模式并清除旧选中状态；插件工具栏和 Shift+数字快捷键都进入这里
@@ -215,6 +244,16 @@ func get_spa_selection_mode_name() -> String:
 
 func get_scene_placement_actor() -> Object:
 	return _spa
+
+
+## 编辑器桥入口：运行 GPU 常驻直连写回端到端检查（spa_test 的静态检查函数）。
+func run_resident_placement_writeback_check() -> Dictionary:
+	return SPATestScript.check_resident_placement_writeback()
+
+
+## 编辑器桥入口：stamp-only 提交 + BrushSV/BlendSV/feedback 端到端检查。
+func run_stamp_only_commit_check() -> Dictionary:
+	return SPATestScript.check_stamp_only_commit_and_blend_sv()
 
 
 func own_autoobject(autoobject_ref: Object, asset_id: int = -1) -> bool:
@@ -310,17 +349,22 @@ func get_selected_anchor_tooltip_text() -> String:
 
 ## Refresh SPA-owned visuals for the provider's current volume-score anchor.
 ## provider 选中/清除/切换 anchor 时回调进来，把权威态镜像进 _active_selection。
+## provider 选中/清除/切换 anchor 时回调进来：SPA 是唯一绘制点，经 canonical selection
+## visual 画高亮 box + top-k 标签 + 红色 sample-bounds 框。
 func refresh_volume_score_anchor_selection() -> Dictionary:
 	var record := _volume_score_selection_record()
 	if record.is_empty():
-		# provider 已无 anchor：只丢弃镜像，不动其它域的选中
+		# provider 已无 anchor：清镜像 + 隐藏 marker/label，不动其它域的选中
 		if _active_selection_is_volume_score_anchor():
 			_active_selection.clear()
+			_hide_node_if_valid(_selection_marker)
+			_hide_node_if_valid(_selection_label)
 		_update_anchor_sample_bounds_marker()
 		_update_hud()
 		return {"ok": false, "reason": "no_selected_anchor"}
 	_active_selection = record.duplicate(true)
-	_update_anchor_sample_bounds_marker(record)
+	_apply_selection_visual(_active_selection)
+	_apply_selection_mode_visuals()
 	_update_hud()
 	return {"ok": true, "record": record}
 
@@ -393,7 +437,7 @@ func register_voxel_display_node(display_key: String, node: Node3D, owner_key: S
 		return
 	_ensure_external_voxel_display_root()
 	node.add_to_group(_voxel_display_group(display_key))
-	node.visible = _voxel_display_is_visible(display_key)
+	node.visible = _voxel_display_effective_visible(display_key)
 
 
 ## 根据模式枚举返回可读名称
@@ -402,10 +446,20 @@ func _selection_mode_name(mode: int = -1) -> String:
 	return SPAEditorContract.selection_mode_name(idx)
 
 
-## 查询体素显示开关状态
+## 查询体素显示开关状态（纯手动开关，不含模式过滤，供工具栏勾选状态查询）
 func _voxel_display_is_visible(display_key: String) -> bool:
 	_normalize_voxel_display_state()
 	return bool(_voxel_display_visible.get(display_key, true))
+
+
+## 实际渲染可见性：手动开关 AND 当前选择模式关联性。
+## 非 Mixed 模式下，与当前模式无关的体素域一律隐藏（而不只是淡化）。
+func _voxel_display_effective_visible(display_key: String) -> bool:
+	if display_key.is_empty():
+		return true
+	if not _voxel_display_is_visible(display_key):
+		return false
+	return SPAEditorContract.mode_focuses_display_key(_selection_mode, display_key)
 
 
 ## 确保运行时显示状态覆盖合同表里的所有体素域
@@ -456,31 +510,79 @@ func _volume_score_anchor_display_active() -> bool:
 	return provider.has_method("select_anchor_at_viewport_position")
 
 
+## SPA 拥有 volume-score anchor 点选：射线优先命中胜出物体世界 AABB（点树身即选中该锚点），
+## 回退锚点小球；点中后调 provider.select_anchor（只置状态 + 回调 refresh，由 SPA 统一绘制反馈）。
 func _select_volume_score_anchor_at_position(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
 	if not _volume_score_anchor_selection_allowed():
 		return {}
 	var provider := _volume_score_provider_node()
-	if provider == null or not provider.has_method("select_anchor_at_viewport_position"):
+	if provider == null or not provider.has_method("select_anchor"):
 		return {}
-	# 先清掉非 anchor 域的旧选中（点云染色 / box marker），但保留 provider，
-	# 这样 provider.select_anchor 的回调 refresh 能干净地把 anchor 镜像进 _active_selection。
+	var anchor_index := _pick_volume_score_anchor(provider, cam, screen_pos)
+	if anchor_index < 0:
+		return {}
+	# 清掉非 anchor 域的旧选中（点云染色 / box marker），保留 provider。
 	clear_active_selection(false, false)
-	var result = provider.call("select_anchor_at_viewport_position", cam, screen_pos)
+	var result = provider.call("select_anchor", anchor_index)
 	if not (result is Dictionary) or not bool(result.get("ok", false)):
 		return {}
 	var record := _volume_score_selection_record(result)
-	if not record.is_empty():
-		_active_selection = record.duplicate(true)
-	_update_anchor_sample_bounds_marker(record)
-	_update_hud()
 	return {
 		"ok": true,
 		"domain": SELECTION_DOMAIN_ANCHOR,
 		"geometry": SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR,
 		"record": record,
-		"anchor_index": int(result.get("anchor_index", record.get("anchor_index", -1))),
+		"anchor_index": anchor_index,
 		"topk": result.get("topk", record.get("topk", [])),
 	}
+
+
+## 射线点选 volume-score 锚点：胜出物体世界 AABB 命中优先，取最近；无命中回退锚点小球半径。
+## 数据来自 provider（get_selectable_anchor_bounds / get_anchor_world_positions / get_anchor_marker_radius）。
+func _pick_volume_score_anchor(provider: Node, cam: Camera3D, screen_pos: Vector2) -> int:
+	if cam == null:
+		return -1
+	var ray_origin := cam.project_ray_origin(screen_pos)
+	var ray_dir := cam.project_ray_normal(screen_pos).normalized()
+	var best_idx := -1
+	var best_t := INF
+	if provider.has_method("get_selectable_anchor_bounds"):
+		for b in provider.call("get_selectable_anchor_bounds"):
+			if not (b is Dictionary):
+				continue
+			var raw_aabb = (b as Dictionary).get("aabb", null)
+			if not (raw_aabb is AABB):
+				continue
+			var hit = (raw_aabb as AABB).intersects_ray(ray_origin, ray_dir)
+			if hit is Vector3:
+				var hp: Vector3 = hit
+				var t := (hp - ray_origin).dot(ray_dir)
+				if t >= 0.0 and t < best_t:
+					best_t = t
+					best_idx = int((b as Dictionary).get("anchor_index", -1))
+	if best_idx >= 0:
+		return best_idx
+	if not provider.has_method("get_anchor_world_positions"):
+		return -1
+	var positions: PackedVector3Array = provider.call("get_anchor_world_positions")
+	var radius := 4.0
+	if provider.has_method("get_anchor_marker_radius"):
+		radius = maxf(float(provider.call("get_anchor_marker_radius")) * 2.5, 0.1)
+	var radius_sq := radius * radius
+	var best_dist := INF
+	for i in range(positions.size()):
+		var world_pos := positions[i]
+		if cam.is_position_behind(world_pos):
+			continue
+		var ray_t := (world_pos - ray_origin).dot(ray_dir)
+		if ray_t < 0.0:
+			continue
+		var closest := ray_origin + ray_dir * ray_t
+		var d := closest.distance_squared_to(world_pos)
+		if d <= radius_sq and d < best_dist:
+			best_dist = d
+			best_idx = i
+	return best_idx
 
 
 func _cycle_volume_score_anchor_topk(delta: int) -> bool:
@@ -562,7 +664,7 @@ func _apply_external_voxel_display_visibility(display_key: String) -> void:
 	_apply_voxel_display_group_visibility(
 		_external_voxel_display_root,
 		_voxel_display_group(display_key),
-		_voxel_display_is_visible(display_key)
+		_voxel_display_effective_visible(display_key)
 	)
 
 
@@ -585,10 +687,9 @@ func _active_selection_autoobject_index() -> int:
 	return -1
 
 
-## 当前活动选中的 box marker / label 是否应显示。
-## volume-score anchor 由 provider 自绘高亮，SPA 不出 box；其余域按所属显示开关。
+## 当前活动选中的 box marker / label 是否应显示。SPA 统一出 box（含 volume-score anchor）。
 func _active_selection_box_visible() -> bool:
-	if _active_selection.is_empty() or _active_selection_is_volume_score_anchor():
+	if _active_selection.is_empty():
 		return false
 	var key := _voxel_display_key_for_domain(str(_active_selection.get("domain", "")))
 	return key.is_empty() or _voxel_display_is_visible(key)
@@ -687,14 +788,40 @@ func _select_editor_selection_anchor_for_mode() -> void:
 	sel.add_node(self)
 
 
+## mode → Callable 拾取/记录派发表（直接方法引用，编译期检查），首次用到时惰性建立。
+var _data_pick_callables: Dictionary = {}
+var _data_record_callables: Dictionary = {}
+
+
+## 用直接方法引用建立 mode → Callable 派发表，取代按字符串名 callv 动态派发。
+## 好处：拾取/记录函数被改名/手误时，这里就是解析期 "Identifier not found" 报错，
+## 而不是运行时 has_method 落空导致该模式静默点不中（无任何报错）。
+func _ensure_selection_callables() -> void:
+	if not _data_pick_callables.is_empty():
+		return
+	_data_pick_callables = {
+		SelectionMode.SVTILE: _pick_svtile_record_with_camera,
+		SelectionMode.ANCHOR: _pick_anchor_record_with_camera,
+		SelectionMode.SV: _pick_sv_record_with_camera,
+		SelectionMode.TARGETSV: _pick_targetsv_record_with_camera,
+	}
+	_data_record_callables = {
+		SelectionMode.SVTILE: _svtile_record_for_voxel,
+		SelectionMode.ANCHOR: _anchor_record_for_voxel,
+		SelectionMode.SV: _sv_record_for_voxel,
+		SelectionMode.TARGETSV: _targetsv_record_for_selection_voxel,
+	}
+
+
 ## 按模式将体素坐标转为对应数据记录；AutoObject 没有体素直选记录，需走点云拾取
 func _data_record_for_voxel(mode: int, raw_voxel: Vector3i) -> Dictionary:
 	var mode_id := int(mode)
-	var method_name := SPAEditorContract.data_record_method_for_mode(mode_id)
-	if method_name.is_empty() or not has_method(method_name):
+	_ensure_selection_callables()
+	var cb: Callable = _data_record_callables.get(mode_id, Callable())
+	if not cb.is_valid():
 		return {}
 	var voxel := _clamp_selection_voxel(raw_voxel) if _mode_requires_scene_voxel_committer(mode_id) else raw_voxel
-	var result = callv(method_name, [voxel])
+	var result = cb.call(voxel)
 	return result if result is Dictionary else {}
 
 
@@ -784,17 +911,36 @@ func _register_all_assets() -> void:
 		return
 	_spa.clear_assets()
 	var t0 := Time.get_ticks_msec()
+	var voxelizer = MeshVoxelizerGpuScript.new()
 	for i in range(_meshes.size()):
 		var color := DemoAssets.asset_color(i)
+		var collision_samples := _collision_samples_from_mesh(voxelizer, _meshes[i], color)
 		var descriptor := AutoObjectScript.create_voxel_descriptor(
-			color, color.a, 1.0,
-			[{"shape": "cylinder", "radius": 1.0, "y_min": 0.0, "y_max": 2.0}])
+			color, color.a, 1.0, collision_samples)
 		_descriptors.append(descriptor)
 		var pid: int = _spa.register_asset(descriptor, _meshes[i])
 		_profile_ids.append(pid)
-		print("[SPA Demo] Registered [%d] %s → profile_id=%d" % [
-			i, DemoAssets.asset_name(i, "?"), pid])
+		print("[SPA Demo] Registered [%d] %s → profile_id=%d (%d collision voxels)" % [
+			i, DemoAssets.asset_name(i, "?"), pid, collision_samples.size()])
 	_register_time_ms = float(Time.get_ticks_msec() - t0)
+
+
+## 用通用的 mesh 体素化路径为资产生成 per-voxel collision footprint samples
+## （替代早期硬编码的 cylinder 基元）。每个实心体素 → 一条 point collision sample。
+func _collision_samples_from_mesh(voxelizer, mesh: Mesh, color: Color) -> Array:
+	var samples: Array = []
+	if mesh == null:
+		return samples
+	var result: Dictionary = voxelizer.voxelize(mesh, maxi(asset_voxel_grid_count, 1), color, 0.9, 4)
+	if not bool(result.get("ok", false)):
+		push_warning("[SPA Demo] voxelize failed (%s); asset collision footprint is empty" % str(result.get("reason", "unknown")))
+		return samples
+	for v in result.get("voxels", []):
+		var strength := float(v.get("collision", 0.0))
+		if strength <= 0.0:
+			continue
+		samples.append(AutoVoxelProfileScript.make_collision_sample(v["voxel"], strength, 1.0))
+	return samples
 
 
 # ---- SVTile / GPU AutoObject runtime visualization ------------------------
@@ -968,18 +1114,22 @@ func _build_svtile_autoobject_overlay(
 	_autoobject_points.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_autoobject_overlay_root.add_child(_autoobject_points)
 
-	_autoobject_overlay_label = Label3D.new()
+	# 总览标题：非 billboard、放大字号；样式统一走 VoxelDebugLabel（保留原有 28 / 0.45 / 8 观感）
+	_autoobject_overlay_label = VoxelDebugLabel.make(
+		"SPA -> GPU AutoObject -> SVTile refs\n%d autoobjects / %d occupied tiles / max %d refs per tile" % [
+			object_positions.size(),
+			_svtile_occupied_tile_count,
+			_svtile_max_refs_per_tile,
+		],
+		Color(0.95, 0.98, 1.0, 1.0),
+		28,     # font_size
+		0.0,    # width（不换行）
+		0.45,   # pixel_size
+		8,      # outline_size
+		false,  # billboard（总览标题不面朝相机）
+	)
 	_autoobject_overlay_label.name = "SVTileAutoObjectLegend"
-	_autoobject_overlay_label.text = "SPA -> GPU AutoObject -> SVTile refs\n%d autoobjects / %d occupied tiles / max %d refs per tile" % [
-		object_positions.size(),
-		_svtile_occupied_tile_count,
-		_svtile_max_refs_per_tile,
-	]
 	_autoobject_overlay_label.position = _position_on_terrain_from_voxel_center(Vector3(12.0, 0.0, 12.0), 10.0)
-	_autoobject_overlay_label.font_size = 28
-	_autoobject_overlay_label.pixel_size = 0.45
-	_autoobject_overlay_label.outline_size = 8
-	_autoobject_overlay_label.modulate = Color(0.95, 0.98, 1.0, 1.0)
 	_autoobject_overlay_root.add_child(_autoobject_overlay_label)
 	_ensure_selection_visual()
 	_apply_selection_mode_visuals()
@@ -1100,12 +1250,9 @@ func _make_selection_wire_box_mesh() -> ImmediateMesh:
 
 ## 创建一个选中标签用的 Label3D 节点
 func _make_selection_label(node_name: String, modulate: Color = Color.WHITE) -> Label3D:
-	var label := Label3D.new()
+	# 统一样式来自 VoxelDebugLabel（默认即体素悬浮字：24 / 0.16 / 6 + billboard + 底边对齐）
+	var label := VoxelDebugLabel.make("", modulate)
 	label.name = node_name
-	label.font_size = 24
-	label.pixel_size = 0.16
-	label.outline_size = 6
-	label.modulate = modulate
 	label.visible = false
 	return label
 
@@ -1127,14 +1274,13 @@ func _make_selection_material() -> StandardMaterial3D:
 	return _make_unshaded_material(Color(1.0, 0.9, 0.08, 0.92), false, true, true)
 
 
-## 设置GPU AutoObject点云中单个实例的颜色
+## 设置GPU AutoObject点云中单个实例的颜色。点云实例数据只存在于 GPU 缓冲
+## （VoxelDisplay GPU 直写），必须经 writer 改色；MultiMesh.set_instance_color
+## 会以全零 CPU cache 整块回传，抹掉同一脏区内所有实例的 transform。
 func _set_autoobject_instance_color(object_index: int, color: Color) -> void:
-	if _autoobject_points == null or _autoobject_points.multimesh == null:
+	if _autoobject_points == null or not is_instance_valid(_autoobject_points):
 		return
-	var mm := _autoobject_points.multimesh
-	if object_index < 0 or object_index >= mm.instance_count:
-		return
-	mm.set_instance_color(object_index, color)
+	VoxelDisplay.write_instance_color(_autoobject_points, object_index, color)
 
 
 ## 若节点有效则隐藏它
@@ -1184,12 +1330,6 @@ func set_active_selection(record: Dictionary) -> void:
 ## 几何形状决定摆位：gpu_point 顶在点云上方，voxel 直接落在 world_position。
 func _apply_selection_visual(record: Dictionary) -> void:
 	var geometry := str(record.get("geometry", ""))
-	if geometry == SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR:
-		# provider 自绘 anchor 高亮；SPA 只补 sample-bounds 范围框
-		_hide_node_if_valid(_selection_marker)
-		_hide_node_if_valid(_selection_label)
-		_update_anchor_sample_bounds_marker(record)
-		return
 	_ensure_selection_visual()
 	var color := _selection_domain_color(str(record.get("domain", "data")))
 	var marker_pos: Vector3
@@ -1200,13 +1340,13 @@ func _apply_selection_visual(record: Dictionary) -> void:
 		var s := _autoobject_point_size() * 2.4
 		marker_pos = base + Vector3(0.0, s * 0.45, 0.0)
 		marker_scale = Vector3(s, s * 1.8, s)
-		label_pos = base + Vector3(0.0, s * 3.2, 0.0)
 	else:
 		var base: Vector3 = record.get("world_position", Vector3.ZERO)
 		var size: Vector3 = record.get("marker_size", _default_voxel_marker_size())
 		marker_pos = base
 		marker_scale = size
-		label_pos = base + Vector3(0.0, size.y * 1.25 + 2.0, 0.0)
+	# 标签统一贴在 marker box 顶面正上方：水平居中于体素中心、竖直落在头顶
+	label_pos = _selection_label_top_position(marker_pos, marker_scale)
 	if _selection_marker != null:
 		_selection_marker.position = marker_pos
 		_selection_marker.scale = marker_scale
@@ -1220,6 +1360,14 @@ func _apply_selection_visual(record: Dictionary) -> void:
 		_selection_label.text = _format_selection_label(record)
 		_selection_label.visible = true
 	_update_anchor_sample_bounds_marker(record)
+
+
+## 标签锚点：marker box 顶面 + 少量净空，水平居中于体素中心。
+## 配合 Label3D 底边对齐，文字底部正好贴在体素头顶再向上生长。
+func _selection_label_top_position(marker_pos: Vector3, marker_scale: Vector3) -> Vector3:
+	var top_y := marker_pos.y + marker_scale.y * 0.5
+	var clearance := maxf(marker_scale.y * 0.25, 0.4)
+	return Vector3(marker_pos.x, top_y + clearance, marker_pos.z)
 
 
 ## 把活动选中同步到编辑器 Selection（锚定到 marker，缺失时退回自身）
@@ -1287,6 +1435,19 @@ func _format_selection_label(record: Dictionary) -> String:
 			int(record.get("object_id", -1)),
 			str(tile),
 		]
+	if str(record.get("geometry", "")) == SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR:
+		var lines := PackedStringArray(["Anchor #%d %s" % [int(record.get("anchor_index", -1)), str(voxel)]])
+		for entry in record.get("topk", []):
+			if not (entry is Dictionary):
+				continue
+			var e := entry as Dictionary
+			var sc := float(e.get("score", -INF))
+			var sc_text := ("%.2f" % sc) if sc > -1.0e20 else "n/a"
+			var mark := "*" if bool(e.get("selected", false)) else " "
+			var valid_suffix := "" if bool(e.get("valid", false)) else " invalid"
+			lines.append("%s#%d %s  %s  yaw=%.0f%s" % [
+				mark, int(e.get("rank", 0)), str(e.get("asset_name", "?")), sc_text, float(e.get("yaw", 0.0)), valid_suffix])
+		return "\n".join(lines)
 	match domain:
 		SELECTION_DOMAIN_SVTILE:
 			return "SVTile %s\nrefs=%d  voxel=%s" % [
@@ -1398,7 +1559,7 @@ func _apply_selection_mode_visual_binding(binding: Dictionary) -> void:
 	if node == null:
 		return
 	var display_key := str(binding.get("display_key", ""))
-	node.visible = display_key.is_empty() or _voxel_display_is_visible(display_key)
+	node.visible = _voxel_display_effective_visible(display_key)
 	node.transparency = 0.0 if _selection_mode_visual_focused(binding) else SELECTION_FADED_TRANSPARENCY
 
 
@@ -1419,8 +1580,8 @@ func _selection_mode_focuses_any(mode_ids: Array) -> bool:
 func _apply_autoobject_overlay_label_visual() -> void:
 	if _autoobject_overlay_label == null:
 		return
-	var gpu_objects_visible := _voxel_display_is_visible(SPAEditorContract.voxel_display_key_for_mode(SelectionMode.AUTOOBJECT))
-	var svtile_visible := _voxel_display_is_visible(SPAEditorContract.voxel_display_key_for_mode(SelectionMode.SVTILE))
+	var gpu_objects_visible := _voxel_display_effective_visible(SPAEditorContract.voxel_display_key_for_mode(SelectionMode.AUTOOBJECT))
+	var svtile_visible := _voxel_display_effective_visible(SPAEditorContract.voxel_display_key_for_mode(SelectionMode.SVTILE))
 	var label_color := _autoobject_overlay_label.modulate
 	_autoobject_overlay_label.visible = gpu_objects_visible or svtile_visible
 	label_color.a = 1.0 if _selection_mode_focuses_any(SPAEditorContract.SVTILE_OVERLAY_FOCUS_MODES) else 0.25
@@ -1434,7 +1595,7 @@ func _apply_targetsv_visuals(target_focus: bool, target_key: String = "") -> voi
 		return
 	if target_key.is_empty():
 		target_key = SPAEditorContract.voxel_display_key_for_mode(SelectionMode.TARGETSV)
-	var target_visible := _voxel_display_is_visible(target_key)
+	var target_visible := _voxel_display_effective_visible(target_key)
 	if targetsv.has_method("set_display_visible"):
 		targetsv.set_display_visible(target_visible)
 	var display := targetsv.get_node_or_null("TargetSVVoxels")
@@ -1564,13 +1725,15 @@ func _pick_bound_data_selection_record(mode_id: int, cam: Camera3D, screen_pos: 
 		return {}
 	if mode_id == SelectionMode.ANCHOR and _volume_score_anchor_display_active():
 		return {}
-	var method_name := SPAEditorContract.data_pick_method_for_mode(mode_id)
-	if method_name.is_empty() or not has_method(method_name):
+	_ensure_selection_callables()
+	var cb: Callable = _data_pick_callables.get(mode_id, Callable())
+	if not cb.is_valid():
 		return {}
-	var args := [cam, screen_pos]
+	var result: Variant
 	if mode_id == SelectionMode.TARGETSV and not allow_empty_fallback:
-		args.append(false)
-	var result = callv(method_name, args)
+		result = cb.call(cam, screen_pos, false)
+	else:
+		result = cb.call(cam, screen_pos)
 	return result if result is Dictionary else {}
 
 
@@ -1599,12 +1762,29 @@ func _pick_voxel_hit_with_camera(cam: Camera3D, screen_pos: Vector2) -> Dictiona
 
 
 ## 世界坐标→限制在有效范围的体素坐标
+## GPU 拾取不可用时是否已提示过（节流，避免每次点击刷屏）。
+var _warned_gpu_pick_unavailable := false
+
+
+## GPU 拾取设备/管线不可用时，点选会静默回落 CPU 射线（可能命中与 GPU 不同的体素），
+## 之前无任何提示 → "选中错误体素"很难排查。首次不可用时 push_warning 一次让它不再隐形；
+## 恢复可用时清标志以便下次掉了再提示。
+func _ensure_voxel_pick_gpu_or_warn() -> bool:
+	if _ensure_voxel_pick_gpu():
+		_warned_gpu_pick_unavailable = false
+		return true
+	if not _warned_gpu_pick_unavailable:
+		_warned_gpu_pick_unavailable = true
+		push_warning("[SPA Selection] GPU 体素拾取不可用，点选回落到 CPU 射线（可能与 GPU 命中不同的体素）。")
+	return false
+
+
 func _pick_voxel_hit_gpu(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
 	if cam == null:
 		return {}
 	if _terrain_field.is_empty() or _terrain_field_res <= 0:
 		_cache_terrain_field()
-	if not _ensure_voxel_pick_gpu():
+	if not _ensure_voxel_pick_gpu_or_warn():
 		return {}
 	var capture := TerrainConfigScript.CAPTURE_SIZE
 	var res := maxi(autoobject_grid_resolution, 1)
@@ -1835,7 +2015,7 @@ func _pick_targetsv_voxel_gpu(
 		return {}
 	if _terrain_field.is_empty() or _terrain_field_res <= 0:
 		_cache_terrain_field()
-	if not _ensure_voxel_pick_gpu():
+	if not _ensure_voxel_pick_gpu_or_warn():
 		return {}
 	var display_scale := 1.0
 	var display_scale_value = targetsv.get("display_scale")
@@ -2550,3 +2730,8 @@ func _process(_delta: float) -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
 		_dispose_spa_components(true)
+	elif what == NOTIFICATION_EXIT_TREE or what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		# 切编辑器标签页 / 窗口失焦时，配对的鼠标 release 可能永远不到达
+		# _handle_editor_mouse_button，_consume_editor_mouse_release 会卡在 true，
+		# 随后吞掉一次无关点击的 release。主动复位，避免"点击被吃掉 / 要切模式才恢复"。
+		_consume_editor_mouse_release = false

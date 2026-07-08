@@ -10,7 +10,8 @@ const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
 const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
-const VoxelFieldDisplayGPUScript := preload("res://scripts/voxel_field_display_gpu.gd")
+const VoxelDisplayScript := preload("res://scripts/utils/voxel_display.gd")
+const VoxelFieldDisplayGPUScript := preload("res://scripts/utils/voxel_field_display_gpu.gd")
 
 const DISPLAY_NODE := "TargetSVVoxels"
 const GENERATED_GROUP := "meshfill_targetsv_generated"
@@ -22,7 +23,6 @@ enum DisplayChannel { COLOR, COMPLEXITY, COLLISION }
 @export_enum("Color", "Complexity", "Collision") var display_channel: int = DisplayChannel.COLOR
 @export_range(0.0, 1.0, 0.001) var occupancy_threshold: float = 0.001
 @export var display_scale: float = 1.0
-@export var prefer_gpu_display: bool = true
 @export var fresnel_enabled: bool = true
 
 var _ready_ok := false
@@ -87,9 +87,7 @@ func rebuild_display() -> void:
 		push_warning("[TargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
 		return
 
-	var node := _build_gpu_display() if prefer_gpu_display else null
-	if node == null:
-		node = _build_cpu_display()
+	var node := _build_field_display()
 	if node == null:
 		push_warning("[TargetSVSetup] TargetSV display skipped: %s" % _last_display_reason)
 		return
@@ -155,7 +153,7 @@ func _prepare_display_fields() -> bool:
 	return true
 
 
-func _build_gpu_display() -> MultiMeshInstance3D:
+func _build_field_display() -> MultiMeshInstance3D:
 	if RenderingServer.get_rendering_device() == null:
 		_last_display_reason = "missing_rendering_device"
 		return null
@@ -165,7 +163,7 @@ func _build_gpu_display() -> MultiMeshInstance3D:
 	var half := _capture_size * display_scale * 0.5 + cell_size
 	var y_max := (_height_span + _vertical_span) * display_scale + cell_size
 	var aabb := AABB(Vector3(-half, -cell_size, -half), Vector3(2.0 * half, y_max + 2.0 * cell_size, 2.0 * half))
-	var instance := VoxelDisplay.build_field_gpu(
+	var instance := VoxelDisplayScript.build_field_gpu(
 		_voxel_count,
 		cell,
 		aabb,
@@ -185,40 +183,17 @@ func _build_gpu_display() -> MultiMeshInstance3D:
 			"height_span": _height_span,
 			"threshold": occupancy_threshold,
 		},
-		{"name": DISPLAY_NODE, "fill": 1.0}
+		{
+			"name": DISPLAY_NODE,
+			"fill": 1.0,
+		}
 	)
 	if instance != null and fresnel_enabled:
 		_apply_fresnel_material(instance)
-	return instance
-
-
-func _build_cpu_display() -> MultiMeshInstance3D:
-	var centers := PackedVector3Array()
-	var colors := PackedColorArray()
-	var slice_voxel_count := _texture_size * _texture_size
-	for idx in range(_voxel_count):
-		if _occupancy[idx] <= occupancy_threshold:
-			continue
-		var slice_index := idx / slice_voxel_count
-		var rem := idx % slice_voxel_count
-		var z := rem / _texture_size
-		var x := rem % _texture_size
-		centers.append(voxel_to_world(x, slice_index, z))
-		colors.append(_channel_color(idx))
-	if centers.is_empty():
-		_last_display_reason = "no_visible_voxels"
-		return null
-
-	var cell_size := _capture_size / maxf(float(_texture_size - 1), 1.0) * display_scale * 0.72
-	var slice_height := _vertical_span / maxf(float(_slice_count), 1.0) * display_scale * 0.72
-	var instance := VoxelDisplay.build_colored(
-		centers,
-		Vector3(cell_size, maxf(slice_height, 0.02), cell_size),
-		colors,
-		{"name": DISPLAY_NODE, "fill": 1.0}
-	)
-	if instance != null and fresnel_enabled:
-		_apply_fresnel_material(instance)
+	if instance != null:
+		_last_display_reason = str(instance.get_meta("voxel_display_reason", "ok"))
+	else:
+		_last_display_reason = "field_display_build_failed" if _active_voxel_count > 0 else "no_visible_voxels"
 	return instance
 
 
@@ -229,27 +204,6 @@ func _view_mode() -> int:
 		DisplayChannel.COLLISION:
 			return VoxelFieldDisplayGPUScript.VIEW_COLLISION
 	return VoxelFieldDisplayGPUScript.VIEW_TARGET_COLOR
-
-
-func _channel_color(idx: int) -> Color:
-	var color_base := idx * 4
-	var complexity := _color_rgba[color_base + 3]
-	var collision := _collision[idx] if idx < _collision.size() else 0.0
-	match display_channel:
-		DisplayChannel.COLOR:
-			var c := Color(
-				_color_rgba[color_base + 0],
-				_color_rgba[color_base + 1],
-				_color_rgba[color_base + 2],
-				clampf(maxf(_occupancy[idx], 0.35), 0.35, 1.0)
-			)
-			var sand := Color(0.82, 0.78, 0.68, c.a)
-			return c.lerp(sand, clampf(collision * 0.45, 0.0, 1.0))
-		DisplayChannel.COMPLEXITY:
-			return Color(complexity, complexity * 0.7, 0.1, clampf(maxf(complexity, 0.35), 0.35, 1.0))
-		DisplayChannel.COLLISION:
-			return Color(0.1, collision * 0.8, collision, clampf(maxf(collision, 0.35), 0.35, 1.0))
-	return Color.WHITE
 
 
 func _apply_fresnel_material(instance: MultiMeshInstance3D) -> void:

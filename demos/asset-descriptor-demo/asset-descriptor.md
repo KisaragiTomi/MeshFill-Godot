@@ -2,7 +2,7 @@
 
 `AssetDescriptor` 是 MeshFill 中描述资产“是什么”的统一 descriptor。它应该能描述所有种类的可放置物体；object、vegetation、scaffold preset 或导入资源只是不同 authoring entry，不应该各自再定义一套资产默认语义。
 
-源码事实以 [`scripts/auto_voxel_descriptor.gd`((../../scripts/auto_voxel_descriptor.gd) 为准。export 字段逐项含义维护在源码声明旁；本文维护跨文档共享的职责、边界和生命周期，避免在其它 core 文档重复定义 descriptor。
+源码事实以 [`scripts/asset_descriptor.gd`](../../scripts/asset_descriptor.gd) 为准。export 字段逐项含义维护在源码声明旁；本文维护跨文档共享的职责、边界和生命周期，避免在其它 core 文档重复定义 descriptor。
 
 ## 核心契约
 
@@ -29,7 +29,7 @@
 | 组 | 字段 / API | 归属 |
 | --- | --- | --- |
 | Shared semantic fields | `color`、`complexity`、`collision`、`get_color()`、`get_complexity()`、`get_collision()` | 写入 shared fields、`ISWS`、source voxel 和 committed `SceneVoxel` 的默认语义来源。 |
-| Placement shape | `collision`、`normalize_collision()`、`pivot_variants`、`auto_generate_vertical_pivots`、`get_pivot_variants()` | placement footprint、anchor/pivot variants 和 profile collision records。 |
+| Placement shape | `collision`、`VoxelGeneral.normalize_collision_samples()`、`pivot_variants`、`auto_generate_vertical_pivots`、`get_pivot_variants()` | placement footprint、anchor/pivot variants 和 profile collision records。 |
 | Semantic probes | `semantic_probe_profile`、`semantic_probe_density`、`context_sensing_radius`、`get_semantic_probes()` | prefilter 对 `anchor x asset` 打分的 descriptor-backed probes。 |
 | Asset identity / grouping | `asset_id`、`object_type`、`object_subtype` | asset/debug/profile lookup 和粗分组；不表达新的资产语义层级。 |
 | Profile fallback | `voxel_profile`、`from_profile()` | 导入或旧 preset 的 shared-field fallback；不覆盖显式 descriptor 字段。 |
@@ -99,7 +99,7 @@ AssetDescriptor resource
 - **非 GPU 测试**（不涉及 RenderingDevice、compute shader、storage buffer 或 GPU readback）：
 
 ```powershell
-godot --headless --path . --script tools/test_asset_properties_descriptor_contract.gd
+godot --headless --path . --script tools/test_semantic_probe_generation.gd
 ```
 
 - **GPU / Vulkan 测试**（需要 RenderingDevice，禁止 `--headless`）：
@@ -114,10 +114,8 @@ godot --path . --rendering-driver vulkan --script tools/test_auto_voxel_runtime_
 
 | 测试文件 | 覆盖范围 | 驱动模式 |
 | --- | --- | --- |
-| [`test_asset_properties_descriptor_contract.gd`((../../tools/test_asset_properties_descriptor_contract.gd) | `SHARED_FIELD_KEYS`、collision canonical、descriptor-backed getter 权威性、`to_record_fields()` collision key、channel 排除、factory 创建 | 非 GPU |
-| [`test_auto_voxel_runtime_profile_container.gd`((../../tools/test_auto_voxel_runtime_profile_container.gd) | descriptor 注册、profile 分阶段、GPU 上传/回读、等效 descriptor 去重、dirty profile 标记、profile 容器边界 | GPU (vulkan) |
-| [`test_markdown_contracts.gd`((../../tools/test_markdown_contracts.gd) | descriptor-backed getter 权威性、`ISWS` record 携带 collision、`apply_to_scene_voxel` 传播、zero-complexity 不擦除 terrain collision、channel 排除、候选 region 别名 | 非 GPU |
-| [`test_voxel_asset_priority.gd`((../../tools/test_voxel_asset_priority.gd) | asset priority/weight/quota，通过 VPG pipeline 使用 collision/priority/weight 定义 | GPU (vulkan) |
+| [`test_auto_voxel_runtime_profile_container.gd`](../../tools/test_auto_voxel_runtime_profile_container.gd) | descriptor 注册、profile 分阶段、GPU 上传/回读、等效 descriptor 去重、dirty profile 标记、profile 容器边界 | GPU (vulkan) |
+| [`test_markdown_contracts.gd`](../../tools/test_markdown_contracts.gd) | `SHARED_FIELD_KEYS`、descriptor-backed getter 权威性、`ISWS` record 携带 collision、`apply_to_scene_voxel` 传播、zero-complexity 不擦除 terrain collision、channel 排除、候选 region 别名 | GPU (vulkan) |
 
 ### 关键测试场景
 
@@ -125,7 +123,7 @@ godot --path . --rendering-driver vulkan --script tools/test_auto_voxel_runtime_
 
 **1. Shared fields 边界**
 
-- 验证 `SHARED_FIELD_KEYS == ["color", "complexity", "collision"(`
+- 验证 `SHARED_FIELD_KEYS == ["color", "complexity", "collision"]`
 - 验证 `normalize_shared_fields()` 保持 collision、传播 complexity alpha
 - 验证 `to_record_fields()` 包含 collision key
 - 验证 channel、scatter 字段、transform 等不进入 shared fields
@@ -164,7 +162,7 @@ godot --path . --rendering-driver vulkan --script tools/test_auto_voxel_runtime_
 ```gdscript
 extends SceneTree
 
-const AssetDescriptor := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptor := preload("res://scripts/asset_descriptor.gd")
 
 func _init() -> void:
     var ok := true
@@ -214,7 +212,7 @@ func _test_profile_upload_or_skip() -> bool:
 
 项目在两层运行合约验证：
 
-1. **Demo 合约**（`test_core_demo_contracts.gd`）：解析 `docs/core/*.md` 中的测试场景表格，验证引用的 demo 文档、场景文件和元数据一致性
+1. **Demo 合约**（`test_core_demo_contracts.gd`）：解析核心知识文档（`_list_core_docs` 清单，位于 `demos/` 各子目录）中的测试场景表格，验证引用的 demo 文档、场景文件和元数据一致性
 2. **Markdown/源码合约**（`test_markdown_contracts.gd`）：跨 `docs/`、源码和测试文件进行深度正则/文本合约验证，包括 GPU-first 措辞、共享字段边界、候选区域别名等
 
 新增 descriptor 字段或修改本文契约后，必须同步更新 `test_markdown_contracts.gd` 中对应的合约断言。
@@ -247,13 +245,7 @@ func _test_profile_upload_or_skip() -> bool:
 
 ### 契约测试
 
-`AssetDescriptor` 资产属性契约为纯 CPU 校验，可用 `--headless`：
-
-```bash
-godot --headless --path . --script tools/test_asset_properties_descriptor_contract.gd
-```
-
-核心 demo 契约与 markdown 契约必须用 Vulkan 驱动运行，禁止 `--headless`：
+descriptor 资产属性契约（descriptor-backed getter 权威性、`ISWS` record 携带 collision、channel 排除）已并入 `tools/test_markdown_contracts.gd`；连同核心 demo 契约必须用 Vulkan 驱动运行，禁止 `--headless`：
 
 ```bash
 godot --path . --rendering-driver vulkan --script tools/test_core_demo_contracts.gd
@@ -267,11 +259,17 @@ godot --path . --rendering-driver vulkan --script tools/test_markdown_contracts.
 - 探针 marker 颜色按 `shape_source` 区分，分层优先级 `convex > voxel_interior > surface > context`。
 - 碰撞柱体的半径、高度、中心与 `collision` 定义一致。
 
+## 测试场景
+
+| 场景 | 说明 | Godot 场景 |
+| --- | --- | --- |
+| [AssetDescriptor 统一 Demo](res://demos/asset-descriptor-demo/asset-descriptor.md) | 本文即该 demo 的测试文档 | [`asset-descriptor-demo.tscn`](res://demos/asset-descriptor-demo/asset-descriptor-demo.tscn) |
+
 ## 相关文档
 
-- [`asset-properties.md`](asset-properties.md)：descriptor、shared fields、metadata 和 `ISWS` 的字段归属边界。
-- [`auto-asset-scripting.md`](auto-asset-scripting.md)：脚手架 JSON 如何写入 descriptor / descriptor-backed asset。
-- [`asset-semantic-probes.md`](asset-semantic-probes.md)：descriptor-backed semantic probes。
+- [`asset-properties.md`](asset-properties.md)（`res://demos/asset-descriptor-demo/asset-properties.md`）：descriptor、shared fields、metadata 和 `ISWS` 的字段归属边界。
+- [`auto-asset-scripting.md`](auto-asset-scripting.md)（`res://demos/asset-descriptor-demo/auto-asset-scripting.md`）：脚手架 JSON 如何写入 descriptor / descriptor-backed asset。
+- [`asset-semantic-probes.md`](asset-semantic-probes.md)（`res://demos/asset-descriptor-demo/asset-semantic-probes.md`）：descriptor-backed semantic probes。
 - [`scene-placement-actor.md`](../core-SPA-scene-placement-actor/scene-placement-actor.md)：descriptor 注册、GPU profile buffer 生命周期和 SPA 访问入口。
 - [`autoobject-gpu-runtime-architecture.md`](../core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md)：profile container、GPU object pool 和 runtime contract。
 - [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)：`ISWS`、source write、committed `SceneVoxel` 和 SV resident state。

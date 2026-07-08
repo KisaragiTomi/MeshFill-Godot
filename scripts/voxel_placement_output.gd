@@ -1,145 +1,25 @@
 class_name VoxelPlacementOutput
 
-## placement 结果 → 世界坐标/节点/写规格 的纯静态转换与实例化(从 VoxelPlacementGenerator 抽出)。
-extends RefCounted
+## GPU-capable placement output conversion plus CPU-only scene instantiation helpers.
+extends "res://scripts/godot_compute_shader_base.gd"
 
 const AutoObject := preload("res://scripts/auto_object.gd")
+const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
+const PlacementResultCodec := preload("res://scripts/utils/placement_result_codec.gd")
 
-const TILE_SIZE := 8
-const FOOTPRINT_CAPACITY := 128
 const RECORD_STRIDE := 4
-const DELTA_STRIDE := 2
-const STAMP_BOUNDS_STRIDE := 2
-const FLAG_SUPPORT := 1
-const FLAG_CLEARANCE := 2
-const NUM_DEBUG_CHANNELS := 8
-const ACCEPTED_PLACEMENT_SOURCE_BUFFER_INCOMPLETE_REASON := "incomplete_source_candidate_handoff_missing_payload_and_group_index_buffers"
-const SCORE_CONTRACT_DEBUG_WORDS := 48
-const SCORE_CONTRACT_MAGIC := 0x4D465052 # MFPR: MeshFill placement runtime/profile.
-const CANDIDATE_ROUTE_BINDING_DEBUG_WORDS := 16
-const CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS := 4
-const CANDIDATE_ROUTE_INDIRECT_ARGS_BYTES := 12
-const CANDIDATE_ROUTE_SPARSE_ADAPTER_LOCAL_SIZE := 64
-const BOX_FOOTPRINT_BAKE_SHADER_PATH := "res://shaders/bake_box_footprint.glsl"
-const BOX_FOOTPRINT_BAKE_LOCAL_SIZE := 64
-const CYLINDER_FOOTPRINT_BAKE_SHADER_PATH := "res://shaders/bake_cylinder_footprint.glsl"
-const CYLINDER_FOOTPRINT_BAKE_LOCAL_SIZE := 64
-const ROTATE_FOOTPRINT_Y_SHADER_PATH := "res://shaders/rotate_footprint_y.glsl"
-const ROTATE_FOOTPRINT_Y_LOCAL_SIZE := 64
-const GPU_RUNTIME_PROVIDER_CONFIG_KEYS := [
-	"gpu_autoobject_runtime",
-	"autoobject_runtime",
-	"runtime",
-]
-const GPU_PROFILE_CONTAINER_CONFIG_KEYS := [
-	"auto_voxel_runtime_profile_container",
-	"runtime_profile_container",
-	"profile_container",
-]
+const WORLD_RESULT_STRIDE := 4
+const VEC4_BYTES := 16
+const PLACEMENT_RESULT_STRIDE_BYTES := RECORD_STRIDE * VEC4_BYTES
+const WORLD_RESULT_STRIDE_BYTES := WORLD_RESULT_STRIDE * VEC4_BYTES
+const RESULTS_TO_WORLD_SHADER_PATH := "res://shaders/placement_results_to_world.glsl"
+const RESULTS_TO_WORLD_LOCAL_SIZE := 64
 const SCENE_PLACEMENT_ACTOR_CONFIG_KEYS := [
 	"scene_placement_actor",
 	"placement_actor",
 	"spa",
 ]
-const CANDIDATE_REGION_BY_ASSET_CONFIG_KEYS := [
-	"candidate_voxel_regions_by_asset",
-	"candidate_voxel_sparses_by_asset",
-]
-const CANDIDATE_ROUTE_CONTRACT_SCHEMA_VERSION := 1
-const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := 16
-const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := 16
-const ASSET_CANDIDATE_REGION_CONFIG_KEYS := [
-	"candidate_voxel_regions",
-	"candidate_voxel_sparses",
-]
-const REQUIRED_GPU_RUNTIME_BUFFERS := [
-	"alive",
-	"generation",
-	"type",
-	"profile",
-	"bounds_min",
-	"bounds_max",
-	"previous_bounds_min",
-	"previous_bounds_max",
-	"transform",
-]
-const REQUIRED_GPU_PROFILE_BUFFERS := [
-	"profile_table",
-	"probe_records",
-	"pivot_records",
-]
-const DEBUG_CHANNEL_NAMES: PackedStringArray = [
-	"target_coverage",
-	"target_complexity_fit",
-	"target_color_fit",
-	"target_density",
-	"placement_score",
-	"support_ratio",
-	"solid_collision",
-	"clearance_overlap",
-]
-const SCORE_CONTRACT_DEBUG_NAMES: PackedStringArray = [
-	"magic",
-	"contract_enabled",
-	"runtime_object_capacity",
-	"profile_count",
-	"alive_object_reads",
-	"profile_records_matched",
-	"runtime_overlap_tests",
-	"runtime_overlap_hits",
-	"profile_table_reads",
-	"asset_profile_id",
-	"candidate_invocations",
-	"profile_complexity_q1000",
-	"runtime_profile_reads",
-	"runtime_profile_matches",
-	"probe_record_reads",
-	"reserved_profile_side_read",
-	"pivot_record_reads",
-	"probe_weight_q1000",
-	"reserved_profile_side_metric",
-	"pivot_bias_q1000",
-	"profile_probe_count",
-	"reserved_profile_side_count",
-	"profile_pivot_count",
-	"debug_max_target_coverage_q1000",
-	"debug_max_target_complexity_fit_q1000",
-	"debug_max_target_color_fit_q1000",
-	"debug_max_target_density_q1000",
-	"debug_max_placement_score_q1000",
-	"debug_max_support_ratio_q1000",
-	"debug_max_solid_collision_q1000",
-	"debug_max_clearance_overlap_q1000",
-	"runtime_spacing_tests",
-	"runtime_spacing_profile_matches",
-	"runtime_spacing_rejections",
-	"runtime_spacing_min_distance_q1000",
-	"scene_voxel_tile_object_ref_enabled",
-	"scene_voxel_tile_object_ref_tile_reads",
-	"scene_voxel_tile_object_ref_slot_reads",
-	"scene_voxel_tile_object_ref_object_reads",
-	"scene_voxel_tile_object_ref_duplicate_reads",
-	"reserved40",
-	"reserved41",
-	"reserved42",
-	"reserved43",
-	"reserved44",
-	"reserved45",
-	"reserved46",
-	"reserved47",
-]
 const SCENE_VOXEL_COMMITTER_CONFIG_KEY := "scene_voxel_committer"
-const SCENE_VOXEL_TILE_COMMITTER_CONFIG_KEYS := [
-	SCENE_VOXEL_COMMITTER_CONFIG_KEY,
-	"sv_committer",
-	"scene_voxel_tile_committer",
-]
-const SCENE_VOXEL_TILE_OBJECT_REF_BUFFER_NAME := "scene_voxel_tile_object_refs"
-const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
-const SCENE_VOXEL_TILE_OBJECT_REF_STRIDE_BYTES := 4
-const SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT := 8
-const PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY := "vegetation" + "_exclusion"
-const STAGE_SCENE_VOXEL_SOURCE_CANDIDATES_CONFIG_KEY := "stage_scene_voxel_source_candidates_to_resident_buffers"
 const VOXEL_WRITE_SPEC_CONFIG_KEYS := [
 	"asset",
 	"base_pixel",
@@ -158,74 +38,12 @@ const VOXEL_WRITE_SPEC_CONFIG_KEYS := [
 	"record_id",
 	SCENE_VOXEL_COMMITTER_CONFIG_KEY,
 	"texture_resolution",
-	PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY,
 	"voxel_size",
 	"volume_xz_resolution",
 	AutoObject.INSTANCE_STAMP_WRITE_SPEC_META_KEY,
 	"voxel_write_spec",
 	"world_capture_size",
 ]
-const SCENE_VOXEL_SOURCE_WRITE_DIAGNOSTIC_KEYS := [
-	"source_write_handoff_mode",
-	"source_write_batch_api",
-	"cpu_pending_source_candidate_bridge",
-	"pending_source_candidate_flush_api",
-	"source_candidate_resolve_api",
-	"resident_source_write_buffer",
-	"resident_source_write_buffer_owner",
-	"resident_source_write_buffer_rid",
-	"resident_source_write_buffer_lifetime",
-	"resident_source_write_buffer_stride_bytes",
-	"resident_source_write_buffer_range_count",
-	"resident_source_candidate_buffer_rid",
-	"resident_source_candidate_buffer_stride_bytes",
-	"resident_source_candidate_buffer_capacity",
-	"resident_source_candidate_buffer_count",
-	"resident_source_range_buffer_rid",
-	"resident_source_range_buffer_stride_bytes",
-	"resident_source_range_buffer_capacity",
-	"resident_source_range_buffer_count",
-	"resident_source_candidate_staging_epoch",
-	"runtime_read_source",
-	"final_source_stream_resident",
-	"final_source_stream_resident_source",
-	"resident_gpu_allocator_writeback",
-	"resident_gpu_allocator_writeback_mode",
-]
-
-
-## --- 复制自 generator 的辅助 ---
-
-
-## 按已知 meta key 依次在配置字典中查找已有的 voxel write spec 记录，返回第一个非空记录的副本；找不到则返回空字典。
-static func _get_config_voxel_write_spec(config: Dictionary) -> Dictionary:
-	for key in AutoObject.voxel_write_spec_meta_keys():
-		var raw_record = config.get(key, {})
-		if raw_record is Dictionary:
-			var record := raw_record as Dictionary
-			if not record.is_empty():
-				return record.duplicate(true)
-	return {}
-
-
-
-
-
-## 将 Vector3 / Array / Dictionary 等宽松类型的值统一转换为 Vector3；无法识别时返回 fallback。
-static func _vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vector3:
-	if value is Vector3:
-		return value as Vector3
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
-	if value is Dictionary:
-		var d := value as Dictionary
-		return Vector3(float(d.get("x", fallback.x)), float(d.get("y", fallback.y)), float(d.get("z", fallback.z)))
-	return fallback
-
-
-
 
 
 ## 按候选 key 列表在配置字典中查找场景放置执行者(Scene Placement Actor)对象，找不到则返回 null。
@@ -274,7 +92,7 @@ static func instantiate_placement(
 	if parent != null and node.get_parent() == null:
 		parent.add_child(node)
 
-	var record := _get_config_voxel_write_spec(cfg)
+	var record := AutoObject.voxel_write_spec_from_config(cfg)
 	if not record.is_empty():
 		record = attach_placement_voxel_write_spec(node, record)
 	elif bool(cfg.get("create_voxel_write_spec", false)):
@@ -282,7 +100,7 @@ static func instantiate_placement(
 		if not record.is_empty():
 			record = attach_placement_voxel_write_spec(node, record)
 
-	var target = cfg.get(SCENE_VOXEL_COMMITTER_CONFIG_KEY, cfg.get(PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY, null))
+	var target = cfg.get(SCENE_VOXEL_COMMITTER_CONFIG_KEY, null)
 	if not record.is_empty() and target != null and target.has_method("apply_voxel_write_spec"):
 		var apply_method := "apply_voxel_write_spec"
 		var applied: Dictionary = target.call(
@@ -428,7 +246,7 @@ static func _placement_base_pixel(
 		if arr.size() >= 2:
 			return Vector2i(int(arr[0]), int(arr[1]))
 	var world_pos: Vector3 = world_result.get("position", Vector3.ZERO)
-	var target = record_config.get(SCENE_VOXEL_COMMITTER_CONFIG_KEY, record_config.get(PREVIOUS_SCENE_VOXEL_COMMITTER_CONFIG_KEY, null))
+	var target = record_config.get(SCENE_VOXEL_COMMITTER_CONFIG_KEY, null)
 	if target != null and target.has_method("world_to_volume_pixel"):
 		return target.call("world_to_volume_pixel", world_pos, resolution)
 	if record_config.has("grid_origin") or record_config.has("voxel_size"):
@@ -437,8 +255,8 @@ static func _placement_base_pixel(
 		return world_to_volume_pixel(
 			world_pos,
 			resolution,
-			_vector3_from_value(record_config.get("grid_origin", fallback_grid_origin), fallback_grid_origin),
-			_vector3_from_value(record_config.get("voxel_size", fallback_voxel_size), fallback_voxel_size)
+			VariantUtils.vector3_from_value(record_config.get("grid_origin", fallback_grid_origin), fallback_grid_origin),
+			VariantUtils.vector3_from_value(record_config.get("voxel_size", fallback_voxel_size), fallback_voxel_size)
 		)
 	return world_to_texture_pixel(world_pos, capture_size, resolution)
 
@@ -502,46 +320,201 @@ static func _configure_node(node: AutoObject, node_class: String, cfg: Dictionar
 			node.configure_auto_object(cfg)
 
 
+static func results_to_world_gpu(
+	results: Array[Dictionary],
+	voxel_size: Vector3,
+	grid_origin: Vector3,
+	rotation_count: int = 24,
+	pivot_variant: Dictionary = {},
+	rendering_device: RenderingDevice = null
+) -> Dictionary:
+	var runner = load("res://scripts/voxel_placement_output.gd").new()
+	if rendering_device != null:
+		runner.attach_rendering_device(rendering_device, false)
+	return runner._results_to_world_gpu(results, voxel_size, grid_origin, rotation_count, pivot_variant)
 
-## 将 GPU 输出的体素空间放置记录批量转换为世界空间结果：过滤无效记录，按旋转索引换算世界坐标与偏航角，
-## 应用 pivot 偏移旋转得到实例位置，并保留分数/支撑率/碰撞等调试字段。
-static func results_to_world(
+
+func _results_to_world_gpu(
 	results: Array[Dictionary],
 	voxel_size: Vector3,
 	grid_origin: Vector3,
 	rotation_count: int = 24,
 	pivot_variant: Dictionary = {}
+) -> Dictionary:
+	var record_count := results.size()
+	if record_count <= 0:
+		return {
+			"ok": true,
+			"reason": "empty_results",
+			"gpu_first": true,
+			"cpu_fallback": false,
+			"record_count": 0,
+			"world_result_count": 0,
+			"world_results": [],
+			"readback_source": "none",
+		}
+
+	var input_bytes := _pack_placement_result_records(results)
+	if input_bytes.size() != record_count * PLACEMENT_RESULT_STRIDE_BYTES:
+		return _results_to_world_gpu_blocked("pack_failed", record_count)
+
+	log_name = "VoxelPlacementOutputWorld"
+	sync_global_device = false
+	if _rd == null and not ensure_device(true, false):
+		dispose()
+		return _results_to_world_gpu_blocked("missing_rendering_device", record_count)
+
+	var shader := load_compute_shader(RESULTS_TO_WORLD_SHADER_PATH)
+	var pipeline := create_compute_pipeline(shader)
+	if not shader.is_valid() or not pipeline.is_valid():
+		dispose()
+		return _results_to_world_gpu_blocked("placement_output_world_shader_not_ready", record_count)
+
+	var input_buffer := storage_buffer_from_bytes(input_bytes, SCOPE_FRAME, "placement_results_in_vec4")
+	var output_buffer := storage_buffer_zero(record_count * WORLD_RESULT_STRIDE_BYTES, SCOPE_FRAME, "placement_world_results_out_vec4")
+	if not input_buffer.is_valid() or not output_buffer.is_valid():
+		dispose()
+		return _results_to_world_gpu_blocked("placement_output_world_buffer_create_failed", record_count)
+
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, input_buffer),
+		make_storage_uniform(1, output_buffer),
+	], shader, 0, SCOPE_PASS, "placement_results_to_world_set0")
+	if not set0.is_valid():
+		dispose()
+		return _results_to_world_gpu_blocked("placement_output_world_uniform_set_failed", record_count)
+
+	var safe_voxel_size := VoxelGeneral.safe_voxel_size(voxel_size)
+	var pivot_offset := VariantUtils.vector3_from_value(pivot_variant.get("offset", Vector3.ZERO), Vector3.ZERO)
+	var push := _pack_results_to_world_push(record_count, rotation_count, grid_origin, safe_voxel_size, pivot_offset)
+	var groups := dispatch_groups_1d(record_count, RESULTS_TO_WORLD_LOCAL_SIZE)
+	var cl := begin_compute_list()
+	if cl < 0:
+		dispose()
+		return _results_to_world_gpu_blocked("placement_output_world_compute_list_begin_failed", record_count)
+	_gpu_dispatch_pipeline_sets(cl, pipeline, [set0], push, groups)
+	end_compute_list()
+	submit_and_sync(true)
+
+	var out_bytes := _rd.buffer_get_data(output_buffer, 0, record_count * WORLD_RESULT_STRIDE_BYTES)
+	dispose()
+	if out_bytes.size() != record_count * WORLD_RESULT_STRIDE_BYTES:
+		return _results_to_world_gpu_blocked("placement_output_world_readback_failed", record_count)
+
+	var world_results := _decode_world_result_bytes(out_bytes, results, pivot_variant, record_count)
+	return {
+		"ok": true,
+		"reason": "ok",
+		"gpu_first": true,
+		"cpu_fallback": false,
+		"record_count": record_count,
+		"world_result_count": world_results.size(),
+		"input_format": "placement_result_vec4x4",
+		"output_format": "world_result_vec4x4",
+		"input_stride_bytes": PLACEMENT_RESULT_STRIDE_BYTES,
+		"output_stride_bytes": WORLD_RESULT_STRIDE_BYTES,
+		"local_size_x": RESULTS_TO_WORLD_LOCAL_SIZE,
+		"dispatch_groups": groups,
+		"world_result_bytes": out_bytes,
+		"world_results": world_results,
+		"readback_source": "placement_results_to_world_compute",
+	}
+
+
+static func _results_to_world_gpu_blocked(reason: String, record_count: int = 0) -> Dictionary:
+	return {
+		"ok": false,
+		"reason": reason,
+		"gpu_first": true,
+		"cpu_fallback": false,
+		"record_count": record_count,
+		"world_result_count": 0,
+		"world_results": [],
+		"readback_source": "none",
+	}
+
+
+static func _pack_placement_result_records(results: Array[Dictionary]) -> PackedByteArray:
+	var bytes := PackedByteArray()
+	bytes.resize(results.size() * PLACEMENT_RESULT_STRIDE_BYTES)
+	for i in range(results.size()):
+		var r: Dictionary = results[i]
+		var base := i * PLACEMENT_RESULT_STRIDE_BYTES
+		var origin := VoxelGeneral.vector3i_from_value(r.get("voxel_origin", Vector3i.ZERO), Vector3i.ZERO)
+		bytes.encode_float(base + 0, float(origin.x))
+		bytes.encode_float(base + 4, float(origin.y))
+		bytes.encode_float(base + 8, float(origin.z))
+		bytes.encode_float(base + 12, float(r.get("score", 0.0)))
+		bytes.encode_float(base + 16, float(r.get("tile_id", 0)))
+		bytes.encode_float(base + 20, float(r.get("asset_index", 0)))
+		bytes.encode_float(base + 24, float(r.get("rotation_index", 0)))
+		bytes.encode_float(base + 28, float(r.get("scale_index", 0)))
+		bytes.encode_float(base + 32, float(r.get("support_ratio", 0.0)))
+		bytes.encode_float(base + 36, float(r.get("solid_collision", 0.0)))
+		bytes.encode_float(base + 40, float(r.get("complexity_overlap", 0.0)))
+		bytes.encode_float(base + 44, float(r.get("clearance_overlap", 0.0)))
+		bytes.encode_float(base + 48, float(r.get("ignored_sample", 0.0)))
+		bytes.encode_float(base + 52, 1.0 if bool(r.get("valid", false)) else 0.0)
+		bytes.encode_float(base + 56, float(r.get("support_hit", 0.0)))
+		bytes.encode_float(base + 60, float(r.get("support_total", 0.0)))
+	return bytes
+
+
+## 委托给 PlacementResultCodec（与 writeback 共享的 results→world push 布局）。
+static func _pack_results_to_world_push(
+	record_count: int,
+	rotation_count: int,
+	grid_origin: Vector3,
+	voxel_size: Vector3,
+	pivot_offset: Vector3
+) -> PackedByteArray:
+	return PlacementResultCodec.pack_results_to_world_push(record_count, rotation_count, grid_origin, voxel_size, pivot_offset)
+
+
+static func _decode_world_result_bytes(
+	bytes: PackedByteArray,
+	source_results: Array[Dictionary],
+	pivot_variant: Dictionary,
+	record_count: int
 ) -> Array[Dictionary]:
 	var world_results: Array[Dictionary] = []
-	for r in results:
-		if not bool(r.get("valid", false)):
+	var available_bytes := mini(bytes.size(), record_count * WORLD_RESULT_STRIDE_BYTES)
+	available_bytes -= available_bytes % WORLD_RESULT_STRIDE_BYTES
+	var available := mini(record_count, int(available_bytes / WORLD_RESULT_STRIDE_BYTES))
+	var pivot_offset := VariantUtils.vector3_from_value(pivot_variant.get("offset", Vector3.ZERO), Vector3.ZERO)
+	for i in range(available):
+		var base := i * WORLD_RESULT_STRIDE_BYTES
+		var valid := bytes.decode_float(base + 52) > 0.5
+		if not valid:
 			continue
-		var origin: Vector3i = r.get("voxel_origin", Vector3i.ZERO)
-		var rot_idx := int(r.get("rotation_index", 0))
-		var scale_idx := int(r.get("scale_index", 0))
-		var world_pos := VoxelGeneral.voxel_to_world(origin, grid_origin, voxel_size)
-		var yaw := float(rot_idx) * 360.0 / float(maxi(rotation_count, 1))
-		var pivot_offset := _vector3_from_value(pivot_variant.get("offset", Vector3.ZERO), Vector3.ZERO)
-		var pivot_world_offset := pivot_offset.rotated(Vector3.UP, deg_to_rad(yaw))
-		var instance_pos := world_pos - pivot_world_offset
+		var source: Dictionary = source_results[i]
+		var yaw := bytes.decode_float(base + 28)
 		world_results.append({
-			"position": instance_pos,
-			"anchor_position": world_pos,
+			"position": Vector3(
+				bytes.decode_float(base + 0),
+				bytes.decode_float(base + 4),
+				bytes.decode_float(base + 8)
+			),
+			"anchor_position": Vector3(
+				bytes.decode_float(base + 16),
+				bytes.decode_float(base + 20),
+				bytes.decode_float(base + 24)
+			),
 			"pivot_variant": str(pivot_variant.get("name", "bottom")),
 			"pivot_offset": pivot_offset,
 			"rotation_degrees": Vector3(0.0, yaw, 0.0),
 			"rotation_mode": "Y",
 			"scale": Vector3.ONE,
-			"score": float(r.get("score", 0.0)),
-			"voxel_origin": origin,
-			"rotation_index": rot_idx,
-			"scale_index": scale_idx,
-			"asset_index": int(r.get("asset_index", 0)),
-			"support_ratio": float(r.get("support_ratio", 0.0)),
-			"solid_collision": float(r.get("solid_collision", 0.0)),
-			"complexity_overlap": float(r.get("complexity_overlap", 0.0)),
-			"clearance_overlap": float(r.get("clearance_overlap", 0.0)),
-			"ignored_sample": float(r.get("ignored_sample", 0.0)),
+			"score": bytes.decode_float(base + 12),
+			"voxel_origin": VoxelGeneral.vector3i_from_value(source.get("voxel_origin", Vector3i.ZERO), Vector3i.ZERO),
+			"rotation_index": int(source.get("rotation_index", 0)),
+			"scale_index": int(roundf(bytes.decode_float(base + 60))),
+			"asset_index": int(roundf(bytes.decode_float(base + 56))),
+			"support_ratio": bytes.decode_float(base + 32),
+			"solid_collision": bytes.decode_float(base + 36),
+			"complexity_overlap": bytes.decode_float(base + 40),
+			"clearance_overlap": bytes.decode_float(base + 44),
+			"ignored_sample": bytes.decode_float(base + 48),
 		})
 	return world_results
 

@@ -20,10 +20,7 @@ func _run() -> void:
 	print("[SHOT] scene instanced: ", inst.name)
 
 	# Wait for deferred terrain setup and viewport frames to settle.
-	for i in range(40):
-		await process_frame
-	RenderingServer.force_draw(true)
-	await process_frame
+	await ShotUtils.settle_frames(self, 40)
 
 	var checks := await _capture_and_check(inst)
 	quit(0 if checks else 1)
@@ -53,9 +50,7 @@ func _capture_and_check(inst: Node) -> bool:
 	if terrain_node != null:
 		terrain_node.visible = false
 		print("[SHOT] terrain hidden for framing")
-	RenderingServer.force_draw(true)
-	await process_frame
-	await process_frame
+	await ShotUtils.settle_frames(self, 0, 2)
 
 	# 截图 1: 默认俯视（无调试）
 	ok = _shot("01_default") and ok
@@ -102,8 +97,7 @@ func _capture_and_check(inst: Node) -> bool:
 	var terrain2 := inst.find_child("Terrain", true, false) as Node3D
 	if terrain2 != null:
 		terrain2.visible = false
-	RenderingServer.force_draw(true)
-	await process_frame
+	await ShotUtils.settle_frames(self, 0)
 	ok = _shot("02_after_contract") and ok
 
 	# 激活全部 mesh debug 显示：探针 + buffer info
@@ -117,10 +111,7 @@ func _capture_and_check(inst: Node) -> bool:
 	var terrain3 := inst.find_child("Terrain", true, false) as Node3D
 	if terrain3 != null:
 		terrain3.visible = false
-	for i in range(10):
-		await process_frame
-	RenderingServer.force_draw(true)
-	await process_frame
+	await ShotUtils.settle_frames(self, 10)
 
 	# 截图 3: mesh debug 全显示
 	ok = _shot("03_mesh_debug_all") and ok

@@ -6,6 +6,8 @@ const VP_SIZE := Vector2i(1152, 648)
 const MIN_PAINT_DIFF := 0.002
 const MIN_MODE_DIFF := 0.0005
 const ShotUtils := preload("res://scripts/utils/shot_utils.gd")
+const InputSim := preload("res://scripts/utils/input_sim.gd")
+const DemoUI := preload("res://scripts/utils/demo_ui.gd")
 
 var _vp: SubViewport
 var _demo: Node
@@ -41,7 +43,7 @@ func _run() -> void:
 	print("[BRUSH_SHOT] scene instanced: ", _demo.name)
 
 	await _settle(50)
-	_camera = ShotUtils.find_camera_recursive(_demo)
+	_camera = DemoUI.find_any_camera(_demo, false, false)
 	if _camera == null:
 		print("[BRUSH_SHOT] FAIL camera missing")
 		quit(1)
@@ -123,19 +125,11 @@ func _trigger_brush_paint() -> bool:
 	print("[BRUSH_SHOT] projected paint center voxel=", center, " screen=", screen_pos)
 
 	var before_count := int((_demo.call("get_brush_state") as Dictionary).get("brush_voxel_count", 0))
-	var down := InputEventMouseButton.new()
-	down.button_index = MOUSE_BUTTON_LEFT
-	down.pressed = true
-	down.position = screen_pos
-	down.global_position = screen_pos
+	var down := InputSim.make_mouse_button(screen_pos, MOUSE_BUTTON_LEFT, true)
 	_demo.call("_unhandled_input", down)
 	await _settle(6)
 
-	var up := InputEventMouseButton.new()
-	up.button_index = MOUSE_BUTTON_LEFT
-	up.pressed = false
-	up.position = screen_pos
-	up.global_position = screen_pos
+	var up := InputSim.make_mouse_button(screen_pos, MOUSE_BUTTON_LEFT, false)
 	_demo.call("_unhandled_input", up)
 	await _settle(10)
 
@@ -153,11 +147,7 @@ func _trigger_brush_paint() -> bool:
 
 
 func _switch_mode(keycode: Key, expected_mode: int, label: String) -> bool:
-	var ev := InputEventKey.new()
-	ev.keycode = keycode
-	ev.physical_keycode = keycode
-	ev.shift_pressed = true
-	ev.pressed = true
+	var ev := InputSim.make_key(keycode, true)
 	_demo.call("_unhandled_input", ev)
 	await _settle(12)
 	var actual := int(_demo.get("_brush_display_mode"))
@@ -169,10 +159,7 @@ func _switch_mode(keycode: Key, expected_mode: int, label: String) -> bool:
 
 
 func _settle(frames: int = 8) -> void:
-	for i in range(frames):
-		await process_frame
-	RenderingServer.force_draw(true)
-	await process_frame
+	await ShotUtils.settle_frames(self, frames)
 
 
 func _shot(tag: String) -> Dictionary:

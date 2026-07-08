@@ -1,6 +1,7 @@
 extends SceneTree
 
 const SHADER_DIR := "res://shaders"
+const TestUtils := preload("res://scripts/utils/test_utils.gd")
 
 
 func _init() -> void:
@@ -32,24 +33,7 @@ func _init() -> void:
 
 
 func _collect_shader_paths() -> PackedStringArray:
-	var paths := PackedStringArray()
-	var dir := DirAccess.open(SHADER_DIR)
-	if dir == null:
-		push_error("[ShaderCompile] missing shader dir: %s" % SHADER_DIR)
-		return paths
-
-	dir.list_dir_begin()
-	while true:
-		var name := dir.get_next()
-		if name.is_empty():
-			break
-		if dir.current_is_dir():
-			continue
-		if name.ends_with(".glsl"):
-			paths.append("%s/%s" % [SHADER_DIR, name])
-	dir.list_dir_end()
-	paths.sort()
-	return paths
+	return TestUtils.collect_files(SHADER_DIR, ".glsl", [], "[ShaderCompile] missing shader dir")
 
 
 func _compile_shader(rd: RenderingDevice, path: String) -> bool:

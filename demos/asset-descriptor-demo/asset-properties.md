@@ -6,11 +6,11 @@
 
 ![AutoAssetFactory relationships](diagrams/autoassetfactory_relationships.svg)
 
-本文是资产字段、descriptor 入口、runtime write record 和 metadata 边界的速查。`AssetDescriptor` 的统一定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)；源码已在 export 字段旁维护逐项含义，本页只写跨层契约和归属边界。
+本文是资产字段、descriptor 入口、runtime write record 和 metadata 边界的速查。`AssetDescriptor` 的统一定义见 [`asset-descriptor.md`](asset-descriptor.md)；源码已在 export 字段旁维护逐项含义，本页只写跨层契约和归属边界。
 
 ## 核心规则
 
-- [`AssetDescriptor`](auto-voxel-descriptor.md) 是所有资产种类默认体素语义的 canonical source；`AutoVoxelProfile` 只作为已有资产 / 导入 preset fallback 进入同一 shared-field 归一化路径。
+- [`AssetDescriptor`](asset-descriptor.md) 是所有资产种类默认体素语义的 canonical source；`AutoVoxelProfile` 只作为已有资产 / 导入 preset fallback 进入同一 shared-field 归一化路径。
 - `AssetDescriptor.collision` 是权威字段；新 config、descriptor record 和 shared fields 只读写 `collision`。
 - `SharedPropertyType.SHARED_FIELD_KEYS == ["color", "complexity", "collision"]`。
 - `channel` 不进入共享语义。
@@ -26,7 +26,7 @@
 | 职责 | 说明 asset defaults、descriptor-backed getter、shared fields、`ISWS` 和 metadata 的字段归属。 |
 | 输入 | `.tres` / `.tscn` 资产、脚手架 JSON、Inspector config、`AutoVoxelProfile` fallback。 |
 | 输出 | descriptor-backed shared fields、runtime `ISWS` record、metadata handle、committed `SceneVoxel` accepted fields。 |
-| 生命周期 | author / scaffold -> descriptor 或 descriptor-backed asset 保存 -> `AutoObject` 读取 descriptor -> 构造 `ISWS` -> source write -> `blend_scene_voxels()` 发布 committed `SceneVoxel`。 |
+| 生命周期 | author / scaffold -> descriptor 或 descriptor-backed asset 保存 -> `AutoObject` 读取 descriptor -> 构造 `ISWS` -> `apply_voxel_write_spec()` 盖章 -> `commit_scene_voxels()` 发布 committed `SceneVoxel`（stamp-only 提交）。 |
 | Source of truth | 资产默认值在 `AssetDescriptor`；shared schema 在 `SharedPropertyType`；committed runtime read model 在 `SceneVoxelCommitter`。 |
 | Placement 边界 | placement 读取 descriptor-backed asset defs、collision footprint、candidate regions 和 `ISWS`，但不定义资产默认字段，也不把 candidate regions 当作 committed `SceneVoxel`。 |
 | Core runtime 边界 | `SceneVoxel` source / commit / resident buffers 由 `scene-voxel-field-system.md` 维护；本文只维护资产字段到 runtime record 的交接。 |
@@ -36,14 +36,14 @@
 
 | 类型 | 职责 | 文件 |
 | --- | --- | --- |
-| `AssetDescriptor` | 所有资产种类的默认语义 descriptor；字段定义见 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md) | `scripts/auto_voxel_descriptor.gd` |
+| `AssetDescriptor` | 所有资产种类的默认语义 descriptor；字段定义见 [`asset-descriptor.md`](asset-descriptor.md) | `scripts/asset_descriptor.gd` |
 | `AutoObject` | 运行时节点、实例身份、descriptor 入口、placement helper、legacy-named `voxel_write_spec` / `ISWS` 构造 | `scripts/auto_object.gd` |
 | `SharedPropertyType` | `color` / `complexity` / `collision` 的归一化、record 和 `SceneVoxel` 传播 | `scripts/shared_property_type.gd` |
 | `AutoAssetFactory` | 脚手架和导入 helper；创建 descriptor / profile fallback / descriptor-backed asset；通过当前 helper 输出 `ISWS` record | `scripts/auto_asset_factory.gd` |
 
 ## Descriptor 字段
 
-Descriptor 字段、归一化入口和 authoring 规则统一维护在 [`auto-voxel-descriptor.md`](auto-voxel-descriptor.md)。本页只保留跨层交接：descriptor 输出 shared fields / profile payload；`AutoObject`、metadata、`ISWS`、runtime profile 和 committed `SceneVoxel` 都不能反向成为资产默认语义来源。
+Descriptor 字段、归一化入口和 authoring 规则统一维护在 [`asset-descriptor.md`](asset-descriptor.md)。本页只保留跨层交接：descriptor 输出 shared fields / profile payload；`AutoObject`、metadata、`ISWS`、runtime profile 和 committed `SceneVoxel` 都不能反向成为资产默认语义来源。
 
 ## AutoObject 边界
 
@@ -156,7 +156,7 @@ AssetDescriptor / AutoVoxelProfile
   -> committed SceneVoxel
 ```
 
-`AutoObject.make_profile_voxel_write_spec()` 会先把 profile / descriptor-backed shared fields 写入 record，再追加实例上下文和 source 分类。`channel` 可作为 object 或 vegetation placement 的 write context 出现在 record 中，但不因此变成 shared field。prefilter 传入的 candidate regions 只限制 placement 搜索范围；只有 source write 和 `blend_scene_voxels()` 才会发布 committed `SceneVoxel`。
+`AutoObject.make_profile_voxel_write_spec()` 会先把 profile / descriptor-backed shared fields 写入 record，再追加实例上下文和 source 分类。`channel` 可作为 object 或 vegetation placement 的 write context 出现在 record 中，但不因此变成 shared field。prefilter 传入的 candidate regions 只限制 placement 搜索范围；只有 stamp（`apply_voxel_write_spec()` / VPG state-chain stamp）和 `commit_scene_voxels()` 才会发布 committed `SceneVoxel`。
 
 committed `SceneVoxel` 的 accepted fields 是 `complexity`、`color`、`collision`，可选 `auto_mix`。`channel` 只作为 write context 输入，不进入 committed read model；查询缓存、占用状态、source 类型、commit tick 和 record id 属于 SV resident state、source/debug buffers、object-ref index 或 debug view。
 
@@ -164,7 +164,7 @@ committed `SceneVoxel` 的 accepted fields 是 `complexity`、`color`、`collisi
 
 Metadata 只保留索引、回查和调试入口。当前 `AutoObject._sync_auto_metadata()` 写入 `auto_id`、`auto_instance_id` / `instance_id` 和 `instance_mesh_id`；`set_voxel_write_spec()` / `set_instance_stamp_write_spec()` 同时通过 canonical metadata key `instance_stamp_write_spec` 和 legacy key `voxel_write_spec` 暴露同一个 `ISWS` handle。
 
-`auto_source`、`object_type`、`object_subtype` 等来源 / 分组字段可以存在于 `ISWS` record 或 debug record 中，但不要新增一套 metadata 语义镜像。新增资产语义字段时优先进入 [`AssetDescriptor`](auto-voxel-descriptor.md)。
+`auto_source`、`object_type`、`object_subtype` 等来源 / 分组字段可以存在于 `ISWS` record 或 debug record 中，但不要新增一套 metadata 语义镜像。新增资产语义字段时优先进入 [`AssetDescriptor`](asset-descriptor.md)。
 
 `object_type` 保留为 placement、same-type exclusion、GPU runtime record 和 debug record 的粗粒度类型字段。已有 `object_subtype` 只作为 compatibility / debug metadata；新 schema 不新增 `object_subtype`，更细的资产差异应进入 `AssetDescriptor` / runtime `profile_id`。
 
@@ -193,7 +193,7 @@ shader / SV 通过 profile_id 采样资产 profile
 
 ## 相关文档
 
-- `auto-voxel-descriptor.md`：`AssetDescriptor` 的统一定义、字段分组和 authoring 规则。
+- `asset-descriptor.md`：`AssetDescriptor` 的统一定义、字段分组和 authoring 规则。
 - `meshfill-framework.md`：框架数据归属和主流程。
 - `scene-voxel-field-system.md`：`instance_stamp_write_spec` / `ISWS`、source voxel、committed `SceneVoxel` 和 SV resident collision field。
 - `asset-semantic-probes.md`：descriptor-backed semantic probes。
@@ -206,4 +206,4 @@ shader / SV 通过 profile_id 采样资产 profile
 
 | 场景 | 说明 | Godot 场景 |
 | --- | --- | --- |
-| [Auto Asset Scaffolding](../../demos/modules/auto-asset-scaffolding/auto-asset-scaffolding.md) | 测试方法与验收标准 | [`../../demos/modules/auto-asset-scaffolding/auto-asset-scaffolding.tscn`](../../demos/modules/auto-asset-scaffolding/auto-asset-scaffolding.tscn) |
+| [AssetDescriptor 统一 Demo](res://demos/asset-descriptor-demo/asset-descriptor.md) | 测试方法与验收标准 | [`asset-descriptor-demo.tscn`](res://demos/asset-descriptor-demo/asset-descriptor-demo.tscn) |

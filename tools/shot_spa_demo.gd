@@ -35,11 +35,7 @@ func _run() -> void:
 		cam.look_at(Vector3.ZERO, Vector3.UP)
 		cam.fov = 55.0
 		cam.far = 3000.0
-	for i in range(10):
-		await process_frame
-	RenderingServer.force_draw(true)
-	await process_frame
-	await process_frame
+	await ShotUtils.settle_frames(self, 10, 2)
 
 	var shot1 := ShotUtils.save_viewport_png(root, SHOT_DIR + "/spa_cam_default.png", true)
 	if bool(shot1.get("ok", false)) and not bool(shot1.get("skipped", false)):
@@ -50,11 +46,7 @@ func _run() -> void:
 		cam.global_position = Vector3(-half * 0.3, half * 0.6, half * 0.8)
 		cam.look_at(Vector3(0.0, 20.0, 0.0), Vector3.UP)
 		cam.fov = 60.0
-	for i in range(10):
-		await process_frame
-	RenderingServer.force_draw(true)
-	await process_frame
-	await process_frame
+	await ShotUtils.settle_frames(self, 10, 2)
 
 	var shot2 := ShotUtils.save_viewport_png(root, SHOT_DIR + "/spa_cam_spa.png", true)
 	if bool(shot2.get("ok", false)) and not bool(shot2.get("skipped", false)):
@@ -64,11 +56,7 @@ func _run() -> void:
 		cam.global_position = Vector3(0.0, 600.0, 10.0)
 		cam.look_at(Vector3.ZERO, Vector3.UP)
 		cam.fov = 55.0
-	for i in range(10):
-		await process_frame
-	RenderingServer.force_draw(true)
-	await process_frame
-	await process_frame
+	await ShotUtils.settle_frames(self, 10, 2)
 
 	var shot3 := ShotUtils.save_viewport_png(root, SHOT_DIR + "/spa_cam_topdown.png", true)
 	if bool(shot3.get("ok", false)) and not bool(shot3.get("skipped", false)):

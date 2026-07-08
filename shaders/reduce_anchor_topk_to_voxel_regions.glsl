@@ -27,9 +27,14 @@ layout(set = 0, binding = 2, std430) restrict buffer VoxelRegionVotes {
     float voxel_sparse_votes[];
 };
 
+// GPU-resident anchor count (written by collect_sv_anchors, no CPU readback).
+layout(set = 0, binding = 3, std430) restrict readonly buffer AnchorCountBuf {
+    uint anchor_count_dyn[];
+};
+
 layout(push_constant, std430) uniform Params {
     ivec4 tile_grid_size_pad;   // xyz = tile grid dims, w = tile_count
-    uint  anchor_count;
+    uint  _unused_anchor_count; // anchor count now read from AnchorCountBuf
     uint  asset_count;
     uint  topk;
     uint  _pad0;
@@ -46,7 +51,7 @@ int tile_id_from_voxel(ivec3 p) {
 
 void main() {
     uint tile_count = uint(tile_grid_size_pad.w);
-    uint ac = min(anchor_count, 100000u);
+    uint ac = min(anchor_count_dyn[0], 100000u);
     uint k_max = min(topk, 8u);
     uint a_count = min(asset_count, 256u);
 

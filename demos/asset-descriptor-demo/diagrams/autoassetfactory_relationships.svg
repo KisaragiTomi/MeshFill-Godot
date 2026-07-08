@@ -142,7 +142,7 @@
     <g id="sv-owned-path">
     <rect class="node" x="1225" y="575" width="265" height="110" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
     <text class="node-title" x="1243" y="603">SV-owned path</text>
-    <text class="small"><tspan x="1243" y="625">source write</tspan><tspan x="1243" y="642">blend_scene_voxels()</tspan><tspan x="1243" y="659">resident scene/collision fields</tspan></text>
+    <text class="small"><tspan x="1243" y="625">source write</tspan><tspan x="1243" y="642">commit_scene_voxels()</tspan><tspan x="1243" y="659">resident scene/collision fields</tspan></text>
     </g>
   </g>
   <g>

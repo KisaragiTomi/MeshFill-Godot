@@ -10,13 +10,13 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
 const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const TargetSceneVoxelGeneratorScript := preload("res://scripts/target_scene_voxel_generator.gd")
-const VoxelFieldDisplayGPU := preload("res://scripts/voxel_field_display_gpu.gd")
+const VoxelFieldDisplayGPU := preload("res://scripts/utils/voxel_field_display_gpu.gd")
 const AutoObject := preload("res://scripts/auto_object.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
-const VoxelDisplay := preload("res://scripts/voxel_display.gd")
+const VoxelDisplay := preload("res://scripts/utils/voxel_display.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const DemoUI := preload("res://scripts/utils/demo_ui.gd")
-const SceneVoxelFixture := preload("res://scripts/utils/scene_voxel_fixture.gd")
+const SceneVoxelFixture := preload("res://scripts/utils/voxel_fixtures.gd")
 
 const TILE_SIZE := 8
 
@@ -286,11 +286,27 @@ func _run_collection() -> void:
 		_collision_field,
 		TILE_SIZE
 	)
+	# GPU-resident-only：目标场以自建常驻缓冲交接给 prefilter（CPU 字节上传路径已删除）。
+	var rd: RenderingDevice = _spa.get_rendering_device()
+	if rd == null:
+		_last_reason = "missing_rendering_device"
+		return
+	var target_field_bytes := _target_field.to_byte_array()
+	var target_field_buf := rd.storage_buffer_create(target_field_bytes.size(), target_field_bytes)
+	# run_autoobject_prefilter 的 dirty_tile_ids 形参是 Array[int]；传无类型 [] 会在
+	# 运行时报"元素类型不一致"并中断 _run_collection（锚点列表建不起来 → 点选无锚点可命中）。
+	var no_dirty_tiles: Array[int] = []
 	var result: Dictionary = _spa.run_autoobject_prefilter(
 		sv,
-		[],
-		_target_field,
-		{"debug_readback_topk": true},
+		no_dirty_tiles,
+		{
+			"target_field_buffer": target_field_buf,
+			"rendering_device": rd,
+			"target_field_byte_count": target_field_bytes.size(),
+			"resident_target_read_buffer_handoff": true,
+			"resident_target_read_buffer_owner": "sv_anchor_collection_demo",
+			"debug_readback_topk": true,
+		},
 		RID(),
 		{
 			"max_complexity_field": max_complexity_field,
@@ -298,8 +314,10 @@ func _run_collection() -> void:
 			"min_support": min_support,
 			"min_target_interest": min_target_interest,
 			"min_prefilter_score": 0.0,
+			"debug_read_anchors": true,  # this demo visualizes anchors, so opt into the readback
 		}
 	)
+	rd.free_rid(target_field_buf)
 	_last_reason = str(result.get("prefilter_reason", result.get("reason", "")))
 	var anchors: Array = result.get("anchors", [])
 	for anchor in anchors:
@@ -520,26 +538,28 @@ func _asset_name_by_id(asset_id: int) -> String:
 	return "?"
 
 
-func _unhandled_input(event: InputEvent) -> void:
-	if not Engine.is_editor_hint():
-		return
+## MeshFill 插件通过 _forward_3d_gui_input 把编辑器视口事件转发到这里。
+## viewport_camera 是用户实际点击所用的视口相机；不能用 get_viewport().get_camera_3d()，
+## 那在编辑器里拿到的是运行时相机，射线会和光标对不上。返回 true 表示已消费该事件。
+## （旧实现用 _unhandled_input，但编辑场景里的 @tool 节点根本收不到，点击一直是死的。）
+func _editor_viewport_input(viewport_camera: Camera3D, event: InputEvent) -> bool:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-			_try_pick_anchor(mb.position)
-			get_viewport().set_input_as_handled()
-			return
+			_try_pick_anchor(viewport_camera, mb.position)
+			return true
+		return false
 	if not event is InputEventKey:
-		return
+		return false
 	var ke := event as InputEventKey
 	if not ke.pressed or ke.echo:
-		return
+		return false
 	match ke.keycode:
 		KEY_G:
 			if ke.shift_pressed:
 				_rerun()
 			else:
-				return
+				return false
 		KEY_1: _show_layer(LAYER_SUPPORT)
 		KEY_2: _show_layer(LAYER_DEMAND)
 		KEY_3: _show_layer(LAYER_CANDIDATE)
@@ -564,12 +584,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			_selected_anchor_pos = Vector3i(-1, -1, -1)
 			_show_layer(_current_layer)
 		_:
-			return
-	get_viewport().set_input_as_handled()
+			return false
+	return true
 
 
-func _try_pick_anchor(screen_pos: Vector2) -> void:
-	var cam := get_viewport().get_camera_3d()
+func _try_pick_anchor(cam: Camera3D, screen_pos: Vector2) -> void:
 	if cam == null:
 		return
 	var ray_origin := cam.project_ray_origin(screen_pos)

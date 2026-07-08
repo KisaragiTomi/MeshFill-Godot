@@ -210,40 +210,12 @@ static func is_collision_helper_node(node: Node) -> bool:
 		or node_name.begins_with("MCDCX_")
 
 
-static func transformed_aabb(aabb: AABB, transform: Transform3D) -> AABB:
-	var points := [
-		aabb.position,
-		aabb.position + Vector3(aabb.size.x, 0.0, 0.0),
-		aabb.position + Vector3(0.0, aabb.size.y, 0.0),
-		aabb.position + Vector3(0.0, 0.0, aabb.size.z),
-		aabb.position + Vector3(aabb.size.x, aabb.size.y, 0.0),
-		aabb.position + Vector3(aabb.size.x, 0.0, aabb.size.z),
-		aabb.position + Vector3(0.0, aabb.size.y, aabb.size.z),
-		aabb.position + aabb.size,
-	]
-	var first: Vector3 = transform * points[0]
-	var min_p := first
-	var max_p := first
-	for i in range(1, points.size()):
-		var p: Vector3 = transform * points[i]
-		min_p.x = minf(min_p.x, p.x)
-		min_p.y = minf(min_p.y, p.y)
-		min_p.z = minf(min_p.z, p.z)
-		max_p.x = maxf(max_p.x, p.x)
-		max_p.y = maxf(max_p.y, p.y)
-		max_p.z = maxf(max_p.z, p.z)
-	return AABB(min_p, max_p - min_p)
-
-
-static func aabb_longest_axis(aabb: AABB) -> float:
-	return maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
-
-
 # Bake xform into mesh vertex positions (and normals) so the caller can set
 # MeshInstance3D.transform = IDENTITY while the mesh displays identically.
-# Returns source unchanged when xform is identity. Ignores tangents (not needed
-# for geo display) and preserves surface materials and primitive types.
-static func bake_mesh_xform(source: Mesh, xform: Transform3D) -> Mesh:
+# Returns source unchanged when xform is identity. Preserves surface materials
+# and primitive types. bake_tangents=true 时同时变换切线(运行时法线贴图路径需要,
+# 原 AutoAssetFactory._bake_mesh_transform 行为);默认 false 走 demo 显示的轻量路径。
+static func bake_mesh_xform(source: Mesh, xform: Transform3D, bake_tangents: bool = false) -> Mesh:
 	if source == null:
 		return null
 	if xform.is_equal_approx(Transform3D.IDENTITY):
@@ -263,6 +235,21 @@ static func bake_mesh_xform(source: Mesh, xform: Transform3D) -> Mesh:
 			for i in range(normals.size()):
 				normals[i] = (normal_basis * normals[i]).normalized()
 			arrays[Mesh.ARRAY_NORMAL] = normals
+		if bake_tangents and arrays[Mesh.ARRAY_TANGENT] != null:
+			var tangents: PackedFloat32Array = arrays[Mesh.ARRAY_TANGENT]
+			if tangents.size() > 0:
+				var baked_tangents := tangents.duplicate()
+				for tangent_index in range(0, tangents.size(), 4):
+					var tangent := Vector3(
+						tangents[tangent_index],
+						tangents[tangent_index + 1],
+						tangents[tangent_index + 2]
+					)
+					tangent = (normal_basis * tangent).normalized()
+					baked_tangents[tangent_index] = tangent.x
+					baked_tangents[tangent_index + 1] = tangent.y
+					baked_tangents[tangent_index + 2] = tangent.z
+				arrays[Mesh.ARRAY_TANGENT] = baked_tangents
 		result.add_surface_from_arrays(source.surface_get_primitive_type(surf_idx), arrays)
 		result.surface_set_material(surf_idx, source.surface_get_material(surf_idx))
 	return result
@@ -274,7 +261,7 @@ static func bake_mesh_xform(source: Mesh, xform: Transform3D) -> Mesh:
 static func base_pivot_xform(mesh: Mesh, mesh_transform: Transform3D) -> Transform3D:
 	if mesh == null:
 		return mesh_transform
-	var bounds := transformed_aabb(mesh.get_aabb(), mesh_transform)
+	var bounds := VoxelGeneral.transformed_aabb(mesh.get_aabb(), mesh_transform)
 	var shift := Vector3(
 		-(bounds.position.x + bounds.size.x * 0.5),
 		-bounds.position.y,

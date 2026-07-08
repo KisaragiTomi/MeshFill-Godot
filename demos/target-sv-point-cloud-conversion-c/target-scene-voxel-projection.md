@@ -18,7 +18,7 @@
 | --- | --- |
 | `asset_type` / `asset_group` | 资产类型属于 routing / placement 结果。 |
 | `placement_role` | role 应由 probe、projection 或 matcher 推断。 |
-| committed source metadata | `TargetSV_B` 不进入 `blend_scene_voxels()`。 |
+| committed source metadata | `TargetSV_B` 不进入 stamp-only 提交。 |
 
 当前实现通过 `target_scene_voxel.glsl` 生成 `TargetSV` / `TargetSV_B` raw buffers，支持持久化和 `target_completely` / `target_color` 解码。
 
@@ -41,7 +41,7 @@
 硬边界：
 
 - `TargetSV` / `BrushSV` / `TargetSV_B` 都不参与 committed `SceneVoxel` source write。
-- `TargetSV_B` 不进入 `blend_scene_voxels()`。
+- `TargetSV_B` 不进入 stamp-only 提交的 committed `SceneVoxel`。
 - `TargetSceneVoxel` guidance record 可作为 queryable metadata 保留，但会跳过 source buffers。
 - 当前 record builder 会为 `TargetSceneVoxel` 设置 `target_guidance_only = true`、`height_buffer_applied = false`、`collision_buffer_applied = false`。
 - 最终 `collision_field` 由 committed `SceneVoxel.collision` 与 terrain base collision 发布到 SV resident collision channel。
@@ -60,7 +60,7 @@ TargetSV + BrushSV
   -> BlendSV[tick] result feedback comparison
 ```
 
-当前 prefilter 和 physical score 只读取 `target_completely` 与 `target_color`。`score_voxel_tile.glsl` 不读取 projection cache，也不做 semantic rerank / MLP。结果级 feedback 是 placement / commit 之后的独立阶段：`SceneVoxelCommitter.score_blendsv_feedback_against_target()` 比较 `BlendSV[tick]` 与 `TargetSV_B` / `TargetSV`，不能写成 `score_voxel_tile.glsl` 的现行能力。
+当前 prefilter 和 physical score 只读取 `target_completely` 与 `target_color`。`score_voxel_tile.glsl` 不读取 projection cache，也不做 semantic rerank / MLP。结果级 feedback 是 placement / commit 之后的独立阶段：`ScenePlacementActor.score_blendsv_feedback_against_target()` 临时合成 `BlendSV` 并与 `TargetSV_B` / `TargetSV` 对比，不能写成 `score_voxel_tile.glsl` 的现行能力。
 
 ## Anchor 语义
 
@@ -85,7 +85,7 @@ AutoObject probe prefilter
   -> VoxelPlacementGenerator.run_multi_asset()
 ```
 
-候选区域必须偏向召回：GPU prefilter readback 会按 footprint、probe offset、context radius 和至少 1 voxel interpolation guard 扩张。footprint、support、collision、clearance 和 target fit 仍由 `score_voxel_tile.glsl` 精筛。
+候选区域必须偏向召回：GPU prefilter readback 会按 footprint、probe offset、context radius 和至少 1 voxel interpolation guard 扩张。footprint、collision、clearance 和 target fit 仍由 `score_voxel_tile.glsl` 精筛。
 
 ## Stamp 计划
 
@@ -163,7 +163,5 @@ Houdini / DCC
 
 | 场景 | 说明 | Godot 场景 |
 | --- | --- | --- |
-| [TargetSV 总览](../../demos/placement-target-scene-voxel-projection/placement-target-scene-voxel-projection.md) | 测试方法与验收标准 | [`../../demos/placement-target-scene-voxel-projection/placement-target-scene-voxel-projection.tscn`](../../demos/placement-target-scene-voxel-projection/placement-target-scene-voxel-projection.tscn) |
-| [Target Canvas Guidance](../../demos/modules/target-canvas-guidance/target-canvas-guidance.md) | 测试方法与验收标准 | [`../../demos/modules/target-canvas-guidance/target-canvas-guidance.tscn`](../../demos/modules/target-canvas-guidance/target-canvas-guidance.tscn) |
-| [Probe Prefilter Routing](../../demos/modules/probe-prefilter-routing/probe-prefilter-routing.md) | 测试方法与验收标准 | [`../../demos/modules/probe-prefilter-routing/probe-prefilter-routing.tscn`](../../demos/modules/probe-prefilter-routing/probe-prefilter-routing.tscn) |
-| [TargetSV Point Cloud Conversion](../../demos/target-sv-point-cloud-conversion/target-sv-point-cloud-conversion.md) | Houdini point-cloud `Cd` / `complex` / `collision` 转 TargetSV guidance buffer 的验收场景 | [`../../demos/target-sv-point-cloud-conversion/target-sv-point-cloud-conversion.tscn`](../../demos/target-sv-point-cloud-conversion/target-sv-point-cloud-conversion.tscn) |
+| [TargetSV Point Cloud Conversion](target-sv-point-cloud-conversion.md) | Houdini point-cloud `Cd` / `complex` / `collision` 转 TargetSV guidance buffer 的验收场景 | [`target-sv-point-cloud-conversion.tscn`](target-sv-point-cloud-conversion.tscn) |
+| [TargetSV Brush Overlay](targetsv-brush-overlay.md) | BrushSV 覆盖层显示与笔刷写入验收 | [`target-sv-point-cloud-conversion.tscn`](target-sv-point-cloud-conversion.tscn) |

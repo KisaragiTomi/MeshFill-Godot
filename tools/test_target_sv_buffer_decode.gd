@@ -1,48 +1,35 @@
-extends SceneTree
+extends "res://scripts/utils/scene_tree_test.gd"
 
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
-const AutoVoxelFixture := preload("res://scripts/utils/auto_voxel_fixture.gd")
-const TargetSVBufferFixture := preload("res://scripts/utils/target_sv_buffer_fixture.gd")
+const AutoVoxelFixture := preload("res://scripts/utils/voxel_fixtures.gd")
+const TargetSVBufferFixture := preload("res://scripts/utils/voxel_fixtures.gd")
 const TestUtils := preload("res://scripts/utils/test_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 const Q8_EPSILON := (1.0 / 255.0) + 0.001
 
 
 func _init() -> void:
-	var ok := true
-	ok = ok and _test_decode_target_read_buffers()
-	ok = ok and _test_decode_target_read_buffers_gpu_or_skip()
-	ok = ok and _test_decode_rejects_missing_buffers()
-	ok = ok and _test_vpg_accepts_prepacked_target_field()
-	ok = ok and _test_vpg_accepts_prepacked_target_color_rgba8()
-	ok = ok and _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads()
-	ok = ok and _test_scene_placement_actor_prefers_prepacked_target_bytes()
-	ok = ok and _test_scene_placement_actor_keeps_brush_sv_control_metadata_only()
-	ok = ok and _test_scene_placement_actor_exposes_mesh_descriptions()
-	ok = ok and _test_gpu_derive_target_packed_buffers_or_skip()
-	ok = ok and _test_gpu_derive_target_stats_only_or_skip()
-	ok = ok and _test_gpu_generated_occupancy_buffer_or_skip()
-
-	if ok:
-		print("[TargetSVBufferDecode] ALL TESTS PASSED")
-		quit(0)
-	else:
-		push_error("[TargetSVBufferDecode] SOME TESTS FAILED")
-		quit(1)
+	run_suite("TargetSVBufferDecode", [
+		_test_decode_target_read_buffers,
+		_test_decode_target_read_buffers_gpu_or_skip,
+		_test_decode_rejects_missing_buffers,
+		_test_vpg_accepts_prepacked_target_field,
+		_test_vpg_accepts_prepacked_target_color_rgba8,
+		_test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads,
+		_test_scene_placement_actor_prefers_prepacked_target_bytes,
+		_test_scene_placement_actor_keeps_brush_sv_control_metadata_only,
+		_test_scene_placement_actor_exposes_mesh_descriptions,
+		_test_gpu_derive_target_packed_buffers_or_skip,
+		_test_gpu_derive_target_stats_only_or_skip,
+		_test_gpu_generated_occupancy_buffer_or_skip,
+	], true)  # 保留原 `ok = ok and _test()` 的短路语义
 
 
 
 func _quantize_unorm8_value(value: float) -> float:
-	return float(clampi(int(round(clampf(value, 0.0, 1.0) * 255.0)), 0, 255)) / 255.0
-
-
-func _pack_rgba8_for_test(color: Color) -> int:
-	var r := int(round(clampf(color.r, 0.0, 1.0) * 255.0))
-	var g := int(round(clampf(color.g, 0.0, 1.0) * 255.0))
-	var b := int(round(clampf(color.b, 0.0, 1.0) * 255.0))
-	var a := int(round(clampf(color.a, 0.0, 1.0) * 255.0))
-	return ((r & 0xFF) << 24) | ((g & 0xFF) << 16) | ((b & 0xFF) << 8) | (a & 0xFF)
+	return float(BufferUtils.quantize_unorm8(value)) / 255.0
 
 
 func _close_q8(actual: float, expected: float) -> bool:
@@ -406,7 +393,7 @@ func _test_vpg_accepts_prepacked_target_color_rgba8() -> bool:
 	var prepacked := PackedByteArray()
 	prepacked.resize(voxel_count * 4 + 8)
 	for i in range(voxel_count):
-		prepacked.encode_u32(i * 4, VoxelPlacementGeneratorScript._pack_color_rgba8(colors[i]))
+		prepacked.encode_u32(i * 4, BufferUtils.pack_shader_rgba8_word(colors[i]))
 	prepacked.encode_u32(voxel_count * 4, 0x12345678)
 
 	var generator := VoxelPlacementGeneratorScript.new()
@@ -493,7 +480,7 @@ func _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads() ->
 	var color_bytes := PackedByteArray()
 	color_bytes.resize(voxel_count * 4)
 	for i in range(voxel_count):
-		color_bytes.encode_u32(i * 4, VoxelPlacementGeneratorScript._pack_color_rgba8(Color(0.1, 0.2, 0.3, 0.4)))
+		color_bytes.encode_u32(i * 4, BufferUtils.pack_shader_rgba8_word(Color(0.1, 0.2, 0.3, 0.4)))
 
 	var actor := ScenePlacementActorScript.new()
 	var target_buffers := actor.prepare_target_read_buffers_from_common_gpu({
@@ -563,7 +550,7 @@ func _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads() ->
 	}, voxel_count)
 	if bool(blocked.get("ready", true)) \
 			or not bool(blocked.get("contract_blocked", false)) \
-			or str(blocked.get("reason", "")) != "resident_target_read_buffer_rendering_device_mismatch_no_debug_or_legacy_bytes" \
+			or str(blocked.get("reason", "")) != "resident_target_read_buffer_rendering_device_mismatch_no_target_bytes_input" \
 			or bool(blocked.get("target_read_buffers_uploaded", true)) \
 			or bool(blocked.get("cpu_fallback", true)):
 		mismatch_generator.dispose()
@@ -643,7 +630,7 @@ func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 		return false
 
 	var expected_color := Color(0.5, 0.6, 0.7, 0.25)
-	var expected_rgba8 := VoxelPlacementGeneratorScript._pack_color_rgba8(expected_color)
+	var expected_rgba8 := BufferUtils.pack_shader_rgba8_word(expected_color)
 	var expected_color_bytes := PackedByteArray()
 	expected_color_bytes.resize(4)
 	expected_color_bytes.encode_u32(0, expected_rgba8)
@@ -672,9 +659,9 @@ func _test_gpu_derive_target_stats_only_or_skip() -> bool:
 	visual.resize(voxel_count * 4)
 	collision.resize(voxel_count)
 	for i in range(voxel_count):
-		visual.encode_u32(i * 4, _pack_rgba8_for_test(Color(0.0, 0.0, 0.0, 0.0)))
+		visual.encode_u32(i * 4, BufferUtils.pack_shader_rgba8_word(Color(0.0, 0.0, 0.0, 0.0)))
 		collision[i] = 0
-	visual.encode_u32(2 * 4, _pack_rgba8_for_test(Color(0.0, 0.0, 0.0, 0.4)))
+	visual.encode_u32(2 * 4, BufferUtils.pack_shader_rgba8_word(Color(0.0, 0.0, 0.0, 0.4)))
 	collision[5] = int(round(0.8 * 255.0))
 
 	var generator := TargetSceneVoxelGenerator.new()
@@ -813,7 +800,7 @@ func _test_gpu_generated_occupancy_buffer_or_skip() -> bool:
 		if absf(occupancy - maxf(complexity, collision)) > Q8_EPSILON:
 			push_error("  FAIL: GPU target field mismatch at %d: %.4f vs max(%.4f, %.4f)" % [i, occupancy, complexity, collision])
 			return false
-		var expected_rgba8 := VoxelPlacementGeneratorScript._pack_color_rgba8(color)
+		var expected_rgba8 := BufferUtils.pack_shader_rgba8_word(color)
 		var expected_color_bytes := PackedByteArray()
 		expected_color_bytes.resize(4)
 		expected_color_bytes.encode_u32(0, expected_rgba8)

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://p3eql1aou5kq"
+path="res://.godot/imported/prefilter_anchor_dispatch_finalize.glsl-3a4c47a2fe87387aecc4487ed2b6f4e8.res"
+
+[deps]
+
+source_file="res://shaders/prefilter_anchor_dispatch_finalize.glsl"
+dest_files=["res://.godot/imported/prefilter_anchor_dispatch_finalize.glsl-3a4c47a2fe87387aecc4487ed2b6f4e8.res"]
+
+[params]
+

@@ -45,10 +45,16 @@ layout(set = 0, binding = 5, std430) restrict writeonly buffer ScoresOut {
     float asset_scores[];
 };
 
+// GPU-resident anchor count (written by collect_sv_anchors, no CPU readback).
+// Replaces the former push-constant anchor_count so dispatch can be indirect.
+layout(set = 0, binding = 6, std430) restrict readonly buffer AnchorCountBuf {
+    uint anchor_count_dyn[];
+};
+
 layout(push_constant, std430) uniform Params {
     ivec4 grid_size_asset_count;  // xyz = grid dims, w = asset_count
     vec4  voxel_size_inv;         // xyz = 1.0 / voxel_size, w = unused
-    uint  anchor_count;
+    uint  _unused_anchor_count;   // anchor count now read from AnchorCountBuf
     uint  anchor_grid_x;
     float min_prefilter_score;
     float _pad0;
@@ -157,6 +163,7 @@ void main() {
     uint probe_lane  = gl_LocalInvocationID.y;  // 0..15
     uint asset_count = min(uint(grid_size_asset_count.w), MAX_ASSETS);
     uint asset_id    = asset_block * ASSET_LANES + asset_lane;
+    uint anchor_count = anchor_count_dyn[0];
 
     float lane_score  = 0.0;
 

@@ -146,9 +146,9 @@
     <text class="node-title" x="1303" y="188">Source stamp / SVBrush</text>
     <text class="small"><tspan x="1303" y="210">rebuilt from dirty tiles</tspan><tspan x="1303" y="227">AutoSceneVoxel + Brush intent</tspan><tspan x="1303" y="244">not direct SV update</tspan></text>
     </g>
-    <g id="blend_scene_voxels(tick)">
+    <g id="commit_scene_voxels(tick)">
     <rect class="node" x="1285" y="340" width="315" height="120" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
-    <text class="node-title" x="1303" y="368">blend_scene_voxels(tick)</text>
+    <text class="node-title" x="1303" y="368">commit_scene_voxels(tick)</text>
     <text class="small"><tspan x="1303" y="390">commit only after source changed</tspan><tspan x="1303" y="407">SceneVoxel payload</tspan><tspan x="1303" y="424">complexity / color / collision</tspan></text>
     </g>
     <g id="result-feedback">

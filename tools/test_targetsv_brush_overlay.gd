@@ -1,6 +1,6 @@
 extends SceneTree
 
-const VoxelDisplayScript := preload("res://scripts/voxel_display.gd")
+const VoxelDisplayScript := preload("res://scripts/utils/voxel_display.gd")
 
 const SCENE_PATH := "res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.tscn"
 const FLOATS_PER_INSTANCE := 16
@@ -69,7 +69,7 @@ func _test_scene_builds_guidance() -> bool:
 		push_error("  FAIL: scene does not instantiate")
 		return false
 	get_root().add_child(instance)
-	instance.call("_ready")
+	instance.call("rebuild", true)
 
 	var ok := true
 	var guidance := instance.get_node_or_null("GuidanceVoxels") as MultiMeshInstance3D

@@ -1,38 +1,31 @@
-extends SceneTree
+extends "res://scripts/utils/scene_tree_test.gd"
 
 const TestUtils := preload("res://scripts/utils/test_utils.gd")
 const DemoContractUtils := preload("res://scripts/utils/demo_contract_utils.gd")
 const CORE_DOC_DIR := "res://demos"  # archive: docs migrated into demos/ subdirs
 const DEMO_ROOTS := [
-	"res://demos/core-",
-	"res://demos/modules/",
+	"res://demos/",
 ]
 
 
 func _init() -> void:
-	var ok := true
 	var entries := []
-	ok = _collect_core_demo_entries(entries) and ok
-	ok = _test_demo_links_and_metadata(entries) and ok
-	ok = _test_demo_scene_scripts(entries) and ok
-	ok = _test_gpu_first_fixture_wording(entries) and ok
-	ok = _test_gpu_fixture_vulkan_validation() and ok
-	ok = _test_gpu_runtime_and_tile_deep_contracts() and ok
-	ok = _test_core_fixture_boundaries() and ok
-
-	if ok:
-		print("[CoreDemoContracts] ALL TESTS PASSED")
-		quit(0)
-	else:
-		push_error("[CoreDemoContracts] SOME TESTS FAILED")
-		quit(1)
+	run_suite("CoreDemoContracts", [
+		_collect_core_demo_entries.bind(entries),
+		_test_demo_links_and_metadata.bind(entries),
+		_test_demo_scene_scripts.bind(entries),
+		_test_gpu_first_fixture_wording.bind(entries),
+		_test_gpu_fixture_vulkan_validation,
+		_test_gpu_runtime_and_tile_deep_contracts,
+		_test_core_fixture_boundaries,
+	])
 
 
 func _collect_core_demo_entries(entries: Array) -> bool:
 	print("[CoreDemoContracts] collect_core_demo_entries...")
 	var docs := _list_core_docs()
 	if docs.is_empty():
-		push_error("  FAIL: no docs/core markdown files found")
+		push_error("  FAIL: no core demo markdown files found")
 		return false
 
 	var ok := true
@@ -92,7 +85,7 @@ func _test_demo_links_and_metadata(entries: Array) -> bool:
 			ok = false
 
 	if ok:
-		print("  OK: demo files exist and scene metadata matches docs/core contracts")
+		print("  OK: demo files exist and scene metadata matches core demo doc contracts")
 	return ok
 
 
@@ -164,7 +157,7 @@ func _test_demo_scene_scripts(entries: Array) -> bool:
 					ok = false
 
 	if ok:
-		print("  OK: docs/core demo scenes expose executable metadata/GPU skip contracts")
+		print("  OK: core demo scenes expose executable metadata/GPU skip contracts")
 	return ok
 
 
@@ -173,14 +166,14 @@ func _test_core_fixture_boundaries() -> bool:
 	var ok := true
 	ok = _assert_fixture_acceptance(
 		"SceneVoxelTile",
-		"res://demos/core-scenevoxeltile/core-scenevoxeltile.md",
+		"res://demos/core-scenevoxeltile/scenevoxeltile.md",
 		"res://demos/core-scenevoxeltile/core-scenevoxeltile.tscn",
 		["SceneVoxelTile", "sidecar", "committed", "payload", "GPU", "readback"]
 	) and ok
 	ok = _assert_fixture_acceptance(
-		"GPU AutoObject runtime plan",
-		"res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md",
-		"res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn",
+		"GPU AutoObject runtime",
+		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md",
+		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn",
 		["GPUAutoObjectRuntime", "AutoVoxelRuntimeProfileContainer", "SV", "dirty"]
 	) and ok
 	ok = _assert_runtime_plan_gpu_first_boundaries() and ok
@@ -214,11 +207,6 @@ func _test_gpu_fixture_vulkan_validation() -> bool:
 		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md",
 		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn"
 	) and ok
-	ok = _assert_gpu_validation_fixture(
-		"module GPU runtime",
-		"res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md",
-		"res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn"
-	) and ok
 	if ok:
 		print("  OK: GPU fixtures document headless smoke plus Vulkan RD validation")
 	return ok
@@ -231,8 +219,6 @@ func _test_gpu_runtime_and_tile_deep_contracts() -> bool:
 		TestUtils.read_text("res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"),
 		TestUtils.read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md"),
 		TestUtils.read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn"),
-		TestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md"),
-		TestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn"),
 	])
 	for missing in DemoContractUtils.find_missing_terms(runtime_contract, [
 		"VPG",
@@ -245,17 +231,14 @@ func _test_gpu_runtime_and_tile_deep_contracts() -> bool:
 		"runtime_ready",
 		"`contract_blocked=true`",
 		"`cpu_fallback=false`",
-		"tools/test_voxel_multi_asset.gd",
+		"tools/test_auto_voxel_runtime_profile_container.gd",
 	]):
 		push_error("  FAIL: GPU runtime fixture contract is missing '%s'" % missing)
 		ok = false
 
 	var tile_contract := "\n".join([
 		TestUtils.read_text("res://demos/core-scenevoxeltile/scenevoxeltile.md"),
-		TestUtils.read_text("res://demos/core-scenevoxeltile/core-scenevoxeltile.md"),
 		TestUtils.read_text("res://demos/core-scenevoxeltile/core-scenevoxeltile.tscn"),
-		TestUtils.read_text("res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md"),
-		TestUtils.read_text("res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn"),
 	])
 	for missing in DemoContractUtils.find_missing_terms(tile_contract, [
 		"ensure_scene_voxel_tile_buffers_uploaded()",
@@ -276,14 +259,9 @@ func _test_gpu_runtime_and_tile_deep_contracts() -> bool:
 		"res://demos/asset-descriptor-demo/asset-semantic-probes.md",
 		"res://demos/core-meshfill-framework/meshfill-framework.md",
 		"res://demos/core-scenevoxeltile/scenevoxeltile.md",
-		"res://demos/core-scenevoxeltile/core-scenevoxeltile.md",
 		"res://demos/core-scenevoxeltile/core-scenevoxeltile.tscn",
 		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md",
 		"res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn",
-		"res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md",
-		"res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn",
-		"res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.md",
-		"res://demos/modules/scenevoxel-tile-dirty/scenevoxel-tile-dirty.tscn",
 	]:
 		ok = _assert_no_deep_stale_contract_wording(source, TestUtils.read_text(source)) and ok
 
@@ -327,7 +305,7 @@ func _assert_gpu_validation_fixture(label: String, demo_doc: String, scene_path:
 		"--rendering-driver vulkan",
 		"非 headless Vulkan",
 		"RenderingDevice",
-		"tools/test_voxel_multi_asset.gd",
+		"tools/test_auto_voxel_runtime_profile_container.gd",
 	]):
 		push_error("  FAIL: %s demo doc is missing GPU validation wording '%s'" % [label, missing])
 		ok = false
@@ -386,8 +364,8 @@ func _assert_runtime_plan_gpu_first_boundaries() -> bool:
 	var ok := true
 	var combined := "\n".join([
 		TestUtils.read_text("res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"),
-		TestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.md"),
-		TestUtils.read_text("res://demos/modules/gpu-autoobject-runtime-plan/gpu-autoobject-runtime-plan.tscn"),
+		TestUtils.read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md"),
+		TestUtils.read_text("res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn"),
 	])
 	for missing in DemoContractUtils.find_missing_terms(combined, [
 		"GPU-first",
@@ -439,7 +417,6 @@ func _list_core_docs() -> Array:
 		"res://demos/core-SPA-scene-placement-actor/scene-placement-actor.md",
 		"res://demos/core-scene-voxel-field-system/scene-voxel-field-system.md",
 		"res://demos/core-scenevoxeltile/scenevoxeltile.md",
-		"res://demos/core-voxel-display/voxel-display.md",
 	]
 	docs.sort()
 	return docs

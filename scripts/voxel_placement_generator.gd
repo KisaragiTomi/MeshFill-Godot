@@ -8,10 +8,10 @@ extends "res://scripts/godot_compute_shader_base.gd"
 ## callers provide compact scene/collision field buffers and a simplified
 ## asset footprint, then receive compact placement records and stamped occupancy.
 
-const AutoObject := preload("res://scripts/auto_object.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const VoxelPlacementWritebackScript := preload("res://scripts/voxel_placement_writeback.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 var _placement_writeback = null
 
 ## Lazily creates the delegated placement writeback helper.
@@ -25,11 +25,12 @@ func _ensure_placement_writeback():
 	return _placement_writeback
 
 const VoxelPlacementOutputScript := preload("res://scripts/voxel_placement_output.gd")
-const VoxelFootprintBakerScript := preload("res://scripts/voxel_footprint_baker.gd")
+const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 
 const TILE_SIZE := 8
 const FOOTPRINT_CAPACITY := 128
 const RECORD_STRIDE := 4
+const SCORE_SUM_SHADER_PATH := "res://shaders/placement_result_score_sum.glsl"
 const DELTA_STRIDE := 2
 const STAMP_BOUNDS_STRIDE := 2
 const NUM_DEBUG_CHANNELS := 8
@@ -39,27 +40,12 @@ const CANDIDATE_ROUTE_BINDING_DEBUG_WORDS := 16
 const CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS := 4
 const CANDIDATE_ROUTE_INDIRECT_ARGS_BYTES := 12
 const CANDIDATE_ROUTE_SPARSE_ADAPTER_LOCAL_SIZE := 64
-const GPU_RUNTIME_PROVIDER_CONFIG_KEYS := [
-	"gpu_autoobject_runtime",
-	"autoobject_runtime",
-	"runtime",
-]
-const GPU_PROFILE_CONTAINER_CONFIG_KEYS := [
-	"auto_voxel_runtime_profile_container",
-	"runtime_profile_container",
-	"profile_container",
-]
-const CANDIDATE_REGION_BY_ASSET_CONFIG_KEYS := [
-	"candidate_voxel_regions_by_asset",
-	"candidate_voxel_sparses_by_asset",
-]
-const CANDIDATE_ROUTE_CONTRACT_SCHEMA_VERSION := 1
-const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := 16
-const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := 16
-const ASSET_CANDIDATE_REGION_CONFIG_KEYS := [
-	"candidate_voxel_regions",
-	"candidate_voxel_sparses",
-]
+const GPU_RUNTIME_PROVIDER_CONFIG_KEY := "gpu_autoobject_runtime"
+const GPU_PROFILE_CONTAINER_CONFIG_KEY := "auto_voxel_runtime_profile_container"
+const CandidateRouteSchemaScript := preload("res://scripts/candidate_route_schema.gd")
+const CANDIDATE_ROUTE_SCHEMA_VERSION := CandidateRouteSchemaScript.SCHEMA_VERSION
+const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := CandidateRouteSchemaScript.RECORD_STRIDE_BYTES
+const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := CandidateRouteSchemaScript.RANGE_STRIDE_BYTES
 const REQUIRED_GPU_RUNTIME_BUFFERS := [
 	"alive",
 	"generation",
@@ -137,11 +123,6 @@ const SCORE_CONTRACT_DEBUG_NAMES: PackedStringArray = [
 	"reserved47",
 ]
 const SCENE_VOXEL_COMMITTER_CONFIG_KEY := "scene_voxel_committer"
-const SCENE_VOXEL_TILE_COMMITTER_CONFIG_KEYS := [
-	SCENE_VOXEL_COMMITTER_CONFIG_KEY,
-	"sv_committer",
-	"scene_voxel_tile_committer",
-]
 const SCENE_VOXEL_TILE_OBJECT_REF_BUFFER_NAME := "scene_voxel_tile_object_refs"
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
 const SCENE_VOXEL_TILE_OBJECT_REF_STRIDE_BYTES := 4
@@ -161,7 +142,7 @@ var min_distance_voxels: float = 2.0
 var scene_write_scale: float = 1.0
 var collision_write_scale: float = 1.0
 var asset_index: int = 0
-var rotation_index: int = 0
+var rotation_slots: int = 12
 var scale_index: int = 0
 var asset_color: Color = Color.WHITE
 
@@ -181,27 +162,8 @@ var _pipeline_candidate_route_sparse_adapter: RID
 var _pipeline_candidate_route_sparse_adapter_finalize: RID
 
 
-## 检查 settings 中是否包含“按资产分类”的候选体素区域配置（Dictionary 形式）。
-static func _has_candidate_regions_by_asset(settings: Dictionary) -> bool:
-	for key in CANDIDATE_REGION_BY_ASSET_CONFIG_KEYS:
-		if settings.get(key, null) is Dictionary:
-			return true
-	return false
-
-
-## 从 settings 中提取“按资产分类”的候选体素区域字典（不存在则返回空字典）。
-static func _candidate_regions_by_asset_from_settings(settings: Dictionary) -> Dictionary:
-	for key in CANDIDATE_REGION_BY_ASSET_CONFIG_KEYS:
-		var value = settings.get(key, {})
-		if value is Dictionary:
-			return (value as Dictionary).duplicate(true)
-	return {}
-
-
 ## 根据 settings 推断候选路由（candidate route）的 GPU 回读来源标签。
 static func _candidate_route_readback_source_from_settings(settings: Dictionary) -> String:
-	if _has_candidate_regions_by_asset(settings):
-		return "gpu_vote_buffer_readback"
 	if bool(_candidate_route_input_contract_from_settings(settings).get("resident_route_input_ready", false)):
 		return "resident_route_snapshot"
 	return "none"
@@ -209,8 +171,6 @@ static func _candidate_route_readback_source_from_settings(settings: Dictionary)
 
 ## 根据 settings 推断候选路由在运行时的读取来源标签。
 static func _candidate_route_runtime_read_source_from_settings(settings: Dictionary) -> String:
-	if _has_candidate_regions_by_asset(settings):
-		return "cpu_debug_bridge"
 	if bool(_candidate_route_input_contract_from_settings(settings).get("resident_route_input_ready", false)):
 		return "resident"
 	return "none"
@@ -221,7 +181,6 @@ static func _candidate_route_runtime_read_source_from_settings(settings: Diction
 ## 路由所需的各项条件（RID 有效性、stride、schema 版本、稀疏适配器状态等）逐一核实，
 ## 最终返回包含就绪状态、拒绝原因及大量调试/统计字段的字典。
 static func _candidate_route_input_contract_from_settings(settings: Dictionary) -> Dictionary:
-	var has_cpu_route := _has_candidate_regions_by_asset(settings)
 	var requested_readback := str(settings.get("candidate_route_readback_source", "none"))
 	var requested_runtime := str(settings.get("candidate_route_runtime_read_source", "none"))
 	var requested_resident_label := requested_readback != "none" or requested_runtime != "none"
@@ -230,29 +189,25 @@ static func _candidate_route_input_contract_from_settings(settings: Dictionary) 
 	if settings.get("resident_candidate_route_contract", null) is Dictionary:
 		resident_contract = (settings.get("resident_candidate_route_contract") as Dictionary).duplicate(true)
 
-	var record_rid: RID = _rid_from_contract(resident_contract, "resident_route_record_rid", "resident_route_record_buffer_rid")
-	var range_rid: RID = _rid_from_contract(resident_contract, "resident_route_range_rid", "resident_route_range_buffer_rid")
-	var record_stride := int(resident_contract.get("resident_route_record_stride", resident_contract.get("resident_route_record_stride_bytes", 0)))
-	var range_stride := int(resident_contract.get("resident_route_range_stride", resident_contract.get("resident_route_range_stride_bytes", 0)))
+	var record_rid: RID = VariantUtils.rid_from_value(resident_contract.get("resident_route_record_rid", RID()))
+	var range_rid: RID = VariantUtils.rid_from_value(resident_contract.get("resident_route_range_rid", RID()))
+	var record_stride := int(resident_contract.get("resident_route_record_stride", 0))
+	var range_stride := int(resident_contract.get("resident_route_range_stride", 0))
 	var range_count := int(resident_contract.get("resident_route_range_count", 0))
-	var record_capacity := int(resident_contract.get("resident_route_record_capacity", resident_contract.get("resident_route_record_count", 0)))
-	var schema_version := int(resident_contract.get("schema_version", resident_contract.get("resident_route_schema_version", 0)))
+	var record_capacity := int(resident_contract.get("resident_route_record_capacity", 0))
+	var schema_version := int(resident_contract.get("schema_version", 0))
 	var vpg_binds_route_buffers := bool(resident_contract.get("vpg_binds_route_buffers", false))
 	var cpu_expanded := bool(resident_contract.get("cpu_expanded_route_input", false))
 	var direct_all_tiles := bool(resident_contract.get("direct_all_tiles", false))
 	var route_sparse_adapter := bool(resident_contract.get("resident_route_sparse_adapter", false))
 	var rd_matches_vpg := bool(resident_contract.get("same_rendering_device_as_vpg", false))
-	if resident_contract.get("rendering_device_matches_vpg", null) is bool:
-		rd_matches_vpg = bool(resident_contract.get("rendering_device_matches_vpg"))
 	var debug_api := str(resident_contract.get("debug_snapshot_api", "none"))
 	var debug_status := str(resident_contract.get("debug_snapshot_status", "none" if debug_api == "none" else "available"))
 
 	var record_rid_valid := record_rid.is_valid()
 	var range_rid_valid := range_rid.is_valid()
 	var rejection_reason := "none"
-	if has_cpu_route:
-		rejection_reason = "cpu_debug_bridge_route_dictionary"
-	elif requested_resident_label and resident_contract.is_empty():
+	if requested_resident_label and resident_contract.is_empty():
 		rejection_reason = "metadata_only_route_labels"
 	elif requested_resident_label and not record_rid_valid:
 		rejection_reason = "missing_or_invalid_route_record_rid"
@@ -266,32 +221,36 @@ static func _candidate_route_input_contract_from_settings(settings: Dictionary) 
 		rejection_reason = "route_range_stride_mismatch"
 	elif requested_resident_label and range_count <= 0:
 		rejection_reason = "route_range_count_not_positive"
-	elif requested_resident_label and schema_version != CANDIDATE_ROUTE_CONTRACT_SCHEMA_VERSION:
+	elif requested_resident_label and schema_version != CANDIDATE_ROUTE_SCHEMA_VERSION:
 		rejection_reason = "route_schema_version_mismatch"
+	# 此分支不是"功能未实现"：record/range RID、stride、schema 均已校验通过，
+	# 仅表示该契约快照尚未经过 _prepare_candidate_route_binding（它会把
+	# vpg_binds_route_buffers 置为 bindable）。绑定链路本身已完整实现：
+	# _prepare_candidate_route_binding → _dispatch_candidate_route_sparse_adapter
+	# （candidate_route_sparse_adapter.glsl 展开为候选 tile id）→ 间接 score dispatch。
 	elif requested_resident_label and not vpg_binds_route_buffers:
-		rejection_reason = "vpg_route_buffer_binding_not_implemented"
+		rejection_reason = "resident_route_binding_not_applied"
 	elif requested_resident_label and record_capacity <= 0:
 		rejection_reason = "resident_route_record_capacity_missing"
 	elif requested_resident_label and (cpu_expanded or direct_all_tiles or not route_sparse_adapter):
 		rejection_reason = "route_dispatch_not_resident_sparse"
 
-	var resident_ready := not has_cpu_route \
-		and requested_resident_label \
+	var resident_ready := requested_resident_label \
 		and record_rid_valid \
 		and range_rid_valid \
 		and rd_matches_vpg \
 		and record_stride == CANDIDATE_ROUTE_RECORD_STRIDE_BYTES \
 		and range_stride == CANDIDATE_ROUTE_RANGE_STRIDE_BYTES \
 		and range_count > 0 \
-		and schema_version == CANDIDATE_ROUTE_CONTRACT_SCHEMA_VERSION \
+		and schema_version == CANDIDATE_ROUTE_SCHEMA_VERSION \
 		and vpg_binds_route_buffers \
 		and record_capacity > 0 \
 		and not cpu_expanded \
 		and not direct_all_tiles \
 		and route_sparse_adapter
-	var normalized_readback := "gpu_vote_buffer_readback" if has_cpu_route else ("resident_route_snapshot" if resident_ready else "none")
-	var normalized_runtime := "cpu_debug_bridge" if has_cpu_route else ("resident" if resident_ready else "none")
-	var route_input := "common_cpu_dictionary" if has_cpu_route else ("resident_contract" if requested_resident_label and not resident_contract.is_empty() else "none")
+	var normalized_readback := "resident_route_snapshot" if resident_ready else "none"
+	var normalized_runtime := "resident" if resident_ready else "none"
+	var route_input := "resident_contract" if requested_resident_label and not resident_contract.is_empty() else "none"
 	return {
 		"route_input": route_input,
 		"resident_route_input_ready": resident_ready,
@@ -355,24 +314,9 @@ static func _candidate_route_input_contract_from_settings(settings: Dictionary) 
 	}
 
 
-## 从契约（contract）字典中按 key_a、key_b 依次尝试取出 RID，取不到或类型不符时返回空 RID。
-static func _rid_from_contract(contract: Dictionary, key_a: String, key_b: String) -> RID:
-	var raw = contract.get(key_a, contract.get(key_b, RID()))
-	if raw is RID:
-		return raw as RID
-	return RID()
-
-
-## 若传入值本身就是 RID 类型则原样返回，否则返回空 RID。
-static func _rid_from_value(value) -> RID:
-	if value is RID:
-		return value as RID
-	return RID()
-
-
-## Legacy debug-only: full-field CPU readback contract.
+## Debug-only: full-field CPU readback contract.
 ## Only used when `read_full_field_outputs` is explicitly set to `true`.
-## 旧版调试专用：完整体素场（full-field）CPU 回读契约，仅当显式设置
+## 调试专用：完整体素场（full-field）CPU 回读契约，仅当显式设置
 ## `read_full_field_outputs` 为 true 时才会使用。
 static func _full_field_readback_contract(voxel_count: int, output_source: String, is_gpu_readback: bool) -> Dictionary:
 	var complexity_byte_count := SceneVoxelTileCodecScript.rgba8_byte_count(voxel_count)
@@ -399,10 +343,10 @@ static func _full_field_readback_contract(voxel_count: int, output_source: Strin
 	}
 
 
-## Legacy/debug: compact stamp-delta state chain contract.
-## Kept for backward compatibility with tests and debug paths.
-## 旧版/调试用：紧凑戳记增量（compact stamp-delta）状态链契约，
-## 仅为测试与调试路径保留，以维持向后兼容。
+## CPU-input state chain: compact stamp-delta contract. Used when the caller
+## provides CPU field arrays instead of resident GPU buffers (demos/tests).
+## CPU 输入状态链：紧凑戳记增量（compact stamp-delta）契约，
+## 调用方传 CPU 场数组（而非常驻 GPU 缓冲）时使用（演示/测试路径）。
 static func _compact_delta_state_chain_contract(
 	voxel_count: int,
 	stamp_delta_count: int,
@@ -481,48 +425,19 @@ static func _gpu_resident_state_chain_contract(
 	}
 
 
-## Legacy: compact stamp-delta state chaining check.
-## GPU-resident state chain is now the primary path. This function is kept
-## for backward compatibility with tests and debug paths.
-## 旧版：判断是否请求了紧凑戳记增量状态链。GPU 常驻状态链现为主路径，
-## 此函数仅为测试与调试路径保留兼容性。
+## 判断 CPU 输入模式下是否使用紧凑戳记增量状态链（默认开启，PCIe 带宽较
+## 全场回读省 90%+：256³=67MB → 仅 stamp deltas）。
+## 传 force_full_field_readback=true 可退回调试用的全场回读路径。
 static func _compact_delta_state_chain_requested(settings: Dictionary) -> bool:
-	# Explicit opt-out flags — pass force_full_field_readback=true to fall back to
-	# the legacy full-voxel-field readback path (e.g. for debugging / compatibility).
-	if bool(settings.get("force_full_field_readback", false)):
-		return false
-	if bool(settings.get("disable_compact_state_chain", false)):
-		return false
-	if bool(settings.get("use_full_field_readback", false)):
-		return false
-	var mode := str(settings.get("cpu_state_chain_mode", settings.get("cpu_state_chaining_mode", "")))
-	if mode == "full_field_readback" or mode == "full_field":
-		return false
-	# Legacy opt-in flags (preserved for backward compatibility but now no-ops).
-	if bool(settings.get("use_compact_state_chain", false)):
-		return true
-	if bool(settings.get("use_vpg_compact_state_chain", false)):
-		return true
-	if bool(settings.get("use_stamp_delta_state_chain", false)):
-		return true
-	if mode == "compact_stamp_deltas" or mode == "compact_deltas" or mode == "stamp_deltas":
-		return true
-	# DEFAULT: compact stamp-delta state chaining is enabled.
-	# Reduces PCIe bandwidth by 90%+ (256³=67MB → stamp deltas only).
-	return true
+	return not bool(settings.get("force_full_field_readback", false))
 
 
 ## GPU-resident state chain: scene/collision buffers live entirely on GPU.
 ## This is the production default path. No CPU arrays for state transfer.
-## Disable via `force_cpu_state_chain=true` or `disable_gpu_state_chain=true`.
 ## 判断是否启用 GPU 常驻状态链（生产环境默认路径），可通过
-## `force_cpu_state_chain` 或 `disable_gpu_state_chain` 关闭。
+## `disable_gpu_state_chain` 或 `force_full_field_readback` 关闭。
 static func _gpu_state_chain_enabled(settings: Dictionary) -> bool:
-	if bool(settings.get("force_cpu_state_chain", false)):
-		return false
 	if bool(settings.get("disable_gpu_state_chain", false)):
-		return false
-	if bool(settings.get("use_cpu_state_chain", false)):
 		return false
 	if bool(settings.get("force_full_field_readback", false)):
 		return false
@@ -580,23 +495,6 @@ static func _apply_stamp_deltas_to_cpu_state(
 	}
 
 
-## 检查单个资产定义（asset_def）中是否包含候选体素区域配置。
-static func _has_asset_candidate_regions(asset_def: Dictionary) -> bool:
-	for key in ASSET_CANDIDATE_REGION_CONFIG_KEYS:
-		if asset_def.has(key):
-			return true
-	return false
-
-
-## 从资产定义（asset_def）中提取候选体素区域数组（不存在则返回空数组）。
-static func _asset_candidate_regions(asset_def: Dictionary) -> Array:
-	for key in ASSET_CANDIDATE_REGION_CONFIG_KEYS:
-		var value = asset_def.get(key, [])
-		if value is Array:
-			return (value as Array).duplicate(true)
-	return []
-
-
 # ---------------------------------------------------------------------------
 # Multi-asset sequential pipeline
 # ---------------------------------------------------------------------------
@@ -625,9 +523,14 @@ func run_multi_asset(
 	grid_origin: Vector3 = Vector3.ZERO,
 	common_settings: Dictionary = {}
 ) -> Dictionary:
-	var runtime_provider := _first_config_object(common_settings, GPU_RUNTIME_PROVIDER_CONFIG_KEYS)
-	var profile_container := _first_config_object(common_settings, GPU_PROFILE_CONTAINER_CONFIG_KEYS)
+	var runtime_provider := _config_object(common_settings, GPU_RUNTIME_PROVIDER_CONFIG_KEY)
+	var profile_container := _config_object(common_settings, GPU_PROFILE_CONTAINER_CONFIG_KEY)
 	var write_accepted_placements_to_gpu_runtime := bool(common_settings.get("write_accepted_placements_to_gpu_runtime", false))
+	# GPU-direct: runtime consumes resident placement buffers positionally; no
+	# result/world/stamp-bounds readback and no CPU spawn-record dictionaries.
+	var gpu_direct_runtime_writeback := write_accepted_placements_to_gpu_runtime \
+		and runtime_provider != null \
+		and runtime_provider.has_method("spawn_batch_from_accepted_placement_gpu_buffers")
 	var gpu_contract_settings := common_settings.duplicate(true)
 	if write_accepted_placements_to_gpu_runtime:
 		gpu_contract_settings["require_gpu_runtime_profile_contract"] = true
@@ -652,16 +555,16 @@ func run_multi_asset(
 	var compact_state_chain_applied_count := 0
 
 	var _voxel_count := VoxelGeneral.voxel_count(grid_size)
-	var _gpu_complexity_buffer: RID = _rid_from_value(common_settings.get("complexity_field_buffer_rid", RID()))
-	var _gpu_collision_buffer: RID = _rid_from_value(common_settings.get("collision_field_buffer_rid", RID()))
+	var _gpu_complexity_buffer: RID = VariantUtils.rid_from_value(common_settings.get("complexity_field_buffer_rid", RID()))
+	var _gpu_collision_buffer: RID = VariantUtils.rid_from_value(common_settings.get("collision_field_buffer_rid", RID()))
 	var _gpu_state_chain_requested := _gpu_state_chain_enabled(common_settings)
 	var _gpu_state_chain_external := _gpu_complexity_buffer.is_valid() and _gpu_collision_buffer.is_valid()
 	var _gpu_state_chain_active := _gpu_state_chain_requested and _gpu_state_chain_external
 	var _gpu_state_chain_blocked_reason := "none" if _gpu_state_chain_active else "external_complexity_collision_field_buffers_missing" if _gpu_state_chain_requested else "disabled"
 	var _gpu_state_chain_source := str(common_settings.get("gpu_state_chain_source", "caller_provided_complexity_collision_field_rids"))
-	var _gpu_state_chain_owner := str(common_settings.get("complexity_field_buffer_owner", common_settings.get("resident_complexity_field_owner", "external")))
+	var _gpu_state_chain_owner := str(common_settings.get("complexity_field_buffer_owner", "external"))
 	var _gpu_state_chain_rd: RenderingDevice = get_rendering_device()
-	var raw_chain_rd = common_settings.get("resident_complexity_field_rendering_device", common_settings.get("rendering_device", null))
+	var raw_chain_rd = common_settings.get("resident_complexity_field_rendering_device", null)
 	if _gpu_state_chain_rd == null and raw_chain_rd is RenderingDevice:
 		_gpu_state_chain_rd = raw_chain_rd as RenderingDevice
 
@@ -686,8 +589,8 @@ func run_multi_asset(
 			}
 			continue
 
-		var base_footprint := bake_footprint_from_collision(
-			cv, voxel_size,
+		var base_footprint := AssetDescriptorScript.bake_footprint(
+			cv,
 			bool(asset_def.get("add_support", true)),
 			int(asset_def.get("clearance_slices", 1)))
 		if base_footprint.is_empty():
@@ -711,58 +614,49 @@ func run_multi_asset(
 			per_asset_settings["collision_field_buffer_owner"] = str(common_settings.get("collision_field_buffer_owner", _gpu_state_chain_owner))
 			per_asset_settings["gpu_state_chain_source"] = _gpu_state_chain_source
 			per_asset_settings["read_full_field_outputs"] = false
-		var routed_regions_by_asset := _candidate_regions_by_asset_from_settings(common_settings)
-		if _has_asset_candidate_regions(asset_def):
-			var asset_regions: Array = _asset_candidate_regions(asset_def)
-			if asset_regions.is_empty():
-				result_by_index[orig_idx] = {
-					"asset_index": orig_idx, "results": [], "world_results": [], "result_count": 0,
-					"stamp_deltas": [], "skipped_prefilter": true,
-				}
-				continue
-			per_asset_settings["candidate_voxel_sparses"] = asset_regions
-		elif _has_candidate_regions_by_asset(common_settings):
-			var route_key = orig_idx if routed_regions_by_asset.has(orig_idx) else str(orig_idx)
-			var routed_regions = routed_regions_by_asset.get(route_key, [])
-			if routed_regions.is_empty():
-				result_by_index[orig_idx] = {
-					"asset_index": orig_idx, "results": [], "world_results": [], "result_count": 0,
-					"stamp_deltas": [],
-					"skipped_prefilter": true,
-				}
-				continue
-			per_asset_settings["candidate_voxel_sparses"] = routed_regions
+			# Stamp-only commit：读取场为 BlendSV 工作对时，stamp 还需双写 committed SV 常驻对
+			per_asset_settings["commit_complexity_field_buffer_rid"] = VariantUtils.rid_from_value(common_settings.get("commit_complexity_field_buffer_rid", RID()))
+			per_asset_settings["commit_collision_field_buffer_rid"] = VariantUtils.rid_from_value(common_settings.get("commit_collision_field_buffer_rid", RID()))
 		if asset_def.has("result_capacity"):
 			per_asset_settings["result_capacity"] = int(asset_def.result_capacity)
 		if asset_def.has("min_distance_voxels"):
 			per_asset_settings["min_distance_voxels"] = float(asset_def.min_distance_voxels)
-		for profile_key in ["profile_id", "auto_voxel_profile_id", "runtime_profile_id", "asset_profile_id"]:
-			if asset_def.has(profile_key):
-				per_asset_settings["profile_id"] = int(asset_def[profile_key])
-				break
+		if asset_def.has("profile_id"):
+			per_asset_settings["profile_id"] = int(asset_def.profile_id)
 		per_asset_settings["asset_index"] = orig_idx
+		if gpu_direct_runtime_writeback:
+			per_asset_settings["retain_placement_result_buffers"] = true
+			if not per_asset_settings.has("read_placement_results"):
+				per_asset_settings["read_placement_results"] = false
 		if compact_state_chain and not _gpu_state_chain_active:
 			per_asset_settings["read_stamp_deltas"] = true
 			per_asset_settings["read_full_field_outputs"] = false
-			per_asset_settings["cpu_state_chain_mode"] = "compact_stamp_deltas"
 
 		if global_quota >= 0:
 			var remaining := global_quota - total_placed
 			var cap := int(per_asset_settings.get("result_capacity", result_capacity))
 			per_asset_settings["result_capacity"] = mini(cap, remaining)
 
-		var pivot_variants = load("res://scripts/auto_voxel_descriptor.gd").normalize_pivot_variants(asset_def.get("pivot_variants", [{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}]))
+		var pivot_variants = load("res://scripts/asset_descriptor.gd").normalize_pivot_variants(asset_def.get("pivot_variants", [{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}]))
 		var best_gpu_out: Dictionary = {}
 		var best_pivot: Dictionary = {}
 		var best_pivot_score := -INF
 		for pivot in pivot_variants:
-			var pivot_offset := _vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
-			var pivot_voxels := _world_offset_to_voxels(pivot_offset, voxel_size)
-			var footprint := apply_pivot_to_footprint(base_footprint, pivot_voxels)
+			var pivot_offset := VariantUtils.vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
+			var pivot_voxels := VoxelGeneral.world_offset_to_voxels(pivot_offset, voxel_size)
+			# Footprint stays pivot-invariant (base_footprint); the pivot voxel offset is
+			# applied on the GPU (subtracted before yaw in the score/stamp shaders), so the
+			# same packed footprint bytes serve every pivot variant.
+			per_asset_settings["footprint_pivot_voxels"] = pivot_voxels
 			if _gpu_state_chain_active and _gpu_state_chain_rd != null and get_rendering_device() != _gpu_state_chain_rd:
 				attach_rendering_device(_gpu_state_chain_rd, false)
-			var gpu_out := run_minimal(current_complexity, current_collision, footprint, grid_size, per_asset_settings)
+			var gpu_out := run_minimal(current_complexity, current_collision, base_footprint, grid_size, per_asset_settings)
 			if bool(gpu_out.get("contract_blocked", false)):
+				_release_placement_result_buffers(gpu_out)
+				_release_placement_result_buffers(best_gpu_out)
+				for existing in result_by_index.values():
+					if existing is Dictionary:
+						_release_placement_result_buffers(existing)
 				return _gpu_contract_blocked_multi_asset_output(
 					complexity_field,
 					collision_field,
@@ -774,9 +668,12 @@ func run_multi_asset(
 				candidate_route_output_settings["candidate_route_input_contract"] = gpu_out.get("candidate_route_input_contract", {})
 			var pivot_score := _placement_output_score(gpu_out) + float(pivot.get("score_bias", 0.0))
 			if not gpu_out.is_empty() and (best_gpu_out.is_empty() or pivot_score > best_pivot_score):
+				_release_placement_result_buffers(best_gpu_out)
 				best_gpu_out = gpu_out
 				best_pivot = pivot
 				best_pivot_score = pivot_score
+			else:
+				_release_placement_result_buffers(gpu_out)
 
 		if best_gpu_out.is_empty():
 			result_by_index[orig_idx] = {
@@ -792,7 +689,35 @@ func run_multi_asset(
 
 		var count := int(best_gpu_out.get("result_count", 0))
 		var raw_results: Array = best_gpu_out.get("results", [])
-		var world := VoxelPlacementOutputScript.results_to_world(raw_results, voxel_size, grid_origin, 24, best_pivot)
+		# rotation_count MUST match the scorer's rotation_slots sweep so the
+		# instance yaw (rotation_index * 360 / rotation_count) equals the scored/stamped slot angle.
+		var asset_rotation_slots := maxi(int(per_asset_settings.get("rotation_slots", rotation_slots)), 1)
+		var world: Array = []
+		var world_gpu_report := {}
+		if raw_results.is_empty() and not (best_gpu_out.get("placement_result_buffers", {}) as Dictionary).is_empty():
+			# GPU-direct handoff: world conversion runs on the resident buffers
+			# inside the runtime writeback dispatch; no CPU world dictionaries.
+			world_gpu_report = {
+				"ok": true,
+				"reason": "resident_gpu_direct_no_cpu_world_results",
+				"record_count": count,
+				"readback_source": "none",
+			}
+		else:
+			var world_gpu := VoxelPlacementOutputScript.results_to_world_gpu(
+				raw_results,
+				voxel_size,
+				grid_origin,
+				asset_rotation_slots,
+				best_pivot,
+				get_rendering_device()
+			)
+			world = world_gpu.get("world_results", []) if bool(world_gpu.get("ok", false)) else []
+			world_gpu_report = world_gpu.duplicate(true)
+			world_gpu_report.erase("world_results")
+			world_gpu_report.erase("world_result_bytes")
+			if not bool(world_gpu.get("ok", false)):
+				count = 0
 
 		var compact_state_chain_report := {}
 		if compact_state_chain and not _gpu_state_chain_active:
@@ -816,6 +741,8 @@ func run_multi_asset(
 			"results": raw_results,
 			"world_results": world,
 			"result_count": count,
+			"placement_output_gpu": world_gpu_report,
+			"placement_output_readback_source": str(world_gpu_report.get("readback_source", "none")),
 			"stamp_deltas": best_gpu_out.get("stamp_deltas", []),
 			"stamp_delta_count": best_gpu_out.get("stamp_delta_count", 0),
 			"stamp_delta_readback_source": best_gpu_out.get("stamp_delta_readback_source", ""),
@@ -823,6 +750,10 @@ func run_multi_asset(
 			"stamp_bounds_source": best_gpu_out.get("stamp_bounds_source", ""),
 			"pivot_variant": best_pivot,
 			"pivot_variant_count": pivot_variants.size(),
+			"placement_result_buffers": best_gpu_out.get("placement_result_buffers", {}),
+			"placement_score_sum": best_gpu_out.get("placement_score_sum", 0.0),
+			"rotation_slots_used": asset_rotation_slots,
+			"pivot_offset_world": VariantUtils.vector3_from_value(best_pivot.get("offset", Vector3.ZERO), Vector3.ZERO),
 		}
 		if best_gpu_out.has("full_field_readback"):
 			asset_result["full_field_readback"] = best_gpu_out.get("full_field_readback", {})
@@ -870,36 +801,46 @@ func run_multi_asset(
 			var overrides: Dictionary = asset_def.get("settings", {})
 			for key in overrides:
 				per_asset_settings[key] = overrides[key]
-			for profile_key in ["profile_id", "auto_voxel_profile_id", "runtime_profile_id", "asset_profile_id"]:
-				if asset_def.has(profile_key):
-					per_asset_settings["profile_id"] = int(asset_def[profile_key])
-					break
+			if asset_def.has("profile_id"):
+				per_asset_settings["profile_id"] = int(asset_def.profile_id)
 			per_asset_settings["asset_index"] = orig_idx
 			var asset_writeback := _write_accepted_placements_to_gpu_runtime(
 				runtime_provider,
 				orig_idx,
 				asset_def,
 				per_asset_settings,
-				asset_result.get("world_results", []),
-				asset_result.get("results", []),
-				asset_result.get("stamp_deltas", []),
-				asset_result.get("stamp_bounds", []),
-				common_settings
+				asset_result,
+				common_settings,
+				{
+					"grid_size": grid_size,
+					"voxel_size": voxel_size,
+					"grid_origin": grid_origin,
+				}
 			)
 			_merge_gpu_autoobject_runtime_writeback_report(runtime_writeback_report, asset_writeback)
 			asset_result["gpu_autoobject_runtime_writeback"] = asset_writeback
 			result_by_index[orig_idx] = asset_result
 			asset_results[orig_idx] = asset_result
 
-	var instance_stamp_writeback := _write_accepted_placements_to_scene_voxel_committer(
-		asset_defs,
-		result_by_index,
-		asset_results,
-		common_settings,
-		grid_size,
-		voxel_size,
-		grid_origin
-	)
+	# Release retained GPU-direct handoff buffers (idempotent; covers assets
+	# skipped by the writeback loop and the no-writeback path).
+	for retained_result in asset_results:
+		_release_placement_result_buffers(retained_result)
+
+	# Stamp-only commit：GPU state chain 激活时，stamp pass 已原位写入 committer 的
+	# 常驻 field buffer——stamp 即 SV 提交，无需 source-candidate 打包交接。
+	var instance_stamp_writeback := {}
+	if _gpu_state_chain_active:
+		instance_stamp_writeback = {
+			"ok": true,
+			"reason": "gpu_state_chain_stamp_committed",
+			"gpu_first": true,
+			"cpu_fallback": false,
+			"accepted_placement_writeback_mode": "gpu_state_chain_stamp",
+			"applied_count": total_placed,
+			"failed_count": 0,
+			"commit_owner": _gpu_state_chain_owner,
+		}
 
 	var output := {
 		"asset_results": asset_results,
@@ -988,15 +929,6 @@ func run_multi_asset(
 		output["target_read_buffer_summary"] = target_read_buffer_output_summary
 	if not instance_stamp_writeback.is_empty():
 		output["instance_stamp_writeback"] = instance_stamp_writeback
-		# P0 #3: propagate accepted placement RIDs to top-level for SPA handoff
-		var _records_rid = instance_stamp_writeback.get("accepted_placement_source_records_rid", RID())
-		if _records_rid is RID and (_records_rid as RID).is_valid():
-			output["accepted_placement_source_records_rid"] = _records_rid
-		var _ranges_rid = instance_stamp_writeback.get("accepted_placement_source_ranges_rid", RID())
-		if _ranges_rid is RID and (_ranges_rid as RID).is_valid():
-			output["accepted_placement_source_ranges_rid"] = _ranges_rid
-		output["accepted_placement_source_record_count"] = instance_stamp_writeback.get("accepted_placement_source_record_count", 0)
-		output["accepted_placement_source_range_count"] = instance_stamp_writeback.get("accepted_placement_source_range_count", 0)
 	if str(gpu_contract.get("reason", "")) != "not_requested":
 		output["cpu_fallback"] = false
 	return output
@@ -1077,59 +1009,79 @@ static func _weighted_shuffle(
 	return result
 
 
-## 将 footprint 中每个体素条目的 local_pos 按 pivot_voxels 整体平移，用于应用不同的锚点
-## （pivot）变体；偏移量为零时仅做深拷贝，不做位移。
-static func apply_pivot_to_footprint(footprint: Array, pivot_voxels: Vector3i) -> Array[Dictionary]:
-	if pivot_voxels == Vector3i.ZERO:
-		var copied: Array[Dictionary] = []
-		for e in footprint:
-			if e is Dictionary:
-				copied.append((e as Dictionary).duplicate(true))
-		return copied
-	var shifted: Array[Dictionary] = []
-	for e in footprint:
-		if not e is Dictionary:
-			continue
-		var entry := (e as Dictionary).duplicate(true)
-		entry["local_pos"] = VoxelGeneral.vector3i_from_value(entry.get("local_pos", Vector3i.ZERO), Vector3i.ZERO) - pivot_voxels
-		shifted.append(entry)
-	return shifted
-
-
-## 将世界坐标系下的偏移量按 voxel_size 转换为体素坐标系下的整数偏移（委托给 VoxelGeneral）。
-static func _world_offset_to_voxels(offset: Vector3, voxel_size: Vector3) -> Vector3i:
-	return VoxelGeneral.world_offset_to_voxels(offset, voxel_size)
-
-
-## 汇总 run_minimal 的 GPU 输出中所有有效（valid）放置结果的 score，用于比较不同 pivot
-## 变体的优劣；输出为空或结果数为 0 时返回 -INF。
+## 比较不同 pivot 变体的优劣：主序为有效放置数（填充越满越好），次序为每放置平均罚分
+## （score 现为 penalty-only，<=0，均值越接近 0 越好，归一化进 (-1,0] 使 count 严格主导）。
+## 输出为空或有效结果数为 0 时返回 -INF。
+## 注意：不能再按 score 总和排序——penalty-only 下更多放置=更负的总和=被误判为更差
+## （见 score_voxel_tile.glsl）。caller 的 score_bias 现以“放置数”为单位（+1.0 ≈ 抵一个放置）。
 static func _placement_output_score(gpu_out: Dictionary) -> float:
 	if gpu_out.is_empty():
 		return -INF
-	var count := int(gpu_out.get("result_count", 0))
-	if count <= 0:
+	var valid_count := 0
+	var score_sum := 0.0
+	# GPU-direct mode: use the GPU-reduced control scalars (sum + valid count) instead of CPU dicts.
+	if gpu_out.has("placement_score_sum"):
+		score_sum = float(gpu_out.get("placement_score_sum", 0.0))
+		valid_count = int(gpu_out.get("placement_valid_count", gpu_out.get("result_count", 0)))
+	else:
+		for raw in gpu_out.get("results", []):
+			if raw is Dictionary and bool((raw as Dictionary).get("valid", false)):
+				score_sum += float((raw as Dictionary).get("score", 0.0))
+				valid_count += 1
+	if valid_count <= 0:
 		return -INF
-	var score := 0.0
-	var results: Array = gpu_out.get("results", [])
-	for raw in results:
-		if raw is Dictionary and bool((raw as Dictionary).get("valid", false)):
-			score += float((raw as Dictionary).get("score", 0.0))
-	return score
+	var mean_penalty := score_sum / float(valid_count)
+	return float(valid_count) + mean_penalty / (1.0 + absf(mean_penalty))
 
 
-## 将 Vector3 / 至少含 3 个元素的 Array / 含 x、y、z 键的 Dictionary 等多种形式的值统一
-## 转换为 Vector3；无法识别时返回 fallback。
-static func _vector3_from_value(value, fallback: Vector3 = Vector3.ZERO) -> Vector3:
-	if value is Vector3:
-		return value as Vector3
-	if value is Array:
-		var arr := value as Array
-		if arr.size() >= 3:
-			return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
-	if value is Dictionary:
-		var d := value as Dictionary
-		return Vector3(float(d.get("x", fallback.x)), float(d.get("y", fallback.y)), float(d.get("z", fallback.z)))
-	return fallback
+# ---- 精细语义打分:数据驱动的维度打分 ---------------------------------------
+# 详见根目录 scoring-dimensions-design.md。当前为 CPU 参考实现,数据契约
+# (维度表 + 每资产画像 + 每锚点多通道特征)与将来 GPU 端口一致。
+
+## 拟合模式(fit_mode)。目前仅 MATCH;新增一种拟合方式 = 加一个枚举 + 一个 match 分支。
+const FIT_MODE_MATCH := 0
+
+## 数据驱动的维度打分:对每个锚点,按维度表算每个资产的加权分,返回胜者。
+## **可拓展**——加一个维度 = `dimensions` 加一行(引用某通道)、每条 `asset_profiles` /
+## `anchor_features` 加一个通道值;本函数不变(只按 `dimensions` 循环)。
+##
+##   dimensions:      Array[Dictionary]        每维 { channel:int, mode:int=FIT_MODE_MATCH, weight:float }
+##   asset_profiles:  Array[PackedFloat32Array] 每资产一条画像,按通道索引(来源 AssetDescriptor)
+##   anchor_features: Array[PackedFloat32Array] 每锚点一条环境特征,按通道索引(来源 TargetSV/场景场)
+##
+## 返回:Array[Dictionary] 每锚点 { scores:PackedFloat32Array(每资产), winner:int }。
+static func score_dimensions(
+	dimensions: Array,
+	asset_profiles: Array,
+	anchor_features: Array
+) -> Array:
+	var results: Array = []
+	for ai in range(anchor_features.size()):
+		var feat: PackedFloat32Array = anchor_features[ai]
+		var scores := PackedFloat32Array()
+		scores.resize(asset_profiles.size())
+		var winner := -1
+		var best := -INF
+		for asset_i in range(asset_profiles.size()):
+			var profile: PackedFloat32Array = asset_profiles[asset_i]
+			var s := 0.0
+			for dim in dimensions:
+				var ch := int((dim as Dictionary).get("channel", 0))
+				var w := float((dim as Dictionary).get("weight", 1.0))
+				var mode := int((dim as Dictionary).get("mode", FIT_MODE_MATCH))
+				var f := feat[ch] if ch >= 0 and ch < feat.size() else 0.0
+				var a := profile[ch] if ch >= 0 and ch < profile.size() else 0.0
+				match mode:
+					FIT_MODE_MATCH:
+						s += w * (1.0 - absf(f - a))
+					_:
+						pass
+			scores[asset_i] = s
+			if s > best:
+				best = s
+				winner = asset_i
+		results.append({"scores": scores, "winner": winner})
+	return results
 
 
 ## 单资产单 footprint 的 GPU 放置调度入口，由 run_multi_asset 针对每个 pivot 变体调用一次。
@@ -1156,16 +1108,24 @@ func run_minimal(
 		push_error("VoxelPlacementGenerator: footprint is limited to %d voxels" % FOOTPRINT_CAPACITY)
 		return {}
 
-	var complexity_data := _normalize_float_array(complexity_field, voxel_count)
-	var collision_data := _normalize_float_array(collision_field, voxel_count)
-	var _complexity_field_gpu_rid: RID = _rid_from_value(settings.get("complexity_field_buffer_rid", RID()))
-	var _collision_field_gpu_rid: RID = _rid_from_value(settings.get("collision_field_buffer_rid", RID()))
+	var _complexity_field_gpu_rid: RID = VariantUtils.rid_from_value(settings.get("complexity_field_buffer_rid", RID()))
+	var _collision_field_gpu_rid: RID = VariantUtils.rid_from_value(settings.get("collision_field_buffer_rid", RID()))
 	var _complexity_field_gpu_resident: bool = _complexity_field_gpu_rid.is_valid() and _collision_field_gpu_rid.is_valid()
+	# Resident GPU field path never packs/uploads/echoes these CPU arrays: the field lives in
+	# the borrowed buffers, the non-resident pack branch below is skipped, success output reads
+	# complexity_field_out from the GPU buffer, and blocked/empty outputs are re-derived from
+	# originals by run_multi_asset. So skip the two full-grid duplicate+resize allocs per pivot.
+	var complexity_data := PackedFloat32Array() if _complexity_field_gpu_resident else _normalize_float_array(complexity_field, voxel_count)
+	var collision_data := PackedFloat32Array() if _complexity_field_gpu_resident else _normalize_float_array(collision_field, voxel_count)
 	var _complexity_field_gpu_borrowed_external := _complexity_field_gpu_resident \
-		and bool(settings.get("complexity_field_buffer_borrowed", settings.get("complexity_field_buffer_external", true))) \
-		and bool(settings.get("collision_field_buffer_borrowed", settings.get("collision_field_buffer_external", true)))
-	var _complexity_field_gpu_source := str(settings.get("gpu_state_chain_source", settings.get("complexity_field_read_source", "caller_provided_complexity_collision_field_rids")))
-	var _complexity_field_gpu_owner := str(settings.get("complexity_field_buffer_owner", settings.get("resident_complexity_field_owner", "external")))
+		and bool(settings.get("complexity_field_buffer_borrowed", true)) \
+		and bool(settings.get("collision_field_buffer_borrowed", true))
+	var _complexity_field_gpu_source := str(settings.get("gpu_state_chain_source", "caller_provided_complexity_collision_field_rids"))
+	var _complexity_field_gpu_owner := str(settings.get("complexity_field_buffer_owner", "external"))
+	# Pivot voxel offset applied on the GPU (subtracted before yaw) instead of baked
+	# into local_pos on the CPU, so footprint bytes are pivot-invariant. Defaults to
+	# ZERO for callers that already pass a pivot-resolved footprint.
+	var footprint_pivot_voxels: Vector3i = VoxelGeneral.vector3i_from_value(settings.get("footprint_pivot_voxels", Vector3i.ZERO), Vector3i.ZERO)
 	var footprint_buffers := _pack_footprint(footprint)
 	var tile_counts := Vector3i(
 		ceili(float(grid_size.x) / float(TILE_SIZE)),
@@ -1173,9 +1133,11 @@ func run_minimal(
 		ceili(float(grid_size.z) / float(TILE_SIZE))
 	)
 	var tile_count := tile_counts.x * tile_counts.y * tile_counts.z
-	var candidate_voxel_sparse_ids := _build_candidate_voxel_sparse_ids(settings, tile_counts, tile_count)
-	var direct_all_tiles := _uses_direct_all_tile_candidates(settings)
-	var candidate_voxel_sparse_count := tile_count if direct_all_tiles else candidate_voxel_sparse_ids.size()
+	# CPU 候选注入已移除：候选来源只有 resident GPU route（下方按需展开）；
+	# 无 resident route 时以 all-tiles 起步。
+	var candidate_voxel_sparse_ids := PackedInt32Array()
+	var direct_all_tiles := true
+	var candidate_voxel_sparse_count := tile_count
 	var gpu_contract := _validate_gpu_runtime_profile_contract(settings)
 	if not bool(gpu_contract.get("ok", true)):
 		return _gpu_contract_blocked_minimal_output(
@@ -1237,6 +1199,8 @@ func run_minimal(
 			gpu_contract
 		)
 
+	var resident_route_requested := str(settings.get("candidate_route_readback_source", "none")) != "none" \
+		or str(settings.get("candidate_route_runtime_read_source", "none")) != "none"
 	var route_binding := _prepare_candidate_route_binding(settings, direct_all_tiles)
 	var route_settings: Dictionary = route_binding.get("settings", settings)
 	var resident_route_sparse := _prepare_candidate_sparse_ids_from_resident_route_gpu(route_binding, tile_count)
@@ -1247,12 +1211,21 @@ func run_minimal(
 		candidate_voxel_sparse_count = candidate_voxel_sparse_ids.size()
 		_mark_candidate_route_sparse_adapter_ready(route_settings, resident_route_sparse)
 		route_binding["settings"] = route_settings
-	elif bool(route_binding.get("bindable", false)):
-		_mark_candidate_route_sparse_adapter_blocked(route_settings, str(resident_route_sparse.get("reason", "resident_route_gpu_sparse_adapter_blocked")))
+	elif resident_route_requested:
+		# CPU 候选回退已移除：resident route 被请求却无法绑定/展开时硬失败，
+		# 不再静默退化为 all-tiles / empty。（未请求 route 仍走 all-tiles，非错误。）
+		var route_block_reason := str(route_binding.get("bindable_block_reason", "resident_route_unavailable"))
+		if bool(route_binding.get("bindable", false)):
+			route_block_reason = str(resident_route_sparse.get("reason", "resident_route_gpu_sparse_adapter_blocked"))
+		_mark_candidate_route_sparse_adapter_blocked(route_settings, route_block_reason)
 		route_binding["settings"] = route_settings
-		candidate_voxel_sparse_ids = PackedInt32Array()
-		direct_all_tiles = false
-		candidate_voxel_sparse_count = 0
+		_free_gpu()
+		push_error("VoxelPlacementGenerator: resident candidate route requested but unavailable: %s" % route_block_reason)
+		return _gpu_contract_blocked_minimal_output(
+			complexity_data, collision_data, voxel_count, tile_count, tile_counts,
+			candidate_voxel_sparse_ids,
+			_gpu_contract_result(false, "resident_candidate_route_unavailable:%s" % route_block_reason)
+		)
 	if candidate_voxel_sparse_count <= 0:
 		_free_gpu()
 		var empty_output := _empty_prefilter_output(
@@ -1390,7 +1363,8 @@ func run_minimal(
 		footprint.size(),
 		has_target,
 		gpu_contract,
-		route_settings
+		route_settings,
+		footprint_pivot_voxels
 	)
 	if resident_route_sparse_gpu:
 		resident_route_sparse["score_dispatch_indirect"] = bool(score_dispatch.get("score_dispatch_indirect", false))
@@ -1408,16 +1382,32 @@ func run_minimal(
 		stamp_bounds_buffer,
 		grid_size,
 		footprint.size(),
-		settings
+		settings,
+		footprint_pivot_voxels
 	)
+
+	# GPU-direct handoff mode: keep placement result buffers resident, sum scores
+	# on GPU (8-byte control scalar for pivot selection), skip bulk readbacks.
+	var retain_placement_result_buffers := bool(settings.get("retain_placement_result_buffers", false))
+	var read_placement_results := bool(settings.get("read_placement_results", not retain_placement_result_buffers))
+	var score_sum_buffer := RID()
+	if retain_placement_result_buffers:
+		score_sum_buffer = _dispatch_placement_score_sum(result_buffer, result_count_buffer, result_capacity)
 
 	submit_and_sync(true)
 
 	var result_count_data := _rd.buffer_get_data(result_count_buffer)
-	var result_count := _decode_u32_count(result_count_data)
+	var result_count := BufferUtils.decode_u32_count(result_count_data)
 	result_count = clampi(result_count, 0, result_capacity)
 	var result_readback_bytes := result_count * RECORD_STRIDE * 16
-	var result_data := _rd.buffer_get_data(result_buffer, 0, result_readback_bytes)
+	var result_data := _rd.buffer_get_data(result_buffer, 0, result_readback_bytes) if read_placement_results else PackedByteArray()
+	var placement_score_sum := 0.0
+	var placement_valid_count := 0
+	if score_sum_buffer.is_valid():
+		var score_sum_bytes := _rd.buffer_get_data(score_sum_buffer, 0, 8)
+		if score_sum_bytes.size() >= 8:
+			placement_score_sum = score_sum_bytes.decode_float(0)
+			placement_valid_count = int(score_sum_bytes.decode_u32(4))
 	var read_tile_topk := bool(settings.get("read_tile_topk", false))
 	var tile_topk_data := _rd.buffer_get_data(tile_topk_buffer) if read_tile_topk else PackedByteArray()
 	var compact_state_chain := _compact_delta_state_chain_requested(settings)
@@ -1427,22 +1417,24 @@ func run_minimal(
 		pass  # GPU-resident: skip full-field readback, borrowed buffers stay on GPU
 	var scene_out_data := _rd.buffer_get_data(complexity_buffer) if read_full_field_outputs else PackedByteArray()
 	var collision_out_data := _rd.buffer_get_data(collision_buffer) if read_full_field_outputs else PackedByteArray()
-	var stamp_delta_count_data := _rd.buffer_get_data(stamp_delta_count_buffer)
-	var stamp_delta_count := clampi(_decode_u32_count(stamp_delta_count_data), 0, stamp_capacity)
 	var read_stamp_deltas := bool(settings.get("read_stamp_deltas", false))
+	# stamp_delta_count is only consumed when the CPU actually reads the stamp deltas, or
+	# when the compact stamp-delta state-chain contract is the active branch. In GPU-resident
+	# or full-field-readback mode the count is neither needed nor reported, so skip the readback.
+	var need_stamp_delta_count := read_stamp_deltas \
+		or (compact_state_chain and not _gpu_resident_field_input and not read_full_field_outputs)
+	var stamp_delta_count_data := _rd.buffer_get_data(stamp_delta_count_buffer) if need_stamp_delta_count else PackedByteArray()
+	var stamp_delta_count := clampi(BufferUtils.decode_u32_count(stamp_delta_count_data), 0, stamp_capacity)
 	var stamp_delta_data := _rd.buffer_get_data(stamp_delta_buffer, 0, stamp_delta_count * DELTA_STRIDE * 16) if read_stamp_deltas else PackedByteArray()
 	var decoded_stamp_deltas: Array[Dictionary] = []
 	if read_stamp_deltas:
 		decoded_stamp_deltas = _decode_stamp_deltas(stamp_delta_data, stamp_delta_count)
-	var stamp_bounds_data := _rd.buffer_get_data(stamp_bounds_buffer, 0, result_count * STAMP_BOUNDS_STRIDE * 16)
+	var stamp_bounds_data := _rd.buffer_get_data(stamp_bounds_buffer, 0, result_count * STAMP_BOUNDS_STRIDE * 16) if read_placement_results else PackedByteArray()
 	var read_debug_voxel := bool(settings.get("read_debug_voxel", false))
 	var debug_voxel_data := _rd.buffer_get_data(debug_voxel_buffer) if read_debug_voxel else PackedByteArray()
 	var score_contract_debug_data := _rd.buffer_get_data(score_contract_debug_buffer)
 	var score_contract_debug := _decode_score_contract_debug(score_contract_debug_data)
-	var read_route_adapter_debug := bool(route_settings.get(
-		"read_candidate_route_sparse_adapter_debug",
-		route_settings.get("read_resident_route_sparse_adapter_debug", false)
-	))
+	var read_route_adapter_debug := bool(route_settings.get("read_candidate_route_sparse_adapter_debug", false))
 	var read_route_binding_debug := bool(route_settings.get(
 		"read_candidate_route_binding_debug",
 		read_route_adapter_debug
@@ -1512,7 +1504,7 @@ func run_minimal(
 		"full_field_readback": _state_chain_contract,
 		"stamp_deltas": decoded_stamp_deltas,
 		"stamp_delta_count": stamp_delta_count,
-		"stamp_delta_count_source": "stamp_shader_storage_buffer",
+		"stamp_delta_count_source": "stamp_shader_storage_buffer" if need_stamp_delta_count else "skipped_gpu_resident_state_chain",
 		"stamp_delta_readback_source": "stamp_shader_storage_buffer" if read_stamp_deltas else "disabled",
 		"stamp_bounds": _decode_stamp_bounds(stamp_bounds_data, result_count, grid_size),
 		"stamp_bounds_source": "stamp_shader_storage_buffer",
@@ -1542,6 +1534,22 @@ func run_minimal(
 		output["cpu_state_chain"] = _state_chain_contract
 	if bool(_state_chain_contract.get("gpu_state_chaining", false)):
 		output["gpu_state_chain"] = _state_chain_contract
+	if retain_placement_result_buffers:
+		output["placement_score_sum"] = placement_score_sum
+		output["placement_valid_count"] = placement_valid_count
+		output["placement_results_readback_skipped"] = not read_placement_results
+		# Ownership handoff: untracked RIDs survive _free_gpu; the caller frees
+		# them via _release_placement_result_buffers after the GPU-direct apply.
+		# 携带创建设备：_free_gpu 会把 _rd 置 null，释放时必须用它 free_rid。
+		output["placement_result_buffers"] = {
+			"placement_results_rid": untrack_rid(result_buffer),
+			"result_count_rid": untrack_rid(result_count_buffer),
+			"stamp_bounds_rid": untrack_rid(stamp_bounds_buffer),
+			"result_capacity": result_capacity,
+			"result_count": result_count,
+			"owner": "VoxelPlacementGenerator",
+			"rendering_device": _rd,
+		}
 
 	_free_gpu()
 	return output
@@ -1696,8 +1704,8 @@ func _apply_settings(settings: Dictionary) -> void:
 	scene_write_scale = float(settings.get("scene_write_scale", scene_write_scale))
 	collision_write_scale = float(settings.get("collision_write_scale", collision_write_scale))
 	asset_index = int(settings.get("asset_index", asset_index))
-	rotation_index = int(settings.get("rotation_index", rotation_index))
 	scale_index = int(settings.get("scale_index", scale_index))
+	rotation_slots = maxi(int(settings.get("rotation_slots", rotation_slots)), 1)
 	asset_color = Color(settings.get("asset_color", asset_color))
 	top_k = clampi(top_k, 1, 8)
 	result_capacity = maxi(result_capacity, 1)
@@ -1706,8 +1714,8 @@ func _apply_settings(settings: Dictionary) -> void:
 ## 校验 GPU 自动物体运行时与体素画像容器是否就绪、渲染设备是否一致、
 ## 所需 GPU 缓冲区是否齐全，构建并返回 gpu_runtime_profile_contract 校验结果。
 func _validate_gpu_runtime_profile_contract(settings: Dictionary) -> Dictionary:
-	var runtime_provider = _first_config_object(settings, GPU_RUNTIME_PROVIDER_CONFIG_KEYS)
-	var profile_container = _first_config_object(settings, GPU_PROFILE_CONTAINER_CONFIG_KEYS)
+	var runtime_provider = _config_object(settings, GPU_RUNTIME_PROVIDER_CONFIG_KEY)
+	var profile_container = _config_object(settings, GPU_PROFILE_CONTAINER_CONFIG_KEY)
 	var require_contract := bool(settings.get("require_gpu_runtime_profile_contract", false))
 	if runtime_provider == null and profile_container == null:
 		if require_contract:
@@ -1775,7 +1783,7 @@ func _prepare_scene_voxel_tile_object_ref_exclusion(
 	if not _score_same_type_spacing_active(gpu_contract, settings):
 		return _scene_voxel_tile_object_ref_exclusion_result(true, "not_requested")
 
-	var committer := _first_config_object(settings, SCENE_VOXEL_TILE_COMMITTER_CONFIG_KEYS)
+	var committer := _config_object(settings, SCENE_VOXEL_COMMITTER_CONFIG_KEY)
 	if committer == null:
 		return _scene_voxel_tile_object_ref_unavailable("missing_scene_voxel_committer", gpu_contract, settings)
 	if not committer.has_method("get_scene_voxel_tile_gpu_buffer") \
@@ -1880,10 +1888,7 @@ func _scene_voxel_tile_object_ref_unavailable(
 	gpu_contract: Dictionary,
 	settings: Dictionary
 ) -> Dictionary:
-	var require_object_refs := bool(settings.get(
-		"require_scene_voxel_tile_object_ref_exclusion",
-		settings.get("require_same_type_exclusion_object_refs", settings.get("require_object_ref_exclusion", false))
-	))
+	var require_object_refs := bool(settings.get("require_scene_voxel_tile_object_ref_exclusion", false))
 	var fallback_allowed := _runtime_spacing_full_scan_debug_fallback_allowed(gpu_contract, settings)
 	if fallback_allowed and not require_object_refs:
 		var fallback := _scene_voxel_tile_object_ref_exclusion_result(true, reason)
@@ -1906,13 +1911,7 @@ func _scene_voxel_tile_object_ref_unavailable(
 ## 判断在 object ref 缓冲区不可用时，是否允许退化为调试用的全量扫描间距检测：
 ## 需要 settings 显式开启该调试开关，且运行时物体数量未超过配置的上限。
 func _runtime_spacing_full_scan_debug_fallback_allowed(gpu_contract: Dictionary, settings: Dictionary) -> bool:
-	var requested := bool(settings.get(
-		"allow_runtime_spacing_full_scan_debug",
-		settings.get(
-			"debug_allow_runtime_spacing_full_scan",
-			settings.get("allow_same_type_exclusion_full_runtime_scan_debug", false)
-		)
-	))
+	var requested := bool(settings.get("allow_runtime_spacing_full_scan_debug", false))
 	if not requested:
 		return false
 	var runtime_summary: Dictionary = gpu_contract.get("runtime_summary", {})
@@ -2030,13 +2029,11 @@ static func _with_same_type_exclusion_defaults(result: Dictionary) -> Dictionary
 	return result
 
 
-## 按顺序在 settings 中查找 keys 列表对应的值，返回第一个类型为 Object 的值；找不到则返回 null。
-func _first_config_object(settings: Dictionary, keys: Array) -> Object:
-	for key in keys:
-		if settings.has(key):
-			var value = settings.get(key)
-			if value is Object:
-				return value as Object
+## 从 settings 按 key 取出配置对象；不存在或类型不为 Object 时返回 null。
+func _config_object(settings: Dictionary, key: String) -> Object:
+	var value = settings.get(key)
+	if value is Object:
+		return value as Object
 	return null
 
 
@@ -2131,6 +2128,56 @@ func _placement_pipeline_ready() -> bool:
 		and _pipeline_pack_target_field.is_valid()
 
 
+## 在常驻 result 记录上调度分数求和 pass，输出 8 字节控制标量（score 总和 + 有效数），
+## 供 pivot 变体选优在 CPU 比较，免除整块 result 记录回读。
+func _dispatch_placement_score_sum(result_buffer: RID, result_count_buffer: RID, result_capacity: int) -> RID:
+	var shader := load_compute_shader(SCORE_SUM_SHADER_PATH, SCOPE_FRAME, "placement_result_score_sum")
+	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "placement_result_score_sum")
+	if not shader.is_valid() or not pipeline.is_valid():
+		return RID()
+	var score_sum_buffer := storage_buffer_zero(8, SCOPE_FRAME, "placement_score_sum_out")
+	if not score_sum_buffer.is_valid():
+		return RID()
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, result_buffer),
+		make_storage_uniform(1, result_count_buffer),
+		make_storage_uniform(2, score_sum_buffer),
+	], shader, 0, SCOPE_PASS, "placement_result_score_sum_set0")
+	if not set0.is_valid():
+		return RID()
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, result_capacity)
+	push.encode_s32(4, RECORD_STRIDE)
+	var cl := begin_compute_list()
+	if cl < 0:
+		return RID()
+	_gpu_dispatch_pipeline_sets(cl, pipeline, [set0], push, Vector3i(1, 1, 1))
+	end_compute_list()
+	return score_sum_buffer
+
+
+## 释放 run_minimal 交接出的常驻 placement 缓冲区 RID（untrack 后由调用方负责生命周期），
+## 幂等：释放后清空 handoff 字典。gpu_out 可为 run_minimal 输出或 asset_result。
+## run_minimal 末尾 _free_gpu 已把 _rd 置 null，必须用 handoff 携带的创建设备 free_rid。
+func _release_placement_result_buffers(gpu_out: Dictionary) -> void:
+	if gpu_out.is_empty():
+		return
+	var handoff: Dictionary = gpu_out.get("placement_result_buffers", {})
+	if handoff.is_empty():
+		return
+	var raw_handoff_rd = handoff.get("rendering_device", null)
+	var handoff_rd: RenderingDevice = raw_handoff_rd if raw_handoff_rd is RenderingDevice else _rd
+	for key in ["placement_results_rid", "result_count_rid", "stamp_bounds_rid"]:
+		var rid_value = handoff.get(key, RID())
+		if rid_value is RID and (rid_value as RID).is_valid():
+			if handoff_rd != null:
+				handoff_rd.free_rid(rid_value)
+			else:
+				release_rid(rid_value, false)
+	gpu_out["placement_result_buffers"] = {}
+
+
 ## 释放本生成器持有的 GPU 资源（各计算管线与着色器 RID 全部重置），并调用 dispose 清理其余借用资源。
 func _free_gpu() -> void:
 	dispose()
@@ -2148,52 +2195,6 @@ func _free_gpu() -> void:
 	_shader_pack_target_field = RID()
 	_shader_candidate_route_sparse_adapter = RID()
 	_shader_candidate_route_sparse_adapter_finalize = RID()
-
-
-## 根据资产配置中的候选体素区域（CPU 侧配置项）转换为去重后的稀疏分片 ID 列表；
-## 未配置候选区域或区域非法时返回空数组并给出警告。
-func _build_candidate_voxel_sparse_ids(settings: Dictionary, tile_counts: Vector3i, tile_count: int) -> PackedInt32Array:
-	var ids := PackedInt32Array()
-	var raw_regions: Variant = null
-	for key in ASSET_CANDIDATE_REGION_CONFIG_KEYS:
-		if settings.has(key):
-			raw_regions = settings.get(key)
-			break
-	if raw_regions == null:
-		return ids
-	if not raw_regions is Array:
-		push_warning("VoxelPlacementGenerator: candidate_voxel_regions must be an Array; skipping asset")
-		return ids
-
-	var seen := {}
-	for region in raw_regions:
-		var tile_id := _voxel_sparse_to_tile_id(region, tile_counts)
-		if tile_id < 0 or tile_id >= tile_count or seen.has(tile_id):
-			continue
-		seen[tile_id] = true
-		ids.append(tile_id)
-
-	if ids.is_empty():
-		push_warning("VoxelPlacementGenerator: candidate_voxel_regions produced no valid regions; skipping asset")
-	return ids
-
-
-## 判断 settings 是否未配置任何候选体素区域键；若是，则应采用“直接测试全部分片”模式。
-func _uses_direct_all_tile_candidates(settings: Dictionary) -> bool:
-	for key in ASSET_CANDIDATE_REGION_CONFIG_KEYS:
-		if settings.has(key):
-			return false
-	return true
-
-
-## 将 region（Vector3i/Vector3/整数索引）转换为按 tile_counts 展开的一维分片 ID。
-static func _voxel_sparse_to_tile_id(region: Variant, tile_counts: Vector3i) -> int:
-	if region is Vector3i:
-		return region.x + tile_counts.x * (region.y + tile_counts.y * region.z)
-	if region is Vector3:
-		var v := Vector3i(int(region.x), int(region.y), int(region.z))
-		return v.x + tile_counts.x * (v.y + tile_counts.y * v.z)
-	return int(region)
 
 
 ## 将 search_radius 配置值（标量或向量）归一化为 Vector3i，并将各分量夹紧到 [0, 4] 范围内。
@@ -2238,7 +2239,8 @@ func _dispatch_score(
 	footprint_count: int,
 	has_target: int,
 	gpu_contract: Dictionary,
-	settings: Dictionary
+	settings: Dictionary,
+	footprint_pivot: Vector3i
 ) -> Dictionary:
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, complexity_buffer),
@@ -2265,9 +2267,9 @@ func _dispatch_score(
 	var sample_min: Vector3i = settings.get("sample_min", Vector3i.ZERO)
 	var sample_max: Vector3i = settings.get("sample_max", grid_size)
 	var search_radius: Vector3i = _normalize_search_radius(settings.get("search_radius", Vector3i.ZERO))
-	var packed_color := _pack_color_rgba8(asset_color)
+	var packed_color := BufferUtils.pack_shader_rgba8_word(asset_color)
 	var push := PackedByteArray()
-	push.resize(128)
+	push.resize(144)
 	push.encode_s32(0, grid_size.x)
 	push.encode_s32(4, grid_size.y)
 	push.encode_s32(8, grid_size.z)
@@ -2286,7 +2288,7 @@ func _dispatch_score(
 	push.encode_s32(60, has_target)
 	push.encode_s32(64, footprint_count)
 	push.encode_s32(68, asset_index)
-	push.encode_s32(72, rotation_index)
+	push.encode_s32(72, rotation_slots) # rotation sweep width; shader evaluates 0..N-1 yaws, records best slot
 	push.encode_s32(76, scale_index)
 	push.encode_float(80, solid_threshold)
 	push.encode_float(84, collision_limit)
@@ -2300,6 +2302,10 @@ func _dispatch_score(
 	push.encode_s32(116, search_radius.x)
 	push.encode_s32(120, search_radius.y)
 	push.encode_s32(124, search_radius.z)
+	push.encode_s32(128, footprint_pivot.x)
+	push.encode_s32(132, footprint_pivot.y)
+	push.encode_s32(136, footprint_pivot.z)
+	push.encode_s32(140, 0)
 
 	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_score)
@@ -2328,7 +2334,7 @@ func _score_dispatch_indirect_decision(
 	candidate_voxel_sparse_count: int,
 	direct_all_tiles: bool
 ) -> Dictionary:
-	var api_supported := _rd != null and _rd.has_method("compute_list_dispatch_indirect")
+	var api_supported := _rd != null
 	if direct_all_tiles:
 		return {
 			"score_dispatch_indirect": false,
@@ -2455,15 +2461,9 @@ func _dispatch_candidate_route_sparse_adapter(
 	push.encode_s32(16, int(route_binding.get("record_capacity", 0)))
 
 	var cl := begin_compute_list()
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_candidate_route_sparse_adapter)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, ceil_div(output_capacity, CANDIDATE_ROUTE_SPARSE_ADAPTER_LOCAL_SIZE), 1, 1)
+	_gpu_dispatch_pipeline_sets(cl, _pipeline_candidate_route_sparse_adapter, [set0], push, Vector3i(ceil_div(output_capacity, CANDIDATE_ROUTE_SPARSE_ADAPTER_LOCAL_SIZE), 1, 1))
 	_rd.compute_list_add_barrier(cl)
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_candidate_route_sparse_adapter_finalize)
-	_rd.compute_list_bind_uniform_set(cl, finalize_set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, 1, 1, 1)
+	_gpu_dispatch_pipeline_sets(cl, _pipeline_candidate_route_sparse_adapter_finalize, [finalize_set0], push, Vector3i(1, 1, 1))
 	_rd.compute_list_add_barrier(cl)
 	end_compute_list()
 
@@ -2649,39 +2649,32 @@ func _prepare_candidate_route_binding(settings: Dictionary, direct_all_tiles: bo
 		resident_contract = (route_settings.get("resident_candidate_route_contract") as Dictionary).duplicate(true)
 	var has_resident_contract := not resident_contract.is_empty()
 
-	var record_rid: RID = _rid_from_contract(resident_contract, "resident_route_record_rid", "resident_route_record_buffer_rid")
-	var range_rid: RID = _rid_from_contract(resident_contract, "resident_route_range_rid", "resident_route_range_buffer_rid")
-	var record_stride := int(resident_contract.get("resident_route_record_stride", resident_contract.get("resident_route_record_stride_bytes", 0)))
-	var range_stride := int(resident_contract.get("resident_route_range_stride", resident_contract.get("resident_route_range_stride_bytes", 0)))
+	var record_rid: RID = VariantUtils.rid_from_value(resident_contract.get("resident_route_record_rid", RID()))
+	var range_rid: RID = VariantUtils.rid_from_value(resident_contract.get("resident_route_range_rid", RID()))
+	var record_stride := int(resident_contract.get("resident_route_record_stride", 0))
+	var range_stride := int(resident_contract.get("resident_route_range_stride", 0))
 	var range_count := int(resident_contract.get("resident_route_range_count", 0))
-	var record_capacity := int(resident_contract.get("resident_route_record_capacity", resident_contract.get("resident_route_record_count", 0)))
-	var schema_version := int(resident_contract.get("schema_version", resident_contract.get("resident_route_schema_version", 0)))
+	var record_capacity := int(resident_contract.get("resident_route_record_capacity", 0))
+	var schema_version := int(resident_contract.get("schema_version", 0))
 	var requested_readback := str(route_settings.get("candidate_route_readback_source", "none"))
 	var requested_runtime := str(route_settings.get("candidate_route_runtime_read_source", "none"))
 	var requested_resident_label := requested_readback != "none" or requested_runtime != "none"
-	var cpu_route_dictionary := _has_candidate_regions_by_asset(route_settings)
-	var cpu_expanded_route_input := _has_asset_candidate_regions(route_settings)
-	var rd_matches_vpg := bool(resident_contract.get("same_rendering_device_as_vpg", resident_contract.get("rendering_device_matches_vpg", false)))
+	var rd_matches_vpg := bool(resident_contract.get("same_rendering_device_as_vpg", false))
 	var bindable := requested_resident_label \
 		and has_resident_contract \
-		and not cpu_route_dictionary \
 		and record_rid.is_valid() \
 		and range_rid.is_valid() \
 		and rd_matches_vpg \
 		and record_stride == CANDIDATE_ROUTE_RECORD_STRIDE_BYTES \
 		and range_stride == CANDIDATE_ROUTE_RANGE_STRIDE_BYTES \
 		and range_count > 0 \
-		and schema_version == CANDIDATE_ROUTE_CONTRACT_SCHEMA_VERSION
+		and schema_version == CANDIDATE_ROUTE_SCHEMA_VERSION
 	var bindable_block_reason := "none"
 	if not bindable:
 		if not requested_resident_label:
 			bindable_block_reason = "resident_route_not_requested"
 		elif not has_resident_contract:
 			bindable_block_reason = "missing_resident_route_contract"
-		elif cpu_route_dictionary:
-			bindable_block_reason = "cpu_route_dictionary_present"
-		elif cpu_expanded_route_input:
-			bindable_block_reason = "asset_cpu_route_present"
 		elif not record_rid.is_valid():
 			bindable_block_reason = "missing_or_invalid_route_record_rid"
 		elif not range_rid.is_valid():
@@ -2694,7 +2687,7 @@ func _prepare_candidate_route_binding(settings: Dictionary, direct_all_tiles: bo
 			bindable_block_reason = "route_range_stride_mismatch"
 		elif range_count <= 0:
 			bindable_block_reason = "route_range_count_not_positive"
-		elif schema_version != CANDIDATE_ROUTE_CONTRACT_SCHEMA_VERSION:
+		elif schema_version != CANDIDATE_ROUTE_SCHEMA_VERSION:
 			bindable_block_reason = "route_schema_version_mismatch"
 		else:
 			bindable_block_reason = "unknown_route_binding_block"
@@ -2714,7 +2707,7 @@ func _prepare_candidate_route_binding(settings: Dictionary, direct_all_tiles: bo
 		resident_contract["vpg_route_buffer_binding_source"] = "score_shader_set2_uniform_set" if bindable else "none"
 		resident_contract["vpg_route_buffer_binding_debug_source"] = "score_shader_candidate_route_binding_debug" if bindable else "none"
 		resident_contract["vpg_route_buffer_binding_block_reason"] = bindable_block_reason
-		resident_contract["cpu_expanded_route_input"] = bool(resident_contract.get("cpu_expanded_route_input", false)) or cpu_route_dictionary or cpu_expanded_route_input
+		resident_contract["cpu_expanded_route_input"] = bool(resident_contract.get("cpu_expanded_route_input", false))
 		resident_contract["direct_all_tiles"] = bool(resident_contract.get("direct_all_tiles", false)) or direct_all_tiles
 		route_settings["candidate_route_input_contract"] = resident_contract
 		route_settings["resident_candidate_route_contract"] = resident_contract
@@ -2725,6 +2718,7 @@ func _prepare_candidate_route_binding(settings: Dictionary, direct_all_tiles: bo
 		"range_buffer": range_rid if bindable else RID(),
 		"debug_buffer": debug_buffer,
 		"bindable": bindable,
+		"bindable_block_reason": bindable_block_reason,
 		"range_count": range_count if bindable else 0,
 		"record_capacity": record_capacity if bindable else 0,
 	}
@@ -2895,13 +2889,7 @@ func _pack_score_contract_params(gpu_contract: Dictionary, settings: Dictionary)
 	var object_ref_tile_grid: Vector3i = object_ref_contract.get("object_ref_tile_grid_size", Vector3i.ZERO) if object_ref_enabled else Vector3i.ZERO
 	var object_ref_tile_size: Vector3i = object_ref_contract.get("object_ref_tile_size", Vector3i(TILE_SIZE, TILE_SIZE, TILE_SIZE)) if object_ref_enabled else Vector3i(TILE_SIZE, TILE_SIZE, TILE_SIZE)
 	var full_scan_debug_fallback := bool(object_ref_contract.get("same_type_exclusion_full_runtime_scan_debug_fallback", false))
-	var asset_profile_id := int(settings.get(
-		"profile_id",
-		settings.get(
-			"auto_voxel_profile_id",
-			settings.get("runtime_profile_id", settings.get("asset_profile_id", 0))
-		)
-	))
+	var asset_profile_id := int(settings.get("profile_id", 0))
 	var bytes := PackedByteArray()
 	bytes.resize(112)
 	bytes.encode_s32(0, 1 if contract_enabled else 0)
@@ -3098,10 +3086,7 @@ func _dispatch_reduce(tile_topk_buffer: RID, result_buffer: RID, result_count_bu
 	push.encode_float(28, 0.0)
 
 	var cl := begin_compute_list()
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_reduce)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, 1, 1, 1)
+	_gpu_dispatch_pipeline_sets(cl, _pipeline_reduce, [set0], push, Vector3i(1, 1, 1))
 	end_compute_list()
 
 
@@ -3121,11 +3106,24 @@ func _dispatch_stamp(
 	stamp_bounds_buffer: RID,
 	grid_size: Vector3i,
 	footprint_count: int,
-	settings: Dictionary
+	settings: Dictionary,
+	footprint_pivot: Vector3i
 ) -> void:
 	var init_set0 := create_uniform_set([
 		make_storage_uniform(0, stamp_bounds_buffer),
 	], _shader_init_stamp_bounds, 0)
+
+	# Stamp-only commit：BlendSV 工作场与 committed（纯 auto）SV 常驻场分离时，
+	# stamp 双写两组 field（binding 9/10 + dual_commit flag）；否则别名绑定并跳过第二次写入。
+	var commit_complexity_buffer: RID = VariantUtils.rid_from_value(settings.get("commit_complexity_field_buffer_rid", RID()))
+	var commit_collision_buffer: RID = VariantUtils.rid_from_value(settings.get("commit_collision_field_buffer_rid", RID()))
+	var dual_commit := commit_complexity_buffer.is_valid() \
+		and commit_collision_buffer.is_valid() \
+		and (commit_complexity_buffer != complexity_buffer or commit_collision_buffer != collision_buffer)
+	if not commit_complexity_buffer.is_valid():
+		commit_complexity_buffer = complexity_buffer
+	if not commit_collision_buffer.is_valid():
+		commit_collision_buffer = collision_buffer
 
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, complexity_buffer),
@@ -3137,12 +3135,14 @@ func _dispatch_stamp(
 		make_storage_uniform(6, stamp_delta_buffer),
 		make_storage_uniform(7, stamp_delta_count_buffer),
 		make_storage_uniform(8, stamp_bounds_buffer),
+		make_storage_uniform(9, commit_complexity_buffer),
+		make_storage_uniform(10, commit_collision_buffer),
 	], _shader_stamp, 0)
 
 	var write_min: Vector3i = settings.get("write_min", Vector3i.ZERO)
 	var write_max: Vector3i = settings.get("write_max", grid_size)
 	var push := PackedByteArray()
-	push.resize(80)
+	push.resize(96)
 	push.encode_s32(0, grid_size.x)
 	push.encode_s32(4, grid_size.y)
 	push.encode_s32(8, grid_size.z)
@@ -3150,7 +3150,7 @@ func _dispatch_stamp(
 	push.encode_s32(16, write_min.x)
 	push.encode_s32(20, write_min.y)
 	push.encode_s32(24, write_min.z)
-	push.encode_s32(28, 0)
+	push.encode_s32(28, rotation_slots) # rotation sweep width; stamp yaws footprint by record's best slot
 	push.encode_s32(32, write_max.x)
 	push.encode_s32(36, write_max.y)
 	push.encode_s32(40, write_max.z)
@@ -3158,11 +3158,15 @@ func _dispatch_stamp(
 	push.encode_float(48, solid_threshold)
 	push.encode_float(52, scene_write_scale)
 	push.encode_float(56, collision_write_scale)
-	push.encode_float(60, 0.0)
+	push.encode_float(60, 1.0 if dual_commit else 0.0)
 	push.encode_float(64, asset_color.r)
 	push.encode_float(68, asset_color.g)
 	push.encode_float(72, asset_color.b)
 	push.encode_float(76, 0.0)
+	push.encode_s32(80, footprint_pivot.x)
+	push.encode_s32(84, footprint_pivot.y)
+	push.encode_s32(88, footprint_pivot.z)
+	push.encode_s32(92, 0)
 
 	var init_push := PackedByteArray()
 	init_push.resize(16)
@@ -3175,26 +3179,20 @@ func _dispatch_stamp(
 	var init_groups := ceili(float(maxi(result_capacity, 1)) / 64.0)
 	var groups := ceili(float(maxi(total_threads, 1)) / 64.0)
 	var cl := begin_compute_list()
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_init_stamp_bounds)
-	_rd.compute_list_bind_uniform_set(cl, init_set0, 0)
-	_rd.compute_list_set_push_constant(cl, init_push, init_push.size())
-	_rd.compute_list_dispatch(cl, init_groups, 1, 1)
+	_gpu_dispatch_pipeline_sets(cl, _pipeline_init_stamp_bounds, [init_set0], init_push, Vector3i(init_groups, 1, 1))
 	_rd.compute_list_add_barrier(cl)
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_stamp)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, groups, 1, 1)
+	_gpu_dispatch_pipeline_sets(cl, _pipeline_stamp, [set0], push, Vector3i(groups, 1, 1))
 	end_compute_list()
 
 
-## 将资产的足迹（footprint，局部体素形状）数组打包为 GPU 可读取的
-## 位置字节缓冲区（含碰撞强度）与权重字节缓冲区（含 flags、半径）。
+## 将资产的足迹（footprint，局部体素形状）数组打包为 GPU 可读取的双缓冲字节：
+## pos(ivec4: local_pos + w=collision_q8) 与 weight(vec4: weight/flags/radius/0)。
+## 与评分/放置 compute 管线共用同一布局。
 func _pack_footprint(footprint: Array) -> Dictionary:
 	var pos_bytes := PackedByteArray()
 	var weight_bytes := PackedByteArray()
 	pos_bytes.resize(footprint.size() * BufferUtils.IVEC4_BYTES)
 	weight_bytes.resize(footprint.size() * BufferUtils.IVEC4_BYTES)
-
 	for i in range(footprint.size()):
 		var entry: Dictionary = footprint[i]
 		var local_pos: Vector3i = entry.get("local_pos", Vector3i.ZERO)
@@ -3222,18 +3220,7 @@ func _normalize_float_array(values: PackedFloat32Array, expected_size: int) -> P
 
 ## 将原始字节数据解码为指定数量的 32 位浮点数组，容忍数据不足（不足部分补零）。
 func _decode_float_array(bytes: PackedByteArray, value_count: int) -> PackedFloat32Array:
-	var available_bytes := mini(bytes.size(), value_count * 4)
-	available_bytes -= available_bytes % 4
-	var values := bytes.slice(0, available_bytes).to_float32_array()
-	values.resize(value_count)
-	return values
-
-
-## 从字节缓冲区开头读取一个 32 位无符号整数，作为计数值返回。
-func _decode_u32_count(bytes: PackedByteArray) -> int:
-	if bytes.size() < 4:
-		return 0
-	return int(bytes.decode_u32(0))
+	return BufferUtils.decode_float_buffer(bytes, value_count)
 
 
 ## 将 GPU 结果缓冲区中的原始字节解码为放置结果记录数组（Array[Dictionary]）。
@@ -3338,16 +3325,8 @@ func _decode_stamp_bounds(bytes: PackedByteArray, bound_count: int, grid_size: V
 		var written_count := int(bytes.decode_u32(base + 12))
 		if written_count <= 0:
 			continue
-		var voxel_min := Vector3i(
-			clampi(int(bytes.decode_u32(base + 0)), 0, grid_size.x),
-			clampi(int(bytes.decode_u32(base + 4)), 0, grid_size.y),
-			clampi(int(bytes.decode_u32(base + 8)), 0, grid_size.z)
-		)
-		var voxel_max := Vector3i(
-			clampi(int(bytes.decode_u32(base + 16)), 0, grid_size.x),
-			clampi(int(bytes.decode_u32(base + 20)), 0, grid_size.y),
-			clampi(int(bytes.decode_u32(base + 24)), 0, grid_size.z)
-		)
+		var voxel_min := _decode_grid_clamped_vec3i(bytes, base, grid_size)
+		var voxel_max := _decode_grid_clamped_vec3i(bytes, base + 16, grid_size)
 		if voxel_max.x <= voxel_min.x or voxel_max.y <= voxel_min.y or voxel_max.z <= voxel_min.z:
 			continue
 		bounds.append({
@@ -3360,13 +3339,13 @@ func _decode_stamp_bounds(bytes: PackedByteArray, bound_count: int, grid_size: V
 	return bounds
 
 
-## 将 Color 颜色打包为单个 RGBA8 整数（各分量量化到 0-255 并按 R/G/B/A 顺序移位组合）。
-static func _pack_color_rgba8(c: Color) -> int:
-	var r := clampi(int(roundf(c.r * 255.0)), 0, 255)
-	var g := clampi(int(roundf(c.g * 255.0)), 0, 255)
-	var b := clampi(int(roundf(c.b * 255.0)), 0, 255)
-	var a := clampi(int(roundf(c.a * 255.0)), 0, 255)
-	return (r << 24) | (g << 16) | (b << 8) | a
+## 从 stamp bounds 缓冲区中连续的 3 个 u32 字（word_offset 起）解码出体素坐标，并按 grid_size 逐轴裁剪。
+static func _decode_grid_clamped_vec3i(bytes: PackedByteArray, word_offset: int, grid_size: Vector3i) -> Vector3i:
+	return Vector3i(
+		clampi(int(bytes.decode_u32(word_offset + 0)), 0, grid_size.x),
+		clampi(int(bytes.decode_u32(word_offset + 4)), 0, grid_size.y),
+		clampi(int(bytes.decode_u32(word_offset + 8)), 0, grid_size.z)
+	)
 
 
 ## 从 settings 中取出预打包的 target_color_rgba8_bytes，并按 voxel_count 截断/校验长度。
@@ -3422,9 +3401,10 @@ func _target_field_bytes_from_settings(settings: Dictionary, voxel_count: int) -
 
 
 ## 组装本帧用于目标（target）评分的 GPU 读取缓冲区数据包，是 target read buffer 的统一入口。
-## 优先尝试复用 ScenePlacementActor 提供的常驻 GPU 缓冲区（_borrowed_target_read_buffer_pack）；
-## 若不可用，则回退到 settings 中的旧版 target_field/target_color 字节数组并在此处上传；
-## 若声明了常驻交接但数据不足，则返回 blocked 包表示无法提供目标数据。
+## 两种一等输入方式：优先复用 ScenePlacementActor 提供的常驻 GPU 缓冲区
+## （_borrowed_target_read_buffer_pack）；否则使用调用方在 settings 中直接提供的
+## target_field/target_color 字节并在此处上传——独立调用方（demo/测试）的标准输入。
+## 若声明了常驻交接但既借不到缓冲也无字节输入，则返回 blocked 包表示无法提供目标数据。
 func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Dictionary:
 	var expected_color_bytes := maxi(voxel_count, 1) * 4
 	var expected_field_floats := maxi(voxel_count, 1) * 4
@@ -3436,10 +3416,10 @@ func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Diction
 	if bool(borrowed.get("ready", false)):
 		return borrowed
 
-	var field_input := _target_read_buffer_legacy_field(settings, target_read_buffers)
+	var field_input := _target_field_bytes_input(settings, target_read_buffers)
 	var field_pack := _target_field_bytes_from_settings({"target_field_bytes": field_input}, voxel_count)
 	var has_field := bool(field_pack.get("has_target", false))
-	var color_input_bytes := _target_read_buffer_legacy_bytes(settings, target_read_buffers, "target_color_rgba8_bytes")
+	var color_input_bytes := _target_bytes_input(settings, target_read_buffers, "target_color_rgba8_bytes")
 	var upload_reason := str(borrowed.get("reason", "resident_handoff_absent"))
 	if _target_read_buffers_claim_resident(target_read_buffers) \
 			and not has_field \
@@ -3484,9 +3464,9 @@ func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Diction
 			"cpu_fallback": false,
 		}
 
-	var legacy_byte_settings := settings.duplicate(false)
-	legacy_byte_settings["target_color_rgba8_bytes"] = color_input_bytes
-	var color_bytes := _target_color_rgba8_bytes_from_settings(legacy_byte_settings, voxel_count)
+	var color_input_settings := settings.duplicate(false)
+	color_input_settings["target_color_rgba8_bytes"] = color_input_bytes
+	var color_bytes := _target_color_rgba8_bytes_from_settings(color_input_settings, voxel_count)
 	var has_color := color_bytes.size() >= expected_color_bytes
 	return {
 		"ready": true,
@@ -3590,7 +3570,7 @@ func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected
 
 
 ## 判断调用方是否声明了"常驻目标读取缓冲区交接"（resident_target_read_buffer_handoff）。
-## 该标记用于决定：当旧版字节数据缺失时，是否应视为错误并返回 blocked 结果。
+## 该标记用于决定：当借用失败且无字节输入可上传时，是否应视为错误并返回 blocked 结果。
 func _target_read_buffers_claim_resident(target_read_buffers: Dictionary) -> bool:
 	if target_read_buffers.is_empty():
 		return false
@@ -3601,9 +3581,9 @@ func _target_read_buffers_claim_resident(target_read_buffers: Dictionary) -> boo
 	))
 
 
-## 旧版回退路径：依次尝试从 settings、再从 target_read_buffers 交接字典中读取 target_field_bytes
-## （兼容 PackedFloat32Array 与 PackedByteArray 两种存储形式），都取不到则返回空数组。
-func _target_read_buffer_legacy_field(settings: Dictionary, target_read_buffers: Dictionary) -> PackedFloat32Array:
+## 调用方字节输入：依次尝试从 settings、再从 target_read_buffers 交接字典中读取 target_field_bytes
+## （接受 PackedFloat32Array 与 PackedByteArray 两种存储形式），都取不到则返回空数组。
+func _target_field_bytes_input(settings: Dictionary, target_read_buffers: Dictionary) -> PackedFloat32Array:
 	var raw = settings.get("target_field_bytes", PackedFloat32Array())
 	if raw is PackedFloat32Array:
 		var field := raw as PackedFloat32Array
@@ -3621,9 +3601,9 @@ func _target_read_buffer_legacy_field(settings: Dictionary, target_read_buffers:
 	return PackedFloat32Array()
 
 
-## 通用的旧版字节数组回退读取：先从 settings 按 key 取值，取不到再从 target_read_buffers 交接字典中取，
+## 通用的调用方字节输入读取：先从 settings 按 key 取值，取不到再从 target_read_buffers 交接字典中取，
 ## 都没有则返回空的 PackedByteArray。
-func _target_read_buffer_legacy_bytes(settings: Dictionary, target_read_buffers: Dictionary, key: String) -> PackedByteArray:
+func _target_bytes_input(settings: Dictionary, target_read_buffers: Dictionary, key: String) -> PackedByteArray:
 	var raw = settings.get(key, PackedByteArray())
 	if raw is PackedByteArray:
 		var bytes := raw as PackedByteArray
@@ -3636,14 +3616,14 @@ func _target_read_buffer_legacy_bytes(settings: Dictionary, target_read_buffers:
 
 
 ## 构造一个 ready=false 的"阻塞"目标读取缓冲区数据包：用于常驻交接已声明但既无 target_field
-## 也无合法旧版颜色字节可用的情况，携带失败原因及期望/实际字节数用于诊断。
+## 也无合法 target_color 字节输入可用的情况，携带失败原因及期望/实际字节数用于诊断。
 func _blocked_target_read_buffer_pack(
 	borrow_reason: String,
 	expected_field_bytes: int,
 	actual_field_bytes: int,
 	actual_color_bytes: int
 ) -> Dictionary:
-	var reason := "%s_no_debug_or_legacy_bytes" % borrow_reason
+	var reason := "%s_no_target_bytes_input" % borrow_reason
 	return {
 		"ready": false,
 		"reason": reason,
@@ -3678,8 +3658,9 @@ func _blocked_target_read_buffer_pack(
 	}
 
 
-## 将内部的目标读取缓冲区数据包（可能含原始 RID/字节数组）转换为轻量级摘要字典，
-## 便于日志输出与调试：仅保留 RID 是否有效等标志位，不包含原始字节负载。
+## 将目标读取缓冲区的内部数据包转换为适合日志与调试的摘要信息。
+## 如果原始数据中包含 RID 或大块字节数组，这里只保留“是否存在/是否有效”等轻量状态，
+## 避免把底层句柄或完整字节内容直接输出到日志中。
 func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 	var raw_field = pack.get("target_field_buffer", RID())
 	var field_buffer: RID = raw_field if raw_field is RID else RID()
@@ -3749,10 +3730,7 @@ func _ensure_combined_target_field_buffer(complexity_buffer: RID, collision_buff
 
 	var groups := ceili(float(maxi(voxel_count, 1)) / 64.0)
 	var cl := begin_compute_list()
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_pack_target_field)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, groups, 1, 1)
+	_gpu_dispatch_pipeline_sets(cl, _pipeline_pack_target_field, [set0], push, Vector3i(groups, 1, 1))
 	end_compute_list()
 
 	return output_buffer
@@ -3760,182 +3738,6 @@ func _ensure_combined_target_field_buffer(complexity_buffer: RID, collision_buff
 ## 分配并清零一个与 target_field 同尺寸（voxel_count * 16 字节）的 GPU 临时缓冲区。
 func _create_zero_target_field_buffer(voxel_count: int) -> RID:
 	return storage_buffer_zero(voxel_count * 16, SCOPE_FRAME, "target_field_zero")
-
-
-## 在 CPU 端从交错排列的逐体素调试缓冲区中提取指定通道（channel）的数据。
-## 通道索引越界时返回全零数组。
-static func get_debug_channel(debug_voxel: PackedFloat32Array, channel: int, voxel_count: int) -> PackedFloat32Array:
-	var result := PackedFloat32Array()
-	result.resize(voxel_count)
-	if channel < 0 or channel >= NUM_DEBUG_CHANNELS:
-		return result
-	for i in range(mini(voxel_count, debug_voxel.size() / NUM_DEBUG_CHANNELS)):
-		result[i] = debug_voxel[i * NUM_DEBUG_CHANNELS + channel]
-	return result
-
-
-## get_debug_channel 的 GPU 计算版本：校验通道索引与缓冲区大小后，
-## 准备渲染设备/着色器/管线，将 debug_voxel 上传为存储缓冲区，
-## 派发 extract_debug_voxel_channel 计算着色器提取单一通道并回读结果；
-## 返回包含 ok/reason 及派发诊断信息的字典，成功或失败路径均会释放 GPU 资源。
-func get_debug_channel_gpu(debug_voxel: PackedFloat32Array, channel: int, voxel_count: int) -> Dictionary:
-	var safe_voxel_count := maxi(voxel_count, 0)
-	var result := PackedFloat32Array()
-	result.resize(safe_voxel_count)
-	if channel < 0 or channel >= NUM_DEBUG_CHANNELS:
-		return {
-			"ok": false,
-			"reason": "debug_channel_out_of_range",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"channel": channel,
-			"voxel_count": safe_voxel_count,
-			"channel_stride": NUM_DEBUG_CHANNELS,
-			"debug_channel": result,
-		}
-
-	var required_floats := safe_voxel_count * NUM_DEBUG_CHANNELS
-	if debug_voxel.size() < required_floats:
-		return {
-			"ok": false,
-			"reason": "debug_voxel_size_mismatch",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"channel": channel,
-			"voxel_count": safe_voxel_count,
-			"channel_stride": NUM_DEBUG_CHANNELS,
-			"expected_floats": required_floats,
-			"actual_floats": debug_voxel.size(),
-			"debug_channel": result,
-		}
-	if safe_voxel_count <= 0:
-		return {
-			"ok": true,
-			"reason": "empty",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"channel": channel,
-			"voxel_count": safe_voxel_count,
-			"channel_stride": NUM_DEBUG_CHANNELS,
-			"debug_channel": result,
-		}
-
-	log_name = "VoxelPlacementDebugChannel"
-	sync_global_device = true
-	if not ensure_device(true, true):
-		return {
-			"ok": false,
-			"reason": "missing_rendering_device",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"channel": channel,
-			"voxel_count": safe_voxel_count,
-			"channel_stride": NUM_DEBUG_CHANNELS,
-			"debug_channel": result,
-		}
-
-	var shader := load_compute_shader("res://shaders/extract_debug_voxel_channel.glsl")
-	var pipeline := create_compute_pipeline(shader)
-	if not shader.is_valid() or not pipeline.is_valid():
-		dispose()
-		return {
-			"ok": false,
-			"reason": "debug_channel_shader_not_ready",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"channel": channel,
-			"voxel_count": safe_voxel_count,
-			"channel_stride": NUM_DEBUG_CHANNELS,
-			"debug_channel": result,
-		}
-
-	var input_buffer := storage_buffer_from_floats(debug_voxel.slice(0, required_floats), SCOPE_FRAME, "debug_voxel_r32f")
-	var output_buffer := storage_buffer_zero(safe_voxel_count * 4, SCOPE_FRAME, "debug_channel_r32f")
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, input_buffer),
-		make_storage_uniform(1, output_buffer),
-	], shader, 0)
-	if not set0.is_valid():
-		dispose()
-		return {
-			"ok": false,
-			"reason": "debug_channel_uniform_set_not_ready",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"channel": channel,
-			"voxel_count": safe_voxel_count,
-			"channel_stride": NUM_DEBUG_CHANNELS,
-			"debug_channel": result,
-		}
-
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, safe_voxel_count)
-	push.encode_s32(4, channel)
-	push.encode_s32(8, NUM_DEBUG_CHANNELS)
-	push.encode_s32(12, 0)
-
-	var groups := ceili(float(safe_voxel_count) / 64.0)
-	var cl := begin_compute_list()
-	if cl < 0:
-		dispose()
-		return {
-			"ok": false,
-			"reason": "debug_channel_compute_list_begin_failed",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"channel": channel,
-			"voxel_count": safe_voxel_count,
-			"channel_stride": NUM_DEBUG_CHANNELS,
-			"debug_channel": result,
-		}
-	_rd.compute_list_bind_compute_pipeline(cl, pipeline)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, groups, 1, 1)
-	end_compute_list()
-	submit_and_sync(true)
-
-	var out_bytes := _rd.buffer_get_data(output_buffer, 0, safe_voxel_count * 4)
-	dispose()
-
-	return {
-		"ok": true,
-		"reason": "ok",
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"channel": channel,
-		"voxel_count": safe_voxel_count,
-		"channel_stride": NUM_DEBUG_CHANNELS,
-		"input_format": "r32f_interleaved_debug_voxel",
-		"output_format": "r32f_channel",
-		"local_size_x": 64,
-		"dispatch_groups_x": groups,
-		"debug_channel": out_bytes.to_float32_array(),
-		"readback_source": "extract_debug_voxel_channel_compute",
-	}
-
-
-# ---------------------------------------------------------------------------
-# Footprint baking: collision -> GPU footprint array
-# ---------------------------------------------------------------------------
-
-## 委托给 VoxelFootprintBakerScript，从碰撞层烘焙出资产的本地体素 footprint 形状数组。
-static func bake_footprint_from_collision(
-	collision_layers: Array,
-	voxel_size: Vector3,
-	add_support: bool = true,
-	clearance_slices: int = 1,
-	prefer_gpu: bool = true
-) -> Array[Dictionary]:
-	return VoxelFootprintBakerScript.bake_footprint_from_collision(collision_layers, voxel_size, add_support, clearance_slices, prefer_gpu)
-
-## 委托给 VoxelFootprintBakerScript，将已烘焙的 footprint 绕 Y 轴旋转 yaw_degrees 度。
-static func rotate_footprint_y(
-	footprint: Array[Dictionary], yaw_degrees: float
-) -> Array[Dictionary]:
-	return VoxelFootprintBakerScript.rotate_footprint_y(footprint, yaw_degrees)
-
 
 
 ## ===== VoxelPlacementWriteback delegates =====
@@ -3948,26 +3750,12 @@ func _new_gpu_autoobject_runtime_writeback_report(runtime_provider: Object,
 	gpu_contract: Dictionary,
 	enabled: bool) -> Dictionary:
 	return _ensure_placement_writeback()._new_gpu_autoobject_runtime_writeback_report(runtime_provider, profile_container, gpu_contract, enabled)
-## 转发给 VoxelPlacementWriteback：将已接受的放置结果写入 GPU AutoObject 运行时。
+## 转发给 VoxelPlacementWriteback：将已接受的放置结果（GPU 常驻缓冲区）交给 GPU AutoObject 运行时。
 func _write_accepted_placements_to_gpu_runtime(runtime_provider: Object,
 	asset_index: int,
 	asset_def: Dictionary,
 	per_asset_settings: Dictionary,
-	world_results: Array,
-	raw_results: Array,
-	stamp_deltas: Array,
-	stamp_bounds: Array,
-	common_settings: Dictionary) -> Dictionary:
-	return _ensure_placement_writeback()._write_accepted_placements_to_gpu_runtime(runtime_provider, asset_index, asset_def, per_asset_settings, world_results, raw_results, stamp_deltas, stamp_bounds, common_settings)
-## 转发给 VoxelPlacementWriteback：将已接受的放置结果写入场景体素瓦片提交器（committer）。
-func _write_accepted_placements_to_scene_voxel_committer(asset_defs: Array,
-	result_by_index: Dictionary,
-	asset_results: Array[Dictionary],
+	asset_result: Dictionary,
 	common_settings: Dictionary,
-	grid_size: Vector3i,
-	voxel_size: Vector3,
-	grid_origin: Vector3) -> Dictionary:
-	return _ensure_placement_writeback()._write_accepted_placements_to_scene_voxel_committer(asset_defs, result_by_index, asset_results, common_settings, grid_size, voxel_size, grid_origin)
-## 转发给 VoxelPlacementWriteback：校验 GPU 运行时 profile 契约是否满足。
-func validate_gpu_runtime_profile_contract(settings: Dictionary) -> Dictionary:
-	return _ensure_placement_writeback().validate_gpu_runtime_profile_contract(settings)
+	world_convert_params: Dictionary) -> Dictionary:
+	return _ensure_placement_writeback()._write_accepted_placements_to_gpu_runtime(runtime_provider, asset_index, asset_def, per_asset_settings, asset_result, common_settings, world_convert_params)

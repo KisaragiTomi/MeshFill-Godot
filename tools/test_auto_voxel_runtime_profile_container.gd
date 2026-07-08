@@ -1,27 +1,21 @@
-extends SceneTree
+extends "res://scripts/utils/scene_tree_test.gd"
 
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
-const AutoVoxelFixture := preload("res://scripts/utils/auto_voxel_fixture.gd")
+const AutoVoxelFixture := preload("res://scripts/utils/voxel_fixtures.gd")
 
 
 func _init() -> void:
-	var ok := true
-	ok = ok and _test_descriptor_registration_stages_profile_data()
-	ok = ok and _test_gpu_upload_readback_or_skip()
-	ok = ok and _test_dispose_sync_guard_respects_borrowed_device_or_skip()
-	ok = ok and _test_readback_byte_count_validation_contract()
-	ok = ok and _test_equivalent_descriptors_reuse_profile_id()
-	ok = ok and _test_profile_registration_is_stable()
-	ok = ok and _test_dirty_profile_marking()
-	ok = ok and _test_container_stays_gpu_profile_control_plane()
-	ok = ok and _test_descriptor_profile_id_and_probe_range_lookup()
-
-	if ok:
-		print("[AutoVoxelRuntimeProfileContainer] ALL TESTS PASSED")
-		quit(0)
-	else:
-		push_error("[AutoVoxelRuntimeProfileContainer] SOME TESTS FAILED")
-		quit(1)
+	run_suite("AutoVoxelRuntimeProfileContainer", [
+		_test_descriptor_registration_stages_profile_data,
+		_test_gpu_upload_readback_or_skip,
+		_test_dispose_sync_guard_respects_borrowed_device_or_skip,
+		_test_readback_byte_count_validation_contract,
+		_test_equivalent_descriptors_reuse_profile_id,
+		_test_profile_registration_is_stable,
+		_test_dirty_profile_marking,
+		_test_container_stays_gpu_profile_control_plane,
+		_test_descriptor_profile_id_and_probe_range_lookup,
+	], true)  # 保留原 `ok = ok and _test()` 的短路语义
 
 
 func _test_descriptor_registration_stages_profile_data() -> bool:
@@ -125,7 +119,6 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 		RuntimeProfileContainerScript.PROFILE_TABLE_BUFFER: 1,
 		RuntimeProfileContainerScript.PROBE_RECORD_BUFFER: 1,
 		RuntimeProfileContainerScript.PIVOT_RECORD_BUFFER: 1,
-		RuntimeProfileContainerScript.COLLISION_RECORD_BUFFER: 0,
 	}
 	for buffer_name in expected_counts.keys():
 		var buffer_summary: Dictionary = buffers.get(buffer_name, {})
@@ -163,7 +156,6 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 	var profile_bytes: PackedByteArray = snapshot.get("profile_table_bytes", PackedByteArray())
 	var probe_bytes: PackedByteArray = snapshot.get("probe_record_bytes", PackedByteArray())
 	var pivot_bytes: PackedByteArray = snapshot.get("pivot_record_bytes", PackedByteArray())
-	var collision_bytes: PackedByteArray = snapshot.get("collision_record_bytes", PackedByteArray())
 	if profile_bytes.size() != RuntimeProfileContainerScript.PROFILE_TABLE_STRIDE_BYTES:
 		container.dispose(true)
 		push_error("  FAIL: profile table byte size mismatch")
@@ -171,14 +163,6 @@ func _test_gpu_upload_readback_or_skip() -> bool:
 	if probe_bytes.size() != RuntimeProfileContainerScript.PROBE_RECORD_STRIDE_BYTES:
 		container.dispose(true)
 		push_error("  FAIL: probe byte size mismatch")
-		return false
-	if not snapshot.has("collision_record_bytes"):
-		container.dispose(true)
-		push_error("  FAIL: snapshot must include collision_record_bytes for GPU-resident collision buffer")
-		return false
-	if collision_bytes.size() != 0:
-		container.dispose(true)
-		push_error("  FAIL: GPU collision record byte size mismatch (expected 0-byte empty buffer, got %d)" % collision_bytes.size())
 		return false
 	if pivot_bytes.size() != RuntimeProfileContainerScript.PIVOT_RECORD_STRIDE_BYTES:
 		container.dispose(true)

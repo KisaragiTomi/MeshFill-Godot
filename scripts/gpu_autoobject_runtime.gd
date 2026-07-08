@@ -2,6 +2,7 @@ class_name GPUAutoObjectRuntime
 extends "res://scripts/godot_compute_shader_base.gd"
 
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 
 const DEFAULT_DIRTY_FLAGS := {"auto": true, "object_refs": true}
 
@@ -41,6 +42,8 @@ const ACCEPTED_PLACEMENT_RECORD_RESULT_INDEX_OFFSET := 120
 const ACCEPTED_PLACEMENT_RECORD_RESERVED_OFFSET := 124
 const ACCEPTED_PLACEMENT_RECORD_SHADER_PATH := "res://shaders/autoobject_apply_accepted_placements.glsl"
 const ACCEPTED_PLACEMENT_RECORD_SHADER_NAME := "autoobject_apply_accepted_placements.glsl"
+const ACCEPTED_PLACEMENT_RESIDENT_SHADER_PATH := "res://shaders/autoobject_apply_accepted_placements_resident.glsl"
+const ACCEPTED_PLACEMENT_RESIDENT_SHADER_NAME := "autoobject_apply_accepted_placements_resident.glsl"
 const ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X := 64
 const ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT := 8
 const ACCEPTED_PLACEMENT_RECORD_STAT_APPLIED := 0
@@ -353,6 +356,242 @@ func spawn_batch_from_accepted_placement_records(
 		"accepted_placement_record_shader_dispatch_count": int(shader_result.get("accepted_placement_record_shader_dispatch_count", 0)),
 		"runtime_command_flush_mode": str(shader_result.get("runtime_command_flush_mode", "resident_accepted_placement_record_shader_writeback")),
 	}
+
+
+## GPU 常驻批量生成：直接消费 VPG 的 placement/world/stamp-bounds 存储缓冲区
+## （无 CPU 回读、无 CPU spawn 记录打包）。对象 ID 在 CPU 端按块预留（数量 =
+## result_count，dispatch 前已知），shader 按 reserved_object_ids[record_index]
+## 位置消费；generation 由 shader 直接读常驻缓冲区，免除逐条回读。
+func spawn_batch_from_accepted_placement_gpu_buffers(
+	resident_inputs: Dictionary,
+	record_count: int,
+	asset_params: Dictionary,
+	options: Dictionary = {}
+) -> Dictionary:
+	var report := {
+		"ok": false,
+		"reason": "runtime_not_ready",
+		"spawned_count": 0,
+		"failed_count": maxi(record_count, 0),
+		"object_ids": [],
+		"runtime_command_flush_mode": "none",
+		"accepted_placement_record_source": "vpg_resident_placement_buffers",
+		"accepted_placement_record_schema_version": ACCEPTED_PLACEMENT_RECORD_SCHEMA_VERSION,
+		"accepted_placement_record_stride_bytes": 0,
+		"accepted_placement_record_count": 0,
+		"accepted_placement_record_byte_count": 0,
+		"accepted_placement_record_shader_consumed": false,
+		"accepted_placement_record_shader_name": "none",
+		"accepted_placement_record_shader_path": "none",
+		"accepted_placement_record_shader_dispatch_count": 0,
+		"accepted_placement_record_shader_local_size_x": ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X,
+		"accepted_placement_record_shader_stats": {},
+		"resident_gpu_allocator_writeback": false,
+		"resident_gpu_allocator_writeback_mode": "none",
+		"resident_gpu_allocator_writeback_blocked_reason": "runtime_not_ready",
+		"pending_dirty_delta_count": _dirty_delta_count,
+		"gpu_first": true,
+		"cpu_fallback": false,
+	}
+	if not _gpu_ready:
+		return report
+	if record_count <= 0:
+		report["ok"] = true
+		report["reason"] = "empty_batch"
+		report["failed_count"] = 0
+		report["resident_gpu_allocator_writeback_blocked_reason"] = "empty_batch"
+		return report
+	var placement_results_rid: RID = resident_inputs.get("placement_results_rid", RID())
+	var world_results_rid: RID = resident_inputs.get("world_results_rid", RID())
+	var stamp_bounds_rid: RID = resident_inputs.get("stamp_bounds_rid", RID())
+	if not placement_results_rid.is_valid() or not world_results_rid.is_valid() or not stamp_bounds_rid.is_valid():
+		report["reason"] = "invalid_resident_input_rid"
+		report["resident_gpu_allocator_writeback_blocked_reason"] = "invalid_resident_input_rid"
+		return report
+	if _free_ids.size() < record_count:
+		report["reason"] = "capacity_full"
+		report["resident_gpu_allocator_writeback_blocked_reason"] = "capacity_full"
+		return report
+	if _dirty_delta_count + record_count > dirty_delta_capacity:
+		report["reason"] = "dirty_delta_capacity_full"
+		report["resident_gpu_allocator_writeback_blocked_reason"] = "dirty_delta_capacity_full"
+		return report
+
+	# Block-reserve object IDs for positional consumption by the shader.
+	# No per-id alive/generation readback: the shader guards already-alive
+	# slots and reads generation from the resident buffer.
+	var object_ids: Array[int] = []
+	for _i in range(record_count):
+		var object_id := _allocate_id()
+		if object_id < 0:
+			for free_id in object_ids:
+				_free_ids.append(free_id)
+			report["reason"] = "capacity_full_mid_alloc"
+			report["resident_gpu_allocator_writeback_blocked_reason"] = "capacity_full_mid_alloc"
+			return report
+		object_ids.append(object_id)
+	var reserved_bytes := PackedByteArray()
+	reserved_bytes.resize(record_count * 4)
+	for i in range(record_count):
+		reserved_bytes.encode_s32(i * 4, object_ids[i])
+
+	var dispatch_result := _dispatch_accepted_placement_resident_shader(
+		placement_results_rid,
+		world_results_rid,
+		stamp_bounds_rid,
+		reserved_bytes,
+		record_count,
+		asset_params,
+		options
+	)
+	if not bool(dispatch_result.get("ok", false)):
+		# Rollback only when the shader never ran; after a dispatch the IDs may
+		# be alive on the GPU and returning them to the free list would corrupt it.
+		if not bool(dispatch_result.get("applied_on_gpu", false)):
+			for free_id in object_ids:
+				_free_ids.append(free_id)
+		report["reason"] = str(dispatch_result.get("reason", "resident_shader_dispatch_failed"))
+		report["resident_gpu_allocator_writeback_blocked_reason"] = report["reason"]
+		report["accepted_placement_record_shader_stats"] = dispatch_result.get("accepted_placement_record_shader_stats", {})
+		report["pending_dirty_delta_count"] = _dirty_delta_count
+		return report
+
+	report["ok"] = true
+	report["reason"] = "ok"
+	report["spawned_count"] = record_count
+	report["failed_count"] = 0
+	report["object_ids"] = object_ids
+	report["runtime_command_flush_mode"] = "resident_accepted_placement_record_shader_writeback"
+	report["accepted_placement_record_count"] = record_count
+	report["accepted_placement_record_shader_consumed"] = true
+	report["accepted_placement_record_shader_name"] = ACCEPTED_PLACEMENT_RESIDENT_SHADER_NAME
+	report["accepted_placement_record_shader_path"] = ACCEPTED_PLACEMENT_RESIDENT_SHADER_PATH
+	report["accepted_placement_record_shader_dispatch_count"] = int(dispatch_result.get("dispatch_group_count", 0))
+	report["accepted_placement_record_shader_stats"] = dispatch_result.get("accepted_placement_record_shader_stats", {})
+	report["resident_gpu_allocator_writeback"] = true
+	report["resident_gpu_allocator_writeback_mode"] = "resident_object_buffer_writeback"
+	report["resident_gpu_allocator_writeback_blocked_reason"] = "none"
+	report["resident_gpu_allocator_owner"] = "GPUAutoObjectRuntime"
+	report["pending_dirty_delta_count"] = _dirty_delta_count
+	return report
+
+
+## 构建双 uniform set（set0=VPG 常驻输入，set1=运行时状态）并调度常驻放置 shader。
+## 生产路径零回读：dirty 计数用算术镜像；readback_stats 仅调试用。
+func _dispatch_accepted_placement_resident_shader(
+	placement_results_rid: RID,
+	world_results_rid: RID,
+	stamp_bounds_rid: RID,
+	reserved_id_bytes: PackedByteArray,
+	record_count: int,
+	asset_params: Dictionary,
+	options: Dictionary
+) -> Dictionary:
+	if _rd == null or not _all_required_buffers_valid():
+		return {"ok": false, "reason": "runtime_not_ready", "applied_on_gpu": false}
+	var dirty_base := _dirty_delta_count
+	var reserved_ids_buffer := storage_buffer_from_bytes(reserved_id_bytes, SCOPE_FRAME, "autoobject_resident_reserved_object_ids")
+	var stats_buffer := storage_buffer_zero(ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT * 4, SCOPE_FRAME, "autoobject_resident_accepted_placement_stats")
+	var shader := load_compute_shader(ACCEPTED_PLACEMENT_RESIDENT_SHADER_PATH, SCOPE_FRAME, ACCEPTED_PLACEMENT_RESIDENT_SHADER_NAME)
+	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "autoobject_apply_accepted_placements_resident")
+	if not reserved_ids_buffer.is_valid() or not stats_buffer.is_valid() or not shader.is_valid() or not pipeline.is_valid():
+		gc_frame()
+		return {"ok": false, "reason": "resident_shader_setup_failed", "applied_on_gpu": false}
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, placement_results_rid),
+		make_storage_uniform(1, world_results_rid),
+		make_storage_uniform(2, stamp_bounds_rid),
+		make_storage_uniform(3, reserved_ids_buffer),
+	], shader, 0, SCOPE_FRAME, "autoobject_resident_accepted_placement_set0")
+	var set1 := create_uniform_set([
+		make_storage_uniform(0, _alive_buffer),
+		make_storage_uniform(1, _generation_buffer),
+		make_storage_uniform(2, _type_buffer),
+		make_storage_uniform(3, _profile_buffer),
+		make_storage_uniform(4, _flags_buffer),
+		make_storage_uniform(5, _bounds_min_buffer),
+		make_storage_uniform(6, _bounds_max_buffer),
+		make_storage_uniform(7, _previous_bounds_min_buffer),
+		make_storage_uniform(8, _previous_bounds_max_buffer),
+		make_storage_uniform(9, _transform_buffer),
+		make_storage_uniform(10, _dirty_delta_buffer),
+		make_storage_uniform(11, _dirty_count_buffer),
+		make_storage_uniform(12, stats_buffer),
+	], shader, 1, SCOPE_FRAME, "autoobject_resident_accepted_placement_set1")
+	if not set0.is_valid() or not set1.is_valid():
+		gc_frame()
+		return {"ok": false, "reason": "resident_shader_uniform_set_failed", "applied_on_gpu": false}
+
+	var grid_value = asset_params.get("grid_size", Vector3i.ZERO)
+	var grid_size: Vector3i = grid_value if grid_value is Vector3i else Vector3i.ZERO
+	var dirty_bits := int(asset_params.get(
+		"dirty_flag_bits",
+		_dirty_flags_to_bits(asset_params.get("dirty_flags", {}) if asset_params.get("dirty_flags", {}) is Dictionary else {})
+	))
+	var push := PackedByteArray()
+	push.resize(64)
+	push.encode_s32(0, record_count)
+	push.encode_s32(4, max_objects)
+	push.encode_s32(8, dirty_delta_capacity)
+	push.encode_s32(12, dirty_base)
+	push.encode_s32(16, int(asset_params.get("profile_id", -1)))
+	push.encode_s32(20, int(asset_params.get("object_type", 0)))
+	push.encode_s32(24, _object_flags_from_value(asset_params.get("object_flags", 0)))
+	push.encode_s32(28, dirty_bits)
+	push.encode_s32(32, int(asset_params.get("asset_index", -1)))
+	push.encode_s32(36, _flush_epoch)
+	push.encode_s32(40, ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT)
+	push.encode_s32(44, 0)
+	push.encode_s32(48, grid_size.x)
+	push.encode_s32(52, grid_size.y)
+	push.encode_s32(56, grid_size.z)
+	push.encode_s32(60, 0)
+
+	var group_count := ceil_div(record_count, ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X)
+	var cl := begin_compute_list()
+	if cl < 0:
+		gc_frame()
+		return {"ok": false, "reason": "resident_shader_compute_list_failed", "applied_on_gpu": false}
+	_gpu_dispatch_pipeline_sets(cl, pipeline, [set0, set1], push, Vector3i(group_count, 1, 1))
+	end_compute_list()
+	# include_global_device=true: when the runtime is attached to a shared
+	# (committer-owned) device, the no-arg form would no-op and leave this
+	# dispatch unsubmitted until the owner's next submit.
+	submit_and_sync(true)
+
+	var result := {
+		"ok": true,
+		"reason": "ok",
+		"applied_on_gpu": true,
+		"dispatch_group_count": group_count,
+		"accepted_placement_record_shader_stats": {},
+	}
+	if bool(options.get("readback_stats", false)):
+		var stats := _read_accepted_placement_record_shader_stats(stats_buffer)
+		var count_result := _read_dirty_delta_count_result()
+		gc_frame()
+		result["accepted_placement_record_shader_stats"] = stats
+		var stats_ok := int(stats.get("applied", 0)) == record_count \
+			and int(stats.get("skipped", 0)) == 0
+		if not bool(count_result.get("ok", false)):
+			result["ok"] = false
+			result["reason"] = str(count_result.get("reason", "dirty_count_readback_failed"))
+			return result
+		_dirty_delta_count = int(count_result.get("count", _dirty_delta_count))
+		if not stats_ok:
+			result["ok"] = false
+			result["reason"] = "resident_shader_stats_failed"
+			return result
+	else:
+		# Production path: no readback, trust GPU execution after submit+sync barrier.
+		gc_frame()
+		_dirty_delta_count = dirty_base + record_count
+		result["accepted_placement_record_shader_stats"] = {
+			"ok": true,
+			"reason": "deferred_no_readback",
+			"readback_source": "none",
+		}
+	return result
 
 
 ## 将运行时绑定到 SceneVoxelCommitter 的 RenderingDevice，并按需重新配置容量。
@@ -1118,17 +1357,14 @@ func _try_apply_accepted_placement_record_shader(
 		_flush_epoch,
 		int(options.get("accepted_placement_record_shader_options", 0))
 	)
-	var group_count := int(ceil(float(record_count) / float(ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X)))
+	var group_count := ceil_div(record_count, ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X)
 	var cl := begin_compute_list()
 	if cl < 0:
 		gc_frame()
 		base_result["reason"] = "accepted_placement_record_compute_list_failed"
 		base_result["resident_gpu_allocator_writeback_blocked_reason"] = "accepted_placement_record_compute_list_failed"
 		return base_result
-	_rd.compute_list_bind_compute_pipeline(cl, pipeline)
-	_rd.compute_list_bind_uniform_set(cl, uniform_set, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, group_count, 1, 1)
+	_gpu_dispatch_pipeline_sets(cl, pipeline, [uniform_set], push, Vector3i(group_count, 1, 1))
 	end_compute_list()
 	submit_and_sync()
 
@@ -2471,9 +2707,7 @@ func _write_buffer(buffer: RID, offset: int, bytes: PackedByteArray, sync_after:
 # All production paths use resident GPU-to-GPU handoff instead of readback.
 ## 通过 buffer_get_data 从 GPU 缓冲区读取指定字节范围（调试/测试路径）。
 func _read_buffer_bytes(buffer: RID, offset: int, byte_count: int) -> PackedByteArray:
-	if _rd == null or not buffer.is_valid() or byte_count <= 0:
-		return PackedByteArray()
-	return _rd.buffer_get_data(buffer, offset, byte_count)
+	return read_buffer_bytes(buffer, offset, byte_count)
 
 
 ## 从 GPU 缓冲区读取单个 int32 值。
@@ -2562,7 +2796,7 @@ func _profile_id_lookup_from_value(value) -> Dictionary:
 		var object := value as Object
 		if object.has_method("get_dirty_profile_ids"):
 			return _profile_id_lookup_from_value(object.call("get_dirty_profile_ids"))
-		if _object_has_property(object, "dirty_profile_ids"):
+		if VariantUtils.has_property(object, "dirty_profile_ids"):
 			return _profile_id_lookup_from_value(object.get("dirty_profile_ids"))
 	return lookup
 
@@ -2686,13 +2920,3 @@ func _is_valid_id(object_id: int) -> bool:
 ## 检查 object_id 是否有效且对应对象当前存活。
 func _is_alive_id(object_id: int) -> bool:
 	return _is_valid_id(object_id) and bool(_read_object_state(object_id).get("alive", false))
-
-
-## 检查 object 的属性列表中是否存在指定属性名。
-static func _object_has_property(object: Object, property_name: String) -> bool:
-	if object == null:
-		return false
-	for property in object.get_property_list():
-		if str((property as Dictionary).get("name", "")) == property_name:
-			return true
-	return false

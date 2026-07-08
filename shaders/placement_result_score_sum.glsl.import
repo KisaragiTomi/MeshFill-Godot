@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cibx7rir70qdt"
+path="res://.godot/imported/placement_result_score_sum.glsl-fcaf706aa784d93f6e8fe04d815ced74.res"
+
+[deps]
+
+source_file="res://shaders/placement_result_score_sum.glsl"
+dest_files=["res://.godot/imported/placement_result_score_sum.glsl-fcaf706aa784d93f6e8fe04d815ced74.res"]
+
+[params]
+

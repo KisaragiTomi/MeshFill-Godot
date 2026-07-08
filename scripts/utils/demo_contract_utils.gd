@@ -52,9 +52,9 @@ static func source_docs_from_metadata(metadata: Dictionary) -> Array:
 
 static func source_docs_from_values(source_doc, source_docs) -> Array:
 	var values := []
-	_append_unique(values, str(source_doc).strip_edges())
+	append_unique(values, str(source_doc).strip_edges())
 	for part in str(source_docs).split(";"):
-		_append_unique(values, String(part).strip_edges())
+		append_unique(values, String(part).strip_edges())
 	return values
 
 
@@ -109,7 +109,7 @@ static func _target_has_extension(target: String, allowed_extensions: Array) -> 
 	return false
 
 
-static func _append_unique(values: Array, value: String) -> void:
+static func append_unique(values: Array, value: String) -> void:
 	if value.is_empty() or values.has(value):
 		return
 	values.append(value)

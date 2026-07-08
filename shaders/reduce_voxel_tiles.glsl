@@ -25,6 +25,9 @@ layout(push_constant, std430) uniform Params {
 };
 
 const uint RECORD_STRIDE = 4u;
+// Sentinel below any real penalty-only score, so the max-select baseline never beats a
+// valid candidate. Mirrors INVALID_SCORE in score_voxel_tile.glsl (scores are now <= 0).
+const float INVALID_SCORE = -1.0e18;
 
 float result_distance(uint result_index, vec3 candidate_origin) {
     vec3 selected_origin = placement_results[result_index * RECORD_STRIDE + 0u].xyz;
@@ -47,14 +50,18 @@ void main() {
     result_count = 0u;
 
     for (uint out_index = 0u; out_index < result_capacity; out_index++) {
-        float best_score = -1.0;
+        float best_score = INVALID_SCORE;
         uint best_candidate = candidate_count;
 
         for (uint candidate_index = 0u; candidate_index < candidate_count; candidate_index++) {
             uint base = candidate_index * RECORD_STRIDE;
             vec4 pose = tile_topk[base + 0u];
             vec4 debug1 = tile_topk[base + 3u];
-            if (debug1.y < 0.5 || pose.w < 0.0) {
+            // Gate on the valid flag only. The score (pose.w) is penalty-only now
+            // (<= 0 for valid placements), so a "pose.w < 0.0" test would wrongly drop
+            // every real placement that overlaps anything. Empty/invalid records carry
+            // debug1.y == 0 (see score_voxel_tile.glsl record layout).
+            if (debug1.y < 0.5) {
                 continue;
             }
 

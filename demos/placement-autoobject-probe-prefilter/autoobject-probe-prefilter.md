@@ -196,7 +196,7 @@ prefilter candidate_voxel_regions_by_asset / legacy candidate_voxel_sparses_by_a
   -> optional GPUAutoObjectRuntime writeback
   -> optional scene_voxel_committer + create_voxel_write_spec
   -> instance_stamp_writeback
-  -> dirty SceneVoxelTile / blend_scene_voxels()
+  -> dirty SceneVoxelTile / commit_scene_voxels()
 ```
 
 边界：
@@ -204,7 +204,7 @@ prefilter candidate_voxel_regions_by_asset / legacy candidate_voxel_sparses_by_a
 - prefilter 只减少候选，不直接写入 scene。
 - `candidate_route_profiles` 不参与 physical score。
 - 空 candidate regions 表示该 asset 本轮 skip，不回退 full grid。
-- `score_voxel_tile.glsl` 仍负责 footprint、support、collision、clearance、target coverage 和 target color fit。
+- `score_voxel_tile.glsl` 仍负责 footprint、collision、clearance、target coverage 和 target color fit。
 - `score_voxel_tile.glsl` 不做 semantic dot、MLP、`semantic_score` 或 `route_score`。
 - runtime writeback 和 `instance_stamp_writeback` 是 accepted placement 之后的显式 opt-in；prefilter 本身不拥有 runtime object state 或 committed SV source。
 
@@ -214,7 +214,7 @@ prefilter candidate_voxel_regions_by_asset / legacy candidate_voxel_sparses_by_a
 
 - `target_completely` 和 `target_color` 从 `TargetSV_B` 映射而来。
 - `TargetSceneVoxel` guidance record 会跳过 source buffers。
-- committed `SceneVoxel` 由 `AutoSceneVoxel` / `BrushSceneVoxel` source write 和 `blend_scene_voxels()` 发布。
+- committed `SceneVoxel` 由 stamp（VPG state-chain / CPU 入口盖章）和 `commit_scene_voxels()` 发布，纯 auto；brush 内容在 SPA 常驻 `BrushSV` 层。
 
 更完整的目标画布说明见 [`target-scene-voxel-projection.md`](target-scene-voxel-projection.md)。
 
@@ -235,6 +235,4 @@ Debug 输出字段含义维护在 `scripts/autoobject_probe_prefilter_gpu.gd` �
 
 | 场景 | 说明 | Godot 场景 |
 | --- | --- | --- |
-| [Prefilter 总览](../../demos/placement-autoobject-probe-prefilter/placement-autoobject-probe-prefilter.md) | 测试方法与验收标准 | [`../../demos/placement-autoobject-probe-prefilter/placement-autoobject-probe-prefilter.tscn`](../../demos/placement-autoobject-probe-prefilter/placement-autoobject-probe-prefilter.tscn) |
-| [Probe Prefilter Routing](../../demos/modules/probe-prefilter-routing/probe-prefilter-routing.md) | 测试方法与验收标准 | [`../../demos/modules/probe-prefilter-routing/probe-prefilter-routing.tscn`](../../demos/modules/probe-prefilter-routing/probe-prefilter-routing.tscn) |
-| [Semantic Probe Authoring](../../demos/modules/semantic-probe-authoring/semantic-probe-authoring.md) | 测试方法与验收标准 | [`../../demos/modules/semantic-probe-authoring/semantic-probe-authoring.tscn`](../../demos/modules/semantic-probe-authoring/semantic-probe-authoring.tscn) |
+| [Prefilter 总览](res://demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md) | 本文即该 demo 的测试文档 | [`placement-autoobject-probe-prefilter.tscn`](res://demos/placement-autoobject-probe-prefilter/placement-autoobject-probe-prefilter.tscn) |

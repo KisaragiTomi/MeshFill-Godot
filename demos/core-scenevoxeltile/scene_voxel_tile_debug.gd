@@ -2,7 +2,6 @@
 extends "res://scripts/core_demo_contract_fixture.gd"
 
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
-const DemoUI := preload("res://scripts/utils/demo_ui.gd")
 
 # Dirty flag bit constants (mirroring SceneVoxelCommitter)
 const FLAG_SCENE := 1
@@ -97,7 +96,7 @@ func _populate_test_data() -> void:
 			{"id": rec[0]}
 		)
 
-	_committer.blend_scene_voxels()
+	_committer.commit_scene_voxels()
 
 
 func _compute_record_voxel_bounds(voxel_xz: Vector2i, slice_index: int, _shape: String) -> Dictionary:
@@ -423,42 +422,48 @@ func _flag_name_to_bit(flag_name: String) -> int:
 	return -1
 
 
-func _input(event: InputEvent) -> void:
-	if not Engine.is_editor_hint():
-		return
+## MeshFill 插件通过 _forward_3d_gui_input 把编辑器视口事件转发到这里。
+## viewport_camera 是用户实际点击所用的视口相机；不能用 find_any_camera / get_camera_3d，
+## 那拿到的是运行时相机，编辑器里射线会和光标对不上。返回 true 表示已消费该事件。
+## （旧实现用 _input，但编辑场景里的 @tool 节点根本收不到 _input，导致点击一直是死的。）
+func _editor_viewport_input(viewport_camera: Camera3D, event: InputEvent) -> bool:
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_T:
 				show_wireframe = not show_wireframe
 				if _wire_multimesh_instance != null:
 					_wire_multimesh_instance.visible = show_wireframe
+				return true
 			KEY_R:
 				# Refresh: mark some tiles dirty with random flags
 				_demo_tick += 1
 				_apply_demo_update()
 				_full_refresh()
+				return true
 			KEY_C:
 				# Clear all dirty
 				_committer.clear_sv_dirty()
 				_selected_tile_id = ""
 				_full_refresh()
+				return true
 			KEY_D:
 				# Toggle highlight_dirty
 				highlight_dirty = not highlight_dirty
 				_full_refresh()
-
+				return true
+		return false
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		if Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
-			_ray_pick_tile()
+		_ray_pick_tile(viewport_camera, (event as InputEventMouseButton).position)
+		return true
+	return false
 
 
-func _ray_pick_tile() -> void:
-	var camera := _get_camera()
+func _ray_pick_tile(camera: Camera3D, screen_pos: Vector2) -> void:
 	if camera == null:
 		return
 
-	var from := camera.project_ray_origin(get_viewport().get_mouse_position())
-	var dir := camera.project_ray_normal(get_viewport().get_mouse_position())
+	var from := camera.project_ray_origin(screen_pos)
+	var dir := camera.project_ray_normal(screen_pos)
 	var ray_length := 1000.0
 
 	var best_tile_id := ""
@@ -476,10 +481,6 @@ func _ray_pick_tile() -> void:
 	_selected_tile_id = best_tile_id
 	_update_selection_display()
 	_full_refresh()
-
-
-func _get_camera() -> Camera3D:
-	return DemoUI.find_any_camera(self, true, false)
 
 
 func _update_selection_display() -> void:
@@ -537,7 +538,7 @@ func _apply_demo_update() -> void:
 			# To reset dirty, mark with minimal "auto" then clear in next cycle
 			_committer.mark_scene_voxel_tile_dirty(coord, {"scene": true, "auto": true}, {"id": "demo_%d" % _demo_tick})
 
-	_committer.blend_scene_voxels()
+	_committer.commit_scene_voxels()
 
 
 func _process(_delta: float) -> void:

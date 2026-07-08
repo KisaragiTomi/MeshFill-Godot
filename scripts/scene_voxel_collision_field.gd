@@ -1,8 +1,8 @@
 class_name SceneVoxelCollisionField
 
-## 场景体素碰撞/占据场与盖章子系统(Stage 3 抽出)。拥有 occupancy 与三层 collision field 的真实存储，
+## 场景体素碰撞/占据场与盖章子系统(Stage 3 抽出)。拥有 occupancy 与 terrain-base collision field 的真实存储，
 ## 以及 disc 盖章、collision 场 make/resample/merge、shared field layers、occupancy 盖章、mask import。
-## committer 通过同名转发属性(occupancy/_collision_field/...)对外暴露，自身核心代码无需改动。
+## committer 通过同名转发属性(occupancy/_terrain_base_collision_field/...)对外暴露，自身核心代码无需改动。
 extends "res://scripts/godot_compute_shader_base.gd"
 
 const VOXEL_OCCUPIED_EPSILON := VoxelGeneral.VOXEL_OCCUPIED_EPSILON
@@ -43,22 +43,6 @@ const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := 4
 const SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE := 6
 const SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE := 8
 const SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE := 1000000.0
-const SCENE_VOXEL_COMMIT_SOURCE_FLOAT_STRIDE := 16
-const SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE := 12
-const SCENE_VOXEL_COMMITTED_PAYLOAD_STRIDE_BYTES := SCENE_VOXEL_COMMIT_OUTPUT_FLOAT_STRIDE * 4
-const SCENE_VOXEL_COMMITTED_KEY_COORD_STRIDE_BYTES := 16
-const SCENE_VOXEL_COMMITTED_KEY_COORD_FORMAT := "ivec4(slice_index, voxel_x, voxel_z, reserved)"
-const SCENE_COMPLEXITY_FIELD_PROJECTION_SOURCE_STREAMS := 0
-const SCENE_COMPLEXITY_FIELD_PROJECTION_COMMITTED_PAYLOADS := 1
-const SCENE_VOXEL_COMMIT_SOURCE_NONE := 0
-const SCENE_VOXEL_COMMIT_SOURCE_AUTO := 1
-const SCENE_VOXEL_COMMIT_SOURCE_BRUSH := 2
-const SCENE_VOXEL_SOURCE_CANDIDATE_STRIDE_BYTES := 16
-const SCENE_VOXEL_SOURCE_CANDIDATE_RANGE_STRIDE_BYTES := 16
-const SCENE_VOXEL_SOURCE_CANDIDATE_GROUP_INDEX_STRIDE_BYTES := 4
-const SCENE_VOXEL_SOURCE_PAYLOAD_STRIDE_BYTES := SCENE_VOXEL_COMMIT_SOURCE_FLOAT_STRIDE * 4
-const ACCEPTED_PLACEMENT_SOURCE_BUFFER_INCOMPLETE_REASON := "incomplete_source_candidate_handoff_missing_payload_and_group_index_buffers"
-
 const SCENE_VOXEL_TILE_FLAG_COMPLEXITY := 1
 const SCENE_VOXEL_TILE_FLAG_COLLISION := 2
 const SCENE_VOXEL_TILE_FLAG_AUTO := 4
@@ -76,12 +60,10 @@ const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd
 const SceneVoxelProfileScript := preload("res://scripts/scene_voxel_profile.gd")
 const SceneVoxelSourceRecordScript := preload("res://scripts/scene_voxel_source_record.gd")
 const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
-const SceneVoxelCommitPayloadScript := preload("res://scripts/scene_voxel_commit_payload.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const SceneVoxelVolumeChannelsScript := preload("res://scripts/scene_voxel_volume_channels.gd")
-const SceneVoxelBrushScript := preload("res://scripts/scene_voxel_brush.gd")
 const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
-const VoxelGeneralScript := preload("res://scripts/voxel_general.gd")
+const VoxelGeneralScript := preload("res://scripts/utils/voxel_general.gd")
 const SceneVoxelDebugScript := preload("res://scripts/scene_voxel_debug.gd")
 
 
@@ -91,9 +73,7 @@ var _gpu_ready: bool = false
 
 ## --- occupancy 与 collision field 真实存储(从 committer 迁入；committer 留转发属性) ---
 var occupancy: Image
-var _source_collision_field: Image
 var _terrain_base_collision_field: Image
-var _collision_field: Image
 
 ## 本组件自有的线性采样器(collision/stamp GPU 采样用)
 var _sampler: RID
@@ -101,10 +81,6 @@ var _sampler: RID
 ## --- collision compute shader 管线(本组件拥有) ---
 var _shader_import: RID
 var _pipeline_import: RID
-var _shader_filter: RID
-var _pipeline_filter: RID
-var _shader_max_collision: RID
-var _pipeline_max_collision: RID
 var _shader_stamp_r32_disc: RID
 var _pipeline_stamp_r32_disc: RID
 var _shader_stamp_rgba_channel_disc: RID
@@ -125,8 +101,6 @@ func setup(committer, base_resolution: int) -> void:
 func _init_collision_gpu() -> void:
 	var specs := {
 		"import": "res://shaders/channel_import_mask.glsl",
-		"filter": "res://shaders/channel_filter_candidates.glsl",
-		"max_collision": "res://shaders/max_collision_images.glsl",
 		"stamp_r32_disc": "res://shaders/stamp_r32_disc.glsl",
 		"stamp_rgba_channel_disc": "res://shaders/stamp_rgba_channel_disc.glsl",
 		"merge_sv_collision_records": "res://shaders/merge_sv_collision_records.glsl",
@@ -148,149 +122,10 @@ func teardown() -> void:
 	dispose()
 	_committer = null
 
-## --- 复制自 committer 的 dispatch 辅助 ---
-
-## Dispatch a single compute pipeline with uniform sets and push constants,
-## then submit_and_sync. Returns true on success, false if begin_compute_list fails.
-func _gpu_dispatch_and_sync(pipeline: RID, uniform_sets: Array, push: PackedByteArray, groups: Vector3i) -> bool:
-	var cl := begin_compute_list()
-	if cl < 0:
-		return false
-	_rd.compute_list_bind_compute_pipeline(cl, pipeline)
-	for set_index in range(uniform_sets.size()):
-		_rd.compute_list_bind_uniform_set(cl, uniform_sets[set_index], set_index)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, groups.x, groups.y, groups.z)
-	end_compute_list()
-	submit_and_sync()
-	return true
-
-## Bind and dispatch a single pipeline within an open compute list (no begin/end).
-## Use for multi-pass sequences where the caller manages begin_compute_list/end_compute_list.
-
 ## --- 迁移自 committer 的 collision/occupancy/stamp 函数 ---
 func _create_collision_image(resolution: int) -> Image:
 
 	return VoxelGeneralScript.create_r32_image(resolution)
-
-## GPU 逐像素取两张碰撞图像的最大值，返回合成后的 R32 图像
-
-func _max_collision_images_gpu(a: Image, b: Image) -> Image:
-
-	if a == null or a.is_empty() or b == null or b.is_empty():
-
-		push_error("[SceneVoxelCommitter] Collision max compute requires two valid images")
-
-		return _create_collision_image(_committer._base_res)
-
-	if not _gpu_ready or _rd == null or not _shader_max_collision.is_valid() or not _pipeline_max_collision.is_valid():
-
-		push_error("[SceneVoxelCommitter] Collision max compute resources are not ready")
-
-		return _create_collision_image(_committer._base_res)
-
-	var tex_a := upload_texture_2d(
-
-		a,
-
-		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
-
-		Image.FORMAT_RF,
-
-		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
-
-		SCOPE_FRAME,
-
-		"collision_a_r32f"
-
-	)
-
-	var tex_b := upload_texture_2d(
-
-		b,
-
-		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
-
-		Image.FORMAT_RF,
-
-		RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT,
-
-		SCOPE_FRAME,
-
-		"collision_b_r32f"
-
-	)
-
-	var out_tex := create_rw_texture_2d(
-
-		_committer._base_res,
-
-		_committer._base_res,
-
-		RenderingDevice.DATA_FORMAT_R32_SFLOAT,
-
-		RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT,
-
-		SCOPE_FRAME,
-
-		"collision_max_r32f"
-
-	)
-
-	if not tex_a.is_valid() or not tex_b.is_valid() or not out_tex.is_valid():
-
-		gc_frame()
-
-		push_error("[SceneVoxelCommitter] Collision max compute texture allocation failed")
-
-		return _create_collision_image(_committer._base_res)
-
-	var set0 := create_uniform_set([
-
-		make_sampler_uniform(0, _sampler, tex_a),
-
-		make_sampler_uniform(1, _sampler, tex_b),
-
-	], _shader_max_collision, 0)
-
-	var set1 := create_uniform_set([
-
-		make_image_uniform(0, out_tex),
-
-	], _shader_max_collision, 1)
-
-	var push := PackedByteArray()
-
-	push.resize(16)
-
-	push.encode_s32(0, _committer._base_res)
-
-	push.encode_s32(4, _committer._base_res)
-
-	push.encode_s32(8, 0)
-
-	push.encode_s32(12, 0)
-
-	var groups := ceili(float(_committer._base_res) / 32.0)
-
-	if not _gpu_dispatch_and_sync(_pipeline_max_collision, [set0, set1], push, Vector3i(groups, groups, 1)):
-		gc_frame()
-		push_error("[SceneVoxelCommitter] Collision max compute list begin failed")
-		return _create_collision_image(_committer._base_res)
-
-	var data := _rd.texture_get_data(out_tex, 0)
-
-	var result := Image.create_from_data(_committer._base_res, _committer._base_res, false, Image.FORMAT_RF, data)
-
-	gc_frame()
-
-	return result
-
-## 用 GPU 合成地形基础碰撞与源碰撞，刷新合并后的碰撞场
-
-func _refresh_combined_collision_field() -> void:
-
-	_collision_field = _max_collision_images_gpu(_terrain_base_collision_field, _source_collision_field)
 
 func import_mask_channel(channel: int, mask_img: Image, complexity: float = 1.0) -> void:
 
@@ -338,7 +173,7 @@ func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
 
 	push.encode_s32(12, _committer._base_res)
 
-	var groups := ceili(float(_committer._base_res) / 32.0)
+	var groups := ceil_div(_committer._base_res, 32)
 
 	if not _gpu_dispatch_and_sync(_pipeline_import, [set0, set1], push, Vector3i(groups, groups, 1)):
 		gc_frame()
@@ -665,12 +500,6 @@ func _collision_layer_base_px(base_px: Vector2i, collision: Dictionary) -> Vecto
 
 	return VoxelGeneralScript.collision_layer_base_px(base_px, collision, _committer._base_res)
 
-## 计算碰撞记录的像素半径，点采样优先用 radius_px 字段
-
-func _collision_radius_px(collision: Dictionary) -> int:
-
-	return VoxelGeneralScript.collision_radius_px(collision, _committer._capture_size, _committer._base_res)
-
 ## 规范化共享场层列表，统一字段并计算有效半径与像素半径
 
 func _normalize_shared_field_layers(field_layers: Array, base_px: Vector2i = Vector2i(-1, -1)) -> Array[Dictionary]:
@@ -781,7 +610,8 @@ func _make_source_collision(base_px: Vector2i, collision_layers: Array, rec: Dic
 
 		var collision_strength := clampf(float(layer.get("collision_strength", 1.0)), 0.0, 1.0)
 
-		var radius_px := _collision_radius_px(layer)
+		# Collision is per-voxel point samples: source records carry no shape radius.
+		var radius_px := 0
 
 		var layer_base_px := _collision_layer_base_px(base_px, layer)
 
@@ -841,11 +671,11 @@ func _ensure_volume_collision_layer() -> void:
 
 	if not _committer._volume.has("source_collision_field"):
 
-		_committer._volume["source_collision_field"] = _resample_collision_field(_source_collision_field, xz_res)
+		_committer._volume["source_collision_field"] = _create_collision_image(xz_res)
 
 	if not _committer._volume.has("collision_field"):
 
-		var img := _resample_collision_field(_collision_field, xz_res)
+		var img := _resample_collision_field(_terrain_base_collision_field, xz_res)
 
 		_committer._volume["collision_field"] = img
 
@@ -997,7 +827,12 @@ func _stamp_shared_field_layer(base_px: Vector2i, source_layer: Dictionary, rec:
 
 	var layer := normalized[0]
 
-	var radius_px := _collision_radius_px(layer)
+	# Collision footprint is per-voxel point samples: exactly one voxel per collision
+	# cell, no radius disc (fixed-shape spreading retired). The scorer's CollisionField
+	# is built by the radius-free atomic-max record merge (merge_sv_collision_records),
+	# so a 0-radius record collection is a pure point sample. (shape/radius on the layer
+	# stay only as inert write-spec metadata; nothing in the field build reads them.)
+	var radius_px := 0
 
 	var collision_strength := clampf(float(layer.get("collision_strength", 1.0)), 0.0, 1.0)
 
@@ -1005,9 +840,8 @@ func _stamp_shared_field_layer(base_px: Vector2i, source_layer: Dictionary, rec:
 
 	var layer_base_px := _collision_layer_base_px(base_px, layer)
 
-	# Non-terrain collision stamping disabled; only terrain base collision is preserved.
-	# _source_collision_field remains zero, so _refresh_combined_collision_field() yields terrain-only.
-	# _source_collision_field = _stamp_scalar_image_disc(_source_collision_field, layer_base_px, radius_px, collision_strength, 0)
+	# Non-terrain collision is recorded as per-voxel samples into _volume["collision"]
+	# by _stamp_scalar_volume_disc below; terrain base is merged in _make_sv_collision_field.
 
 	var cell_template := {
 		"slice_index": int(layer.get("slice_index", 0)),
@@ -1032,14 +866,6 @@ func _stamp_shared_field_layer(base_px: Vector2i, source_layer: Dictionary, rec:
 		collision_strength,
 		cell_template
 	)
-
-	if not _committer._volume.is_empty():
-
-		var xz_res: int = _committer._volume.xz_res
-
-		_refresh_combined_collision_field()
-
-		_committer._volume["collision_field"] = _resample_collision_field(_collision_field, xz_res)
 
 	layer["base_pixel"] = layer_base_px
 
@@ -1067,7 +893,14 @@ func _stamp_shared_field_layers(base_px: Vector2i, field_layers: Array, rec: Dic
 
 			updated.append(stamped)
 
-	_refresh_combined_collision_field()
+	# The merged collision_field depends only on the terrain base + resolution
+	# (resample_collision_field.glsl reads only _terrain_base_collision_field, never the
+	# per-layer stamp), so resample once after all layers instead of redundantly per layer.
+	# Guarded on updated so the empty-layers case stays a no-op exactly as before (the old
+	# per-layer resample only ran when a layer was actually stamped).
+	if not updated.is_empty() and not _committer._volume.is_empty():
+
+		_committer._volume["collision_field"] = _resample_collision_field(_terrain_base_collision_field, _committer._volume.xz_res)
 
 	return updated
 
@@ -1075,67 +908,19 @@ func _stamp_shared_field_layers(base_px: Vector2i, field_layers: Array, rec: Dic
 
 func _clear_shared_field_cache() -> void:
 
-	_source_collision_field.fill(Color(0.0, 0.0, 0.0, 0.0))
-
-	_refresh_combined_collision_field()
-
 	if _committer._volume.is_empty():
 
 		return
 
 	var xz_res: int = _committer._volume.xz_res
 
-	var img := _resample_collision_field(_collision_field, xz_res)
+	var img := _resample_collision_field(_terrain_base_collision_field, xz_res)
 
-	_committer._volume["source_collision_field"] = _resample_collision_field(_source_collision_field, xz_res)
+	_committer._volume["source_collision_field"] = _create_collision_image(xz_res)
 
 	_committer._volume["collision_field"] = img
 
 	_committer._volume["collision"] = {}
-
-## 从场景体素字典重建共享场缓存，按脚印去重盖印碰撞层
-
-func _rebuild_shared_field_cache_from_scene_voxels(scene_voxels: Dictionary) -> void:
-
-	_clear_shared_field_cache()
-
-	if _committer._volume.is_empty():
-
-		return
-
-	var stamped_footprints: Dictionary = {}
-
-	for key in scene_voxels.keys():
-
-		var scene_voxel = scene_voxels[key]
-
-		if not scene_voxel is Dictionary:
-
-			continue
-
-		var voxel := scene_voxel as Dictionary
-
-		var collision_layers := SharedPropertyTypeScript.collision_from_fields(voxel)
-
-		if collision_layers.is_empty():
-
-			continue
-
-		var base_px = voxel.get("base_pixel", voxel.get("voxel_xz", Vector2i.ZERO))
-
-		if not base_px is Vector2i:
-
-			continue
-
-		var stamp_key := "%d:%d:%s" % [base_px.x, base_px.y, str(collision_layers)]
-
-		if stamped_footprints.has(stamp_key):
-
-			continue
-
-		stamped_footprints[stamp_key] = true
-
-		_stamp_shared_field_layers(base_px, collision_layers, voxel)
 
 ## 在指定通道上盖印 occupancy 的圆形区域
 
@@ -1147,79 +932,6 @@ func _stamp_occupancy_channel(base_px: Vector2i, channel: int, radius_px: int, c
 
 	occupancy = _stamp_scalar_image_disc(occupancy, base_px, maxi(radius_px, 1), complexity, channel)
 
-## 按 profile 在 occupancy 上逐通道盖印圆形区域
-
-func _stamp_occupancy(base_px: Vector2i, profile: Array[Dictionary]) -> void:
-
-	for entry in profile:
-
-		var ch := int(entry.get("channel", -1))
-
-		if not _committer._is_valid_channel(ch):
-
-			continue
-
-		var complexity := SceneVoxelProfileScript.profile_entry_complexity(entry, 1.0)
-
-		var r_px := _committer._radius_to_px(float(entry.get("radius", 0.0)))
-
-		_stamp_occupancy_channel(base_px, ch, r_px, complexity)
-
-## ─── GPU Candidate Filtering ───
-
-## Returns an Image at _committer._base_res where R = 1.0 if candidate, 0.0 if blocked.
-
-## GPU 按profile筛选候选并输出候选图像
-
-func _gpu_filter_candidates(profile: Array[Dictionary]) -> Image:
-
-	var tex_occ := upload_texture_2d(occupancy)
-
-	var tex_out := create_rw_texture_2d(_committer._base_res, _committer._base_res, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT, RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)
-
-	var set0 := create_uniform_set([make_sampler_uniform(0, _sampler, tex_occ)], _shader_filter, 0)
-
-	var set1 := create_uniform_set([make_image_uniform(0, tex_out)], _shader_filter, 1)
-
-	var pmask := SceneVoxelProfileScript.profile_to_mask(profile)
-
-	var push := PackedByteArray()
-
-	push.resize(32)
-
-	push.encode_float(0, pmask.r)
-
-	push.encode_float(4, pmask.g)
-
-	push.encode_float(8, pmask.b)
-
-	push.encode_float(12, pmask.a)
-
-	push.encode_float(16, 0.01)  # block_threshold
-
-	push.encode_s32(20, _committer._base_res)
-
-	push.encode_s32(24, 0)  # pad0
-
-	push.encode_s32(28, 0)  # pad1
-
-	var groups := ceili(float(_committer._base_res) / 32.0)
-
-	if not _gpu_dispatch_and_sync(_pipeline_filter, [set0, set1], push, Vector3i(groups, groups, 1)):
-		gc_frame()
-		push_error("[SceneVoxelCommitter] Candidate filter compute list begin failed")
-		var empty := Image.create(_committer._base_res, _committer._base_res, false, Image.FORMAT_RGBAH)
-		empty.fill(Color(0.0, 0.0, 0.0, 0.0))
-		return empty
-
-	var data := _rd.texture_get_data(tex_out, 0)
-
-	var result := Image.create_from_data(_committer._base_res, _committer._base_res, false, Image.FORMAT_RGBAH, data)
-
-	gc_frame()
-
-	return result
-
 ## ─── Query & Debug ───
 
 ## 设置地形基础碰撞场，重采样后刷新合并场并标记重建
@@ -1228,15 +940,13 @@ func set_terrain_base_collision_field(base_collision: Image) -> void:
 
 	_terrain_base_collision_field = _resample_collision_field(base_collision, _committer._base_res)
 
-	_refresh_combined_collision_field()
-
 	if not _committer._volume.is_empty():
 
 		var xz_res: int = _committer._volume.xz_res
 
 		_committer._volume["terrain_base_collision_field"] = _resample_collision_field(_terrain_base_collision_field, xz_res)
 
-		_committer._volume["collision_field"] = _resample_collision_field(_collision_field, xz_res)
+		_committer._volume["collision_field"] = _resample_collision_field(_terrain_base_collision_field, xz_res)
 
 		_committer._mark_scene_voxel_full_rebuild_dirty("terrain_base_collision")
 

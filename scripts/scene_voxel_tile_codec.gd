@@ -1,6 +1,7 @@
 extends RefCounted
 
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+const HashUtils := preload("res://scripts/utils/hash_utils.gd")
 
 const RECORD_STRIDE_BYTES := 128
 const SUMMARY_STRIDE_BYTES := 32
@@ -159,32 +160,9 @@ static func flags_from_value(value, default_layer: String = "scene") -> Dictiona
 
 	return flags
 
+## 委托到 VoxelGeneral.vector3i_from_value（该版本已并入本函数原有的超集行为）。
 static func vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
-	if value is Vector3i:
-		return value
-	if value is Vector3:
-		var v3: Vector3 = value
-		return Vector3i(roundi(v3.x), roundi(v3.y), roundi(v3.z))
-	if value is Vector2i:
-		var v2i: Vector2i = value
-		return Vector3i(v2i.x, fallback.y, v2i.y)
-	if value is Vector2:
-		var v2: Vector2 = value
-		return Vector3i(roundi(v2.x), fallback.y, roundi(v2.y))
-	if value is Array:
-		var arr: Array = value
-		if arr.size() >= 3:
-			return Vector3i(int(arr[0]), int(arr[1]), int(arr[2]))
-		if arr.size() >= 2:
-			return Vector3i(int(arr[0]), fallback.y, int(arr[1]))
-	if value is Dictionary:
-		var dict: Dictionary = value
-		return Vector3i(
-			int(dict.get("x", dict.get("r", fallback.x))),
-			int(dict.get("y", dict.get("g", fallback.y))),
-			int(dict.get("z", dict.get("b", fallback.z)))
-		)
-	return fallback
+	return VoxelGeneral.vector3i_from_value(value, fallback)
 
 static func first_vector3i(record: Dictionary, keys: Array[String], fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
 	for key in keys:
@@ -197,6 +175,39 @@ static func has_any_key(record: Dictionary, keys: Array[String]) -> bool:
 		if record.has(key):
 			return true
 	return false
+
+
+# ============================================================
+# GPU-autoobject dirty delta 解读契约(候选键表 + removed 规则 + 新旧边界解析)。
+# 原 SceneVoxelTileStore._pack_gpu_autoobject_dirty_delta_words 与
+# apply_gpu_autoobject_dirty_delta 各持一份逐字副本,集中于此避免漂移。
+# ============================================================
+
+const DELTA_CURRENT_MIN_KEYS: Array[String] = ["new_voxel_min", "voxel_min", "bounds_min", "new_bounds_min"]
+const DELTA_CURRENT_MAX_KEYS: Array[String] = ["new_voxel_max", "voxel_max", "bounds_max", "new_bounds_max"]
+const DELTA_PREVIOUS_MIN_KEYS: Array[String] = ["old_voxel_min", "previous_voxel_min", "old_bounds_min", "previous_bounds_min"]
+const DELTA_PREVIOUS_MAX_KEYS: Array[String] = ["old_voxel_max", "previous_voxel_max", "old_bounds_max", "previous_bounds_max"]
+
+
+## delta 是否表示对象移除:removed/freed/killed 任一为真,或显式 alive=false。
+static func delta_removed(delta: Dictionary) -> bool:
+	return bool(delta.get("removed", delta.get("freed", delta.get("killed", false)))) \
+		or bool(delta.has("alive") and not bool(delta.get("alive", true)))
+
+
+## 解析 delta 的新旧体素边界:current 键缺失时回退 previous;previous 缺失时回退 current。
+## 返回 {new_min, new_max, old_min, old_max}(与原内联解析逐字段等价)。
+static func delta_bounds(delta: Dictionary) -> Dictionary:
+	var new_min := first_vector3i(delta, DELTA_CURRENT_MIN_KEYS, first_vector3i(delta, DELTA_PREVIOUS_MIN_KEYS, Vector3i.ZERO))
+	var new_max := first_vector3i(delta, DELTA_CURRENT_MAX_KEYS, first_vector3i(delta, DELTA_PREVIOUS_MAX_KEYS, new_min + Vector3i.ONE))
+	var old_min := first_vector3i(delta, DELTA_PREVIOUS_MIN_KEYS, new_min)
+	var old_max := first_vector3i(delta, DELTA_PREVIOUS_MAX_KEYS, new_max)
+	return {
+		"new_min": new_min,
+		"new_max": new_max,
+		"old_min": old_min,
+		"old_max": old_max,
+	}
 
 static func normalized_bounds(voxel_min: Vector3i, voxel_max: Vector3i, grid_size: Vector3i) -> Dictionary:
 	var min_v := Vector3i(
@@ -245,25 +256,6 @@ static func decode_float_field_bytes(bytes: PackedByteArray) -> PackedFloat32Arr
 	available_bytes -= available_bytes % LEGACY_FLOAT_FIELD_STRIDE_BYTES
 	return bytes.slice(0, available_bytes).to_float32_array()
 
-static func quantize_unorm8(value: float) -> int:
-	return clampi(int(round(clampf(value, 0.0, 1.0) * 255.0)), 0, 255)
-
-static func pack_rgba8_word(color: Color) -> int:
-	var r := quantize_unorm8(color.r)
-	var g := quantize_unorm8(color.g)
-	var b := quantize_unorm8(color.b)
-	var a := quantize_unorm8(color.a)
-	return ((r & 0xFF) << 24) | ((g & 0xFF) << 16) | ((b & 0xFF) << 8) | (a & 0xFF)
-
-static func rgba8_word_to_color(word: int) -> Color:
-	var rgba8 := word & 0xFFFFFFFF
-	return Color(
-		float((rgba8 >> 24) & 0xFF) / 255.0,
-		float((rgba8 >> 16) & 0xFF) / 255.0,
-		float((rgba8 >> 8) & 0xFF) / 255.0,
-		float(rgba8 & 0xFF) / 255.0
-	)
-
 static func rgba8_byte_count(voxel_count: int) -> int:
 	return maxi(voxel_count, 0) * COMPLEXITY_FIELD_STRIDE_BYTES
 
@@ -298,7 +290,7 @@ static func pack_complexity_field_rgba8_bytes(values: PackedFloat32Array, voxel_
 		elif i < values.size():
 			var value := values[i]
 			color = Color(1.0, 1.0, 1.0, value)
-		out.encode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES, pack_rgba8_word(color))
+		out.encode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES, BufferUtils.pack_shader_rgba8_word(color))
 	return out
 
 static func decode_complexity_field_rgba8_vec4_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
@@ -307,7 +299,7 @@ static func decode_complexity_field_rgba8_vec4_bytes(bytes: PackedByteArray, vox
 	out.resize(safe_count * 4)
 	var available := mini(safe_count, int(bytes.size() / COMPLEXITY_FIELD_STRIDE_BYTES))
 	for i in range(available):
-		var color := rgba8_word_to_color(bytes.decode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES))
+		var color := BufferUtils.shader_rgba8_word_to_color(bytes.decode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES))
 		var base := i * 4
 		out[base + 0] = color.r
 		out[base + 1] = color.g
@@ -321,7 +313,7 @@ static func decode_complexity_field_rgba8_alpha_bytes(bytes: PackedByteArray, vo
 	out.resize(safe_count)
 	var available := mini(safe_count, int(bytes.size() / COMPLEXITY_FIELD_STRIDE_BYTES))
 	for i in range(available):
-		out[i] = rgba8_word_to_color(bytes.decode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES)).a
+		out[i] = BufferUtils.shader_rgba8_word_to_color(bytes.decode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES)).a
 	return out
 
 static func pack_collision_field_r8_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
@@ -329,7 +321,7 @@ static func pack_collision_field_r8_bytes(values: PackedFloat32Array, voxel_coun
 	var out := PackedByteArray()
 	out.resize(r8_byte_count(safe_count))
 	for i in range(mini(safe_count, values.size())):
-		out[i] = quantize_unorm8(values[i])
+		out[i] = BufferUtils.quantize_unorm8(values[i])
 	return out
 
 static func pack_collision_field_r8_word_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
@@ -402,7 +394,7 @@ static func pack_record_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictio
 		bytes.encode_s32(base + 100, int(tile.get("collision_cell_count", 0)))
 		bytes.encode_s32(base + 104, 0)  # was non_empty
 		bytes.encode_s32(base + 108, 1 if bool(tile.get("updated_this_commit", false)) else 0)
-		bytes.encode_u32(base + 112, stable_hash(tile_id))
+		bytes.encode_u32(base + 112, HashUtils.stable_u32_from_string(tile_id))
 		bytes.encode_s32(base + 116, 1 if bool(tile.get("dirty", false)) else 0)
 		bytes.encode_s32(base + 120, 0)
 		bytes.encode_s32(base + 124, 0)
@@ -442,7 +434,7 @@ static func pack_ref_hash_bytes(values: Array[String]) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(values.size() * REF_STRIDE_BYTES)
 	for i in range(values.size()):
-		bytes.encode_u32(i * REF_STRIDE_BYTES, stable_hash(str(values[i])))
+		bytes.encode_u32(i * REF_STRIDE_BYTES, HashUtils.stable_u32_from_string(str(values[i])))
 	return bytes
 
 static func decode_records(bytes: PackedByteArray, tile_ids: Array[String]) -> Array[Dictionary]:
@@ -546,10 +538,3 @@ static func flags_from_bits(bits: int) -> Dictionary:
 
 static func _u32_word(value: int) -> int:
 	return value if value >= 0 else value + 4294967296
-
-static func stable_hash(value: String) -> int:
-	var h := 2166136261
-	for i in range(value.length()):
-		h = (h ^ value.unicode_at(i)) & 0xffffffff
-		h = (h * 16777619) & 0xffffffff
-	return h

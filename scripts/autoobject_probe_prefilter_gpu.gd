@@ -18,9 +18,10 @@ extends "res://scripts/godot_compute_shader_base.gd"
 ## resident buffer cannot be borrowed the prefilter raises an error (push_error)
 ## and returns a blocked result instead of uploading CPU bytes.
 
-const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
+const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
@@ -28,12 +29,18 @@ const TILE_SIZE := 8
 const MAX_ASSETS := 256
 const TOPK := 4
 const ANCHOR_CAPACITY := 65536
+## Fixed anchor grid width for score/top-K dispatch. Kept constant (not derived from
+## the anchor count) so the GPU finalize pass and the shaders agree on the anchor_id
+## decode without a CPU/GPU formula. 256 * 256 == ANCHOR_CAPACITY, so it always covers
+## the full capacity; only group_count_y scales with the actual anchor count.
+const ANCHOR_GRID_X := 256
 const SCORE_ASSET_LANES := 16
 const PREFILTER_DISPATCH_AXIS_LIMIT := 65535
 const EMPTY_ASSET_ID := 0xffffffff
-const CANDIDATE_ROUTE_SCHEMA_VERSION := 1
-const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := 16
-const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := 16
+const CandidateRouteSchemaScript := preload("res://scripts/candidate_route_schema.gd")
+const CANDIDATE_ROUTE_SCHEMA_VERSION := CandidateRouteSchemaScript.SCHEMA_VERSION
+const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := CandidateRouteSchemaScript.RECORD_STRIDE_BYTES
+const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := CandidateRouteSchemaScript.RANGE_STRIDE_BYTES
 const CANDIDATE_ROUTE_GPU_PACK_SOURCE_LABEL := "gpu_vote_buffer_gpu_pack"
 const CANDIDATE_ROUTE_GPU_PACK_PASS := "pack_candidate_route_records_from_votes"
 const CANDIDATE_ROUTE_GPU_EXPAND_PASS := "expand_scene_voxel_tile_routes"
@@ -46,15 +53,21 @@ var min_support: float = 0.25               # required support below anchor
 var min_target_interest: float = 0.01       # minimum TargetSV_B demand
 var min_prefilter_score: float = 0.35       # minimum probe score accepted by shader
 var interpolation_guard_voxels: int = 1     # route expansion guard, at least 1 voxel
+## Opt-in only: CPU readback of the anchor position array into result["anchors"].
+## The anchors array is purely for debug/visualization (the resident GPU route buffers
+## drive placement); off by default so the routing path stays GPU-first.
+var debug_read_anchors: bool = false
 
 # Shaders & pipelines
 var _shader_collect: RID
+var _shader_anchor_finalize: RID
 var _shader_score: RID
 var _shader_topk: RID
 var _shader_reduce: RID
 var _shader_route_pack: RID
 var _shader_route_expand: RID
 var _pipeline_collect: RID
+var _pipeline_anchor_finalize: RID
 var _pipeline_score: RID
 var _pipeline_topk: RID
 var _pipeline_reduce: RID
@@ -69,12 +82,12 @@ var _candidate_route_gpu_pack_range_buf: RID
 # ---------------------------------------------------------------------------
 
 ## 执行 GPU 探针预过滤主入口，返回包含候选路由和锚点信息的结果字典。
+## 目标场只接受 target_read_buffers 中的常驻 GPU 交接（无 CPU 字节上传）。
 func run_probe_prefilter(
 	sv: Dictionary,
 	autoobjects: Array,
 	dirty_tile_ids: Array[int] = [],
 	runtime_profile_container: Object = null,
-	target_field_bytes: PackedFloat32Array = PackedFloat32Array(),
 	target_read_buffers: Dictionary = {},
 	tile_summaries_rid: RID = RID()
 ) -> Dictionary:
@@ -104,7 +117,7 @@ func run_probe_prefilter(
 		_free_gpu()
 		return blocked_result
 
-	var result := _run_gpu_pipeline(sv, autoobjects, voxel_sparse_ids, runtime_profile_container, target_field_bytes, target_read_buffers, tile_summaries_rid)
+	var result := _run_gpu_pipeline(sv, autoobjects, voxel_sparse_ids, runtime_profile_container, target_read_buffers, tile_summaries_rid)
 	if _result_has_resident_candidate_route_payload(result):
 		gc_frame()
 	else:
@@ -122,7 +135,6 @@ func _run_gpu_pipeline(
 	autoobjects: Array,
 	tile_ids: Array[int],
 	runtime_profile_container: Object = null,
-	_target_field_bytes: PackedFloat32Array = PackedFloat32Array(),  ## ignored: resident GPU target handoff required, no CPU upload
 	target_read_buffers: Dictionary = {},
 	tile_summaries_rid: RID = RID()
 ) -> Dictionary:
@@ -142,13 +154,8 @@ func _run_gpu_pipeline(
 
 	# ---- Normalize GPU buffer inputs ----
 
-	var complexity_collision_bytes := _pack_complexity_collision_float_bytes(
-		_ensure_float_array(sv.get("complexity_field", PackedFloat32Array()), voxel_count),
-		_ensure_float_array(sv.get("collision_field", PackedFloat32Array()), voxel_count),
-		voxel_count
-	)
 	var use_expand_shader := tile_summaries_rid.is_valid()
-	var target_buffer_pack := _target_read_buffer_pack(target_read_buffers, PackedFloat32Array(), voxel_count)
+	var target_buffer_pack := _target_read_buffer_pack(target_read_buffers, voxel_count)
 	if not bool(target_buffer_pack.get("ready", false)):
 		var blocked_reason := str(target_buffer_pack.get("reason", "target_read_buffer_not_ready"))
 		var blocked_result := _empty_result(blocked_reason, {}, _pipeline_readiness(use_expand_shader))
@@ -165,7 +172,11 @@ func _run_gpu_pipeline(
 
 	# ---- Create GPU buffers ----
 
-	var complexity_collision_buf := storage_buffer_from_bytes(complexity_collision_bytes, SCOPE_FRAME, "complexity_collision_merged")
+	var complexity_collision_buf := _make_complexity_collision_buffer(sv, voxel_count)
+	if not complexity_collision_buf.is_valid():
+		var field_pipeline_status := _pipeline_readiness(use_expand_shader)
+		_free_gpu()
+		return _empty_result("complexity_collision_field_buffer_not_ready", probe_pack, field_pipeline_status)
 	# Target read buffers must be a resident GPU handoff (borrowed); the CPU
 	# upload fallback was removed, so _target_read_buffer_pack only reaches here
 	# with a valid borrowed RID.
@@ -198,24 +209,20 @@ func _run_gpu_pipeline(
 		var pipeline_status := _pipeline_readiness(use_expand_shader)
 		_free_gpu()
 		return _empty_result("collect_anchor_dispatch_bounds_exceeded", probe_pack, pipeline_status)
-	submit_and_sync(true)
 
-	# Read anchor count
-	var anchor_count_bytes := _rd.buffer_get_data(anchor_count_buf, 0, 4)
-	var actual_anchor_count := mini(_decode_u32_count(anchor_count_bytes), ANCHOR_CAPACITY)
-	if actual_anchor_count == 0:
-		var pipeline_status := _pipeline_readiness(use_expand_shader)
-		_free_gpu()
-		return _empty_result("no_anchors_collected", probe_pack, pipeline_status)
+	# GPU-first: anchor_count stays on the GPU. The finalize pass inside
+	# _dispatch_score_topk_reduce turns it into indirect dispatch args, so the host
+	# never reads it back. Zero anchors -> zero score/top-K groups -> empty routes
+	# flow through the rest of the pipeline naturally (no CPU early-out / sync here).
 
 	# ---- Dispatch 2-4: Score probes -> Top-K selection -> Voxel-region reduction ----
 
 	if not _dispatch_score_topk_reduce(
-		anchor_buf, probe_range_buf, probe_data_buf,
+		anchor_buf, anchor_count_buf, probe_range_buf, probe_data_buf,
 		complexity_collision_buf, target_field_buf,
 		asset_scores_buf, topk_buf, voxel_sparse_votes_buf,
 		grid_size, voxel_size,
-		tile_grid, tile_count, actual_anchor_count, asset_count
+		tile_grid, tile_count, asset_count
 	):
 		var pipeline_status := _pipeline_readiness(use_expand_shader)
 		_free_gpu()
@@ -234,7 +241,15 @@ func _run_gpu_pipeline(
 
 	# ---- Read back results ----
 
-	var anchors_bytes := _rd.buffer_get_data(anchor_buf, 0, actual_anchor_count * 16)
+	# Anchor position array + count readback is debug-only (result["anchors"]
+	# visualization). Off by default so the routing path stays fully GPU-first; the
+	# route pack pass has already submit_and_sync'd by the time we get here.
+	var actual_anchor_count := 0
+	var anchors_bytes := PackedByteArray()
+	if debug_read_anchors:
+		var anchor_count_bytes := _rd.buffer_get_data(anchor_count_buf, 0, 4)
+		actual_anchor_count = mini(BufferUtils.decode_u32_count(anchor_count_bytes), ANCHOR_CAPACITY)
+		anchors_bytes = _rd.buffer_get_data(anchor_buf, 0, actual_anchor_count * 16)
 	var resident_route_payload_ready := _candidate_route_payload_has_resident_rids(gpu_route_pack_payload)
 	var pipeline_status := _pipeline_readiness(use_expand_shader)
 
@@ -303,34 +318,61 @@ func _dispatch_collect(
 	if cl < 0:
 		push_error("[AutoObjectProbePrefilterGPU] Collect anchors compute list begin failed")
 		return false
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_collect)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, collect_groups.x, collect_groups.y, collect_groups.z)
+	_gpu_dispatch_pipeline_sets(cl, _pipeline_collect, [set0], push, collect_groups)
 	end_compute_list()
 	return true
 
 
-## 在单个计算列表中连续调度评分→Top-K→聚合三个 Pass，含屏障隔离。
+## GPU-first：先用 finalize pass 把 GPU 端 anchor_count 转成 score/top-K 的间接 dispatch
+## 参数（anchor_count 全程不回读 CPU），再以间接 dispatch 连续调度评分→Top-K→聚合。
+## anchor_count==0 时 finalize 写出 0 组 → score/top-K 天然空跑，无需 CPU early-out。
 func _dispatch_score_topk_reduce(
-	anchor_buf: RID, probe_range_buf: RID,
+	anchor_buf: RID, anchor_count_buf: RID, probe_range_buf: RID,
 	probe_data_buf: RID, complexity_collision_buf: RID,
 	target_field_buf: RID, asset_scores_buf: RID,
 	topk_buf: RID, voxel_sparse_votes_buf: RID,
 	grid_size: Vector3i, voxel_size: Vector3,
 	tile_grid: Vector3i, tile_count: int,
-	anchor_count: int, asset_count: int
+	asset_count: int
 ) -> bool:
-	var safe_anchor_count := clampi(anchor_count, 0, ANCHOR_CAPACITY)
 	var safe_asset_count := clampi(asset_count, 0, MAX_ASSETS)
-	var anchor_dispatch := _anchor_dispatch_groups(safe_anchor_count)
 	var asset_blocks := _score_asset_block_dispatch_groups(safe_asset_count)
-	if anchor_dispatch == Vector3i.ZERO or asset_blocks <= 0:
-		push_error("[AutoObjectProbePrefilterGPU] Score/Top-K dispatch count is out of bounds")
+	if asset_blocks <= 0:
+		push_error("[AutoObjectProbePrefilterGPU] Score/Top-K asset block dispatch count is out of bounds")
 		return false
-	var anchor_grid_x := anchor_dispatch.x
-	var anchor_grid_y := anchor_dispatch.y
+	if not _rd.has_method("compute_list_dispatch_indirect"):
+		push_error("[AutoObjectProbePrefilterGPU] RenderingDevice lacks compute_list_dispatch_indirect")
+		return false
+	var anchor_grid_x := ANCHOR_GRID_X
 
+	# ---- GPU finalize: anchor_count -> indirect dispatch args (no CPU readback) ----
+	var score_indirect_args_buf := dispatch_indirect_args_buffer_zero(SCOPE_FRAME, "prefilter_score_indirect_args")
+	var topk_indirect_args_buf := dispatch_indirect_args_buffer_zero(SCOPE_FRAME, "prefilter_topk_indirect_args")
+	if not score_indirect_args_buf.is_valid() or not topk_indirect_args_buf.is_valid():
+		push_error("[AutoObjectProbePrefilterGPU] Failed to allocate anchor indirect args buffers")
+		return false
+	var finalize_set0 := create_uniform_set([
+		make_storage_uniform(0, anchor_count_buf),
+		make_storage_uniform(1, score_indirect_args_buf),
+		make_storage_uniform(2, topk_indirect_args_buf),
+	], _shader_anchor_finalize, 0, SCOPE_PASS, "prefilter_anchor_dispatch_finalize")
+	if not finalize_set0.is_valid():
+		push_error("[AutoObjectProbePrefilterGPU] Anchor finalize uniform set create failed")
+		return false
+	var finalize_push := PackedByteArray()
+	finalize_push.resize(16)
+	finalize_push.encode_u32(0, anchor_grid_x)
+	finalize_push.encode_u32(4, asset_blocks)
+	finalize_push.encode_u32(8, ANCHOR_CAPACITY)
+	finalize_push.encode_u32(12, 0)
+	var fcl := begin_compute_list()
+	if fcl < 0:
+		push_error("[AutoObjectProbePrefilterGPU] Anchor finalize compute list begin failed")
+		return false
+	_gpu_dispatch_pipeline_sets(fcl, _pipeline_anchor_finalize, [finalize_set0], finalize_push, Vector3i(1, 1, 1))
+	end_compute_list()
+
+	# ---- Score -> Top-K -> Reduce (score/top-K via indirect dispatch) ----
 	var score_set0 := create_uniform_set([
 		make_storage_uniform(0, anchor_buf),
 		make_storage_uniform(1, probe_range_buf),
@@ -338,19 +380,24 @@ func _dispatch_score_topk_reduce(
 		make_storage_uniform(3, complexity_collision_buf),
 		make_storage_uniform(4, target_field_buf),
 		make_storage_uniform(5, asset_scores_buf),
+		make_storage_uniform(6, anchor_count_buf),
 	], _shader_score, 0)
 
 	var topk_set0 := create_uniform_set([
 		make_storage_uniform(0, asset_scores_buf),
 		make_storage_uniform(1, topk_buf),
+		make_storage_uniform(2, anchor_count_buf),
 	], _shader_topk, 0)
 
 	var reduce_set0 := create_uniform_set([
 		make_storage_uniform(0, anchor_buf),
 		make_storage_uniform(1, topk_buf),
 		make_storage_uniform(2, voxel_sparse_votes_buf),
+		make_storage_uniform(3, anchor_count_buf),
 	], _shader_reduce, 0)
 
+	# anchor_count is read from anchor_count_buf inside the shaders; the former
+	# push-constant slots are left zeroed. anchor_grid_x stays fixed (ANCHOR_GRID_X).
 	var score_push := PackedByteArray()
 	score_push.resize(48)
 	score_push.encode_s32(0, grid_size.x)
@@ -361,14 +408,14 @@ func _dispatch_score_topk_reduce(
 	score_push.encode_float(20, 1.0 / maxf(voxel_size.y, 0.0001))
 	score_push.encode_float(24, 1.0 / maxf(voxel_size.z, 0.0001))
 	score_push.encode_float(28, 0.0)
-	score_push.encode_u32(32, safe_anchor_count)
+	score_push.encode_u32(32, 0)
 	score_push.encode_u32(36, anchor_grid_x)
 	score_push.encode_float(40, min_prefilter_score)
 	score_push.encode_float(44, 0.0)
 
 	var topk_push := PackedByteArray()
 	topk_push.resize(16)
-	topk_push.encode_u32(0, safe_anchor_count)
+	topk_push.encode_u32(0, 0)
 	topk_push.encode_u32(4, safe_asset_count)
 	topk_push.encode_u32(8, anchor_grid_x)
 	topk_push.encode_float(12, min_prefilter_score)
@@ -379,7 +426,7 @@ func _dispatch_score_topk_reduce(
 	reduce_push.encode_s32(4, tile_grid.y)
 	reduce_push.encode_s32(8, tile_grid.z)
 	reduce_push.encode_s32(12, tile_count)
-	reduce_push.encode_u32(16, safe_anchor_count)
+	reduce_push.encode_u32(16, 0)
 	reduce_push.encode_u32(20, safe_asset_count)
 	reduce_push.encode_u32(24, TOPK)
 	reduce_push.encode_u32(28, 0)
@@ -388,132 +435,14 @@ func _dispatch_score_topk_reduce(
 	if cl < 0:
 		push_error("[AutoObjectProbePrefilterGPU] Score/Top-K/Reduce compute list begin failed")
 		return false
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_score)
-	_rd.compute_list_bind_uniform_set(cl, score_set0, 0)
-	_rd.compute_list_set_push_constant(cl, score_push, score_push.size())
-	_rd.compute_list_dispatch(cl, anchor_grid_x, anchor_grid_y, asset_blocks)
+	_gpu_dispatch_pipeline_sets_indirect(cl, _pipeline_score, [score_set0], score_push, score_indirect_args_buf)
 	_rd.compute_list_add_barrier(cl)
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_topk)
-	_rd.compute_list_bind_uniform_set(cl, topk_set0, 0)
-	_rd.compute_list_set_push_constant(cl, topk_push, topk_push.size())
-	_rd.compute_list_dispatch(cl, anchor_grid_x, anchor_grid_y, 1)
+	_gpu_dispatch_pipeline_sets_indirect(cl, _pipeline_topk, [topk_set0], topk_push, topk_indirect_args_buf)
 	_rd.compute_list_add_barrier(cl)
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_reduce)
-	_rd.compute_list_bind_uniform_set(cl, reduce_set0, 0)
-	_rd.compute_list_set_push_constant(cl, reduce_push, reduce_push.size())
-	_rd.compute_list_dispatch(cl, 1, 1, 1)
+	_gpu_dispatch_pipeline_sets(cl, _pipeline_reduce, [reduce_set0], reduce_push, Vector3i(1, 1, 1))
 	_rd.compute_list_add_barrier(cl)
 	end_compute_list()
 	return true
-
-
-## 调度 Pass A：对每个锚点×资源的探针集进行打分，结果写入 asset_scores_buf。
-func _dispatch_score(
-	anchor_buf: RID, probe_range_buf: RID,
-	probe_data_buf: RID, complexity_collision_buf: RID,
-	target_field_buf: RID, asset_scores_buf: RID,
-	grid_size: Vector3i, voxel_size: Vector3, asset_count: int,
-	anchor_count: int, anchor_grid_x: int, anchor_grid_y: int,
-	asset_blocks: int
-) -> void:
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, anchor_buf),
-		make_storage_uniform(1, probe_range_buf),
-		make_storage_uniform(2, probe_data_buf),
-		make_storage_uniform(3, complexity_collision_buf),
-		make_storage_uniform(4, target_field_buf),
-		make_storage_uniform(5, asset_scores_buf),
-	], _shader_score, 0)
-
-	var push := PackedByteArray()
-	push.resize(32)
-	push.encode_s32(0, grid_size.x)
-	push.encode_s32(4, grid_size.y)
-	push.encode_s32(8, grid_size.z)
-	push.encode_s32(12, asset_count)
-	push.encode_float(16, 1.0 / maxf(voxel_size.x, 0.0001))
-	push.encode_float(20, 1.0 / maxf(voxel_size.y, 0.0001))
-	push.encode_float(24, 1.0 / maxf(voxel_size.z, 0.0001))
-	push.encode_float(28, 0.0)  # pad
-	# Second 16 bytes
-	push.resize(48)
-	push.encode_u32(32, anchor_count)
-	push.encode_u32(36, anchor_grid_x)
-	push.encode_float(40, min_prefilter_score)
-	push.encode_float(44, 0.0)  # pad
-
-	var cl := begin_compute_list()
-	if cl < 0:
-		push_error("[AutoObjectProbePrefilterGPU] Score probes compute list begin failed")
-		return
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_score)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, anchor_grid_x, anchor_grid_y, asset_blocks)
-	end_compute_list()
-
-
-## 调度 Pass B：从每锚点的资源分数中选出 Top-K 候选资源，写入 topk_buf。
-func _dispatch_topk(
-	asset_scores_buf: RID, topk_buf: RID,
-	anchor_count: int, asset_count: int,
-	anchor_grid_x: int, anchor_grid_y: int
-) -> void:
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, asset_scores_buf),
-		make_storage_uniform(1, topk_buf),
-	], _shader_topk, 0)
-
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_u32(0, anchor_count)
-	push.encode_u32(4, asset_count)
-	push.encode_u32(8, anchor_grid_x)
-	push.encode_float(12, min_prefilter_score)
-
-	var cl := begin_compute_list()
-	if cl < 0:
-		push_error("[AutoObjectProbePrefilterGPU] Top-K compute list begin failed")
-		return
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_topk)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, anchor_grid_x, anchor_grid_y, 1)
-	end_compute_list()
-
-
-## 调度 Pass C：将 Top-K 结果聚合为每资源的稀疏体素区域投票，写入 voxel_sparse_votes_buf。
-func _dispatch_reduce(
-	anchor_buf: RID, topk_buf: RID, voxel_sparse_votes_buf: RID,
-	tile_grid: Vector3i, tile_count: int,
-	anchor_count: int, asset_count: int
-) -> void:
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, anchor_buf),
-		make_storage_uniform(1, topk_buf),
-		make_storage_uniform(2, voxel_sparse_votes_buf),
-	], _shader_reduce, 0)
-
-	var push := PackedByteArray()
-	push.resize(32)
-	push.encode_s32(0, tile_grid.x)
-	push.encode_s32(4, tile_grid.y)
-	push.encode_s32(8, tile_grid.z)
-	push.encode_s32(12, tile_count)
-	push.encode_u32(16, anchor_count)
-	push.encode_u32(20, asset_count)
-	push.encode_u32(24, TOPK)
-	push.encode_u32(28, 0)
-
-	var cl := begin_compute_list()
-	if cl < 0:
-		push_error("[AutoObjectProbePrefilterGPU] Reduce votes compute list begin failed")
-		return
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_reduce)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, 1, 1, 1)
-	end_compute_list()
 
 
 ## 执行 GPU 路由打包 Pass（pack 或 expand），将稀疏投票缓冲区转换为 schema-v1 记录/范围 RID，返回驻留载荷字典。
@@ -606,10 +535,7 @@ func _run_candidate_route_gpu_pack_pass(
 	var cl := begin_compute_list()
 	if cl < 0:
 		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_compute_list_begin_failed" % ("expand" if use_expand else "pack"))
-	_rd.compute_list_bind_compute_pipeline(cl, pipeline_rid)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, 1, 1, 1)
+	_gpu_dispatch_pipeline_sets(cl, pipeline_rid, [set0], push, Vector3i(1, 1, 1))
 	end_compute_list()
 	submit_and_sync(true)
 
@@ -645,8 +571,8 @@ func _run_candidate_route_gpu_pack_pass(
 		"schema_version": CANDIDATE_ROUTE_SCHEMA_VERSION,
 		"record_stride_bytes": CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
 		"range_stride_bytes": CANDIDATE_ROUTE_RANGE_STRIDE_BYTES,
-		"resident_route_record_stride_bytes": CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
-		"resident_route_range_stride_bytes": CANDIDATE_ROUTE_RANGE_STRIDE_BYTES,
+		"resident_route_record_stride": CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
+		"resident_route_range_stride": CANDIDATE_ROUTE_RANGE_STRIDE_BYTES,
 		# 交给 VPG 适配链的驻留 GPU 缓冲区
 		"resident_route_record_rid": record_buf,
 		"resident_route_range_rid": range_buf,
@@ -655,7 +581,6 @@ func _run_candidate_route_gpu_pack_pass(
 		"resident_route_record_capacity": record_capacity,
 		"resident_route_range_count": asset_count,
 		"same_rendering_device_as_vpg": true,
-		"rendering_device_matches_vpg": true,
 		# 计数 / CPU 上传回退入参（GPU-first 不回读计数，record_bytes 留空）
 		"record_count": 0,
 		"range_count": asset_count,
@@ -918,6 +843,7 @@ static func _result_has_resident_candidate_route_payload(result: Dictionary) -> 
 ## 加载并编译所有计算着色器，按需加载路由打包/展开 Shader，同时创建对应管线 RID。
 func _load_shaders(load_route_expand: bool = false) -> void:
 	_shader_collect = load_compute_shader("res://shaders/collect_sv_anchors.glsl")
+	_shader_anchor_finalize = load_compute_shader("res://shaders/prefilter_anchor_dispatch_finalize.glsl")
 	_shader_score = load_compute_shader("res://shaders/score_anchor_asset_probes.glsl")
 	_shader_topk = load_compute_shader("res://shaders/select_anchor_topk.glsl")
 	_shader_reduce = load_compute_shader("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl")
@@ -926,6 +852,8 @@ func _load_shaders(load_route_expand: bool = false) -> void:
 		_shader_route_expand = load_compute_shader("res://shaders/expand_scene_voxel_tile_routes.glsl")
 	if _shader_collect.is_valid():
 		_pipeline_collect = create_compute_pipeline(_shader_collect)
+	if _shader_anchor_finalize.is_valid():
+		_pipeline_anchor_finalize = create_compute_pipeline(_shader_anchor_finalize)
 	if _shader_score.is_valid():
 		_pipeline_score = create_compute_pipeline(_shader_score)
 	if _shader_topk.is_valid():
@@ -942,6 +870,7 @@ func _load_shaders(load_route_expand: bool = false) -> void:
 func _pipeline_rids_ready(require_route_expand: bool = false) -> bool:
 	var core_ready := (
 		_shader_collect.is_valid() and _pipeline_collect.is_valid()
+		and _shader_anchor_finalize.is_valid() and _pipeline_anchor_finalize.is_valid()
 		and _shader_score.is_valid() and _pipeline_score.is_valid()
 		and _shader_topk.is_valid() and _pipeline_topk.is_valid()
 		and _shader_reduce.is_valid() and _pipeline_reduce.is_valid()
@@ -956,6 +885,7 @@ func _pipeline_rids_ready(require_route_expand: bool = false) -> bool:
 ## 返回每个 Pass 的 shader/pipeline 有效性状态字典，用于调试和错误报告。
 func _pipeline_readiness(route_expand_requested: bool = false) -> Dictionary:
 	var collect := _pipeline_pass_readiness(_shader_collect, _pipeline_collect)
+	var anchor_finalize := _pipeline_pass_readiness(_shader_anchor_finalize, _pipeline_anchor_finalize)
 	var score := _pipeline_pass_readiness(_shader_score, _pipeline_score)
 	var topk := _pipeline_pass_readiness(_shader_topk, _pipeline_topk)
 	var reduce := _pipeline_pass_readiness(_shader_reduce, _pipeline_reduce)
@@ -964,6 +894,7 @@ func _pipeline_readiness(route_expand_requested: bool = false) -> Dictionary:
 	var route_expand := _pipeline_pass_readiness(_shader_route_expand, _pipeline_route_expand)
 	route_expand["requested"] = route_expand_requested
 	var all_ready := bool(collect.get("ready", false)) \
+		and bool(anchor_finalize.get("ready", false)) \
 		and bool(score.get("ready", false)) \
 		and bool(topk.get("ready", false)) \
 		and bool(reduce.get("ready", false))
@@ -973,6 +904,7 @@ func _pipeline_readiness(route_expand_requested: bool = false) -> Dictionary:
 		all_ready = all_ready and bool(route_pack.get("ready", false))
 	return {
 		"collect": collect,
+		"anchor_finalize": anchor_finalize,
 		"score": score,
 		"topk": topk,
 		"reduce": reduce,
@@ -997,12 +929,14 @@ func _pipeline_pass_readiness(shader: RID, pipeline: RID) -> Dictionary:
 func _free_gpu() -> void:
 	dispose()
 	_pipeline_collect = RID()
+	_pipeline_anchor_finalize = RID()
 	_pipeline_score = RID()
 	_pipeline_topk = RID()
 	_pipeline_reduce = RID()
 	_pipeline_route_pack = RID()
 	_pipeline_route_expand = RID()
 	_shader_collect = RID()
+	_shader_anchor_finalize = RID()
 	_shader_score = RID()
 	_shader_topk = RID()
 	_shader_reduce = RID()
@@ -1192,18 +1126,6 @@ static func _linear_dispatch_groups(work_count: int) -> Vector3i:
 	return Vector3i(groups_x, groups_y, 1)
 
 
-## 将锚点数量映射为近似平方根分布的 2D dispatch 组数。
-static func _anchor_dispatch_groups(anchor_count: int) -> Vector3i:
-	var safe_anchor_count := clampi(anchor_count, 0, ANCHOR_CAPACITY)
-	if safe_anchor_count <= 0:
-		return Vector3i.ZERO
-	var groups_x := clampi(ceili(sqrt(float(safe_anchor_count))), 1, PREFILTER_DISPATCH_AXIS_LIMIT)
-	var groups_y := _ceil_div_positive(safe_anchor_count, groups_x)
-	if groups_y <= 0 or groups_y > PREFILTER_DISPATCH_AXIS_LIMIT:
-		return Vector3i.ZERO
-	return Vector3i(groups_x, groups_y, 1)
-
-
 ## 计算评分 Pass 的 Z 轴 dispatch 组数（每 SCORE_ASSET_LANES 个资源一组）。
 static func _score_asset_block_dispatch_groups(asset_count: int) -> int:
 	var safe_asset_count := clampi(asset_count, 0, MAX_ASSETS)
@@ -1264,7 +1186,7 @@ func _profile_id_from_autoobject(autoobject: Object, runtime_profile_container: 
 	for profile_key in ["profile_id", "auto_voxel_profile_id", "runtime_profile_id", "asset_profile_id"]:
 		if autoobject.has_meta(profile_key):
 			return int(autoobject.get_meta(profile_key))
-		if _object_has_property(autoobject, profile_key):
+		if VariantUtils.has_property(autoobject, profile_key):
 			return int(autoobject.get(profile_key))
 	var write_spec := {}
 	if autoobject.has_method("get_voxel_write_spec"):
@@ -1276,13 +1198,13 @@ func _profile_id_from_autoobject(autoobject: Object, runtime_profile_container: 
 			return int(write_spec.get(profile_key, -1))
 	if not runtime_profile_container.has_method("get_profile_id_for_descriptor"):
 		return -1
-	if not _object_has_property(autoobject, "voxel_descriptor"):
+	if not VariantUtils.has_property(autoobject, "voxel_descriptor"):
 		return -1
 	var descriptor = autoobject.get("voxel_descriptor")
 	if not descriptor is Resource:
 		return -1
-	var density := _semantic_probe_density(autoobject) if _object_has_property(autoobject, "semantic_probe_density") else -1.0
-	var mesh_ref = autoobject.get("mesh") if _object_has_property(autoobject, "mesh") else null
+	var density := _semantic_probe_density(autoobject) if VariantUtils.has_property(autoobject, "semantic_probe_density") else -1.0
+	var mesh_ref = autoobject.get("mesh") if VariantUtils.has_property(autoobject, "mesh") else null
 	return int(runtime_profile_container.call(
 		"get_profile_id_for_descriptor",
 		descriptor,
@@ -1337,11 +1259,36 @@ func _pack_complexity_collision_float_bytes(scene_data: PackedFloat32Array, coll
 	return bytes
 
 
-## 从 4 字节缓冲区解码单个 uint32 计数值。
-func _decode_u32_count(bytes: PackedByteArray) -> int:
-	if bytes.size() < 4:
-		return 0
-	return int(bytes.decode_u32(0))
+## 构建合并 complexity/collision 输入缓冲：优先从 sv 携带的常驻 8-bit field RID
+## 做 GPU 转换（含 BlendSV 读取对，无 CPU 打包）；无常驻 RID 时回退 CPU float 打包。
+func _make_complexity_collision_buffer(sv: Dictionary, voxel_count: int) -> RID:
+	var raw_complexity_rid = sv.get("resident_complexity_field_read_rid", RID())
+	var raw_collision_rid = sv.get("resident_collision_field_read_rid", RID())
+	var resident_complexity: RID = raw_complexity_rid if raw_complexity_rid is RID else RID()
+	var resident_collision: RID = raw_collision_rid if raw_collision_rid is RID else RID()
+	if resident_complexity.is_valid() and resident_collision.is_valid():
+		var shader := load_compute_shader("res://shaders/pack_prefilter_field_pair.glsl", SCOPE_FRAME, "pack_prefilter_field_pair")
+		var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "pack_prefilter_field_pair")
+		if shader.is_valid() and pipeline.is_valid():
+			var merged_buf := storage_buffer_zero(voxel_count * 8, SCOPE_FRAME, "complexity_collision_merged")
+			var set0 := create_uniform_set([
+				make_storage_uniform(0, resident_complexity),
+				make_storage_uniform(1, resident_collision),
+				make_storage_uniform(2, merged_buf),
+			], shader, 0, SCOPE_PASS, "pack_prefilter_field_pair")
+			if merged_buf.is_valid() and set0.is_valid():
+				var push := PackedByteArray()
+				push.resize(16)
+				push.encode_s32(0, voxel_count)
+				if _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(voxel_count, 64)):
+					return merged_buf
+		push_error("[AutoObjectProbePrefilterGPU] resident field pair convert dispatch failed; falling back to CPU pack")
+	var complexity_collision_bytes := _pack_complexity_collision_float_bytes(
+		_ensure_float_array(sv.get("complexity_field", PackedFloat32Array()), voxel_count),
+		_ensure_float_array(sv.get("collision_field", PackedFloat32Array()), voxel_count),
+		voxel_count
+	)
+	return storage_buffer_from_bytes(complexity_collision_bytes, SCOPE_FRAME, "complexity_collision_merged")
 
 
 ## 将 int 数组打包为 PackedByteArray（u32 格式），空数组返回 4 字节零。
@@ -1369,48 +1316,17 @@ func _pack_route_profile_radius_bytes(route_profiles: Array, asset_count: int) -
 	return bytes
 
 
-## 解析目标场 GPU 缓冲区来源：优先借用驻留 RID，否则上传字节数据。
-func _target_read_buffer_pack(
-	target_read_buffers: Dictionary,
-	target_field_bytes: PackedFloat32Array,
-	voxel_count: int
-) -> Dictionary:
+## 组装目标评分的 GPU 读取缓冲区数据包：仅接受常驻 GPU 交接（借用外部持有的
+## target_field 缓冲）；借用失败即阻断——无 CPU 字节上传回退。
+func _target_read_buffer_pack(target_read_buffers: Dictionary, voxel_count: int) -> Dictionary:
 	var expected_floats := maxi(voxel_count, 1) * 4
 	var borrowed := _borrowed_target_read_buffer_pack(target_read_buffers, expected_floats)
 	if bool(borrowed.get("ready", false)):
 		return borrowed
-
-	var field_input: PackedFloat32Array = target_field_bytes
-	var raw_field_from_pack = target_read_buffers.get("target_field_bytes", PackedFloat32Array())
-	if field_input.is_empty() and raw_field_from_pack is PackedFloat32Array:
-		field_input = raw_field_from_pack
-	var upload_reason := str(borrowed.get("reason", "resident_handoff_absent"))
-	if _target_read_buffers_claim_resident(target_read_buffers) and field_input.size() < expected_floats:
-		return _blocked_target_read_buffer_pack(upload_reason, expected_floats, field_input.size())
-
-	var field_data := _target_field_data(field_input, voxel_count)
-	return {
-		"ready": true,
-		"target_read_buffer_source": "uploaded_target_bytes",
-		"target_read_buffer_ownership": "prefilter_uploaded_owned",
-		"target_read_buffer_lifetime": "AutoObjectProbePrefilterGPU frame scope",
-		"target_read_buffers_borrowed": false,
-		"target_read_buffers_uploaded": true,
-		"target_field_buffer": RID(),
-		"target_field_bytes": field_data,
-		"target_field_byte_count": field_data.size() * 4,
-		"expected_byte_count": expected_floats * 4,
-		"target_field_format": "vec4",
-		"target_field_stride_bytes": 16,
-		"owner": "AutoObjectProbePrefilterGPU",
-		"producer": "AutoObjectProbePrefilterGPU",
-		"borrowed_from": "none",
-		"source_reason": upload_reason,
-		"rendering_device_match": false,
-		"rid_valid": false,
-		"gpu_first": true,
-		"cpu_fallback": false,
-	}
+	return _blocked_target_read_buffer_pack(
+		str(borrowed.get("reason", "resident_handoff_absent")),
+		expected_floats
+	)
 
 
 ## 尝试从 target_read_buffers 字典借用已驻留的目标场缓冲区 RID，校验设备和字节数。
@@ -1466,24 +1382,13 @@ func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected
 	}
 
 
-## 检查 target_read_buffers 是否声明持有驻留目标缓冲区交接。
-func _target_read_buffers_claim_resident(target_read_buffers: Dictionary) -> bool:
-	if target_read_buffers.is_empty():
-		return false
-	var summary: Dictionary = target_read_buffers.get("resident_target_read_buffer_handoff_summary", {})
-	return bool(target_read_buffers.get(
-		"resident_target_read_buffer_handoff",
-		summary.get("resident_target_read_buffer_handoff", false)
-	))
-
-
-## 构造目标场缓冲区不可用时的阻塞结果字典。
+## 构造目标场缓冲区不可用时的阻塞结果字典（常驻 GPU 交接缺失或不合规，无 CPU 上传回退）。
 func _blocked_target_read_buffer_pack(
 	borrow_reason: String,
-	expected_floats: int,
-	actual_floats: int
+	expected_floats: int
 ) -> Dictionary:
-	var reason := "%s_no_debug_or_legacy_bytes" % borrow_reason
+	var reason := "%s_gpu_resident_required" % borrow_reason
+	push_error("[AutoObjectProbePrefilterGPU] target read buffers require a resident GPU handoff: %s" % reason)
 	return {
 		"ready": false,
 		"reason": reason,
@@ -1494,7 +1399,7 @@ func _blocked_target_read_buffer_pack(
 		"target_read_buffers_uploaded": false,
 		"target_field_buffer": RID(),
 		"target_field_bytes": PackedFloat32Array(),
-		"target_field_byte_count": actual_floats * 4,
+		"target_field_byte_count": 0,
 		"expected_byte_count": expected_floats * 4,
 		"target_field_format": "vec4",
 		"target_field_stride_bytes": 16,
@@ -1538,46 +1443,16 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 	}
 
 
-## 返回恰好 voxel_count×4 个 float 的目标场数据，过长则截断，不足则补零。
-func _target_field_data(prepacked: PackedFloat32Array, voxel_count: int) -> PackedFloat32Array:
-	var expected_floats := maxi(voxel_count, 1) * 4
-	if prepacked.size() >= expected_floats:
-		if prepacked.size() == expected_floats:
-			return prepacked
-		return prepacked.slice(0, expected_floats)
-	var result := PackedFloat32Array()
-	result.resize(expected_floats)
-	return result
-
-
-## 将 Color 打包为 RGBA8 格式的 uint32（R 在最高字节）。
-static func _pack_rgba8(c: Color) -> int:
-	var r := clampi(int(roundf(c.r * 255.0)), 0, 255)
-	var g := clampi(int(roundf(c.g * 255.0)), 0, 255)
-	var b := clampi(int(roundf(c.b * 255.0)), 0, 255)
-	var a := clampi(int(roundf(c.a * 255.0)), 0, 255)
-	return (r << 24) | (g << 16) | (b << 8) | a
-
-
 ## 从探针字典中提取颜色和复杂度，转换为 GPU 所需的 RGBA8 uint32。
 static func _shader_rgba8_from_probe(probe: Dictionary) -> int:
 	if probe.has("expected_color") or probe.has("color") or probe.has("expected_complexity") or probe.has("complexity"):
-		var color := SemanticProbeProfileScript.color_from_value(
+		var color := VariantUtils.color_from_value(
 			probe.get("expected_color", probe.get("color", Color.WHITE)),
 			Color.WHITE
 		)
 		color.a = clampf(float(probe.get("expected_complexity", probe.get("complexity", color.a))), 0.0, 1.0)
-		return _pack_rgba8(color)
-	return _semantic_rgba8_to_shader_rgba8(int(probe.get("expected_rgba8", 0)))
-
-
-## 将语义 RGBA8（R 在最低位）转换为 Shader RGBA8（R 在最高字节）。
-static func _semantic_rgba8_to_shader_rgba8(packed: int) -> int:
-	var r := packed & 0xff
-	var g := (packed >> 8) & 0xff
-	var b := (packed >> 16) & 0xff
-	var a := (packed >> 24) & 0xff
-	return (r << 24) | (g << 16) | (b << 8) | a
+		return BufferUtils.pack_shader_rgba8_word(color)
+	return BufferUtils.semantic_to_shader_rgba8_word(int(probe.get("expected_rgba8", 0)))
 
 
 ## 将 Variant 安全转换为 Vector3，类型不匹配返回 Vector3.ZERO。
@@ -1674,8 +1549,8 @@ static func _probe_offset_voxel_bounds(probes: Array, voxel_size: Vector3) -> Di
 		if not raw_probe is Dictionary:
 			continue
 		var probe := raw_probe as Dictionary
-		var offset := SemanticProbeProfileScript.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
-		var ov := _world_offset_to_voxels(offset, voxel_size)
+		var offset := VariantUtils.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
+		var ov := VoxelGeneral.world_offset_to_voxels(offset, voxel_size)
 		if not has_probe:
 			min_v = ov
 			max_v = ov
@@ -1687,13 +1562,8 @@ static func _probe_offset_voxel_bounds(probes: Array, voxel_size: Vector3) -> Di
 
 
 ## 计算碰撞脚印在体素坐标系下的 AABB（min/max）。
-static func _footprint_voxel_bounds(collision: Array, voxel_size: Vector3) -> Dictionary:
-	var footprint: Array = VoxelPlacementGeneratorScript.bake_footprint_from_collision(
-		collision,
-		voxel_size,
-		true,
-		1
-	)
+static func _footprint_voxel_bounds(collision: Array, _voxel_size: Vector3) -> Dictionary:
+	var footprint: Array = AssetDescriptorScript.bake_footprint(collision, true, 1)
 	if footprint.is_empty():
 		return {"min": Vector3i.ZERO, "max": Vector3i.ZERO}
 	var min_v := Vector3i(2147483647, 2147483647, 2147483647)
@@ -1716,9 +1586,9 @@ static func _radius_to_voxels(radius: float, voxel_size: Vector3) -> Vector3i:
 ## 将体素填充量转换为 Tile 半径（向上取整到 TILE_SIZE）。
 static func _padding_to_tile_radius(min_pad: Vector3i, max_pad: Vector3i) -> Vector3i:
 	return Vector3i(
-		ceili(float(maxi(abs(min_pad.x), abs(max_pad.x))) / float(TILE_SIZE)),
-		ceili(float(maxi(abs(min_pad.y), abs(max_pad.y))) / float(TILE_SIZE)),
-		ceili(float(maxi(abs(min_pad.z), abs(max_pad.z))) / float(TILE_SIZE))
+		_ceil_div_positive(maxi(abs(min_pad.x), abs(max_pad.x)), TILE_SIZE),
+		_ceil_div_positive(maxi(abs(min_pad.y), abs(max_pad.y)), TILE_SIZE),
+		_ceil_div_positive(maxi(abs(min_pad.z), abs(max_pad.z)), TILE_SIZE)
 	)
 
 
@@ -1744,38 +1614,23 @@ static func _tile_id_to_pos(tile_id: int, tile_grid: Vector3i) -> Vector3i:
 	return Vector3i(tx, ty, tz)
 
 
-## 将世界空间偏移转换为体素坐标（委托给 VoxelGeneral）。
-static func _world_offset_to_voxels(offset: Vector3, voxel_size: Vector3) -> Vector3i:
-	return VoxelGeneral.world_offset_to_voxels(offset, voxel_size)
-
-
 ## 从 autoobject 或其 voxel_descriptor 中读取 context_sensing_radius。
 static func _object_context_sensing_radius(autoobject: Object) -> float:
 	if autoobject == null:
 		return 0.0
-	var descriptor = autoobject.get("voxel_descriptor") if _object_has_property(autoobject, "voxel_descriptor") else null
-	if descriptor is Resource and _object_has_property(descriptor, "context_sensing_radius"):
+	var descriptor = autoobject.get("voxel_descriptor") if VariantUtils.has_property(autoobject, "voxel_descriptor") else null
+	if descriptor is Resource and VariantUtils.has_property(descriptor, "context_sensing_radius"):
 		return maxf(float(descriptor.get("context_sensing_radius")), 0.0)
-	if _object_has_property(autoobject, "context_sensing_radius"):
+	if VariantUtils.has_property(autoobject, "context_sensing_radius"):
 		return maxf(float(autoobject.get("context_sensing_radius")), 0.0)
 	return 0.0
 
 
 ## 从 autoobject 中读取 semantic_probe_density，默认返回 1.0。
 static func _semantic_probe_density(autoobject: Object) -> float:
-	if autoobject != null and _object_has_property(autoobject, "semantic_probe_density"):
+	if autoobject != null and VariantUtils.has_property(autoobject, "semantic_probe_density"):
 		return float(autoobject.get("semantic_probe_density"))
 	return 1.0
-
-
-## 检查 object 的属性列表中是否存在指定属性名。
-static func _object_has_property(object: Object, property_name: String) -> bool:
-	if object == null:
-		return false
-	for property in object.get_property_list():
-		if str((property as Dictionary).get("name", "")) == property_name:
-			return true
-	return false
 
 
 ## 构造路由 Profile 的调试副本数组，缺失条目用空 Profile 填充。

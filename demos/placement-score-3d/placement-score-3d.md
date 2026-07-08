@@ -2,7 +2,20 @@
 
 本文记录 3D placement score 阶段的设计契约：对单个候选物体，先按 asset footprint 预烘每个旋转角度的有效 sample records，再围绕 anchor 采样 `SV` 与 `TargetSV_B` 内容并评分。每个旋转槽只访问该槽实际会命中 footprint 的 sample，单槽 sample 数按 asset 尺寸裁剪并硬性限制在 `32^3` 以内。
 
-> 状态：**实现中（GPU compute + volume score demo）**。两阶段 compute shader 已落地：`shaders/score_object_subtile.glsl`（Pass A: sample group × 12 rotation partial 累加）、`shaders/reduce_object_rotation_scores.glsl`（Pass B: 跨 sample group reduce + best rotation pick）。GPU 编排由 `scripts/object_volume_score_gpu.gd` 管理。当前演示场景 `demos/placement-score-3d/` 会在默认地形的每个 anchor 上对所有 geo 物体逐一评分比较。当前 in-tree 的 tile 粒度评分 `shaders/score_voxel_tile.glsl`（`TILE_SIZE = 8`）仍并存。
+> 状态：**已合并进生产放置管线（in-shader 旋转方案）**。3D 体积评分不再走独立两遍管线，而是并入 `VoxelPlacementGenerator` 的评分阶段：`shaders/score_voxel_tile.glsl` 现对每个候选原点在 shader 内扫 `rotation_slots`（默认 12）个 yaw，逐一用其完整物理模型（clearance/solid + runtime same-type avoidance + candidate route）评分并取最优槽写入 tile_topk 记录；`shaders/stamp_voxel_field.glsl` 按记录里的最优槽旋转 footprint 盖章；旋转经现有 record→`results_to_world_gpu`→实例 yaw 以同一 Godot `Basis(UP,θ)` 约定一致贯通，reduce 原样复用。生产路径（SPA → `run_multi_asset`）已在编辑器 Vulkan 下验证。
+>
+> 原独立两遍 demo 管线 `scripts/object_volume_score_gpu.gd`（`score_object_subtile.glsl` + `reduce_object_rotation_scores.glsl`）已**退役删除**，其评分并入 `VoxelPlacementGenerator`（VPG）。
+>
+> **当前实现：`demos/placement-score-3d/volume_score_demo.gd` 是一个 volume-score provider**，向同场景兄弟 `CoreSPADemo`（ScenePlacementActor）`register_volume_score_provider` 注册，接管编辑器工具栏「Anchors」「Score」按钮与 Anchor 模式点选：
+> - **Anchors**：`VolumeScore3D.generate_anchors` 在场景场表面按 `anchor_spacing`（默认 = VPG `TILE_SIZE` = 8，1 锚点/tile）铺锚点。
+> - **Score**：对每个 `AssetDescriptor` 资产用 `VPG.run_minimal`（`candidate_voxel_sparses` = 锚点所属 tile、`read_tile_topk`、in-shader 12 旋转）评分，读回每 tile 最佳 `{voxel, score, rotation}` 记录映射回锚点，得每锚点 × 每资产的 top-k 排名；点选锚点显示其排名与最优朝向。
+> - 退役的 `ObjectVolumeScoreGpu.*`（build_anchor_asset_topk / best_asset_per_anchor / …）已在 provider 内以纯数据函数就地重写，不复活两遍管线。
+>
+> **放置的物体（每锚点胜出资产）一律实例化真实 `AssetDescriptor` 的 mesh（`get_mesh()`），绝不用占位方盒子**（见项目 `CLAUDE.md`「Placement / Score Demos: Render Real AssetDescriptor Assets」）：资产在 `.tscn` 里以 `ext_resource` 挂到 `@export Array[AssetDescriptor] placement_assets`（默认 `assets/vegetation/sm_test_leaf_test2_asset.tres`）；footprint（评分用）按 mesh AABB 比例导出，展示则把 mesh 缩放贴合 footprint、按最优 yaw 旋转、底面贴地。`AssetDescriptor` 已标 `@tool`，其 `get_mesh()` 等方法方能在编辑器 @tool demo 里运行。
+>
+> 同场景 `CoreSPADemo` 以 `spawn_autoobjects_on_start = false` 关闭默认 65536 autoobject 批量 spawn（该 provider 场景不需要 autoobject）；`selection_mode = 3`（Anchor）使锚点点选开箱即用。
+>
+> ⚠️ 下文「数据流 / Dispatch 布局 / Sample Record 预烘 / 12 旋转评分 / Reduce 汇总 / 输出记录」等章节描述的是**已删除的两遍原型设计**，仅作历史参考；当前实现见 `shaders/score_voxel_tile.glsl` 的 in-shader 旋转与 `scripts/voxel_placement_generator.gd`。
 
 2.5D heightfield 路径已废弃移除。3D 路径只接替「物理 score」阶段，上游 probe prefilter 与候选路由契约不变。
 
@@ -103,7 +116,7 @@ for slot in 0..11:
             partial[slot] += weighted_fit(asset, s, t)   # 采样值已按 wsum 归一化
 ```
 
-`weighted_fit` 复用现有物理 + target fit 维度：target coverage、complexity fit、color fit、support、solid collision、clearance。具体权重沿用 `score_voxel_tile.glsl` 当前语义，本文不重新定义权重默认值。
+`weighted_fit` 复用现有物理 + target fit 维度：target coverage、complexity fit、color fit、solid collision、clearance。具体权重沿用 `score_voxel_tile.glsl` 当前语义，本文不重新定义权重默认值。
 
 footprint 旋转使用 forward 预烘：遍历 asset footprint voxel，按 yaw 旋转后写入 scene-relative sample offset。
 
@@ -147,7 +160,7 @@ per-object score record 字段含义维护在对应 GDScript owner 的 readback 
 
 - 本路径只接替 placement **physical / target fit score** 阶段，不改 probe prefilter、候选路由、commit 契约。
 - 上游候选仍由 `autoobject-probe-prefilter.md` 的 prefilter 提供；空候选仍直接 skip，不回退 full grid。
-- score 不写 committed `SceneVoxel`；接受的 placement 仍走现有 `instance_stamp_writeback` / `SceneVoxelCommitter` source write。
+- score 不写 committed `SceneVoxel`；接受的 placement 由 VPG state-chain stamp 原位提交（`instance_stamp_writeback.accepted_placement_writeback_mode == "gpu_state_chain_stamp"`）。
 - `TargetSV_B` 只作为 target / guidance 输入采样，不进入 committed source，越界 clamp 规则同 prefilter。
 - score 不做 semantic dot / MLP / route rerank；语义重排仍是候选内 TODO。
 - 不引入 float `atomicAdd`；跨 sample group 汇总只通过独立 reduce pass。
@@ -158,4 +171,4 @@ per-object score record 字段含义维护在对应 GDScript owner 的 readback 
 - 12 旋转是否只绕 Y，还是需要少量 pitch / roll slot 支持斜面贴合。
 - sample-group partial buffer 在多候选物体批处理下的容量上限与回收策略（复用 `GodotComputeShaderBase` 的 scope GC）。
 - ~~forward / inverse footprint 旋转哪种更适合当前路径。~~ **已选择 forward 预烘**：CPU 遍历 occupied footprint voxel → 按 yaw 旋转成 scene-relative sample offset → GPU 只采样有效 records。
-- 与 `score_voxel_tile.glsl` 的 `8^3` 路径是并存还是完全替换，迁移期如何对账。
+- ~~与 `score_voxel_tile.glsl` 的 `8^3` 路径是并存还是完全替换，迁移期如何对账。~~ **已解决**：完全替换——`score_voxel_tile.glsl` 演化为 in-shader 12 旋转体积评分，成为唯一评分器；独立两遍管线取代待退役。

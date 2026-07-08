@@ -182,7 +182,7 @@
 
     <g id="blend-sv">
       <rect class="node" x="1285" y="700" width="335" height="125" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
-      <text class="node-title" x="1303" y="728">blend_scene_voxels()</text>
+      <text class="node-title" x="1303" y="728">commit_scene_voxels()</text>
       <text class="small"><tspan x="1303" y="750">runs only when source changed</tspan><tspan x="1303" y="767">publishes SV[tick] resident fields</tspan><tspan x="1303" y="784">not a separate state root</tspan></text>
     </g>
 

@@ -1,4 +1,4 @@
-extends SceneTree
+extends "res://scripts/utils/scene_tree_test.gd"
 
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
@@ -6,7 +6,7 @@ const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const TestUtils := preload("res://scripts/utils/test_utils.gd")
 const DemoContractUtils := preload("res://scripts/utils/demo_contract_utils.gd")
-const AssetDescriptorScript := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const AutoObjectScript := preload("res://scripts/auto_object.gd")
 
 # Demo-doc command driver contract (project rule):
@@ -17,19 +17,14 @@ const AutoObjectScript := preload("res://scripts/auto_object.gd")
 # Every tools/*.gd referenced from demos/**/*.md must be classified here so a
 # newly added or relabeled command cannot silently regress the driver flag.
 const DEMO_GPU_TEST_SCRIPTS := [
-	"test_voxel_placement_generator",
-	"test_scene_voxel_field",
-	"test_blendsv_feedback_score",
+	"test_stamp_collect_voxel_disc",
 	"test_autoobject_probe_prefilter",
 	"test_auto_voxel_runtime_profile_container",
-	"test_gpu_autoobject_runtime_bridge",
 	"test_markdown_contracts",
 	"test_targetsv_brush_overlay",
 	"test_core_demo_contracts",
 ]
 const DEMO_CPU_ONLY_TEST_SCRIPTS := [
-	"test_voxel_placement_record_commit",
-	"test_asset_properties_descriptor_contract",
 	"test_semantic_probe_generation",
 	"test_target_sv_point_cloud_conversion",
 ]
@@ -38,18 +33,20 @@ var _gpu_skip_count := 0
 
 
 func _init() -> void:
-	var ok := true
-	ok = _test_descriptor_backed_asset_semantics() and ok
-	ok = _test_shared_field_collision_contract() and ok
-	ok = _test_committed_scene_voxel_accepted_fields() and ok
-	ok = _test_terrain_collision_survives_zero_complexity_writes() and ok
-	ok = _test_channel_stays_out_of_shared_semantics() and ok
-	ok = _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() and ok
-	ok = _test_gpu_first_no_cpu_fallback_contracts() and ok
-	ok = _test_legacy_scene_voxel_scatter_removed() and ok
-	ok = _test_runtime_read_sources_reject_staging_success() and ok
-	ok = _test_vpg_and_scene_tile_gpu_binding_contracts() and ok
-	ok = _test_demo_doc_test_commands_match_driver_contract() and ok
+	# 用基类 run_tests 跑套件,但保留自定义成功消息(GPU SKIPS 计数),故不走 finish_suite 的成功分支。
+	var ok := run_tests([
+		_test_descriptor_backed_asset_semantics,
+		_test_shared_field_collision_contract,
+		_test_committed_scene_voxel_accepted_fields,
+		_test_terrain_collision_survives_zero_complexity_writes,
+		_test_channel_stays_out_of_shared_semantics,
+		_test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed,
+		_test_gpu_first_no_cpu_fallback_contracts,
+		_test_legacy_scene_voxel_scatter_removed,
+		_test_runtime_read_sources_reject_staging_success,
+		_test_vpg_and_scene_tile_gpu_binding_contracts,
+		_test_demo_doc_test_commands_match_driver_contract,
+	])
 
 	if ok:
 		if _gpu_skip_count > 0:
@@ -238,8 +235,9 @@ func _test_terrain_collision_survives_zero_complexity_writes() -> bool:
 	committer.build_voxel_volume(8, [
 		{"channel": 0, "color": Color(0.4, 0.4, 0.4, 1.0), "complexity": 1.0, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
 	])
-	var sv := committer.get_sv()
-	var collision_field: PackedFloat32Array = sv.get("collision_field", PackedFloat32Array())
+	# Stamp-only commit 后 sv 不再携带 CPU field 投影；碰撞断言走显式 debug 回读。
+	var field_projection := committer.readback_sv_field_debug_projection()
+	var collision_field: PackedFloat32Array = field_projection.get("collision_field", PackedFloat32Array())
 	var collision_max := 0.0
 	for value in collision_field:
 		collision_max = maxf(collision_max, value)
@@ -573,10 +571,9 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 	print("[MarkdownContracts] test_vpg_and_scene_tile_gpu_binding_contracts...")
 	var ok := true
 	var vpg_source := TestUtils.read_text("res://scripts/voxel_placement_generator.gd")
-	# VPG 拆分后术语分布在抽出的子组件中(writeback/output/footprint baker);按子系统簇校验合约。
+	# VPG 拆分后术语分布在抽出的子组件中(writeback/output);按子系统簇校验合约。
 	vpg_source += TestUtils.read_text("res://scripts/voxel_placement_writeback.gd")
 	vpg_source += TestUtils.read_text("res://scripts/voxel_placement_output.gd")
-	vpg_source += TestUtils.read_text("res://scripts/voxel_footprint_baker.gd")
 	for missing in DemoContractUtils.find_missing_terms(vpg_source, [
 		"REQUIRED_GPU_RUNTIME_BUFFERS",
 		"REQUIRED_GPU_PROFILE_BUFFERS",
@@ -609,7 +606,6 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 		"PROFILE_TABLE_BUFFER := \"profile_table\"",
 		"PROBE_RECORD_BUFFER := \"probe_records\"",
 		"PIVOT_RECORD_BUFFER := \"pivot_records\"",
-		"COLLISION_RECORD_BUFFER := \"collision_records\"",
 		"upload_profiles",
 		"is_runtime_ready",
 		"readback_debug_snapshot",
@@ -619,9 +615,9 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 		ok = false
 
 	var committer_source := TestUtils.read_text("res://scripts/scene_voxel_committer.gd")
-	# committer 拆分后 tile/source/collision/debug 术语分布在抽出的子系统中;按子系统簇校验合约。
+	# committer 拆分后 tile/collision/debug 术语分布在抽出的子系统中;按子系统簇校验合约。
+	# (source staging 子系统已随 stamp-only commit 删除)
 	committer_source += TestUtils.read_text("res://scripts/scene_voxel_tile_store.gd")
-	committer_source += TestUtils.read_text("res://scripts/scene_voxel_source_staging.gd")
 	committer_source += TestUtils.read_text("res://scripts/scene_voxel_collision_field.gd")
 	committer_source += TestUtils.read_text("res://scripts/scene_voxel_debug.gd")
 	for missing in DemoContractUtils.find_missing_terms(committer_source, [
@@ -631,7 +627,6 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 		"\"read_source\": \"gpu_storage_buffers\"",
 		"\"readback_source\": \"gpu_storage_buffers\"",
 		"readback_snapshot",
-		"dirty_scene_voxel_tile_ranges",
 		"last_upload_mode",
 		"last_upload_tile_ids",
 		"_scene_voxel_tile_pending_resident_upload_tiles",

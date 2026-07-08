@@ -4,6 +4,7 @@ const SCENE_PATH := "res://demos/core-sv-anchor-collection/core-sv-anchor-collec
 const SHOT_DIR := "res://tools/_shots"
 const SHOT_NAME := "sv_anchor_collection_anchor_arrows.png"
 const ShotUtils := preload("res://scripts/utils/shot_utils.gd")
+const InputSim := preload("res://scripts/utils/input_sim.gd")
 
 
 func _initialize() -> void:
@@ -50,20 +51,13 @@ func _verify_and_capture(inst: Node) -> bool:
 		print("[ANCHOR_SHOT] FAIL anchors should not be computed before Shift+G")
 		ok = false
 
-	var shift_g := InputEventKey.new()
-	shift_g.keycode = KEY_G
-	shift_g.physical_keycode = KEY_G
-	shift_g.pressed = true
-	shift_g.shift_pressed = true
+	var shift_g := InputSim.make_key(KEY_G, true)
 	inst.call("_unhandled_input", shift_g)
 
 	for i in range(8):
 		await process_frame
 
-	var key_4 := InputEventKey.new()
-	key_4.keycode = KEY_4
-	key_4.physical_keycode = KEY_4
-	key_4.pressed = true
+	var key_4 := InputSim.make_key(KEY_4)
 	inst.call("_unhandled_input", key_4)
 
 	for i in range(8):
@@ -110,9 +104,7 @@ func _verify_and_capture(inst: Node) -> bool:
 		print("[ANCHOR_SHOT] FAIL camera missing")
 		ok = false
 
-	RenderingServer.force_draw(true)
-	for i in range(4):
-		await process_frame
+	await ShotUtils.settle_frames(self, 0, 4)
 
 	var result := ShotUtils.save_viewport_png(root, "%s/%s" % [SHOT_DIR, SHOT_NAME])
 	if not bool(result.get("ok", false)):

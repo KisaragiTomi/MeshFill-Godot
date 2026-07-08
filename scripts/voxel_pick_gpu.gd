@@ -16,10 +16,12 @@ var _target_visual_bytes := 0
 var _target_collision_bytes := 0
 
 
+# 初始化日志名称，便于在 GPU 拾取相关输出中区分该组件。
 func _init() -> void:
 	log_name = "VoxelPickGPU"
 
 
+# 使用场景体素网格和地形高度图执行一次 GPU 射线拾取，返回命中的体素与世界坐标信息。
 func pick_scene_voxel(
 	ray_origin: Vector3,
 	ray_dir: Vector3,
@@ -70,6 +72,7 @@ func pick_scene_voxel(
 	return _dispatch_pick(push, terrain_buffer, _dummy_storage_buffer(), _dummy_storage_buffer())
 
 
+# 使用目标体素贴图数据执行 GPU 射线拾取，适用于 TargetSV 视觉/碰撞体素缓冲的命中检测。
 func pick_targetsv(
 	ray_origin: Vector3,
 	ray_dir: Vector3,
@@ -144,6 +147,7 @@ func pick_targetsv(
 	return _dispatch_pick(push, terrain_buffer, _target_visual_buffer, _target_collision_buffer)
 
 
+# 确保计算着色器与计算管线已加载完成，首次调用时会创建并缓存相关 GPU 资源。
 func _ensure_pipeline() -> bool:
 	if _pipeline.is_valid():
 		return true
@@ -156,6 +160,7 @@ func _ensure_pipeline() -> bool:
 	return _pipeline.is_valid()
 
 
+# 提交一次完整的 GPU 拾取 dispatch，读取输出缓冲并解码为统一的拾取结果字典。
 func _dispatch_pick(push: PackedByteArray, terrain_buffer: RID, visual_buffer: RID, collision_buffer: RID) -> Dictionary:
 	if _rd == null or not _pipeline.is_valid():
 		return {"ok": false, "reason": "gpu_pick_not_ready"}
@@ -178,10 +183,7 @@ func _dispatch_pick(push: PackedByteArray, terrain_buffer: RID, visual_buffer: R
 	if cl < 0:
 		gc_frame()
 		return {"ok": false, "reason": "compute_list_begin_failed"}
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, 1, 1, 1)
+	_gpu_dispatch_pipeline_sets(cl, _pipeline, [set0], push, Vector3i(1, 1, 1))
 	end_compute_list()
 	submit_and_sync(true)
 
@@ -191,6 +193,7 @@ func _dispatch_pick(push: PackedByteArray, terrain_buffer: RID, visual_buffer: R
 	return result
 
 
+# 解析着色器输出缓冲，将原始字节数据转换为可直接使用的拾取结果。
 func _decode_output(bytes: PackedByteArray) -> Dictionary:
 	if bytes.size() < OUTPUT_BYTES:
 		return {"ok": false, "reason": "output_readback_too_small"}
@@ -221,6 +224,7 @@ func _decode_output(bytes: PackedByteArray) -> Dictionary:
 	}
 
 
+# 根据当前 TargetSV 数据尺寸维护持久化 GPU 缓冲，必要时释放旧缓冲并重建。
 func _ensure_target_buffers(visual_bytes: PackedByteArray, collision_bytes: PackedByteArray) -> bool:
 	if _target_visual_buffer.is_valid() \
 			and _target_collision_buffer.is_valid() \
@@ -239,6 +243,7 @@ func _ensure_target_buffers(visual_bytes: PackedByteArray, collision_bytes: Pack
 	return _target_visual_buffer.is_valid() and _target_collision_buffer.is_valid()
 
 
+# 提供一个最小占位 storage buffer，供不需要真实体素数据的拾取模式复用。
 func _dummy_storage_buffer() -> RID:
 	if _dummy_buffer.is_valid():
 		return _dummy_buffer
@@ -248,6 +253,7 @@ func _dummy_storage_buffer() -> RID:
 	return _dummy_buffer
 
 
+# 将拾取参数按着色器约定打包为 push constant，统一两种拾取模式的输入布局。
 func _pack_push(
 	mode: int,
 	ray_origin: Vector3,

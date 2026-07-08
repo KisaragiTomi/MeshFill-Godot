@@ -8,7 +8,7 @@ extends SceneTree
 #                     while everything is still alive (the intended path).
 # After the fix BOTH must show NO dispose error, NO invalid-ID free, NO leaked RIDs.
 
-const VoxelDisplayScript := preload("res://scripts/voxel_display.gd")
+const VoxelDisplayScript := preload("res://scripts/utils/voxel_display.gd")
 
 var _orphan = null
 var _alive = null

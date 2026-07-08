@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bopdem258h7yw"
+path="res://.godot/imported/placement_results_to_world.glsl-8b6e56458a4bb496c43a2e41ac4d3b96.res"
+
+[deps]
+
+source_file="res://shaders/placement_results_to_world.glsl"
+dest_files=["res://.godot/imported/placement_results_to_world.glsl-8b6e56458a4bb496c43a2e41ac4d3b96.res"]
+
+[params]
+

@@ -1,11 +1,11 @@
 # SPA + AutoObject GPU Runtime — 统一交互 / 测试场景
 
 源文档：
-- [`scene-placement-actor.md`](scene-placement-actor.md) — SPA 编排契约
-- [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md) — GPU Runtime 架构
+- [`scene-placement-actor.md`](scene-placement-actor.md)（`res://demos/core-SPA-scene-placement-actor/scene-placement-actor.md`）— SPA 编排契约
+- [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)（`res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md`）— GPU Runtime 架构
 
 测试场景：`res://demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn`（交互 Demo，挂 `spa_interactive_demo.gd`）
-MCP 测试脚本：`res://demos/core-SPA-scene-placement-actor/spa_test.gd`（9 项 SPA 断言套件，供 `game_call_method` 调用）
+MCP 测试脚本：`res://demos/core-SPA-scene-placement-actor/spa_test.gd`（SPA 断言套件；GPU 常驻直连写回检查可经编辑器桥 `call_method` 调 `CoreSPADemo.run_resident_placement_writeback_check()` 远程执行）
 
 ## 运行方式
 
@@ -41,6 +41,7 @@ MCP 测试脚本：`res://demos/core-SPA-scene-placement-actor/spa_test.gd`（9 
 | 7 | `test_brush_sv_metadata` | `set_brush_sv_persistence_metadata()` / `update_brush_sv_lifecycle_state()` / `clear_brush_sv_persistence_metadata()` |
 | 8 | `test_pipeline_error_paths` | 未初始化 / 空注册表时 `run_placement_pipeline()` 返回 `ok=false` |
 | 9 | `test_merged_gpu_summary` | `get_merged_gpu_buffer_summary()` 聚合报告 |
+| 10 | `test_resident_placement_writeback` | GPU 常驻直连写回端到端：`run_multi_asset` → `spawn_batch_from_accepted_placement_gpu_buffers`，断言无 CPU 字典回读、交接 RID 已释放、resident shader stats `applied==spawned` |
 
 6. GPU 验收测试（必须在非 headless Vulkan 驱动下运行）：
 
@@ -48,7 +49,6 @@ MCP 测试脚本：`res://demos/core-SPA-scene-placement-actor/spa_test.gd`（9 
 <godot> --path . --rendering-driver vulkan --script tools/test_auto_voxel_runtime_profile_container.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_core_demo_contracts.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
-<godot> --path . --rendering-driver vulkan --script tools/test_gpu_autoobject_runtime_bridge.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
 ```
 

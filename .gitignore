@@ -41,3 +41,6 @@ tools/godot-mcp-bridge/
 
 # Claude Code 本地 agent 工作树（isolation:worktree 生成，可再生，不入库）
 .claude/worktrees/
+# Claude Code 本地/运行时文件（机器相关，不入库）
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

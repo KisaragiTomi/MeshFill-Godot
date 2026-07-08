@@ -20,8 +20,13 @@ layout(set = 0, binding = 1, std430) restrict writeonly buffer TopKOut {
     uvec2 anchor_topk[];
 };
 
+// GPU-resident anchor count (written by collect_sv_anchors, no CPU readback).
+layout(set = 0, binding = 2, std430) restrict readonly buffer AnchorCountBuf {
+    uint anchor_count_dyn[];
+};
+
 layout(push_constant, std430) uniform Params {
-    uint  anchor_count;
+    uint  _unused_anchor_count;  // anchor count now read from AnchorCountBuf
     uint  asset_count;
     uint  anchor_grid_x;
     float min_prefilter_score;
@@ -36,6 +41,7 @@ void main() {
     uint anchor_id = gl_WorkGroupID.y * anchor_grid_x + gl_WorkGroupID.x;
     uint tid = gl_LocalInvocationID.y * 16u + gl_LocalInvocationID.x;
     uint asset_count_clamped = min(asset_count, MAX_ASSETS);
+    uint anchor_count = anchor_count_dyn[0];
 
     float score = -1.0;
     if (anchor_id < anchor_count && tid < asset_count_clamped) {

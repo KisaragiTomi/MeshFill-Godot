@@ -9,10 +9,7 @@ func _initialize() -> void:
 		quit(1)
 		return
 	root.add_child(packed.instantiate())
-	for i in range(60):
-		await process_frame
-	RenderingServer.force_draw(true)
-	await process_frame
+	await ShotUtils.settle_frames(self, 60)
 	var result := ShotUtils.save_viewport_png(root, "res://_shots/brush_overlay_test.png")
 	if not bool(result.get("ok", false)):
 		push_error("screenshot failed: %s" % result.get("reason", "unknown"))

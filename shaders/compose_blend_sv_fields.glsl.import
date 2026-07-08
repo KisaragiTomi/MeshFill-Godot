@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://crmldww66c51p"
+path="res://.godot/imported/compose_blend_sv_fields.glsl-b444e25613e00fefaa4bb00c366ebc75.res"
+
+[deps]
+
+source_file="res://shaders/compose_blend_sv_fields.glsl"
+dest_files=["res://.godot/imported/compose_blend_sv_fields.glsl-b444e25613e00fefaa4bb00c366ebc75.res"]
+
+[params]
+

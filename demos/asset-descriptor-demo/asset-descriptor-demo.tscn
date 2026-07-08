@@ -179,7 +179,7 @@ albedo_color = Color(0.95, 0.9, 0.25, 1)
 
 [node name="AssetDescriptorDemo" type="Node3D" unique_id=1261577421]
 script = ExtResource("1_demo")
-metadata/source_docs = "res://demos/asset-descriptor-demo/asset-properties.md; res://demos/asset-descriptor-demo/auto-asset-scripting.md; res://demos/asset-descriptor-demo/asset-semantic-probes.md"
+metadata/source_docs = "res://demos/asset-descriptor-demo/asset-properties.md; res://demos/asset-descriptor-demo/auto-asset-scripting.md; res://demos/asset-descriptor-demo/asset-semantic-probes.md; res://demos/asset-descriptor-demo/asset-descriptor.md"
 metadata/test_doc = "res://demos/asset-descriptor-demo/asset-descriptor.md"
 metadata/focus = "AssetDescriptor authority, shared fields, AutoObject mirrors, metadata boundary, ISWS handoff, semantic probes + collision debug + buffer info display"
 

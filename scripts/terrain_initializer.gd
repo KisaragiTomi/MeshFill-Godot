@@ -9,6 +9,8 @@ const DEFAULT_TERRAIN_NAME := TerrainConfigScript.TERRAIN_NAME
 const TERRAIN_GROUP := "meshfill_utils_terrain"
 const TERRAIN_VOXEL_COLOR := Color(0.45, 0.42, 0.35, 1.0)
 const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
+const FsUtils := preload("res://scripts/utils/fs_utils.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const HEIGHT_NORMAL_SHADER_PATH := "res://shaders/height_normal_from_height.glsl"
 const HEIGHT_NORMAL_LOCAL_SIZE := 16
 const HEIGHT_NORMAL_STATS_BUFFER_BYTES := 12
@@ -271,7 +273,7 @@ static func load_terrain_textures(texture_size: int = DEFAULT_TEXTURE_SIZE, max_
 	print("[TerrainInit] Loading terrain textures...")
 	for raw_name in TEXTURE_NAMES:
 		var tname := str(raw_name)
-		var tex := load_raw_texture("res://textures/%s.raw" % tname, texture_size, texture_size)
+		var tex := FsUtils.load_raw_rgbaf_texture("res://textures/%s.raw" % tname, texture_size, texture_size, "TerrainInit")
 		if tex == null:
 			all_loaded = false
 			break
@@ -283,20 +285,6 @@ static func load_terrain_textures(texture_size: int = DEFAULT_TEXTURE_SIZE, max_
 
 	print("[TerrainInit] .raw textures not found, generating procedural terrain data...")
 	return generate_procedural_textures(texture_size, max_height)
-
-
-static func load_raw_texture(path: String, width: int, height: int) -> ImageTexture:
-	var f := FileAccess.open(path, FileAccess.READ)
-	if f == null:
-		return null
-	var expected_size := width * height * 4 * 4
-	var data := f.get_buffer(expected_size)
-	f.close()
-	if data.size() != expected_size:
-		push_error("[TerrainInit] Size mismatch for %s: got %d, expected %d" % [path, data.size(), expected_size])
-		return null
-	var img := Image.create_from_data(width, height, false, Image.FORMAT_RGBAF, data)
-	return ImageTexture.create_from_image(img)
 
 
 static func generate_procedural_textures(texture_size: int = DEFAULT_TEXTURE_SIZE, max_height: float = DEFAULT_MAX_HEIGHT) -> Dictionary:
@@ -616,15 +604,7 @@ static func get_height_stats_gpu(img: Image) -> Dictionary:
 
 
 static func _ordered_uint_to_float(key: int) -> float:
-	var bits := 0
-	if (key & 0x80000000) != 0:
-		bits = key ^ 0x80000000
-	else:
-		bits = (~key) & 0xFFFFFFFF
-	var bytes := PackedByteArray()
-	bytes.resize(4)
-	bytes.encode_u32(0, bits)
-	return bytes.decode_float(0)
+	return BufferUtils.float_from_ordered_u32(key)
 
 
 static func _target_height_texture_from_options(options: Dictionary) -> Texture2D:

@@ -32,7 +32,7 @@
 
 ## GPU 契约
 
-笔刷体素的每实例 transform 与 color 由 compute shader `res://shaders/brush_voxel_instances.glsl` 在 GPU 上生成，写入 `MULTIMESH_TRANSFORM_3D + use_colors` 布局（16 floats/instance）的实例缓冲。`res://scripts/brush_voxel_display_gpu.gd`（`BrushVoxelDisplayGPU`）在**主 RenderingDevice** 上经 `multimesh_get_buffer_rd_rid()` 拿到真实实例缓冲 RID，在渲染线程用 compute 直接写入，**无 `submit_and_sync`、无 `buffer_get_data`、无 `multimesh_set_buffer`**。MultiMesh 用已知网格尺寸设 `custom_aabb`，避免实例缓冲填充前被视锥剔除。利用 Godot 4.6 已修复的 issue #105100（compute 可直写 MultiMesh 缓冲）。
+笔刷体素的每实例 transform 与 color 由 compute shader `res://shaders/brush_voxel_instances.glsl` 在 GPU 上生成，写入 `MULTIMESH_TRANSFORM_3D + use_colors` 布局（16 floats/instance）的实例缓冲。`res://scripts/utils/brush_voxel_display_gpu.gd`（`BrushVoxelDisplayGPU`）在**主 RenderingDevice** 上经 `multimesh_get_buffer_rd_rid()` 拿到真实实例缓冲 RID，在渲染线程用 compute 直接写入，**无 `submit_and_sync`、无 `buffer_get_data`、无 `multimesh_set_buffer`**。MultiMesh 用已知网格尺寸设 `custom_aabb`，避免实例缓冲填充前被视锥剔除。利用 Godot 4.6 已修复的 issue #105100（compute 可直写 MultiMesh 缓冲）。
 
 GPU 路径走 Vulkan RenderingDevice。无主 RenderingDevice 时直写路径只能 SKIP，不改走任何替代路径。
 

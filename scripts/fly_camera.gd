@@ -148,22 +148,12 @@ func _merge_bounds(result: Dictionary, bounds: AABB) -> void:
 
 
 func _transform_aabb(transform: Transform3D, local: AABB) -> AABB:
-	var min_v := Vector3(INF, INF, INF)
-	var max_v := Vector3(-INF, -INF, -INF)
-	var xs := [local.position.x, local.position.x + local.size.x]
-	var ys := [local.position.y, local.position.y + local.size.y]
-	var zs := [local.position.z, local.position.z + local.size.z]
-	for x in xs:
-		for y in ys:
-			for z in zs:
-				var p := transform * Vector3(x, y, z)
-				min_v = Vector3(minf(min_v.x, p.x), minf(min_v.y, p.y), minf(min_v.z, p.z))
-				max_v = Vector3(maxf(max_v.x, p.x), maxf(max_v.y, p.y), maxf(max_v.z, p.z))
-	if (max_v - min_v).length_squared() <= 0.000001:
+	var result := VoxelGeneral.transformed_aabb(local, transform)
+	if result.size.length_squared() <= 0.000001:
+		# 退化为零体积时按取景半径补一层 padding，避免相机贴到零尺寸包围盒上
 		var pad := maxf(auto_frame_min_radius * 0.05, 0.1)
-		min_v -= Vector3.ONE * pad
-		max_v += Vector3.ONE * pad
-	return AABB(min_v, max_v - min_v)
+		return AABB(result.position - Vector3.ONE * pad, result.size + Vector3.ONE * (pad * 2.0))
+	return result
 
 
 func _frame_bounds(bounds: AABB) -> void:

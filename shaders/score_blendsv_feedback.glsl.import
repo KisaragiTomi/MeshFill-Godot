@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dkt1iutoneidj"
+path="res://.godot/imported/score_blendsv_feedback.glsl-0d8fa413838df01a595b9add819c53ec.res"
+
+[deps]
+
+source_file="res://shaders/score_blendsv_feedback.glsl"
+dest_files=["res://.godot/imported/score_blendsv_feedback.glsl-0d8fa413838df01a595b9add819c53ec.res"]
+
+[params]
+

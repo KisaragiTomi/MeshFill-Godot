@@ -1,8 +1,6 @@
 @tool
 extends RefCounted
 
-const DemoUI := preload("res://scripts/utils/demo_ui.gd")
-
 
 static func ensure_dir(path: String) -> void:
 	if path.is_empty():
@@ -69,8 +67,14 @@ static func save_viewport_png(
 	return result
 
 
-static func find_camera_recursive(root_node: Node) -> Camera3D:
-	return DemoUI.find_any_camera(root_node, false, false)
+## 截图前让视口稳定:等待 frames 帧 → RenderingServer.force_draw → 再等 post_draw_frames 帧。
+## 原 tools/shot_*.gd 中反复内联的 settle 序列(brush_overlay._settle 及各处 for-await 块)。
+static func settle_frames(tree: SceneTree, frames: int = 8, post_draw_frames: int = 1) -> void:
+	for i in range(frames):
+		await tree.process_frame
+	RenderingServer.force_draw(true)
+	for i in range(post_draw_frames):
+		await tree.process_frame
 
 
 static func image_diff_ratio(a, b, step: int = 2, threshold: float = 0.08) -> float:

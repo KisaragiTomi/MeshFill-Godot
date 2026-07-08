@@ -4,25 +4,11 @@ extends RefCounted
 const AutoObject := preload("res://scripts/auto_object.gd")
 const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
+const FsUtils := preload("res://scripts/utils/fs_utils.gd")
+const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
 const SUPPORTED_VEGETATION_MESH_CREATE_METHODS := [
 	"create_sample_autoobject_mesh",
 ]
-
-
-static func color_from_value(value, fallback: Color = Color.WHITE) -> Color:
-	return SharedPropertyTypeScript.color_from_value(value, fallback)
-
-
-static func vector2_from_value(value, fallback: Vector2) -> Vector2:
-	return AutoObject.vector2_from_value(value, fallback)
-
-
-static func vector3_from_value(value, fallback: Vector3) -> Vector3:
-	return AutoObject.vector3_from_value(value, fallback)
-
-
-static func duplicate_dictionary_array(source: Array) -> Array[Dictionary]:
-	return SharedPropertyTypeScript.duplicate_dictionary_array(source)
 
 
 static func is_supported_vegetation_mesh_create_method(method_name: String) -> bool:
@@ -100,9 +86,9 @@ static func create_or_update_object_asset(
 		var descriptor_fields := SharedPropertyTypeScript.from_descriptor(result.voxel_descriptor, mesh_size * 0.5)
 		direct_color = descriptor_fields.color
 		direct_complexity = float(descriptor_fields.complexity)
-		direct_collision = duplicate_dictionary_array(descriptor_fields.get("collision", []))
+		direct_collision = SharedPropertyTypeScript.duplicate_dictionary_array(descriptor_fields.get("collision", []))
 	if not collision.is_empty():
-		direct_collision = duplicate_dictionary_array(collision)
+		direct_collision = SharedPropertyTypeScript.duplicate_dictionary_array(collision)
 	direct_color.a = direct_complexity
 	if not direct_collision.is_empty():
 		direct_collision = SharedPropertyTypeScript.collision_from_fields({SharedPropertyTypeScript.COLLISION_KEY: direct_collision})
@@ -140,7 +126,7 @@ static func configure_object_instance(obj: AutoObject, asset: AutoObject, config
 static func save_object_asset(obj: AutoObject, resource_path: String) -> int:
 	if obj == null or resource_path.is_empty():
 		return ERR_INVALID_PARAMETER
-	var err := _ensure_parent_dir(resource_path)
+	var err := FsUtils.ensure_parent_dir(resource_path)
 	if err != OK:
 		return err
 	var packed := PackedScene.new()
@@ -345,107 +331,22 @@ static func load_source_mesh(mesh_path: String) -> Mesh:
 	return null
 
 
-static func _find_mesh_in_tree(node: Node) -> Mesh:
-	if node is MeshInstance3D:
-		return (node as MeshInstance3D).mesh
-	if node is ImporterMeshInstance3D:
-		var importer_mesh = node.get("mesh")
-		if importer_mesh != null and importer_mesh.has_method("get_mesh"):
-			return importer_mesh.get_mesh()
-	for child in node.get_children():
-		var mesh := _find_mesh_in_tree(child)
-		if mesh != null:
-			return mesh
-	return null
-
-
+## 网格树查找 / UE 碰撞辅助体过滤 / 变换烘焙已与 DemoAssets 合并(原三份近逐字重复)。
+## 委托版差异均为更安全方向:identity 变换直接返回源网格、空 surface 跳过、法线尺寸校验更严。
 static func _find_mesh_info_in_tree(
 	node: Node,
 	parent_transform: Transform3D = Transform3D.IDENTITY,
 	allow_collision_helpers: bool = false
 ) -> Dictionary:
-	var node_transform := parent_transform
-	if node is Node3D:
-		node_transform = parent_transform * (node as Node3D).transform
-
-	if allow_collision_helpers or not _is_ue_collision_helper(node):
-		if node is MeshInstance3D:
-			var mesh := (node as MeshInstance3D).mesh
-			if mesh != null:
-				return {
-					"mesh": mesh,
-					"transform": node_transform,
-				}
-		if node is ImporterMeshInstance3D:
-			var importer_mesh = node.get("mesh")
-			if importer_mesh != null and importer_mesh.has_method("get_mesh"):
-				var converted = importer_mesh.get_mesh()
-				if converted is Mesh:
-					return {
-						"mesh": converted,
-						"transform": node_transform,
-					}
-
-	for child in node.get_children():
-		var mesh_info := _find_mesh_info_in_tree(child, node_transform, allow_collision_helpers)
-		if not mesh_info.is_empty():
-			return mesh_info
-	return {}
+	return DemoAssets.find_mesh_info_in_tree(node, parent_transform, allow_collision_helpers)
 
 
 static func _is_ue_collision_helper(node: Node) -> bool:
-	var node_name := str(node.name).to_upper()
-	return (
-		node_name.begins_with("UCX_")
-		or node_name.begins_with("UBX_")
-		or node_name.begins_with("UCP_")
-		or node_name.begins_with("USP_")
-		or node_name.begins_with("MCDCX_")
-	)
+	return DemoAssets.is_collision_helper_node(node)
 
 
-static func _bake_mesh_transform(src_mesh: Mesh, mesh_transform: Transform3D) -> ArrayMesh:
-	var normal_basis := mesh_transform.basis.inverse().transposed()
-	var new_mesh := ArrayMesh.new()
-	for surface_index in range(src_mesh.get_surface_count()):
-		var arrays := src_mesh.surface_get_arrays(surface_index)
-		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL] if arrays[Mesh.ARRAY_NORMAL] != null else PackedVector3Array()
-		var tangents: PackedFloat32Array = arrays[Mesh.ARRAY_TANGENT] if arrays[Mesh.ARRAY_TANGENT] != null else PackedFloat32Array()
-
-		var baked_vertices := PackedVector3Array()
-		baked_vertices.resize(vertices.size())
-		for vertex_index in range(vertices.size()):
-			baked_vertices[vertex_index] = mesh_transform * vertices[vertex_index]
-		arrays[Mesh.ARRAY_VERTEX] = baked_vertices
-
-		if normals.size() > 0:
-			var baked_normals := PackedVector3Array()
-			baked_normals.resize(normals.size())
-			for normal_index in range(normals.size()):
-				baked_normals[normal_index] = (normal_basis * normals[normal_index]).normalized()
-			arrays[Mesh.ARRAY_NORMAL] = baked_normals
-
-		if tangents.size() > 0:
-			var baked_tangents := tangents.duplicate()
-			for tangent_index in range(0, tangents.size(), 4):
-				var tangent := Vector3(
-					tangents[tangent_index],
-					tangents[tangent_index + 1],
-					tangents[tangent_index + 2]
-				)
-				tangent = (normal_basis * tangent).normalized()
-				baked_tangents[tangent_index] = tangent.x
-				baked_tangents[tangent_index + 1] = tangent.y
-				baked_tangents[tangent_index + 2] = tangent.z
-			arrays[Mesh.ARRAY_TANGENT] = baked_tangents
-
-		var primitive: int = src_mesh.surface_get_primitive_type(surface_index)
-		new_mesh.add_surface_from_arrays(primitive, arrays)
-		var material := src_mesh.surface_get_material(surface_index)
-		if material != null:
-			new_mesh.surface_set_material(surface_index, material)
-	return new_mesh
+static func _bake_mesh_transform(src_mesh: Mesh, mesh_transform: Transform3D) -> Mesh:
+	return DemoAssets.bake_mesh_xform(src_mesh, mesh_transform, true)
 
 
 static func load_texture_or_raw(texture_path: String, raw_width: int = 256, raw_height: int = 256) -> Texture2D:
@@ -455,35 +356,21 @@ static func load_texture_or_raw(texture_path: String, raw_width: int = 256, raw_
 	if resource is Texture2D:
 		return resource as Texture2D
 	if texture_path.get_extension().to_lower() == "raw":
-		return load_raw_texture(texture_path, raw_width, raw_height)
+		return FsUtils.load_raw_rgbaf_texture(texture_path, raw_width, raw_height, "AutoAssetFactory")
 	return null
-
-
-static func load_raw_texture(path: String, width: int, height: int) -> ImageTexture:
-	var file := FileAccess.open(path, FileAccess.READ)
-	if file == null:
-		return null
-	var expected_size := width * height * 4 * 4
-	var data := file.get_buffer(expected_size)
-	file.close()
-	if data.size() != expected_size:
-		push_error("AutoAssetFactory: raw texture size mismatch for %s" % path)
-		return null
-	var image := Image.create_from_data(width, height, false, Image.FORMAT_RGBAF, data)
-	return ImageTexture.create_from_image(image)
 
 
 static func save_resource(resource: Resource, resource_path: String) -> int:
 	if resource == null or resource_path.is_empty():
 		return ERR_INVALID_PARAMETER
-	var err := _ensure_parent_dir(resource_path)
+	var err := FsUtils.ensure_parent_dir(resource_path)
 	if err != OK:
 		return err
 	return ResourceSaver.save(resource, resource_path)
 
 
 static func write_text_file(path: String, content: String) -> int:
-	var err := _ensure_parent_dir(path)
+	var err := FsUtils.ensure_parent_dir(path)
 	if err != OK:
 		return err
 	var file := FileAccess.open(path, FileAccess.WRITE)
@@ -492,14 +379,6 @@ static func write_text_file(path: String, content: String) -> int:
 	file.store_string(content)
 	file.close()
 	return OK
-
-
-static func _ensure_parent_dir(path: String) -> int:
-	var dir := path.get_base_dir()
-	if dir.is_empty() or dir == ".":
-		return OK
-	var abs_dir := ProjectSettings.globalize_path(dir) if dir.begins_with("res://") or dir.begins_with("user://") else dir
-	return DirAccess.make_dir_recursive_absolute(abs_dir)
 
 
 static func _to_snake_case(value: String) -> String:

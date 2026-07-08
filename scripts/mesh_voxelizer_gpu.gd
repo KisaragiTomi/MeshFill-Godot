@@ -40,6 +40,7 @@ extends "res://scripts/godot_compute_shader_base.gd"
 const VOXELIZE_SHADER := "res://shaders/voxelize_mesh_solid.glsl"
 const COLLISION_SHADER := "res://shaders/voxel_collision_erode.glsl"
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 const MAX_TRIANGLES := 20000
 const MAX_GRID_AXIS := 96
@@ -178,7 +179,7 @@ func _decode_voxels(
 				if (occupancy[index] & 1) == 0:
 					continue
 				var packed := int(color[index]) & 0xFFFFFFFF
-				var c := _unpack_rgba8(packed)
+				var c := BufferUtils.semantic_rgba8_word_to_color(packed)
 				voxels.append({
 					"voxel": Vector3i(x, y, z),
 					"local_center": aabb_min + (Vector3(x, y, z) + Vector3(0.5, 0.5, 0.5)) * cell_size,
@@ -191,7 +192,7 @@ func _decode_voxels(
 
 func _resolve_grid(aabb: AABB, grid_count: int) -> Dictionary:
 	var size := aabb.size
-	var longest := maxf(size.x, maxf(size.y, size.z))
+	var longest := VoxelGeneral.aabb_longest_axis(aabb)
 	if longest <= 0.00001:
 		return {"grid": Vector3i.ZERO, "cell_size": 0.0, "aabb_min": aabb.position}
 	var count := clampi(grid_count, 1, MAX_GRID_AXIS)
@@ -232,22 +233,10 @@ func _voxelize_push_constant(grid: Vector3i, tri_count: int, aabb_min: Vector3, 
 		aabb_min.x, aabb_min.y, aabb_min.z, cell_size,
 		asset_color.r, asset_color.g, asset_color.b, asset_color.a,
 	])
-	var bytes := ints.to_byte_array()
-	bytes.append_array(floats.to_byte_array())
-	return bytes
+	return BufferUtils.pack_push_ints_floats(ints, floats)
 
 
 func _collision_push_constant(grid: Vector3i, collision_strength: float, min_neighbors: int) -> PackedByteArray:
 	var ints := PackedInt32Array([grid.x, grid.y, grid.z, clampi(min_neighbors, 1, 6)])
 	var floats := PackedFloat32Array([clampf(collision_strength, 0.0, 1.0), 0.0, 0.0, 0.0])
-	var bytes := ints.to_byte_array()
-	bytes.append_array(floats.to_byte_array())
-	return bytes
-
-
-func _unpack_rgba8(packed: int) -> Color:
-	var r := float(packed & 0xFF) / 255.0
-	var g := float((packed >> 8) & 0xFF) / 255.0
-	var b := float((packed >> 16) & 0xFF) / 255.0
-	var a := float((packed >> 24) & 0xFF) / 255.0
-	return Color(r, g, b, a)
+	return BufferUtils.pack_push_ints_floats(ints, floats)

@@ -27,6 +27,12 @@ static func decode_u32_buffer(bytes: PackedByteArray, expected_size: int) -> Pac
 	return values
 
 
+static func decode_u32_count(bytes: PackedByteArray) -> int:
+	if bytes.size() < SCALAR32_BYTES:
+		return 0
+	return int(bytes.decode_u32(0))
+
+
 static func pack_s32(value: int) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(SCALAR32_BYTES)
@@ -101,3 +107,75 @@ static func decode_transform_mat4(bytes: PackedByteArray, offset: int = 0) -> Tr
 	var basis_z := decode_vec4_xyz(bytes, offset + 32)
 	var origin := decode_vec4_xyz(bytes, offset + 48)
 	return Transform3D(Basis(basis_x, basis_y, basis_z), origin)
+
+
+# ============================================================
+# RGBA8 打包/量化原语（自 rgba8_utils.gd 合并，8 位 UNORM 颜色 <-> u32 字）
+# ============================================================
+
+static func quantize_unorm8(value: float) -> int:
+	return clampi(int(round(clampf(value, 0.0, 1.0) * 255.0)), 0, 255)
+
+
+static func pack_shader_rgba8_word(color: Color) -> int:
+	var r := quantize_unorm8(color.r)
+	var g := quantize_unorm8(color.g)
+	var b := quantize_unorm8(color.b)
+	var a := quantize_unorm8(color.a)
+	return ((r & 0xFF) << 24) | ((g & 0xFF) << 16) | ((b & 0xFF) << 8) | (a & 0xFF)
+
+
+static func shader_rgba8_word_to_color(word: int) -> Color:
+	var rgba8 := word & 0xFFFFFFFF
+	return Color(
+		float((rgba8 >> 24) & 0xFF) / 255.0,
+		float((rgba8 >> 16) & 0xFF) / 255.0,
+		float((rgba8 >> 8) & 0xFF) / 255.0,
+		float(rgba8 & 0xFF) / 255.0
+	)
+
+
+static func pack_semantic_rgba8_word(color: Color) -> int:
+	var r := quantize_unorm8(color.r)
+	var g := quantize_unorm8(color.g)
+	var b := quantize_unorm8(color.b)
+	var a := quantize_unorm8(color.a)
+	return (r & 0xFF) | ((g & 0xFF) << 8) | ((b & 0xFF) << 16) | ((a & 0xFF) << 24)
+
+
+static func semantic_rgba8_word_to_color(word: int) -> Color:
+	var rgba8 := word & 0xFFFFFFFF
+	return Color(
+		float(rgba8 & 0xFF) / 255.0,
+		float((rgba8 >> 8) & 0xFF) / 255.0,
+		float((rgba8 >> 16) & 0xFF) / 255.0,
+		float((rgba8 >> 24) & 0xFF) / 255.0
+	)
+
+
+static func semantic_to_shader_rgba8_word(word: int) -> int:
+	return pack_shader_rgba8_word(semantic_rgba8_word_to_color(word))
+
+
+## 将 s32 数组与 f32 数组按序拼接为 push constant 字节（ints-then-floats 布局）。
+## 类型化数组拼接不产生手写 encode_* 偏移那类错位风险；是偏移式打包的安全替代习语,
+## 仅适用于整段 s32 后接整段 f32 的布局(std430 下两段各自 4 字节对齐,天然合法)。
+static func pack_push_ints_floats(ints: PackedInt32Array, floats: PackedFloat32Array) -> PackedByteArray:
+	var bytes := ints.to_byte_array()
+	bytes.append_array(floats.to_byte_array())
+	return bytes
+
+
+## 将 GPU atomic-min/max 使用的单调有序 uint 键还原为 float（翻转符号位编码的逆变换）。
+## 与 height_stats_minmax.glsl / height_normal_from_height.glsl 中的编码端配对。
+## 原 TerrainInitializer._ordered_uint_to_float。
+static func float_from_ordered_u32(key: int) -> float:
+	var bits := 0
+	if (key & 0x80000000) != 0:
+		bits = key ^ 0x80000000
+	else:
+		bits = (~key) & 0xFFFFFFFF
+	var bytes := PackedByteArray()
+	bytes.resize(4)
+	bytes.encode_u32(0, bits)
+	return bytes.decode_float(0)

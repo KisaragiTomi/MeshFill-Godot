@@ -144,7 +144,7 @@
     <g id="not-source-write">
     <rect class="node" x="1240" y="385" width="270" height="125" rx="8" fill="#fee2e2" stroke="#dc2626"/>
     <text class="node-title" x="1258" y="413">Not source write</text>
-    <text class="small"><tspan x="1258" y="435">TargetSceneVoxel guidance record</tspan><tspan x="1258" y="452">skips AutoSceneVoxel/BrushSceneVoxel</tspan><tspan x="1258" y="469">does not enter blend_scene_voxels()</tspan></text>
+    <text class="small"><tspan x="1258" y="435">TargetSceneVoxel guidance record</tspan><tspan x="1258" y="452">skips AutoSceneVoxel/BrushSceneVoxel</tspan><tspan x="1258" y="469">does not enter commit_scene_voxels()</tspan></text>
     </g>
     <g id="plans-stay-optional">
     <rect class="node" x="1240" y="595" width="270" height="110" rx="8" fill="#f5f3ff" stroke="#8b5cf6"/>

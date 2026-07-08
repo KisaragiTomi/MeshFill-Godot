@@ -21,7 +21,7 @@ const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const GPUAutoObjectRuntimeScript := preload("res://scripts/gpu_autoobject_runtime.gd")
-const AssetDescriptor := preload("res://scripts/auto_voxel_descriptor.gd")
+const AssetDescriptor := preload("res://scripts/asset_descriptor.gd")
 const AutoObject := preload("res://scripts/auto_object.gd")
 const AutoObjectProbePrefilterGPU := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
 const AutoVoxelRuntimeProfileContainer := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
@@ -29,6 +29,7 @@ const GPUAutoObjectRuntime := preload("res://scripts/gpu_autoobject_runtime.gd")
 const SceneVoxelCommitter := preload("res://scripts/scene_voxel_committer.gd")
 const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generator.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+const HashUtils := preload("res://scripts/utils/hash_utils.gd")
 
 const MESH_DESCRIPTION_BUFFER := "mesh_description"
 const MESH_DESCRIPTION_STRIDE_BYTES := 128
@@ -42,11 +43,20 @@ const TARGET_FIELD_STRIDE_BYTES := 16  # vec4 = 16 bytes per voxel
 const RESIDENT_TARGET_READ_BUFFERS_OPT_IN_KEY := "use_resident_target_read_buffer_handoff"
 const TARGET_READ_BUFFERS_DEBUG_READBACK_KEY := "debug_read_target_read_buffer_bytes"
 const RESIDENT_CANDIDATE_ROUTE_OPT_IN_KEY := "use_resident_candidate_route_handoff"
-const CANDIDATE_ROUTE_SCHEMA_VERSION := 1
-const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := 16
-const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := 16
+const CandidateRouteSchemaScript := preload("res://scripts/candidate_route_schema.gd")
+const CANDIDATE_ROUTE_SCHEMA_VERSION := CandidateRouteSchemaScript.SCHEMA_VERSION
+const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := CandidateRouteSchemaScript.RECORD_STRIDE_BYTES
+const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := CandidateRouteSchemaScript.RANGE_STRIDE_BYTES
 const CANDIDATE_ROUTE_CPU_PACK_SOURCE_LABEL := "gpu_vote_buffer_readback_cpu_pack"
-const ACCEPTED_PLACEMENT_SOURCE_BUFFER_INCOMPLETE_REASON := "incomplete_source_candidate_handoff_missing_payload_and_group_index_buffers"
+## BrushSV 常驻旁路层 + BlendSV 按需合成（方案A：committed SV 纯 auto，brush 不进提交）
+## 散射 stride/路径/键/展平契约已抽取到 utils/sv_field_scatter.gd（与 committer stamp-only 提交共享）。
+const SvFieldScatter := preload("res://scripts/utils/sv_field_scatter.gd")
+const SV_FIELD_SCATTER_SHADER := SvFieldScatter.SHADER_PATH
+const COMPOSE_BLEND_SV_SHADER := "res://shaders/compose_blend_sv_fields.glsl"
+const BLENDSV_FEEDBACK_SHADER := "res://shaders/score_blendsv_feedback.glsl"
+const SV_FIELD_RECORD_FLOAT_STRIDE := SvFieldScatter.RECORD_FLOAT_STRIDE
+const BLENDSV_FEEDBACK_QUANT_SCALE := 1000.0
+const BLENDSV_FEEDBACK_OCCUPIED_EPSILON := 0.001
 
 # ---------------------------------------------------------------------------
 # Fields
@@ -103,6 +113,17 @@ var _last_pipeline_result: Dictionary = {}
 var _brush_sv_control_metadata: Dictionary = {}
 var _gpu_runtime_scene_voxel_setup_result: Dictionary = {}
 
+## BrushSV 常驻旁路层（SPA 生命周期内持有；不进 committed SV）
+var _brush_sv_complexity_buffer: RID
+var _brush_sv_collision_buffer: RID
+var _brush_sv_voxel_count := 0
+var _brush_sv_has_content := false
+
+## BlendSV 临时合成对（SV + BrushSV；对比 TargetSV / 3D score 用，用完即删）
+var _blend_sv_complexity_buffer: RID
+var _blend_sv_collision_buffer: RID
+var _blend_sv_voxel_count := 0
+
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
@@ -155,6 +176,8 @@ func _dispose_internal(sync_before_free: bool = true) -> void:
 	_release_resident_target_read_buffer_handoff()
 	_release_resident_candidate_route_handoff()
 	_release_mesh_description_buffer()
+	clear_brush_sv(true)
+	release_blend_sv_fields()
 
 	if _runtime_profile_container != null:
 		_runtime_profile_container.dispose(sync_before_free)
@@ -300,13 +323,6 @@ func get_pivot_records_buffer() -> RID:
 	return _runtime_profile_container.get_pivot_buffer()
 
 
-## 返回 collision records GPU buffer RID；由 prefilter GPU pass 绑定 uniform 时调用
-func get_collision_records_buffer() -> RID:
-	if not is_gpu_ready():
-		return RID()
-	return _runtime_profile_container.get_collision_records_buffer()
-
-
 ## 合并 profile container 与 mesh description 的 GPU buffer 状态摘要；供外部整体诊断
 func get_merged_gpu_buffer_summary() -> Dictionary:
 	var report := get_gpu_readiness_report()
@@ -335,8 +351,11 @@ func is_autoobject_runtime_ready() -> bool:
 # --------------------------------------------------------------------------
 
 ## Register a single AssetDescriptor.  Returns its profile_id (>=0) or -1
-## on failure.  The descriptor's probes, collision, and pivots are immediately
-## uploaded to GPU via the owned profile container.
+## on failure.  The owned profile container immediately uploads profile table,
+## probe records, and pivot records to GPU. Descriptor collision is normalized
+## and indexed in the profile table, then baked/packed into placement footprint
+## buffers by downstream runtime steps instead of being exposed as a direct
+## shader-readable descriptor array.
 func register_asset(descriptor: AssetDescriptor, mesh_ref: Mesh = null, autoobject_ref: AutoObject = null) -> int:
 	if not is_initialized():
 		push_error("ScenePlacementActor: not initialized.")
@@ -811,6 +830,326 @@ func readback_mesh_description_debug_snapshot() -> Dictionary:
 
 
 # ---------------------------------------------------------------------------
+# BrushSV 常驻旁路层（内容面）+ BlendSV 按需合成
+# ---------------------------------------------------------------------------
+
+## 确保 BrushSV 常驻 field 对存在（体素数取 committer SV 网格；变化时重建并清空内容）
+func ensure_brush_sv_fields() -> Dictionary:
+	if _rd == null:
+		return {}
+	var voxel_count := _sv_field_voxel_count()
+	if voxel_count <= 0:
+		return {}
+	var complexity_byte_count := voxel_count * 4
+	var collision_byte_count := SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count)
+	if _brush_sv_complexity_buffer.is_valid() and _brush_sv_collision_buffer.is_valid() and _brush_sv_voxel_count == voxel_count:
+		return _brush_sv_field_summary(voxel_count, false)
+	clear_brush_sv(true)
+	_brush_sv_complexity_buffer = storage_buffer_zero(complexity_byte_count, SCOPE_PERSISTENT, "spa_brush_sv_complexity_rgba8")
+	_brush_sv_collision_buffer = storage_buffer_zero(collision_byte_count, SCOPE_PERSISTENT, "spa_brush_sv_collision_r8_words")
+	if not _brush_sv_complexity_buffer.is_valid() or not _brush_sv_collision_buffer.is_valid():
+		clear_brush_sv(true)
+		return {}
+	_brush_sv_voxel_count = voxel_count
+	_brush_sv_has_content = false
+	return _brush_sv_field_summary(voxel_count, true)
+
+
+## 将笔刷体素记录散射进 BrushSV 常驻层（复用 stamp-only 散射 shader；不触碰 committed SV）。
+## 记录字段：voxel_xz: Vector2i、slice_index: int、complexity: float、color: Color、collision_strength: float
+func stamp_brush_sv_records(records: Array) -> Dictionary:
+	if records.is_empty():
+		return {"ok": true, "record_count": 0, "gpu_dispatched": false}
+	var fields := ensure_brush_sv_fields()
+	if fields.is_empty():
+		return {"ok": false, "reason": "brush_sv_fields_not_ready", "record_count": records.size(), "gpu_dispatched": false}
+
+	# 按体素去重（后笔胜），保证单次散射 dispatch 内无同体素写竞态
+	var deduped: Dictionary = {}
+	for raw_record in records:
+		if not raw_record is Dictionary:
+			continue
+		var record := raw_record as Dictionary
+		var voxel_xz_value = record.get("voxel_xz", Vector2i(-1, -1))
+		if not voxel_xz_value is Vector2i:
+			continue
+		var voxel_xz: Vector2i = voxel_xz_value
+		var slice_index := int(record.get("slice_index", 0))
+		var color: Color = record.get("color", Color.WHITE) if record.get("color", Color.WHITE) is Color else Color.WHITE
+		var slot := PackedFloat32Array()
+		slot.resize(SV_FIELD_RECORD_FLOAT_STRIDE)
+		slot[0] = float(voxel_xz.x)
+		slot[1] = float(voxel_xz.y)
+		slot[2] = float(slice_index)
+		slot[3] = clampf(float(record.get("complexity", 1.0)), 0.0, 1.0)
+		slot[4] = color.r
+		slot[5] = color.g
+		slot[6] = color.b
+		slot[7] = clampf(float(record.get("collision_strength", 0.0)), 0.0, 1.0)
+		deduped[SvFieldScatter.record_key(voxel_xz, slice_index)] = slot
+	var record_count := deduped.size()
+	if record_count <= 0:
+		return {"ok": true, "record_count": 0, "gpu_dispatched": false}
+	var floats := SvFieldScatter.flatten_record_slots(deduped)
+
+	var shader := load_compute_shader(SV_FIELD_SCATTER_SHADER, SCOPE_FRAME, "spa_brush_sv_scatter")
+	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "spa_brush_sv_scatter")
+	var record_buffer := storage_buffer_from_floats(floats, SCOPE_FRAME, "spa_brush_sv_scatter_records")
+	if not shader.is_valid() or not pipeline.is_valid() or not record_buffer.is_valid():
+		gc_frame()
+		return {"ok": false, "reason": "brush_sv_scatter_resources_not_ready", "record_count": record_count, "gpu_dispatched": false}
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, _brush_sv_complexity_buffer),
+		make_storage_uniform(1, _brush_sv_collision_buffer),
+		make_storage_uniform(2, record_buffer),
+	], shader, 0, SCOPE_PASS, "spa_brush_sv_scatter")
+	if not set0.is_valid():
+		gc_frame()
+		return {"ok": false, "reason": "brush_sv_scatter_uniform_set_failed", "record_count": record_count, "gpu_dispatched": false}
+
+	var grid := _sv_field_grid_size()
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, grid.x)
+	push.encode_s32(4, grid.y)
+	push.encode_s32(8, record_count)
+	push.encode_s32(12, 0)  # write_mode 0：brush 层 overwrite（后笔胜，允许降低/擦除）
+	if not _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(record_count, 64)):
+		gc_frame()
+		return {"ok": false, "reason": "brush_sv_scatter_dispatch_failed", "record_count": record_count, "gpu_dispatched": false}
+	gc_frame()
+	_brush_sv_has_content = true
+	if _sv_committer != null:
+		for raw_record in records:
+			if raw_record is Dictionary:
+				var record := raw_record as Dictionary
+				var voxel_xz_value = record.get("voxel_xz", Vector2i(-1, -1))
+				if voxel_xz_value is Vector2i:
+					var voxel_min := Vector3i((voxel_xz_value as Vector2i).x, int(record.get("slice_index", 0)), (voxel_xz_value as Vector2i).y)
+					_sv_committer.mark_scene_voxel_tile_bounds_dirty(voxel_min, voxel_min + Vector3i.ONE, {"brush": true, "scoring": true}, {"id": "brush_sv_stamp"})
+	return {"ok": true, "record_count": record_count, "gpu_dispatched": true}
+
+
+## 清空 BrushSV 常驻层；release_buffers=true 时连同缓冲一起释放
+func clear_brush_sv(release_buffers: bool = false) -> void:
+	if release_buffers:
+		if _brush_sv_complexity_buffer.is_valid():
+			release_rid(_brush_sv_complexity_buffer, false)
+		if _brush_sv_collision_buffer.is_valid():
+			release_rid(_brush_sv_collision_buffer, false)
+		_brush_sv_complexity_buffer = RID()
+		_brush_sv_collision_buffer = RID()
+		_brush_sv_voxel_count = 0
+	else:
+		if _brush_sv_complexity_buffer.is_valid():
+			buffer_zero(_brush_sv_complexity_buffer, _brush_sv_voxel_count * 4)
+		if _brush_sv_collision_buffer.is_valid():
+			buffer_zero(_brush_sv_collision_buffer, SceneVoxelTileCodecScript.r8_word_byte_count(_brush_sv_voxel_count))
+	_brush_sv_has_content = false
+
+
+## BrushSV 是否有已写入内容
+func has_brush_sv_content() -> bool:
+	return _brush_sv_has_content and _brush_sv_complexity_buffer.is_valid()
+
+
+## BrushSV 常驻层摘要（RID/体素数/内容标志）
+func get_brush_sv_field_summary() -> Dictionary:
+	return _brush_sv_field_summary(_brush_sv_voxel_count, false)
+
+
+func _brush_sv_field_summary(voxel_count: int, created: bool) -> Dictionary:
+	return {
+		"complexity_field_buffer": _brush_sv_complexity_buffer,
+		"collision_field_buffer": _brush_sv_collision_buffer,
+		"voxel_count": voxel_count,
+		"has_content": _brush_sv_has_content,
+		"created": created,
+	}
+
+
+## SV field 网格（xz_res, total_slices）：从 committer 网格元数据推导
+func _sv_field_grid_size() -> Vector2i:
+	if _sv_committer == null:
+		return Vector2i.ZERO
+	var grid: Vector3i = _sv_committer.grid_size
+	return Vector2i(maxi(grid.x, 0), maxi(grid.y, 0))
+
+
+func _sv_field_voxel_count() -> int:
+	if _sv_committer == null:
+		return 0
+	return VoxelGeneral.voxel_count(_sv_committer.grid_size)
+
+
+## 按需合成 BlendSV 临时对（committed SV + BrushSV）；对比 TargetSV / 3D score 读取用。
+## 返回空字典表示合成失败；无 brush 内容时调用方应直接使用 SV RID（零开销直通）。
+func compose_blend_sv_fields(sv_complexity_rid: RID, sv_collision_rid: RID) -> Dictionary:
+	if _rd == null or not sv_complexity_rid.is_valid() or not sv_collision_rid.is_valid():
+		return {}
+	var fields := ensure_brush_sv_fields()
+	if fields.is_empty():
+		return {}
+	var voxel_count := _brush_sv_voxel_count
+	var collision_word_count := int(SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count) / 4)
+	var complexity_byte_count := voxel_count * 4
+	var collision_byte_count := collision_word_count * 4
+
+	if not _blend_sv_complexity_buffer.is_valid() or _blend_sv_voxel_count != voxel_count:
+		release_blend_sv_fields()
+		_blend_sv_complexity_buffer = storage_buffer_zero(complexity_byte_count, SCOPE_PERSISTENT, "spa_blend_sv_complexity_rgba8")
+		_blend_sv_collision_buffer = storage_buffer_zero(collision_byte_count, SCOPE_PERSISTENT, "spa_blend_sv_collision_r8_words")
+		if not _blend_sv_complexity_buffer.is_valid() or not _blend_sv_collision_buffer.is_valid():
+			release_blend_sv_fields()
+			return {}
+		_blend_sv_voxel_count = voxel_count
+
+	var shader := load_compute_shader(COMPOSE_BLEND_SV_SHADER, SCOPE_FRAME, "spa_compose_blend_sv")
+	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "spa_compose_blend_sv")
+	if not shader.is_valid() or not pipeline.is_valid():
+		gc_frame()
+		release_blend_sv_fields()
+		return {}
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, sv_complexity_rid),
+		make_storage_uniform(1, sv_collision_rid),
+		make_storage_uniform(2, _brush_sv_complexity_buffer),
+		make_storage_uniform(3, _brush_sv_collision_buffer),
+		make_storage_uniform(4, _blend_sv_complexity_buffer),
+		make_storage_uniform(5, _blend_sv_collision_buffer),
+	], shader, 0, SCOPE_PASS, "spa_compose_blend_sv")
+	if not set0.is_valid():
+		gc_frame()
+		release_blend_sv_fields()
+		return {}
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, voxel_count)
+	push.encode_s32(4, collision_word_count)
+	push.encode_s32(8, 0)
+	push.encode_s32(12, 0)
+	var thread_count := maxi(voxel_count, collision_word_count)
+	if not _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(thread_count, 64)):
+		gc_frame()
+		release_blend_sv_fields()
+		return {}
+	gc_frame()
+	return {
+		"complexity_field_buffer": _blend_sv_complexity_buffer,
+		"collision_field_buffer": _blend_sv_collision_buffer,
+		"voxel_count": voxel_count,
+	}
+
+
+## 释放 BlendSV 临时合成对（用完即删）
+func release_blend_sv_fields() -> void:
+	if _blend_sv_complexity_buffer.is_valid():
+		release_rid(_blend_sv_complexity_buffer, false)
+	if _blend_sv_collision_buffer.is_valid():
+		release_rid(_blend_sv_collision_buffer, false)
+	_blend_sv_complexity_buffer = RID()
+	_blend_sv_collision_buffer = RID()
+	_blend_sv_voxel_count = 0
+
+
+## 结果级 feedback：临时合成 BlendSV，与 TargetSV_B 读取缓冲对比 completely/color 重合度，
+## 读回统计后立即删除临时体素。target_visual_rgba8_bytes 的 alpha 即 target completeness。
+func score_blendsv_feedback_against_target(
+	target_visual_rgba8_bytes: PackedByteArray,
+	target_collision_r8_bytes: PackedByteArray = PackedByteArray()
+) -> Dictionary:
+	if not is_initialized() or _sv_committer == null:
+		return {"ok": false, "reason": "actor_or_committer_not_ready"}
+	var committed_sv := _sv_committer.get_sv()
+	_sv_committer.ensure_scene_voxel_tile_buffers_uploaded(false)
+	var handoff := _build_resident_complexity_field_handoff(committed_sv)
+	if not bool(handoff.get("ok", false)):
+		return {"ok": false, "reason": str(handoff.get("reason", "resident_field_handoff_failed"))}
+	var sv_complexity: RID = handoff.get("complexity_field_buffer_rid", RID())
+	var sv_collision: RID = handoff.get("collision_field_buffer_rid", RID())
+	var voxel_count := _sv_field_voxel_count()
+	if voxel_count <= 0 or target_visual_rgba8_bytes.size() < voxel_count * 4:
+		return {"ok": false, "reason": "target_visual_bytes_size_mismatch", "expected_bytes": voxel_count * 4}
+
+	# BlendSV：有 brush 内容才临时合成，否则直接对比 committed SV
+	var blend_complexity := sv_complexity
+	var blend_collision := sv_collision
+	var blend_composed := false
+	if has_brush_sv_content():
+		var blend := compose_blend_sv_fields(sv_complexity, sv_collision)
+		if blend.is_empty():
+			return {"ok": false, "reason": "blend_sv_compose_failed"}
+		blend_complexity = blend.get("complexity_field_buffer", RID())
+		blend_collision = blend.get("collision_field_buffer", RID())
+		blend_composed = true
+
+	var shader := load_compute_shader(BLENDSV_FEEDBACK_SHADER, SCOPE_FRAME, "spa_blendsv_feedback")
+	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "spa_blendsv_feedback")
+	var target_visual_buffer := storage_buffer_from_bytes(target_visual_rgba8_bytes, SCOPE_FRAME, "spa_blendsv_feedback_target_visual")
+	var has_target_collision := target_collision_r8_bytes.size() >= SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count)
+	var target_collision_buffer := storage_buffer_from_bytes(
+		target_collision_r8_bytes if has_target_collision else PackedByteArray([0, 0, 0, 0]),
+		SCOPE_FRAME,
+		"spa_blendsv_feedback_target_collision"
+	)
+	var stats_buffer := storage_buffer_zero(6 * 4, SCOPE_FRAME, "spa_blendsv_feedback_stats")
+	if not shader.is_valid() or not pipeline.is_valid() or not target_visual_buffer.is_valid() \
+			or not target_collision_buffer.is_valid() or not stats_buffer.is_valid():
+		gc_frame()
+		if blend_composed:
+			release_blend_sv_fields()
+		return {"ok": false, "reason": "feedback_gpu_resources_not_ready"}
+	var set0 := create_uniform_set([
+		make_storage_uniform(0, blend_complexity),
+		make_storage_uniform(1, blend_collision),
+		make_storage_uniform(2, target_visual_buffer),
+		make_storage_uniform(3, target_collision_buffer),
+		make_storage_uniform(4, stats_buffer),
+	], shader, 0, SCOPE_PASS, "spa_blendsv_feedback")
+	if not set0.is_valid():
+		gc_frame()
+		if blend_composed:
+			release_blend_sv_fields()
+		return {"ok": false, "reason": "feedback_uniform_set_failed"}
+	var push := PackedByteArray()
+	push.resize(16)
+	push.encode_s32(0, voxel_count)
+	push.encode_s32(4, 1 if has_target_collision else 0)
+	push.encode_float(8, BLENDSV_FEEDBACK_OCCUPIED_EPSILON)
+	push.encode_float(12, BLENDSV_FEEDBACK_QUANT_SCALE)
+	if not _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(voxel_count, 64)):
+		gc_frame()
+		if blend_composed:
+			release_blend_sv_fields()
+		return {"ok": false, "reason": "feedback_dispatch_failed"}
+	var stats_bytes := _rd.buffer_get_data(stats_buffer, 0, 6 * 4)
+	gc_frame()
+	if blend_composed:
+		release_blend_sv_fields()  # 用完立马删除临时体素，BrushSV 常驻保留
+
+	var blend_occupied := stats_bytes.decode_u32(0)
+	var target_occupied := stats_bytes.decode_u32(4)
+	var overlap := stats_bytes.decode_u32(8)
+	var completely_diff_sum := float(stats_bytes.decode_u32(12)) / BLENDSV_FEEDBACK_QUANT_SCALE
+	var color_distance_sum := float(stats_bytes.decode_u32(16)) / BLENDSV_FEEDBACK_QUANT_SCALE
+	var processed := stats_bytes.decode_u32(20)
+	var union_count := blend_occupied + target_occupied - overlap
+	return {
+		"ok": true,
+		"gpu_first": true,
+		"cpu_fallback": false,
+		"blend_source": "blend_sv_composed" if blend_composed else "committed_sv_direct",
+		"voxel_count": int(processed),
+		"blend_occupied_count": int(blend_occupied),
+		"target_occupied_count": int(target_occupied),
+		"overlap_count": int(overlap),
+		"overlap_score": float(overlap) / float(maxi(union_count, 1)),
+		"completely_diff_mean": completely_diff_sum / float(maxi(int(processed), 1)),
+		"color_distance_mean": color_distance_sum / float(maxi(int(overlap), 1)),
+	}
+
+
+# ---------------------------------------------------------------------------
 # BrushSV persistence metadata — control plane only
 # ---------------------------------------------------------------------------
 
@@ -893,10 +1232,10 @@ func _pack_mesh_description_bytes() -> PackedByteArray:
 		bytes.encode_s32(base + 28, 0)
 		_encode_aabb(bytes, base + 32, mesh_aabb)
 		_encode_aabb(bytes, base + 64, source_mesh_aabb)
-		bytes.encode_u32(base + 96, _stable_u32_hash(str(description.get("asset_name", ""))))
-		bytes.encode_u32(base + 100, _stable_u32_hash(str(description.get("object_type", ""))))
-		bytes.encode_u32(base + 104, _stable_u32_hash(str(description.get("object_subtype", ""))))
-		bytes.encode_u32(base + 108, _stable_u32_hash(source_path))
+		bytes.encode_u32(base + 96, HashUtils.stable_u32_from_string(str(description.get("asset_name", ""))))
+		bytes.encode_u32(base + 100, HashUtils.stable_u32_from_string(str(description.get("object_type", ""))))
+		bytes.encode_u32(base + 104, HashUtils.stable_u32_from_string(str(description.get("object_subtype", ""))))
+		bytes.encode_u32(base + 108, HashUtils.stable_u32_from_string(source_path))
 		bytes.encode_float(base + 112, mesh_aabb.size.length())
 		bytes.encode_float(base + 116, maxf(mesh_aabb.size.x, maxf(mesh_aabb.size.y, mesh_aabb.size.z)))
 		bytes.encode_float(base + 120, source_mesh_aabb.size.length())
@@ -942,15 +1281,6 @@ static func _decode_mesh_description_bytes(bytes: PackedByteArray, record_count:
 			"source_mesh_max_axis": bytes.decode_float(base + 124),
 		})
 	return result
-
-
-static func _stable_u32_hash(value: String) -> int:
-	var h := 2166136261
-	for i in range(value.length()):
-		h = (h ^ value.unicode_at(i)) & 0xffffffff
-		h = (h * 16777619) & 0xffffffff
-	return h
-
 
 
 # --------------------------------------------------------------------------
@@ -1301,7 +1631,6 @@ func _flush_gpu_runtime_dirty_delta_to_scene_voxel_committer(placement_result: D
 func run_autoobject_prefilter(
 	sv: Dictionary,
 	dirty_tile_ids: Array[int] = [],
-	target_field_bytes: PackedFloat32Array = PackedFloat32Array(),
 	target_read_buffers: Dictionary = {},
 	tile_summaries_rid: RID = RID(),
 	prefilter_settings: Dictionary = {}
@@ -1318,7 +1647,6 @@ func run_autoobject_prefilter(
 		autoobjects,
 		dirty_tile_ids,
 		_runtime_profile_container,
-		target_field_bytes,
 		target_read_buffers.duplicate(true),
 		tile_summaries_rid
 	)
@@ -1345,6 +1673,8 @@ func _apply_prefilter_settings(prefilter: AutoObjectProbePrefilterGPU, settings:
 		prefilter.min_target_interest = clampf(float(settings.get("min_target_interest", prefilter.min_target_interest)), 0.0, 1.0)
 	if settings.has("min_prefilter_score"):
 		prefilter.min_prefilter_score = clampf(float(settings.get("min_prefilter_score", prefilter.min_prefilter_score)), 0.0, 1.0)
+	if settings.has("debug_read_anchors"):
+		prefilter.debug_read_anchors = bool(settings.get("debug_read_anchors", prefilter.debug_read_anchors))
 
 
 # ---------------------------------------------------------------------------
@@ -1374,7 +1704,33 @@ func run_placement_pipeline(
 	if _registered_descriptors.is_empty():
 		return _pipeline_error("no_registered_assets")
 
-	# ---- Phase 0: Prefilter (SV → candidate voxel regions) ----
+	# ---- Phase 0: resident field handoff + BlendSV 合成（SV 纯 auto；读取场按需叠加 brush） ----
+
+	# _rebuild_sv 收尾的 clear_all_dirty 会把 tile staging 重新标脏；handoff 前幂等确保上传就绪
+	if _sv_committer != null:
+		_sv_committer.ensure_scene_voxel_tile_buffers_uploaded(false)
+	var resident_field_handoff := _build_resident_complexity_field_handoff(sv)
+	var resident_complexity_field_rid: RID = resident_field_handoff.get("complexity_field_buffer_rid", RID())
+	var resident_collision_field_rid: RID = resident_field_handoff.get("collision_field_buffer_rid", RID())
+
+	# 读取场（prefilter / target prep / 3D score 采样）：有 brush 内容时为 BlendSV 临时对，
+	# 否则直通 committed SV 常驻对；commit 目标恒为 SV 对（stamp 双写由 VPG flag 控制）。
+	var field_read_complexity_rid := resident_complexity_field_rid
+	var field_read_collision_rid := resident_collision_field_rid
+	var blend_sv_active := false
+	if bool(resident_field_handoff.get("ok", false)) and has_brush_sv_content():
+		var blend := compose_blend_sv_fields(resident_complexity_field_rid, resident_collision_field_rid)
+		if not blend.is_empty():
+			field_read_complexity_rid = blend.get("complexity_field_buffer", RID())
+			field_read_collision_rid = blend.get("collision_field_buffer", RID())
+			blend_sv_active = true
+
+	sv = sv.duplicate()
+	if field_read_complexity_rid.is_valid() and field_read_collision_rid.is_valid():
+		sv["resident_complexity_field_read_rid"] = field_read_complexity_rid
+		sv["resident_collision_field_read_rid"] = field_read_collision_rid
+
+	# ---- Prefilter (SV → candidate voxel regions) ----
 
 	var autoobjects := _build_autoobject_array_for_pipeline()
 	var target_buffers := prepare_target_read_buffers_from_common_gpu(placement_common, sv)
@@ -1387,6 +1743,8 @@ func run_placement_pipeline(
 			"mesh_description": get_mesh_description_gpu_buffer_summary(),
 			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
 		}
+		if blend_sv_active:
+			release_blend_sv_fields()
 		return _last_pipeline_result
 	var target_field_bytes: PackedFloat32Array = target_buffers.get("target_field_bytes", PackedFloat32Array())
 	var mesh_description_summary := get_mesh_description_gpu_buffer_summary()
@@ -1399,7 +1757,6 @@ func run_placement_pipeline(
 		autoobjects,
 		dirty_tile_ids,
 		_runtime_profile_container,  # ← borrowed GPU probes
-		target_field_bytes,
 		target_buffers,
 		sv.get("scene_voxel_tile_summary_gpu_rid", RID())  # ← GPU-first: resident tile summaries RID
 	)
@@ -1413,9 +1770,10 @@ func run_placement_pipeline(
 			"mesh_description": mesh_description_summary,
 			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
 		}
+		if blend_sv_active:
+			release_blend_sv_fields()
 		return _last_pipeline_result
 
-	var candidate_regions: Dictionary = prefilter_result.get("candidate_voxel_regions_by_asset", {})
 	var resident_candidate_route_opt_in_requested := _resident_candidate_route_handoff_opt_in_requested(placement_common)
 	var use_resident_candidate_route_handoff := _should_use_resident_candidate_route_handoff(
 		placement_common,
@@ -1441,6 +1799,8 @@ func run_placement_pipeline(
 				"candidate_route_runtime_read_source": "none",
 				"candidate_route_input_contract": VPGScript._candidate_route_input_contract_from_settings({}),
 			}
+			if blend_sv_active:
+				release_blend_sv_fields()
 			return _last_pipeline_result
 	else:
 		_release_resident_candidate_route_handoff()
@@ -1448,9 +1808,6 @@ func run_placement_pipeline(
 	# ---- Phase 1: Placement (candidate regions → placed instances) ----
 
 	var placer := _get_placer()
-	var resident_field_handoff := _build_resident_complexity_field_handoff(sv)
-	var resident_complexity_field_rid: RID = resident_field_handoff.get("complexity_field_buffer_rid", RID())
-	var resident_collision_field_rid: RID = resident_field_handoff.get("collision_field_buffer_rid", RID())
 
 	var complexity_field := _ensure_float_array(sv.get("complexity_field", PackedFloat32Array()),
 		sv.get("grid_size", Vector3i.ZERO))
@@ -1478,7 +1835,8 @@ func run_placement_pipeline(
 		placement_settings["candidate_route_input_contract"] = resident_contract
 		placement_settings["resident_candidate_route_contract"] = resident_contract
 	else:
-		placement_settings["candidate_voxel_regions_by_asset"] = candidate_regions
+		# CPU 候选区域回退已移除：无 resident handoff 时不再注入 candidate_voxel_regions_by_asset，
+		# 只透传 prefilter 的（none）路由标签，由 VPG 走 all-tiles。
 		placement_settings["candidate_route_readback_source"] = str(prefilter_result.get("candidate_route_readback_source", "none"))
 		placement_settings["candidate_route_runtime_read_source"] = str(prefilter_result.get("candidate_route_runtime_read_source", "none"))
 		placement_settings["candidate_route_input_contract"] = prefilter_result.get("candidate_route_input_contract", {})
@@ -1493,22 +1851,24 @@ func run_placement_pipeline(
 	placement_settings["scene_voxel_tile_resident_field_handoff"] = resident_field_handoff.duplicate(true)
 	placement_settings["resident_complexity_field_handoff"] = resident_field_handoff.duplicate(true)
 	if bool(resident_field_handoff.get("ok", false)):
-		placement_settings["complexity_field_buffer_rid"] = resident_complexity_field_rid
-		placement_settings["collision_field_buffer_rid"] = resident_collision_field_rid
+		# 读取场 = BlendSV（含 brush）或 committed SV 直通；stamp 双写目标恒为 committed SV 对
+		placement_settings["complexity_field_buffer_rid"] = field_read_complexity_rid
+		placement_settings["collision_field_buffer_rid"] = field_read_collision_rid
+		placement_settings["commit_complexity_field_buffer_rid"] = resident_complexity_field_rid
+		placement_settings["commit_collision_field_buffer_rid"] = resident_collision_field_rid
 		placement_settings["complexity_field_buffer_borrowed"] = true
 		placement_settings["collision_field_buffer_borrowed"] = true
-		placement_settings["complexity_field_buffer_owner"] = "SceneVoxelCommitter"
-		placement_settings["collision_field_buffer_owner"] = "SceneVoxelCommitter"
-		placement_settings["complexity_field_read_source"] = "scene_voxel_committer_scene_voxel_tile_resident_complexity_field"
-		placement_settings["collision_field_read_source"] = "scene_voxel_committer_scene_voxel_tile_resident_collision_field"
+		placement_settings["complexity_field_buffer_owner"] = "ScenePlacementActor" if blend_sv_active else "SceneVoxelCommitter"
+		placement_settings["collision_field_buffer_owner"] = "ScenePlacementActor" if blend_sv_active else "SceneVoxelCommitter"
+		placement_settings["complexity_field_read_source"] = "spa_blend_sv_composed_field" if blend_sv_active else "scene_voxel_committer_scene_voxel_tile_resident_complexity_field"
+		placement_settings["collision_field_read_source"] = "spa_blend_sv_composed_field" if blend_sv_active else "scene_voxel_committer_scene_voxel_tile_resident_collision_field"
 		placement_settings["gpu_state_chain_source"] = str(resident_field_handoff.get("gpu_state_chain_source", "scene_voxel_committer_scene_voxel_tile_resident_fields"))
 		placement_settings["resident_complexity_field_rendering_device"] = _rd
+	# 紧凑 stamp-delta 状态链是 VPG 的 CPU 输入默认路径，无需 opt-in 设置；
+	# resident_runtime_dirty_delta_ready 仅供下方 compact_state_chain_summary 报告。
 	var resident_runtime_dirty_delta_ready := _gpu_runtime != null \
 		and _gpu_runtime.is_ready() \
 		and bool(_gpu_runtime_scene_voxel_setup_result.get("resident_gpu_dirty_delta_update_pass_opt_in_ready", false))
-	if resident_runtime_dirty_delta_ready:
-		placement_settings["use_compact_state_chain"] = true
-		placement_settings["cpu_state_chain_mode"] = "compact_stamp_deltas"
 	if _gpu_runtime != null and _gpu_runtime.is_ready():
 		placement_settings["gpu_autoobject_runtime"] = _gpu_runtime
 		placement_settings["write_accepted_placements_to_gpu_runtime"] = true
@@ -1582,14 +1942,18 @@ func run_placement_pipeline(
 		"gpu_runtime_scene_voxel_setup": _gpu_runtime_scene_voxel_setup_result.duplicate(true),
 		"profile_probe_pack": prefilter_result.get("profile_probe_pack", {}),
 		"mesh_description": mesh_description_summary,
-		"candidate_regions": candidate_regions,
+		"candidate_regions": {},
 		"target_read_buffers": target_buffers,
 		"target_read_buffer_summary": placement_result.get("target_read_buffer_summary", prefilter_result.get("target_read_buffer_summary", {})),
 		"candidate_route_readback_source": placement_result.get("candidate_route_readback_source", "none"),
 		"candidate_route_runtime_read_source": placement_result.get("candidate_route_runtime_read_source", "none"),
 		"candidate_route_input_contract": placement_result.get("candidate_route_input_contract", {}),
 		"asset_count": _registered_descriptors.size(),
+		"blend_sv_active": blend_sv_active,
+		"brush_sv_has_content": has_brush_sv_content(),
 	}
+	if blend_sv_active:
+		release_blend_sv_fields()  # BlendSV 临时体素用完即删；BrushSV 常驻保留
 	return _last_pipeline_result
 
 
@@ -1727,84 +2091,35 @@ func _build_placement_asset_defs() -> Array:
 	return asset_defs
 
 
-## 将 placement 结果中已接受的放置记录提交到 SV committer（stamp 体素）并 flush gpu_runtime dirty delta；由 run_placement_pipeline 在放置成功后调用
-func _commit_accepted_placements(placement_result: Dictionary, sv: Dictionary) -> Dictionary:
-	var committed := 0
-	var committed_ids: Array[Dictionary] = []
-
-	# P0 #3: check if VPG already performed GPU buffer handoff to committer.
-	# When accepted_placement_writeback_mode is already "gpu_resident_source_write_buffer",
-	# the committer already owns the source candidate buffers — no duplicate call needed.
+## Stamp-only 提交定稿：GPU state-chain stamp 已原位写入 committed SV 常驻 field（stamp 即提交），
+## 这里推进 committer 的提交发布（散射 CPU 入口记录 + tick + tile 摘要）；由 run_placement_pipeline 在放置成功后调用
+func _commit_accepted_placements(placement_result: Dictionary, _sv: Dictionary) -> Dictionary:
 	var instance_writeback: Dictionary = placement_result.get("instance_stamp_writeback", {})
 	var writeback_mode := str(instance_writeback.get("accepted_placement_writeback_mode", ""))
-	if writeback_mode == "gpu_resident_source_write_buffer":
-		var applied := int(instance_writeback.get("applied_count", 0))
+	var total_accepted := int(placement_result.get("total_placed", 0))
+
+	if writeback_mode == "gpu_state_chain_stamp":
+		var commit_summary := {}
+		if _sv_committer != null:
+			_sv_committer.commit_scene_voxels()
+			commit_summary = _sv_committer.get_last_scene_voxel_commit_summary()
 		return {
 			"ok": true,
-			"committed": applied,
-			"total_accepted": int(placement_result.get("total_placed", applied)),
-			"committed_ids": committed_ids,
-			"commit_mode": "gpu_resident_source_buffer_handoff_already_applied_by_vpg",
+			"committed": int(instance_writeback.get("applied_count", total_accepted)),
+			"total_accepted": total_accepted,
+			"commit_mode": "gpu_state_chain_stamp_commit",
 			"gpu_first": true,
 			"cpu_fallback": false,
-			"gpu_commit_source": "vpg_instance_stamp_writeback",
+			"gpu_commit_source": "vpg_state_chain_stamp",
+			"committer_commit_summary": commit_summary,
 		}
-
-	# P0 #3: fallback — try resident accepted placement source buffers from VPG.
-	var source_records_rid: RID = placement_result.get("accepted_placement_source_records_rid", RID())
-	var source_ranges_rid: RID = placement_result.get("accepted_placement_source_ranges_rid", RID())
-	var candidate_count := int(placement_result.get("accepted_placement_source_record_count", 0))
-	var range_count := int(placement_result.get("accepted_placement_source_range_count", 0))
-	if _sv_committer != null and source_records_rid.is_valid() and source_ranges_rid.is_valid() and candidate_count > 0:
-		if _sv_committer.has_method("apply_accepted_placement_source_buffer"):
-			var gpu_result: Dictionary = _sv_committer.call(
-				"apply_accepted_placement_source_buffer",
-				source_records_rid,
-				source_ranges_rid,
-				candidate_count,
-				range_count
-			)
-			if bool(gpu_result.get("ok", false)):
-				return {
-					"ok": true,
-					"committed": int(gpu_result.get("applied_count", candidate_count)),
-					"total_accepted": int(placement_result.get("total_placed", candidate_count)),
-					"committed_ids": committed_ids,
-					"commit_mode": "gpu_resident_source_buffer_handoff_via_actor",
-					"gpu_first": true,
-					"cpu_fallback": false,
-					"gpu_commit_result": gpu_result,
-				}
-			if str(gpu_result.get("reason", "")) == ACCEPTED_PLACEMENT_SOURCE_BUFFER_INCOMPLETE_REASON:
-				return {
-					"ok": false,
-					"reason": ACCEPTED_PLACEMENT_SOURCE_BUFFER_INCOMPLETE_REASON,
-					"committed": 0,
-					"total_accepted": int(placement_result.get("total_placed", candidate_count)),
-					"committed_ids": committed_ids,
-					"commit_mode": "blocked_incomplete_gpu_resident_source_buffer_handoff_via_actor",
-					"gpu_first": true,
-					"cpu_fallback": false,
-					"gpu_commit_result": gpu_result,
-					"source_candidate_required_buffers": [
-						"candidate_records",
-						"candidate_ranges",
-						"candidate_payloads",
-						"group_source_key_indices",
-					],
-					"source_candidate_missing_buffers": [
-						"candidate_payloads",
-						"group_source_key_indices",
-					],
-				}
 
 	return {
 		"ok": false,
-		"reason": "no_gpu_resident_commit_source_available",
-		"committed": committed,
-		"total_accepted": int(placement_result.get("total_placed", 0)),
-		"committed_ids": committed_ids,
-		"commit_mode": "blocked_no_gpu_resident_commit_source",
+		"reason": "no_gpu_state_chain_stamp_commit",
+		"committed": 0,
+		"total_accepted": total_accepted,
+		"commit_mode": "blocked_no_gpu_state_chain_stamp",
 		"gpu_first": true,
 		"cpu_fallback": false,
 	}
@@ -2205,8 +2520,7 @@ func _payload_has_borrowable_resident_candidate_route(payload: Dictionary, prefi
 	if not bool(payload.get("resident_route_record_rid_valid", true)) \
 	   or not bool(payload.get("resident_route_range_rid_valid", true)):
 		return false
-	if not bool(payload.get("same_rendering_device_as_vpg", false)) \
-	   or not bool(payload.get("rendering_device_matches_vpg", false)):
+	if not bool(payload.get("same_rendering_device_as_vpg", false)):
 		return false
 	return prefilter != null and prefilter.get_rendering_device() == _rd
 
@@ -2435,19 +2749,28 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		"target_read_color_input_rgba8_u32"
 	)
 
-	# Upload canonical 8-bit SceneVoxel fields from the debug float projections in sv.
-	var complexity_field := _sv_float_field(sv, "complexity_field", voxel_count * 4)  # vec4 = 4 floats per voxel
-	var collision_field := _sv_float_field(sv, "collision_field", voxel_count)
-	var complexity_input_buffer := storage_buffer_from_bytes(
-		SceneVoxelTileCodecScript.pack_complexity_field_rgba8_bytes(complexity_field, voxel_count),
-		SCOPE_FRAME,
-		"target_read_complexity_input_rgba8"
-	)
-	var collision_input_buffer := storage_buffer_from_bytes(
-		SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(collision_field, voxel_count),
-		SCOPE_FRAME,
-		"target_read_collision_input_r8_words"
-	)
+	# 场景 completely 输入：优先绑定 sv 携带的常驻 8-bit field 读取对（BlendSV 或 committed SV，
+	# 格式与本 shader 输入契约一致，零拷贝）；无常驻 RID 时回退 CPU debug 投影打包。
+	var raw_resident_complexity = sv.get("resident_complexity_field_read_rid", RID())
+	var raw_resident_collision = sv.get("resident_collision_field_read_rid", RID())
+	var resident_complexity_input: RID = raw_resident_complexity if raw_resident_complexity is RID else RID()
+	var resident_collision_input: RID = raw_resident_collision if raw_resident_collision is RID else RID()
+	var use_resident_field_inputs := resident_complexity_input.is_valid() and resident_collision_input.is_valid()
+	var complexity_input_buffer := resident_complexity_input
+	var collision_input_buffer := resident_collision_input
+	if not use_resident_field_inputs:
+		var complexity_field := _sv_float_field(sv, "complexity_field", voxel_count * 4)  # vec4 = 4 floats per voxel
+		var collision_field := _sv_float_field(sv, "collision_field", voxel_count)
+		complexity_input_buffer = storage_buffer_from_bytes(
+			SceneVoxelTileCodecScript.pack_complexity_field_rgba8_bytes(complexity_field, voxel_count),
+			SCOPE_FRAME,
+			"target_read_complexity_input_rgba8"
+		)
+		collision_input_buffer = storage_buffer_from_bytes(
+			SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(collision_field, voxel_count),
+			SCOPE_FRAME,
+			"target_read_collision_input_r8_words"
+		)
 
 	var output_scope := SCOPE_PERSISTENT if resident_handoff_enabled else SCOPE_FRAME
 	var target_field_output_buffer := storage_buffer_zero(target_field_byte_count, output_scope, "target_field_out_vec4")
@@ -2536,10 +2859,7 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 				Vector3i.ZERO
 			),
 		}
-	_rd.compute_list_bind_compute_pipeline(cl, pipeline)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
-	_rd.compute_list_dispatch(cl, groups.x, groups.y, groups.z)
+	_gpu_dispatch_pipeline_sets(cl, pipeline, [set0], push, groups)
 	end_compute_list()
 	submit_and_sync()
 
@@ -2667,4 +2987,3 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 
 ## Use prepare_target_read_buffers_from_common_gpu() for all target read paths.
 ## The deprecated static helper target_read_buffers_from_common() has been removed.
-

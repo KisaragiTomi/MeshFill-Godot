@@ -5,7 +5,8 @@ extends Node3D
 const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const TargetSceneVoxelGeneratorScript := preload("res://scripts/target_scene_voxel_generator.gd")
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
-const VoxelDisplay := preload("res://scripts/voxel_display.gd")
+const VoxelDisplay := preload("res://scripts/utils/voxel_display.gd")
+const VoxelFieldDisplayGPU := preload("res://scripts/utils/voxel_field_display_gpu.gd")
 const HEIGHT_PATH := "res://textures/scene_height_0_1.png"
 const GUIDANCE_NODE := "GuidanceVoxels"
 const BRUSH_NODE := "BrushTetraVoxels"
@@ -66,12 +67,12 @@ func _ready() -> void:
 	_rebuild.call_deferred()
 
 
-func rebuild() -> void:
-	_rebuild()
+func rebuild(force: bool = false) -> void:
+	_rebuild(force)
 
 
-func _rebuild() -> void:
-	if not Engine.is_editor_hint():
+func _rebuild(force: bool = false) -> void:
+	if not force and not Engine.is_editor_hint():
 		return
 	var terrain_contract := TerrainInitializerScript.ensure_shared_terrain(self, {"visible": true})
 	if not bool(terrain_contract.get("ok", false)):
@@ -185,44 +186,65 @@ func build_guidance_voxels() -> void:
 	if _decoded_occupancy.is_empty():
 		return
 
-	var slice_voxel_count := _texture_size * _texture_size
 	var cell_size := _capture_size / maxf(float(_texture_size - 1), 1.0) * display_scale * 0.72
 	var slice_height := _vertical_span / maxf(float(_slice_count), 1.0) * display_scale * 0.72
 	var cell := Vector3(cell_size, maxf(slice_height, 0.02), cell_size)
-
-	var centers := PackedVector3Array()
-	var colors := PackedColorArray()
-	for idx in range(_decoded_occupancy.size()):
-		if _decoded_occupancy[idx] <= occupancy_threshold:
-			continue
-		var slice_index := idx / slice_voxel_count
-		var rem := idx % slice_voxel_count
-		var z := rem / _texture_size
-		var x := rem % _texture_size
-		centers.append(voxel_to_world(x, slice_index, z))
-		colors.append(_channel_color(idx))
-
-	var instance := VoxelDisplay.build_colored(centers, cell, colors, {"name": GUIDANCE_NODE, "fill": 1.0})
+	var voxel_count := _texture_size * _texture_size * _slice_count
+	var color_rgba := _decoded_color_rgba(voxel_count)
+	var visible_count := 0
+	for idx in range(mini(_decoded_occupancy.size(), voxel_count)):
+		if _decoded_occupancy[idx] > occupancy_threshold:
+			visible_count += 1
+	var instance := VoxelDisplay.build_field_gpu(
+		voxel_count,
+		cell,
+		_brush_grid_aabb(cell_size),
+		{
+			"occupancy": _decoded_occupancy,
+			"collision": _decoded_collision,
+			"color_rgba": color_rgba,
+			"terrain_height": _terrain_height_world,
+		},
+		{
+			"xz_res": _texture_size,
+			"slice_count": _slice_count,
+			"view_mode": _view_mode(),
+			"capture_size": _capture_size,
+			"display_scale": display_scale,
+			"vertical_span": _vertical_span,
+			"height_span": _height_span,
+			"threshold": occupancy_threshold,
+		},
+		{"name": GUIDANCE_NODE, "fill": 1.0}
+	)
 	if instance != null:
 		instance.visible = guidance_visible
+		instance.set_meta("visible_voxel_count", visible_count)
 		if fresnel_enabled:
 			_apply_fresnel_material(instance)
 		_add_generated(instance)
 
 
-func _channel_color(idx: int) -> Color:
+func _view_mode() -> int:
 	match display_channel:
-		DisplayChannel.COLOR:
-			var c: Color = _decoded_color[idx]
-			c.a = clampf(maxf(_decoded_occupancy[idx], 0.35), 0.35, 1.0)
-			return c
 		DisplayChannel.COMPLEXITY:
-			var complexity := _decoded_color[idx].a
-			return Color(complexity, complexity * 0.7, 0.1, clampf(maxf(complexity, 0.35), 0.35, 1.0))
+			return VoxelFieldDisplayGPU.VIEW_COMPLEXITY
 		DisplayChannel.COLLISION:
-			var col := _decoded_collision[idx] if idx < _decoded_collision.size() else 0.0
-			return Color(0.1, col * 0.8, col, clampf(maxf(col, 0.35), 0.35, 1.0))
-	return Color.WHITE
+			return VoxelFieldDisplayGPU.VIEW_COLLISION
+	return VoxelFieldDisplayGPU.VIEW_TARGET_COLOR
+
+
+func _decoded_color_rgba(voxel_count: int) -> PackedFloat32Array:
+	var color_rgba := PackedFloat32Array()
+	color_rgba.resize(voxel_count * 4)
+	for idx in range(voxel_count):
+		var c := _decoded_color[idx] if idx < _decoded_color.size() else Color.TRANSPARENT
+		var base := idx * 4
+		color_rgba[base + 0] = clampf(c.r, 0.0, 1.0)
+		color_rgba[base + 1] = clampf(c.g, 0.0, 1.0)
+		color_rgba[base + 2] = clampf(c.b, 0.0, 1.0)
+		color_rgba[base + 3] = clampf(c.a, 0.0, 1.0)
+	return color_rgba
 
 
 func _apply_fresnel_material(instance: MultiMeshInstance3D) -> void:
@@ -444,6 +466,8 @@ func get_brush_voxel_count() -> int:
 
 func get_guidance_voxel_count() -> int:
 	var g := get_node_or_null(GUIDANCE_NODE) as MultiMeshInstance3D
+	if g != null and g.has_meta("visible_voxel_count"):
+		return int(g.get_meta("visible_voxel_count", 0))
 	if g != null and g.multimesh != null:
 		return g.multimesh.instance_count
 	return 0

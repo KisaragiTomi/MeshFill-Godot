@@ -21,6 +21,8 @@ var _asset_descriptor_debug_menu: MenuButton
 var _asset_descriptor_debug_status_label: Label
 var _asset_descriptor_debug_host_instance_id := 0
 var _asset_descriptor_debug_action_ids: Array[StringName] = []
+var _bake_descriptor_btn: Button
+var _bake_descriptor_status_label: Label
 var _generate_anchor_btn: Button
 var _voxel_score_btn: Button
 var _anchor_score_status_label: Label
@@ -43,6 +45,8 @@ const GEO_SCAN_FORMAT_METHOD := &"_format_geo_scan_result"
 const ASSET_DESCRIPTOR_ACTION_METHOD := &"asset_descriptor_editor_action"
 const ASSET_DESCRIPTOR_ACTIONS_METHOD := &"asset_descriptor_editor_actions"
 const ASSET_DESCRIPTOR_STATE_METHOD := &"get_asset_descriptor_debug_state"
+const ASSET_DESCRIPTOR_BAKE_METHOD := &"bake_scene_descriptors"
+const ASSET_DESCRIPTOR_BAKE_STATE_METHOD := &"get_asset_descriptor_bake_state"
 
 # ---- MCP TCP Server ----
 var _tcp_server: TCPServer
@@ -85,6 +89,7 @@ func _enter_tree() -> void:
 	_create_selection_mode_toolbar()
 	_create_geo_scan_toolbar()
 	_create_asset_descriptor_debug_toolbar()
+	_create_asset_descriptor_bake_toolbar()
 	_create_volume_score_toolbar()
 	_create_voxel_visibility_panel()
 	print("[MeshFill Editor] Activated — MCP bridge on 127.0.0.1:%d" % MCP_PORT)
@@ -93,6 +98,7 @@ func _enter_tree() -> void:
 func _exit_tree() -> void:
 	_remove_voxel_visibility_panel()
 	_remove_volume_score_toolbar()
+	_remove_asset_descriptor_bake_toolbar()
 	_remove_asset_descriptor_debug_toolbar()
 	_remove_geo_scan_toolbar()
 	_remove_selection_mode_toolbar()
@@ -116,6 +122,7 @@ func _process(delta: float) -> void:
 	_sync_selection_mode_option_from_scene()
 	_sync_geo_scan_toolbar_from_scene()
 	_sync_asset_descriptor_debug_toolbar_from_scene()
+	_sync_asset_descriptor_bake_toolbar_from_scene()
 	_sync_volume_score_toolbar_from_scene()
 	_sync_voxel_visibility_panel_from_scene()
 	_heartbeat_timer += delta
@@ -680,6 +687,104 @@ func _format_asset_descriptor_debug_state(state: Dictionary) -> String:
 	if sel.is_empty():
 		sel = "none"
 	return "AD: selected=%s  probes=%s  voxel=%s" % [sel, probes, voxel]
+
+
+# ---- Asset descriptor bake toolbar ----------------------------------------
+#
+# One-click bake of the AssetDescriptor data for every mesh shown in the
+# AssetDescriptorDemo scene. Only visible when the edited scene exposes the
+# bake entry (bake_scene_descriptors).
+
+func _create_asset_descriptor_bake_toolbar() -> void:
+	_bake_descriptor_btn = _make_toolbar_action_button(
+		" Bake AD ",
+		"Bake an AssetDescriptor (.tres) for every mesh displayed in the scene"
+	)
+	_bake_descriptor_btn.name = "MeshFillAssetDescriptorBakeButton"
+	_bake_descriptor_btn.custom_minimum_size = Vector2(84, 0)
+	_bake_descriptor_btn.pressed.connect(_on_bake_descriptor_pressed)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _bake_descriptor_btn)
+
+	_bake_descriptor_status_label = Label.new()
+	_bake_descriptor_status_label.name = "MeshFillAssetDescriptorBakeStatus"
+	_bake_descriptor_status_label.custom_minimum_size = Vector2(220, 0)
+	_bake_descriptor_status_label.clip_text = true
+	_bake_descriptor_status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_bake_descriptor_status_label.add_theme_font_size_override("font_size", 13)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _bake_descriptor_status_label)
+
+	_sync_asset_descriptor_bake_toolbar_from_scene()
+
+
+func _remove_asset_descriptor_bake_toolbar() -> void:
+	if _bake_descriptor_btn != null:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _bake_descriptor_btn)
+		_bake_descriptor_btn.queue_free()
+		_bake_descriptor_btn = null
+	if _bake_descriptor_status_label != null:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _bake_descriptor_status_label)
+		_bake_descriptor_status_label.queue_free()
+		_bake_descriptor_status_label = null
+
+
+func _on_bake_descriptor_pressed() -> void:
+	var host := _scene_asset_descriptor_bake_host()
+	if host == null:
+		push_warning("[MeshFill Editor] Current scene has no AssetDescriptor bake entry.")
+		_sync_asset_descriptor_bake_toolbar_from_scene()
+		return
+	_set_bake_descriptor_status("Baking…")
+	var result = host.call(ASSET_DESCRIPTOR_BAKE_METHOD)
+	if result is Dictionary:
+		if not bool(result.get("ok", false)):
+			push_warning("[MeshFill Editor] Bake AD: %s" % str(result.get("reason", "no descriptors baked")))
+		_set_bake_descriptor_status(_format_asset_descriptor_bake_result(result))
+		print("[MeshFill Editor] Bake AD -> %s" % _format_asset_descriptor_bake_result(result))
+	else:
+		_set_bake_descriptor_status("Bake done")
+
+
+func _sync_asset_descriptor_bake_toolbar_from_scene() -> void:
+	var host := _scene_asset_descriptor_bake_host()
+	var has_host := host != null
+	if _bake_descriptor_btn != null:
+		_bake_descriptor_btn.visible = has_host
+		_bake_descriptor_btn.disabled = not has_host
+	if _bake_descriptor_status_label == null:
+		return
+	_bake_descriptor_status_label.visible = has_host
+	if not has_host:
+		_set_bake_descriptor_status("")
+		return
+	if _bake_descriptor_status_label.text.strip_edges().is_empty():
+		var count := 0
+		if host.has_method(ASSET_DESCRIPTOR_BAKE_STATE_METHOD):
+			var state = host.call(ASSET_DESCRIPTOR_BAKE_STATE_METHOD)
+			if state is Dictionary:
+				count = int(state.get("asset_count", 0))
+		_set_bake_descriptor_status("Bake AD: %d asset(s)" % count)
+
+
+func _scene_asset_descriptor_bake_host() -> Node:
+	var root := get_editor_interface().get_edited_scene_root()
+	if root != null and root.has_method(ASSET_DESCRIPTOR_BAKE_METHOD):
+		return root
+	return null
+
+
+func _set_bake_descriptor_status(text: String) -> void:
+	if _bake_descriptor_status_label == null:
+		return
+	_bake_descriptor_status_label.text = text
+	_bake_descriptor_status_label.tooltip_text = text
+
+
+func _format_asset_descriptor_bake_result(result: Dictionary) -> String:
+	return "Bake AD: baked=%d failed=%d total=%d" % [
+		int(result.get("baked", 0)),
+		int(result.get("failed", 0)),
+		int(result.get("total", 0)),
+	]
 
 
 # ---- Volume score toolbar --------------------------------------------------
@@ -1379,7 +1484,7 @@ func _force_quit_duplicate(reason: String = "") -> void:
 # ---- Documentation file import cleanup (.svg / .md) ----
 
 const _JUNK_IMPORT_EXTENSIONS := [".svg.import", ".md.import", ".png.import"]
-const _JUNK_IMPORT_DIRS := ["res://demos", "res://docs", "res://_shots"]
+const _JUNK_IMPORT_DIRS := ["res://demos", "res://_shots"]
 
 func _cleanup_doc_import_files() -> void:
 	var removed := 0
@@ -1534,7 +1639,11 @@ func _lock_represents_live_editor(data: Dictionary) -> bool:
 	var age := Time.get_unix_time_from_system() - heartbeat
 	if heartbeat > 0.0 and age >= 0.0 and age < HEARTBEAT_STALE_SEC and token != _instance_token:
 		return true
-	if pid > 0 and _is_pid_alive(pid):
+	# Heartbeat is stale. The PID fallback exists for an editor whose main
+	# thread is blocked >15s (long import/GPU work), but the OS recycles dead
+	# PIDs onto unrelated processes — only a PID that is still a *Godot*
+	# process may keep the lock, else launches stay blocked forever.
+	if pid > 0 and _is_godot_pid_alive(pid):
 		return true
 	return false
 
@@ -1561,16 +1670,33 @@ func _format_existing_lock_reason(data: Dictionary) -> String:
 	return "PID %d, heartbeat %s, project %s" % [int(data.get("pid", 0)), age_text, project]
 
 
-func _is_pid_alive(pid: int) -> bool:
+func _is_godot_pid_alive(pid: int) -> bool:
+	return _process_image_name(pid).to_lower().begins_with("godot")
+
+
+## 返回 pid 对应进程的镜像名；进程不存在返回 ""。PID 必须整字段精确匹配，
+## 避免旧版 find(str(pid)) 把内存数值/其他字段里的数字串误判为存活。
+func _process_image_name(pid: int) -> String:
+	var output: Array = []
 	if OS.get_name() == "Windows":
-		var output: Array = []
 		OS.execute("tasklist", PackedStringArray(["/FI", "PID eq %d" % pid, "/FO", "CSV", "/NH"]), output)
 		if output.is_empty():
-			return false
-		var result := str(output[0])
-		return result.find(str(pid)) >= 0 and result.find("INFO:") < 0
-	var exit_code := OS.execute("kill", PackedStringArray(["-0", str(pid)]))
-	return exit_code == 0
+			return ""
+		for raw_line in str(output[0]).split("\n"):
+			var line := raw_line.strip_edges()
+			# 匹配行形如 "image.exe","1234",...；无匹配时 tasklist 输出 INFO: 提示行
+			if not line.begins_with("\""):
+				continue
+			var fields := line.split("\",\"")
+			if fields.size() < 2:
+				continue
+			if fields[1].strip_edges() == str(pid):
+				return fields[0].trim_prefix("\"")
+		return ""
+	OS.execute("ps", PackedStringArray(["-p", str(pid), "-o", "comm="]), output)
+	if output.is_empty():
+		return ""
+	return str(output[0]).strip_edges().get_file()
 
 
 # ---- Scene validation (terrain + TargetSV) ---------------------------------

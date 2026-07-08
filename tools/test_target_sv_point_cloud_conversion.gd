@@ -1,22 +1,18 @@
-extends SceneTree
+extends "res://scripts/utils/scene_tree_test.gd"
 
 const TargetSceneVoxelGeneratorScript := preload("res://scripts/target_scene_voxel_generator.gd")
 const TargetSVLoader := preload("res://scripts/target_sv_loader.gd")
+const InputSim := preload("res://scripts/utils/input_sim.gd")
 
 const SCENE_PATH := "res://demos/target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.tscn"
 
 
 func _init() -> void:
 	TargetSVLoader.reload()
-	var ok := true
-	ok = _test_scene_loads() and ok
-	ok = _test_fixture_buffers_decode() and ok
-	if ok:
-		print("[TargetSVPointCloudConversion] ALL TESTS PASSED")
-		quit(0)
-	else:
-		push_error("[TargetSVPointCloudConversion] SOME TESTS FAILED")
-		quit(1)
+	run_suite("TargetSVPointCloudConversion", [
+		_test_scene_loads,
+		_test_fixture_buffers_decode,
+	])
 
 
 func _test_scene_loads() -> bool:
@@ -84,10 +80,7 @@ func _test_scene_loads() -> bool:
 
 
 func _assert_box_view_hotkey(visualization: Node, keycode: Key, expected_mode: String) -> bool:
-	var event := InputEventKey.new()
-	event.keycode = keycode
-	event.pressed = true
-	event.shift_pressed = true
+	var event := InputSim.make_key(keycode, true)
 	visualization.call("_unhandled_input", event)
 	return _assert_box_view_mode(visualization, expected_mode)
 

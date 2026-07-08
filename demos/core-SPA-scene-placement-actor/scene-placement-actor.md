@@ -10,7 +10,7 @@ SPA 使 [`AssetDescriptor`](../asset-descriptor-demo/asset-descriptor.md) 的 pr
 register assets → prefilter（SV→candidates）→ placement（candidates→instances）→ commit
 ```
 
-跨模块总览见 [`meshfill-framework.md`](../core-meshfill-framework/meshfill-framework.md)；`AssetDescriptor` 定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)；GPU runtime/profile 契约见 [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)；资产 probe schema 见 [`asset-semantic-probes.md`](../asset-descriptor-demo/asset-semantic-probes.md)；SV commit / resident state 见 [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)。
+跨模块总览见 [`meshfill-framework.md`](../core-meshfill-framework/meshfill-framework.md)；`AssetDescriptor` 定义见 [`asset-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)；GPU runtime/profile 契约见 [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)；资产 probe schema 见 [`asset-semantic-probes.md`](../asset-descriptor-demo/asset-semantic-probes.md)；SV commit / resident state 见 [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)。
 
 ## 本文范围
 
@@ -38,7 +38,7 @@ register assets → prefilter（SV→candidates）→ placement（candidates→i
 | --- | --- |
 | `SPA` | `ScenePlacementActor`，MeshFill 运行时数据的一站式容器。后续文档统一使用此简称。 |
 | `asset registry` | SPA 内部的并行数组：`_registered_descriptors`、`_registered_profile_ids`、`_registered_mesh`、`_registered_autoobject_refs`。`asset_id` 即数组索引。 |
-| `profile_container` | `AutoVoxelRuntimeProfileContainer`，SPA 拥有其完整生命周期，持有 `profile_table`、`probe_records`、`collision_records`、`pivot_records` GPU storage buffers。 |
+| `profile_container` | `AutoVoxelRuntimeProfileContainer`，SPA 拥有其完整生命周期，持有 `profile_table`、`probe_records`、`pivot_records` GPU storage buffers。 |
 | `borrowed probe buffer` | prefilter 借用的 `profile_container.probe_records` GPU buffer，零拷贝；仅 `probe_range_buf` 为每帧 transient。 |
 | `lightweight wrapper` | 场景中不存在 `AutoObject` 引用时，按 descriptor 创建的临时 `AutoObject` 节点，仅暴露 `get_semantic_probes()` 和 `get_collision()`。 |
 
@@ -46,8 +46,8 @@ register assets → prefilter（SV→candidates）→ placement（candidates→i
 
 | 数据 | 权威来源 / 持有者 | SPA 的角色 | 说明 |
 | --- | --- | --- | --- |
-| 资产默认语义 | `AssetDescriptor` / `AutoVoxelProfile` | asset registry 保存 descriptor 引用 | descriptor 是资产语义主来源；字段定义见 [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)。SPA 不复制资产数据。 |
-| Runtime profile GPU buffers | `AutoVoxelRuntimeProfileContainer`（SPA 拥有） | 创建、管理、暴露、释放 | `profile_table`、`probe_records`、`collision_records`、`pivot_records` 全部 GPU resident；`register_asset()` 即时上传。 |
+| 资产默认语义 | `AssetDescriptor` / `AutoVoxelProfile` | asset registry 保存 descriptor 引用 | descriptor 是资产语义主来源；字段定义见 [`asset-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)。SPA 不复制资产数据。 |
+| Runtime profile GPU buffers | `AutoVoxelRuntimeProfileContainer`（SPA 拥有） | 创建、管理、暴露、释放 | `profile_table`、`probe_records`、`pivot_records` 全部 GPU resident；`register_asset()` 即时上传。 |
 | SPA 状态 | `ScenePlacementActor` | 拥有 `_initialized`、`_last_pipeline_result`、wrapper 缓存 | 暴露 `is_gpu_ready()` / `get_gpu_readiness_report()` 查询当前就绪状态。 |
 | BrushSV persistence | `ScenePlacementActor` | 保存 brush delta / override 的持久化和序列化入口 | `BrushSV` 内容常驻于 SPA 生命周期；debug 通过稳定 buffer / readback 观察，CPU 只保留控制面元数据。 |
 | Pipeline workers | `ScenePlacementActor`（懒创建） | 创建并注入共享 `RenderingDevice` | `_prefilter` / `_placer` 不独立获取设备。 |
@@ -85,7 +85,7 @@ SPA 的完整生命周期定义 MeshFill 运行时从初始化到释放的所有
   │     placer.run_multi_asset(complexity_field, collision_field, asset_defs, ...)
   │     可选: GPUAutoObjectRuntime writeback
   └── Phase 2: Commit        (accepted to SceneVoxel)
-        _commit_accepted_placements() → sv_committer.apply_voxel_write_spec()
+        _commit_accepted_placements() → 识别 gpu_state_chain_stamp（stamp 已原位提交）→ sv_committer.commit_scene_voxels()
         └── 通过 get_last_pipeline_result() 查询结果
 
 4. dispose()
@@ -102,12 +102,12 @@ SPA 的完整生命周期定义 MeshFill 运行时从初始化到释放的所有
 | 访问方 | 通过 SPA 读取的内容 | SPA 接口 |
 | --- | --- | --- |
 | Prefilter | 借用的 probe_records GPU buffer | `get_probe_records_buffer()` → 传给 prefilter 的 `run_probe_prefilter()` |
-| Placer (VPG) | profile_table, collision_records, pivot_records | SPA 在 `placement_settings` 中注入 `_runtime_profile_container` |
+| Placer (VPG) | profile_table, pivot_records | SPA 在 `placement_settings` 中注入 `_runtime_profile_container` |
 | Placer (VPG) | GPU 运行时对象状态 | SPA 在 `placement_settings` 中注入 `_gpu_runtime` |
 | Any module | GPU 就绪状态 | `is_gpu_ready()` / `get_gpu_readiness_report()` |
 | Any module | 资产注册表 | `get_registered_descriptors()` / `get_profile_id_for_asset()` |
 | Any module | 上一帧流水线结果 | `get_last_pipeline_result()` |
-| SV Committer | 被接受的 placement | SPA 调用 `sv_committer.apply_voxel_write_spec()` |
+| SV Committer | 被接受的 placement | VPG state-chain stamp 原位提交；SPA 调用 `sv_committer.commit_scene_voxels()` 定稿（tick + tile 摘要） |
 
 ## GPU Buffer 就绪契约
 
@@ -119,7 +119,6 @@ SPA 的「随时可读」合约通过以下接口暴露，其它模块不应绕�
 | `get_gpu_readiness_report()` | `Dictionary` | `{ok, reason, asset_count, profile_ids, ...}` + `get_gpu_buffer_summary()` 的完整展开 |
 | `get_probe_records_buffer()` | `RID` | 即 `profile_container.get_probe_buffer()`，就绪时返回有效 RID |
 | `get_profile_table_buffer()` | `RID` | 即 `profile_container.get_profile_table_buffer()` |
-| `get_collision_records_buffer()` | `RID` | 即 `profile_container.get_collision_buffer()` |
 | `get_pivot_records_buffer()` | `RID` | 即 `profile_container.get_pivot_buffer()` |
 | `get_merged_gpu_buffer_summary()` | `Dictionary` | 合并 profile container + gpu_runtime + sv_committer 就绪报告 |
 
@@ -181,7 +180,7 @@ _build_placement_asset_defs(candidate_regions)
     "ok": true / false,
     "prefilter_result": {...},          # anchors, candidate regions, profile_probe_pack
     "placement_result": {...},          # accepted placements, writeback
-    "commit_result": {...},             # committed count, committed_ids (if sv_committer attached)
+    "commit_result": {...},             # committed count, commit_mode=gpu_state_chain_stamp_commit (if sv_committer attached)
     "profile_probe_pack": {...},        # borrowed/blocked probe source summary
     "candidate_regions": {...},         # per-asset voxel regions
     "asset_count": int,                 # 注册的资产数量
@@ -200,7 +199,7 @@ _build_placement_asset_defs(candidate_regions)
 | `AutoVoxelRuntimeProfileContainer` | SPA 拥有并管理 | SPA → container: `register_descriptor()`, `upload_profiles()`；container → prefilter/placer: borrowed GPU buffers |
 | `AutoObjectProbePrefilterGPU` | SPA 懒创建、注入 RD | SPA → prefilter: SV fields + autoobjects + profile_container；prefilter → SPA: candidate regions |
 | `VoxelPlacementGenerator` | SPA 懒创建、注入 RD | SPA → placer: scene/collision fields + asset_defs + profile_container；placer → SPA: accepted placements |
-| `SceneVoxelCommitter` | SPA 借用引用 | SPA → committer: `apply_voxel_write_spec()` (accepted placements) |
+| `SceneVoxelCommitter` | SPA 借用引用 | SPA → committer: `commit_scene_voxels()`（stamp-only 提交定稿；CPU 入口盖章走 `apply_voxel_write_spec()`） |
 | `GPUAutoObjectRuntime` | SPA 默认拥有；legacy/test 可外部注入 | SPA → runtime: placement settings 注入 `gpu_autoobject_runtime` |
 | `SceneVoxel` / SV resident | SPA 不直接持有 | SV fields 由调用方传入 `run_placement_pipeline()`，SPA 不管理 |
 | `TargetSV_B` | SPA 不持有 | 每帧由调用方传入，SPA 只透传 |
@@ -266,7 +265,7 @@ spa.dispose()
 ## 相关文档
 
 - [`meshfill-framework.md`](../core-meshfill-framework/meshfill-framework.md)：总框架 ownership、routing、placement、commit 和 feedback 流程。
-- [`auto-voxel-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)：`AssetDescriptor` 统一定义和 authoring 边界。
+- [`asset-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)：`AssetDescriptor` 统一定义和 authoring 边界。
 - [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)：`GPUAutoObjectRuntime`、profile container 和 VPG runtime/profile contract。
 - [`asset-semantic-probes.md`](../asset-descriptor-demo/asset-semantic-probes.md)：descriptor-backed semantic probes 与 borrowed probe buffer。
 - [`scene-voxel-field-system.md`](../core-scene-voxel-field-system/scene-voxel-field-system.md)：`SceneVoxelCommitter`、source write、commit 和 SV resident state。
@@ -292,7 +291,6 @@ spa.dispose()
 <godot> --path . --rendering-driver vulkan --script tools/test_auto_voxel_runtime_profile_container.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_core_demo_contracts.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_autoobject_probe_prefilter.gd
-<godot> --path . --rendering-driver vulkan --script tools/test_gpu_autoobject_runtime_bridge.gd
 <godot> --path . --rendering-driver vulkan --script tools/test_markdown_contracts.gd
 ```
 
@@ -308,6 +306,6 @@ spa.dispose()
 
 ## 测试场景
 
-| 场景 | Godot 场景 |
-| --- | --- |
-| SPA 统一交互 Demo | [`core-scene-placement-actor.tscn`](core-scene-placement-actor.tscn) |
+| 场景 | 说明 | Godot 场景 |
+| --- | --- | --- |
+| [SPA + GPU Runtime 统一测试](../../demos/core-SPA-scene-placement-actor/core-scene-placement-actor.md) | 测试方法与验收标准 | [`core-scene-placement-actor.tscn`](../../demos/core-SPA-scene-placement-actor/core-scene-placement-actor.tscn) |

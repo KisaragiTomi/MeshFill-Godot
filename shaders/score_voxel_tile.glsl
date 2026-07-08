@@ -3,11 +3,15 @@
 
 // Scores candidate object origins inside 8x8x8 voxel tiles.
 // One workgroup owns one origin tile; each invocation evaluates one candidate.
+// Support is NOT scored here: the anchor/candidate stage guarantees ground contact,
+// so the score is penalty-only (collision/complexity/clearance overlap). The
+// support_ratio/support_hit/support_total record slots are retained for layout
+// stability but are always 0.
 // Output is TileTopKBuffer, encoded as 4 vec4 records per candidate:
 //   0: vec4(voxel_origin.xyz, score)
 //   1: vec4(tile_id, asset_index, rotation_index, scale_index)
-//   2: vec4(support_ratio, solid_collision, complexity_overlap, clearance_overlap)
-//   3: vec4(ignored_sample, valid, support_hit, support_total)
+//   2: vec4(support_ratio[=0], solid_collision, complexity_overlap, clearance_overlap)
+//   3: vec4(ignored_sample, valid, support_hit[=0], support_total[=0])
 //
 // DebugVoxelOutput: NUM_DEBUG_CHANNELS floats per voxel for visualization.
 // Channel layout:
@@ -146,6 +150,7 @@ layout(push_constant, std430) uniform Params {
     vec4 thresholds;               // solid_threshold, collision_limit, min_support_ratio, clearance_limit
     vec4 score_weights;            // support_weight, collision_penalty, overlap_penalty, clearance_penalty
     ivec4 dispatch_search;         // candidate_voxel_sparse_count, search radius xyz
+    ivec4 footprint_pivot_pad;     // xyz = footprint pivot voxels (subtracted before yaw), w = pad
 };
 
 const uint FLAG_SUPPORT = 1u;
@@ -153,6 +158,11 @@ const uint FLAG_CLEARANCE = 2u;
 const uint TILE_SIZE = 8u;
 const uint LOCAL_COUNT = 512u;
 const uint FOOTPRINT_CAPACITY = 128u;
+
+// Sentinel score for "no valid candidate". Kept far below any real penalty-only
+// score (now that the support positive term is retired, valid scores are <= 0) so a
+// valid-but-penalized candidate still beats an invalid one in the per-tile max-select.
+const float INVALID_SCORE = -1.0e18;
 const uint RECORD_STRIDE = 4u;
 const uint NUM_DEBUG_CHANNELS = 8u;
 const uint DEBUG_CH_TARGET_COVERAGE   = 0u;
@@ -593,9 +603,74 @@ VoxelSample sample_voxel(ivec3 p) {
     return s;
 }
 
-EvalResult evaluate_candidate(ivec3 candidate_origin) {
+// --- Trilinear scene-field sampling at a FLOAT footprint position ----------
+struct FieldSample {
+    float complexity;
+    float collision;
+    float coverage; // sum of in-bounds corner weights, 0..1 (0 => fully out of bounds)
+};
+
+// Trilinear read of complexity (RGBA8 low-byte .a) and collision (R8, 4-per-word)
+// at a float voxel position. Out-of-bounds corners contribute value 0 AND weight 0,
+// so the blend is the average of only the in-bounds corners (not biased toward zero,
+// no voxel_index wrap on an out-of-range neighbor). Each corner unpacks its OWN word
+// (the 4 voxels in an R8 word are adjacent X cells, not a 2x2x2 block).
+FieldSample sample_field_trilinear(vec3 pf) {
+    ivec3 p0 = ivec3(floor(pf));
+    vec3 t = pf - vec3(p0);
+    FieldSample s;
+    s.complexity = 0.0;
+    s.collision = 0.0;
+    s.coverage = 0.0;
+    float wsum = 0.0;
+    float csum = 0.0;
+    float xsum = 0.0;
+    for (int c = 0; c < 8; c++) {
+        ivec3 off = ivec3(c & 1, (c >> 1) & 1, (c >> 2) & 1);
+        ivec3 pc = p0 + off;
+        float wx = off.x == 1 ? t.x : (1.0 - t.x);
+        float wy = off.y == 1 ? t.y : (1.0 - t.y);
+        float wz = off.z == 1 ? t.z : (1.0 - t.z);
+        float w = wx * wy * wz;
+        if (w <= 0.0) continue;
+        if (!in_grid_bounds(pc) || !in_sample_bounds(pc)) continue;
+        int i = voxel_index(pc);
+        csum += unpack_rgba8(complexity_field_rgba8[i]).a * w;
+        xsum += load_collision_r8(uint(i)) * w;
+        wsum += w;
+    }
+    if (wsum > 0.0) {
+        s.complexity = csum / wsum;
+        s.collision = xsum / wsum;
+        s.coverage = wsum;
+    }
+    return s;
+}
+
+// Float twin of rotate_footprint_offset_y: rigid yaw (NO round, NO scale) so the
+// footprint sample position stays a genuine float for trilinear sampling. Same
+// convention: rx = ca*x + sa*z ; rz = -sa*x + ca*z ; y unchanged.
+vec3 rotate_footprint_offset_y_f(ivec3 fp, float ca, float sa) {
+    float rx =  ca * float(fp.x) + sa * float(fp.z);
+    float rz = -sa * float(fp.x) + ca * float(fp.z);
+    return vec3(rx, float(fp.y), rz);
+}
+
+ivec3 rotate_footprint_offset_y(ivec3 fp, float ca, float sa) {
+    // Yaw rotation of a footprint offset around the pivot origin (x,z plane).
+    // Convention matches the CPU sample prebake and the stamp shader:
+    //   rx =  ca*x + sa*z ;  rz = -sa*x + ca*z
+    float rx =  ca * float(fp.x) + sa * float(fp.z);
+    float rz = -sa * float(fp.x) + ca * float(fp.z);
+    return ivec3(int(round(rx)), fp.y, int(round(rz)));
+}
+
+EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_count) {
+    float rot_angle = rot_count > 1 ? float(rot_slot) * 6.28318530718 / float(rot_count) : 0.0;
+    float rot_ca = cos(rot_angle);
+    float rot_sa = sin(rot_angle);
     EvalResult r;
-    r.score = -1.0;
+    r.score = INVALID_SCORE;
     r.support_ratio = 0.0;
     r.solid_collision = 0.0;
     r.complexity_overlap = 0.0;
@@ -643,38 +718,42 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
         float weight = max(wf.x, 0.0);
         uint flags = uint(max(wf.y, 0.0) + 0.5);
         float footprint_collision_strength = clamp(float(fp.w) / 255.0, 0.0, 1.0);
-        ivec3 p = candidate_origin + fp.xyz;
+        // Pivot subtracted before yaw (shift-then-rotate order): translate the footprint
+        // offset by -pivot first, then apply the yaw below.
+        ivec3 base_fp = fp.xyz - footprint_pivot_pad.xyz;
+        // Rigid transform (translate + yaw, NO scale) of the footprint offset to a
+        // FLOAT position; the scene field is TRILINEAR-sampled there. There are NO
+        // integer-offset neighbor reads anywhere below.
+        vec3 rotated_fp = rot_count > 1 ? rotate_footprint_offset_y_f(base_fp, rot_ca, rot_sa) : vec3(base_fp);
+        vec3 pf = vec3(candidate_origin) + rotated_fp;
+        ivec3 pn = ivec3(round(pf)); // nearest voxel for membership/validity predicates
 
-        VoxelSample voxel_sample = sample_voxel(p);
-        if (voxel_sample.ignored) {
+        // Support is no longer scored here. The anchor/candidate stage already guarantees
+        // the object rests on solid ground, so a per-voxel support re-test is redundant —
+        // no FLAG_SUPPORT probes are baked (see asset_descriptor.gd) and the old
+        // below-neighbor read is gone. support_ratio/hit/total stay 0.
+
+        // Object mass (and clearance probes): trilinear field read at the float position.
+        FieldSample fs = sample_field_trilinear(pf);
+        if (fs.coverage <= 0.0) {
             r.ignored_sample += weight;
             continue;
         }
 
         if (footprint_collision_strength >= thresholds.x) {
-            r.solid_collision += voxel_sample.collision * weight;
+            r.solid_collision += fs.collision * weight;
         } else {
-            r.complexity_overlap += voxel_sample.complexity * footprint_collision_strength * weight;
+            r.complexity_overlap += fs.complexity * footprint_collision_strength * weight;
         }
 
         if ((flags & FLAG_CLEARANCE) != 0u) {
-            r.clearance_overlap += max(voxel_sample.complexity, voxel_sample.collision) * weight;
+            r.clearance_overlap += max(fs.complexity, fs.collision) * weight;
         }
 
-        if ((flags & FLAG_SUPPORT) != 0u) {
-            VoxelSample below = sample_voxel(p + ivec3(0, -1, 0));
-            if (!below.ignored) {
-                r.support_total += weight;
-                // 支撑面检测：max(complexity, collision) == 0 表示下方无实体，无支撑
-                r.support_hit += step(0.01, max(below.complexity, below.collision)) * weight;
-            } else {
-                r.ignored_sample += weight;
-            }
-        }
-
-        if (has_target != 0 && in_grid_bounds(p) && in_sample_bounds(p)) {
-            int idx = voxel_index(p);
-            vec4 target = target_field[idx];
+        // Target coverage stays a discrete nearest membership (feeds a hard validity gate
+        // and the fit/color divisor); read the field VALUE at the same nearest voxel.
+        if (has_target != 0 && in_grid_bounds(pn) && in_sample_bounds(pn)) {
+            vec4 target = target_field[voxel_index(pn)];
             float target_complexity = target.a;
             r.target_total_weight += weight;
             r.target_density += target_complexity * weight;
@@ -686,15 +765,16 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
         }
     }
 
-    r.support_ratio = r.support_total > 0.0 ? r.support_hit / r.support_total : 0.0;
+    // Support retired: no support_ratio gate (anchors guarantee support), so thresholds.z
+    // (min_support_ratio) is now unused by the validity gate.
     r.valid = r.solid_collision <= thresholds.y
-        && r.support_ratio >= thresholds.z
         && r.clearance_overlap <= thresholds.w
         && (has_target == 0 || r.target_coverage > 0.0);
 
     if (r.valid) {
+        // Penalty-only score now that the support positive term is retired; score_weights.x
+        // (support_weight) is unused. The winner per tile is the least-penalty candidate.
         r.score =
-            r.support_ratio * score_weights.x
             - r.solid_collision * score_weights.y
             - r.complexity_overlap * score_weights.z
             - r.clearance_overlap * score_weights.w;
@@ -716,9 +796,22 @@ EvalResult evaluate_candidate(ivec3 candidate_origin) {
     return r;
 }
 
-EvalResult evaluate_best_near(ivec3 base_candidate, out ivec3 best_origin) {
+EvalResult evaluate_best_at(ivec3 origin, int rot_count, out int best_slot) {
+    best_slot = 0;
+    EvalResult best = evaluate_candidate(origin, 0, rot_count);
+    for (int s = 1; s < rot_count; s++) {
+        EvalResult r = evaluate_candidate(origin, s, rot_count);
+        if (r.score > best.score) {
+            best = r;
+            best_slot = s;
+        }
+    }
+    return best;
+}
+
+EvalResult evaluate_best_near(ivec3 base_candidate, int rot_count, out ivec3 best_origin, out int best_slot) {
     EvalResult best_result;
-    best_result.score = -1.0;
+    best_result.score = INVALID_SCORE;
     best_result.support_ratio = 0.0;
     best_result.solid_collision = 0.0;
     best_result.complexity_overlap = 0.0;
@@ -733,6 +826,7 @@ EvalResult evaluate_best_near(ivec3 base_candidate, out ivec3 best_origin) {
     best_result.target_density = 0.0;
     best_result.target_total_weight = 0.0;
     best_origin = base_candidate;
+    best_slot = 0;
 
     int radius_x = clamp(dispatch_search.y, 0, 4);
     int radius_y = clamp(dispatch_search.z, 0, 4);
@@ -741,10 +835,12 @@ EvalResult evaluate_best_near(ivec3 base_candidate, out ivec3 best_origin) {
         for (int dy = -radius_y; dy <= radius_y; dy++) {
             for (int dx = -radius_x; dx <= radius_x; dx++) {
                 ivec3 candidate = base_candidate + ivec3(dx, dy, dz);
-                EvalResult r = evaluate_candidate(candidate);
+                int candidate_slot;
+                EvalResult r = evaluate_best_at(candidate, rot_count, candidate_slot);
                 if (r.score > best_result.score) {
                     best_result = r;
                     best_origin = candidate;
+                    best_slot = candidate_slot;
                 }
             }
         }
@@ -753,10 +849,10 @@ EvalResult evaluate_best_near(ivec3 base_candidate, out ivec3 best_origin) {
     return best_result;
 }
 
-void write_record(uint slot, ivec3 origin, EvalResult r, uint tile_id) {
+void write_record(uint slot, ivec3 origin, EvalResult r, uint tile_id, int best_rotation_slot) {
     uint base = slot * RECORD_STRIDE;
     tile_topk[base + 0u] = vec4(vec3(origin), r.score);
-    tile_topk[base + 1u] = vec4(float(tile_id), float(ids_counts.y), float(ids_counts.z), float(ids_counts.w));
+    tile_topk[base + 1u] = vec4(float(tile_id), float(ids_counts.y), float(best_rotation_slot), float(ids_counts.w));
     tile_topk[base + 2u] = vec4(r.support_ratio, r.solid_collision, r.complexity_overlap, r.clearance_overlap);
     tile_topk[base + 3u] = vec4(r.ignored_sample, r.valid ? 1.0 : 0.0, r.support_hit, r.support_total);
 }
@@ -812,7 +908,7 @@ void main() {
         write_runtime_profile_contract_header(profile_complexity);
         touch_candidate_route_binding(group_index);
     }
-    s_scores[local_index] = -1.0;
+    s_scores[local_index] = INVALID_SCORE;
     s_candidate_origins[local_index] = ivec4(0);
     barrier();
 
@@ -822,14 +918,17 @@ void main() {
     int tile_y = int((tile_id / uint(tile_count_x)) % uint(tile_count_y));
     int tile_z = int(tile_id / uint(tile_count_x * tile_count_y));
 
+    int rot_count = max(ids_counts.z, 1);
     ivec3 tile_origin = ivec3(tile_x, tile_y, tile_z) * int(TILE_SIZE);
     ivec3 base_candidate = tile_origin + ivec3(gl_LocalInvocationID.xyz);
     ivec3 candidate_origin = base_candidate;
-    EvalResult local_result = evaluate_best_near(base_candidate, candidate_origin);
+    int local_best_slot;
+    EvalResult local_result = evaluate_best_near(base_candidate, rot_count, candidate_origin, local_best_slot);
     s_scores[local_index] = local_result.score;
-    s_candidate_origins[local_index] = ivec4(candidate_origin, 0);
+    s_candidate_origins[local_index] = ivec4(candidate_origin, local_best_slot);
 
-    write_debug_voxel(base_candidate, evaluate_candidate(base_candidate));
+    int debug_slot;
+    write_debug_voxel(base_candidate, evaluate_best_at(base_candidate, rot_count, debug_slot));
 
     barrier();
 
@@ -842,7 +941,7 @@ void main() {
     uint selected_count = min(top_k, 8u);
 
     for (uint rank = 0u; rank < selected_count; rank++) {
-        float best_score = -1.0;
+        float best_score = INVALID_SCORE;
         uint best_index = LOCAL_COUNT;
 
         for (uint i = 0u; i < LOCAL_COUNT; i++) {
@@ -866,9 +965,12 @@ void main() {
             }
         }
 
-        if (best_index >= LOCAL_COUNT || best_score < 0.0) {
+        // Invalid candidates carry INVALID_SCORE and never beat the best_score baseline,
+        // so best_index staying unset means "no valid candidate". A valid-but-negative
+        // (penalty-only) candidate is still a real winner and must NOT be rejected here.
+        if (best_index >= LOCAL_COUNT) {
             EvalResult empty_result;
-            empty_result.score = -1.0;
+            empty_result.score = INVALID_SCORE;
             empty_result.support_ratio = 0.0;
             empty_result.solid_collision = 0.0;
             empty_result.complexity_overlap = 0.0;
@@ -882,14 +984,15 @@ void main() {
             empty_result.target_color_dist = 0.0;
             empty_result.target_density = 0.0;
             empty_result.target_total_weight = 0.0;
-            write_record(base_slot + rank, ivec3(0), empty_result, tile_id);
+            write_record(base_slot + rank, ivec3(0), empty_result, tile_id, 0);
             selected[rank] = LOCAL_COUNT;
             continue;
         }
 
         selected[rank] = best_index;
         ivec3 best_origin = s_candidate_origins[best_index].xyz;
-        EvalResult best_result = evaluate_candidate(best_origin);
-        write_record(base_slot + rank, best_origin, best_result, tile_id);
+        int best_rotation_slot = s_candidate_origins[best_index].w;
+        EvalResult best_result = evaluate_candidate(best_origin, best_rotation_slot, rot_count);
+        write_record(base_slot + rank, best_origin, best_result, tile_id, best_rotation_slot);
     }
 }
