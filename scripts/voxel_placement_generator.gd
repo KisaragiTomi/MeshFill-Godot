@@ -160,6 +160,10 @@ var _pipeline_stamp: RID
 var _pipeline_pack_target_field: RID
 var _pipeline_candidate_route_sparse_adapter: RID
 var _pipeline_candidate_route_sparse_adapter_finalize: RID
+# While a run_multi_asset session is active, run_minimal keeps the device + compiled
+# shaders/pipelines resident and cleans up per call with gc_frame() (scratch only) instead
+# of _free_gpu(), so the 7 shaders + 7 pipelines are compiled once per sweep, not per pivot.
+var _placement_gpu_session_active := false
 
 
 ## 根据 settings 推断候选路由（candidate route）的 GPU 回读来源标签。
@@ -515,6 +519,29 @@ static func _apply_stamp_deltas_to_cpu_state(
 ## complexity/collision 场，并追踪全局配额 global_quota；最终可选择将已接受的放置结果写回
 ## GPU AutoObject 运行时和/或场景体素瓦片提交器（scene voxel tile committer）。
 func run_multi_asset(
+	complexity_field: PackedFloat32Array,
+	collision_field: PackedFloat32Array,
+	asset_defs: Array,
+	grid_size: Vector3i,
+	voxel_size: Vector3,
+	grid_origin: Vector3 = Vector3.ZERO,
+	common_settings: Dictionary = {}
+) -> Dictionary:
+	# Hold the compute device + compiled shaders/pipelines resident across the whole
+	# asset/pivot sweep: while the session is active run_minimal's per-call teardown is a
+	# scratch-only gc_frame(), so the 7 shaders + 7 pipelines compile once instead of per
+	# pivot per asset. Exactly one real teardown here, covering every exit path of the impl.
+	_placement_gpu_session_active = true
+	var session_result := _run_multi_asset_session(
+		complexity_field, collision_field, asset_defs, grid_size, voxel_size, grid_origin, common_settings)
+	_placement_gpu_session_active = false
+	_free_gpu()
+	return session_result
+
+
+## run_multi_asset 的实现体：在 _placement_gpu_session_active 会话内运行，逐资产逐 pivot 调
+## run_minimal（会话期间 run_minimal 末尾走 gc_frame 复用常驻 shader/pipeline，而非 _free_gpu）。
+func _run_multi_asset_session(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
 	asset_defs: Array,
@@ -1551,7 +1578,15 @@ func run_minimal(
 			"rendering_device": _rd,
 		}
 
-	_free_gpu()
+	# During a run_multi_asset session, keep the device + resident shaders/pipelines and
+	# release only per-dispatch scratch (SCOPE_FRAME/PASS buffers + uniform sets); the
+	# untracked handoff buffers above survive gc_frame just as they survive _free_gpu. The
+	# session's single real teardown happens in the run_multi_asset wrapper on every exit.
+	# Standalone run_minimal callers (no session) keep the original per-call full teardown.
+	if _placement_gpu_session_active:
+		gc_frame()
+	else:
+		_free_gpu()
 	return output
 
 
@@ -2091,6 +2126,11 @@ func _track_borrowed_gpu_buffers(buffers: Dictionary, label_prefix: String) -> v
 
 ## 加载各计算着色器（打分/规约/印制边界初始化/印制/目标场打包/候选路由稀疏适配器及其 finalize）并创建对应的计算管线。
 func _load_shaders() -> void:
+	# Shaders/pipelines are SCOPE_PERSISTENT, so gc_frame() (used for per-call cleanup during
+	# a run_multi_asset session) leaves them alive. Skip the 7 GLSL->SPIR-V recompiles when
+	# they are still resident from a prior call.
+	if _placement_pipeline_ready():
+		return
 	_shader_score = load_compute_shader("res://shaders/score_voxel_tile.glsl")
 	_shader_reduce = load_compute_shader("res://shaders/reduce_voxel_tiles.glsl")
 	_shader_init_stamp_bounds = load_compute_shader("res://shaders/init_stamp_bounds.glsl")
