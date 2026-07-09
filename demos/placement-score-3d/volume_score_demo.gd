@@ -19,6 +19,8 @@ const DemoUI := preload("res://scripts/utils/demo_ui.gd")
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
+const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generator.gd")
+const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 
 const VOXEL_DISPLAY_GPU_OBJECTS := SPAEditorContract.VOXEL_DISPLAY_GPU_OBJECTS
 const VOXEL_DISPLAY_ANCHOR := SPAEditorContract.VOXEL_DISPLAY_ANCHOR
@@ -54,6 +56,13 @@ var _selected_anchor_topk_index := 0
 var _scored := false
 var _elapsed_score_ms := 0.0
 var _total_anchors := 0
+
+# ---- Fine-selection (细筛选) GPU scoring state (Phase 2) --------------------
+var _env_ready := false
+var _env_channel_floats := PackedFloat32Array()   # voxel_count * 5: [collision, complexity, r, g, b]
+var _target_field_bytes := PackedFloat32Array()    # voxel_count * 4: [r, g, b, completeness]
+var _complexity_field := PackedFloat32Array()      # voxel_count(=completeness): bounds/coverage
+var _collision_field := PackedFloat32Array()       # voxel_count(=collision)
 
 # ---- Display Nodes ---------------------------------------------------------
 var _hud_label: Label
@@ -289,12 +298,145 @@ func _generate_anchors() -> void:
 	_total_anchors = _anchors.size()
 
 
-# ---- Scoring (待重建) ------------------------------------------------------
+# ---- 细筛选 (Fine-Selection) GPU scoring -----------------------------------
 
-## 精细语义打分待重建:改在 TargetSV 网格上用 GPU score_voxel_tile + footprint(3D 逐体素采样),
-## 见 scoring-dimensions-design.md(Phase 2)。当前无打分 → 无胜者,仅在真实地形上显示锚点。
+## 数据驱动维度打分(design Phase 2):在 TargetSV 网格上 per asset 跑一次全网格
+## score_voxel_tile(dims-mode),footprint 3D 逐体素采样环境场,读 debug_voxel 的 per-voxel
+## 分并取每锚点体素分。维度=collision/complexity/color(全 MATCH)。见 scoring-dimensions-design.md。
 func _run_scoring() -> void:
 	_clear_scores()
+	if not _ensure_target_env_ready():
+		return
+	if _assets.is_empty() or _anchors.is_empty():
+		return
+	var t0 := Time.get_ticks_msec()
+	var grid: Vector3i = _scene_fields.get("grid", Vector3i.ZERO)
+	var dims := _scoring_dimensions()
+	var vpg = VoxelPlacementGenerator.new()
+	for a in range(_assets.size()):
+		var d = _assets[a].get("descriptor")
+		var col: Color = _assets[a].get("color", Color.WHITE)
+		var fp: Array = AssetDescriptorScript.bake_footprint(d.get_collision(), false, 1)
+		if fp.is_empty():
+			fp = _footprint_from_shape(_assets[a].get("footprint_shape", Vector3i.ONE))
+		var profile := PackedFloat32Array([
+			_mean_collision_strength(d), clampf(d.get_complexity(), 0.0, 1.0), col.r, col.g, col.b])
+		var settings := {
+			"asset_index": a, "asset_color": col, "rotation_slots": rotation_slots, "top_k": 1,
+			"scoring_dimensions": dims, "asset_dimension_profile": profile,
+			"env_channel_field_floats": _env_channel_floats, "env_channel_count": 5,
+			"target_field_bytes": _target_field_bytes, "read_debug_voxel": true,
+		}
+		var out: Dictionary = vpg.run_minimal(_complexity_field, _collision_field, fp, grid, settings)
+		var dbg: PackedFloat32Array = out.get("debug_voxel", PackedFloat32Array())
+		var anchor_results: Array[Dictionary] = []
+		for ai in range(_anchors.size()):
+			var av := _anchor_voxel(ai)
+			var vidx := av.x + grid.x * (av.z + grid.z * av.y)   # shader voxel_index order
+			var score := -INF
+			var base := vidx * 8 + 4                              # DEBUG_CH_PLACEMENT_SCORE
+			if base >= 0 and base < dbg.size():
+				score = dbg[base]
+			anchor_results.append({
+				"score": score, "valid": score > -1.0e17, "rotation_slot": 0, "voxel": av})
+		_results.append({"ok": true, "asset_index": a, "anchor_results": anchor_results})
+	if vpg.has_method("dispose"):
+		vpg.dispose()
+	_elapsed_score_ms = float(Time.get_ticks_msec() - t0)
+	_winner_per_anchor = _compute_winners()
+	_scored = true
+	print("[VolumeScore] Fine-selection scored %d assets × %d anchors in %.0f ms" % [
+		_assets.size(), _total_anchors, _elapsed_score_ms])
+
+
+## 环境场(TargetSV)缓存:解码 TargetSV,按 voxel_index 打包 5 通道 env + 4 通道 target。
+## 网格与 TargetSV(256×16×256)一致则无需重建锚点。无 TargetSV → place nothing。
+func _ensure_target_env_ready() -> bool:
+	if _env_ready:
+		return true
+	if not _ensure_scene_fields_ready():
+		return false
+	var meta := TargetSVLoaderScript.metadata()
+	if meta.is_empty():
+		push_warning("[VolumeScore] 无 TargetSV(assets/target_sv/)—— 不打分")
+		return false
+	var tsv_grid := Vector3i(int(meta.get("texture_size", 256)), int(meta.get("slice_count", 16)), int(meta.get("texture_size", 256)))
+	var grid: Vector3i = _scene_fields.get("grid", Vector3i.ZERO)
+	if grid != tsv_grid:
+		push_warning("[VolumeScore] 场网格 %s != TargetSV 网格 %s;在 TargetSV 网格上重建锚点" % [grid, tsv_grid])
+		_scene_fields["grid"] = tsv_grid
+		grid = tsv_grid
+		_generate_anchors()
+	var decoded := TargetSVLoaderScript.decode()
+	if not bool(decoded.get("valid", false)):
+		push_warning("[VolumeScore] TargetSV 解码失败 —— 不打分")
+		return false
+	var voxel_count := grid.x * grid.y * grid.z
+	var t_coll: PackedFloat32Array = decoded.get("target_collision", PackedFloat32Array())
+	var t_comp: PackedFloat32Array = decoded.get("target_completely", PackedFloat32Array())
+	var t_color: PackedColorArray = decoded.get("target_color", PackedColorArray())
+	_env_channel_floats = PackedFloat32Array(); _env_channel_floats.resize(voxel_count * 5)
+	_target_field_bytes = PackedFloat32Array(); _target_field_bytes.resize(voxel_count * 4)
+	_complexity_field = PackedFloat32Array(); _complexity_field.resize(voxel_count)
+	_collision_field = PackedFloat32Array(); _collision_field.resize(voxel_count)
+	for i in range(voxel_count):
+		var coll := t_coll[i] if i < t_coll.size() else 0.0
+		var comp := t_comp[i] if i < t_comp.size() else 0.0
+		var c: Color = t_color[i] if i < t_color.size() else Color(0, 0, 0, 0)
+		var e := i * 5
+		_env_channel_floats[e + 0] = coll
+		_env_channel_floats[e + 1] = comp
+		_env_channel_floats[e + 2] = c.r
+		_env_channel_floats[e + 3] = c.g
+		_env_channel_floats[e + 4] = c.b
+		var f := i * 4
+		_target_field_bytes[f + 0] = c.r
+		_target_field_bytes[f + 1] = c.g
+		_target_field_bytes[f + 2] = c.b
+		# target.a gates dims-mode validity (target_coverage). Use presence = max(completeness,
+		# collision) so anchors over any TargetSV content are valid (completeness alone is sparse).
+		_target_field_bytes[f + 3] = maxf(comp, coll)
+		_complexity_field[i] = comp
+		_collision_field[i] = coll
+	_env_ready = true
+	return true
+
+
+## 维度表(全 MATCH,通道 0..4 对应 env 5 通道):collision/complexity/color r/g/b。
+## 颜色 3 通道各 ~0.34(合计 ~1.0,避免颜色相对 collision/complexity 三倍加权)。
+func _scoring_dimensions() -> Array:
+	return [
+		{"channel": 0, "mode": 0, "weight": 1.0, "min": 0.0, "max": 1.0},
+		{"channel": 1, "mode": 0, "weight": 1.0, "min": 0.0, "max": 1.0},
+		{"channel": 2, "mode": 0, "weight": 0.34, "min": 0.0, "max": 1.0},
+		{"channel": 3, "mode": 0, "weight": 0.34, "min": 0.0, "max": 1.0},
+		{"channel": 4, "mode": 0, "weight": 0.34, "min": 0.0, "max": 1.0},
+	]
+
+
+## 资产 collision 画像:descriptor collision 样本 strength 均值;无剖面回退 complexity。
+func _mean_collision_strength(d) -> float:
+	var samples: Array = d.get_collision() if d != null and d.has_method("get_collision") else []
+	if samples.is_empty():
+		return clampf(d.get_complexity(), 0.0, 1.0) if d != null else 0.0
+	var s := 0.0
+	for e in samples:
+		if e is Dictionary:
+			s += clampf(float((e as Dictionary).get("collision_strength", 0.0)), 0.0, 1.0)
+	return clampf(s / float(samples.size()), 0.0, 1.0)
+
+
+## 无 collision 剖面时用体素跨度建一个实心 footprint(每格 strength/weight 1)。
+func _footprint_from_shape(span: Vector3i) -> Array:
+	var sx := maxi(span.x, 1); var sy := maxi(span.y, 1); var sz := maxi(span.z, 1)
+	var fp: Array = []
+	for x in range(sx):
+		for y in range(sy):
+			for z in range(sz):
+				fp.append({
+					"local_pos": Vector3i(x - int(sx / 2), y, z - int(sz / 2)),
+					"collision_strength": 1.0, "flags": 0, "weight": 1.0})
+	return fp
 
 
 func _anchor_voxel(anchor_index: int) -> Vector3i:

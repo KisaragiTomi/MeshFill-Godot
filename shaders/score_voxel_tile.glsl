@@ -72,6 +72,15 @@ layout(set = 0, binding = 9, std430) restrict readonly buffer DimensionTable {
     DimRecord dims[];
 };
 
+// Config moved out of the push constant (Godot caps push constants at 128 bytes): penalty
+// weights + env_channel_count + the per-asset dimension profile (8 slots).
+layout(set = 0, binding = 10, std430) restrict readonly buffer ScoreConfig {
+    vec4 cfg_score_weights;    // support_weight, collision_penalty, overlap_penalty, clearance_penalty
+    ivec4 cfg_dim_meta;        // x = env_channel_count, yzw = reserved
+    vec4 cfg_asset_profile0;   // per-asset dimension profile values, dims 0..3
+    vec4 cfg_asset_profile1;   // per-asset dimension profile values, dims 4..7
+};
+
 layout(set = 1, binding = 0, std430) restrict readonly buffer RuntimeAlive {
     int runtime_alive[];
 };
@@ -162,13 +171,10 @@ layout(push_constant, std430) uniform Params {
     ivec4 sample_max_pad;          // sample max xyz exclusive, .w = has_target (0/1)
     ivec4 ids_counts;              // footprint_count, asset_index, rotation_index, scale_index
     vec4 thresholds;               // solid_threshold, collision_limit, min_support_ratio, clearance_limit
-    vec4 score_weights;            // support_weight, collision_penalty, overlap_penalty, clearance_penalty
     ivec4 dispatch_search;         // candidate_voxel_sparse_count, search radius xyz
     ivec4 footprint_pivot_pad;     // xyz = footprint pivot voxels (subtracted before yaw), w = dim_count (0 = penalty-only)
-    ivec4 dim_meta;                // x = env_channel_count, yzw = reserved
-    vec4 asset_profile0;           // per-asset dimension profile values, dims 0..3
-    vec4 asset_profile1;           // per-asset dimension profile values, dims 4..7
-};
+};  // 128 bytes exactly (8 x 16) = Godot push-constant limit. score_weights / env_channel_count /
+    // asset_profile moved to the ScoreConfig SSBO (binding 10).
 
 const uint FLAG_SUPPORT = 1u;
 const uint FLAG_CLEARANCE = 2u;
@@ -269,8 +275,8 @@ vec4 unpack_asset_color() {
 
 // Per-asset dimension profile value for dimension d, from the two push-constant vec4s (8 slots).
 float asset_profile_value(int d) {
-    if (d < 4) return asset_profile0[d];
-    if (d < 8) return asset_profile1[d - 4];
+    if (d < 4) return cfg_asset_profile0[d];
+    if (d < 8) return cfg_asset_profile1[d - 4];
     return 0.0;   // >8 dims would need a per-asset profile storage buffer (not built)
 }
 
@@ -730,7 +736,7 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
 
     int has_target = sample_max_pad.w;
     int dim_count = footprint_pivot_pad.w;          // 0 = legacy penalty-only
-    int env_channel_count = dim_meta.x;
+    int env_channel_count = cfg_dim_meta.x;
     if (has_target != 0) {
         if (!in_sample_bounds(candidate_origin)) {
             return r;
@@ -833,9 +839,9 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
             && (has_target == 0 || r.target_coverage > 0.0);
         if (r.valid) {
             r.score =
-                - r.solid_collision * score_weights.y
-                - r.complexity_overlap * score_weights.z
-                - r.clearance_overlap * score_weights.w;
+                - r.solid_collision * cfg_score_weights.y
+                - r.complexity_overlap * cfg_score_weights.z
+                - r.clearance_overlap * cfg_score_weights.w;
         }
     }
 

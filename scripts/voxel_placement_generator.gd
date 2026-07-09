@@ -162,31 +162,16 @@ const SCORE_PUSH := [
 	["collision_limit", "float"], # 84
 	["min_support_ratio", "float"], # 88
 	["clearance_limit", "float"], # 92
-	["support_weight", "float"],  # 96
-	["collision_penalty", "float"], # 100
-	["overlap_penalty", "float"], # 104
-	["clearance_penalty", "float"], # 108
-	["candidate_count_signed", "int"], # 112
-	["search_radius_x", "int"],   # 116
-	["search_radius_y", "int"],   # 120
-	["search_radius_z", "int"],   # 124
-	["footprint_pivot_x", "int"], # 128
-	["footprint_pivot_y", "int"], # 132
-	["footprint_pivot_z", "int"], # 136
-	["dim_count", "int"],         # 140
-	["env_channel_count", "int"], # 144
-	["_pad0", "int"],             # 148
-	["_pad1", "int"],             # 152
-	["_pad2", "int"],             # 156
-	["asset_profile_0", "float"], # 160
-	["asset_profile_1", "float"], # 164
-	["asset_profile_2", "float"], # 168
-	["asset_profile_3", "float"], # 172
-	["asset_profile_4", "float"], # 176
-	["asset_profile_5", "float"], # 180
-	["asset_profile_6", "float"], # 184
-	["asset_profile_7", "float"], # 188
-]
+	["candidate_count_signed", "int"], # 96
+	["search_radius_x", "int"],   # 100
+	["search_radius_y", "int"],   # 104
+	["search_radius_z", "int"],   # 108
+	["footprint_pivot_x", "int"], # 112
+	["footprint_pivot_y", "int"], # 116
+	["footprint_pivot_z", "int"], # 120
+	["dim_count", "int"],         # 124
+]  # 128 bytes exactly (Godot push-constant limit). score_weights / env_channel_count /
+# asset_profile moved to the ScoreConfig SSBO (set0 binding 10), packed by _pack_score_config().
 const CANDIDATE_ROUTE_ADAPTER_PUSH := [
 	["asset_index", "int"],       # 0
 	["range_count", "int"],       # 4
@@ -2356,6 +2341,26 @@ func _pack_dimension_table(dims: Array) -> PackedByteArray:
 	return bytes
 
 
+## ScoreConfig SSBO bytes (std430, 64 B) for set0 binding 10. Holds what used to ride the push
+## constant but no longer fits under Godot's 128-byte limit:
+##   cfg_score_weights   (vec4)  @0  : [support_weight, collision_penalty, overlap_penalty, clearance_penalty]
+##   cfg_dim_meta        (ivec4) @16 : [env_channel_count, 0, 0, 0]
+##   cfg_asset_profile0  (vec4)  @32 : asset dimension profile channels 0..3
+##   cfg_asset_profile1  (vec4)  @48 : asset dimension profile channels 4..7
+func _pack_score_config() -> PackedByteArray:
+	var bytes := PackedByteArray()
+	bytes.resize(64)
+	bytes.encode_float(0, support_weight)
+	bytes.encode_float(4, collision_penalty)
+	bytes.encode_float(8, overlap_penalty)
+	bytes.encode_float(12, clearance_penalty)
+	bytes.encode_s32(16, _env_channel_count)  # 20/24/28 stay 0
+	for pi in range(8):
+		var v := _asset_dimension_profile[pi] if pi < _asset_dimension_profile.size() else 0.0
+		bytes.encode_float(32 + pi * 4, v)
+	return bytes
+
+
 func _dispatch_score(
 	complexity_buffer: RID,
 	collision_buffer: RID,
@@ -2390,6 +2395,9 @@ func _dispatch_score(
 	var env_channel_buffer := storage_buffer_from_bytes(env_bytes, SCOPE_FRAME, "env_channel_field")
 	var dimension_table_buffer := storage_buffer_from_bytes(
 		_pack_dimension_table(_scoring_dimensions), SCOPE_FRAME, "scoring_dimension_table")
+	# ScoreConfig SSBO (binding 10): penalty weights + env_channel_count + per-asset profile,
+	# moved off the push constant so the push stays <= 128 bytes (Godot limit).
+	var score_config_buffer := storage_buffer_from_bytes(_pack_score_config(), SCOPE_FRAME, "score_config")
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, complexity_buffer),
 		make_storage_uniform(1, collision_buffer),
@@ -2401,6 +2409,7 @@ func _dispatch_score(
 		make_storage_uniform(7, debug_voxel_buffer),
 		make_storage_uniform(8, env_channel_buffer),
 		make_storage_uniform(9, dimension_table_buffer),
+		make_storage_uniform(10, score_config_buffer),
 	], _shader_score, 0)
 	var score_contract_params_buffer := storage_buffer_from_bytes(
 		_pack_score_contract_params(gpu_contract, settings),
@@ -2435,18 +2444,14 @@ func _dispatch_score(
 		collision_limit = collision_limit,
 		min_support_ratio = min_support_ratio,
 		clearance_limit = clearance_limit,
-		support_weight = support_weight,
-		collision_penalty = collision_penalty,
-		overlap_penalty = overlap_penalty,
-		clearance_penalty = clearance_penalty,
 		candidate_count_signed = -candidate_voxel_sparse_count if direct_all_tiles else candidate_voxel_sparse_count,
 		search_radius_x = search_radius.x, search_radius_y = search_radius.y, search_radius_z = search_radius.z,
 		footprint_pivot_x = footprint_pivot.x, footprint_pivot_y = footprint_pivot.y, footprint_pivot_z = footprint_pivot.z,
 		dim_count = _dim_count,              # footprint_pivot_pad.w = dim_count (0 = penalty-only)
-		env_channel_count = _env_channel_count, # dim_meta.x = env_channel_count (148/152/156 stay 0)
 	}
-	for pi in range(mini(_asset_dimension_profile.size(), 8)):
-		_score_values["asset_profile_%d" % pi] = _asset_dimension_profile[pi]   # asset_profile0/1 dims 0..7
+	# support_weight/collision/overlap/clearance penalties, env_channel_count and the 8-entry
+	# asset profile now live in the ScoreConfig SSBO (_pack_score_config, binding 10) — off the
+	# push constant to keep it at the 128-byte Godot limit.
 	var push := PushConstantLayout.new(SCORE_PUSH).pack(_score_values)
 
 	var cl := begin_compute_list()

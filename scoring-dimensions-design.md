@@ -118,7 +118,8 @@ tree 因 `collision_fit` 低、`color_fit` 不符而落败。
 
 1. **`AssetDescriptor`**:把 `color` / `complexity` / `collision` 推广成可拓展的「维度画像」(`dimension_name → value`)。
 2. **场**:TargetSV / 场景场 → **多通道特征场**(先 collision / complexity / color,预留通道)。
-3. **`score_voxel_tile.glsl`**:per-voxel 内层改为 **per-dimension 循环**;push constant 加 `dim_count / channel_count`;
+3. **`score_voxel_tile.glsl`**:per-voxel 内层改为 **per-dimension 循环**;push constant 加 `dim_count`
+   (`env_channel_count` / 资产画像 / 惩罚权重走 `ScoreConfig` SSBO,push 受 128B 上限所限);
    `score` = 加权和,`validity` = 约束与。
 4. **`VoxelPlacementGenerator`(VPG)**:构建 / 打包 **维度表 + 资产画像 + 多通道场**;
    **默认空维度表 → 对 SPA 等其他调用方向后兼容**。**打分逻辑集中在此 + shader。**
@@ -132,8 +133,11 @@ tree 因 `collision_fit` 低、`color_fit` 不符而落败。
   - `VoxelPlacementGenerator.score_dimensions(dimensions, asset_profiles, anchor_features)` —— 维度打分核心(CPU 参考实现)。
   - demo:`_scoring_dimensions`(声明)+ `_build_asset_profiles`(源自 `AssetDescriptor`)+ `_build_anchor_features`(源自 TargetSV 列聚合)+ 调用。
   - 效果:anchor 28 → 石头;分数分化,放置按语义分布(不再树通吃)。
-- **Phase 2(进行中,GPU)**:把同一份数据契约(维度表 / 画像 / 多通道场)端口进 `score_voxel_tile.glsl`(上面第 3 项),CPU 参考实现留作对拍基准。
-  - 已落:GPU scorer 的 support 分支 / 门 / 分项已移除(锚点已保证支撑),`score_voxel_tile.glsl` 现为 penalty-only(collision/complexity/clearance);`support_ratio/hit/total` 记录槽保留但恒 0。footprint 烘焙不再产生 `FLAG_SUPPORT` ground-probe。
+- **Phase 2(已落,GPU)**:同一份数据契约(维度表 / 画像 / 多通道场)已端口进 `score_voxel_tile.glsl`(上面第 3 项),数据驱动 per-dimension MATCH 打分在 GPU 上跑通并经编辑器验证。
+  - support 分支 / 门 / 分项已移除(锚点已保证支撑),`support_ratio/hit/total` 记录槽保留但恒 0;footprint 烘焙不再产生 `FLAG_SUPPORT` ground-probe。
+  - per-voxel 内层已改为 **per-dimension 循环**:`score = Σ_d weight_d·fit_d`(MATCH = `1-|env_ch - asset_profile|`)按 footprint 权重归一;`dim_count == 0` 走原 penalty-only 分支(逐字节等价,向后兼容)。
+  - **维度表 / 资产画像 / 多通道场**由 VPG 打包:维度表 = set0 binding 9(`_pack_dimension_table`),多通道场 = binding 8;资产画像 + 惩罚权重 + `env_channel_count` 移入 **`ScoreConfig` SSBO(set0 binding 10,`_pack_score_config`)**——因 push constant 受 Godot **128 字节**上限所限(超限会被静默拒绝→shader 收到全零 push),打分参数不能再全塞 push。push 现固定为 8×16 = 128B。
+  - 编辑器验证(placement-score-3d,256×16×256,3 资产 × 64 锚点):分数分化真实(如锚点 51 leaf 0.314 / cliff_02 0.230 / cliff_01 0.193;锚点 52/60 cliff_02 胜出),winner 随位置翻转,无 push/GPU 报错。
 
 ---
 
