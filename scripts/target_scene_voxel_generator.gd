@@ -41,6 +41,27 @@ const TARGET_R8_STRIDE_BYTES := 1
 const TARGET_LEGACY_RGBA32F_STRIDE_BYTES := 16
 const TARGET_LEGACY_R32F_STRIDE_BYTES := 4
 
+const TARGET_PACK_PUSH := [
+	["voxel_count", "int"],
+	["use_collision", "int"],
+	["completely_valid", "int"],
+	["write_packed", "int"],
+]
+const TARGET_GENERATE_PUSH := [
+	["max_height", "float"],
+	["capture_size", "float"],
+	["vertical_span", "float"],
+	["slope_start", "float"],
+	["slope_full", "float"],
+	["texture_size", "int"],
+	["slice_count", "int"],
+	["dirty_x", "int"],
+	["dirty_y", "int"],
+	["dirty_w", "int"],
+	["dirty_h", "int"],
+	["_pad0", "int"],
+]
+
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 
 var texture_size: int = 256      # TargetSV XZ 分辨率
@@ -600,12 +621,12 @@ func derive_target_packed_buffers(
 		make_storage_uniform(5, stats_out_buffer),
 	], _shader_pack, 0)
 
-	var push := PackedByteArray()
-	push.resize(TARGET_PACK_PUSH_BYTE_SIZE)
-	push.encode_s32(TARGET_PACK_PUSH_VOXEL_COUNT_OFFSET, voxel_count)
-	push.encode_s32(TARGET_PACK_PUSH_USE_COLLISION_OFFSET, 1 if use_collision_as_completely else 0)
-	push.encode_s32(TARGET_PACK_PUSH_COMPLETELY_VALID_OFFSET, 1 if completely_valid else 0)
-	push.encode_s32(TARGET_PACK_PUSH_WRITE_PACKED_OFFSET, 1 if readback_packed_buffers else 0)
+	var push := PushConstantLayout.new(TARGET_PACK_PUSH).pack({
+		voxel_count = voxel_count,
+		use_collision = 1 if use_collision_as_completely else 0,
+		completely_valid = 1 if completely_valid else 0,
+		write_packed = 1 if readback_packed_buffers else 0,
+	})
 
 	var groups := ceil_div(voxel_count, 64)
 	var cl := begin_compute_list()
@@ -767,20 +788,19 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 		make_image_uniform(0, preview_tex),
 	], _shader, 2)
 
-	var push := PackedByteArray()
-	push.resize(TARGET_GENERATE_PUSH_BYTE_SIZE)
-	push.encode_float(TARGET_GENERATE_PUSH_MAX_HEIGHT_OFFSET, max_height)
-	push.encode_float(TARGET_GENERATE_PUSH_CAPTURE_SIZE_OFFSET, capture_size)
-	push.encode_float(TARGET_GENERATE_PUSH_VERTICAL_SPAN_OFFSET, vertical_span)
-	push.encode_float(TARGET_GENERATE_PUSH_SLOPE_START_OFFSET, slope_start)
-	push.encode_float(TARGET_GENERATE_PUSH_SLOPE_FULL_OFFSET, slope_full)
-	push.encode_s32(TARGET_GENERATE_PUSH_TEXTURE_SIZE_OFFSET, texture_size)
-	push.encode_s32(TARGET_GENERATE_PUSH_SLICE_COUNT_OFFSET, slice_count)
-	push.encode_s32(TARGET_GENERATE_PUSH_DIRTY_X_OFFSET, dr.position.x)
-	push.encode_s32(TARGET_GENERATE_PUSH_DIRTY_Y_OFFSET, dr.position.y)
-	push.encode_s32(TARGET_GENERATE_PUSH_DIRTY_W_OFFSET, dr.size.x)
-	push.encode_s32(TARGET_GENERATE_PUSH_DIRTY_H_OFFSET, dr.size.y)
-	push.encode_s32(TARGET_GENERATE_PUSH_PAD0_OFFSET, 0)
+	var push := PushConstantLayout.new(TARGET_GENERATE_PUSH).pack({
+		max_height = max_height,
+		capture_size = capture_size,
+		vertical_span = vertical_span,
+		slope_start = slope_start,
+		slope_full = slope_full,
+		texture_size = texture_size,
+		slice_count = slice_count,
+		dirty_x = dr.position.x,
+		dirty_y = dr.position.y,
+		dirty_w = dr.size.x,
+		dirty_h = dr.size.y,
+	})
 
 	var groups_x := ceili(float(dr.size.x) / 8.0)
 	var groups_y := ceili(float(slice_count) / 4.0)

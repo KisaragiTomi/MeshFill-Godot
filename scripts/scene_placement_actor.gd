@@ -58,6 +58,21 @@ const SV_FIELD_RECORD_FLOAT_STRIDE := SvFieldScatter.RECORD_FLOAT_STRIDE
 const BLENDSV_FEEDBACK_QUANT_SCALE := 1000.0
 const BLENDSV_FEEDBACK_OCCUPIED_EPSILON := 0.001
 
+# std430 push-constant 布局（迁移自手写 push.encode_* 序列；字节布局逐字保持）。
+const BRUSH_SV_SCATTER_PUSH := [
+	["grid_x", "int"], ["grid_y", "int"], ["record_count", "int"], ["write_mode", "int"],
+]
+const COMPOSE_BLEND_SV_PUSH := [
+	["voxel_count", "int"], ["collision_word_count", "int"], ["_pad0", "int"], ["_pad1", "int"],
+]
+const BLENDSV_FEEDBACK_PUSH := [
+	["voxel_count", "int"], ["has_target_collision", "int"],
+	["occupied_epsilon", "float"], ["quant_scale", "float"],
+]
+const TARGET_READ_BUFFER_PREP_PUSH := [
+	["voxel_count", "int"], ["_pad0", "int"], ["_pad1", "int"], ["_pad2", "int"],
+]
+
 # ---------------------------------------------------------------------------
 # Fields
 # ---------------------------------------------------------------------------
@@ -908,12 +923,12 @@ func stamp_brush_sv_records(records: Array) -> Dictionary:
 		return {"ok": false, "reason": "brush_sv_scatter_uniform_set_failed", "record_count": record_count, "gpu_dispatched": false}
 
 	var grid := _sv_field_grid_size()
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, grid.x)
-	push.encode_s32(4, grid.y)
-	push.encode_s32(8, record_count)
-	push.encode_s32(12, 0)  # write_mode 0：brush 层 overwrite（后笔胜，允许降低/擦除）
+	var push := PushConstantLayout.new(BRUSH_SV_SCATTER_PUSH).pack({
+		grid_x = grid.x,
+		grid_y = grid.y,
+		record_count = record_count,
+		write_mode = 0,  # write_mode 0：brush 层 overwrite（后笔胜，允许降低/擦除）
+	})
 	if not _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(record_count, 64)):
 		gc_frame()
 		return {"ok": false, "reason": "brush_sv_scatter_dispatch_failed", "record_count": record_count, "gpu_dispatched": false}
@@ -1022,12 +1037,10 @@ func compose_blend_sv_fields(sv_complexity_rid: RID, sv_collision_rid: RID) -> D
 		gc_frame()
 		release_blend_sv_fields()
 		return {}
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, voxel_count)
-	push.encode_s32(4, collision_word_count)
-	push.encode_s32(8, 0)
-	push.encode_s32(12, 0)
+	var push := PushConstantLayout.new(COMPOSE_BLEND_SV_PUSH).pack({
+		voxel_count = voxel_count,
+		collision_word_count = collision_word_count,
+	})
 	var thread_count := maxi(voxel_count, collision_word_count)
 	if not _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(thread_count, 64)):
 		gc_frame()
@@ -1111,12 +1124,12 @@ func score_blendsv_feedback_against_target(
 		if blend_composed:
 			release_blend_sv_fields()
 		return {"ok": false, "reason": "feedback_uniform_set_failed"}
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, voxel_count)
-	push.encode_s32(4, 1 if has_target_collision else 0)
-	push.encode_float(8, BLENDSV_FEEDBACK_OCCUPIED_EPSILON)
-	push.encode_float(12, BLENDSV_FEEDBACK_QUANT_SCALE)
+	var push := PushConstantLayout.new(BLENDSV_FEEDBACK_PUSH).pack({
+		voxel_count = voxel_count,
+		has_target_collision = 1 if has_target_collision else 0,
+		occupied_epsilon = BLENDSV_FEEDBACK_OCCUPIED_EPSILON,
+		quant_scale = BLENDSV_FEEDBACK_QUANT_SCALE,
+	})
 	if not _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(voxel_count, 64)):
 		gc_frame()
 		if blend_composed:
@@ -2829,12 +2842,9 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 			),
 		}
 
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, voxel_count)
-	push.encode_s32(4, 0)
-	push.encode_s32(8, 0)
-	push.encode_s32(12, 0)
+	var push := PushConstantLayout.new(TARGET_READ_BUFFER_PREP_PUSH).pack({
+		voxel_count = voxel_count,
+	})
 
 	var groups := dispatch_groups_1d(voxel_count, 64)
 	var cl := begin_compute_list()

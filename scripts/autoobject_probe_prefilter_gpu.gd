@@ -46,6 +46,44 @@ const CANDIDATE_ROUTE_GPU_PACK_PASS := "pack_candidate_route_records_from_votes"
 const CANDIDATE_ROUTE_GPU_EXPAND_PASS := "expand_scene_voxel_tile_routes"
 const SCENE_VOXEL_TILE_SUMMARY_STRIDE_UINTS := 8  ## 32 bytes per summary / 4 bytes per uint
 
+# ---------------------------------------------------------------------------
+# Push-constant layout schemas (std430). Each field maps 1:1 to the original
+# manual push.encode_* sequence, in order; trailing unused/zero slots are _pad.
+# ---------------------------------------------------------------------------
+const COLLECT_PUSH := [
+	["grid_x", "int"], ["grid_y", "int"], ["grid_z", "int"], ["dirty_count", "int"],
+	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["anchor_capacity", "int"],
+	["max_complexity", "float"], ["max_collision", "float"], ["min_support", "float"], ["min_target_interest", "float"],
+	["collect_groups_x", "int"], ["collect_groups_y", "int"], ["_pad0", "int"], ["_pad1", "int"],
+]
+const ANCHOR_FINALIZE_PUSH := [
+	["anchor_grid_x", "uint"], ["asset_blocks", "uint"], ["anchor_capacity", "uint"], ["_pad0", "uint"],
+]
+const SCORE_PUSH := [
+	["grid_x", "int"], ["grid_y", "int"], ["grid_z", "int"], ["asset_count", "int"],
+	["inv_voxel_x", "float"], ["inv_voxel_y", "float"], ["inv_voxel_z", "float"], ["_pad0", "float"],
+	["_pad1", "uint"], ["anchor_grid_x", "uint"], ["min_prefilter_score", "float"], ["_pad2", "float"],
+]
+const TOPK_PUSH := [
+	["_pad0", "uint"], ["asset_count", "uint"], ["anchor_grid_x", "uint"], ["min_prefilter_score", "float"],
+]
+const REDUCE_PUSH := [
+	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["tile_count", "int"],
+	["_pad0", "uint"], ["asset_count", "uint"], ["topk", "uint"], ["_pad1", "uint"],
+]
+const ROUTE_EXPAND_PUSH := [
+	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["asset_count", "int"],
+	["tile_count", "uint"], ["record_capacity", "uint"], ["summary_stride_uints", "uint"], ["epsilon", "float"],
+	["_pad0", "uint"],
+]
+const ROUTE_PACK_PUSH := [
+	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["asset_count", "int"],
+	["tile_count", "uint"], ["record_capacity", "uint"], ["epsilon", "float"], ["_pad0", "uint"],
+]
+const FIELD_PAIR_PUSH := [
+	["voxel_count", "int"], ["_pad0", "int"], ["_pad1", "int"], ["_pad2", "int"],
+]
+
 var anchor_topk: int = 4                    # per-anchor asset top-K target
 var max_complexity_field: float = 0.15           # anchor allowed scene occupancy threshold
 var max_collision_field: float = 0.05       # anchor allowed collision threshold
@@ -295,24 +333,22 @@ func _dispatch_collect(
 		make_storage_uniform(4, anchor_count_buf),
 	], _shader_collect, 0)
 
-	var push := PackedByteArray()
-	push.resize(64)
-	push.encode_s32(0, grid_size.x)
-	push.encode_s32(4, grid_size.y)
-	push.encode_s32(8, grid_size.z)
-	push.encode_s32(12, dirty_count)
-	push.encode_s32(16, tile_grid.x)
-	push.encode_s32(20, tile_grid.y)
-	push.encode_s32(24, tile_grid.z)
-	push.encode_s32(28, ANCHOR_CAPACITY)
-	push.encode_float(32, max_complexity_field)
-	push.encode_float(36, max_collision_field)
-	push.encode_float(40, min_support)
-	push.encode_float(44, min_target_interest)
-	push.encode_s32(48, collect_groups.x)
-	push.encode_s32(52, collect_groups.y)
-	push.encode_s32(56, 0)
-	push.encode_s32(60, 0)
+	var push := PushConstantLayout.new(COLLECT_PUSH).pack({
+		grid_x = grid_size.x,
+		grid_y = grid_size.y,
+		grid_z = grid_size.z,
+		dirty_count = dirty_count,
+		tile_grid_x = tile_grid.x,
+		tile_grid_y = tile_grid.y,
+		tile_grid_z = tile_grid.z,
+		anchor_capacity = ANCHOR_CAPACITY,
+		max_complexity = max_complexity_field,
+		max_collision = max_collision_field,
+		min_support = min_support,
+		min_target_interest = min_target_interest,
+		collect_groups_x = collect_groups.x,
+		collect_groups_y = collect_groups.y,
+	})
 
 	var cl := begin_compute_list()
 	if cl < 0:
@@ -359,12 +395,11 @@ func _dispatch_score_topk_reduce(
 	if not finalize_set0.is_valid():
 		push_error("[AutoObjectProbePrefilterGPU] Anchor finalize uniform set create failed")
 		return false
-	var finalize_push := PackedByteArray()
-	finalize_push.resize(16)
-	finalize_push.encode_u32(0, anchor_grid_x)
-	finalize_push.encode_u32(4, asset_blocks)
-	finalize_push.encode_u32(8, ANCHOR_CAPACITY)
-	finalize_push.encode_u32(12, 0)
+	var finalize_push := PushConstantLayout.new(ANCHOR_FINALIZE_PUSH).pack({
+		anchor_grid_x = anchor_grid_x,
+		asset_blocks = asset_blocks,
+		anchor_capacity = ANCHOR_CAPACITY,
+	})
 	var fcl := begin_compute_list()
 	if fcl < 0:
 		push_error("[AutoObjectProbePrefilterGPU] Anchor finalize compute list begin failed")
@@ -398,38 +433,32 @@ func _dispatch_score_topk_reduce(
 
 	# anchor_count is read from anchor_count_buf inside the shaders; the former
 	# push-constant slots are left zeroed. anchor_grid_x stays fixed (ANCHOR_GRID_X).
-	var score_push := PackedByteArray()
-	score_push.resize(48)
-	score_push.encode_s32(0, grid_size.x)
-	score_push.encode_s32(4, grid_size.y)
-	score_push.encode_s32(8, grid_size.z)
-	score_push.encode_s32(12, safe_asset_count)
-	score_push.encode_float(16, 1.0 / maxf(voxel_size.x, 0.0001))
-	score_push.encode_float(20, 1.0 / maxf(voxel_size.y, 0.0001))
-	score_push.encode_float(24, 1.0 / maxf(voxel_size.z, 0.0001))
-	score_push.encode_float(28, 0.0)
-	score_push.encode_u32(32, 0)
-	score_push.encode_u32(36, anchor_grid_x)
-	score_push.encode_float(40, min_prefilter_score)
-	score_push.encode_float(44, 0.0)
+	var score_push := PushConstantLayout.new(SCORE_PUSH).pack({
+		grid_x = grid_size.x,
+		grid_y = grid_size.y,
+		grid_z = grid_size.z,
+		asset_count = safe_asset_count,
+		inv_voxel_x = 1.0 / maxf(voxel_size.x, 0.0001),
+		inv_voxel_y = 1.0 / maxf(voxel_size.y, 0.0001),
+		inv_voxel_z = 1.0 / maxf(voxel_size.z, 0.0001),
+		anchor_grid_x = anchor_grid_x,
+		min_prefilter_score = min_prefilter_score,
+	})
 
-	var topk_push := PackedByteArray()
-	topk_push.resize(16)
-	topk_push.encode_u32(0, 0)
-	topk_push.encode_u32(4, safe_asset_count)
-	topk_push.encode_u32(8, anchor_grid_x)
-	topk_push.encode_float(12, min_prefilter_score)
+	var topk_push := PushConstantLayout.new(TOPK_PUSH).pack({
+		asset_count = safe_asset_count,
+		anchor_grid_x = anchor_grid_x,
+		min_prefilter_score = min_prefilter_score,
+	})
 
-	var reduce_push := PackedByteArray()
-	reduce_push.resize(32)
-	reduce_push.encode_s32(0, tile_grid.x)
-	reduce_push.encode_s32(4, tile_grid.y)
-	reduce_push.encode_s32(8, tile_grid.z)
-	reduce_push.encode_s32(12, tile_count)
-	reduce_push.encode_u32(16, 0)
-	reduce_push.encode_u32(20, safe_asset_count)
-	reduce_push.encode_u32(24, TOPK)
-	reduce_push.encode_u32(28, 0)
+	var reduce_push := PushConstantLayout.new(REDUCE_PUSH).pack({
+		tile_grid_x = tile_grid.x,
+		tile_grid_y = tile_grid.y,
+		tile_grid_z = tile_grid.z,
+		tile_count = tile_count,
+		asset_count = safe_asset_count,
+		topk = TOPK,
+	})
 
 	var cl := begin_compute_list()
 	if cl < 0:
@@ -510,27 +539,27 @@ func _run_candidate_route_gpu_pack_pass(
 	var push := PackedByteArray()
 	if use_expand:
 		# Expand shader uses more push constants
-		push.resize(48)
-		push.encode_s32(0, tile_grid.x)
-		push.encode_s32(4, tile_grid.y)
-		push.encode_s32(8, tile_grid.z)
-		push.encode_s32(12, asset_count)
-		push.encode_u32(16, tile_count)
-		push.encode_u32(20, record_capacity)
-		push.encode_u32(24, SCENE_VOXEL_TILE_SUMMARY_STRIDE_UINTS)
-		push.encode_float(28, 0.0001)
-		push.encode_u32(32, 0)
+		push = PushConstantLayout.new(ROUTE_EXPAND_PUSH).pack({
+			tile_grid_x = tile_grid.x,
+			tile_grid_y = tile_grid.y,
+			tile_grid_z = tile_grid.z,
+			asset_count = asset_count,
+			tile_count = tile_count,
+			record_capacity = record_capacity,
+			summary_stride_uints = SCENE_VOXEL_TILE_SUMMARY_STRIDE_UINTS,
+			epsilon = 0.0001,
+		})
 	else:
 		# Pack shader uses exactly 32 bytes
-		push.resize(32)
-		push.encode_s32(0, tile_grid.x)
-		push.encode_s32(4, tile_grid.y)
-		push.encode_s32(8, tile_grid.z)
-		push.encode_s32(12, asset_count)
-		push.encode_u32(16, tile_count)
-		push.encode_u32(20, record_capacity)
-		push.encode_float(24, 0.0001)
-		push.encode_u32(28, 0)
+		push = PushConstantLayout.new(ROUTE_PACK_PUSH).pack({
+			tile_grid_x = tile_grid.x,
+			tile_grid_y = tile_grid.y,
+			tile_grid_z = tile_grid.z,
+			asset_count = asset_count,
+			tile_count = tile_count,
+			record_capacity = record_capacity,
+			epsilon = 0.0001,
+		})
 
 	var cl := begin_compute_list()
 	if cl < 0:
@@ -1277,9 +1306,9 @@ func _make_complexity_collision_buffer(sv: Dictionary, voxel_count: int) -> RID:
 				make_storage_uniform(2, merged_buf),
 			], shader, 0, SCOPE_PASS, "pack_prefilter_field_pair")
 			if merged_buf.is_valid() and set0.is_valid():
-				var push := PackedByteArray()
-				push.resize(16)
-				push.encode_s32(0, voxel_count)
+				var push := PushConstantLayout.new(FIELD_PAIR_PUSH).pack({
+					voxel_count = voxel_count,
+				})
 				if _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(voxel_count, 64)):
 					return merged_buf
 		push_error("[AutoObjectProbePrefilterGPU] resident field pair convert dispatch failed; falling back to CPU pack")

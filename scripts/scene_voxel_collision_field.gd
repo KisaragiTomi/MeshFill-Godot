@@ -56,6 +56,35 @@ const SCENE_VOXEL_TILE_FLAG_MASK := 512
 
 const CHANNEL_COUNT := VoxelGeneral.CHANNEL_COUNT
 
+## --- push-constant schemas (std430; migrated from manual encode sequences) ---
+const IMPORT_MASK_PUSH := [
+	["channel", "int"], ["complexity", "float"], ["threshold", "float"], ["base_res", "int"],
+]
+const STAMP_DISC_PUSH := [
+	["width", "int"], ["height", "int"], ["center_x", "int"], ["center_y", "int"],
+	["radius_px", "int"], ["channel", "int"], ["_pad0", "int"], ["_pad1", "int"],
+	["value", "float"], ["_pad2", "float"], ["_pad3", "float"], ["_pad4", "float"],
+]
+const STAMP_COLLECT_VOXEL_PUSH := [
+	["xz_res", "int"], ["depth", "int"], ["max_records", "int"], ["compare_mode", "int"],
+	["center_x", "int"], ["center_y", "int"], ["radius", "int"], ["disc_size", "int"],
+	["value", "float"], ["epsilon", "float"], ["slop", "float"], ["quant_scale", "float"],
+]
+const SAMPLE_R32_PIXEL_PUSH := [
+	["width", "int"], ["height", "int"], ["px_x", "int"], ["px_y", "int"],
+]
+const RESAMPLE_COLLISION_PUSH := [
+	["dst_x", "int"], ["dst_y", "int"], ["src_w", "int"], ["src_h", "int"],
+	["base_res", "int"], ["_pad0", "int"], ["_pad1", "int"], ["_pad2", "int"],
+]
+const MERGE_SV_COLLISION_PUSH := [
+	["xz_res", "int"], ["total_slices", "int"], ["voxel_count", "int"], ["record_count", "int"],
+]
+const TERRAIN_COLLISION_VOLUME_PUSH := [
+	["xz_res", "int"], ["total_slices", "int"], ["src_w", "int"], ["src_h", "int"],
+	["voxel_count", "int"], ["epsilon", "float"], ["_pad0", "float"], ["_pad1", "float"],
+]
+
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const SceneVoxelProfileScript := preload("res://scripts/scene_voxel_profile.gd")
 const SceneVoxelSourceRecordScript := preload("res://scripts/scene_voxel_source_record.gd")
@@ -161,17 +190,12 @@ func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
 
 	var set1 := create_uniform_set([make_image_uniform(0, tex_occ)], _shader_import, 1)
 
-	var push := PackedByteArray()
-
-	push.resize(16)
-
-	push.encode_s32(0, channel)
-
-	push.encode_float(4, complexity)
-
-	push.encode_float(8, 0.01)  # threshold
-
-	push.encode_s32(12, _committer._base_res)
+	var push := PushConstantLayout.new(IMPORT_MASK_PUSH).pack({
+		channel = channel,
+		complexity = complexity,
+		threshold = 0.01,
+		base_res = _committer._base_res,
+	})
 
 	var groups := ceil_div(_committer._base_res, 32)
 
@@ -274,22 +298,15 @@ func _stamp_scalar_image_disc_gpu(img: Image, center_px: Vector2i, radius_px: in
 
 		return null
 
-	var push := PackedByteArray()
-
-	push.resize(48)
-
-	push.encode_s32(0, width)
-	push.encode_s32(4, height)
-	push.encode_s32(8, clampi(center_px.x, 0, width - 1))
-	push.encode_s32(12, clampi(center_px.y, 0, height - 1))
-	push.encode_s32(16, maxi(radius_px, 0))
-	push.encode_s32(20, clampi(channel, 0, CHANNEL_COUNT - 1))
-	push.encode_s32(24, 0)
-	push.encode_s32(28, 0)
-	push.encode_float(32, clampf(value, 0.0, 1.0))
-	push.encode_float(36, 0.0)
-	push.encode_float(40, 0.0)
-	push.encode_float(44, 0.0)
+	var push := PushConstantLayout.new(STAMP_DISC_PUSH).pack({
+		width = width,
+		height = height,
+		center_x = clampi(center_px.x, 0, width - 1),
+		center_y = clampi(center_px.y, 0, height - 1),
+		radius_px = maxi(radius_px, 0),
+		channel = clampi(channel, 0, CHANNEL_COUNT - 1),
+		value = clampf(value, 0.0, 1.0),
+	})
 
 	var groups := dispatch_groups_2d(width, height, 16, 16)
 
@@ -370,20 +387,20 @@ func _stamp_collect_voxel_disc_gpu(
 		gc_frame()
 		return fallback
 
-	var push := PackedByteArray()
-	push.resize(48)
-	push.encode_s32(0, xz_res)
-	push.encode_s32(4, depth)
-	push.encode_s32(8, max_records)
-	push.encode_s32(12, clampi(compare_mode, 0, 2))
-	push.encode_s32(16, clampi(center_px.x, 0, xz_res - 1))
-	push.encode_s32(20, clampi(center_px.y, 0, xz_res - 1))
-	push.encode_s32(24, radius)
-	push.encode_s32(28, disc_size)
-	push.encode_float(32, clampf(value, 0.0, 1.0))
-	push.encode_float(36, VOXEL_OCCUPIED_EPSILON)
-	push.encode_float(40, 0.00001)
-	push.encode_float(44, SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE)
+	var push := PushConstantLayout.new(STAMP_COLLECT_VOXEL_PUSH).pack({
+		xz_res = xz_res,
+		depth = depth,
+		max_records = max_records,
+		compare_mode = clampi(compare_mode, 0, 2),
+		center_x = clampi(center_px.x, 0, xz_res - 1),
+		center_y = clampi(center_px.y, 0, xz_res - 1),
+		radius = radius,
+		disc_size = disc_size,
+		value = clampf(value, 0.0, 1.0),
+		epsilon = VOXEL_OCCUPIED_EPSILON,
+		slop = 0.00001,
+		quant_scale = SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE,
+	})
 
 	var groups := dispatch_groups_3d(disc_size, disc_size, depth, 8, 8, 1)
 	if not _gpu_dispatch_and_sync(_pipeline_stamp_collect_voxel_disc, [set0], push, groups):
@@ -454,12 +471,12 @@ func _sample_scalar_image_pixel_gpu(img: Image, px: Vector2i) -> Dictionary:
 		gc_frame()
 		return {}
 
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, width)
-	push.encode_s32(4, height)
-	push.encode_s32(8, px.x)
-	push.encode_s32(12, px.y)
+	var push := PushConstantLayout.new(SAMPLE_R32_PIXEL_PUSH).pack({
+		width = width,
+		height = height,
+		px_x = px.x,
+		px_y = px.y,
+	})
 
 	if not _gpu_dispatch_and_sync(_pipeline_sample_r32_pixel, [set0], push, Vector3i(1, 1, 1)):
 		gc_frame()
@@ -739,16 +756,13 @@ func _resample_collision_field_gpu(source_img: Image, xz_res: int) -> Image:
 		gc_frame()
 		return null
 
-	var push := PackedByteArray()
-	push.resize(32)
-	push.encode_s32(0, xz_res)
-	push.encode_s32(4, xz_res)
-	push.encode_s32(8, source_img.get_width())
-	push.encode_s32(12, source_img.get_height())
-	push.encode_s32(16, _committer._base_res)
-	push.encode_s32(20, 0)
-	push.encode_s32(24, 0)
-	push.encode_s32(28, 0)
+	var push := PushConstantLayout.new(RESAMPLE_COLLISION_PUSH).pack({
+		dst_x = xz_res,
+		dst_y = xz_res,
+		src_w = source_img.get_width(),
+		src_h = source_img.get_height(),
+		base_res = _committer._base_res,
+	})
 
 	var groups := dispatch_groups_2d(xz_res, xz_res, 32, 32)
 	if not _gpu_dispatch_and_sync(pipeline, [set0, set1], push, groups):
@@ -1048,12 +1062,12 @@ func _make_sv_collision_record_summary_gpu_buffer(
 		gc_frame()
 		return {}
 
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, xz_res)
-	push.encode_s32(4, total_slices)
-	push.encode_s32(8, voxel_count)
-	push.encode_s32(12, record_count)
+	var push := PushConstantLayout.new(MERGE_SV_COLLISION_PUSH).pack({
+		xz_res = xz_res,
+		total_slices = total_slices,
+		voxel_count = voxel_count,
+		record_count = record_count,
+	})
 
 	var groups := dispatch_groups_1d(record_count, 64)
 	if not _gpu_dispatch_and_sync(_pipeline_merge_sv_collision_records, [set0], push, groups):
@@ -1154,13 +1168,12 @@ func _merge_sv_collision_records_gpu(base_field: PackedFloat32Array, collision: 
 
 		return PackedFloat32Array()
 
-	var push := PackedByteArray()
-
-	push.resize(16)
-	push.encode_s32(0, xz_res)
-	push.encode_s32(4, total_slices)
-	push.encode_s32(8, voxel_count)
-	push.encode_s32(12, record_count)
+	var push := PushConstantLayout.new(MERGE_SV_COLLISION_PUSH).pack({
+		xz_res = xz_res,
+		total_slices = total_slices,
+		voxel_count = voxel_count,
+		record_count = record_count,
+	})
 
 	var groups := dispatch_groups_1d(record_count, 64)
 
@@ -1231,16 +1244,14 @@ func _make_terrain_base_collision_volume_field_gpu(terrain_base_img: Image, xz_r
 		gc_frame()
 		return PackedFloat32Array()
 
-	var push := PackedByteArray()
-	push.resize(32)
-	push.encode_s32(0, xz_res)
-	push.encode_s32(4, total_slices)
-	push.encode_s32(8, terrain_base_img.get_width())
-	push.encode_s32(12, terrain_base_img.get_height())
-	push.encode_s32(16, voxel_count)
-	push.encode_float(20, VOXEL_OCCUPIED_EPSILON)
-	push.encode_float(24, 0.0)
-	push.encode_float(28, 0.0)
+	var push := PushConstantLayout.new(TERRAIN_COLLISION_VOLUME_PUSH).pack({
+		xz_res = xz_res,
+		total_slices = total_slices,
+		src_w = terrain_base_img.get_width(),
+		src_h = terrain_base_img.get_height(),
+		voxel_count = voxel_count,
+		epsilon = VOXEL_OCCUPIED_EPSILON,
+	})
 
 	var groups := dispatch_groups_1d(voxel_count, 64)
 	if not _gpu_dispatch_and_sync(pipeline, [set0], push, groups):

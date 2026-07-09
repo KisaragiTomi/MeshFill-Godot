@@ -81,6 +81,36 @@ const GPU_BUFFER_NAMES := [
 	GPU_BUFFER_DIRTY_COUNT,
 ]
 
+# std430 push-constant schemas (see scripts/utils/push_constant_layout.gd).
+const RESIDENT_PLACEMENT_PUSH := [
+	["record_count", "int"],
+	["max_objects", "int"],
+	["dirty_delta_capacity", "int"],
+	["dirty_base", "int"],
+	["profile_id", "int"],
+	["object_type", "int"],
+	["object_flags", "int"],
+	["dirty_bits", "int"],
+	["asset_index", "int"],
+	["flush_epoch", "int"],
+	["stats_u32_count", "int"],
+	["_pad0", "int"],
+	["grid_x", "int"],
+	["grid_y", "int"],
+	["grid_z", "int"],
+	["_pad1", "int"],
+]
+const ACCEPTED_PLACEMENT_RECORD_PUSH := [
+	["record_count", "int"],
+	["runtime_capacity", "int"],
+	["dirty_delta_capacity", "int"],
+	["dirty_base", "int"],
+	["flush_epoch", "int"],
+	["options", "int"],
+	["stats_u32_count", "int"],
+	["_pad0", "int"],
+]
+
 var max_objects: int
 var dirty_delta_capacity: int
 
@@ -528,24 +558,22 @@ func _dispatch_accepted_placement_resident_shader(
 		"dirty_flag_bits",
 		_dirty_flags_to_bits(asset_params.get("dirty_flags", {}) if asset_params.get("dirty_flags", {}) is Dictionary else {})
 	))
-	var push := PackedByteArray()
-	push.resize(64)
-	push.encode_s32(0, record_count)
-	push.encode_s32(4, max_objects)
-	push.encode_s32(8, dirty_delta_capacity)
-	push.encode_s32(12, dirty_base)
-	push.encode_s32(16, int(asset_params.get("profile_id", -1)))
-	push.encode_s32(20, int(asset_params.get("object_type", 0)))
-	push.encode_s32(24, _object_flags_from_value(asset_params.get("object_flags", 0)))
-	push.encode_s32(28, dirty_bits)
-	push.encode_s32(32, int(asset_params.get("asset_index", -1)))
-	push.encode_s32(36, _flush_epoch)
-	push.encode_s32(40, ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT)
-	push.encode_s32(44, 0)
-	push.encode_s32(48, grid_size.x)
-	push.encode_s32(52, grid_size.y)
-	push.encode_s32(56, grid_size.z)
-	push.encode_s32(60, 0)
+	var push := PushConstantLayout.new(RESIDENT_PLACEMENT_PUSH).pack({
+		record_count = record_count,
+		max_objects = max_objects,
+		dirty_delta_capacity = dirty_delta_capacity,
+		dirty_base = dirty_base,
+		profile_id = int(asset_params.get("profile_id", -1)),
+		object_type = int(asset_params.get("object_type", 0)),
+		object_flags = _object_flags_from_value(asset_params.get("object_flags", 0)),
+		dirty_bits = dirty_bits,
+		asset_index = int(asset_params.get("asset_index", -1)),
+		flush_epoch = _flush_epoch,
+		stats_u32_count = ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT,
+		grid_x = grid_size.x,
+		grid_y = grid_size.y,
+		grid_z = grid_size.z,
+	})
 
 	var group_count := ceil_div(record_count, ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X)
 	var cl := begin_compute_list()
@@ -1599,17 +1627,15 @@ func _pack_accepted_placement_record_shader_push(
 	flush_epoch: int,
 	options: int
 ) -> PackedByteArray:
-	var bytes := PackedByteArray()
-	bytes.resize(32)
-	bytes.encode_s32(0, record_count)
-	bytes.encode_s32(4, runtime_capacity)
-	bytes.encode_s32(8, p_dirty_delta_capacity)
-	bytes.encode_s32(12, dirty_base)
-	bytes.encode_s32(16, flush_epoch)
-	bytes.encode_s32(20, options)
-	bytes.encode_s32(24, ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT)
-	bytes.encode_s32(28, 0)
-	return bytes
+	return PushConstantLayout.new(ACCEPTED_PLACEMENT_RECORD_PUSH).pack({
+		record_count = record_count,
+		runtime_capacity = runtime_capacity,
+		dirty_delta_capacity = p_dirty_delta_capacity,
+		dirty_base = dirty_base,
+		flush_epoch = flush_epoch,
+		options = options,
+		stats_u32_count = ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT,
+	})
 
 
 

@@ -61,6 +61,31 @@ const SCENE_VOXEL_TILE_FLAG_FEEDBACK := 128
 const SCENE_VOXEL_TILE_FLAG_OBJECT_REFS := 256
 const SCENE_VOXEL_TILE_FLAG_MASK := 512
 
+# --- push-constant schemas (std430; all-scalar blocks pack to sequential 4-byte offsets) ---
+# object-ref update push (80 bytes; offsets 56 & 64 were literal 0 -> _pad)
+const OBJECT_REF_UPDATE_PUSH := [
+	["grid_x", "int"], ["grid_y", "int"], ["grid_z", "int"], ["dirty_delta_count", "int"],
+	["tile_size_x", "int"], ["tile_size_y", "int"], ["tile_size_z", "int"], ["refs_per_tile", "int"],
+	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["total_tile_count", "int"],
+	["dirty_delta_capacity", "int"], ["object_ref_capacity", "int"], ["_pad0", "int"], ["stats_capacity", "int"],
+	["_pad1", "int"], ["dirty_tile_flag_capacity", "int"], ["dirty_tile_worklist_capacity", "int"], ["dirty_flag_schema", "int"],
+]
+# init summaries push (16 bytes; offset 12 was literal 0 -> _pad)
+const REDUCE_INIT_PUSH := [
+	["tile_count", "int"], ["summary_uint_stride", "int"], ["init_value", "int"], ["_pad0", "int"],
+]
+# reduce summaries push (64 bytes; offset 44 int-0 and offsets 56/60 float-0 -> _pad)
+const REDUCE_PUSH := [
+	["xz_res", "int"], ["total_slices", "int"], ["voxel_count", "int"], ["tile_count", "int"],
+	["tile_size_x", "int"], ["tile_size_y", "int"], ["tile_size_z", "int"], ["summary_uint_stride", "int"],
+	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["_pad0", "int"],
+	["occupied_epsilon", "float"], ["quant_scale", "float"], ["_pad1", "float"], ["_pad2", "float"],
+]
+# compact summaries push (16 bytes; offset 12 was literal 0 -> _pad)
+const REDUCE_COMPACT_PUSH := [
+	["tile_count", "int"], ["summary_uint_stride", "int"], ["compact_summary_uint_stride", "int"], ["_pad0", "int"],
+]
+
 const CHANNEL_COUNT := VoxelGeneral.CHANNEL_COUNT
 
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
@@ -1189,28 +1214,26 @@ func _pack_scene_voxel_tile_object_ref_update_push(
 ) -> PackedByteArray:
 	var tile_size := _scene_voxel_tile_size()
 	var tile_grid := _scene_voxel_tile_grid_size(tile_size)
-	var push := PackedByteArray()
-	push.resize(80)
-	push.encode_s32(0, _committer.grid_size.x)
-	push.encode_s32(4, _committer.grid_size.y)
-	push.encode_s32(8, _committer.grid_size.z)
-	push.encode_s32(12, dirty_delta_count)
-	push.encode_s32(16, tile_size.x)
-	push.encode_s32(20, tile_size.y)
-	push.encode_s32(24, tile_size.z)
-	push.encode_s32(28, SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT)
-	push.encode_s32(32, tile_grid.x)
-	push.encode_s32(36, tile_grid.y)
-	push.encode_s32(40, tile_grid.z)
-	push.encode_s32(44, _scene_voxel_tile_total_tile_count(tile_grid))
-	push.encode_s32(48, dirty_delta_capacity)
-	push.encode_s32(52, object_ref_capacity)
-	push.encode_s32(56, 0)
-	push.encode_s32(60, stats_capacity)
-	push.encode_s32(64, 0)
-	push.encode_s32(68, dirty_tile_flag_capacity)
-	push.encode_s32(72, dirty_tile_worklist_capacity)
-	push.encode_s32(76, dirty_flag_schema)
+	var push := PushConstantLayout.new(OBJECT_REF_UPDATE_PUSH).pack({
+		grid_x = _committer.grid_size.x,
+		grid_y = _committer.grid_size.y,
+		grid_z = _committer.grid_size.z,
+		dirty_delta_count = dirty_delta_count,
+		tile_size_x = tile_size.x,
+		tile_size_y = tile_size.y,
+		tile_size_z = tile_size.z,
+		refs_per_tile = SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT,
+		tile_grid_x = tile_grid.x,
+		tile_grid_y = tile_grid.y,
+		tile_grid_z = tile_grid.z,
+		total_tile_count = _scene_voxel_tile_total_tile_count(tile_grid),
+		dirty_delta_capacity = dirty_delta_capacity,
+		object_ref_capacity = object_ref_capacity,
+		stats_capacity = stats_capacity,
+		dirty_tile_flag_capacity = dirty_tile_flag_capacity,
+		dirty_tile_worklist_capacity = dirty_tile_worklist_capacity,
+		dirty_flag_schema = dirty_flag_schema,
+	})
 	return push
 
 ## 构造空的对象引用更新统计结果
@@ -2280,38 +2303,33 @@ func _reduce_scene_voxel_tile_summaries_gpu(
 		_gc_frame_preserving_rids(preserved_buffers)
 		return {}
 
-	var init_push := PackedByteArray()
-	init_push.resize(16)
-	init_push.encode_s32(0, tile_count)
-	init_push.encode_s32(4, SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE)
-	init_push.encode_s32(8, 0x7FFFFFFF)
-	init_push.encode_s32(12, 0)
+	var init_push := PushConstantLayout.new(REDUCE_INIT_PUSH).pack({
+		tile_count = tile_count,
+		summary_uint_stride = SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE,
+		init_value = 0x7FFFFFFF,
+	})
 
-	var push := PackedByteArray()
-	push.resize(64)
-	push.encode_s32(0, xz_res)
-	push.encode_s32(4, total_slices)
-	push.encode_s32(8, voxel_count)
-	push.encode_s32(12, tile_count)
-	push.encode_s32(16, safe_tile_size.x)
-	push.encode_s32(20, safe_tile_size.y)
-	push.encode_s32(24, safe_tile_size.z)
-	push.encode_s32(28, SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE)
-	push.encode_s32(32, tile_grid.x)
-	push.encode_s32(36, tile_grid.y)
-	push.encode_s32(40, tile_grid.z)
-	push.encode_s32(44, 0)
-	push.encode_float(48, VOXEL_OCCUPIED_EPSILON)
-	push.encode_float(52, SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE)
-	push.encode_float(56, 0.0)
-	push.encode_float(60, 0.0)
+	var push := PushConstantLayout.new(REDUCE_PUSH).pack({
+		xz_res = xz_res,
+		total_slices = total_slices,
+		voxel_count = voxel_count,
+		tile_count = tile_count,
+		tile_size_x = safe_tile_size.x,
+		tile_size_y = safe_tile_size.y,
+		tile_size_z = safe_tile_size.z,
+		summary_uint_stride = SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE,
+		tile_grid_x = tile_grid.x,
+		tile_grid_y = tile_grid.y,
+		tile_grid_z = tile_grid.z,
+		occupied_epsilon = VOXEL_OCCUPIED_EPSILON,
+		quant_scale = SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE,
+	})
 
-	var compact_push := PackedByteArray()
-	compact_push.resize(16)
-	compact_push.encode_s32(0, tile_count)
-	compact_push.encode_s32(4, SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE)
-	compact_push.encode_s32(8, SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE)
-	compact_push.encode_s32(12, 0)
+	var compact_push := PushConstantLayout.new(REDUCE_COMPACT_PUSH).pack({
+		tile_count = tile_count,
+		summary_uint_stride = SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE,
+		compact_summary_uint_stride = SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE,
+	})
 
 	var groups := dispatch_groups_1d(voxel_count, 64)
 	var cl := begin_compute_list()

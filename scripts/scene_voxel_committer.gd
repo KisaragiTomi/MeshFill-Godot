@@ -51,6 +51,26 @@ const SvFieldScatter := preload("res://scripts/utils/sv_field_scatter.gd")
 const SV_FIELD_RECORD_FLOAT_STRIDE := SvFieldScatter.RECORD_FLOAT_STRIDE
 const SV_FIELD_SCATTER_SHADER_PATH := SvFieldScatter.SHADER_PATH
 
+## std430 push-constant 布局：_flush_pending_sv_field_records 的 field 散射（16B，4×int）
+const SV_FIELD_SCATTER_PUSH := [
+	["xz_res", "int"],
+	["total_slices", "int"],
+	["record_count", "int"],
+	["merge_mode", "int"],
+]
+
+## std430 push-constant 布局：_make_occupancy_slice_image_gpu 的占据切片投影（32B，6×int + 2×float）
+const OCCUPANCY_SLICE_PUSH := [
+	["xz_res", "int"],
+	["xz_res_2", "int"],
+	["occ_width", "int"],
+	["occ_height", "int"],
+	["base_res", "int"],
+	["channel", "int"],
+	["epsilon", "float"],
+	["_pad_f", "float"],
+]
+
 const SCENE_VOXEL_TILE_FLAG_COMPLEXITY := 1
 const SCENE_VOXEL_TILE_FLAG_COLLISION := 2
 const SCENE_VOXEL_TILE_FLAG_AUTO := 4
@@ -936,14 +956,14 @@ func _flush_pending_sv_field_records() -> Dictionary:
 		gc_frame()
 		return {"ok": false, "reason": "scatter_uniform_set_failed", "record_count": record_count, "gpu_dispatched": false}
 
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, int(_volume.xz_res))
-	push.encode_s32(4, int(_volume.get("total_slices", grid_size.y)))
-	push.encode_s32(8, record_count)
 	# committed SV 用 max-by-complexity 合并：常驻 field 可能已含 VPG state-chain stamp 内容，
-	# CPU compare 门（基于 slices）看不到它们，单调合并防止低值覆写。
-	push.encode_s32(12, 1)
+	# CPU compare 门（基于 slices）看不到它们，单调合并防止低值覆写（merge_mode=1）。
+	var push := PushConstantLayout.new(SV_FIELD_SCATTER_PUSH).pack({
+		xz_res = int(_volume.xz_res),
+		total_slices = int(_volume.get("total_slices", grid_size.y)),
+		record_count = record_count,
+		merge_mode = 1,
+	})
 
 	var groups := dispatch_groups_1d(record_count, 64)
 	if not _gpu_dispatch_and_sync(pipeline, [set0], push, groups):
@@ -1454,16 +1474,15 @@ func _make_occupancy_slice_image_gpu(channel: int, xz_res: int) -> Image:
 		gc_frame()
 		return null
 
-	var push := PackedByteArray()
-	push.resize(32)
-	push.encode_s32(0, xz_res)
-	push.encode_s32(4, xz_res)
-	push.encode_s32(8, occupancy.get_width())
-	push.encode_s32(12, occupancy.get_height())
-	push.encode_s32(16, _base_res)
-	push.encode_s32(20, channel)
-	push.encode_float(24, VOXEL_OCCUPIED_EPSILON)
-	push.encode_float(28, 0.0)
+	var push := PushConstantLayout.new(OCCUPANCY_SLICE_PUSH).pack({
+		xz_res = xz_res,
+		xz_res_2 = xz_res,
+		occ_width = occupancy.get_width(),
+		occ_height = occupancy.get_height(),
+		base_res = _base_res,
+		channel = channel,
+		epsilon = VOXEL_OCCUPIED_EPSILON,
+	})
 
 	var groups := dispatch_groups_2d(xz_res, xz_res, 32, 32)
 	if not _gpu_dispatch_and_sync(pipeline, [set0, set1], push, groups):
