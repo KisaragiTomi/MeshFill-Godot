@@ -128,6 +128,124 @@ const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
 const SCENE_VOXEL_TILE_OBJECT_REF_STRIDE_BYTES := 4
 const SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT := 8
 
+# Push-constant schemas (std430, sequential scalars). Each field maps 1:1 to an original
+# encode_s32/encode_u32/encode_float at the same byte offset; trailing/embedded zero slots are
+# named _pad and default to 0. See PushConstantLayout.
+const SCORE_SUM_PUSH := [
+	["result_capacity", "int"],   # 0
+	["record_stride", "int"],     # 4
+	["_pad0", "int"],             # 8
+	["_pad1", "int"],             # 12
+]
+const SCORE_PUSH := [
+	["grid_x", "int"],            # 0
+	["grid_y", "int"],            # 4
+	["grid_z", "int"],            # 8
+	["tile_count", "int"],        # 12
+	["tile_counts_x", "int"],     # 16
+	["tile_counts_y", "int"],     # 20
+	["tile_counts_z", "int"],     # 24
+	["top_k", "int"],             # 28
+	["sample_min_x", "int"],      # 32
+	["sample_min_y", "int"],      # 36
+	["sample_min_z", "int"],      # 40
+	["packed_color", "uint"],     # 44
+	["sample_max_x", "int"],      # 48
+	["sample_max_y", "int"],      # 52
+	["sample_max_z", "int"],      # 56
+	["has_target", "int"],        # 60
+	["footprint_count", "int"],   # 64
+	["asset_index", "int"],       # 68
+	["rotation_slots", "int"],    # 72
+	["scale_index", "int"],       # 76
+	["solid_threshold", "float"], # 80
+	["collision_limit", "float"], # 84
+	["min_support_ratio", "float"], # 88
+	["clearance_limit", "float"], # 92
+	["support_weight", "float"],  # 96
+	["collision_penalty", "float"], # 100
+	["overlap_penalty", "float"], # 104
+	["clearance_penalty", "float"], # 108
+	["candidate_count_signed", "int"], # 112
+	["search_radius_x", "int"],   # 116
+	["search_radius_y", "int"],   # 120
+	["search_radius_z", "int"],   # 124
+	["footprint_pivot_x", "int"], # 128
+	["footprint_pivot_y", "int"], # 132
+	["footprint_pivot_z", "int"], # 136
+	["dim_count", "int"],         # 140
+	["env_channel_count", "int"], # 144
+	["_pad0", "int"],             # 148
+	["_pad1", "int"],             # 152
+	["_pad2", "int"],             # 156
+	["asset_profile_0", "float"], # 160
+	["asset_profile_1", "float"], # 164
+	["asset_profile_2", "float"], # 168
+	["asset_profile_3", "float"], # 172
+	["asset_profile_4", "float"], # 176
+	["asset_profile_5", "float"], # 180
+	["asset_profile_6", "float"], # 184
+	["asset_profile_7", "float"], # 188
+]
+const CANDIDATE_ROUTE_ADAPTER_PUSH := [
+	["asset_index", "int"],       # 0
+	["range_count", "int"],       # 4
+	["tile_count", "int"],        # 8
+	["output_capacity", "int"],   # 12
+	["record_capacity", "int"],   # 16
+	["_pad0", "int"],             # 20
+	["_pad1", "int"],             # 24
+	["_pad2", "int"],             # 28
+]
+const REDUCE_PUSH := [
+	["candidate_count", "int"],   # 0
+	["result_capacity", "int"],   # 4
+	["record_stride", "int"],     # 8
+	["_pad0", "int"],             # 12
+	["min_distance_voxels", "float"], # 16
+	["_padf0", "float"],          # 20
+	["_padf1", "float"],          # 24
+	["_padf2", "float"],          # 28
+]
+const STAMP_PUSH := [
+	["grid_x", "int"],            # 0
+	["grid_y", "int"],            # 4
+	["grid_z", "int"],            # 8
+	["footprint_count", "int"],   # 12
+	["write_min_x", "int"],       # 16
+	["write_min_y", "int"],       # 20
+	["write_min_z", "int"],       # 24
+	["rotation_slots", "int"],    # 28
+	["write_max_x", "int"],       # 32
+	["write_max_y", "int"],       # 36
+	["write_max_z", "int"],       # 40
+	["_pad0", "int"],             # 44
+	["solid_threshold", "float"], # 48
+	["scene_write_scale", "float"], # 52
+	["collision_write_scale", "float"], # 56
+	["dual_commit", "float"],     # 60
+	["asset_color_r", "float"],   # 64
+	["asset_color_g", "float"],   # 68
+	["asset_color_b", "float"],   # 72
+	["_padf0", "float"],          # 76
+	["footprint_pivot_x", "int"], # 80
+	["footprint_pivot_y", "int"], # 84
+	["footprint_pivot_z", "int"], # 88
+	["_pad1", "int"],             # 92
+]
+const STAMP_INIT_PUSH := [
+	["result_capacity", "int"],   # 0
+	["stamp_bounds_stride", "int"], # 4
+	["_pad0", "int"],             # 8
+	["_pad1", "int"],             # 12
+]
+const PACK_TARGET_FIELD_PUSH := [
+	["voxel_count", "int"],       # 0
+	["_pad0", "int"],             # 4
+	["_pad1", "int"],             # 8
+	["_pad2", "int"],             # 12
+]
+
 var top_k: int = 4
 var result_capacity: int = 8
 var solid_threshold: float = 192.0 / 255.0
@@ -2147,10 +2265,10 @@ func _dispatch_placement_score_sum(result_buffer: RID, result_count_buffer: RID,
 	], shader, 0, SCOPE_PASS, "placement_result_score_sum_set0")
 	if not set0.is_valid():
 		return RID()
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, result_capacity)
-	push.encode_s32(4, RECORD_STRIDE)
+	var push := PushConstantLayout.new(SCORE_SUM_PUSH).pack({
+		result_capacity = result_capacity,
+		record_stride = RECORD_STRIDE,
+	})
 	var cl := begin_compute_list()
 	if cl < 0:
 		return RID()
@@ -2300,47 +2418,36 @@ func _dispatch_score(
 	var sample_max: Vector3i = settings.get("sample_max", grid_size)
 	var search_radius: Vector3i = _normalize_search_radius(settings.get("search_radius", Vector3i.ZERO))
 	var packed_color := BufferUtils.pack_shader_rgba8_word(asset_color)
-	var push := PackedByteArray()
-	push.resize(192)
-	push.encode_s32(0, grid_size.x)
-	push.encode_s32(4, grid_size.y)
-	push.encode_s32(8, grid_size.z)
-	push.encode_s32(12, tile_count)
-	push.encode_s32(16, tile_counts.x)
-	push.encode_s32(20, tile_counts.y)
-	push.encode_s32(24, tile_counts.z)
-	push.encode_s32(28, top_k)
-	push.encode_s32(32, sample_min.x)
-	push.encode_s32(36, sample_min.y)
-	push.encode_s32(40, sample_min.z)
-	push.encode_u32(44, packed_color)
-	push.encode_s32(48, sample_max.x)
-	push.encode_s32(52, sample_max.y)
-	push.encode_s32(56, sample_max.z)
-	push.encode_s32(60, has_target)
-	push.encode_s32(64, footprint_count)
-	push.encode_s32(68, asset_index)
-	push.encode_s32(72, rotation_slots) # rotation sweep width; shader evaluates 0..N-1 yaws, records best slot
-	push.encode_s32(76, scale_index)
-	push.encode_float(80, solid_threshold)
-	push.encode_float(84, collision_limit)
-	push.encode_float(88, min_support_ratio)
-	push.encode_float(92, clearance_limit)
-	push.encode_float(96, support_weight)
-	push.encode_float(100, collision_penalty)
-	push.encode_float(104, overlap_penalty)
-	push.encode_float(108, clearance_penalty)
-	push.encode_s32(112, -candidate_voxel_sparse_count if direct_all_tiles else candidate_voxel_sparse_count)
-	push.encode_s32(116, search_radius.x)
-	push.encode_s32(120, search_radius.y)
-	push.encode_s32(124, search_radius.z)
-	push.encode_s32(128, footprint_pivot.x)
-	push.encode_s32(132, footprint_pivot.y)
-	push.encode_s32(136, footprint_pivot.z)
-	push.encode_s32(140, _dim_count)              # footprint_pivot_pad.w = dim_count (0 = penalty-only)
-	push.encode_s32(144, _env_channel_count)      # dim_meta.x = env_channel_count (148/152/156 stay 0)
+	var _score_values := {
+		grid_x = grid_size.x, grid_y = grid_size.y, grid_z = grid_size.z,
+		tile_count = tile_count,
+		tile_counts_x = tile_counts.x, tile_counts_y = tile_counts.y, tile_counts_z = tile_counts.z,
+		top_k = top_k,
+		sample_min_x = sample_min.x, sample_min_y = sample_min.y, sample_min_z = sample_min.z,
+		packed_color = packed_color,
+		sample_max_x = sample_max.x, sample_max_y = sample_max.y, sample_max_z = sample_max.z,
+		has_target = has_target,
+		footprint_count = footprint_count,
+		asset_index = asset_index,
+		rotation_slots = rotation_slots, # rotation sweep width; shader evaluates 0..N-1 yaws, records best slot
+		scale_index = scale_index,
+		solid_threshold = solid_threshold,
+		collision_limit = collision_limit,
+		min_support_ratio = min_support_ratio,
+		clearance_limit = clearance_limit,
+		support_weight = support_weight,
+		collision_penalty = collision_penalty,
+		overlap_penalty = overlap_penalty,
+		clearance_penalty = clearance_penalty,
+		candidate_count_signed = -candidate_voxel_sparse_count if direct_all_tiles else candidate_voxel_sparse_count,
+		search_radius_x = search_radius.x, search_radius_y = search_radius.y, search_radius_z = search_radius.z,
+		footprint_pivot_x = footprint_pivot.x, footprint_pivot_y = footprint_pivot.y, footprint_pivot_z = footprint_pivot.z,
+		dim_count = _dim_count,              # footprint_pivot_pad.w = dim_count (0 = penalty-only)
+		env_channel_count = _env_channel_count, # dim_meta.x = env_channel_count (148/152/156 stay 0)
+	}
 	for pi in range(mini(_asset_dimension_profile.size(), 8)):
-		push.encode_float(160 + pi * 4, _asset_dimension_profile[pi])   # asset_profile0/1 dims 0..7
+		_score_values["asset_profile_%d" % pi] = _asset_dimension_profile[pi]   # asset_profile0/1 dims 0..7
+	var push := PushConstantLayout.new(SCORE_PUSH).pack(_score_values)
 
 	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_score)
@@ -2487,13 +2594,13 @@ func _dispatch_candidate_route_sparse_adapter(
 		make_storage_uniform(1, candidate_route_indirect_args_buffer),
 	], _shader_candidate_route_sparse_adapter_finalize, 0, SCOPE_PASS, "candidate_route_sparse_adapter_finalize")
 
-	var push := PackedByteArray()
-	push.resize(32)
-	push.encode_s32(0, asset_index)
-	push.encode_s32(4, int(route_binding.get("range_count", 0)))
-	push.encode_s32(8, tile_count)
-	push.encode_s32(12, output_capacity)
-	push.encode_s32(16, int(route_binding.get("record_capacity", 0)))
+	var push := PushConstantLayout.new(CANDIDATE_ROUTE_ADAPTER_PUSH).pack({
+		asset_index = asset_index,
+		range_count = int(route_binding.get("range_count", 0)),
+		tile_count = tile_count,
+		output_capacity = output_capacity,
+		record_capacity = int(route_binding.get("record_capacity", 0)),
+	})
 
 	var cl := begin_compute_list()
 	_gpu_dispatch_pipeline_sets(cl, _pipeline_candidate_route_sparse_adapter, [set0], push, Vector3i(ceil_div(output_capacity, CANDIDATE_ROUTE_SPARSE_ADAPTER_LOCAL_SIZE), 1, 1))
@@ -3109,16 +3216,12 @@ func _dispatch_reduce(tile_topk_buffer: RID, result_buffer: RID, result_count_bu
 		make_storage_uniform(2, result_count_buffer),
 	], _shader_reduce, 0)
 
-	var push := PackedByteArray()
-	push.resize(32)
-	push.encode_s32(0, candidate_count)
-	push.encode_s32(4, result_capacity)
-	push.encode_s32(8, RECORD_STRIDE)
-	push.encode_s32(12, 0)
-	push.encode_float(16, min_distance_voxels)
-	push.encode_float(20, 0.0)
-	push.encode_float(24, 0.0)
-	push.encode_float(28, 0.0)
+	var push := PushConstantLayout.new(REDUCE_PUSH).pack({
+		candidate_count = candidate_count,
+		result_capacity = result_capacity,
+		record_stride = RECORD_STRIDE,
+		min_distance_voxels = min_distance_voxels,
+	})
 
 	var cl := begin_compute_list()
 	_gpu_dispatch_pipeline_sets(cl, _pipeline_reduce, [set0], push, Vector3i(1, 1, 1))
@@ -3176,39 +3279,26 @@ func _dispatch_stamp(
 
 	var write_min: Vector3i = settings.get("write_min", Vector3i.ZERO)
 	var write_max: Vector3i = settings.get("write_max", grid_size)
-	var push := PackedByteArray()
-	push.resize(96)
-	push.encode_s32(0, grid_size.x)
-	push.encode_s32(4, grid_size.y)
-	push.encode_s32(8, grid_size.z)
-	push.encode_s32(12, footprint_count)
-	push.encode_s32(16, write_min.x)
-	push.encode_s32(20, write_min.y)
-	push.encode_s32(24, write_min.z)
-	push.encode_s32(28, rotation_slots) # rotation sweep width; stamp yaws footprint by record's best slot
-	push.encode_s32(32, write_max.x)
-	push.encode_s32(36, write_max.y)
-	push.encode_s32(40, write_max.z)
-	push.encode_s32(44, 0)
-	push.encode_float(48, solid_threshold)
-	push.encode_float(52, scene_write_scale)
-	push.encode_float(56, collision_write_scale)
-	push.encode_float(60, 1.0 if dual_commit else 0.0)
-	push.encode_float(64, asset_color.r)
-	push.encode_float(68, asset_color.g)
-	push.encode_float(72, asset_color.b)
-	push.encode_float(76, 0.0)
-	push.encode_s32(80, footprint_pivot.x)
-	push.encode_s32(84, footprint_pivot.y)
-	push.encode_s32(88, footprint_pivot.z)
-	push.encode_s32(92, 0)
+	var push := PushConstantLayout.new(STAMP_PUSH).pack({
+		grid_x = grid_size.x, grid_y = grid_size.y, grid_z = grid_size.z,
+		footprint_count = footprint_count,
+		write_min_x = write_min.x, write_min_y = write_min.y, write_min_z = write_min.z,
+		rotation_slots = rotation_slots, # rotation sweep width; stamp yaws footprint by record's best slot
+		write_max_x = write_max.x, write_max_y = write_max.y, write_max_z = write_max.z,
+		solid_threshold = solid_threshold,
+		scene_write_scale = scene_write_scale,
+		collision_write_scale = collision_write_scale,
+		dual_commit = 1.0 if dual_commit else 0.0,
+		asset_color_r = asset_color.r,
+		asset_color_g = asset_color.g,
+		asset_color_b = asset_color.b,
+		footprint_pivot_x = footprint_pivot.x, footprint_pivot_y = footprint_pivot.y, footprint_pivot_z = footprint_pivot.z,
+	})
 
-	var init_push := PackedByteArray()
-	init_push.resize(16)
-	init_push.encode_s32(0, maxi(result_capacity, 1))
-	init_push.encode_s32(4, STAMP_BOUNDS_STRIDE)
-	init_push.encode_s32(8, 0)
-	init_push.encode_s32(12, 0)
+	var init_push := PushConstantLayout.new(STAMP_INIT_PUSH).pack({
+		result_capacity = maxi(result_capacity, 1),
+		stamp_bounds_stride = STAMP_BOUNDS_STRIDE,
+	})
 
 	var total_threads := result_capacity * footprint_count
 	var init_groups := ceili(float(maxi(result_capacity, 1)) / 64.0)
@@ -3759,9 +3849,9 @@ func _ensure_combined_target_field_buffer(complexity_buffer: RID, collision_buff
 		release_rid(output_buffer)
 		return RID()
 
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, voxel_count)
+	var push := PushConstantLayout.new(PACK_TARGET_FIELD_PUSH).pack({
+		voxel_count = voxel_count,
+	})
 
 	var groups := ceili(float(maxi(voxel_count, 1)) / 64.0)
 	var cl := begin_compute_list()
