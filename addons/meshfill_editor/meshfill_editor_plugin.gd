@@ -742,6 +742,21 @@ func _on_bake_descriptor_pressed() -> void:
 		print("[MeshFill Editor] Bake AD -> %s" % _format_asset_descriptor_bake_result(result))
 	else:
 		_set_bake_descriptor_status("Bake done")
+	_refresh_volume_score_after_bake(result)
+
+
+## After an AssetDescriptor bake, refresh any live placement-score VolumeScore provider so its
+## anchor candidates reflect the freshly-baked descriptors. The provider may live in a background
+## scene tab, so we reach it through its static registry rather than the edited scene root.
+func _refresh_volume_score_after_bake(result) -> void:
+	if result is Dictionary and not bool(result.get("ok", false)):
+		return
+	var volume_score_script = load("res://demos/placement-score-3d/volume_score_demo.gd")
+	if volume_score_script == null:
+		return
+	var refreshed := int(volume_score_script.call("refresh_all_after_bake"))
+	if refreshed > 0:
+		print("[MeshFill Editor] Bake AD -> refreshed %d volume-score provider(s)" % refreshed)
 
 
 func _sync_asset_descriptor_bake_toolbar_from_scene() -> void:

@@ -66,11 +66,18 @@ var _collision_field := PackedFloat32Array()       # voxel_count(=collision)
 var _hud_label: Label
 var _display_root: Node3D
 
+## Editor-only registry of live VolumeScore providers. Lets the meshfill plugin refresh anchor
+## candidates after an AssetDescriptor bake even when this scene is a background tab — the plugin
+## can only reach the *edited* scene root directly. See refresh_all_after_bake().
+static var _live_providers: Array = []
+
 
 func _ready() -> void:
 	super._ready()
 	if is_scene_startup_blocked():
 		return
+	if not _live_providers.has(self):
+		_live_providers.append(self)
 	_setup_hud()
 	_display_root = Node3D.new()
 	_display_root.name = "VolumeScoreDisplay"
@@ -83,10 +90,50 @@ func _ready() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
+		_live_providers.erase(self)
 		_unregister_spa_volume_score_provider()
 
 
 # ---- Public API — SPA provider interface -----------------------------------
+
+## 每次 AD bake 之后刷新锚点候选：meshfill 插件的 "Bake AD" 按钮在烘焙成功后经
+## refresh_all_after_bake() 调到这里。从磁盘按 resource_path 重载 placement_assets 的 .tres
+## (烘焙覆盖了同名文件)、清 _assets 缓存、再 calculate_voxel_scores() 重打分。锚点(地形派生)
+## 与 TargetSV env 不受描述符烘焙影响,故保留不重建(_env_ready 不复位)。
+func reload_and_rescore() -> Dictionary:
+	if not Engine.is_editor_hint():
+		return {"ok": false, "reason": "not_editor_hint"}
+	_reload_placement_descriptors()
+	_assets.clear()   # 让 _ensure_assets_ready 用重载后的描述符重建 mesh/color/collision/footprint
+	return calculate_voxel_scores()
+
+
+## 插件在一次 AD bake 后调用:刷新所有存活的 VolumeScore provider(可能在后台标签页)。
+## 返回实际刷新的 provider 数;顺带清理失效引用。
+static func refresh_all_after_bake() -> int:
+	var refreshed := 0
+	for p in _live_providers.duplicate():
+		if is_instance_valid(p) and p.has_method("reload_and_rescore"):
+			p.reload_and_rescore()
+			refreshed += 1
+		else:
+			_live_providers.erase(p)
+	return refreshed
+
+
+## 从磁盘按各自 resource_path 重载 placement_assets 描述符(CACHE_MODE_REPLACE 就地刷新已缓存
+## 实例),使烘焙覆盖的 .tres 生效。无路径的内联资源跳过。
+func _reload_placement_descriptors() -> void:
+	for i in range(placement_assets.size()):
+		var d = placement_assets[i]
+		if d == null:
+			continue
+		var path := str(d.resource_path)
+		if path.is_empty():
+			continue
+		var fresh = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REPLACE)
+		if _is_asset_descriptor(fresh):
+			placement_assets[i] = fresh
 
 ## 完整管线：场景场 → 资产 footprint → 锚点 → VPG 评分 → 可视化
 func run_volume_score_pipeline() -> Dictionary:
