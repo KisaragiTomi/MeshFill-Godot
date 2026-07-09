@@ -45,10 +45,17 @@ const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const MAX_TRIANGLES := 20000
 const MAX_GRID_AXIS := 96
 
-var _voxelize_shader: RID
-var _voxelize_pipeline: RID
-var _collision_shader: RID
-var _collision_pipeline: RID
+# push_constant 布局（std430；字节序与原 _voxelize_push_constant / _collision_push_constant 完全一致：
+# 4×int 后接 float，即 BufferUtils.pack_push_ints_floats 的拼接顺序）。
+const VOXELIZE_PUSH := [
+	["grid_x", "int"], ["grid_y", "int"], ["grid_z", "int"], ["tri_count", "int"],
+	["aabb_min_x", "float"], ["aabb_min_y", "float"], ["aabb_min_z", "float"], ["cell_size", "float"],
+	["color_r", "float"], ["color_g", "float"], ["color_b", "float"], ["color_a", "float"],
+]
+const COLLISION_PUSH := [
+	["grid_x", "int"], ["grid_y", "int"], ["grid_z", "int"], ["min_neighbors", "int"],
+	["strength", "float"], ["_pad0", "float"], ["_pad1", "float"], ["_pad2", "float"],
+]
 
 
 func voxelize(
@@ -97,11 +104,9 @@ func _run_gpu(
 ) -> Dictionary:
 	var fail := {"ok": false, "reason": "dispatch-failed", "grid": grid, "cell_size": cell_size, "aabb_min": aabb_min, "voxels": []}
 
-	_voxelize_shader = load_compute_shader(VOXELIZE_SHADER)
-	_voxelize_pipeline = create_compute_pipeline(_voxelize_shader)
-	_collision_shader = load_compute_shader(COLLISION_SHADER)
-	_collision_pipeline = create_compute_pipeline(_collision_shader)
-	if not _voxelize_pipeline.is_valid() or not _collision_pipeline.is_valid():
+	var voxelize_kernel := ComputeKernel.create(self, VOXELIZE_SHADER, VOXELIZE_PUSH, "voxelize_mesh_solid")
+	var collision_kernel := ComputeKernel.create(self, COLLISION_SHADER, COLLISION_PUSH, "voxel_collision_erode")
+	if not voxelize_kernel.is_valid() or not collision_kernel.is_valid():
 		return fail
 
 	var voxel_count := VoxelGeneral.voxel_count(grid)
@@ -110,35 +115,22 @@ func _run_gpu(
 	var color_buf := storage_buffer_zero(voxel_count * 4, SCOPE_FRAME, "color_field")
 	var collision_buf := storage_buffer_zero(SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count), SCOPE_FRAME, "collision_field_r8_words")
 
-	var voxelize_set := create_uniform_set([
-		make_storage_uniform(0, tri_buf),
-		make_storage_uniform(1, occupancy_buf),
-		make_storage_uniform(2, color_buf),
-	], _voxelize_shader, 0)
-	var collision_set := create_uniform_set([
-		make_storage_uniform(0, occupancy_buf),
-		make_storage_uniform(1, collision_buf),
-	], _collision_shader, 0)
-
-	var voxelize_push := _voxelize_push_constant(grid, tri_count, aabb_min, cell_size, asset_color)
-	var collision_push := _collision_push_constant(grid, collision_strength, collision_min_neighbors)
 	var groups := dispatch_groups_3d(grid.x, grid.y, grid.z, 4, 4, 4)
+	var chain_ok := ComputePassChain.run(self, [
+		voxelize_kernel.make_pass([tri_buf, occupancy_buf, color_buf], {
+			grid_x = grid.x, grid_y = grid.y, grid_z = grid.z, tri_count = tri_count,
+			aabb_min_x = aabb_min.x, aabb_min_y = aabb_min.y, aabb_min_z = aabb_min.z, cell_size = cell_size,
+			color_r = asset_color.r, color_g = asset_color.g, color_b = asset_color.b, color_a = asset_color.a,
+		}, groups),
+		collision_kernel.make_pass([occupancy_buf, collision_buf], {
+			grid_x = grid.x, grid_y = grid.y, grid_z = grid.z, min_neighbors = clampi(collision_min_neighbors, 1, 6),
+			strength = clampf(collision_strength, 0.0, 1.0),
+		}, groups),
+	])
+	if not chain_ok:
+		return fail
+
 	var rd := get_rendering_device()
-
-	var cl := begin_compute_list()
-	rd.compute_list_bind_compute_pipeline(cl, _voxelize_pipeline)
-	rd.compute_list_bind_uniform_set(cl, voxelize_set, 0)
-	rd.compute_list_set_push_constant(cl, voxelize_push, voxelize_push.size())
-	rd.compute_list_dispatch(cl, groups.x, groups.y, groups.z)
-	rd.compute_list_add_barrier(cl)
-	rd.compute_list_bind_compute_pipeline(cl, _collision_pipeline)
-	rd.compute_list_bind_uniform_set(cl, collision_set, 0)
-	rd.compute_list_set_push_constant(cl, collision_push, collision_push.size())
-	rd.compute_list_dispatch(cl, groups.x, groups.y, groups.z)
-	end_compute_list()
-
-	submit_and_sync()
-
 	var occupancy_bytes := rd.buffer_get_data(occupancy_buf)
 	var color_bytes := rd.buffer_get_data(color_buf)
 	var collision_bytes := rd.buffer_get_data(collision_buf)
@@ -225,18 +217,3 @@ func _collect_triangle_floats(mesh: Mesh) -> PackedFloat32Array:
 				floats.append_array([verts[indices[i]].x, verts[indices[i]].y, verts[indices[i]].z, 0.0, verts[indices[i + 1]].x, verts[indices[i + 1]].y, verts[indices[i + 1]].z, 0.0, verts[indices[i + 2]].x, verts[indices[i + 2]].y, verts[indices[i + 2]].z, 0.0])
 				tri_count += 1
 	return floats
-
-
-func _voxelize_push_constant(grid: Vector3i, tri_count: int, aabb_min: Vector3, cell_size: float, asset_color: Color) -> PackedByteArray:
-	var ints := PackedInt32Array([grid.x, grid.y, grid.z, tri_count])
-	var floats := PackedFloat32Array([
-		aabb_min.x, aabb_min.y, aabb_min.z, cell_size,
-		asset_color.r, asset_color.g, asset_color.b, asset_color.a,
-	])
-	return BufferUtils.pack_push_ints_floats(ints, floats)
-
-
-func _collision_push_constant(grid: Vector3i, collision_strength: float, min_neighbors: int) -> PackedByteArray:
-	var ints := PackedInt32Array([grid.x, grid.y, grid.z, clampi(min_neighbors, 1, 6)])
-	var floats := PackedFloat32Array([clampf(collision_strength, 0.0, 1.0), 0.0, 0.0, 0.0])
-	return BufferUtils.pack_push_ints_floats(ints, floats)

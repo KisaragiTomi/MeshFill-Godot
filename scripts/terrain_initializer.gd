@@ -19,6 +19,17 @@ const HEIGHT_NORMAL_STATS_MIN_NZ_KEY_OFFSET := 4
 const HEIGHT_NORMAL_STATS_MAX_NZ_KEY_OFFSET := 8
 const HEIGHT_NORMAL_POSITIVE_INF_ORDERED_KEY := 0xFF800000
 const HEIGHT_NORMAL_NEGATIVE_INF_ORDERED_KEY := 0x007FFFFF
+# push_constant 布局（std430；与各处原手工 encode 逐字节一致）。
+const HEIGHT_NORMAL_PUSH := [
+	["width", "int"], ["height", "int"], ["cell_size", "float"], ["steep_nz_threshold", "float"],
+	["input_stride", "int"], ["_pad0", "int"], ["_pad1", "int"], ["_pad2", "int"],
+]
+const PROCEDURAL_HEIGHT_PUSH := [
+	["res_x", "int"], ["res_y", "int"], ["max_height", "float"], ["_pad0", "float"],
+]
+const HEIGHT_STATS_PUSH := [
+	["width", "int"], ["height", "int"], ["min_seed", "float"], ["_pad0", "float"],
+]
 const TEXTURE_NAMES := [
 	"scene_depth",
 	"scene_normal",
@@ -352,9 +363,8 @@ static func make_height_normal_image_gpu(height_img: Image, cell_size: float, st
 		compute.dispose()
 		return {}
 	var rd: RenderingDevice = compute.get_rendering_device()
-	var shader := compute.load_compute_shader(HEIGHT_NORMAL_SHADER_PATH)
-	var pipeline := compute.create_compute_pipeline(shader)
-	if not shader.is_valid() or not pipeline.is_valid():
+	var kernel := ComputeKernel.create(compute, HEIGHT_NORMAL_SHADER_PATH, HEIGHT_NORMAL_PUSH, "height_normal_from_height")
+	if not kernel.is_valid():
 		compute.dispose()
 		return {}
 
@@ -382,35 +392,16 @@ static func make_height_normal_image_gpu(height_img: Image, cell_size: float, st
 		compute.dispose()
 		return {}
 
-	var set0 := compute.create_uniform_set([
-		compute.make_storage_uniform(0, height_buf),
-		compute.make_storage_uniform(1, normal_buf),
-		compute.make_storage_uniform(2, stats_buf),
-	], shader, 0)
-	if not set0.is_valid():
-		compute.dispose()
-		return {}
-
-	var push := PackedByteArray()
-	push.resize(32)
-	push.encode_s32(0, width)
-	push.encode_s32(4, height)
-	push.encode_float(8, maxf(cell_size, 0.000001))
-	push.encode_float(12, steep_nz_threshold)
-	push.encode_s32(16, 4)
-	push.encode_s32(20, 0)
-
 	var groups := compute.dispatch_groups_2d(width, height, HEIGHT_NORMAL_LOCAL_SIZE, HEIGHT_NORMAL_LOCAL_SIZE)
-	var cl := compute.begin_compute_list()
-	if cl < 0:
+	var chain_ok := ComputePassChain.run(compute, [
+		kernel.make_pass([height_buf, normal_buf, stats_buf], {
+			width = width, height = height, cell_size = maxf(cell_size, 0.000001),
+			steep_nz_threshold = steep_nz_threshold, input_stride = 4,
+		}, groups),
+	])
+	if not chain_ok:
 		compute.dispose()
 		return {}
-	rd.compute_list_bind_compute_pipeline(cl, pipeline)
-	rd.compute_list_bind_uniform_set(cl, set0, 0)
-	rd.compute_list_set_push_constant(cl, push, push.size())
-	rd.compute_list_dispatch(cl, groups.x, groups.y, 1)
-	compute.end_compute_list()
-	compute.submit_and_sync()
 
 	var normal_bytes := rd.buffer_get_data(normal_buf, 0, pixel_count * 4 * 4)
 	var stats_bytes := rd.buffer_get_data(stats_buf, 0, HEIGHT_NORMAL_STATS_BUFFER_BYTES)
@@ -438,9 +429,8 @@ static func generate_procedural_height_images_gpu(texture_size: int = DEFAULT_TE
 		compute.dispose()
 		return {}
 	var rd: RenderingDevice = compute.get_rendering_device()
-	var shader := compute.load_compute_shader("res://shaders/procedural_terrain_height.glsl")
-	var pipeline := compute.create_compute_pipeline(shader)
-	if not shader.is_valid() or not pipeline.is_valid():
+	var kernel := ComputeKernel.create(compute, "res://shaders/procedural_terrain_height.glsl", PROCEDURAL_HEIGHT_PUSH, "procedural_terrain_height")
+	if not kernel.is_valid():
 		compute.dispose()
 		return {}
 
@@ -464,32 +454,22 @@ static func generate_procedural_height_images_gpu(texture_size: int = DEFAULT_TE
 		compute.dispose()
 		return {}
 
+	# image 绑定：用逃生口 make_pass_sets（调用方自建 uniform set）。
 	var set0 := compute.create_uniform_set([
 		compute.make_image_uniform(0, target_tex),
 		compute.make_image_uniform(1, depth_tex),
-	], shader, 0)
+	], kernel.shader, 0)
 	if not set0.is_valid():
 		compute.dispose()
 		return {}
 
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, res)
-	push.encode_s32(4, res)
-	push.encode_float(8, max_height)
-	push.encode_float(12, 0.0)
-
 	var groups := ceili(float(res) / 16.0)
-	var cl := compute.begin_compute_list()
-	if cl < 0:
+	var chain_ok := ComputePassChain.run(compute, [
+		kernel.make_pass_sets([set0], {res_x = res, res_y = res, max_height = max_height}, Vector3i(groups, groups, 1)),
+	])
+	if not chain_ok:
 		compute.dispose()
 		return {}
-	rd.compute_list_bind_compute_pipeline(cl, pipeline)
-	rd.compute_list_bind_uniform_set(cl, set0, 0)
-	rd.compute_list_set_push_constant(cl, push, push.size())
-	rd.compute_list_dispatch(cl, groups, groups, 1)
-	compute.end_compute_list()
-	compute.submit_and_sync()
 
 	var target_data := rd.texture_get_data(target_tex, 0)
 	var depth_data := rd.texture_get_data(depth_tex, 0)
@@ -520,9 +500,8 @@ static func get_height_stats_gpu(img: Image) -> Dictionary:
 		compute.dispose()
 		return {}
 	var rd: RenderingDevice = compute.get_rendering_device()
-	var shader := compute.load_compute_shader("res://shaders/height_stats_minmax.glsl")
-	var pipeline := compute.create_compute_pipeline(shader)
-	if not shader.is_valid() or not pipeline.is_valid():
+	var kernel := ComputeKernel.create(compute, "res://shaders/height_stats_minmax.glsl", HEIGHT_STATS_PUSH, "height_stats_minmax")
+	if not kernel.is_valid():
 		compute.dispose()
 		return {}
 
@@ -550,36 +529,27 @@ static func get_height_stats_gpu(img: Image) -> Dictionary:
 	if not sampler.is_valid():
 		compute.dispose()
 		return {}
+	# 多 set：set0=sampler、set1=storage，位置数组顺序即 set index。
 	var set0 := compute.create_uniform_set([
 		compute.make_sampler_uniform(0, sampler, height_tex),
-	], shader, 0)
+	], kernel.shader, 0)
 	var set1 := compute.create_uniform_set([
 		compute.make_storage_uniform(0, stats_buf),
-	], shader, 1)
+	], kernel.shader, 1)
 	if not set0.is_valid() or not set1.is_valid():
 		compute.dispose()
 		return {}
 
-	var push := PackedByteArray()
-	push.resize(16)
-	push.encode_s32(0, img.get_width())
-	push.encode_s32(4, img.get_height())
-	push.encode_float(8, -10000.0)
-	push.encode_float(12, 0.0)
-
 	var groups_x := ceili(float(img.get_width()) / 32.0)
 	var groups_y := ceili(float(img.get_height()) / 32.0)
-	var cl := compute.begin_compute_list()
-	if cl < 0:
+	var chain_ok := ComputePassChain.run(compute, [
+		kernel.make_pass_sets([set0, set1], {
+			width = img.get_width(), height = img.get_height(), min_seed = -10000.0,
+		}, Vector3i(groups_x, groups_y, 1)),
+	])
+	if not chain_ok:
 		compute.dispose()
 		return {}
-	rd.compute_list_bind_compute_pipeline(cl, pipeline)
-	rd.compute_list_bind_uniform_set(cl, set0, 0)
-	rd.compute_list_bind_uniform_set(cl, set1, 1)
-	rd.compute_list_set_push_constant(cl, push, push.size())
-	rd.compute_list_dispatch(cl, groups_x, groups_y, 1)
-	compute.end_compute_list()
-	compute.submit_and_sync()
 
 	var data := rd.buffer_get_data(stats_buf, 0, 12)
 	compute.dispose()

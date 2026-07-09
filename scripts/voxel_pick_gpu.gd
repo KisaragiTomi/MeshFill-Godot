@@ -7,6 +7,20 @@ const OUTPUT_BYTES := 64
 const MODE_SCENE_VOXEL := 0
 const MODE_TARGETSV := 1
 
+# push constant 布局（std430；与原 _pack_push 的 128 字节手工 encode 逐字节一致：12×int 后接 20×float）。
+const PICK_PUSH := [
+	["mode", "int"], ["grid_x", "int"], ["grid_y", "int"], ["grid_z", "int"],
+	["terrain_res", "int"], ["target_size", "int"], ["target_slices", "int"], ["search_radius", "int"],
+	["base_x", "int"], ["base_z", "int"], ["_pad0", "int"], ["_pad1", "int"],
+	["ray_origin_x", "float"], ["ray_origin_y", "float"], ["ray_origin_z", "float"],
+	["dir_x", "float"], ["dir_y", "float"], ["dir_z", "float"],
+	["grid_origin_x", "float"], ["grid_origin_y", "float"], ["grid_origin_z", "float"],
+	["voxel_size_x", "float"], ["voxel_size_y", "float"], ["voxel_size_z", "float"],
+	["capture_size", "float"], ["max_height", "float"], ["surface_offset", "float"],
+	["vertical_span", "float"], ["display_scale", "float"], ["occupancy_threshold", "float"],
+	["max_t", "float"], ["_pad2", "float"],
+]
+
 var _shader := RID()
 var _pipeline := RID()
 var _dummy_buffer := RID()
@@ -14,11 +28,13 @@ var _target_visual_buffer := RID()
 var _target_collision_buffer := RID()
 var _target_visual_bytes := 0
 var _target_collision_bytes := 0
+var _pick_layout: PushConstantLayout = null
 
 
 # 初始化日志名称，便于在 GPU 拾取相关输出中区分该组件。
 func _init() -> void:
 	log_name = "VoxelPickGPU"
+	_pick_layout = PushConstantLayout.new(PICK_PUSH)
 
 
 # 使用场景体素网格和地形高度图执行一次 GPU 射线拾取，返回命中的体素与世界坐标信息。
@@ -278,38 +294,15 @@ func _pack_push(
 	var dir := ray_dir.normalized()
 	if dir.length_squared() <= 0.000001:
 		dir = Vector3(0.0, -1.0, 0.0)
-	var push := PackedByteArray()
-	push.resize(128)
-	push.encode_s32(0, mode)
-	push.encode_s32(4, grid_size.x)
-	push.encode_s32(8, grid_size.y)
-	push.encode_s32(12, grid_size.z)
-	push.encode_s32(16, terrain_res)
-	push.encode_s32(20, target_size)
-	push.encode_s32(24, target_slices)
-	push.encode_s32(28, search_radius)
-	push.encode_s32(32, base_x)
-	push.encode_s32(36, base_z)
-	push.encode_s32(40, 0)
-	push.encode_s32(44, 0)
-	push.encode_float(48, ray_origin.x)
-	push.encode_float(52, ray_origin.y)
-	push.encode_float(56, ray_origin.z)
-	push.encode_float(60, dir.x)
-	push.encode_float(64, dir.y)
-	push.encode_float(68, dir.z)
-	push.encode_float(72, grid_origin.x)
-	push.encode_float(76, grid_origin.y)
-	push.encode_float(80, grid_origin.z)
-	push.encode_float(84, voxel_size.x)
-	push.encode_float(88, voxel_size.y)
-	push.encode_float(92, voxel_size.z)
-	push.encode_float(96, capture_size)
-	push.encode_float(100, max_height)
-	push.encode_float(104, surface_offset)
-	push.encode_float(108, vertical_span)
-	push.encode_float(112, display_scale)
-	push.encode_float(116, occupancy_threshold)
-	push.encode_float(120, max_t)
-	push.encode_float(124, 0.0)
-	return push
+	return _pick_layout.pack({
+		mode = mode, grid_x = grid_size.x, grid_y = grid_size.y, grid_z = grid_size.z,
+		terrain_res = terrain_res, target_size = target_size, target_slices = target_slices, search_radius = search_radius,
+		base_x = base_x, base_z = base_z,
+		ray_origin_x = ray_origin.x, ray_origin_y = ray_origin.y, ray_origin_z = ray_origin.z,
+		dir_x = dir.x, dir_y = dir.y, dir_z = dir.z,
+		grid_origin_x = grid_origin.x, grid_origin_y = grid_origin.y, grid_origin_z = grid_origin.z,
+		voxel_size_x = voxel_size.x, voxel_size_y = voxel_size.y, voxel_size_z = voxel_size.z,
+		capture_size = capture_size, max_height = max_height, surface_offset = surface_offset,
+		vertical_span = vertical_span, display_scale = display_scale, occupancy_threshold = occupancy_threshold,
+		max_t = max_t,
+	})
