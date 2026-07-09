@@ -216,5 +216,3 @@ func _meta_bool(key: String, fallback: bool) -> bool:
 	if not has_meta(key):
 		return fallback
 	return VariantUtils.bool_from_value(get_meta(key), fallback)
-
-

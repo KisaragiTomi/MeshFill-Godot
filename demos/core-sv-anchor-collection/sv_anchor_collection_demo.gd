@@ -63,6 +63,8 @@ var _anchor_list: Array[Dictionary] = []
 var _topk_data: Dictionary = {}
 var _selected_anchor_id: int = -1
 var _selected_anchor_pos := Vector3i(-1, -1, -1)
+## CoreSPADemo（SPA 反馈拥有者）——点选 + marker/label/红框由它画；本 demo 作 provider 出数据。
+var _spa_host: Node
 
 
 func _ready() -> void:
@@ -81,6 +83,7 @@ func _deferred_init() -> void:
 	_build_assets()
 	if _targetsv_valid:
 		_run_collection()
+	_register_with_spa_host()
 	_show_layer(LAYER_ANCHOR)
 	_frame_camera.call_deferred()
 
@@ -112,6 +115,9 @@ func _avg_terrain_height() -> float:
 
 
 func _exit_tree() -> void:
+	if _spa_host != null and is_instance_valid(_spa_host) and _spa_host.has_method("unregister_volume_score_provider"):
+		_spa_host.call("unregister_volume_score_provider", self)
+	_spa_host = null
 	if _spa != null:
 		_spa.dispose(false)
 		_spa = null
@@ -171,6 +177,10 @@ func _build_fields_from_terrain() -> void:
 		_target_field[i * 4 + 2] = c.b
 		_target_field[i * 4 + 3] = occupancy[i] if i < occupancy.size() else c.a
 
+	# 刻意的受控脚手架(勿改成整层真实 complexity):y=0 作「地面/支撑层」,complexity 硬编码 1.0
+	# 提供 support 信号,collision 取真实 TargetSV;y>0 的 complexity/collision 保持 0,让表面候选
+	# 体素满足「自身够空(≤ 阈值)+ 脚下有支撑」的 anchor 判定。若把整层换成真实 complexity,占据
+	# 体素自身复杂度超阈值 → 采集不到任何 anchor(本 demo 的规则演示会失效)。
 	_complexity_field = PackedFloat32Array()
 	_complexity_field.resize(voxel_count)
 	_collision_field = PackedFloat32Array()
@@ -381,12 +391,10 @@ func _show_layer(layer: String) -> void:
 
 
 func _collect_anchor_cells(centers: PackedVector3Array, colors: PackedColorArray) -> void:
+	# 选中高亮由 SPA 的 SelectedVoxelMarker 负责；这里所有锚点统一色。
 	for pos in _anchor_set.keys():
 		centers.append(_world_center(pos))
-		if pos == _selected_anchor_pos:
-			colors.append(Color(1.0, 1.0, 0.0, 1.0))
-		else:
-			colors.append(COLOR_HIT)
+		colors.append(COLOR_HIT)
 
 
 func _collect_support_cells(centers: PackedVector3Array, colors: PackedColorArray) -> void:
@@ -538,17 +546,10 @@ func _asset_name_by_id(asset_id: int) -> String:
 	return "?"
 
 
-## MeshFill 插件通过 _forward_3d_gui_input 把编辑器视口事件转发到这里。
-## viewport_camera 是用户实际点击所用的视口相机；不能用 get_viewport().get_camera_3d()，
-## 那在编辑器里拿到的是运行时相机，射线会和光标对不上。返回 true 表示已消费该事件。
-## （旧实现用 _unhandled_input，但编辑场景里的 @tool 节点根本收不到，点击一直是死的。）
-func _editor_viewport_input(viewport_camera: Camera3D, event: InputEvent) -> bool:
-	if event is InputEventMouseButton:
-		var mb := event as InputEventMouseButton
-		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-			_try_pick_anchor(viewport_camera, mb.position)
-			return true
-		return false
+## CoreSPADemo（SPA 反馈拥有者）把它未消费的编辑器视口事件转发到这里。
+## 鼠标点选锚点由 SPA 拥有（本 demo 作 provider 出数据）；这里只保留 demo 自己的
+## 图层切换 / 阈值调节快捷键。ESC 取消选中也由 SPA 处理（会回调 clear_selected_anchor）。
+func forward_editor_viewport_input(_viewport_camera: Camera3D, event: InputEvent) -> bool:
 	if not event is InputEventKey:
 		return false
 	var ke := event as InputEventKey
@@ -579,42 +580,132 @@ func _editor_viewport_input(viewport_camera: Camera3D, event: InputEvent) -> boo
 			_rerun()
 		KEY_R:
 			_rerun()
-		KEY_ESCAPE:
-			_selected_anchor_id = -1
-			_selected_anchor_pos = Vector3i(-1, -1, -1)
-			_show_layer(_current_layer)
 		_:
 			return false
 	return true
 
 
-func _try_pick_anchor(cam: Camera3D, screen_pos: Vector2) -> void:
-	if cam == null:
-		return
-	var ray_origin := cam.project_ray_origin(screen_pos)
-	var ray_dir := cam.project_ray_normal(screen_pos)
-	var best_dist := INF
-	var best_id := -1
-	var best_pos := Vector3i(-1, -1, -1)
+# ---- SPA volume-score-anchor provider contract ----------------------------
+# CoreSPADemo 拥有点选与反馈（marker/label/HUD/红框）；本 demo 只出锚点数据 + 保留自己的
+# 图层可视化。SPA 用下列方法射线点选锚点、取记录来画反馈。锚点在世界空间（terrain 高度），
+# SPA 的相机射线直接命中它们，坐标一致。
+
+func _register_with_spa_host() -> void:
+	_spa_host = _find_spa_host()
+	if _spa_host != null and _spa_host.has_method("register_volume_score_provider"):
+		_spa_host.call("register_volume_score_provider", self)
+
+
+func _find_spa_host() -> Node:
+	var host := find_child("CoreSPADemo", true, false)
+	if host != null and host.has_method("register_volume_score_provider"):
+		return host
+	return null
+
+
+func _notify_spa_selected_anchor_changed() -> void:
+	if _spa_host != null and is_instance_valid(_spa_host) and _spa_host.has_method("refresh_volume_score_anchor_selection"):
+		_spa_host.call("refresh_volume_score_anchor_selection")
+
+
+func has_volume_score_anchors() -> bool:
+	return not _anchor_list.is_empty()
+
+
+func has_selected_anchor() -> bool:
+	return _selected_anchor_id >= 0
+
+
+func get_anchor_world_positions() -> PackedVector3Array:
+	var out := PackedVector3Array()
+	for anchor in _anchor_list:
+		out.append(_world_center(anchor.get("voxel_pos", Vector3i.ZERO)))
+	return out
+
+
+func get_anchor_marker_radius() -> float:
+	return maxf(_voxel_size.x, _voxel_size.z) * 0.5
+
+
+## [{anchor_index, aabb}]：每个锚点 cell 的世界 AABB（SPA 射线点选目标）。
+func get_selectable_anchor_bounds() -> Array:
+	var out: Array = []
 	var half := _voxel_size * 0.5
 	for i in range(_anchor_list.size()):
-		var anchor: Dictionary = _anchor_list[i]
-		var vp: Vector3i = anchor.get("voxel_pos", Vector3i(-1, -1, -1))
-		var center := _world_center(vp)
-		var aabb := AABB(center - half, _voxel_size)
-		var hit := AutoObject.ray_intersects_aabb(ray_origin, ray_dir, aabb)
-		if hit >= 0.0 and hit < best_dist:
-			best_dist = hit
-			best_id = int(anchor.get("id", i))
-			best_pos = vp
-	if best_id >= 0:
-		_selected_anchor_id = best_id
-		_selected_anchor_pos = best_pos
-		_show_layer(_current_layer)
-	else:
-		_selected_anchor_id = -1
-		_selected_anchor_pos = Vector3i(-1, -1, -1)
-		_update_hud()
+		var center := _world_center(_anchor_list[i].get("voxel_pos", Vector3i.ZERO))
+		out.append({"anchor_index": i, "aabb": AABB(center - half, _voxel_size)})
+	return out
+
+
+## 选中锚点（仅置状态，不自绘）；点选/高亮由 SPA 拥有。anchor_index 是 _anchor_list 下标。
+func select_anchor(anchor_index: int) -> Dictionary:
+	if anchor_index < 0 or anchor_index >= _anchor_list.size():
+		return {"ok": false, "reason": "anchor_index_out_of_range"}
+	var anchor := _anchor_list[anchor_index]
+	_selected_anchor_id = int(anchor.get("id", anchor_index))
+	_selected_anchor_pos = anchor.get("voxel_pos", Vector3i(-1, -1, -1))
+	_update_hud()
+	_notify_spa_selected_anchor_changed()
+	return {"ok": true, "anchor_index": anchor_index}
+
+
+func clear_selected_anchor() -> Dictionary:
+	_selected_anchor_id = -1
+	_selected_anchor_pos = Vector3i(-1, -1, -1)
+	_update_hud()
+	_notify_spa_selected_anchor_changed()
+	return {"ok": true}
+
+
+func get_selected_anchor_record() -> Dictionary:
+	if _selected_anchor_id < 0 or _selected_anchor_pos.x < 0:
+		return {}
+	return {
+		"domain": "anchor",
+		"geometry": "volume_score_anchor",
+		"id": "sv_anchor:%d" % _selected_anchor_id,
+		"anchor_index": _selected_anchor_id,
+		"voxel_coord": _selected_anchor_pos,
+		"world_position": _world_center(_selected_anchor_pos),
+		"marker_size": _voxel_size,
+		"topk": _selected_anchor_topk_entries(),
+		"summary": get_selected_anchor_summary_text(),
+		"tooltip": get_selected_anchor_tooltip_text(),
+	}
+
+
+func get_selected_anchor_summary_text() -> String:
+	if _selected_anchor_id < 0:
+		return "Anchor: click one"
+	return "Anchor #%d  pos=%s" % [_selected_anchor_id, str(_selected_anchor_pos)]
+
+
+func get_selected_anchor_tooltip_text() -> String:
+	return "\n".join(_build_topk_hud_lines())
+
+
+## 本 demo 的锚点 top-k 只读展示、无可循环选择态，滚轮循环不适用。
+func cycle_selected_anchor_topk(_delta: int) -> Dictionary:
+	return {"ok": false, "reason": "no_topk_cycle"}
+
+
+## 把 _topk_data 里该锚点的 top-k 整理成 SPA anchor 标签期望的字段形状。
+func _selected_anchor_topk_entries() -> Array:
+	var out: Array = []
+	if _selected_anchor_id < 0:
+		return out
+	for entry in _topk_data.get(_selected_anchor_id, []):
+		if not entry is Dictionary:
+			continue
+		var d := entry as Dictionary
+		out.append({
+			"rank": int(d.get("rank", 0)),
+			"asset_name": _asset_name_by_id(int(d.get("asset_id", -1))),
+			"score": float(d.get("score", -INF)),
+			"valid": true,
+			"yaw": 0.0,
+		})
+	return out
 
 
 func _rerun() -> void:

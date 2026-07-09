@@ -146,6 +146,14 @@ var rotation_slots: int = 12
 var scale_index: int = 0
 var asset_color: Color = Color.WHITE
 
+# Phase-2 data-driven dimension scoring (see scoring-dimensions-design.md). Empty/zero keeps
+# the legacy penalty-only path (dim_count == 0), so existing callers are unaffected.
+const MAX_SCORING_DIMENSIONS := 16
+var _scoring_dimensions: Array = []
+var _asset_dimension_profile: PackedFloat32Array = PackedFloat32Array()
+var _env_channel_count: int = 0
+var _dim_count: int = 0
+
 var _shader_score: RID
 var _shader_reduce: RID
 var _shader_init_stamp_bounds: RID
@@ -1061,56 +1069,6 @@ static func _placement_output_score(gpu_out: Dictionary) -> float:
 	return float(valid_count) + mean_penalty / (1.0 + absf(mean_penalty))
 
 
-# ---- 精细语义打分:数据驱动的维度打分 ---------------------------------------
-# 详见根目录 scoring-dimensions-design.md。当前为 CPU 参考实现,数据契约
-# (维度表 + 每资产画像 + 每锚点多通道特征)与将来 GPU 端口一致。
-
-## 拟合模式(fit_mode)。目前仅 MATCH;新增一种拟合方式 = 加一个枚举 + 一个 match 分支。
-const FIT_MODE_MATCH := 0
-
-## 数据驱动的维度打分:对每个锚点,按维度表算每个资产的加权分,返回胜者。
-## **可拓展**——加一个维度 = `dimensions` 加一行(引用某通道)、每条 `asset_profiles` /
-## `anchor_features` 加一个通道值;本函数不变(只按 `dimensions` 循环)。
-##
-##   dimensions:      Array[Dictionary]        每维 { channel:int, mode:int=FIT_MODE_MATCH, weight:float }
-##   asset_profiles:  Array[PackedFloat32Array] 每资产一条画像,按通道索引(来源 AssetDescriptor)
-##   anchor_features: Array[PackedFloat32Array] 每锚点一条环境特征,按通道索引(来源 TargetSV/场景场)
-##
-## 返回:Array[Dictionary] 每锚点 { scores:PackedFloat32Array(每资产), winner:int }。
-static func score_dimensions(
-	dimensions: Array,
-	asset_profiles: Array,
-	anchor_features: Array
-) -> Array:
-	var results: Array = []
-	for ai in range(anchor_features.size()):
-		var feat: PackedFloat32Array = anchor_features[ai]
-		var scores := PackedFloat32Array()
-		scores.resize(asset_profiles.size())
-		var winner := -1
-		var best := -INF
-		for asset_i in range(asset_profiles.size()):
-			var profile: PackedFloat32Array = asset_profiles[asset_i]
-			var s := 0.0
-			for dim in dimensions:
-				var ch := int((dim as Dictionary).get("channel", 0))
-				var w := float((dim as Dictionary).get("weight", 1.0))
-				var mode := int((dim as Dictionary).get("mode", FIT_MODE_MATCH))
-				var f := feat[ch] if ch >= 0 and ch < feat.size() else 0.0
-				var a := profile[ch] if ch >= 0 and ch < profile.size() else 0.0
-				match mode:
-					FIT_MODE_MATCH:
-						s += w * (1.0 - absf(f - a))
-					_:
-						pass
-			scores[asset_i] = s
-			if s > best:
-				best = s
-				winner = asset_i
-		results.append({"scores": scores, "winner": winner})
-	return results
-
-
 ## 单资产单 footprint 的 GPU 放置调度入口，由 run_multi_asset 针对每个 pivot 变体调用一次。
 ## 校验 grid_size/footprint 等输入合法性，通过预筛选与候选路线绑定解析待测试的候选 tile 列表，
 ## 确保 GPU 设备、着色器与管线就绪，并在需要时准备同类型物体间距排斥所需的 object ref 缓冲区。
@@ -1742,6 +1700,10 @@ func _apply_settings(settings: Dictionary) -> void:
 	scale_index = int(settings.get("scale_index", scale_index))
 	rotation_slots = maxi(int(settings.get("rotation_slots", rotation_slots)), 1)
 	asset_color = Color(settings.get("asset_color", asset_color))
+	_scoring_dimensions = settings.get("scoring_dimensions", [])
+	_asset_dimension_profile = settings.get("asset_dimension_profile", PackedFloat32Array())
+	_env_channel_count = int(settings.get("env_channel_count", 0))
+	_dim_count = clampi(_scoring_dimensions.size(), 0, MAX_SCORING_DIMENSIONS)
 	top_k = clampi(top_k, 1, 8)
 	result_capacity = maxi(result_capacity, 1)
 
@@ -2259,6 +2221,23 @@ static func _normalize_search_radius(value: Variant) -> Vector3i:
 ## 并填充 128 字节 push constant（网格/分片尺寸、top_k、采样范围、资产颜色、各类阈值与惩罚系数、搜索半径等）。
 ## 根据 _score_dispatch_indirect_decision 的判定结果，选择直接 dispatch 还是通过间接参数缓冲区 dispatch，
 ## 最终返回本次调度所使用的决策信息字典。
+## 把维度表打包成 GPU DimRecord[](32 B/record, std430):ivec4(channel,mode,0,0) + vec4(weight,min,max,0)。
+## 空表 → 1 条全零 stub 记录,保证 binding 9 始终有有效缓冲。
+func _pack_dimension_table(dims: Array) -> PackedByteArray:
+	var count := mini(dims.size(), MAX_SCORING_DIMENSIONS)
+	var bytes := PackedByteArray()
+	bytes.resize(maxi(count, 1) * 32)
+	for d in range(count):
+		var dim: Dictionary = dims[d] if dims[d] is Dictionary else {}
+		var base := d * 32
+		bytes.encode_s32(base + 0, int(dim.get("channel", 0)))
+		bytes.encode_s32(base + 4, int(dim.get("mode", 0)))
+		bytes.encode_float(base + 16, float(dim.get("weight", 0.0)))
+		bytes.encode_float(base + 20, float(dim.get("min", 0.0)))
+		bytes.encode_float(base + 24, float(dim.get("max", 1.0)))
+	return bytes
+
+
 func _dispatch_score(
 	complexity_buffer: RID,
 	collision_buffer: RID,
@@ -2282,6 +2261,17 @@ func _dispatch_score(
 	settings: Dictionary,
 	footprint_pivot: Vector3i
 ) -> Dictionary:
+	# Phase-2 dimension-scoring bindings 8/9. dim_count == 0 (every legacy caller) makes the
+	# shader ignore them, but the uniform set must still bind valid buffers — use zero stubs.
+	var env_bytes := PackedByteArray()
+	if _dim_count > 0:
+		var env_floats: PackedFloat32Array = settings.get("env_channel_field_floats", PackedFloat32Array())
+		env_bytes = env_floats.to_byte_array()
+	if env_bytes.size() < 4:
+		env_bytes.resize(4)
+	var env_channel_buffer := storage_buffer_from_bytes(env_bytes, SCOPE_FRAME, "env_channel_field")
+	var dimension_table_buffer := storage_buffer_from_bytes(
+		_pack_dimension_table(_scoring_dimensions), SCOPE_FRAME, "scoring_dimension_table")
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, complexity_buffer),
 		make_storage_uniform(1, collision_buffer),
@@ -2291,6 +2281,8 @@ func _dispatch_score(
 		make_storage_uniform(5, candidate_voxel_sparse_buffer),
 		make_storage_uniform(6, target_field_buffer),
 		make_storage_uniform(7, debug_voxel_buffer),
+		make_storage_uniform(8, env_channel_buffer),
+		make_storage_uniform(9, dimension_table_buffer),
 	], _shader_score, 0)
 	var score_contract_params_buffer := storage_buffer_from_bytes(
 		_pack_score_contract_params(gpu_contract, settings),
@@ -2309,7 +2301,7 @@ func _dispatch_score(
 	var search_radius: Vector3i = _normalize_search_radius(settings.get("search_radius", Vector3i.ZERO))
 	var packed_color := BufferUtils.pack_shader_rgba8_word(asset_color)
 	var push := PackedByteArray()
-	push.resize(144)
+	push.resize(192)
 	push.encode_s32(0, grid_size.x)
 	push.encode_s32(4, grid_size.y)
 	push.encode_s32(8, grid_size.z)
@@ -2345,7 +2337,10 @@ func _dispatch_score(
 	push.encode_s32(128, footprint_pivot.x)
 	push.encode_s32(132, footprint_pivot.y)
 	push.encode_s32(136, footprint_pivot.z)
-	push.encode_s32(140, 0)
+	push.encode_s32(140, _dim_count)              # footprint_pivot_pad.w = dim_count (0 = penalty-only)
+	push.encode_s32(144, _env_channel_count)      # dim_meta.x = env_channel_count (148/152/156 stay 0)
+	for pi in range(mini(_asset_dimension_profile.size(), 8)):
+		push.encode_float(160 + pi * 4, _asset_dimension_profile[pi])   # asset_profile0/1 dims 0..7
 
 	var cl := begin_compute_list()
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_score)

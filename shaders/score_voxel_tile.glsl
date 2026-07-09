@@ -58,6 +58,20 @@ layout(set = 0, binding = 7, std430) restrict buffer DebugVoxelOutput {
     float debug_voxel[];
 };
 
+// Phase-2 data-driven dimension scoring (see scoring-dimensions-design.md). Environment
+// channels (collision/complexity/color...) laid out flat: env_channels[voxel*env_channel_count + ch].
+layout(set = 0, binding = 8, std430) restrict readonly buffer EnvChannelField {
+    float env_channels[];
+};
+
+struct DimRecord {
+    ivec4 channel_mode_pad;   // x = env channel index, y = fit_mode (0 = MATCH), z/w = pad
+    vec4 weight_min_max_pad;  // x = weight, y = constraint_min, z = constraint_max, w = pad
+};
+layout(set = 0, binding = 9, std430) restrict readonly buffer DimensionTable {
+    DimRecord dims[];
+};
+
 layout(set = 1, binding = 0, std430) restrict readonly buffer RuntimeAlive {
     int runtime_alive[];
 };
@@ -150,7 +164,10 @@ layout(push_constant, std430) uniform Params {
     vec4 thresholds;               // solid_threshold, collision_limit, min_support_ratio, clearance_limit
     vec4 score_weights;            // support_weight, collision_penalty, overlap_penalty, clearance_penalty
     ivec4 dispatch_search;         // candidate_voxel_sparse_count, search radius xyz
-    ivec4 footprint_pivot_pad;     // xyz = footprint pivot voxels (subtracted before yaw), w = pad
+    ivec4 footprint_pivot_pad;     // xyz = footprint pivot voxels (subtracted before yaw), w = dim_count (0 = penalty-only)
+    ivec4 dim_meta;                // x = env_channel_count, yzw = reserved
+    vec4 asset_profile0;           // per-asset dimension profile values, dims 0..3
+    vec4 asset_profile1;           // per-asset dimension profile values, dims 4..7
 };
 
 const uint FLAG_SUPPORT = 1u;
@@ -233,6 +250,8 @@ struct EvalResult {
     float target_color_dist;
     float target_density;
     float target_total_weight;
+    float semantic_score;    // Phase-2 per-dimension weighted fit sum
+    float semantic_weight;   // Phase-2 divisor (footprint weight summed per scored dimension)
 };
 
 vec4 unpack_rgba8(uint packed) {
@@ -246,6 +265,13 @@ vec4 unpack_rgba8(uint packed) {
 
 vec4 unpack_asset_color() {
     return unpack_rgba8(uint(sample_min_pad.w));
+}
+
+// Per-asset dimension profile value for dimension d, from the two push-constant vec4s (8 slots).
+float asset_profile_value(int d) {
+    if (d < 4) return asset_profile0[d];
+    if (d < 8) return asset_profile1[d - 4];
+    return 0.0;   // >8 dims would need a per-asset profile storage buffer (not built)
 }
 
 float load_collision_r8(uint index) {
@@ -684,6 +710,8 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
     r.target_color_dist = 0.0;
     r.target_density = 0.0;
     r.target_total_weight = 0.0;
+    r.semantic_score = 0.0;
+    r.semantic_weight = 0.0;
 
     if (!in_grid_bounds(candidate_origin)) {
         return r;
@@ -701,11 +729,15 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
     }
 
     int has_target = sample_max_pad.w;
+    int dim_count = footprint_pivot_pad.w;          // 0 = legacy penalty-only
+    int env_channel_count = dim_meta.x;
     if (has_target != 0) {
         if (!in_sample_bounds(candidate_origin)) {
             return r;
         }
-        if (target_field[voxel_index(candidate_origin)].a <= 0.01) {
+        // Legacy-only origin gate: in dims-mode the per-footprint semantic fit decides, so a
+        // single low-completeness origin voxel must not reject the whole candidate.
+        if (dim_count == 0 && target_field[voxel_index(candidate_origin)].a <= 0.01) {
             return r;
         }
     }
@@ -763,21 +795,48 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
                 r.target_color_dist += distance(target.rgb, asset_col.rgb) * weight;
             }
         }
+
+        // Phase-2 data-driven per-dimension scoring: piggyback on the SAME nearest voxel pn and
+        // membership gate. Each dimension reads its env channel and MATCH-fits the asset profile
+        // value; accumulate weighted fit (dim_count == 0 skips this entirely).
+        if (dim_count > 0 && env_channel_count > 0 && in_grid_bounds(pn) && in_sample_bounds(pn)) {
+            int vidx = voxel_index(pn);
+            for (int d = 0; d < dim_count; d++) {
+                int ch = dims[d].channel_mode_pad.x;
+                if (ch < 0 || ch >= env_channel_count) continue;
+                float env = env_channels[vidx * env_channel_count + ch];
+                float av = asset_profile_value(d);
+                int mode = dims[d].channel_mode_pad.y;
+                float fit = (mode == 0) ? (1.0 - abs(env - av)) : 0.0;   // 0 = MATCH; PENALTY/GATE reserved
+                fit = clamp(fit, 0.0, 1.0);
+                r.semantic_score += dims[d].weight_min_max_pad.x * fit * weight;
+                r.semantic_weight += weight;
+            }
+        }
     }
 
-    // Support retired: no support_ratio gate (anchors guarantee support), so thresholds.z
-    // (min_support_ratio) is now unused by the validity gate.
-    r.valid = r.solid_collision <= thresholds.y
-        && r.clearance_overlap <= thresholds.w
-        && (has_target == 0 || r.target_coverage > 0.0);
-
-    if (r.valid) {
-        // Penalty-only score now that the support positive term is retired; score_weights.x
-        // (support_weight) is unused. The winner per tile is the least-penalty candidate.
-        r.score =
-            - r.solid_collision * score_weights.y
-            - r.complexity_overlap * score_weights.z
-            - r.clearance_overlap * score_weights.w;
+    if (dim_count > 0) {
+        // Data-driven semantic score (design Phase 2): weighted mean of per-dimension MATCH fit
+        // over footprint voxels. MATCH dims are unconstrained, so validity is coverage-only (the
+        // has_target coverage gate is retained). target_coverage here still holds the SUMMED
+        // footprint weight — the normalization block below reassigns it to a ratio AFTER this.
+        // semantic_score >= 0, so it still beats INVALID_SCORE in the per-tile max-select.
+        r.valid = (has_target == 0 || r.target_coverage > 0.0);
+        r.score = (r.valid && r.semantic_weight > 0.0)
+            ? (r.semantic_score / r.semantic_weight)
+            : INVALID_SCORE;
+    } else {
+        // dim_count == 0: EXACT current penalty-only behavior (support retired). thresholds.z
+        // (min_support_ratio) / score_weights.x (support_weight) are unused.
+        r.valid = r.solid_collision <= thresholds.y
+            && r.clearance_overlap <= thresholds.w
+            && (has_target == 0 || r.target_coverage > 0.0);
+        if (r.valid) {
+            r.score =
+                - r.solid_collision * score_weights.y
+                - r.complexity_overlap * score_weights.z
+                - r.clearance_overlap * score_weights.w;
+        }
     }
 
     if (r.target_total_weight > 0.0) {
@@ -825,6 +884,8 @@ EvalResult evaluate_best_near(ivec3 base_candidate, int rot_count, out ivec3 bes
     best_result.target_color_dist = 0.0;
     best_result.target_density = 0.0;
     best_result.target_total_weight = 0.0;
+    best_result.semantic_score = 0.0;
+    best_result.semantic_weight = 0.0;
     best_origin = base_candidate;
     best_slot = 0;
 
@@ -984,6 +1045,8 @@ void main() {
             empty_result.target_color_dist = 0.0;
             empty_result.target_density = 0.0;
             empty_result.target_total_weight = 0.0;
+            empty_result.semantic_score = 0.0;
+            empty_result.semantic_weight = 0.0;
             write_record(base_slot + rank, ivec3(0), empty_result, tile_id, 0);
             selected[rank] = LOCAL_COUNT;
             continue;

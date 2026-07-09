@@ -1425,6 +1425,16 @@ func _selection_domain_color(domain: String) -> Color:
 
 
 ## 统一的选中 marker 标签文本（表驱动，autoobject 与各数据域共用）
+## 把 SVTile 的 dirty_flags 字典格式化成 csv（语义对齐 scene_voxel_tile debug 的 flags=[..] 显示）。
+func _format_tile_dirty_flags(tile_record: Dictionary) -> String:
+	var flags: Dictionary = tile_record.get("dirty_flags", {})
+	var names := PackedStringArray()
+	for key in flags.keys():
+		if bool(flags[key]):
+			names.append(str(key))
+	return ",".join(names) if names.size() > 0 else "clean"
+
+
 func _format_selection_label(record: Dictionary) -> String:
 	var domain := str(record.get("domain", "data"))
 	var voxel: Vector3i = record.get("voxel_coord", Vector3i.ZERO)
@@ -1450,10 +1460,13 @@ func _format_selection_label(record: Dictionary) -> String:
 		return "\n".join(lines)
 	match domain:
 		SELECTION_DOMAIN_SVTILE:
-			return "SVTile %s\nrefs=%d  voxel=%s" % [
+			var svtile_record: Dictionary = record.get("tile_record", {})
+			return "SVTile %s\nrefs=%d  voxel=%s\nepoch=%d  flags=[%s]" % [
 				str(tile),
 				int(record.get("object_ref_count", 0)),
 				str(voxel),
+				int(svtile_record.get("epoch", 0)),
+				_format_tile_dirty_flags(svtile_record),
 			]
 		SELECTION_DOMAIN_SV:
 			return "SceneVoxel %s\ncomplexity=%.3f collision=%.3f" % [
@@ -2491,9 +2504,16 @@ func _select_current_mode_at_screen_position(cam: Camera3D, screen_pos: Vector2)
 func _editor_viewport_input(viewport_camera: Camera3D, event: InputEvent) -> bool:
 	_editor_camera = viewport_camera
 	if event is InputEventMouseButton:
-		return _handle_editor_mouse_button(viewport_camera, event as InputEventMouseButton)
+		if _handle_editor_mouse_button(viewport_camera, event as InputEventMouseButton):
+			return true
 	elif event is InputEventKey:
-		return _handle_editor_key(event as InputEventKey)
+		if _handle_editor_key(event as InputEventKey):
+			return true
+	# SPA 未消费的视口事件转发给 volume-score provider demo：插件只把编辑器输入转发给一个
+	# host（SPA 优先），作为场景 root 的 provider demo 收不到自己的图层/阈值快捷键，故在此代发。
+	var provider := _volume_score_provider_node()
+	if provider != null and provider.has_method("forward_editor_viewport_input"):
+		return bool(provider.call("forward_editor_viewport_input", viewport_camera, event))
 	return false
 
 
@@ -2678,7 +2698,12 @@ func _append_active_selection_hud_lines(lines: Array[String]) -> void:
 		str(voxel), str(tile), world_pos.x, world_pos.y, world_pos.z
 	])
 	if domain == SELECTION_DOMAIN_SVTILE:
-		lines.append("  object refs=%d" % int(record.get("object_ref_count", 0)))
+		var svtile_record: Dictionary = record.get("tile_record", {})
+		lines.append("  object refs=%d  epoch=%d  flags=[%s]" % [
+			int(record.get("object_ref_count", 0)),
+			int(svtile_record.get("epoch", 0)),
+			_format_tile_dirty_flags(svtile_record),
+		])
 	elif domain == SELECTION_DOMAIN_SV or domain == SELECTION_DOMAIN_TARGETSV:
 		lines.append("  complexity=%.3f  collision=%.3f" % [
 			float(record.get("complexity", 0.0)),

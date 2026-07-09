@@ -1,23 +1,19 @@
 @tool
 extends "res://scripts/core_demo_contract_fixture.gd"
 
-## placement-score-3d — Volume-Score Provider (VPG-backed)
+## placement-score-3d — Volume-Score Provider
 ##
-## Generates surface anchors over the scene field, then scores every prepared
-## AssetDescriptor asset against every anchor via VoxelPlacementGenerator.score_dimensions
-## (the CPU semantic-MATCH scorer), keeping per-anchor asset rankings. Registers itself with
-## the sibling CoreSPADemo (ScenePlacementActor) so the editor toolbar "Anchors"/"Score"
-## buttons and Anchor-mode click-select delegate here.
+## Generates surface anchors on the REAL terrain (over the standard terrain grid), and
+## registers itself with the sibling CoreSPADemo (ScenePlacementActor) so the editor toolbar
+## "Anchors"/"Score" buttons and Anchor-mode click-select delegate here.
 ##
-## Scoring backend note: this provider declares scoring dimensions, builds per-asset profiles
-## from each AssetDescriptor and per-anchor features from the TargetSV, and reads the returned
-## per-anchor `scores` array (one score per asset). It does NOT use the in-shader
-## score_voxel_tile.glsl / run_minimal path. See scoring-dimensions-design.md.
+## Scoring: to be rebuilt on the GPU (score_voxel_tile + footprint, 3D per-voxel sampling of
+## the TargetSV) — see scoring-dimensions-design.md (Phase 2). No scoring is wired right now,
+## so anchors show on the terrain but no winners are placed yet.
 ##
 ## Placed winners are the REAL descriptor mesh (never proxy boxes) — see the project
 ## CLAUDE.md rule "Placement / Score Demos: Render Real AssetDescriptor Assets".
 
-const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generator.gd")
 const VolumeScore3D := preload("res://scripts/utils/volume_score_3d.gd")
 const DemoUI := preload("res://scripts/utils/demo_ui.gd")
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
@@ -34,9 +30,7 @@ const ANCHOR_RADIUS_MIN := 0.06
 const SELECTED_ANCHOR_COLOR := Color(1.0, 0.64, 0.1, 0.95)
 
 # ---- Exported Tunables -----------------------------------------------------
-@export_range(16, 128, 1) var grid_resolution: int = 64        # 场景场 XZ 分辨率
-@export_range(4, 32, 1) var grid_height_slices: int = 16       # 场景场 Y 层数
-@export_range(2, 16, 1) var anchor_spacing: int = 8            # 锚点体素间距
+@export_range(8, 64, 1) var anchor_spacing: int = 32           # 锚点体素间距（在标准地形网格上）
 @export_range(1, 8, 1) var selected_anchor_top_k: int = 4      # 选中锚点显示的 Top-K 资产数
 @export_range(1, 24, 1) var rotation_slots: int = 12           # 每候选原点扫描的 yaw 档数
 @export_range(1, 8, 1) var asset_footprint_voxels: int = 4     # 资产 footprint 最长轴的体素跨度
@@ -256,10 +250,18 @@ func _ensure_scene_fields_ready() -> bool:
 	return not _scene_fields.is_empty()
 
 
+## 场帧 = 标准地形网格(TerrainConfig)+ 真实地形高度(采样真实 Terrain mesh);不再自建合成场。
 func _build_scene_fields() -> void:
-	_terrain_height = VolumeScore3D.sample_terrain_height_for_node(self, grid_resolution, grid_resolution)
-	_scene_fields = VolumeScore3D.build_scene_fields(grid_resolution, grid_height_slices, _terrain_height)
-	_terrain_height = _scene_fields.get("terrain_height", _terrain_height)
+	var tsz := TerrainConfigScript.TEXTURE_SIZE
+	var slices := 16
+	var capture := TerrainConfigScript.CAPTURE_SIZE
+	var max_h := TerrainConfigScript.MAX_HEIGHT
+	_terrain_height = VolumeScore3D.sample_terrain_height_for_node(self, tsz, tsz)
+	_scene_fields = {
+		"grid": Vector3i(tsz, slices, tsz),
+		"voxel_size": VoxelGeneral.voxel_size_for_resolution(capture, tsz, max_h / float(slices)),
+		"grid_origin": VoxelGeneral.default_grid_origin(capture),
+	}
 
 
 func _ensure_assets_ready() -> void:
@@ -287,122 +289,12 @@ func _generate_anchors() -> void:
 	_total_anchors = _anchors.size()
 
 
-# ---- VPG scoring -----------------------------------------------------------
+# ---- Scoring (待重建) ------------------------------------------------------
 
-## 对每个资产用 VPG.score_dimensions 做语义 MATCH 打分：demo 声明维度 + 从 descriptor 建资产画像 +
-## 从 TargetSV 建锚点特征，读取每锚点返回的 scores 数组（每资产一分）。见 scoring-dimensions-design.md。
+## 精细语义打分待重建:改在 TargetSV 网格上用 GPU score_voxel_tile + footprint(3D 逐体素采样),
+## 见 scoring-dimensions-design.md(Phase 2)。当前无打分 → 无胜者,仅在真实地形上显示锚点。
 func _run_scoring() -> void:
 	_clear_scores()
-	if _anchors.is_empty() or _assets.is_empty():
-		push_warning("[VolumeScore] Cannot score: anchors or assets empty")
-		return
-
-	# 精细语义打分:逻辑在 VPG(score_dimensions),demo 只声明维度 + 从 descriptor 建资产画像 +
-	# 从 TargetSV 建锚点特征 + 调用。见根目录 scoring-dimensions-design.md。
-	var t0 := Time.get_ticks_msec()
-	var dimensions := _scoring_dimensions()
-	var asset_profiles := _build_asset_profiles()
-	var anchor_features := _build_anchor_features()
-	var scored: Array = VoxelPlacementGenerator.score_dimensions(dimensions, asset_profiles, anchor_features)
-
-	for asset_index in range(_assets.size()):
-		var anchor_results: Array[Dictionary] = []
-		for anchor_index in range(_anchors.size()):
-			var per: Dictionary = scored[anchor_index] if anchor_index < scored.size() else {}
-			var scores: PackedFloat32Array = per.get("scores", PackedFloat32Array())
-			anchor_results.append({
-				"score": float(scores[asset_index]) if asset_index < scores.size() else -INF,
-				"valid": true,
-				"rotation_slot": 0,
-				"voxel": _anchor_voxel(anchor_index),
-			})
-		_results.append({"ok": true, "asset_index": asset_index, "anchor_results": anchor_results})
-
-	_elapsed_score_ms = float(Time.get_ticks_msec() - t0)
-	_winner_per_anchor = _compute_winners()
-	_scored = true
-	print("[VolumeScore] Semantic-scored %d assets × %d anchors (%d dims) in %.0f ms" % [
-		_assets.size(), _total_anchors, dimensions.size(), _elapsed_score_ms])
-
-
-## 声明打分维度(数据驱动:加维度 = 在此加一行 + 对应通道 + 画像/特征一列)。
-## 通道:0=collision 1=complexity 2=color.r 3=color.g 4=color.b。
-func _scoring_dimensions() -> Array:
-	var m := VoxelPlacementGenerator.FIT_MODE_MATCH
-	return [
-		{"name": "collision_fit", "channel": 0, "mode": m, "weight": 1.0},
-		{"name": "complexity_fit", "channel": 1, "mode": m, "weight": 0.6},
-		{"name": "color_fit_r", "channel": 2, "mode": m, "weight": 0.34},
-		{"name": "color_fit_g", "channel": 3, "mode": m, "weight": 0.34},
-		{"name": "color_fit_b", "channel": 4, "mode": m, "weight": 0.34},
-	]
-
-
-## 每资产画像 [collision, complexity, color.r, color.g, color.b],来源 AssetDescriptor。
-func _build_asset_profiles() -> Array:
-	var profiles: Array = []
-	for a in _assets:
-		var col: Color = a.get("color", Color.WHITE)   # descriptor.get_color(),.a = complexity
-		var collision := _descriptor_collision(a.get("descriptor"))
-		profiles.append(PackedFloat32Array([collision, clampf(col.a, 0.0, 1.0), col.r, col.g, col.b]))
-	return profiles
-
-
-## 资产 collision 画像(来自 descriptor):object_type 含 "rock" → 高,否则取 collision 样本均值。
-func _descriptor_collision(d) -> float:
-	if d == null:
-		return 0.15
-	if str(d.get("object_type")).to_lower().find("rock") >= 0:
-		return 0.9
-	var samples: Array = d.get_collision() if d.has_method("get_collision") else []
-	if samples.is_empty():
-		return 0.15
-	var s := 0.0
-	for e in samples:
-		s += clampf(float((e as Dictionary).get("collision_strength", 0.0)), 0.0, 1.0)
-	return clampf(s / float(samples.size()), 0.0, 1.0)
-
-
-## 每锚点环境特征 [collision, complexity, color.rgb],来源 TargetSV(锚点 XZ 列按占据度聚合)。
-func _build_anchor_features() -> Array:
-	var features: Array = []
-	var meta := TargetSVLoaderScript.metadata()
-	var decoded: Dictionary = TargetSVLoaderScript.decode() if not meta.is_empty() else {}
-	var ok := bool(decoded.get("valid", false))
-	var tsz := int(meta.get("texture_size", 256))
-	var slices := int(meta.get("slice_count", 16))
-	var capture := float(meta.get("capture_size", TerrainConfigScript.CAPTURE_SIZE))
-	var collision: PackedFloat32Array = decoded.get("target_collision", PackedFloat32Array())
-	var color: PackedColorArray = decoded.get("target_color", PackedColorArray())
-	var occ: PackedFloat32Array = decoded.get("target_completely", PackedFloat32Array())
-	for i in range(_anchor_world_positions.size()):
-		var feat := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0])
-		if ok:
-			var wp := _anchor_world_positions[i]
-			var tx := clampi(int(round((wp.x / capture + 0.5) * float(tsz - 1))), 0, tsz - 1)
-			var tz := clampi(int(round((wp.z / capture + 0.5) * float(tsz - 1))), 0, tsz - 1)
-			var wsum := 0.0
-			var cc := 0.0; var cx := 0.0; var cr := 0.0; var cg := 0.0; var cb := 0.0
-			for s in range(slices):
-				var idx := tx + tsz * (tz + tsz * s)
-				if idx < 0 or idx >= occ.size():
-					continue
-				var o := occ[idx]
-				if o <= 0.01:
-					continue
-				var c: Color = color[idx] if idx < color.size() else Color(0, 0, 0, 0)
-				cc += (collision[idx] if idx < collision.size() else 0.0) * o
-				cx += c.a * o
-				cr += c.r * o; cg += c.g * o; cb += c.b * o
-				wsum += o
-			if wsum > 0.0:
-				feat[0] = clampf(cc / wsum, 0.0, 1.0)
-				feat[1] = clampf(cx / wsum, 0.0, 1.0)
-				feat[2] = clampf(cr / wsum, 0.0, 1.0)
-				feat[3] = clampf(cg / wsum, 0.0, 1.0)
-				feat[4] = clampf(cb / wsum, 0.0, 1.0)
-		features.append(feat)
-	return features
 
 
 func _anchor_voxel(anchor_index: int) -> Vector3i:
@@ -793,7 +685,7 @@ func _update_hud() -> void:
 	var rd_status := "ready" if RenderingServer.get_rendering_device() != null else "NO GPU"
 	var lines: Array[String] = [
 		"placement-score-3d (volume score / VPG)",
-		"GPU: %s   grid=%dx%dx%d   assets=%d" % [rd_status, grid_resolution, grid_height_slices, grid_resolution, _assets.size()],
+		"GPU: %s   grid=%s   assets=%d" % [rd_status, str(_scene_fields.get("grid", Vector3i.ZERO)), _assets.size()],
 		"Anchors: %d (spacing=%d)   Rotations: %d   Score: %.0f ms" % [_total_anchors, anchor_spacing, rotation_slots, _elapsed_score_ms],
 		"Toolbar: Anchors → generate, Score → rank assets; click an anchor to inspect top-%d" % selected_anchor_top_k,
 		"",

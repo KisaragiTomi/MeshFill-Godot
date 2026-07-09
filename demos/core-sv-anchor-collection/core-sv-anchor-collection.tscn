@@ -1,6 +1,7 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://demos/core-sv-anchor-collection/sv_anchor_collection_demo.gd" id="1_anchor"]
+[ext_resource type="Script" path="res://demos/core-SPA-scene-placement-actor/spa_interactive_demo.gd" id="2_spa"]
 [ext_resource type="PackedScene" path="res://demos/utils_demo_setup.tscn" id="99_setup"]
 
 [node name="SVAnchorCollectionDemo" type="Node3D" unique_id=308417662]
@@ -9,6 +10,11 @@ metadata/source_doc = "res://demos/core-SPA-scene-placement-actor/autoobject-gpu
 metadata/test_doc = "res://demos/core-sv-anchor-collection/core-sv-anchor-collection.md"
 metadata/focus = "collect_sv_anchors GPU dispatch: position-only anchor rules (self complexity/collision gates, target demand, support below) validated via real RenderingDevice storage buffers and readback; missing RD skips GPU anchor collection"
 metadata/gpu_required = true
+
+[node name="CoreSPADemo" type="Node3D" parent="."]
+script = ExtResource("2_spa")
+selection_mode = 3
+spawn_autoobjects_on_start = false
 
 [node name="DemoSetup" type="Node3D" parent="." unique_id=1402882551 instance=ExtResource("99_setup")]
 
