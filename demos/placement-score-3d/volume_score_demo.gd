@@ -7,9 +7,10 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 ## registers itself with the sibling CoreSPADemo (ScenePlacementActor) so the editor toolbar
 ## "Anchors"/"Score" buttons and Anchor-mode click-select delegate here.
 ##
-## Scoring: to be rebuilt on the GPU (score_voxel_tile + footprint, 3D per-voxel sampling of
-## the TargetSV) — see scoring-dimensions-design.md (Phase 2). No scoring is wired right now,
-## so anchors show on the terrain but no winners are placed yet.
+## Scoring: GPU fine-selection (细筛选) — per asset, one full-grid score_voxel_tile pass
+## (data-driven per-dimension MATCH over the TargetSV env field) via
+## VoxelPlacementGenerator.run_minimal; the per-voxel score at each anchor ranks the assets
+## and the winner's REAL mesh is placed. See scoring-dimensions-design.md (Phase 2).
 ##
 ## Placed winners are the REAL descriptor mesh (never proxy boxes) — see the project
 ## CLAUDE.md rule "Placement / Score Demos: Render Real AssetDescriptor Assets".
@@ -22,14 +23,11 @@ const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generator.gd")
 const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 
-const VOXEL_DISPLAY_GPU_OBJECTS := SPAEditorContract.VOXEL_DISPLAY_GPU_OBJECTS
 const VOXEL_DISPLAY_ANCHOR := SPAEditorContract.VOXEL_DISPLAY_ANCHOR
 const VOLUME_SCORE_DISPLAY_OWNER := "volume_score"
 const SELECTION_DOMAIN_ANCHOR := SPAEditorContract.SELECTION_DOMAIN_ANCHOR
 const SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR := SPAEditorContract.SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR
 const ANCHOR_RADIUS_MIN := 0.06
-## 选中锚点高亮色，与 SPA canonical SELECTION_DOMAIN_ANCHOR 保持一致
-const SELECTED_ANCHOR_COLOR := Color(1.0, 0.64, 0.1, 0.95)
 
 # ---- Exported Tunables -----------------------------------------------------
 @export_range(8, 64, 1) var anchor_spacing: int = 32           # 锚点体素间距（在标准地形网格上）
@@ -67,7 +65,6 @@ var _collision_field := PackedFloat32Array()       # voxel_count(=collision)
 # ---- Display Nodes ---------------------------------------------------------
 var _hud_label: Label
 var _display_root: Node3D
-var _anchor_point_display: MultiMeshInstance3D
 
 
 func _ready() -> void:
@@ -531,7 +528,6 @@ func _build_visualization() -> void:
 		_attach_display_root_to_spa()
 	for child in _display_root.get_children():
 		child.queue_free()
-	_anchor_point_display = null
 	if _anchor_world_positions.is_empty():
 		return
 	if _selected_anchor_idx >= _anchor_world_positions.size():
@@ -562,7 +558,6 @@ func _build_anchor_point_display() -> void:
 	points.name = "AnchorPoints"
 	points.multimesh = mm
 	points.material_override = mat
-	_anchor_point_display = points
 	_display_root.add_child(points)
 	_register_spa_voxel_display_node(VOXEL_DISPLAY_ANCHOR, points)
 

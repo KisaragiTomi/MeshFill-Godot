@@ -45,7 +45,7 @@ TargetSceneVoxel（目标画布）            Placement Pipeline（生成管线�
 | **TargetSV** | `scripts/target_scene_voxel_generator.gd` | 目标体素画布，GPU 生成/持久化/解码，对外提供 `target_occupancy` + `target_color` |
 | **AssetDescriptor** | `scripts/asset_descriptor.gd` | 资产语义描述符，定义每个可放置物体的默认 color/complexity/collision/探针 |
 | **Probe Prefilter** | `scripts/autoobject_probe_prefilter_gpu.gd` | GPU 语义探针粗筛，从 TargetSV 和 SV[t-1] 中提取 anchor，匹配候选资产 |
-| **VoxelPlacementGenerator** | `scripts/voxel_placement_generator.gd` | GPU 放置评分与放置：数据驱动语义维度打分（`score_dimensions`）+ footprint/collision/clearance 精筛（support 已由 anchor 阶段保证，不再评分） |
+| **VoxelPlacementGenerator** | `scripts/voxel_placement_generator.gd` | GPU 放置评分与放置：数据驱动语义维度打分（per-dimension MATCH，`score_voxel_tile.glsl`）+ footprint/collision/clearance 精筛（support 已由 anchor 阶段保证，不再评分） |
 | **SceneVoxelCommitter** | `scripts/scene_voxel_committer.gd` | 体素提交与合成，管理 SceneVoxel 常驻显存状态（stamp-only 提交），tile/collision/debug 子系统拆分见 `scene_voxel_tile_store.gd` / `scene_voxel_collision_field.gd` / `scene_voxel_debug.gd` |
 | **SceneVoxelTile** | `scripts/scene_voxel_tile_store.gd` | 粗粒度体素瓦片（4×4×4），dirty 追踪、局部重建、对象引用索引 |
 | **GPUAutoObjectRuntime** | `scripts/gpu_autoobject_runtime.gd` | GPU 端百万级运行时对象池，管理 object id/transform/profile |

@@ -16,6 +16,23 @@
 
 ## 核心模型:维度 =(场通道 × 拟合模式 × 权重)+ 每资产取值
 
+**一句话**:一个「维度(Dimension)」= 一个**打分轴 / 一条比较标准**——拿**资产画像在该轴上的期望值**,
+去比**环境场在该通道上的实际值**,得到一个 `0..1` 契合度,再按权重并入总分。把「环境特征」和「资产画像」
+都看成一个向量,每个维度就是这个向量空间里的**一根坐标轴**;打分 = 在每根轴上量二者的接近程度、再合并。
+这既是它叫「维度」的原因,也是为何**加一条判据 = 加一根轴(加数据),不改 shader**。
+
+一个维度的字段:
+
+| 字段 | 含义 |
+|---|---|
+| `channel` | 读环境场的哪一路通道 |
+| `mode` | 怎么比;当前只实现 `MATCH`(`fit = 1 − |env − asset|`),`PENALTY` / `GATE` 预留未实现(fit=0) |
+| `weight` | 该轴在总分里的权重 |
+| `min` / `max` | 该轴取值范围;**当前 `MATCH` 未消费**(预留给归一化,现直接用原始 `0..1` 值) |
+
+打分**两侧来源不同**:**环境侧** = `env_channels[voxel]`(TargetSV / 场景场实际长什么样);
+**资产侧** = `asset_dimension_profile`(资产“想匹配 / 代表”的值)。见下「判断源」。
+
 ### 三张表
 
 ```text
@@ -46,12 +63,18 @@ AssetProfile[asset] = float[dimension_count]
 ### 打分 = 一个循环(在 VPG / score shader 内)
 
 ```text
-score(voxel, asset) = Σ_d  dim[d].weight · fit( dim[d].mode,
-                                                Field[voxel][dim[d].channel],
-                                                AssetProfile[asset][d] )
+// 每个 (voxel, asset) 的语义分 = 各维度契合度的加权平均
+score(voxel, asset) = ( Σ_d  dim[d].weight · fit( dim[d].mode,
+                                                  Field[voxel][dim[d].channel],
+                                                  AssetProfile[asset][d] ) )
+                      / Σ_d dim[d].weight        // 归一化 → 落在 fit 量纲(MATCH ⟹ 0..1)
 
-valid(voxel, asset) = AND_d  满足 dim[d].constraint      // 初始集无约束型维度 → 恒真;胜者 = 最高语义分
+valid(voxel, asset) = 有 target coverage(footprint 覆盖到 TargetSV 内容)   // 无约束型维度不设门;胜者 = 最高语义分
 ```
+
+> GPU 版(`score_voxel_tile.glsl`, `dim_count > 0`)按 **footprint 权重**逐体素累加同一公式,分母是参与的
+> footprint 权重和;`valid` 仅要求 `target_coverage > 0`(MATCH 维度本身不淘汰),否则写 `INVALID_SCORE`
+> (`-1e18`)哨兵。下游 reduce / stamp 一律按 **valid flag** 取舍,不看分数符号。
 
 **加一个新维度** → 追加 `Dimension` 一行 + `Field` 一个通道 + `AssetProfile` 一列;
 shader 只按 `dimension_count` 循环,**不改**。这就是可拓展性的落点。
@@ -97,20 +120,31 @@ shader 只按 `dimension_count` 循环,**不改**。这就是可拓展性的落�
 | ~~clearance~~ | **删除**(inert:无悬垂 / 堆叠) |
 | ~~collision 淘汰 / gate~~ | **删除** 物理门;collision 改由 `collision_fit`(MATCH)以语义方式承载 |
 
-新系统 = **纯语义特征匹配**(3 个 `MATCH` 维度),无物理门。
+新系统 = **纯语义特征匹配**(3 条判据 / 5 行 `MATCH` 维度,颜色 = r/g/b),无物理门。
 
 结果:anchor 28(TargetSV collision 高、无植被色)→ rock 的 `collision_fit` 高、`color_fit` 符 → **石头赢**;
 tree 因 `collision_fit` 低、`color_fit` 不符而落败。
 
-## 初始维度集
+## 初始维度集(当前实现)
 
-全部 `MATCH`(无 gate):
+概念上 **3 条判据**,实现成 **5 行维度表**(颜色 = r/g/b 三个标量通道,各占 ~0.34 权重,合计 ≈1.0,
+避免颜色相对 collision / complexity 被三倍加权)。全部 `MATCH`、无 gate。对应 demo 的
+[`_scoring_dimensions()`](demos/placement-score-3d/volume_score_demo.gd),`channel` 一一对应 5 通道
+环境场 `[collision, complexity, r, g, b]`:
 
-| # | 维度 | 场通道 | 说明 |
-|---|---|---|---|
-| 1 | `collision_fit` | collision | 岩石地(高 collision)配石头 |
-| 2 | `color_fit` | color.rgb | 颜色匹配 |
-| 3 | `complexity_fit` | complexity | 复杂度匹配 |
+| # | 维度 | 场通道 (channel) | mode | weight | 说明 |
+|---|---|---|---|---|---|
+| 1 | `collision_fit` | 0 collision | `MATCH` | 1.0 | 岩石地(高 collision)配石头 |
+| 2 | `complexity_fit` | 1 complexity | `MATCH` | 1.0 | 复杂度匹配 |
+| 3 | `color_fit.r` | 2 color.r | `MATCH` | 0.34 | 颜色匹配(r) |
+| 4 | `color_fit.g` | 3 color.g | `MATCH` | 0.34 | 颜色匹配(g) |
+| 5 | `color_fit.b` | 4 color.b | `MATCH` | 0.34 | 颜色匹配(b) |
+
+资产侧 `asset_dimension_profile` = `[mean_collision_strength, complexity, color.r, color.g, color.b]`
+(5 值,与 5 通道对齐;由 `AssetDescriptor` 派生)。
+
+> **上限**:资产画像现由两个 `vec4`(`cfg_asset_profile0 / 1`)承载 ⟹ 最多 **8 维**;超出需另建
+> per-asset profile SSBO。维度表(`_pack_dimension_table`)本身上限 `MAX_SCORING_DIMENSIONS = 16`。
 
 ---
 
@@ -129,10 +163,8 @@ tree 因 `collision_fit` 低、`color_fit` 不符而落败。
 
 ## 实施状态
 
-- **Phase 1(已落,CPU)**:数据契约 + 数据驱动打分已实现并验证。
-  - `VoxelPlacementGenerator.score_dimensions(dimensions, asset_profiles, anchor_features)` —— 维度打分核心(CPU 参考实现)。
-  - demo:`_scoring_dimensions`(声明)+ `_build_asset_profiles`(源自 `AssetDescriptor`)+ `_build_anchor_features`(源自 TargetSV 列聚合)+ 调用。
-  - 效果:anchor 28 → 石头;分数分化,放置按语义分布(不再树通吃)。
+- **Phase 1(历史,CPU 参考实现,已移除)**:最早用一版 CPU 数据驱动打分打通数据契约(维度表 / 资产画像 / 锚点特征聚合)并验证语义分化。**该 CPU 参考实现已随 Phase 2 落地删除**——`score_dimensions` / `_build_asset_profiles` / `_build_anchor_features` 等函数**在代码里已不存在**,仅此处留档;当前**无 CPU 打分路径**,demo 只保留 `_scoring_dimensions()`(声明维度集)。
+  - 效果(当时):分数分化,放置按语义分布(不再树通吃)。
 - **Phase 2(已落,GPU)**:同一份数据契约(维度表 / 画像 / 多通道场)已端口进 `score_voxel_tile.glsl`(上面第 3 项),数据驱动 per-dimension MATCH 打分在 GPU 上跑通并经编辑器验证。
   - support 分支 / 门 / 分项已移除(锚点已保证支撑),`support_ratio/hit/total` 记录槽保留但恒 0;footprint 烘焙不再产生 `FLAG_SUPPORT` ground-probe。
   - per-voxel 内层已改为 **per-dimension 循环**:`score = Σ_d weight_d·fit_d`(MATCH = `1-|env_ch - asset_profile|`)按 footprint 权重归一;`dim_count == 0` 走原 penalty-only 分支(逐字节等价,向后兼容)。
@@ -143,7 +175,7 @@ tree 因 `collision_fit` 低、`color_fit` 不符而落败。
 
 ## 向后兼容
 
-- 维度表为空(`dimension_count == 0`)时,scorer 退化为现状 / 纯物理门,**其他调用方不受影响**。
+- 维度表为空(`dimension_count == 0`)时,scorer 退化为 **penalty-only 老路**(collision/complexity/clearance 罚分,run_multi_asset / SPA 走此路),**其他调用方不受影响**。
 - 新增维度权重默认 0 时,对既有打分结果无影响,可灰度接入。
 
 ---

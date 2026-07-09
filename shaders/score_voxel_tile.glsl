@@ -20,7 +20,7 @@
 //   2: target_color_fit  — 1 − mean RGB distance to asset_color, higher = better
 //   3: target_density    — average target complexity under footprint
 //   4: placement_score   — final candidate score
-//   5: support_ratio
+//   5: support_ratio      [always 0 — support retired, slot kept for layout stability]
 //   6: solid_collision
 //   7: clearance_overlap
 
@@ -75,7 +75,7 @@ layout(set = 0, binding = 9, std430) restrict readonly buffer DimensionTable {
 // Config moved out of the push constant (Godot caps push constants at 128 bytes): penalty
 // weights + env_channel_count + the per-asset dimension profile (8 slots).
 layout(set = 0, binding = 10, std430) restrict readonly buffer ScoreConfig {
-    vec4 cfg_score_weights;    // support_weight, collision_penalty, overlap_penalty, clearance_penalty
+    vec4 cfg_score_weights;    // x = support_weight [unused, support retired]; y/z/w = collision/overlap/clearance penalty
     ivec4 cfg_dim_meta;        // x = env_channel_count, yzw = reserved
     vec4 cfg_asset_profile0;   // per-asset dimension profile values, dims 0..3
     vec4 cfg_asset_profile1;   // per-asset dimension profile values, dims 4..7
@@ -170,13 +170,13 @@ layout(push_constant, std430) uniform Params {
     ivec4 sample_min_pad;          // sample min xyz, .w = packed asset color (RGBA8)
     ivec4 sample_max_pad;          // sample max xyz exclusive, .w = has_target (0/1)
     ivec4 ids_counts;              // footprint_count, asset_index, rotation_index, scale_index
-    vec4 thresholds;               // solid_threshold, collision_limit, min_support_ratio, clearance_limit
+    vec4 thresholds;               // solid_threshold, collision_limit, min_support_ratio [unused], clearance_limit
     ivec4 dispatch_search;         // candidate_voxel_sparse_count, search radius xyz
     ivec4 footprint_pivot_pad;     // xyz = footprint pivot voxels (subtracted before yaw), w = dim_count (0 = penalty-only)
 };  // 128 bytes exactly (8 x 16) = Godot push-constant limit. score_weights / env_channel_count /
     // asset_profile moved to the ScoreConfig SSBO (binding 10).
 
-const uint FLAG_SUPPORT = 1u;
+const uint FLAG_SUPPORT = 1u;    // reserved/unused — support retired; kept so FLAG_CLEARANCE bit stays 2u
 const uint FLAG_CLEARANCE = 2u;
 const uint TILE_SIZE = 8u;
 const uint LOCAL_COUNT = 512u;
@@ -833,7 +833,7 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
             : INVALID_SCORE;
     } else {
         // dim_count == 0: EXACT current penalty-only behavior (support retired). thresholds.z
-        // (min_support_ratio) / score_weights.x (support_weight) are unused.
+        // (min_support_ratio) / cfg_score_weights.x (support_weight) are unused.
         r.valid = r.solid_collision <= thresholds.y
             && r.clearance_overlap <= thresholds.w
             && (has_target == 0 || r.target_coverage > 0.0);
