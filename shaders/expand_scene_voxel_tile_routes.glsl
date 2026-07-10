@@ -12,7 +12,7 @@
 //
 // Inputs:
 //   tile_summaries[]            — 8 uints per tile (32 bytes), words [4]=scene_count, [5]=collision_count
-//   voxel_sparse_votes[]        — dense per-asset tile votes, layout:
+//   asset_tile_votes[]          — dense per-asset tile votes, layout:
 //                                  votes[asset_id * tile_count + tile_id] = score
 //   route_profile_radii[]       — per-asset expansion radius, uvec4(xyz, 0)
 // Outputs:
@@ -29,7 +29,7 @@ layout(set = 0, binding = 0, std430) restrict readonly buffer TileSummaries {
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer VoxelRegionVotes {
-    float voxel_sparse_votes[];
+    float asset_tile_votes[];
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer RouteProfileRadii {
@@ -127,7 +127,7 @@ void main() {
                 continue;
             }
 
-            float vote = voxel_sparse_votes[asset_base + center_id];
+            float vote = asset_tile_votes[asset_base + center_id];
             if (vote <= vote_threshold) continue;
             positive_votes++;
 

@@ -19,8 +19,11 @@
 //   1: target_complexity_fit  — 1 − mean |target complexity - collision strength|, higher = better
 //   2: target_color_fit  — 1 − mean RGB distance to asset_color, higher = better
 //   3: target_density    — average target complexity under footprint
-//   4: placement_score   — final candidate score
-//   5: support_ratio      [always 0 — support retired, slot kept for layout stability]
+//   4: placement_score   — final candidate score (best over the yaw sweep at this voxel)
+//   5: best_rotation_slot — winning yaw slot index (0..rotation_slots-1) at this voxel;
+//                           reuses the retired support_ratio slot (support gone). CPU reads
+//                           score (ch 4) + rotation (ch 5) straight from this buffer — the
+//                           per-tile tile_topk record is no longer read back.
 //   6: solid_collision
 //   7: clearance_overlap
 
@@ -47,7 +50,7 @@ layout(set = 0, binding = 4, std430) restrict buffer TileTopK {
 };
 
 layout(set = 0, binding = 5, std430) restrict readonly buffer CandidateVoxelRegions {
-    uint candidate_voxel_sparse_ids[];
+    uint candidate_tile_ids[];
 };
 
 layout(set = 0, binding = 6, std430) restrict readonly buffer TargetField {
@@ -75,7 +78,7 @@ layout(set = 0, binding = 9, std430) restrict readonly buffer DimensionTable {
 // Config moved out of the push constant (Godot caps push constants at 128 bytes): penalty
 // weights + env_channel_count + the per-asset dimension profile (8 slots).
 layout(set = 0, binding = 10, std430) restrict readonly buffer ScoreConfig {
-    vec4 cfg_score_weights;    // x = support_weight [unused, support retired]; y/z/w = collision/overlap/clearance penalty
+    vec4 cfg_score_weights;    // x reserved (support retired); y/z/w = collision/overlap/clearance penalty
     ivec4 cfg_dim_meta;        // x = env_channel_count, yzw = reserved
     vec4 cfg_asset_profile0;   // per-asset dimension profile values, dims 0..3
     vec4 cfg_asset_profile1;   // per-asset dimension profile values, dims 4..7
@@ -170,13 +173,13 @@ layout(push_constant, std430) uniform Params {
     ivec4 sample_min_pad;          // sample min xyz, .w = packed asset color (RGBA8)
     ivec4 sample_max_pad;          // sample max xyz exclusive, .w = has_target (0/1)
     ivec4 ids_counts;              // footprint_count, asset_index, rotation_index, scale_index
-    vec4 thresholds;               // solid_threshold, collision_limit, min_support_ratio [unused], clearance_limit
-    ivec4 dispatch_search;         // candidate_voxel_sparse_count, search radius xyz
+    vec4 thresholds;               // solid_threshold, collision_limit, .z reserved (support retired), clearance_limit
+    ivec4 dispatch_search;         // candidate_tile_count, search radius xyz
     ivec4 footprint_pivot_pad;     // xyz = footprint pivot voxels (subtracted before yaw), w = dim_count (0 = penalty-only)
 };  // 128 bytes exactly (8 x 16) = Godot push-constant limit. score_weights / env_channel_count /
     // asset_profile moved to the ScoreConfig SSBO (binding 10).
 
-const uint FLAG_SUPPORT = 1u;    // reserved/unused — support retired; kept so FLAG_CLEARANCE bit stays 2u
+// bit 0 (value 1u) reserved — was FLAG_SUPPORT; support retired. FLAG_CLEARANCE stays 2u.
 const uint FLAG_CLEARANCE = 2u;
 const uint TILE_SIZE = 8u;
 const uint LOCAL_COUNT = 512u;
@@ -193,7 +196,7 @@ const uint DEBUG_CH_TARGET_COMPLEXITY_FIT  = 1u;
 const uint DEBUG_CH_TARGET_COLOR_FIT  = 2u;
 const uint DEBUG_CH_TARGET_DENSITY    = 3u;
 const uint DEBUG_CH_PLACEMENT_SCORE   = 4u;
-const uint DEBUG_CH_SUPPORT_RATIO     = 5u;
+const uint DEBUG_CH_BEST_ROTATION_SLOT = 5u;
 const uint DEBUG_CH_SOLID_COLLISION   = 6u;
 const uint DEBUG_CH_CLEARANCE_OVERLAP = 7u;
 const uint SCORE_CONTRACT_MAGIC = 0x4D465052u;
@@ -832,8 +835,8 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
             ? (r.semantic_score / r.semantic_weight)
             : INVALID_SCORE;
     } else {
-        // dim_count == 0: EXACT current penalty-only behavior (support retired). thresholds.z
-        // (min_support_ratio) / cfg_score_weights.x (support_weight) are unused.
+        // dim_count == 0: EXACT current penalty-only behavior (support retired).
+        // thresholds.z and cfg_score_weights.x are reserved/zero (support retired).
         r.valid = r.solid_collision <= thresholds.y
             && r.clearance_overlap <= thresholds.w
             && (has_target == 0 || r.target_coverage > 0.0);
@@ -924,7 +927,7 @@ void write_record(uint slot, ivec3 origin, EvalResult r, uint tile_id, int best_
     tile_topk[base + 3u] = vec4(r.ignored_sample, r.valid ? 1.0 : 0.0, r.support_hit, r.support_total);
 }
 
-void write_debug_voxel(ivec3 origin, EvalResult r) {
+void write_debug_voxel(ivec3 origin, EvalResult r, int best_rotation_slot) {
     if (!in_grid_bounds(origin)) return;
     uint base = uint(voxel_index(origin)) * NUM_DEBUG_CHANNELS;
     debug_voxel[base + DEBUG_CH_TARGET_COVERAGE]   = r.target_coverage;
@@ -932,7 +935,9 @@ void write_debug_voxel(ivec3 origin, EvalResult r) {
     debug_voxel[base + DEBUG_CH_TARGET_COLOR_FIT]   = r.target_color_dist;
     debug_voxel[base + DEBUG_CH_TARGET_DENSITY]     = r.target_density;
     debug_voxel[base + DEBUG_CH_PLACEMENT_SCORE]    = r.score;
-    debug_voxel[base + DEBUG_CH_SUPPORT_RATIO]      = r.support_ratio;
+    // Winning yaw slot for this voxel (only meaningful when r.valid); reuses the retired
+    // support_ratio channel so the CPU reads score + rotation from this one debug buffer.
+    debug_voxel[base + DEBUG_CH_BEST_ROTATION_SLOT] = r.valid ? float(best_rotation_slot) : 0.0;
     debug_voxel[base + DEBUG_CH_SOLID_COLLISION]    = r.solid_collision;
     debug_voxel[base + DEBUG_CH_CLEARANCE_OVERLAP]  = r.clearance_overlap;
 
@@ -941,7 +946,7 @@ void write_debug_voxel(ivec3 origin, EvalResult r) {
     atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_TARGET_COLOR_FIT], q1000(r.target_color_dist));
     atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_TARGET_DENSITY], q1000(r.target_density));
     atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_PLACEMENT_SCORE], q1000(r.score));
-    atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_SUPPORT_RATIO], q1000(r.support_ratio));
+    atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_BEST_ROTATION_SLOT], uint(max(best_rotation_slot, 0)));
     atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_SOLID_COLLISION], q1000(r.solid_collision));
     atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_CLEARANCE_OVERLAP], q1000(r.clearance_overlap));
 }
@@ -951,16 +956,16 @@ void main() {
     uint group_index = gl_WorkGroupID.x;
     uint tile_count = uint(grid_size_tile_count.w);
     bool direct_all_tiles = dispatch_search.x < 0;
-    uint candidate_voxel_sparse_count = direct_all_tiles
+    uint candidate_tile_count = direct_all_tiles
         ? uint(-dispatch_search.x)
         : uint(max(dispatch_search.x, 0));
     uint top_k = uint(tile_counts_topk.w);
 
-    if (group_index >= candidate_voxel_sparse_count) {
+    if (group_index >= candidate_tile_count) {
         return;
     }
 
-    uint tile_id = direct_all_tiles ? group_index : candidate_voxel_sparse_ids[group_index];
+    uint tile_id = direct_all_tiles ? group_index : candidate_tile_ids[group_index];
     if (tile_id >= tile_count) {
         return;
     }
@@ -995,7 +1000,8 @@ void main() {
     s_candidate_origins[local_index] = ivec4(candidate_origin, local_best_slot);
 
     int debug_slot;
-    write_debug_voxel(base_candidate, evaluate_best_at(base_candidate, rot_count, debug_slot));
+    EvalResult debug_result = evaluate_best_at(base_candidate, rot_count, debug_slot);
+    write_debug_voxel(base_candidate, debug_result, debug_slot);
 
     barrier();
 

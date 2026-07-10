@@ -3,7 +3,7 @@
 
 // Packs dense per-asset tile votes into schema-v1 candidate route records/ranges.
 // Inputs:
-//   voxel_sparse_votes[asset_id * tile_count + tile_id] = vote score
+//   asset_tile_votes[asset_id * tile_count + tile_id] = vote score
 //   route_profile_radii[asset_id].xyz = route expansion radius in tile units
 // Outputs:
 //   candidate_route_records[] = uvec4(tile_id, 0, 0, 0)
@@ -15,7 +15,7 @@
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) restrict readonly buffer VoxelRegionVotes {
-    float voxel_sparse_votes[];
+    float asset_tile_votes[];
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer RouteProfileRadii {
@@ -89,7 +89,7 @@ void main() {
         uvec4 raw_radius = route_profile_radii[asset_id];
         ivec3 radius = ivec3(raw_radius.xyz);
         for (uint center_id = 0u; center_id < tile_count; center_id++) {
-            float vote = voxel_sparse_votes[asset_base + center_id];
+            float vote = asset_tile_votes[asset_base + center_id];
             if (vote <= vote_threshold) continue;
             positive_votes++;
 

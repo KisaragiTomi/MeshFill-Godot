@@ -132,12 +132,12 @@ func run_probe_prefilter(
 ) -> Dictionary:
 	if sv.is_empty():
 		return _empty_result("empty_sv")
-	var voxel_sparse_ids := dirty_tile_ids.duplicate()
-	if voxel_sparse_ids.is_empty():
-		voxel_sparse_ids = _dirty_tile_ids_from_sv(sv)
-	if voxel_sparse_ids.is_empty():
-		voxel_sparse_ids = all_tile_ids(sv)
-	if voxel_sparse_ids.is_empty():
+	var candidate_tile_ids := dirty_tile_ids.duplicate()
+	if candidate_tile_ids.is_empty():
+		candidate_tile_ids = _dirty_tile_ids_from_sv(sv)
+	if candidate_tile_ids.is_empty():
+		candidate_tile_ids = all_tile_ids(sv)
+	if candidate_tile_ids.is_empty():
 		return _empty_result("no_candidate_tiles")
 
 	log_name = "AutoObjectProbePrefilterGPU"
@@ -156,7 +156,7 @@ func run_probe_prefilter(
 		_free_gpu()
 		return blocked_result
 
-	var result := _run_gpu_pipeline(sv, autoobjects, voxel_sparse_ids, runtime_profile_container, target_read_buffers, tile_summaries_rid)
+	var result := _run_gpu_pipeline(sv, autoobjects, candidate_tile_ids, runtime_profile_container, target_read_buffers, tile_summaries_rid)
 	if _result_has_resident_candidate_route_payload(result):
 		gc_frame()
 	else:
@@ -236,7 +236,7 @@ func _run_gpu_pipeline(
 	var score_buf_size := ANCHOR_CAPACITY * MAX_ASSETS * 4
 	var asset_scores_buf := storage_buffer_zero(score_buf_size)
 	var topk_buf := storage_buffer_zero(ANCHOR_CAPACITY * TOPK * 8)  # uvec2 per entry
-	var voxel_sparse_votes_buf := storage_buffer_zero(asset_count * tile_count * 4)
+	var asset_tile_votes_buf := storage_buffer_zero(asset_count * tile_count * 4)
 
 	# ---- Dispatch 1: Collect anchors ----
 
@@ -259,7 +259,7 @@ func _run_gpu_pipeline(
 	if not _dispatch_score_topk_reduce(
 		anchor_buf, anchor_count_buf, probe_range_buf, probe_data_buf,
 		complexity_collision_buf, target_field_buf,
-		asset_scores_buf, topk_buf, voxel_sparse_votes_buf,
+		asset_scores_buf, topk_buf, asset_tile_votes_buf,
 		grid_size, voxel_size,
 		tile_grid, tile_count, asset_count
 	):
@@ -268,7 +268,7 @@ func _run_gpu_pipeline(
 		return _empty_result("score_topk_reduce_compute_list_begin_failed", probe_pack, pipeline_status)
 
 	var gpu_route_pack_payload := _run_candidate_route_gpu_pack_pass(
-		voxel_sparse_votes_buf,
+		asset_tile_votes_buf,
 		probe_pack.get("route_extents", []),
 		tile_grid,
 		tile_count,
@@ -365,7 +365,7 @@ func _dispatch_score_topk_reduce(
 	anchor_buf: RID, anchor_count_buf: RID, probe_range_buf: RID,
 	probe_data_buf: RID, complexity_collision_buf: RID,
 	target_field_buf: RID, asset_scores_buf: RID,
-	topk_buf: RID, voxel_sparse_votes_buf: RID,
+	topk_buf: RID, asset_tile_votes_buf: RID,
 	grid_size: Vector3i, voxel_size: Vector3,
 	tile_grid: Vector3i, tile_count: int,
 	asset_count: int
@@ -426,7 +426,7 @@ func _dispatch_score_topk_reduce(
 	var reduce_set0 := create_uniform_set([
 		make_storage_uniform(0, anchor_buf),
 		make_storage_uniform(1, topk_buf),
-		make_storage_uniform(2, voxel_sparse_votes_buf),
+		make_storage_uniform(2, asset_tile_votes_buf),
 		make_storage_uniform(3, anchor_count_buf),
 	], _shader_reduce, 0)
 
@@ -475,7 +475,7 @@ func _dispatch_score_topk_reduce(
 
 ## 执行 GPU 路由打包 Pass（pack 或 expand），将稀疏投票缓冲区转换为 schema-v1 记录/范围 RID，返回驻留载荷字典。
 func _run_candidate_route_gpu_pack_pass(
-	voxel_sparse_votes_buf: RID,
+	asset_tile_votes_buf: RID,
 	route_extents: Array,
 	tile_grid: Vector3i,
 	tile_count: int,
@@ -490,8 +490,8 @@ func _run_candidate_route_gpu_pack_pass(
 		return _candidate_route_gpu_pack_blocked(
 			"candidate_route_gpu_%s_shader_not_ready" % ("expand" if use_expand else "pack")
 		)
-	if not voxel_sparse_votes_buf.is_valid():
-		return _candidate_route_gpu_pack_blocked("missing_voxel_sparse_votes_buffer")
+	if not asset_tile_votes_buf.is_valid():
+		return _candidate_route_gpu_pack_blocked("missing_asset_tile_votes_buffer")
 	if asset_count <= 0 or tile_count <= 0 or tile_grid.x <= 0 or tile_grid.y <= 0 or tile_grid.z <= 0:
 		return _candidate_route_gpu_pack_blocked("invalid_route_pack_dimensions")
 
@@ -515,7 +515,7 @@ func _run_candidate_route_gpu_pack_pass(
 	if use_expand:
 		bindings = [
 			make_storage_uniform(0, tile_summaries_rid),
-			make_storage_uniform(1, voxel_sparse_votes_buf),
+			make_storage_uniform(1, asset_tile_votes_buf),
 			make_storage_uniform(2, route_radius_buf),
 			make_storage_uniform(3, route_mark_buf),
 			make_storage_uniform(4, record_buf),
@@ -524,7 +524,7 @@ func _run_candidate_route_gpu_pack_pass(
 		]
 	else:
 		bindings = [
-			make_storage_uniform(0, voxel_sparse_votes_buf),
+			make_storage_uniform(0, asset_tile_votes_buf),
 			make_storage_uniform(1, route_radius_buf),
 			make_storage_uniform(2, route_mark_buf),
 			make_storage_uniform(3, record_buf),
@@ -1308,7 +1308,12 @@ func _make_complexity_collision_buffer(sv: Dictionary, voxel_count: int) -> RID:
 				})
 				if _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(voxel_count, 64)):
 					return merged_buf
-		push_error("[AutoObjectProbePrefilterGPU] resident field pair convert dispatch failed; falling back to CPU pack")
+		# resident RIDs were authoritative but the GPU convert failed. Do NOT fall through to the
+		# CPU pack below: under a committer, sv carries no CPU fields → _ensure_float_array returns
+		# an all-zero field that scores as real and slips past the caller's is_valid() block-guard.
+		# Fail loud so run_probe_prefilter returns complexity_collision_field_buffer_not_ready.
+		push_error("[AutoObjectProbePrefilterGPU] resident field pair convert failed; blocking (no CPU zero-fill fallback)")
+		return RID()
 	var complexity_collision_bytes := _pack_complexity_collision_float_bytes(
 		_ensure_float_array(sv.get("complexity_field", PackedFloat32Array()), voxel_count),
 		_ensure_float_array(sv.get("collision_field", PackedFloat32Array()), voxel_count),

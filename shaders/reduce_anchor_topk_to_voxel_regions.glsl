@@ -5,7 +5,7 @@
 // Single workgroup, serial scan — anchor counts are moderate (< 100K).
 //
 // For each anchor's top-K asset selections, compute which tile the anchor
-// belongs to, and accumulate score into voxel_sparse_votes[asset_id * tile_count + tile_id].
+// belongs to, and accumulate score into asset_tile_votes[asset_id * tile_count + tile_id].
 //
 // Output is read back to CPU to produce per-asset sorted voxel-region lists.
 
@@ -22,9 +22,9 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer TopKIn {
 };
 
 // Output: voxel-region vote scores per asset
-// Layout: voxel_sparse_votes[asset_id * tile_count + tile_id] += score
+// Layout: asset_tile_votes[asset_id * tile_count + tile_id] += score
 layout(set = 0, binding = 2, std430) restrict buffer VoxelRegionVotes {
-    float voxel_sparse_votes[];
+    float asset_tile_votes[];
 };
 
 // GPU-resident anchor count (written by collect_sv_anchors, no CPU readback).
@@ -67,7 +67,7 @@ void main() {
             if (asset_id >= a_count || score < 0.0) continue;
 
             uint vote_idx = asset_id * tile_count + uint(tid);
-            voxel_sparse_votes[vote_idx] += score;
+            asset_tile_votes[vote_idx] += score;
         }
     }
 }

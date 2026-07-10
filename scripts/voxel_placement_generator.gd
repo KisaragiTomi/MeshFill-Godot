@@ -1221,9 +1221,9 @@ func run_minimal(
 	var tile_count := tile_counts.x * tile_counts.y * tile_counts.z
 	# CPU 候选注入已移除：候选来源只有 resident GPU route（下方按需展开）；
 	# 无 resident route 时以 all-tiles 起步。
-	var candidate_voxel_sparse_ids := PackedInt32Array()
+	var candidate_tile_ids := PackedInt32Array()
 	var direct_all_tiles := true
-	var candidate_voxel_sparse_count := tile_count
+	var candidate_tile_count := tile_count
 	var gpu_contract := _validate_gpu_runtime_profile_contract(settings)
 	if not bool(gpu_contract.get("ok", true)):
 		return _gpu_contract_blocked_minimal_output(
@@ -1232,17 +1232,17 @@ func run_minimal(
 			voxel_count,
 			tile_count,
 			tile_counts,
-			candidate_voxel_sparse_ids,
+			candidate_tile_ids,
 			gpu_contract
 		)
-	if candidate_voxel_sparse_count <= 0:
+	if candidate_tile_count <= 0:
 		return _empty_prefilter_output(
 			complexity_data,
 			collision_data,
 			voxel_count,
 			tile_count,
 			tile_counts,
-			candidate_voxel_sparse_ids
+			candidate_tile_ids
 		)
 
 	log_name = "VoxelPlacementGenerator"
@@ -1254,7 +1254,7 @@ func run_minimal(
 			voxel_count,
 			tile_count,
 			tile_counts,
-			candidate_voxel_sparse_ids,
+			candidate_tile_ids,
 			_gpu_contract_result(false, "missing_rendering_device")
 		)
 
@@ -1267,7 +1267,7 @@ func run_minimal(
 			voxel_count,
 			tile_count,
 			tile_counts,
-			candidate_voxel_sparse_ids,
+			candidate_tile_ids,
 			_gpu_contract_result(false, "placement_shader_pipeline_not_ready")
 		)
 
@@ -1281,7 +1281,7 @@ func run_minimal(
 			voxel_count,
 			tile_count,
 			tile_counts,
-			candidate_voxel_sparse_ids,
+			candidate_tile_ids,
 			gpu_contract
 		)
 
@@ -1292,9 +1292,9 @@ func run_minimal(
 	var resident_route_sparse := _prepare_candidate_sparse_ids_from_resident_route_gpu(route_binding, tile_count)
 	var resident_route_sparse_gpu := bool(resident_route_sparse.get("ok", false))
 	if resident_route_sparse_gpu:
-		candidate_voxel_sparse_ids = resident_route_sparse.get("candidate_voxel_sparse_ids", PackedInt32Array())
+		candidate_tile_ids = resident_route_sparse.get("candidate_tile_ids", PackedInt32Array())
 		direct_all_tiles = false
-		candidate_voxel_sparse_count = candidate_voxel_sparse_ids.size()
+		candidate_tile_count = candidate_tile_ids.size()
 		_mark_candidate_route_sparse_adapter_ready(route_settings, resident_route_sparse)
 		route_binding["settings"] = route_settings
 	elif resident_route_requested:
@@ -1309,10 +1309,10 @@ func run_minimal(
 		push_error("VoxelPlacementGenerator: resident candidate route requested but unavailable: %s" % route_block_reason)
 		return _gpu_contract_blocked_minimal_output(
 			complexity_data, collision_data, voxel_count, tile_count, tile_counts,
-			candidate_voxel_sparse_ids,
+			candidate_tile_ids,
 			_gpu_contract_result(false, "resident_candidate_route_unavailable:%s" % route_block_reason)
 		)
-	if candidate_voxel_sparse_count <= 0:
+	if candidate_tile_count <= 0:
 		_free_gpu()
 		var empty_output := _empty_prefilter_output(
 			complexity_data,
@@ -1320,14 +1320,14 @@ func run_minimal(
 			voxel_count,
 			tile_count,
 			tile_counts,
-			candidate_voxel_sparse_ids
+			candidate_tile_ids
 		)
 		empty_output["candidate_route_readback_source"] = _candidate_route_readback_source_from_settings(route_settings)
 		empty_output["candidate_route_runtime_read_source"] = _candidate_route_runtime_read_source_from_settings(route_settings)
 		empty_output["candidate_route_input_contract"] = _candidate_route_input_contract_from_settings(route_settings)
 		return empty_output
 
-	var candidate_count := candidate_voxel_sparse_count * top_k
+	var candidate_count := candidate_tile_count * top_k
 	var stamp_capacity := result_capacity * footprint.size()
 
 	if _complexity_field_gpu_borrowed_external:
@@ -1345,8 +1345,8 @@ func run_minimal(
 	)
 	var footprint_pos_buffer := storage_buffer_from_bytes(footprint_buffers.pos_bytes)
 	var footprint_weight_buffer := storage_buffer_from_bytes(footprint_buffers.weight_bytes)
-	var candidate_voxel_sparse_buffer := storage_buffer_from_bytes(
-		PackedByteArray() if direct_all_tiles else pack_u32_array(candidate_voxel_sparse_ids)
+	var candidate_tile_buffer := storage_buffer_from_bytes(
+		PackedByteArray() if direct_all_tiles else pack_u32_array(candidate_tile_ids)
 	)
 	var tile_topk_buffer := storage_buffer_zero(candidate_count * RECORD_STRIDE * 16)
 	var result_buffer := storage_buffer_zero(result_capacity * RECORD_STRIDE * 16)
@@ -1364,7 +1364,7 @@ func run_minimal(
 			voxel_count,
 			tile_count,
 			tile_counts,
-			candidate_voxel_sparse_ids,
+			candidate_tile_ids,
 			_gpu_contract_result(false, blocked_reason)
 		)
 		blocked_output["target_read_buffer_summary"] = _target_read_buffer_summary(target_buffer_pack)
@@ -1397,7 +1397,7 @@ func run_minimal(
 			voxel_count,
 			tile_count,
 			tile_counts,
-			candidate_voxel_sparse_ids,
+			candidate_tile_ids,
 			_gpu_contract_result(false, "target_field_buffer_not_ready")
 		)
 		blocked_output["target_read_buffer_summary"] = _target_read_buffer_summary(target_buffer_pack)
@@ -1423,18 +1423,18 @@ func run_minimal(
 		)
 		_dispatch_candidate_route_sparse_adapter(
 			route_binding,
-			candidate_voxel_sparse_buffer,
+			candidate_tile_buffer,
 			candidate_route_adapter_count_buffer,
 			candidate_route_indirect_args_buffer,
 			tile_count,
-			candidate_voxel_sparse_count
+			candidate_tile_count
 		)
 	var score_dispatch := _dispatch_score(
 		complexity_buffer,
 		collision_buffer,
 		footprint_pos_buffer,
 		footprint_weight_buffer,
-		candidate_voxel_sparse_buffer,
+		candidate_tile_buffer,
 		tile_topk_buffer,
 		target_field_buffer,
 		debug_voxel_buffer,
@@ -1444,7 +1444,7 @@ func run_minimal(
 		grid_size,
 		tile_counts,
 		tile_count,
-		candidate_voxel_sparse_count,
+		candidate_tile_count,
 		direct_all_tiles,
 		footprint.size(),
 		has_target,
@@ -1529,17 +1529,17 @@ func run_minimal(
 	var route_binding_debug := _read_candidate_route_binding_debug(route_binding, read_route_binding_debug)
 	if resident_route_sparse_gpu:
 		resident_route_sparse = _read_candidate_route_sparse_adapter_result(
-			candidate_voxel_sparse_buffer,
+			candidate_tile_buffer,
 			candidate_route_adapter_count_buffer,
 			candidate_route_indirect_args_buffer,
 			route_binding_debug,
 			tile_count,
-			candidate_voxel_sparse_count,
+			candidate_tile_count,
 			score_dispatch,
 			read_route_adapter_debug
 		)
-		candidate_voxel_sparse_ids = resident_route_sparse.get("candidate_voxel_sparse_ids", PackedInt32Array())
-		candidate_voxel_sparse_count = int(resident_route_sparse.get("candidate_count", candidate_voxel_sparse_ids.size()))
+		candidate_tile_ids = resident_route_sparse.get("candidate_tile_ids", PackedInt32Array())
+		candidate_tile_count = int(resident_route_sparse.get("candidate_count", candidate_tile_ids.size()))
 		_mark_candidate_route_sparse_adapter_ready(route_settings, resident_route_sparse)
 	if read_route_binding_debug:
 		_merge_candidate_route_binding_debug_into_settings(route_settings, route_binding_debug)
@@ -1551,7 +1551,7 @@ func run_minimal(
 			voxel_count,
 			tile_count,
 			tile_counts,
-			candidate_voxel_sparse_ids,
+			candidate_tile_ids,
 			gpu_contract
 		)
 		blocked_output["gpu_runtime_profile_binding_debug"] = score_contract_debug
@@ -1601,10 +1601,10 @@ func run_minimal(
 		"debug_channel_max_source": score_contract_debug.get("debug_channel_max_source", ""),
 		"tile_count": tile_count,
 		"tile_counts": tile_counts,
-		"candidate_voxel_sparse_count": candidate_voxel_sparse_count,
-		"candidate_voxel_sparse_ids": candidate_voxel_sparse_ids,
+		"candidate_tile_count": candidate_tile_count,
+		"candidate_tile_ids": candidate_tile_ids,
 		"candidate_voxel_dispatch_mode": "direct_all_tiles" if direct_all_tiles else "sparse_buffer",
-		"candidate_count": candidate_voxel_sparse_count * top_k,
+		"candidate_count": candidate_tile_count * top_k,
 		"gpu_runtime_profile_contract": gpu_contract,
 		"gpu_runtime_profile_binding_debug": score_contract_debug,
 		"candidate_route_readback_source": _candidate_route_readback_source_from_settings(route_settings),
@@ -1700,7 +1700,7 @@ func _gpu_contract_blocked_minimal_output(
 	voxel_count: int,
 	tile_count: int,
 	tile_counts: Vector3i,
-	candidate_voxel_sparse_ids: PackedInt32Array,
+	candidate_tile_ids: PackedInt32Array,
 	contract: Dictionary
 ) -> Dictionary:
 	var debug_empty := PackedFloat32Array()
@@ -1726,8 +1726,8 @@ func _gpu_contract_blocked_minimal_output(
 		"debug_channel_count": NUM_DEBUG_CHANNELS,
 		"tile_count": tile_count,
 		"tile_counts": tile_counts,
-		"candidate_voxel_sparse_count": candidate_voxel_sparse_ids.size(),
-		"candidate_voxel_sparse_ids": candidate_voxel_sparse_ids,
+		"candidate_tile_count": candidate_tile_ids.size(),
+		"candidate_tile_ids": candidate_tile_ids,
 		"candidate_count": 0,
 		"gpu_runtime_profile_contract": contract,
 		"contract_blocked": true,
@@ -1747,7 +1747,7 @@ func _empty_prefilter_output(
 	voxel_count: int,
 	tile_count: int,
 	tile_counts: Vector3i,
-	candidate_voxel_sparse_ids: PackedInt32Array
+	candidate_tile_ids: PackedInt32Array
 ) -> Dictionary:
 	var debug_empty := PackedFloat32Array()
 	debug_empty.resize(voxel_count * NUM_DEBUG_CHANNELS)
@@ -1771,8 +1771,8 @@ func _empty_prefilter_output(
 		"debug_channel_count": NUM_DEBUG_CHANNELS,
 		"tile_count": tile_count,
 		"tile_counts": tile_counts,
-		"candidate_voxel_sparse_count": 0,
-		"candidate_voxel_sparse_ids": candidate_voxel_sparse_ids,
+		"candidate_tile_count": 0,
+		"candidate_tile_ids": candidate_tile_ids,
 		"candidate_count": 0,
 		"skipped_prefilter": true,
 	}
@@ -2357,7 +2357,7 @@ func _dispatch_score(
 	collision_buffer: RID,
 	footprint_pos_buffer: RID,
 	footprint_weight_buffer: RID,
-	candidate_voxel_sparse_buffer: RID,
+	candidate_tile_buffer: RID,
 	tile_topk_buffer: RID,
 	target_field_buffer: RID,
 	debug_voxel_buffer: RID,
@@ -2367,7 +2367,7 @@ func _dispatch_score(
 	grid_size: Vector3i,
 	tile_counts: Vector3i,
 	tile_count: int,
-	candidate_voxel_sparse_count: int,
+	candidate_tile_count: int,
 	direct_all_tiles: bool,
 	footprint_count: int,
 	has_target: int,
@@ -2395,7 +2395,7 @@ func _dispatch_score(
 		make_storage_uniform(2, footprint_pos_buffer),
 		make_storage_uniform(3, footprint_weight_buffer),
 		make_storage_uniform(4, tile_topk_buffer),
-		make_storage_uniform(5, candidate_voxel_sparse_buffer),
+		make_storage_uniform(5, candidate_tile_buffer),
 		make_storage_uniform(6, target_field_buffer),
 		make_storage_uniform(7, debug_voxel_buffer),
 		make_storage_uniform(8, env_channel_buffer),
@@ -2434,7 +2434,7 @@ func _dispatch_score(
 		solid_threshold = solid_threshold,
 		collision_limit = collision_limit,
 		clearance_limit = clearance_limit,
-		candidate_count_signed = -candidate_voxel_sparse_count if direct_all_tiles else candidate_voxel_sparse_count,
+		candidate_count_signed = -candidate_tile_count if direct_all_tiles else candidate_tile_count,
 		search_radius_x = search_radius.x, search_radius_y = search_radius.y, search_radius_z = search_radius.z,
 		footprint_pivot_x = footprint_pivot.x, footprint_pivot_y = footprint_pivot.y, footprint_pivot_z = footprint_pivot.z,
 		dim_count = _dim_count,              # footprint_pivot_pad.w = dim_count (0 = penalty-only)
@@ -2452,7 +2452,7 @@ func _dispatch_score(
 		score_sets.append(set2)
 	var dispatch_result := _score_dispatch_indirect_decision(
 		candidate_route_indirect_args_buffer,
-		candidate_voxel_sparse_count,
+		candidate_tile_count,
 		direct_all_tiles
 	)
 	var score_pass := {
@@ -2463,8 +2463,8 @@ func _dispatch_score(
 	if bool(dispatch_result.get("score_dispatch_indirect", false)):
 		score_pass["indirect_args"] = candidate_route_indirect_args_buffer
 		ComputePassChain.run(self, [score_pass], false)
-	elif candidate_voxel_sparse_count > 0:
-		score_pass["groups"] = Vector3i(candidate_voxel_sparse_count, 1, 1)
+	elif candidate_tile_count > 0:
+		score_pass["groups"] = Vector3i(candidate_tile_count, 1, 1)
 		ComputePassChain.run(self, [score_pass], false)
 	# else: no candidates and not indirect — prior code bound sets but issued no dispatch;
 	# skipping the empty compute list here is behaviour-equivalent.
@@ -2474,7 +2474,7 @@ func _dispatch_score(
 ## 判断打分调度是否可以使用间接 dispatch（indirect dispatch），并在无法使用时给出具体的阻断原因。
 func _score_dispatch_indirect_decision(
 	candidate_route_indirect_args_buffer: RID,
-	candidate_voxel_sparse_count: int,
+	candidate_tile_count: int,
 	direct_all_tiles: bool
 ) -> Dictionary:
 	var api_supported := _rd != null
@@ -2484,7 +2484,7 @@ func _score_dispatch_indirect_decision(
 			"score_dispatch_indirect_block_reason": "direct_all_tiles_dispatch",
 			"score_dispatch_indirect_api_supported": api_supported,
 		}
-	if candidate_voxel_sparse_count <= 0:
+	if candidate_tile_count <= 0:
 		return {
 			"score_dispatch_indirect": false,
 			"score_dispatch_indirect_block_reason": "zero_candidate_count_indirect_dispatch_gated",
@@ -2537,7 +2537,7 @@ func _prepare_candidate_sparse_ids_from_resident_route_gpu(route_binding: Dictio
 	return {
 		"ok": true,
 		"reason": "ok",
-		"candidate_voxel_sparse_ids": ids,
+		"candidate_tile_ids": ids,
 		"range_index": range_index,
 		"range_start": 0,
 		"range_count": 0,
@@ -2566,7 +2566,7 @@ func _prepare_candidate_sparse_ids_from_resident_route_gpu(route_binding: Dictio
 ## 再执行 finalize 通道生成间接 dispatch 参数；整个过程完全在 GPU 上完成，不做 CPU 回读。
 func _dispatch_candidate_route_sparse_adapter(
 	route_binding: Dictionary,
-	candidate_voxel_sparse_buffer: RID,
+	candidate_tile_buffer: RID,
 	candidate_route_adapter_count_buffer: RID,
 	candidate_route_indirect_args_buffer: RID,
 	tile_count: int,
@@ -2580,13 +2580,13 @@ func _dispatch_candidate_route_sparse_adapter(
 	var range_buffer: RID = route_binding.get("range_buffer", RID())
 	var debug_buffer: RID = route_binding.get("debug_buffer", RID())
 	if not record_buffer.is_valid() or not range_buffer.is_valid() \
-	   or not candidate_voxel_sparse_buffer.is_valid() or not debug_buffer.is_valid() \
+	   or not candidate_tile_buffer.is_valid() or not debug_buffer.is_valid() \
 	   or not candidate_route_adapter_count_buffer.is_valid() or not candidate_route_indirect_args_buffer.is_valid():
 		return
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, record_buffer),
 		make_storage_uniform(1, range_buffer),
-		make_storage_uniform(2, candidate_voxel_sparse_buffer),
+		make_storage_uniform(2, candidate_tile_buffer),
 		make_storage_uniform(3, debug_buffer),
 		make_storage_uniform(4, candidate_route_adapter_count_buffer),
 	], _shader_candidate_route_sparse_adapter, 0, SCOPE_PASS, "candidate_route_sparse_adapter")
@@ -2618,7 +2618,7 @@ func _dispatch_candidate_route_sparse_adapter(
 ## 当 read_debug_snapshot 为 true 时，才会从 GPU 回读计数缓冲区、间接参数缓冲区与稀疏 ID 缓冲区生成调试快照；
 ## 默认（非调试）情况下不进行任何 CPU 回读，候选数量在语义上完全由 GPU 端间接参数缓冲区持有。
 func _read_candidate_route_sparse_adapter_result(
-	candidate_voxel_sparse_buffer: RID,
+	candidate_tile_buffer: RID,
 	candidate_route_adapter_count_buffer: RID,
 	candidate_route_indirect_args_buffer: RID,
 	route_binding_debug: Dictionary,
@@ -2660,8 +2660,8 @@ func _read_candidate_route_sparse_adapter_result(
 		debug_indirect_args_snapshot_source = "route_adapter_indirect_args_debug_readback"
 	var debug_requested_count := clampi(int(count_words[0]), 0, output_capacity) if read_debug_snapshot else 0
 	var debug_ids := PackedInt32Array()
-	if read_debug_snapshot and candidate_voxel_sparse_buffer.is_valid() and debug_requested_count > 0:
-		var bytes := _rd.buffer_get_data(candidate_voxel_sparse_buffer, 0, output_capacity * 4)
+	if read_debug_snapshot and candidate_tile_buffer.is_valid() and debug_requested_count > 0:
+		var bytes := _rd.buffer_get_data(candidate_tile_buffer, 0, output_capacity * 4)
 		var available := mini(int(bytes.size() / 4), output_capacity)
 		for i in range(available):
 			var tile_id := int(bytes.decode_u32(i * 4))
@@ -2671,11 +2671,11 @@ func _read_candidate_route_sparse_adapter_result(
 					break
 		if not debug_ids.is_empty():
 			ids = debug_ids
-		debug_sparse_ids_snapshot_source = "candidate_voxel_sparse_ids_debug_readback"
+		debug_sparse_ids_snapshot_source = "candidate_tile_ids_debug_readback"
 	return {
 		"ok": output_capacity > 0,
 		"reason": "ok" if output_capacity > 0 else "resident_route_gpu_sparse_adapter_no_output_capacity",
-		"candidate_voxel_sparse_ids": ids,
+		"candidate_tile_ids": ids,
 		"range_index": int(route_binding_debug.get("sparse_adapter_range_index", clampi(asset_index, 0, maxi(int(route_binding_debug.get("range_count", 1)) - 1, 0)))),
 		"range_start": int(route_binding_debug.get("sparse_adapter_range_start", route_binding_debug.get("first_range_start", 0))),
 		"range_count": int(route_binding_debug.get("sparse_adapter_range_count", route_binding_debug.get("first_range_count", 0))),

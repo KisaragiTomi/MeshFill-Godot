@@ -17,7 +17,7 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer CandidateRouteRang
 };
 
 layout(set = 0, binding = 2, std430) restrict buffer CandidateVoxelRegions {
-    uint candidate_voxel_sparse_ids[];
+    uint candidate_tile_ids[];
 };
 
 layout(set = 0, binding = 3, std430) restrict buffer CandidateRouteBindingDebug {
@@ -79,6 +79,6 @@ void main() {
         return;
     }
 
-    candidate_voxel_sparse_ids[write_index] = tile_id;
+    candidate_tile_ids[write_index] = tile_id;
     atomicAdd(candidate_route_binding_debug[8], 1u);
 }
