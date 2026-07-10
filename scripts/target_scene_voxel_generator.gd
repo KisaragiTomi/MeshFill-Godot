@@ -802,15 +802,14 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 		dirty_h = dr.size.y,
 	})
 
-	var groups_x := ceili(float(dr.size.x) / 8.0)
-	var groups_y := ceili(float(slice_count) / 4.0)
-	var groups_z := ceili(float(dr.size.y) / 8.0)
+	# local_size in target_scene_voxel.glsl = (8, 4, 8)
+	var groups := dispatch_groups_3d(dr.size.x, slice_count, dr.size.y, 8, 4, 8)
 	var cl := begin_compute_list()
 	if cl < 0:
 		push_error("[TargetSV] Compute list begin failed")
 		_free_gpu()
 		return {}
-	_gpu_dispatch_pipeline_sets(cl, _pipeline, [set0, set1, set2], push, Vector3i(groups_x, groups_y, groups_z))
+	_gpu_dispatch_pipeline_sets(cl, _pipeline, [set0, set1, set2], push, groups)
 	end_compute_list()
 	submit_and_sync(true)
 

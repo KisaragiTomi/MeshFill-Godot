@@ -17,14 +17,8 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 config/name="MeshFill-Godot"
 config/features=PackedStringArray("4.6", "Forward Plus")
 
-[dotnet]
-
-project/assembly_name="MeshFill-Godot"
-
 [editor_plugins]
 
-meshfill_editor/enabled=true
-MeshFillEditor/enabled=true
 enabled=PackedStringArray("res://addons/meshfill_editor/plugin.cfg")
 
 [filesystem]
