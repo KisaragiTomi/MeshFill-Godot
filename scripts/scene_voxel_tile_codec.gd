@@ -407,12 +407,12 @@ static func pack_summary_bytes(tile_ids: Array[String], scene_voxel_tiles: Dicti
 
 	for i in range(tile_ids.size()):
 		var tile: Dictionary = scene_voxel_tiles.get(tile_ids[i], {})
-		var scene_minmax: Vector2 = tile.get("scene_minmax", Vector2.ZERO)
+		var complexity_minmax: Vector2 = tile.get("complexity_minmax", Vector2.ZERO)
 		var collision_minmax: Vector2 = tile.get("collision_minmax", Vector2.ZERO)
 		var base := i * SUMMARY_STRIDE_BYTES
 
-		bytes.encode_float(base + 0, scene_minmax.x)
-		bytes.encode_float(base + 4, scene_minmax.y)
+		bytes.encode_float(base + 0, complexity_minmax.x)
+		bytes.encode_float(base + 4, complexity_minmax.y)
 		bytes.encode_float(base + 8, collision_minmax.x)
 		bytes.encode_float(base + 12, collision_minmax.y)
 		bytes.encode_s32(base + 16, int(tile.get("scene_voxel_count", 0)))
@@ -480,7 +480,7 @@ static func decode_summaries(bytes: PackedByteArray, tile_ids: Array[String]) ->
 		var base := i * SUMMARY_STRIDE_BYTES
 		summaries.append({
 			"scene_voxel_tile_id": tile_ids[i],
-			"scene_minmax": Vector2(bytes.decode_float(base + 0), bytes.decode_float(base + 4)),
+			"complexity_minmax": Vector2(bytes.decode_float(base + 0), bytes.decode_float(base + 4)),
 			"collision_minmax": Vector2(bytes.decode_float(base + 8), bytes.decode_float(base + 12)),
 			"scene_voxel_count": bytes.decode_s32(base + 16),
 			"collision_voxel_count": bytes.decode_s32(base + 20),

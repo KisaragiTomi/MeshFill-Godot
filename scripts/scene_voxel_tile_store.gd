@@ -260,7 +260,7 @@ func _default_scene_voxel_tile_record(tile_coord: Vector3i) -> Dictionary:
 
 		"last_commit_tick": _committer._committed_tick,
 
-		"scene_minmax": Vector2.ZERO,
+		"complexity_minmax": Vector2.ZERO,
 
 		"collision_minmax": Vector2.ZERO,
 
@@ -280,7 +280,7 @@ func _default_scene_voxel_tile_record(tile_coord: Vector3i) -> Dictionary:
 
 		"summary": {
 
-			"scene_minmax": Vector2.ZERO,
+			"complexity_minmax": Vector2.ZERO,
 
 			"collision_minmax": Vector2.ZERO,
 
@@ -302,7 +302,7 @@ func _scene_voxel_tile_summary(tile: Dictionary) -> Dictionary:
 
 	return {
 
-		"scene_minmax": tile.get("scene_minmax", Vector2.ZERO),
+		"complexity_minmax": tile.get("complexity_minmax", Vector2.ZERO),
 
 		"collision_minmax": tile.get("collision_minmax", Vector2.ZERO),
 
@@ -674,7 +674,7 @@ func _reset_scene_voxel_tile_summaries() -> void:
 
 		var tile: Dictionary = _scene_voxel_tiles[tile_id]
 
-		tile["scene_minmax"] = Vector2.ZERO
+		tile["complexity_minmax"] = Vector2.ZERO
 
 		tile["collision_minmax"] = Vector2.ZERO
 
@@ -700,7 +700,7 @@ func _update_scene_voxel_tile_scene_summary(slice_index: int, voxel_xz: Vector2i
 
 	var count := int(tile.get("scene_voxel_count", 0))
 
-	var minmax: Vector2 = tile.get("scene_minmax", Vector2(complexity, complexity))
+	var minmax: Vector2 = tile.get("complexity_minmax", Vector2(complexity, complexity))
 
 	if count <= 0:
 
@@ -712,7 +712,7 @@ func _update_scene_voxel_tile_scene_summary(slice_index: int, voxel_xz: Vector2i
 
 	tile["scene_voxel_count"] = count + 1
 
-	tile["scene_minmax"] = minmax
+	tile["complexity_minmax"] = minmax
 
 	tile["summary"] = _scene_voxel_tile_summary(tile)
 
@@ -2187,9 +2187,9 @@ func _decode_scene_voxel_tile_compact_summaries(bytes: PackedByteArray, record_c
 		if scene_count <= 0 and collision_count <= 0:
 			continue
 
-		var scene_minmax := Vector2.ZERO
+		var complexity_minmax := Vector2.ZERO
 		if scene_count > 0:
-			scene_minmax = Vector2(
+			complexity_minmax = Vector2(
 				_decode_tile_summary_value(int(bytes.decode_u32(base + 8))),
 				_decode_tile_summary_value(int(bytes.decode_u32(base + 12)))
 			)
@@ -2205,7 +2205,7 @@ func _decode_scene_voxel_tile_compact_summaries(bytes: PackedByteArray, record_c
 			"tile_coord": _tile_coord_from_summary_index(tile_index, tile_grid),
 			"scene_voxel_count": scene_count,
 			"collision_voxel_count": collision_count,
-			"scene_minmax": scene_minmax,
+			"complexity_minmax": complexity_minmax,
 			"collision_minmax": collision_minmax,
 		})
 	return summaries
@@ -2382,7 +2382,7 @@ func _apply_scene_voxel_tile_reduce_summaries(reduced: Dictionary) -> void:
 		var collision_count := int(summary.get("collision_voxel_count", 0))
 		tile["scene_voxel_count"] = scene_count
 		tile["collision_voxel_count"] = collision_count
-		tile["scene_minmax"] = summary.get("scene_minmax", Vector2.ZERO)
+		tile["complexity_minmax"] = summary.get("complexity_minmax", Vector2.ZERO)
 		tile["collision_minmax"] = summary.get("collision_minmax", Vector2.ZERO)
 		tile["summary"] = _scene_voxel_tile_summary(tile)
 		_scene_voxel_tiles[tile_id] = tile
@@ -2406,7 +2406,7 @@ func _legacy_sv_tiles_from_reduce_summaries(
 		var px := Vector2i(tile_coord.x * tile_size, tile_coord.z * tile_size)
 		var slice_index := tile_coord.y
 		var scene_count := int(summary.get("scene_voxel_count", 0))
-		var scene_minmax: Vector2 = summary.get("scene_minmax", Vector2.ZERO)
+		var complexity_minmax: Vector2 = summary.get("complexity_minmax", Vector2.ZERO)
 		if scene_count > 0:
 			var scene_key := SceneVoxelTileCodecScript.sv_tile_key(slice_index, px, "scene", tile_size)
 			tiles[scene_key] = {
@@ -2420,7 +2420,7 @@ func _legacy_sv_tiles_from_reduce_summaries(
 				"distance_or_occupancy": "occupancy",
 				"scene_voxel_count": scene_count,
 				"collision_voxel_count": 0,
-				"max_complexity": scene_minmax.y,
+				"max_complexity": complexity_minmax.y,
 			}
 
 		var collision_count := int(summary.get("collision_voxel_count", 0))

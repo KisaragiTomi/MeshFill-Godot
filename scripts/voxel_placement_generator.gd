@@ -584,7 +584,7 @@ static func _apply_stamp_deltas_to_cpu_state(
 		if index < 0 or index >= current_complexity.size() or index >= current_collision.size():
 			skipped_count += 1
 			continue
-		var scene_value := clampf(float(delta.get("scene_complexity", 0.0)), 0.0, 1.0)
+		var scene_value := clampf(float(delta.get("complexity", 0.0)), 0.0, 1.0)
 		var collision_value := clampf(float(delta.get("collision_strength", 0.0)), 0.0, 1.0)
 		if scene_value > current_complexity[index]:
 			current_complexity[index] = scene_value
@@ -3432,7 +3432,7 @@ func _decode_stamp_deltas(bytes: PackedByteArray, delta_count: int) -> Array[Dic
 			continue
 		deltas.append({
 			"voxel": Vector3i(int(roundf(pos_scene.x)), int(roundf(pos_scene.y)), int(roundf(pos_scene.z))),
-			"scene_complexity": pos_scene.w,
+			"complexity": pos_scene.w,
 			"collision_strength": collision_meta.x,
 			"result_index": int(roundf(collision_meta.y)),
 			"footprint_index": int(roundf(collision_meta.z)),
@@ -3824,7 +3824,7 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 ## 合并为单个 vec4 target_field 缓冲区；输入无效或管线未就绪时返回全零缓冲区。
 func _ensure_combined_target_field_buffer(complexity_buffer: RID, collision_buffer: RID, target_color_buffer: RID, voxel_count: int) -> RID:
 	# Combines target_visual_rgba8 (u32 RGBA8) with scene/collision fields into a single vec4 target_field buffer.
-	# target_field.a = completely = max(scene_complexity, collision); zero means the voxel is empty.
+	# target_field.a = completely = max(complexity, collision); zero means the voxel is empty.
 	if not target_color_buffer.is_valid() or not complexity_buffer.is_valid() or not collision_buffer.is_valid():
 		return _create_zero_target_field_buffer(voxel_count)
 
