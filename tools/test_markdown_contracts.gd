@@ -236,7 +236,7 @@ func _test_terrain_collision_survives_zero_complexity_writes() -> bool:
 		{"channel": 0, "color": Color(0.4, 0.4, 0.4, 1.0), "complexity": 1.0, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
 	])
 	# Stamp-only commit 后 sv 不再携带 CPU field 投影；碰撞断言走显式 debug 回读。
-	var field_projection := committer.readback_sv_field_debug_projection()
+	var field_projection := committer.readback_sv_field_debug_snapshot()
 	var collision_field: PackedFloat32Array = field_projection.get("collision_field", PackedFloat32Array())
 	var collision_max := 0.0
 	for value in collision_field:

@@ -597,8 +597,6 @@ func _run_candidate_route_gpu_pack_pass(
 		"readback_derived": false,
 		# Schema / stride（VPG 合同与 SPA 借用门控会校验）
 		"schema_version": CANDIDATE_ROUTE_SCHEMA_VERSION,
-		"record_stride_bytes": CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
-		"range_stride_bytes": CANDIDATE_ROUTE_RANGE_STRIDE_BYTES,
 		"resident_route_record_stride": CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
 		"resident_route_range_stride": CANDIDATE_ROUTE_RANGE_STRIDE_BYTES,
 		# 交给 VPG 适配链的驻留 GPU 缓冲区

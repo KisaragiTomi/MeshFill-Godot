@@ -730,7 +730,7 @@ static func check_stamp_only_commit_and_blend_sv() -> Dictionary:
 		failures.append("commit mode=%s" % str(commit_summary.get("mode", "?")))
 	if int(commit_summary.get("scattered_field_record_count", 0)) <= 0:
 		failures.append("no field records scattered")
-	var projection: Dictionary = committer.readback_sv_field_debug_projection()
+	var projection: Dictionary = committer.readback_sv_field_debug_snapshot()
 	var committed_complexity: PackedFloat32Array = projection.get("complexity_field", PackedFloat32Array())
 	var committed_max := 0.0
 	for value in committed_complexity:

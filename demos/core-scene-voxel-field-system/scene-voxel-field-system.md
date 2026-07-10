@@ -129,7 +129,7 @@ AutoObject / brush / profile / placement delta
 
 工具点选一个 voxel 时，用同一个 voxel 坐标分别读取当前层：
 
-- committed result：`get_scene_voxel()`（盖章直写投影）或 `readback_sv_field_debug_projection()`（常驻 field 显式 debug 回读）。
+- committed result：`get_scene_voxel()`（盖章直写投影）或 `readback_sv_field_debug_snapshot()`（常驻 field 显式 debug 回读）。
 - brush layer：SPA 常驻 `BrushSV` field 对（`get_brush_sv_field_summary()`）。
 - auto layer：committed SV 常驻 field（纯 auto，即上一项）。
 - tile debug：`SceneVoxelTile` 由 `floor(Vector3i(x, y, z) / scene_voxel_tile_size)` 推导；tile record、summary、dirty index、object/source refs 通过 `readback_scene_voxel_tile_debug_snapshot()` 读取。
@@ -138,7 +138,7 @@ AutoObject / brush / profile / placement delta
 
 - 不再提供 `get_scene_voxel_sidecar()` / `SceneVoxelLocal` 这类 CPU Dictionary 聚合查询。
 - CPU 侧不再为了 debug 长期保留 `BrushSV` / `AutoSV` 的完整内容镜像；只保留资源句柄、生命周期、dirty、序列化入口和 readback 定位键等控制面元数据。
-- 工具需要 debug 信息时读稳定 debug buffers / readback decoder（`readback_sv_field_debug_projection()` / `readback_scene_voxel_tile_debug_snapshot()`），不直接读取 `_scene_voxel_tiles` 或 `_volume["scene_voxels"]`。
+- 工具需要 debug 信息时读稳定 debug buffers / readback decoder（`readback_sv_field_debug_snapshot()` / `readback_scene_voxel_tile_debug_snapshot()`），不直接读取 `_scene_voxel_tiles` 或 `_volume["scene_voxels"]`。
 - `commit_tick` 只作为 SV snapshot 全局 epoch 出现在 snapshot/header 级信息中，不作为 per-voxel source provenance。
 - committed `SceneVoxel` 仍必须只接受 SV-owned fields；`source_voxel_type`、record id、object refs 和 tile debug 只存在于 source/debug buffers 或 tile readback 中。
 

@@ -1253,7 +1253,7 @@ func get_last_scene_voxel_commit_summary() -> Dictionary:
 	return _last_commit_summary.duplicate(true)
 
 ## Debug 回读：把常驻 field buffer 解码为 CPU float 投影（显式调试/契约测试路径，不进运行时）
-func readback_sv_field_debug_projection() -> Dictionary:
+func readback_sv_field_debug_snapshot() -> Dictionary:
 	if _volume.is_empty() or _rd == null:
 		return {}
 	var field_buffers := _tile_store.ensure_resident_field_buffers()

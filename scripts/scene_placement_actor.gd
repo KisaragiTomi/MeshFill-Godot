@@ -2516,9 +2516,9 @@ func _build_resident_candidate_route_handoff(
 func _payload_has_borrowable_resident_candidate_route(payload: Dictionary, prefilter: AutoObjectProbePrefilterGPU) -> bool:
 	if int(payload.get("schema_version", CANDIDATE_ROUTE_SCHEMA_VERSION)) != CANDIDATE_ROUTE_SCHEMA_VERSION:
 		return false
-	if int(payload.get("record_stride_bytes", CANDIDATE_ROUTE_RECORD_STRIDE_BYTES)) != CANDIDATE_ROUTE_RECORD_STRIDE_BYTES:
+	if int(payload.get("resident_route_record_stride", CANDIDATE_ROUTE_RECORD_STRIDE_BYTES)) != CANDIDATE_ROUTE_RECORD_STRIDE_BYTES:
 		return false
-	if int(payload.get("range_stride_bytes", CANDIDATE_ROUTE_RANGE_STRIDE_BYTES)) != CANDIDATE_ROUTE_RANGE_STRIDE_BYTES:
+	if int(payload.get("resident_route_range_stride", CANDIDATE_ROUTE_RANGE_STRIDE_BYTES)) != CANDIDATE_ROUTE_RANGE_STRIDE_BYTES:
 		return false
 	var record_rid: RID = payload.get("resident_route_record_rid", RID())
 	var range_rid: RID = payload.get("resident_route_range_rid", RID())
