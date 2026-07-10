@@ -13,13 +13,13 @@ const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 const VoxelGeneralScript := preload("res://scripts/utils/voxel_general.gd")
 
 const FOOTPRINT_CAPACITY := 128     # footprint 体素上限，超出截断
-const FLAG_SUPPORT := 1             # 保留位：支撑已在 anchor 阶段判定，当前不再烘焙 support 探针
+# 值 1 保留（原 FLAG_SUPPORT；支撑已在 anchor 阶段判定，不再烘焙 support 探针）
 const FLAG_CLEARANCE := 2           # 顶部净空体素标记
 
 @export var color: Color = Color.WHITE                         # canonical 默认颜色；alpha 同步 complexity
 @export_range(0.0, 1.0) var complexity: float = 1.0             # canonical 默认强度
 @export var collision: Array[Dictionary] = []                   # canonical 局部 footprint sample 列表
-@export var pivot_variants: Array[Dictionary] = []              # 显式 anchor/pivot 列表
+@export var pivot_variants: Array[Dictionary] = []              # 显式 pivot 列表
 @export var auto_generate_vertical_pivots: bool = false         # 从 collision 高度生成 vertical pivots
 @export_range(0.0, 16.0, 0.1) var vertical_pivot_middle_min_height: float = 1.5 # middle pivot 最小高度
 @export_range(0.0, 16.0, 0.1) var vertical_pivot_upper_min_height: float = 3.0 # upper pivot 最小高度
@@ -230,7 +230,7 @@ func to_record_fields(default_radius: float = 0.0) -> Dictionary:
 	var profile := ensure_semantic_probe_profile() if semantic_probe_profile != null else null
 	var result := SharedPropertyTypeScript.from_descriptor(self, default_radius)
 	result.merge({
-		"pivot_variants": get_pivot_variants(),                           # runtime anchor/pivot variants
+		"pivot_variants": get_pivot_variants(),                           # runtime pivot variants
 		"auto_generate_vertical_pivots": auto_generate_vertical_pivots,   # vertical pivot generation flag
 		"semantic_probe_density": semantic_probe_density,                 # probe generation density
 	}, true)

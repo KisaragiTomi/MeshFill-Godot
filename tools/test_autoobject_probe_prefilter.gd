@@ -135,7 +135,7 @@ func _test_position_only_anchor_layers() -> bool:
 	return true
 func _test_candidate_routes_expand_for_probe_footprint_context_guard() -> bool:
 	print("[AutoObjectProbePrefilter] test_candidate_routes_expand_for_probe_footprint_context_guard...")
-	var profile := Prefilter._build_route_profile_from_arrays(
+	var profile := Prefilter._build_route_extent_from_arrays(
 		[
 			ProbeProfile.make_probe(Vector3(9.0, 0.0, 0.0), Color.WHITE, 0.0, 1.0, 0.0, 0.0, "test"),
 		],
@@ -163,7 +163,7 @@ func _test_candidate_routes_expand_for_probe_footprint_context_guard() -> bool:
 
 func _test_candidate_route_profile_debug_schema() -> bool:
 	print("[AutoObjectProbePrefilter] test_candidate_route_profile_debug_schema...")
-	var profile := Prefilter._build_route_profile_from_arrays(
+	var profile := Prefilter._build_route_extent_from_arrays(
 		[
 			ProbeProfile.make_probe(Vector3(0.0, 2.0, -3.0), Color.WHITE, 0.0, 1.0, 0.0, 0.0, "schema"),
 		],
@@ -267,8 +267,8 @@ func _test_prefilter_decode_output_contract() -> bool:
 		{},
 		Vector3i(2, 1, 2),
 		[
-			Prefilter._empty_route_profile(0),
-			Prefilter._empty_route_profile(1),
+			Prefilter._empty_route_extent(0),
+			Prefilter._empty_route_extent(1),
 		]
 	)
 
@@ -473,7 +473,7 @@ func _test_prefilter_output_reports_gpu_profile_probe_contract() -> bool:
 		1,
 		{},
 		Vector3i.ONE,
-		[Prefilter._empty_route_profile(0)],
+		[Prefilter._empty_route_extent(0)],
 		{
 			"ready": true,
 			"probe_data_borrowed": true,

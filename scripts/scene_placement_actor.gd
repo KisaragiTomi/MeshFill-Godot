@@ -174,7 +174,7 @@ func initialize(
 	if sv_committer != null:
 		attach_sv_committer(sv_committer)
 
-	_prepare_gpu_runtime_for_scene_voxel_committer()
+	_ensure_gpu_runtime_for_scene_voxel_committer()
 	_initialized = true
 	return true
 
@@ -240,7 +240,7 @@ func is_initialized() -> bool:
 ## 注入外部 SceneVoxelCommitter 引用，并同步到 gpu_runtime；由外部在 SV 就绪后调用
 func attach_sv_committer(sv_committer: SceneVoxelCommitter) -> void:
 	_sv_committer = sv_committer
-	_prepare_gpu_runtime_for_scene_voxel_committer()
+	_ensure_gpu_runtime_for_scene_voxel_committer()
 
 
 ## 返回当前挂载的 SceneVoxelCommitter（可能为 null）；由外部查询使用
@@ -266,7 +266,7 @@ func set_autoobject_runtime_capacity(max_objects: int, recreate_owned_runtime: b
 		_gpu_runtime.dispose(false)
 		_gpu_runtime = null
 		_ensure_owned_gpu_runtime()
-		_prepare_gpu_runtime_for_scene_voxel_committer()
+		_ensure_gpu_runtime_for_scene_voxel_committer()
 
 
 ## 返回当前设定的 autoobject runtime 最大对象容量
@@ -872,7 +872,7 @@ func ensure_brush_sv_fields() -> Dictionary:
 
 ## 将笔刷体素记录散射进 BrushSV 常驻层（复用 stamp-only 散射 shader；不触碰 committed SV）。
 ## 记录字段：voxel_xz: Vector2i、slice_index: int、complexity: float、color: Color、collision_strength: float
-func stamp_brush_sv_records(records: Array) -> Dictionary:
+func write_brush_sv_records(records: Array) -> Dictionary:
 	if records.is_empty():
 		return {"ok": true, "record_count": 0, "gpu_dispatched": false}
 	var fields := ensure_brush_sv_fields()
@@ -1411,7 +1411,7 @@ func spawn_autoobject_batch_from_accepted_placement_records(
 	if _gpu_runtime == null:
 		_ensure_owned_gpu_runtime()
 	if _sv_committer != null:
-		_prepare_gpu_runtime_for_scene_voxel_committer()
+		_ensure_gpu_runtime_for_scene_voxel_committer()
 	if _gpu_runtime == null or not _gpu_runtime.is_ready():
 		return _autoobject_runtime_action_error("gpu_autoobject_runtime_not_ready", "spawn_batch_from_accepted_placement_records")
 	var result: Dictionary = _gpu_runtime.spawn_batch_from_accepted_placement_records(
@@ -1431,7 +1431,7 @@ func flush_autoobject_runtime_to_scene_voxel_committer(options: Dictionary = {})
 		_ensure_owned_gpu_runtime()
 	if _sv_committer == null:
 		return _autoobject_runtime_action_error("missing_scene_voxel_committer", "flush_to_scene_voxel_committer")
-	var setup_result := _prepare_gpu_runtime_for_scene_voxel_committer()
+	var setup_result := _ensure_gpu_runtime_for_scene_voxel_committer()
 	if _gpu_runtime == null or not _gpu_runtime.is_ready():
 		return _autoobject_runtime_action_error("gpu_autoobject_runtime_not_ready", "flush_to_scene_voxel_committer")
 	if bool(setup_result.get("blocked", false)):
@@ -1482,7 +1482,7 @@ func _annotate_autoobject_runtime_action_result(result: Dictionary, action: Stri
 
 
 ## 向 gpu_runtime 传递 SV committer 的 GPU buffer RID（tile records/summaries/dirty_indices 等）；由 attach_sv_committer 和 pipeline 前调用
-func _prepare_gpu_runtime_for_scene_voxel_committer() -> Dictionary:
+func _ensure_gpu_runtime_for_scene_voxel_committer() -> Dictionary:
 	if _gpu_runtime == null:
 		_ensure_owned_gpu_runtime()
 	if _gpu_runtime == null:
@@ -1536,7 +1536,7 @@ func _prepare_gpu_runtime_for_scene_voxel_committer() -> Dictionary:
 	return _gpu_runtime_scene_voxel_setup_result
 
 
-## 构造 gpu_runtime SV 配置被阻断的错误报告字典；由 _prepare_gpu_runtime_for_scene_voxel_committer 发现缺失 buffer 时调用
+## 构造 gpu_runtime SV 配置被阻断的错误报告字典；由 _ensure_gpu_runtime_for_scene_voxel_committer 发现缺失 buffer 时调用
 func _gpu_runtime_scene_voxel_setup_blocked(reason: String) -> Dictionary:
 	return {
 		"ok": false,
@@ -1600,7 +1600,7 @@ func _flush_gpu_runtime_dirty_delta_to_scene_voxel_committer(placement_result: D
 		result["runtime_ready"] = _gpu_runtime.is_ready()
 		return result
 
-	var setup_result := _prepare_gpu_runtime_for_scene_voxel_committer()
+	var setup_result := _ensure_gpu_runtime_for_scene_voxel_committer()
 	result["runtime_setup"] = setup_result.duplicate(true)
 	result["runtime_ready"] = _gpu_runtime.is_ready()
 	if not bool(setup_result.get("resident_gpu_dirty_delta_update_pass_opt_in_ready", false)):
@@ -1676,12 +1676,6 @@ func _apply_prefilter_settings(prefilter: AutoObjectProbePrefilterGPU, settings:
 		return
 	if settings.has("anchor_topk"):
 		prefilter.anchor_topk = maxi(int(settings.get("anchor_topk", prefilter.anchor_topk)), 1)
-	if settings.has("max_complexity_field"):
-		prefilter.max_complexity_field = clampf(float(settings.get("max_complexity_field", prefilter.max_complexity_field)), 0.0, 1.0)
-	if settings.has("max_collision_field"):
-		prefilter.max_collision_field = clampf(float(settings.get("max_collision_field", prefilter.max_collision_field)), 0.0, 1.0)
-	if settings.has("min_support"):
-		prefilter.min_support = clampf(float(settings.get("min_support", prefilter.min_support)), 0.0, 1.0)
 	if settings.has("min_target_interest"):
 		prefilter.min_target_interest = clampf(float(settings.get("min_target_interest", prefilter.min_target_interest)), 0.0, 1.0)
 	if settings.has("min_prefilter_score"):

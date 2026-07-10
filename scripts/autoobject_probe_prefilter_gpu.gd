@@ -53,7 +53,7 @@ const SCENE_VOXEL_TILE_SUMMARY_STRIDE_UINTS := 8  ## 32 bytes per summary / 4 by
 const COLLECT_PUSH := [
 	["grid_x", "int"], ["grid_y", "int"], ["grid_z", "int"], ["dirty_count", "int"],
 	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["anchor_capacity", "int"],
-	["max_complexity", "float"], ["max_collision", "float"], ["min_support", "float"], ["min_target_interest", "float"],
+	["reserved0", "float"], ["reserved1", "float"], ["reserved2", "float"], ["min_target_interest", "float"],
 	["collect_groups_x", "int"], ["collect_groups_y", "int"], ["_pad0", "int"], ["_pad1", "int"],
 ]
 const ANCHOR_FINALIZE_PUSH := [
@@ -85,10 +85,11 @@ const FIELD_PAIR_PUSH := [
 ]
 
 var anchor_topk: int = 4                    # per-anchor asset top-K target
-var max_complexity_field: float = 0.15           # anchor allowed scene occupancy threshold
-var max_collision_field: float = 0.05       # anchor allowed collision threshold
-var min_support: float = 0.25               # required support below anchor
-var min_target_interest: float = 0.01       # minimum TargetSV_B demand
+# Anchor gate retired (2026-07-09): collect_sv_anchors emits an anchor wherever the cell is
+# inside the target volume (target_field.a > min_target_interest), matching Houdini's
+# volumesample(targetVol,0,P) > 0. The former scene-occupancy / collision / support caps are
+# gone; their COLLECT_PUSH slots (reserved0/1/2) are now zero-filled for layout stability.
+var min_target_interest: float = 0.01       # anchor gate: cell counts as "inside target" when target_field.a exceeds this
 var min_prefilter_score: float = 0.35       # minimum probe score accepted by shader
 var interpolation_guard_voxels: int = 1     # route expansion guard, at least 1 voxel
 ## Opt-in only: CPU readback of the anchor position array into result["anchors"].
@@ -137,7 +138,7 @@ func run_probe_prefilter(
 	if voxel_sparse_ids.is_empty():
 		voxel_sparse_ids = all_tile_ids(sv)
 	if voxel_sparse_ids.is_empty():
-		return _empty_result("no_voxel_regions")
+		return _empty_result("no_candidate_tiles")
 
 	log_name = "AutoObjectProbePrefilterGPU"
 	sync_global_device = true
@@ -188,7 +189,7 @@ func _run_gpu_pipeline(
 	var safe_tile_ids := _sanitize_prefilter_tile_ids(tile_ids, tile_count)
 	if safe_tile_ids.is_empty():
 		var pipeline_status := _pipeline_readiness(tile_summaries_rid.is_valid())
-		return _empty_result("no_valid_voxel_regions", {}, pipeline_status)
+		return _empty_result("no_valid_candidate_tiles", {}, pipeline_status)
 
 	# ---- Normalize GPU buffer inputs ----
 
@@ -240,7 +241,7 @@ func _run_gpu_pipeline(
 	# ---- Dispatch 1: Collect anchors ----
 
 	if not _dispatch_collect(
-		complexity_collision_buf, target_field_buf, dirty_tile_buf,
+		target_field_buf, dirty_tile_buf,
 		anchor_buf, anchor_count_buf,
 		grid_size, tile_grid, safe_tile_ids.size()
 	):
@@ -268,7 +269,7 @@ func _run_gpu_pipeline(
 
 	var gpu_route_pack_payload := _run_candidate_route_gpu_pack_pass(
 		voxel_sparse_votes_buf,
-		probe_pack.get("route_profiles", []),
+		probe_pack.get("route_extents", []),
 		tile_grid,
 		tile_count,
 		asset_count,
@@ -303,7 +304,7 @@ func _run_gpu_pipeline(
 		tile_count,
 		sv,
 		tile_grid,
-		probe_pack.get("route_profiles", []),
+		probe_pack.get("route_extents", []),
 		probe_pack,
 		pipeline_status,
 		_target_read_buffer_summary(target_buffer_pack),
@@ -315,9 +316,11 @@ func _run_gpu_pipeline(
 # Dispatch helpers
 # ---------------------------------------------------------------------------
 
-## 调度 Pass 1：在脏 Tile 内收集满足阈值的 SV 锚点体素，写入 anchor_buf。
+## 调度 Pass 1：在脏 Tile 内收集落在目标体积内（target_field.a > min_target_interest）的锚点
+## 体素，写入 anchor_buf。这是 Houdini `volumesample(targetVol,0,P) > 0` 门控的 GPU 对应实现：
+## 只判定"是否在目标区域内"，场景占用/碰撞/支撑门控已交由后续评分阶段处理。
 func _dispatch_collect(
-	complexity_collision_buf: RID, target_field_buf: RID,
+	target_field_buf: RID,
 	dirty_tile_buf: RID, anchor_buf: RID, anchor_count_buf: RID,
 	grid_size: Vector3i, tile_grid: Vector3i, dirty_count: int
 ) -> bool:
@@ -326,11 +329,10 @@ func _dispatch_collect(
 		push_error("[AutoObjectProbePrefilterGPU] Collect anchors dispatch count is out of bounds")
 		return false
 	var set0 := create_uniform_set([
-		make_storage_uniform(0, complexity_collision_buf),
-		make_storage_uniform(1, target_field_buf),
-		make_storage_uniform(2, dirty_tile_buf),
-		make_storage_uniform(3, anchor_buf),
-		make_storage_uniform(4, anchor_count_buf),
+		make_storage_uniform(0, target_field_buf),
+		make_storage_uniform(1, dirty_tile_buf),
+		make_storage_uniform(2, anchor_buf),
+		make_storage_uniform(3, anchor_count_buf),
 	], _shader_collect, 0)
 
 	var push := PushConstantLayout.new(COLLECT_PUSH).pack({
@@ -342,9 +344,6 @@ func _dispatch_collect(
 		tile_grid_y = tile_grid.y,
 		tile_grid_z = tile_grid.z,
 		anchor_capacity = ANCHOR_CAPACITY,
-		max_complexity = max_complexity_field,
-		max_collision = max_collision_field,
-		min_support = min_support,
 		min_target_interest = min_target_interest,
 		collect_groups_x = collect_groups.x,
 		collect_groups_y = collect_groups.y,
@@ -477,7 +476,7 @@ func _dispatch_score_topk_reduce(
 ## 执行 GPU 路由打包 Pass（pack 或 expand），将稀疏投票缓冲区转换为 schema-v1 记录/范围 RID，返回驻留载荷字典。
 func _run_candidate_route_gpu_pack_pass(
 	voxel_sparse_votes_buf: RID,
-	route_profiles: Array,
+	route_extents: Array,
 	tile_grid: Vector3i,
 	tile_count: int,
 	asset_count: int,
@@ -498,7 +497,7 @@ func _run_candidate_route_gpu_pack_pass(
 
 	_release_candidate_route_gpu_pack_payload_buffers()
 	var record_capacity := maxi(asset_count * tile_count, 0)
-	var route_radius_buf := storage_buffer_from_bytes(_pack_route_profile_radius_bytes(route_profiles, asset_count), SCOPE_FRAME, "candidate_route_profile_radii")
+	var route_radius_buf := storage_buffer_from_bytes(_pack_route_profile_radius_bytes(route_extents, asset_count), SCOPE_FRAME, "candidate_route_profile_radii")
 	var route_mark_buf := storage_buffer_zero(record_capacity * 4, SCOPE_FRAME, "candidate_route_tile_marks")
 	var record_buf := storage_buffer_zero(record_capacity * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES, SCOPE_PERSISTENT, "candidate_route_records_gpu_%s" % ("expand" if use_expand else "pack"))
 	var range_buf := storage_buffer_zero(asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES, SCOPE_PERSISTENT, "candidate_route_ranges_gpu_%s" % ("expand" if use_expand else "pack"))
@@ -718,7 +717,7 @@ func _pack_all_probes(
 		"probe_data_borrowed": false,
 		"probe_source": "transient_descriptor_probes",
 		"contract_blocked": false,
-		"route_profiles": _build_route_profiles(autoobjects, asset_count, voxel_size),
+		"route_extents": _build_route_extents(autoobjects, asset_count, voxel_size),
 	}
 
 
@@ -767,7 +766,7 @@ func _pack_profile_container_probes(
 		"probe_source": "auto_voxel_runtime_profile_container.probe_records",
 		"profile_ids": profile_ids,
 		"contract_blocked": false,
-		"route_profiles": _build_route_profiles(autoobjects, asset_count, voxel_size),
+		"route_extents": _build_route_extents(autoobjects, asset_count, voxel_size),
 	}
 
 
@@ -782,7 +781,7 @@ func _blocked_probe_pack(reason: String, autoobjects: Array, asset_count: int, v
 		"cpu_fallback": false,
 		"probe_data_borrowed": false,
 		"probe_source": "none",
-		"route_profiles": _build_route_profiles(autoobjects, asset_count, voxel_size),
+		"route_extents": _build_route_extents(autoobjects, asset_count, voxel_size),
 	}
 
 
@@ -798,7 +797,7 @@ func _decode_results(
 	tile_count: int,
 	sv,
 	tile_grid: Vector3i,
-	route_profiles: Array,
+	route_extents: Array,
 	probe_pack: Dictionary = {},
 	pipeline_status: Dictionary = {},
 	target_read_buffer_summary: Dictionary = {},
@@ -818,7 +817,7 @@ func _decode_results(
 			"voxel_pos": voxel_pos,          # position-only anchor voxel
 		})
 
-	var route_debug := _route_profile_debug(route_profiles, asset_count)
+	var route_debug := _route_extent_debug(route_extents, asset_count)
 	var readiness := pipeline_status.duplicate(true) if not pipeline_status.is_empty() else _pipeline_readiness()
 	var route_handoff_payload := gpu_route_pack_payload.duplicate(true)
 
@@ -1330,12 +1329,12 @@ func _pack_u32_array_from_int(values: Array[int]) -> PackedByteArray:
 
 
 ## 将每个资源的路由半径（tile_radius）打包为 GPU 所需的字节缓冲区（每资源 16 字节）。
-func _pack_route_profile_radius_bytes(route_profiles: Array, asset_count: int) -> PackedByteArray:
+func _pack_route_profile_radius_bytes(route_extents: Array, asset_count: int) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(maxi(asset_count, 1) * 16)
 	for asset_index in range(maxi(asset_count, 0)):
-		var route_profile: Dictionary = route_profiles[asset_index] if asset_index < route_profiles.size() and route_profiles[asset_index] is Dictionary else _empty_route_profile(asset_index)
-		var radius := VoxelGeneral.vector3i_from_value(route_profile.get("tile_radius", Vector3i.ONE), Vector3i.ONE)
+		var route_extent: Dictionary = route_extents[asset_index] if asset_index < route_extents.size() and route_extents[asset_index] is Dictionary else _empty_route_extent(asset_index)
+		var radius := VoxelGeneral.vector3i_from_value(route_extent.get("tile_radius", Vector3i.ONE), Vector3i.ONE)
 		radius = Vector3i(maxi(radius.x, 0), maxi(radius.y, 0), maxi(radius.z, 0))
 		var base := asset_index * 16
 		bytes.encode_u32(base + 0, radius.x)
@@ -1501,17 +1500,17 @@ static func _probe_metric_weights(p: Dictionary) -> Vector3:
 
 
 ## 为所有 autoobject 构建路由 Profile 数组（probe/footprint/tile_radius）。
-static func _build_route_profiles(autoobjects: Array, asset_count: int, voxel_size: Vector3) -> Array[Dictionary]:
+static func _build_route_extents(autoobjects: Array, asset_count: int, voxel_size: Vector3) -> Array[Dictionary]:
 	var profiles: Array[Dictionary] = []
 	for obj_idx in range(asset_count):
 		var autoobject := autoobjects[obj_idx] as Object
 		if autoobject == null:
-			profiles.append(_empty_route_profile(obj_idx))
+			profiles.append(_empty_route_extent(obj_idx))
 			continue
 		var probes: Array = autoobject.call("get_semantic_probes", _semantic_probe_density(autoobject)) if autoobject.has_method("get_semantic_probes") else []
 		var collisions: Array = autoobject.call("get_collision") if autoobject.has_method("get_collision") else []
 		var context_radius := _object_context_sensing_radius(autoobject)
-		profiles.append(_build_route_profile_from_arrays(
+		profiles.append(_build_route_extent_from_arrays(
 			probes,
 			collisions,
 			voxel_size,
@@ -1522,7 +1521,7 @@ static func _build_route_profiles(autoobjects: Array, asset_count: int, voxel_si
 
 
 ## 返回指定 asset_index 的空路由 Profile 默认值字典。
-static func _empty_route_profile(asset_index: int) -> Dictionary:
+static func _empty_route_extent(asset_index: int) -> Dictionary:
 	return {
 		"asset_index": asset_index,                 # asset index in current registry
 		"probe_min": Vector3i.ZERO,                 # min probe offset in voxels
@@ -1536,7 +1535,7 @@ static func _empty_route_profile(asset_index: int) -> Dictionary:
 
 
 ## 根据探针偏移、碰撞脚印和上下文感知半径计算路由 Profile（tile_radius 等）。
-static func _build_route_profile_from_arrays(
+static func _build_route_extent_from_arrays(
 	probes: Array,
 	collision: Array,
 	voxel_size: Vector3,
@@ -1663,11 +1662,11 @@ static func _semantic_probe_density(autoobject: Object) -> float:
 
 
 ## 构造路由 Profile 的调试副本数组，缺失条目用空 Profile 填充。
-static func _route_profile_debug(route_profiles: Array, asset_count: int) -> Array[Dictionary]:
+static func _route_extent_debug(route_extents: Array, asset_count: int) -> Array[Dictionary]:
 	var debug: Array[Dictionary] = []
 	for asset_id in range(asset_count):
-		if asset_id < route_profiles.size() and route_profiles[asset_id] is Dictionary:
-			debug.append((route_profiles[asset_id] as Dictionary).duplicate(true))
+		if asset_id < route_extents.size() and route_extents[asset_id] is Dictionary:
+			debug.append((route_extents[asset_id] as Dictionary).duplicate(true))
 		else:
-			debug.append(_empty_route_profile(asset_id))
+			debug.append(_empty_route_extent(asset_id))
 	return debug

@@ -737,11 +737,6 @@ func set_voxel_write_spec(record: Dictionary) -> void:
 	if name.is_empty():
 		name = auto_id
 	voxel_write_spec["auto_id"] = auto_id
-	voxel_write_spec["auto_object_id"] = auto_id
-	voxel_write_spec["auto_instance_id"] = instance_id
-	var mesh_instance_id := int(voxel_write_spec.get("instance_mesh_id", voxel_write_spec.get("mesh_instance_id", instance_id)))
-	voxel_write_spec["instance_mesh_id"] = mesh_instance_id
-	voxel_write_spec["mesh_instance_id"] = mesh_instance_id
 	if voxel_write_spec.has("min_spacing_auto"):
 		min_spacing_auto = bool(voxel_write_spec.min_spacing_auto)
 	if voxel_write_spec.has("min_spacing"):
@@ -794,8 +789,6 @@ func _sync_auto_metadata() -> void:
 	refresh_bound_spacing()
 	_clear_state_mirror_metadata()
 	set_meta("auto_id", auto_id)
-	set_meta("auto_instance_id", instance_id)
-	set_meta("instance_mesh_id", int(voxel_write_spec.get("instance_mesh_id", instance_id)))
 	_sync_selectable_metadata()
 
 

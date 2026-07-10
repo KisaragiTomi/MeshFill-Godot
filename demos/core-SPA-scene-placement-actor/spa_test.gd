@@ -620,7 +620,6 @@ static func check_resident_placement_writeback() -> Dictionary:
 		"rotation_slots": 4,
 		"result_capacity": 8,
 		"min_distance_voxels": 2.0,
-		"min_support_ratio": 0.5,
 		"collision_limit": 0.5,
 		"clearance_limit": 2.0,
 		"collision_penalty": 1.0,
@@ -748,7 +747,7 @@ static func check_stamp_only_commit_and_blend_sv() -> Dictionary:
 	var grid: Vector3i = committer.grid_size
 	var voxel_count := grid.x * grid.y * grid.z
 	var brush_voxel := Vector2i(2, 2)
-	var brush_result: Dictionary = spa.stamp_brush_sv_records([
+	var brush_result: Dictionary = spa.write_brush_sv_records([
 		{"voxel_xz": brush_voxel, "slice_index": 0, "complexity": 0.9, "color": Color(1.0, 0.2, 0.1, 1.0), "collision_strength": 0.8},
 	])
 	if not bool(brush_result.get("ok", false)):
