@@ -86,14 +86,12 @@ const TERRAIN_COLLISION_VOLUME_PUSH := [
 ]
 
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
-const SceneVoxelProfileScript := preload("res://scripts/scene_voxel_profile.gd")
 const SceneVoxelSourceRecordScript := preload("res://scripts/scene_voxel_source_record.gd")
 const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const SceneVoxelVolumeChannelsScript := preload("res://scripts/scene_voxel_volume_channels.gd")
 const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
 const VoxelGeneralScript := preload("res://scripts/utils/voxel_general.gd")
-const SceneVoxelDebugScript := preload("res://scripts/scene_voxel_debug.gd")
 
 
 ## committer 反向引用(读 _volume/_base_res/_capture_size/_sv_dirty，调 _is_valid_channel/_radius_to_px 等)。
