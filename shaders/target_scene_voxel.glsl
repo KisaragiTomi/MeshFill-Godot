@@ -27,7 +27,7 @@ layout(set = 1, binding = 4, std430) restrict buffer TargetStats {
     uint target_stats[];
 };
 
-const uint TARGET_STATS_MAX_OCCUPANCY = 0u;
+const uint TARGET_STATS_MAX_COMPLETELY = 0u;
 const uint TARGET_STATS_MAX_COLLISION = 1u;
 const uint TARGET_STATS_ACTIVE_COUNT = 2u;
 const uint TARGET_STATS_COLLISION_COUNT = 3u;
@@ -187,7 +187,7 @@ void main() {
     store_completely_r8(idx_u, completely);
     target_color_rgba8[idx] = rgba8;
 
-    atomicMax(target_stats[TARGET_STATS_MAX_OCCUPANCY], quantize_unit(completely));
+    atomicMax(target_stats[TARGET_STATS_MAX_COMPLETELY], quantize_unit(completely));
     atomicMax(target_stats[TARGET_STATS_MAX_COLLISION], quantize_unit(voxel.collision));
     if (completely > TARGET_STATS_ACTIVE_THRESHOLD) {
         atomicAdd(target_stats[TARGET_STATS_ACTIVE_COUNT], 1u);

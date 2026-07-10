@@ -4,7 +4,7 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) restrict readonly buffer TileSummaries {
-    uint summary[];
+    uint tile_summaries[];
 };
 
 layout(set = 0, binding = 1, std430) restrict writeonly buffer CompactSummaries {
@@ -29,8 +29,8 @@ void main() {
     }
 
     int src_base = int(tile_index) * summary_stride;
-    uint scene_count = summary[src_base + 0];
-    uint collision_count = summary[src_base + 3];
+    uint scene_count = tile_summaries[src_base + 0];
+    uint collision_count = tile_summaries[src_base + 3];
     if (scene_count == 0u && collision_count == 0u) {
         return;
     }
@@ -43,10 +43,10 @@ void main() {
     int dst_base = int(out_index) * compact_stride;
     compact_summary[dst_base + 0] = tile_index;
     compact_summary[dst_base + 1] = scene_count;
-    compact_summary[dst_base + 2] = summary[src_base + 1];
-    compact_summary[dst_base + 3] = summary[src_base + 2];
+    compact_summary[dst_base + 2] = tile_summaries[src_base + 1];
+    compact_summary[dst_base + 3] = tile_summaries[src_base + 2];
     compact_summary[dst_base + 4] = collision_count;
-    compact_summary[dst_base + 5] = summary[src_base + 4];
-    compact_summary[dst_base + 6] = summary[src_base + 5];
+    compact_summary[dst_base + 5] = tile_summaries[src_base + 4];
+    compact_summary[dst_base + 6] = tile_summaries[src_base + 5];
     compact_summary[dst_base + 7] = 0u;
 }

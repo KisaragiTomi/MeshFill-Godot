@@ -1224,7 +1224,7 @@ func _flush_bulk_spawn_command_queue(queued: Array, options: Dictionary = {}) ->
 		options
 	)
 	var attempted := bool(shader_result.get("attempted", false))
-	var write_result := shader_result if attempted else _write_bulk_spawn_records(records)
+	var write_result := shader_result if attempted else _upload_bulk_spawn_records(records)
 	var ok := bool(write_result.get("ok", false))
 	var results: Array[Dictionary] = []
 	var applied_count := 0
@@ -1474,7 +1474,7 @@ func _pack_accepted_placement_spawn_records(records: Array[Dictionary]) -> Packe
 
 
 ## 通过 CPU 逐缓冲区批量写入 spawn 记录到 GPU 存储缓冲区（调试/回退路径）。
-func _write_bulk_spawn_records(records: Array[Dictionary]) -> Dictionary:
+func _upload_bulk_spawn_records(records: Array[Dictionary]) -> Dictionary:
 	if records.is_empty():
 		return {"ok": true, "reason": "ok", "pending_dirty_delta_count": _dirty_delta_count}
 	if not _write_bulk_scalar_buffer(_generation_buffer, records, "generation"):

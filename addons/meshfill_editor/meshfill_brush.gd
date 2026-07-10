@@ -264,7 +264,7 @@ func clear_brush() -> void:
 
 
 func paint_at_voxel(center: Vector2i) -> bool:
-	return _accumulate_footprint(center)
+	return _accumulate_brush_extent(center)
 
 
 func paint_voxel_footprint_for_test(center: Vector2i) -> bool:
@@ -318,7 +318,7 @@ func screen_to_voxel_xz(camera: Camera3D, screen_pos: Vector2) -> Vector2i:
 	return Vector2i(best_px, best_pz)
 
 
-func _accumulate_footprint(center: Vector2i) -> bool:
+func _accumulate_brush_extent(center: Vector2i) -> bool:
 	var half_w := int((maxi(brush_width, 1) - 1) / 2)
 	var half_l := int((maxi(brush_length, 1) - 1) / 2)
 	var slice_max := clampi(brush_height, 1, _slice_count)
@@ -474,7 +474,7 @@ func _height_at_pixel(x: int, z: int) -> float:
 
 
 func paint_at_xy(x: int, z: int) -> bool:
-	return _accumulate_footprint(Vector2i(x, z))
+	return _accumulate_brush_extent(Vector2i(x, z))
 
 
 func get_brush_state() -> Dictionary:

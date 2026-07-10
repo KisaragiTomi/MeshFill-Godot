@@ -276,7 +276,7 @@ func _default_scene_voxel_tile_record(tile_coord: Vector3i) -> Dictionary:
 
 		"scene_voxel_count": 0,
 
-		"collision_cell_count": 0,
+		"collision_voxel_count": 0,
 
 		"summary": {
 
@@ -286,7 +286,7 @@ func _default_scene_voxel_tile_record(tile_coord: Vector3i) -> Dictionary:
 
 			"scene_voxel_count": 0,
 
-			"collision_cell_count": 0,
+			"collision_voxel_count": 0,
 
 		},
 
@@ -308,7 +308,7 @@ func _scene_voxel_tile_summary(tile: Dictionary) -> Dictionary:
 
 		"scene_voxel_count": int(tile.get("scene_voxel_count", 0)),
 
-		"collision_cell_count": int(tile.get("collision_cell_count", 0)),
+		"collision_voxel_count": int(tile.get("collision_voxel_count", 0)),
 
 	}
 
@@ -680,7 +680,7 @@ func _reset_scene_voxel_tile_summaries() -> void:
 
 		tile["scene_voxel_count"] = 0
 
-		tile["collision_cell_count"] = 0
+		tile["collision_voxel_count"] = 0
 
 		tile["summary"] = _scene_voxel_tile_summary(tile)
 
@@ -730,7 +730,7 @@ func _update_scene_voxel_tile_collision_summary(slice_index: int, voxel_xz: Vect
 
 	var tile: Dictionary = _scene_voxel_tiles.get(tile_id, _default_scene_voxel_tile_record(coord))
 
-	var count := int(tile.get("collision_cell_count", 0))
+	var count := int(tile.get("collision_voxel_count", 0))
 
 	var minmax: Vector2 = tile.get("collision_minmax", Vector2(collision_strength, collision_strength))
 
@@ -742,7 +742,7 @@ func _update_scene_voxel_tile_collision_summary(slice_index: int, voxel_xz: Vect
 
 		minmax = Vector2(minf(minmax.x, collision_strength), maxf(minmax.y, collision_strength))
 
-	tile["collision_cell_count"] = count + 1
+	tile["collision_voxel_count"] = count + 1
 
 	tile["collision_minmax"] = minmax
 
@@ -776,7 +776,7 @@ func _clear_scene_voxel_tile_dirty_flags() -> void:
 
 ## 返回当前所有脏 tile 的快照字典
 
-func _dirty_scene_voxel_tile_snapshot() -> Dictionary:
+func _copy_scene_voxel_tile() -> Dictionary:
 
 	var result := {}
 
@@ -791,7 +791,7 @@ func _dirty_scene_voxel_tile_snapshot() -> Dictionary:
 	return result
 
 ## 返回当前所有脏 SV 像素瓦片(_sv_dirty_tiles)的快照字典；由 committer 提交路径调用，对应 _sv["dirty_tiles"]
-func _dirty_sv_pixel_tile_snapshot() -> Dictionary:
+func _copy_sv_pixel_tile() -> Dictionary:
 
 	return _sv_dirty_tiles.duplicate(true)
 
@@ -2204,7 +2204,7 @@ func _decode_scene_voxel_tile_compact_summaries(bytes: PackedByteArray, record_c
 		summaries.append({
 			"tile_coord": _tile_coord_from_summary_index(tile_index, tile_grid),
 			"scene_voxel_count": scene_count,
-			"collision_cell_count": collision_count,
+			"collision_voxel_count": collision_count,
 			"scene_minmax": scene_minmax,
 			"collision_minmax": collision_minmax,
 		})
@@ -2379,9 +2379,9 @@ func _apply_scene_voxel_tile_reduce_summaries(reduced: Dictionary) -> void:
 		var tile_id := SceneVoxelTileCodecScript.tile_id(tile_coord)
 		var tile: Dictionary = _scene_voxel_tiles.get(tile_id, _default_scene_voxel_tile_record(tile_coord))
 		var scene_count := int(summary.get("scene_voxel_count", 0))
-		var collision_count := int(summary.get("collision_cell_count", 0))
+		var collision_count := int(summary.get("collision_voxel_count", 0))
 		tile["scene_voxel_count"] = scene_count
-		tile["collision_cell_count"] = collision_count
+		tile["collision_voxel_count"] = collision_count
 		tile["scene_minmax"] = summary.get("scene_minmax", Vector2.ZERO)
 		tile["collision_minmax"] = summary.get("collision_minmax", Vector2.ZERO)
 		tile["summary"] = _scene_voxel_tile_summary(tile)
@@ -2419,11 +2419,11 @@ func _legacy_sv_tiles_from_reduce_summaries(
 				"updated_this_commit": dirty_tiles_snapshot.has(scene_key),
 				"distance_or_occupancy": "occupancy",
 				"scene_voxel_count": scene_count,
-				"collision_cell_count": 0,
+				"collision_voxel_count": 0,
 				"max_complexity": scene_minmax.y,
 			}
 
-		var collision_count := int(summary.get("collision_cell_count", 0))
+		var collision_count := int(summary.get("collision_voxel_count", 0))
 		var collision_minmax: Vector2 = summary.get("collision_minmax", Vector2.ZERO)
 		if collision_count > 0:
 			var collision_key := SceneVoxelTileCodecScript.sv_tile_key(slice_index, px, "collision", tile_size)
@@ -2437,7 +2437,7 @@ func _legacy_sv_tiles_from_reduce_summaries(
 				"updated_this_commit": dirty_tiles_snapshot.has(collision_key),
 				"distance_or_occupancy": "occupancy",
 				"scene_voxel_count": 0,
-				"collision_cell_count": collision_count,
+				"collision_voxel_count": collision_count,
 				"max_complexity": collision_minmax.y,
 			}
 	return tiles
@@ -2482,7 +2482,7 @@ func mark_all_scene_voxel_tiles_dirty(dirty_flags = {}, source_record: Dictionar
 
 				mark_scene_voxel_tile_dirty(Vector3i(tx, ty, tz), flags, source_record)
 
-	var dirty_snapshot := _dirty_scene_voxel_tile_snapshot()
+	var dirty_snapshot := _copy_scene_voxel_tile()
 
 	return {
 
@@ -2719,7 +2719,7 @@ func apply_gpu_autoobject_dirty_delta(delta: Dictionary, dispatch_object_ref_upd
 			"reason": "empty_dirty_delta",
 			"gpu_first": true,
 			"cpu_fallback": false,
-			"dirty_scene_voxel_tiles": _dirty_scene_voxel_tile_snapshot(),
+			"dirty_scene_voxel_tiles": _copy_scene_voxel_tile(),
 		}
 
 	var object_id := _scene_voxel_tile_gpu_autoobject_id(delta)
@@ -2731,7 +2731,7 @@ func apply_gpu_autoobject_dirty_delta(delta: Dictionary, dispatch_object_ref_upd
 			"reason": "missing_object_id",
 			"gpu_first": true,
 			"cpu_fallback": false,
-			"dirty_scene_voxel_tiles": _dirty_scene_voxel_tile_snapshot(),
+			"dirty_scene_voxel_tiles": _copy_scene_voxel_tile(),
 		}
 
 	var flags := SceneVoxelTileCodecScript.flags_from_value(delta.get("dirty_flags", {"auto": true, "object_refs": true}), "")
@@ -2762,7 +2762,7 @@ func apply_gpu_autoobject_dirty_delta(delta: Dictionary, dispatch_object_ref_upd
 			"gpu_first": true,
 			"cpu_fallback": false,
 			"object_id": object_id,
-			"dirty_scene_voxel_tiles": _dirty_scene_voxel_tile_snapshot(),
+			"dirty_scene_voxel_tiles": _copy_scene_voxel_tile(),
 		}
 
 	var delta_bounds := SceneVoxelTileCodecScript.delta_bounds(delta)
@@ -2843,7 +2843,7 @@ func apply_gpu_autoobject_dirty_delta(delta: Dictionary, dispatch_object_ref_upd
 
 		"voxel_max": current_bounds.voxel_max,
 
-		"dirty_scene_voxel_tiles": _dirty_scene_voxel_tile_snapshot(),
+		"dirty_scene_voxel_tiles": _copy_scene_voxel_tile(),
 
 	}
 	if dispatch_object_ref_update:
@@ -2937,7 +2937,7 @@ func apply_gpu_autoobject_dirty_deltas(deltas: Array) -> Dictionary:
 			if reason == "ok":
 
 				reason = str(commit_result.get("reason", "dirty_delta_apply_failed"))
-	var dirty_tiles := _dirty_scene_voxel_tile_snapshot()
+	var dirty_tiles := _copy_scene_voxel_tile()
 
 	var result := {
 		"ok": ok,
@@ -2985,7 +2985,7 @@ func apply_gpu_autoobject_dirty_deltas(deltas: Array) -> Dictionary:
 
 func get_dirty_scene_voxel_tiles() -> Dictionary:
 
-	return _dirty_scene_voxel_tile_snapshot()
+	return _copy_scene_voxel_tile()
 
 ## 获取全部场景体素瓦片的副本
 

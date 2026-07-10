@@ -665,7 +665,7 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 	var total_tiles := tile_grid_size.x * tile_grid_size.y * tile_grid_size.z
 
-	var dirty_tiles_snapshot: Dictionary = _tile_store._dirty_sv_pixel_tile_snapshot()
+	var dirty_tiles_snapshot: Dictionary = _tile_store._copy_sv_pixel_tile()
 
 	var dirty_rects_snapshot := _sv_dirty_rects.duplicate(true)
 
@@ -715,7 +715,7 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 	_rebuild_scene_voxel_tile_source_refs()
 
-	dirty_scene_voxel_tiles_snapshot = _dirty_scene_voxel_tile_snapshot()
+	dirty_scene_voxel_tiles_snapshot = _copy_scene_voxel_tile()
 	if not dirty_scene_voxel_tiles_snapshot.is_empty():
 		_tile_store._scene_voxel_tile_pending_resident_upload_tiles = dirty_scene_voxel_tiles_snapshot.duplicate(true)
 
@@ -789,7 +789,7 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 
 		"scene_voxel_count": scene_voxels.size(),
 
-		"collision_cell_count": collision.size(),
+		"collision_voxel_count": collision.size(),
 
 		"dirty_tile_count": dirty_tiles_snapshot.size(),
 
@@ -1232,7 +1232,7 @@ func commit_scene_voxels(tick: int = -1) -> Dictionary:
 		"field_scatter_gpu_dispatched": bool(scatter_result.get("gpu_dispatched", false)),
 		"field_scatter_reason": str(scatter_result.get("reason", "none")),
 		"committed_scene_voxel_count": scene_voxels.size(),
-		"dirty_tile_count": _dirty_scene_voxel_tile_snapshot().size(),
+		"dirty_tile_count": _copy_scene_voxel_tile().size(),
 	}
 
 	if not bool(scatter_result.get("ok", false)):
@@ -1617,8 +1617,8 @@ func _apply_scene_voxel_tile_reduce_summaries(reduced: Dictionary) -> void:
 func _clear_scene_voxel_tile_dirty_flags() -> void:
 	_tile_store._clear_scene_voxel_tile_dirty_flags()
 ## 返回当前脏 SceneVoxelTile 字典快照；由 commit_scene_voxels、_rebuild_sv 调用，委托 _tile_store
-func _dirty_scene_voxel_tile_snapshot() -> Dictionary:
-	return _tile_store._dirty_scene_voxel_tile_snapshot()
+func _copy_scene_voxel_tile() -> Dictionary:
+	return _tile_store._copy_scene_voxel_tile()
 ## 从归约摘要构建旧式 tile 摘要字典（供 _sv["tiles"] 使用）；由 _rebuild_sv 调用，委托 _tile_store
 func _legacy_sv_tiles_from_reduce_summaries(reduced: Dictionary,
 	tile_size: int,

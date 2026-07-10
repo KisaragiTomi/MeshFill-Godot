@@ -391,7 +391,7 @@ static func pack_record_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictio
 		bytes.encode_s32(base + 88, 0)
 		bytes.encode_s32(base + 92, 0)
 		bytes.encode_s32(base + 96, int(tile.get("scene_voxel_count", 0)))
-		bytes.encode_s32(base + 100, int(tile.get("collision_cell_count", 0)))
+		bytes.encode_s32(base + 100, int(tile.get("collision_voxel_count", 0)))
 		bytes.encode_s32(base + 104, 0)  # was non_empty
 		bytes.encode_s32(base + 108, 1 if bool(tile.get("updated_this_commit", false)) else 0)
 		bytes.encode_u32(base + 112, HashUtils.stable_u32_from_string(tile_id))
@@ -416,7 +416,7 @@ static func pack_summary_bytes(tile_ids: Array[String], scene_voxel_tiles: Dicti
 		bytes.encode_float(base + 8, collision_minmax.x)
 		bytes.encode_float(base + 12, collision_minmax.y)
 		bytes.encode_s32(base + 16, int(tile.get("scene_voxel_count", 0)))
-		bytes.encode_s32(base + 20, int(tile.get("collision_cell_count", 0)))
+		bytes.encode_s32(base + 20, int(tile.get("collision_voxel_count", 0)))
 		bytes.encode_s32(base + 24, 0)  # was non_empty
 		bytes.encode_s32(base + 28, 0)
 
@@ -462,7 +462,7 @@ static func decode_records(bytes: PackedByteArray, tile_ids: Array[String]) -> A
 			"object_range_start": bytes.decode_s32(base + 80),
 			"object_range_count": bytes.decode_s32(base + 84),
 			"scene_voxel_count": bytes.decode_s32(base + 96),
-			"collision_cell_count": bytes.decode_s32(base + 100),
+			"collision_voxel_count": bytes.decode_s32(base + 100),
 			"updated_this_commit": bytes.decode_s32(base + 108) != 0,
 			"tile_hash": int(bytes.decode_u32(base + 112)),
 			"dirty": bytes.decode_s32(base + 116) != 0,
@@ -483,7 +483,7 @@ static func decode_summaries(bytes: PackedByteArray, tile_ids: Array[String]) ->
 			"scene_minmax": Vector2(bytes.decode_float(base + 0), bytes.decode_float(base + 4)),
 			"collision_minmax": Vector2(bytes.decode_float(base + 8), bytes.decode_float(base + 12)),
 			"scene_voxel_count": bytes.decode_s32(base + 16),
-			"collision_cell_count": bytes.decode_s32(base + 20),
+			"collision_voxel_count": bytes.decode_s32(base + 20),
 		})
 
 	return summaries

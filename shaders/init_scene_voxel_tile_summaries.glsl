@@ -4,7 +4,7 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) restrict writeonly buffer TileSummaries {
-    uint summary[];
+    uint tile_summaries[];
 };
 
 layout(push_constant, std430) uniform Params {
@@ -21,10 +21,10 @@ void main() {
 
     int base = int(tile_index) * stride;
     uint sentinel = uint(max(counts.z, 0));
-    summary[base + 0] = 0u;
-    summary[base + 1] = sentinel;
-    summary[base + 2] = 0u;
-    summary[base + 3] = 0u;
-    summary[base + 4] = sentinel;
-    summary[base + 5] = 0u;
+    tile_summaries[base + 0] = 0u;
+    tile_summaries[base + 1] = sentinel;
+    tile_summaries[base + 2] = 0u;
+    tile_summaries[base + 3] = 0u;
+    tile_summaries[base + 4] = sentinel;
+    tile_summaries[base + 5] = 0u;
 }

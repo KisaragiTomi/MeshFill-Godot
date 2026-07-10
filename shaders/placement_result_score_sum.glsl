@@ -48,10 +48,10 @@ void main() {
     uint local_valid = 0u;
     for (uint i = thread_index; i < record_count; i += 256u) {
         uint base = i * stride;
-        vec4 pose = placement_results[base + 0u];
+        vec4 origin_score = placement_results[base + 0u];
         vec4 debug1 = placement_results[base + 3u];
         if (debug1.y > 0.5) {
-            local_score += pose.w;
+            local_score += origin_score.w;
             local_valid += 1u;
         }
     }

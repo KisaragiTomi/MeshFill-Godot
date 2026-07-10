@@ -2,7 +2,7 @@
 #version 450
 
 // Serial global reducer for the first 3D voxel placement prototype.
-// It scans TileTopKBuffer, applies distance deduplication, and writes a compact
+// It scans TileTopK, applies distance deduplication, and writes a compact
 // PlacementResultBuffer with the same 4-vec4 record layout.
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
@@ -55,10 +55,10 @@ void main() {
 
         for (uint candidate_index = 0u; candidate_index < candidate_count; candidate_index++) {
             uint base = candidate_index * RECORD_STRIDE;
-            vec4 pose = tile_topk[base + 0u];
+            vec4 origin_score = tile_topk[base + 0u];
             vec4 debug1 = tile_topk[base + 3u];
-            // Gate on the valid flag only. The score (pose.w) is penalty-only now
-            // (<= 0 for valid placements), so a "pose.w < 0.0" test would wrongly drop
+            // Gate on the valid flag only. The score (origin_score.w) is penalty-only now
+            // (<= 0 for valid placements), so a "origin_score.w < 0.0" test would wrongly drop
             // every real placement that overlaps anything. Empty/invalid records carry
             // debug1.y == 0 (see score_voxel_tile.glsl record layout).
             if (debug1.y < 0.5) {
@@ -67,7 +67,7 @@ void main() {
 
             bool too_close = false;
             for (uint selected = 0u; selected < result_count; selected++) {
-                if (result_distance(selected, pose.xyz) < min_distance_voxels) {
+                if (result_distance(selected, origin_score.xyz) < min_distance_voxels) {
                     too_close = true;
                     break;
                 }
@@ -76,8 +76,8 @@ void main() {
                 continue;
             }
 
-            if (pose.w > best_score) {
-                best_score = pose.w;
+            if (origin_score.w > best_score) {
+                best_score = origin_score.w;
                 best_candidate = candidate_index;
             }
         }

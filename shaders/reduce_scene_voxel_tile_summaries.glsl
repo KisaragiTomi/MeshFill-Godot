@@ -12,7 +12,7 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
 };
 
 layout(set = 0, binding = 2, std430) restrict buffer TileSummaries {
-    uint summary[];
+    uint tile_summaries[];
 };
 
 layout(push_constant, std430) uniform Params {
@@ -48,9 +48,9 @@ void reduce_value(int tile_index, int count_offset, int min_offset, int max_offs
 
     int base = tile_index * tile_size.w;
     uint q = quantize_unit(value);
-    atomicAdd(summary[base + count_offset], 1u);
-    atomicMin(summary[base + min_offset], q);
-    atomicMax(summary[base + max_offset], q);
+    atomicAdd(tile_summaries[base + count_offset], 1u);
+    atomicMin(tile_summaries[base + min_offset], q);
+    atomicMax(tile_summaries[base + max_offset], q);
 }
 
 void main() {

@@ -8,7 +8,7 @@
 // and consumed positionally via reserved_object_ids[record_index].
 //
 // Binding contract, set 0 (VPG-owned resident inputs):
-//   0  readonly  placement_result_vec4x4 records (reduce output; pose.xyz = voxel origin)
+//   0  readonly  placement_result_vec4x4 records (reduce output; origin_score.xyz = voxel origin)
 //   1  readonly  world_result_vec4x4 records (placement_results_to_world output)
 //   2  readonly  uvec4 stamp_bounds[]; 2 rows per record: (min.xyz, written_count), (max.xyz, pad)
 //   3  readonly  int reserved_object_ids[]
@@ -205,7 +205,7 @@ void main() {
     }
 
     uint result_base = record_index * RECORD_STRIDE_VEC4;
-    vec4 world_pose = world_results[result_base + 0u];
+    vec4 world_origin_score = world_results[result_base + 0u];
     vec4 world_anchor = world_results[result_base + 1u];
     vec4 world_meta = world_results[result_base + 3u];
     if (world_meta.y <= 0.5) {
@@ -227,8 +227,8 @@ void main() {
         && voxel_max.y > voxel_min.y
         && voxel_max.z > voxel_min.z;
     if (!bounds_valid) {
-        vec4 result_pose = placement_results[result_base + 0u];
-        ivec3 voxel_origin = clamp(ivec3(round(result_pose.xyz)), ivec3(0), grid_size - ivec3(1));
+        vec4 result_origin_score = placement_results[result_base + 0u];
+        ivec3 voxel_origin = clamp(ivec3(round(result_origin_score.xyz)), ivec3(0), grid_size - ivec3(1));
         voxel_min = voxel_origin;
         voxel_max = voxel_origin + ivec3(1);
     }
@@ -242,7 +242,7 @@ void main() {
         vec4(cos_y, 0.0, -sin_y, 0.0),
         vec4(0.0, 1.0, 0.0, 0.0),
         vec4(sin_y, 0.0, cos_y, 0.0),
-        vec4(world_pose.xyz, 1.0)
+        vec4(world_origin_score.xyz, 1.0)
     );
 
     int object_generation = generation[object_id];

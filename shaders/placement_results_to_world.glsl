@@ -42,7 +42,7 @@ void main() {
 	uint input_base = idx * input_stride;
 	uint output_base = idx * output_stride;
 
-	vec4 pose = placement_results[input_base + 0u];
+	vec4 origin_score = placement_results[input_base + 0u];
 	vec4 ids = placement_results[input_base + 1u];
 	vec4 debug0 = placement_results[input_base + 2u];
 	vec4 debug1 = placement_results[input_base + 3u];
@@ -55,7 +55,7 @@ void main() {
 	float sin_y = sin(yaw);
 
 	vec3 safe_voxel_size = max(params.voxel_size.xyz, vec3(MIN_VOXEL_SIZE));
-	vec3 anchor_position = params.grid_origin.xyz + pose.xyz * safe_voxel_size;
+	vec3 anchor_position = params.grid_origin.xyz + origin_score.xyz * safe_voxel_size;
 	vec3 pivot = params.pivot_offset.xyz;
 	vec3 pivot_world_offset = vec3(
 		pivot.x * cos_y + pivot.z * sin_y,
@@ -65,7 +65,7 @@ void main() {
 	vec3 instance_position = anchor_position - pivot_world_offset;
 	float valid = debug1.y > 0.5 ? 1.0 : 0.0;
 
-	world_results[output_base + 0u] = vec4(instance_position, pose.w);
+	world_results[output_base + 0u] = vec4(instance_position, origin_score.w);
 	world_results[output_base + 1u] = vec4(anchor_position, yaw_degrees);
 	world_results[output_base + 2u] = debug0;
 	world_results[output_base + 3u] = vec4(debug1.x, valid, ids.y, ids.w);

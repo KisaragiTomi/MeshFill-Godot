@@ -1,7 +1,7 @@
 #[compute]
 #version 450
 
-// Derive TargetSV packed placement buffers from canonical 8bit readback buffers.
+// Derive TargetSV packed placement buffers from canonical 8bit read buffers.
 // Inputs:
 //   binding 0: rgba8 visual buffer packed as uint, high-to-low bytes RGBA
 //   binding 1: r8 collision buffer packed four voxels per uint
@@ -37,7 +37,7 @@ layout(set = 0, binding = 5, std430) restrict buffer TargetStatsOut {
     uint target_stats_out[];
 };
 
-const uint TARGET_STATS_MAX_OCCUPANCY = 0u;
+const uint TARGET_STATS_MAX_COMPLETELY = 0u;
 const uint TARGET_STATS_MAX_COLLISION = 1u;
 const uint TARGET_STATS_ACTIVE_COUNT = 2u;
 const uint TARGET_STATS_COLLISION_COUNT = 3u;
@@ -112,7 +112,7 @@ void main() {
         store_completely_r8(idx, completely);
         target_color_rgba8_out[idx] = visual_word;
     }
-    atomicMax(target_stats_out[TARGET_STATS_MAX_OCCUPANCY], quantize_unit(completely));
+    atomicMax(target_stats_out[TARGET_STATS_MAX_COMPLETELY], quantize_unit(completely));
     atomicMax(target_stats_out[TARGET_STATS_MAX_COLLISION], quantize_unit(collision));
     if (completely > TARGET_STATS_ACTIVE_THRESHOLD) {
         atomicAdd(target_stats_out[TARGET_STATS_ACTIVE_COUNT], 1u);

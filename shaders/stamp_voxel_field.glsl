@@ -209,8 +209,8 @@ void main() {
         return;
     }
 
-    vec4 pose = placement_results[result_index * RECORD_STRIDE + 0u];
-    // The placement score (pose.w) is penalty-only now (<= 0 for valid placements), so it
+    vec4 origin_score = placement_results[result_index * RECORD_STRIDE + 0u];
+    // The placement score (origin_score.w) is penalty-only now (<= 0 for valid placements), so it
     // can no longer double as the skip marker. Empty/invalid result slots carry valid == 0
     // in record[3].y (reduce_voxel_tiles.glsl write_empty zeroes the record) — gate on that.
     if (placement_results[result_index * RECORD_STRIDE + 3u].y < 0.5) {
@@ -226,7 +226,7 @@ void main() {
     float rot_ca = cos(rot_angle);
     float rot_sa = sin(rot_angle);
 
-    ivec3 origin = ivec3(round(pose.xyz));
+    ivec3 origin = ivec3(round(origin_score.xyz));
     ivec4 fp = footprint_pos_strength[footprint_index];
     vec4 wf = footprint_weight_flags[footprint_index];
     // Pivot subtracted before yaw to match the scorer (CPU shift-then-rotate order).
