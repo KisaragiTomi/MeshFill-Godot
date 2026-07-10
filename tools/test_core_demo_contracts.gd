@@ -242,7 +242,7 @@ func _test_gpu_runtime_and_tile_deep_contracts() -> bool:
 	])
 	for missing in DemoContractUtils.find_missing_terms(tile_contract, [
 		"ensure_scene_voxel_tile_buffers_uploaded()",
-		"get_scene_voxel_tile_gpu_buffer_summary()",
+		"get_scene_voxel_tile_gpu_buffer_status()",
 		"readback_scene_voxel_tile_debug_snapshot()",
 		"runtime resident success",
 		"GPU storage buffers",

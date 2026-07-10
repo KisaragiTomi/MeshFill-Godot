@@ -1650,7 +1650,7 @@ func get_scene_voxel_tile_summary_gpu_buffer() -> RID:
 
 ## 返回场景体素瓦片GPU缓冲汇总信息
 
-func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
+func get_scene_voxel_tile_gpu_buffer_status() -> Dictionary:
 
 	var buffers := {}
 
@@ -2576,7 +2576,7 @@ func try_apply_gpu_autoobject_object_ref_update_pass(deltas: Array) -> Dictionar
 		return result
 
 	if not ensure_scene_voxel_tile_buffers_uploaded(false):
-		var skipped_summary := get_scene_voxel_tile_gpu_buffer_summary()
+		var skipped_summary := get_scene_voxel_tile_gpu_buffer_status()
 		var upload_reason := str(skipped_summary.get("reason", "scene_voxel_tile_buffer_upload_failed"))
 		if upload_reason.is_empty():
 			upload_reason = "scene_voxel_tile_buffer_upload_failed"
@@ -2587,7 +2587,7 @@ func try_apply_gpu_autoobject_object_ref_update_pass(deltas: Array) -> Dictionar
 		result["scene_voxel_tile_gpu_skip_reason"] = str(skipped_summary.get("skip_reason", ""))
 		return result
 
-	var uploaded_summary := get_scene_voxel_tile_gpu_buffer_summary()
+	var uploaded_summary := get_scene_voxel_tile_gpu_buffer_status()
 	result["scene_voxel_tile_gpu_ready"] = bool(uploaded_summary.get("runtime_ready", false))
 	result["scene_voxel_tile_gpu_upload_status"] = str(uploaded_summary.get("gpu_upload_status", "ready"))
 	result["object_ref_capacity"] = int(uploaded_summary.get("object_ref_capacity", result.get("object_ref_capacity", 0)))
@@ -2682,7 +2682,7 @@ func try_apply_gpu_autoobject_object_ref_update_pass_from_buffer(
 		return result
 
 	if not ensure_scene_voxel_tile_buffers_uploaded(false):
-		var skipped_summary := get_scene_voxel_tile_gpu_buffer_summary()
+		var skipped_summary := get_scene_voxel_tile_gpu_buffer_status()
 		var upload_reason := str(skipped_summary.get("reason", "scene_voxel_tile_buffer_upload_failed"))
 		if upload_reason.is_empty():
 			upload_reason = "scene_voxel_tile_buffer_upload_failed"
@@ -2693,7 +2693,7 @@ func try_apply_gpu_autoobject_object_ref_update_pass_from_buffer(
 		result["scene_voxel_tile_gpu_skip_reason"] = str(skipped_summary.get("skip_reason", ""))
 		return result
 
-	var uploaded_summary := get_scene_voxel_tile_gpu_buffer_summary()
+	var uploaded_summary := get_scene_voxel_tile_gpu_buffer_status()
 	result["scene_voxel_tile_gpu_ready"] = bool(uploaded_summary.get("runtime_ready", false))
 	result["scene_voxel_tile_gpu_upload_status"] = str(uploaded_summary.get("gpu_upload_status", "ready"))
 	result["object_ref_capacity"] = int(uploaded_summary.get("object_ref_capacity", result.get("object_ref_capacity", 0)))

@@ -542,7 +542,7 @@ func _test_runtime_read_sources_reject_staging_success() -> bool:
 		{"scene": true, "object_refs": true},
 		{"id": "staging_only_tile", "source_id": "staging_only_source"}
 	)
-	var tile_summary: Dictionary = committer.get_scene_voxel_tile_gpu_buffer_summary()
+	var tile_summary: Dictionary = committer.get_scene_voxel_tile_gpu_buffer_status()
 	if bool(tile_summary.get("runtime_ready", true)):
 		push_error("  FAIL: staged SceneVoxelTile table must not be runtime ready before GPU upload")
 		ok = false
@@ -622,7 +622,7 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 	committer_source += TestUtils.read_text("res://scripts/scene_voxel_debug.gd")
 	for missing in DemoContractUtils.find_missing_terms(committer_source, [
 		"ensure_scene_voxel_tile_buffers_uploaded",
-		"get_scene_voxel_tile_gpu_buffer_summary",
+		"get_scene_voxel_tile_gpu_buffer_status",
 		"readback_scene_voxel_tile_debug_snapshot",
 		"\"read_source\": \"gpu_storage_buffers\"",
 		"\"readback_source\": \"gpu_storage_buffers\"",

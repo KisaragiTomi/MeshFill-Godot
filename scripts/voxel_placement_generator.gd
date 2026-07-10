@@ -1880,7 +1880,7 @@ func _prepare_scene_voxel_tile_object_ref_exclusion(
 	if committer == null:
 		return _scene_voxel_tile_object_ref_unavailable("missing_scene_voxel_committer", gpu_contract, settings)
 	if not committer.has_method("get_scene_voxel_tile_gpu_buffer") \
-			or not committer.has_method("get_scene_voxel_tile_gpu_buffer_summary"):
+			or not committer.has_method("get_scene_voxel_tile_gpu_buffer_status"):
 		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_gpu_buffer_api_missing", gpu_contract, settings)
 
 	var committer_rd: RenderingDevice = rendering_device_of(committer)
@@ -1889,7 +1889,7 @@ func _prepare_scene_voxel_tile_object_ref_exclusion(
 	if committer_rd != _rd:
 		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_rendering_device_mismatch", gpu_contract, settings)
 
-	var raw_summary = committer.call("get_scene_voxel_tile_gpu_buffer_summary")
+	var raw_summary = committer.call("get_scene_voxel_tile_gpu_buffer_status")
 	if not raw_summary is Dictionary:
 		return _scene_voxel_tile_object_ref_unavailable("scene_voxel_tile_summary_invalid", gpu_contract, settings)
 	var summary: Dictionary = raw_summary

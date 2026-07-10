@@ -983,7 +983,7 @@ func _run_gpu_autoobject_batch() -> void:
 	var uploaded: bool = _sv_committer.ensure_scene_voxel_tile_buffers_uploaded(true)
 	var metadata_ms := Time.get_ticks_msec() - metadata_t0
 	if not uploaded:
-		_autoobject_flush_result = _sv_committer.get_scene_voxel_tile_gpu_buffer_summary()
+		_autoobject_flush_result = _sv_committer.get_scene_voxel_tile_gpu_buffer_status()
 		_autoobject_flush_result["ok"] = false
 		_autoobject_flush_result["reason"] = str(_autoobject_flush_result.get("reason", "scene_voxel_tile_upload_failed"))
 		print("[SPA SVTile] FAIL: tile metadata upload failed (%s)" % str(_autoobject_flush_result.get("reason", "")))
@@ -1005,7 +1005,7 @@ func _run_gpu_autoobject_batch() -> void:
 	var flush_t0 := Time.get_ticks_msec()
 	_autoobject_flush_result = _spa.flush_autoobject_runtime_to_scene_voxel_committer({})
 	_autoobject_flush_time_ms = float(Time.get_ticks_msec() - flush_t0)
-	_svtile_summary = _sv_committer.get_scene_voxel_tile_gpu_buffer_summary()
+	_svtile_summary = _sv_committer.get_scene_voxel_tile_gpu_buffer_status()
 
 	if show_svtile_autoobject_overlay:
 		var visual_t0 := Time.get_ticks_msec()

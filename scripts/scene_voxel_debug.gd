@@ -49,7 +49,7 @@ static func append_tile_value(values: Array, value: String, unique: bool = true)
 
 ## 回读 tile GPU 缓冲并组装调试快照字典。原 readback_scene_voxel_tile_debug_snapshot。
 static func readback_tile_snapshot(committer) -> Dictionary:
-	var summary = committer.get_scene_voxel_tile_gpu_buffer_summary()
+	var summary = committer.get_scene_voxel_tile_gpu_buffer_status()
 	if not committer.is_scene_voxel_tile_gpu_ready():
 		summary["readback_snapshot"] = false
 		summary["tile_record_bytes"] = PackedByteArray()

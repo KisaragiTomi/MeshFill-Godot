@@ -30,7 +30,7 @@
 - `SceneVoxelTile` 当前通过 `apply_gpu_autoobject_dirty_delta()` 接收 GPU AutoObject dirty delta handoff，同时更新 voxel 级和 tile 级 object refs；它不拥有完整 runtime object state。
 - `SceneVoxelTile` 不进入 committed `SceneVoxel` per-voxel accepted fields。公开 `SceneVoxel` 查询仍只返回 `complexity`、`color`、`collision`，可选 `auto_mix`。`channel` 不进入 committed read model；`object_refs` 是独立 object-ref channel，通过 GPU resident buffers / readback 访问。
 - `SceneVoxelTile` 可以包装当前 `_sv_dirty_tiles` / `_sv_dirty_rects` 的语义；这些字段只是 implementation/storage compatibility，新 contract 和新 API 优先写 `SceneVoxelTile`。
-- `SceneVoxelTile` runtime metadata 和 committed scene/collision resident fields 是 GPU-first：`ensure_scene_voxel_tile_buffers_uploaded()` 成功后，tile record、summary、dirty index、object ref、source ref、`complexity_field` 和 `collision_field` 都以 GPU storage buffers / readback 为验收路径。`get_scene_voxel_tile_gpu_buffer_summary()` 的 valid RID、record count、resident field source 和 upload revision 才能说明 runtime resident success；CPU dictionary / PackedFloat32Array 只做 command staging、debug label 和无 RD 时的 SKIP 判定。staging revision 前进后，旧 GPU buffers 会标记 stale，不能继续作为 runtime read source。
+- `SceneVoxelTile` runtime metadata 和 committed scene/collision resident fields 是 GPU-first：`ensure_scene_voxel_tile_buffers_uploaded()` 成功后，tile record、summary、dirty index、object ref、source ref、`complexity_field` 和 `collision_field` 都以 GPU storage buffers / readback 为验收路径。`get_scene_voxel_tile_gpu_buffer_status()` 的 valid RID、record count、resident field source 和 upload revision 才能说明 runtime resident success；CPU dictionary / PackedFloat32Array 只做 command staging、debug label 和无 RD 时的 SKIP 判定。staging revision 前进后，旧 GPU buffers 会标记 stale，不能继续作为 runtime read source。
 - `SceneVoxelTile` 的 voxel bounds 必须覆盖真实 footprint 和 guard expansion，不能只用 object center 或 search radius 近似。
 - 正常 committed SV 增量更新入口只接受 `SceneVoxelTile` dirty；AutoObject、brush、profile 和 placement 都只是 dirty producer。
 - Target guidance 变化只标记 routing / scoring / feedback 相关 dirty；`TargetSceneVoxel` / `TargetSV_B` 不进入 source write，不直接写 committed source，也不修改 `SceneVoxelTile` 的 source range。
@@ -118,7 +118,7 @@ GPU upload / readback API：
 
 ```gdscript
 committer.ensure_scene_voxel_tile_buffers_uploaded(true)       # create tile metadata + scene/collision SSBOs when RD exists
-committer.get_scene_voxel_tile_gpu_buffer_summary()            # buffer RID/count/stride summary
+committer.get_scene_voxel_tile_gpu_buffer_status()            # buffer RID/count/stride summary
 committer.readback_scene_voxel_tile_debug_snapshot()           # GPU buffer readback for tests/debug
 committer.set_scene_voxel_tile_gpu_auto_upload(true)           # optional: upload clean metadata after get_sv()/clear publish
 # voxel (8, 0, 8) -> SceneVoxelTile coord floor(voxel / scene_voxel_tile_size)
@@ -126,7 +126,7 @@ committer.set_scene_voxel_tile_gpu_auto_upload(true)           # optional: uploa
 
 验收规则：
 
-- `get_scene_voxel_tile_gpu_buffer_summary().runtime_ready == true` 且每个 required buffer 的 RID 有效时，才算 metadata / resident fields GPU-ready。
+- `get_scene_voxel_tile_gpu_buffer_status().runtime_ready == true` 且每个 required buffer 的 RID 有效时，才算 metadata / resident fields GPU-ready。
 - summary 必须暴露 `staging_revision`、`uploaded_revision`、`uploaded_revision_matches_staging`、`buffers_stale`、`runtime_read_source`、`resident_field_read_source`、`last_reused_buffers`、`resident_field_buffers_reused`、`last_upload_mode`、`last_upload_tile_ids` 和 `last_upload_range_count`；stale 时这些 runtime read source 只能是 `none`。
 - `scene_voxel_tile_complexity_field` / `scene_voxel_tile_collision_field` 的 `record_count` 必须等于 committed resident voxel count，readback 的 float values 必须来自 GPU storage buffer。
 - 空 dirty index 仍会分配最小 GPU padding bytes，但 `logical_byte_size` / `record_count` 必须为 `0`，readback 不能把 padding 解码成有效 dirty tile。

@@ -2252,7 +2252,7 @@ func _build_resident_complexity_field_handoff(sv: Dictionary) -> Dictionary:
 		return _resident_complexity_field_handoff_summary(false, "no_scene_voxel_committer", expected_voxel_count, summary, complexity_rid, collision_rid)
 	if not _sv_committer.has_method("get_scene_voxel_tile_gpu_buffer"):
 		return _resident_complexity_field_handoff_summary(false, "committer_buffer_api_missing", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if not _sv_committer.has_method("get_scene_voxel_tile_gpu_buffer_summary"):
+	if not _sv_committer.has_method("get_scene_voxel_tile_gpu_buffer_status"):
 		return _resident_complexity_field_handoff_summary(false, "committer_buffer_summary_api_missing", expected_voxel_count, summary, complexity_rid, collision_rid)
 
 	var committer_rd := GodotComputeShaderBase.rendering_device_of(_sv_committer)
@@ -2261,7 +2261,7 @@ func _build_resident_complexity_field_handoff(sv: Dictionary) -> Dictionary:
 	if committer_rd != _rd:
 		return _resident_complexity_field_handoff_summary(false, "committer_rendering_device_mismatch", expected_voxel_count, summary, complexity_rid, collision_rid)
 
-	var raw_summary = _sv_committer.call("get_scene_voxel_tile_gpu_buffer_summary")
+	var raw_summary = _sv_committer.call("get_scene_voxel_tile_gpu_buffer_status")
 	if not raw_summary is Dictionary:
 		return _resident_complexity_field_handoff_summary(false, "committer_buffer_summary_invalid", expected_voxel_count, summary, complexity_rid, collision_rid)
 	summary = raw_summary as Dictionary
@@ -2329,7 +2329,7 @@ func _resident_complexity_field_handoff_summary(
 		"ok": ok,
 		"resident_complexity_field_handoff": ok,
 		"reason": reason,
-		"source": "SceneVoxelCommitter.get_scene_voxel_tile_gpu_buffer_summary" if not summary.is_empty() else "none",
+		"source": "SceneVoxelCommitter.get_scene_voxel_tile_gpu_buffer_status" if not summary.is_empty() else "none",
 		"producer": "SceneVoxelCommitter",
 		"owner": "SceneVoxelCommitter" if ok else "none",
 		"borrowed_from": "SceneVoxelCommitter" if ok else "none",

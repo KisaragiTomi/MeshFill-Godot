@@ -483,7 +483,7 @@ func _publish_scene_voxel_tile_gpu_summary_to_sv() -> void:
 
 		return
 
-	var summary := get_scene_voxel_tile_gpu_buffer_summary()
+	var summary := get_scene_voxel_tile_gpu_buffer_status()
 
 	_sv["scene_voxel_tile_gpu_buffer_summary"] = summary
 
@@ -1684,8 +1684,8 @@ func get_scene_voxel_tile(tile_coord: Vector3i) -> Dictionary:
 func get_scene_voxel_tile_gpu_buffer(buffer_name: String) -> RID:
 	return _tile_store.get_scene_voxel_tile_gpu_buffer(buffer_name)
 ## 返回 SceneVoxelTile GPU 缓冲状态摘要字典；由 _publish_scene_voxel_tile_gpu_summary_to_sv 调用，委托 _tile_store
-func get_scene_voxel_tile_gpu_buffer_summary() -> Dictionary:
-	return _tile_store.get_scene_voxel_tile_gpu_buffer_summary()
+func get_scene_voxel_tile_gpu_buffer_status() -> Dictionary:
+	return _tile_store.get_scene_voxel_tile_gpu_buffer_status()
 ## 返回 SceneVoxelTile summary GPU 缓冲 RID；由 _publish_scene_voxel_tile_gpu_summary_to_sv 调用，委托 _tile_store
 func get_scene_voxel_tile_summary_gpu_buffer() -> RID:
 	return _tile_store.get_scene_voxel_tile_summary_gpu_buffer()

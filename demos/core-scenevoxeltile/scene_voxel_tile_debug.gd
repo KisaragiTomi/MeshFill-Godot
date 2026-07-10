@@ -354,7 +354,7 @@ func _full_refresh() -> void:
 		int(sv.get("generation_tick", 0)),
 	]
 
-	var gpu_summary: Dictionary = _committer.get_scene_voxel_tile_gpu_buffer_summary()
+	var gpu_summary: Dictionary = _committer.get_scene_voxel_tile_gpu_buffer_status()
 	_metric_labels["gpu_status"].text = "GPU: %s  stale=%s  rev=%d/%d" % [
 		"ready" if gpu_summary.get("runtime_ready", false) else "not ready",
 		"Y" if gpu_summary.get("buffers_stale", false) else "N",
