@@ -107,7 +107,7 @@ var _resident_candidate_route_range_count := 0
 var _resident_candidate_route_revision := 0
 var _resident_candidate_route_buffers_borrowed := false
 var _last_resident_candidate_route_handoff: Dictionary = {}
-var _resident_target_color_rgba8_buffer: RID
+var _resident_target_field_buffer: RID
 var _resident_target_read_buffer_voxel_count := 0
 var _resident_target_read_buffer_byte_count := 0
 var _resident_target_read_buffer_revision := 0
@@ -1720,6 +1720,23 @@ func run_placement_pipeline(
 	var resident_complexity_field_rid: RID = resident_field_handoff.get("complexity_field_buffer_rid", RID())
 	var resident_collision_field_rid: RID = resident_field_handoff.get("collision_field_buffer_rid", RID())
 
+	# resident-or-error：有 committer 时常驻 complexity/collision 场就是权威来源，拿不到它
+	# （未就绪 / stride/format/device 失配 / 过期）是真·错误。旧行为静默退回 CPU 数组，而 committer
+	# 路径下调用方并不往 sv 里喂 CPU 场 → 那实际是在“零场”上跑放置（静默垃圾）。这里改为硬失败。
+	# 无 committer 时保留 CPU 数组接口（调用方自带 SV 场，见 scene-placement-actor.md）。
+	if _sv_committer != null and not bool(resident_field_handoff.get("ok", false)):
+		push_error("ScenePlacementActor: committer present but resident complexity/collision field handoff unavailable: %s" % str(resident_field_handoff.get("reason", "unknown")))
+		_last_pipeline_result = {
+			"ok": false,
+			"phase": "resident_complexity_field_handoff",
+			"resident_complexity_field_handoff": resident_field_handoff,
+			"scene_voxel_tile_resident_field_handoff": resident_field_handoff,
+			"profile_probe_pack": {},
+			"mesh_description": get_mesh_description_gpu_buffer_summary(),
+			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
+		}
+		return _last_pipeline_result
+
 	# 读取场（prefilter / target prep / 3D score 采样）：有 brush 内容时为 BlendSV 临时对，
 	# 否则直通 committed SV 常驻对；commit 目标恒为 SV 对（stamp 双写由 VPG flag 控制）。
 	var field_read_complexity_rid := resident_complexity_field_rid
@@ -1847,7 +1864,7 @@ func run_placement_pipeline(
 		placement_settings["candidate_route_readback_source"] = str(prefilter_result.get("candidate_route_readback_source", "none"))
 		placement_settings["candidate_route_runtime_read_source"] = str(prefilter_result.get("candidate_route_runtime_read_source", "none"))
 		placement_settings["candidate_route_input_contract"] = prefilter_result.get("candidate_route_input_contract", {})
-	placement_settings["target_color_rgba8_bytes"] = placement_common.get("target_color_rgba8_bytes", PackedByteArray())
+	placement_settings["target_visual_rgba8_bytes"] = placement_common.get("target_visual_rgba8_bytes", PackedByteArray())
 	placement_settings["target_field_bytes"] = target_field_bytes
 	placement_settings["target_read_buffers"] = target_buffers
 	placement_settings["auto_voxel_runtime_profile_container"] = _runtime_profile_container
@@ -2632,9 +2649,9 @@ func _resident_candidate_route_handoff_summary_from_payload(
 
 ## 释放 resident target read GPU 缓冲并重置摘要；由 _dispose_internal 和 pipeline 开始时调用
 func _release_resident_target_read_buffer_handoff() -> void:
-	if _resident_target_color_rgba8_buffer.is_valid():
-		release_rid(_resident_target_color_rgba8_buffer)
-	_resident_target_color_rgba8_buffer = RID()
+	if _resident_target_field_buffer.is_valid():
+		release_rid(_resident_target_field_buffer)
+	_resident_target_field_buffer = RID()
 	_resident_target_read_buffer_voxel_count = 0
 	_resident_target_read_buffer_byte_count = 0
 	_resident_target_read_buffer_revision += 1
@@ -2661,11 +2678,8 @@ func _resident_target_read_buffer_handoff_summary(
 		"owner": "ScenePlacementActor" if ok else "none",
 		"producer": "ScenePlacementActorTargetReadBuffers",
 		"rendering_device": _rd if ok else null,
-		"target_color_rgba8_buffer": _resident_target_color_rgba8_buffer if ok else RID(),
-		"target_color_rgba8_byte_count": expected_bytes if ok else 0,
-		"target_field_buffer": _resident_target_color_rgba8_buffer if ok else RID(),
-		"resident_target_field_buffer": _resident_target_color_rgba8_buffer if ok else RID(),
-		"target_field_buffer_rid": "valid" if ok and _resident_target_color_rgba8_buffer.is_valid() else "none",
+		"target_field_buffer": _resident_target_field_buffer if ok else RID(),
+		"target_field_buffer_rid": "valid" if ok and _resident_target_field_buffer.is_valid() else "none",
 		"target_field_byte_count": safe_target_field_byte_count if ok else 0,
 		"target_field_stride_bytes": 16 if ok else 0,
 		"target_field_format": "vec4" if ok else "none",
@@ -2680,18 +2694,6 @@ func _resident_target_read_buffer_handoff_summary(
 	}
 
 
-## 从 SV 字典按 key 取出 PackedFloat32Array 并校验长度；长度不符时返回空数组；由 prepare_target_read_buffers_from_common_gpu 调用
-func _sv_float_field(sv: Dictionary, key: String, target_length: int) -> PackedFloat32Array:
-	var field: PackedFloat32Array = PackedFloat32Array(sv.get(key, PackedFloat32Array()))
-	if field.size() >= target_length:
-		return field.slice(0, target_length)
-	var result := PackedFloat32Array()
-	result.resize(target_length)
-	for i in range(mini(field.size(), target_length)):
-		result[i] = field[i]
-	return result
-
-
 ## 从 SV complexity/collision field 构建 GPU-resident target read buffer 合约（用于 prefilter 目标评分）；由 run_placement_pipeline 与外部拆分 pipeline 时调用
 func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dictionary) -> Dictionary:
 	# GPU-specialized: combines target color + completely (max(complexity_field, collision_field)) into a single vec4 target_field buffer.
@@ -2703,9 +2705,9 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 	var target_field_byte_count := voxel_count * 16  # vec4 = 16 bytes per voxel
 	var resident_handoff_enabled := bool(settings.get(RESIDENT_TARGET_READ_BUFFERS_OPT_IN_KEY, true))
 	var debug_readback_requested := _target_read_buffer_debug_readback_requested(settings)
-	var source_color := _prepacked_target_bytes(settings, "target_color_rgba8_bytes", expected_bytes)
+	var source_color := _prepacked_target_bytes(settings, "target_visual_rgba8_bytes", expected_bytes)
 	var color_valid := not source_color.is_empty()
-	var color_source := "target_color_rgba8_bytes" if color_valid else "zero_filled"
+	var color_source := "target_visual_rgba8_bytes" if color_valid else "zero_filled"
 
 	if not ensure_device(true, false):
 		return {
@@ -2756,28 +2758,34 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		"target_read_color_input_rgba8_u32"
 	)
 
-	# 场景 completely 输入：优先绑定 sv 携带的常驻 8-bit field 读取对（BlendSV 或 committed SV，
-	# 格式与本 shader 输入契约一致，零拷贝）；无常驻 RID 时回退 CPU debug 投影打包。
+	# 场景 completely 输入：绑定 sv 携带的常驻 8-bit field 读取对（BlendSV 或 committed SV，
+	# 格式与本 shader 输入契约一致，零拷贝）。CPU 投影打包回退已移除——无常驻 RID 直接报错。
 	var raw_resident_complexity = sv.get("resident_complexity_field_read_rid", RID())
 	var raw_resident_collision = sv.get("resident_collision_field_read_rid", RID())
 	var resident_complexity_input: RID = raw_resident_complexity if raw_resident_complexity is RID else RID()
 	var resident_collision_input: RID = raw_resident_collision if raw_resident_collision is RID else RID()
-	var use_resident_field_inputs := resident_complexity_input.is_valid() and resident_collision_input.is_valid()
+	if not resident_complexity_input.is_valid() or not resident_collision_input.is_valid():
+		push_error("ScenePlacementActorTargetReadBuffers: missing resident SV field read RIDs (resident_complexity_field_read_rid / resident_collision_field_read_rid); CPU field-pack fallback removed.")
+		gc_frame()
+		return {
+			"ok": false,
+			"reason": "target_read_buffer_prep_resident_field_inputs_missing",
+			"gpu_first": true,
+			"cpu_fallback": false,
+			"expected_byte_count": expected_bytes,
+			"voxel_count": voxel_count,
+			"resident_target_read_buffer_handoff": false,
+			"resident_target_read_buffer_handoff_summary": _resident_target_read_buffer_handoff_summary(
+				false,
+				"target_read_buffer_prep_resident_field_inputs_missing",
+				expected_bytes,
+				voxel_count,
+				color_source,
+				Vector3i.ZERO
+			),
+		}
 	var complexity_input_buffer := resident_complexity_input
 	var collision_input_buffer := resident_collision_input
-	if not use_resident_field_inputs:
-		var complexity_field := _sv_float_field(sv, "complexity_field", voxel_count * 4)  # vec4 = 4 floats per voxel
-		var collision_field := _sv_float_field(sv, "collision_field", voxel_count)
-		complexity_input_buffer = storage_buffer_from_bytes(
-			SceneVoxelTileCodecScript.pack_complexity_field_rgba8_bytes(complexity_field, voxel_count),
-			SCOPE_FRAME,
-			"target_read_complexity_input_rgba8"
-		)
-		collision_input_buffer = storage_buffer_from_bytes(
-			SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(collision_field, voxel_count),
-			SCOPE_FRAME,
-			"target_read_collision_input_r8_words"
-		)
 
 	var output_scope := SCOPE_PERSISTENT if resident_handoff_enabled else SCOPE_FRAME
 	var target_field_output_buffer := storage_buffer_zero(target_field_byte_count, output_scope, "target_field_out_vec4")
@@ -2894,13 +2902,13 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 					),
 				}
 
-		_resident_target_color_rgba8_buffer = target_field_output_buffer
+		_resident_target_field_buffer = target_field_output_buffer
 		_resident_target_read_buffer_voxel_count = voxel_count
 		_resident_target_read_buffer_byte_count = target_field_byte_count
 		_resident_target_read_buffer_revision += 1
 		var resident_summary := _resident_target_read_buffer_handoff_summary(
-			_resident_target_color_rgba8_buffer.is_valid(),
-			"ok" if _resident_target_color_rgba8_buffer.is_valid() else "resident_target_read_buffer_rid_invalid",
+			_resident_target_field_buffer.is_valid(),
+			"ok" if _resident_target_field_buffer.is_valid() else "resident_target_read_buffer_rid_invalid",
 			expected_bytes,
 			voxel_count,
 			color_source,
@@ -2908,7 +2916,7 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 			target_field_byte_count
 		)
 		_last_resident_target_read_buffer_handoff = resident_summary
-		rid_ok = _resident_target_color_rgba8_buffer.is_valid()
+		rid_ok = _resident_target_field_buffer.is_valid()
 		gc_frame()
 		return {
 			"ok": rid_ok,
@@ -2926,8 +2934,7 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 			"resident_target_read_buffer_handoff": rid_ok,
 			"resident_target_read_buffer_handoff_summary": resident_summary,
 			"rendering_device": _rd if rid_ok else null,
-			"target_field_buffer": _resident_target_color_rgba8_buffer,
-			"resident_target_field_buffer": _resident_target_color_rgba8_buffer,
+			"target_field_buffer": _resident_target_field_buffer,
 			"resident_target_read_buffer_owner": "ScenePlacementActor" if rid_ok else "none",
 			"resident_target_read_buffer_lifetime": str(resident_summary.get("target_read_buffer_lifetime", "ScenePlacementActor owned until next target read-buffer prep, dispose, or explicit release")),
 		}
@@ -2983,7 +2990,6 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		"resident_target_read_buffer_handoff_summary": resident_summary,
 		"rendering_device": null,
 		"target_field_buffer": RID(),
-		"resident_target_field_buffer": RID(),
 		"resident_target_read_buffer_owner": "none",
 		"resident_target_read_buffer_lifetime": "none",
 	}

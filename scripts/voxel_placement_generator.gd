@@ -68,7 +68,7 @@ const DEBUG_CHANNEL_NAMES: PackedStringArray = [
 	"target_color_fit",
 	"target_density",
 	"placement_score",
-	"support_ratio",
+	"best_rotation_slot",
 	"solid_collision",
 	"clearance_overlap",
 ]
@@ -101,7 +101,7 @@ const SCORE_CONTRACT_DEBUG_NAMES: PackedStringArray = [
 	"debug_max_target_color_fit_q1000",
 	"debug_max_target_density_q1000",
 	"debug_max_placement_score_q1000",
-	"debug_max_support_ratio_q1000",
+	"debug_max_best_rotation_slot",
 	"debug_max_solid_collision_q1000",
 	"debug_max_clearance_overlap_q1000",
 	"runtime_spacing_tests",
@@ -160,7 +160,7 @@ const SCORE_PUSH := [
 	["scale_index", "int"],       # 76
 	["solid_threshold", "float"], # 80
 	["collision_limit", "float"], # 84
-	["min_support_ratio", "float"], # 88
+	["reserved_support_ratio", "float"], # 88 (retired: support gate; slot preserved, zero-filled)
 	["clearance_limit", "float"], # 92
 	["candidate_count_signed", "int"], # 96
 	["search_radius_x", "int"],   # 100
@@ -235,9 +235,7 @@ var top_k: int = 4
 var result_capacity: int = 8
 var solid_threshold: float = 192.0 / 255.0
 var collision_limit: float = 0.0
-var min_support_ratio: float = 1.0  # packed but UNUSED by the shader (support retired); kept for push/SSBO layout
 var clearance_limit: float = 0.0
-var support_weight: float = 10.0    # packed into ScoreConfig.x but UNUSED by the shader (support retired)
 var collision_penalty: float = 100.0
 var overlap_penalty: float = 1.0
 var clearance_penalty: float = 10.0
@@ -1387,9 +1385,9 @@ func run_minimal(
 		)
 	else:
 		var target_color_buffer := storage_buffer_from_bytes(
-			target_buffer_pack.get("target_color_rgba8_bytes", PackedByteArray()),
+			target_buffer_pack.get("target_visual_rgba8_bytes", PackedByteArray()),
 			SCOPE_FRAME,
-			"target_color_rgba8_uploaded"
+			"target_visual_rgba8_uploaded"
 		)
 		target_field_buffer = _ensure_combined_target_field_buffer(complexity_buffer, collision_buffer, target_color_buffer, voxel_count)
 	if not target_field_buffer.is_valid():
@@ -1496,8 +1494,9 @@ func run_minimal(
 		if score_sum_bytes.size() >= 8:
 			placement_score_sum = score_sum_bytes.decode_float(0)
 			placement_valid_count = int(score_sum_bytes.decode_u32(4))
-	var read_tile_topk := bool(settings.get("read_tile_topk", false))
-	var tile_topk_data := _rd.buffer_get_data(tile_topk_buffer) if read_tile_topk else PackedByteArray()
+	# tile_topk is a GPU-internal producer for reduce→result→stamp; the per-tile records are
+	# no longer read back to the CPU. Scoring readback now flows through the per-voxel debug
+	# buffer (placement_score + best_rotation_slot channels), read via read_debug_voxel below.
 	var compact_state_chain := _compact_delta_state_chain_requested(settings)
 	var _gpu_resident_field_input: bool = _complexity_field_gpu_resident
 	var read_full_field_outputs := bool(settings.get("read_full_field_outputs", false))
@@ -1581,8 +1580,6 @@ func run_minimal(
 		"result_readback_bytes": result_readback_bytes,
 		"result_readback_count_source": "reduce_shader_result_count_buffer",
 		"results": _decode_records(result_data, result_count),
-		"tile_topk": _decode_records(tile_topk_data, candidate_count) if read_tile_topk else [],
-		"tile_topk_readback_source": "score_shader_tile_topk_buffer" if read_tile_topk else "disabled",
 		"complexity_field_out": SceneVoxelTileCodecScript.decode_complexity_field_rgba8_alpha_bytes(scene_out_data, voxel_count) if read_full_field_outputs else PackedFloat32Array(),
 		"collision_field_out": SceneVoxelTileCodecScript.decode_collision_field_r8_word_bytes(collision_out_data, voxel_count) if read_full_field_outputs else PackedFloat32Array(),
 		"complexity_field_out_source": _state_chain_contract.get("complexity_field_out_source", ""),
@@ -1713,7 +1710,6 @@ func _gpu_contract_blocked_minimal_output(
 		"ok": false,
 		"result_count": 0,
 		"results": [],
-		"tile_topk": [],
 		"complexity_field_out": complexity_data,
 		"collision_field_out": collision_data,
 		"complexity_field_out_source": full_field_readback.get("complexity_field_out_source", ""),
@@ -1759,7 +1755,6 @@ func _empty_prefilter_output(
 	return {
 		"result_count": 0,
 		"results": [],
-		"tile_topk": [],
 		"complexity_field_out": complexity_data,
 		"collision_field_out": collision_data,
 		"complexity_field_out_source": full_field_readback.get("complexity_field_out_source", ""),
@@ -1790,9 +1785,7 @@ func _apply_settings(settings: Dictionary) -> void:
 	result_capacity = int(settings.get("result_capacity", result_capacity))
 	solid_threshold = float(settings.get("solid_threshold", solid_threshold))
 	collision_limit = float(settings.get("collision_limit", collision_limit))
-	min_support_ratio = float(settings.get("min_support_ratio", min_support_ratio))
 	clearance_limit = float(settings.get("clearance_limit", clearance_limit))
-	support_weight = float(settings.get("support_weight", support_weight))
 	collision_penalty = float(settings.get("collision_penalty", collision_penalty))
 	overlap_penalty = float(settings.get("overlap_penalty", overlap_penalty))
 	clearance_penalty = float(settings.get("clearance_penalty", clearance_penalty))
@@ -2254,11 +2247,9 @@ func _dispatch_placement_score_sum(result_buffer: RID, result_count_buffer: RID,
 		result_capacity = result_capacity,
 		record_stride = RECORD_STRIDE,
 	})
-	var cl := begin_compute_list()
-	if cl < 0:
-		return RID()
-	_gpu_dispatch_pipeline_sets(cl, pipeline, [set0], push, Vector3i(1, 1, 1))
-	end_compute_list()
+	ComputePassChain.run(self, [
+		{pipeline = pipeline, uniform_sets = [set0], push = push, groups = Vector3i(1, 1, 1)},
+	], false)
 	return score_sum_buffer
 
 
@@ -2343,14 +2334,14 @@ func _pack_dimension_table(dims: Array) -> PackedByteArray:
 
 ## ScoreConfig SSBO bytes (std430, 64 B) for set0 binding 10. Holds what used to ride the push
 ## constant but no longer fits under Godot's 128-byte limit:
-##   cfg_score_weights   (vec4)  @0  : [support_weight, collision_penalty, overlap_penalty, clearance_penalty]
+##   cfg_score_weights   (vec4)  @0  : [reserved(support retired), collision_penalty, overlap_penalty, clearance_penalty]
 ##   cfg_dim_meta        (ivec4) @16 : [env_channel_count, 0, 0, 0]
 ##   cfg_asset_profile0  (vec4)  @32 : asset dimension profile channels 0..3
 ##   cfg_asset_profile1  (vec4)  @48 : asset dimension profile channels 4..7
 func _pack_score_config() -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(64)
-	bytes.encode_float(0, support_weight)
+	bytes.encode_float(0, 0.0)  # cfg_score_weights.x reserved — support retired
 	bytes.encode_float(4, collision_penalty)
 	bytes.encode_float(8, overlap_penalty)
 	bytes.encode_float(12, clearance_penalty)
@@ -2442,36 +2433,41 @@ func _dispatch_score(
 		scale_index = scale_index,
 		solid_threshold = solid_threshold,
 		collision_limit = collision_limit,
-		min_support_ratio = min_support_ratio,
 		clearance_limit = clearance_limit,
 		candidate_count_signed = -candidate_voxel_sparse_count if direct_all_tiles else candidate_voxel_sparse_count,
 		search_radius_x = search_radius.x, search_radius_y = search_radius.y, search_radius_z = search_radius.z,
 		footprint_pivot_x = footprint_pivot.x, footprint_pivot_y = footprint_pivot.y, footprint_pivot_z = footprint_pivot.z,
 		dim_count = _dim_count,              # footprint_pivot_pad.w = dim_count (0 = penalty-only)
 	}
-	# support_weight/collision/overlap/clearance penalties, env_channel_count and the 8-entry
-	# asset profile now live in the ScoreConfig SSBO (_pack_score_config, binding 10) — off the
-	# push constant to keep it at the 128-byte Godot limit.
+	# collision/overlap/clearance penalties, env_channel_count and the 8-entry asset profile
+	# live in the ScoreConfig SSBO (_pack_score_config, binding 10; slot x reserved — support
+	# retired) — off the push constant to keep it at the 128-byte Godot limit.
 	var push := PushConstantLayout.new(SCORE_PUSH).pack(_score_values)
 
-	var cl := begin_compute_list()
-	_rd.compute_list_bind_compute_pipeline(cl, _pipeline_score)
-	_rd.compute_list_bind_uniform_set(cl, set0, 0)
-	if set1.is_valid():
-		_rd.compute_list_bind_uniform_set(cl, set1, 1)
+	# set1 (runtime-profile contract) is always valid here — its params + debug buffers are
+	# allocated unconditionally (run_minimal :1410 and _dispatch_score above) — so the bound sets
+	# stay contiguous from set 0. set2 (candidate-route binding) is the only optional trailing set.
+	var score_sets: Array = [set0, set1]
 	if set2.is_valid():
-		_rd.compute_list_bind_uniform_set(cl, set2, 2)
-	_rd.compute_list_set_push_constant(cl, push, push.size())
+		score_sets.append(set2)
 	var dispatch_result := _score_dispatch_indirect_decision(
 		candidate_route_indirect_args_buffer,
 		candidate_voxel_sparse_count,
 		direct_all_tiles
 	)
+	var score_pass := {
+		pipeline = _pipeline_score,
+		uniform_sets = score_sets,
+		push = push,
+	}
 	if bool(dispatch_result.get("score_dispatch_indirect", false)):
-		_rd.compute_list_dispatch_indirect(cl, candidate_route_indirect_args_buffer, 0)
+		score_pass["indirect_args"] = candidate_route_indirect_args_buffer
+		ComputePassChain.run(self, [score_pass], false)
 	elif candidate_voxel_sparse_count > 0:
-		_rd.compute_list_dispatch(cl, candidate_voxel_sparse_count, 1, 1)
-	end_compute_list()
+		score_pass["groups"] = Vector3i(candidate_voxel_sparse_count, 1, 1)
+		ComputePassChain.run(self, [score_pass], false)
+	# else: no candidates and not indirect — prior code bound sets but issued no dispatch;
+	# skipping the empty compute list here is behaviour-equivalent.
 	return dispatch_result
 
 
@@ -2611,6 +2607,9 @@ func _dispatch_candidate_route_sparse_adapter(
 	_gpu_dispatch_pipeline_sets(cl, _pipeline_candidate_route_sparse_adapter, [set0], push, Vector3i(ceil_div(output_capacity, CANDIDATE_ROUTE_SPARSE_ADAPTER_LOCAL_SIZE), 1, 1))
 	_rd.compute_list_add_barrier(cl)
 	_gpu_dispatch_pipeline_sets(cl, _pipeline_candidate_route_sparse_adapter_finalize, [finalize_set0], push, Vector3i(1, 1, 1))
+	# Trailing barrier: publish finalize's indirect-args write to the score pass's indirect dispatch
+	# in the NEXT compute list. ComputePassChain only barriers BETWEEN passes (not after the last),
+	# so this helper stays hand-rolled to preserve this cross-list indirect-args barrier.
 	_rd.compute_list_add_barrier(cl)
 	end_compute_list()
 
@@ -3228,9 +3227,9 @@ func _dispatch_reduce(tile_topk_buffer: RID, result_buffer: RID, result_count_bu
 		min_distance_voxels = min_distance_voxels,
 	})
 
-	var cl := begin_compute_list()
-	_gpu_dispatch_pipeline_sets(cl, _pipeline_reduce, [set0], push, Vector3i(1, 1, 1))
-	end_compute_list()
+	ComputePassChain.run(self, [
+		{pipeline = _pipeline_reduce, uniform_sets = [set0], push = push, groups = Vector3i(1, 1, 1)},
+	], false)
 
 
 ## 派发 stamp 计算着色器：先初始化 stamp_bounds 缓冲区（init pass），
@@ -3308,11 +3307,10 @@ func _dispatch_stamp(
 	var total_threads := result_capacity * footprint_count
 	var init_groups := ceili(float(maxi(result_capacity, 1)) / 64.0)
 	var groups := ceili(float(maxi(total_threads, 1)) / 64.0)
-	var cl := begin_compute_list()
-	_gpu_dispatch_pipeline_sets(cl, _pipeline_init_stamp_bounds, [init_set0], init_push, Vector3i(init_groups, 1, 1))
-	_rd.compute_list_add_barrier(cl)
-	_gpu_dispatch_pipeline_sets(cl, _pipeline_stamp, [set0], push, Vector3i(groups, 1, 1))
-	end_compute_list()
+	ComputePassChain.run(self, [
+		{pipeline = _pipeline_init_stamp_bounds, uniform_sets = [init_set0], push = init_push, groups = Vector3i(init_groups, 1, 1)},
+		{pipeline = _pipeline_stamp, uniform_sets = [set0], push = push, groups = Vector3i(groups, 1, 1)},
+	], false)
 
 
 ## 将资产的足迹（footprint，局部体素形状）数组打包为 GPU 可读取的双缓冲字节：
@@ -3478,11 +3476,11 @@ static func _decode_grid_clamped_vec3i(bytes: PackedByteArray, word_offset: int,
 	)
 
 
-## 从 settings 中取出预打包的 target_color_rgba8_bytes，并按 voxel_count 截断/校验长度。
+## 从 settings 中取出预打包的 target_visual_rgba8_bytes，并按 voxel_count 截断/校验长度。
 ## 若数据不足则返回填零的字节数组。
-func _target_color_rgba8_bytes_from_settings(settings: Dictionary, voxel_count: int) -> PackedByteArray:
+func _target_visual_rgba8_bytes_from_settings(settings: Dictionary, voxel_count: int) -> PackedByteArray:
 	var expected_bytes := maxi(voxel_count, 1) * 4
-	var prepacked: PackedByteArray = settings.get("target_color_rgba8_bytes", PackedByteArray())
+	var prepacked: PackedByteArray = settings.get("target_visual_rgba8_bytes", PackedByteArray())
 	if prepacked.size() >= expected_bytes:
 		if prepacked.size() == expected_bytes:
 			return prepacked
@@ -3549,7 +3547,7 @@ func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Diction
 	var field_input := _target_field_bytes_input(settings, target_read_buffers)
 	var field_pack := _target_field_bytes_from_settings({"target_field_bytes": field_input}, voxel_count)
 	var has_field := bool(field_pack.get("has_target", false))
-	var color_input_bytes := _target_bytes_input(settings, target_read_buffers, "target_color_rgba8_bytes")
+	var color_input_bytes := _target_bytes_input(settings, target_read_buffers, "target_visual_rgba8_bytes")
 	var upload_reason := str(borrowed.get("reason", "resident_handoff_absent"))
 	if _target_read_buffers_claim_resident(target_read_buffers) \
 			and not has_field \
@@ -3578,9 +3576,9 @@ func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Diction
 			"expected_byte_count": expected_field_bytes,
 			"target_field_format": "vec4",
 			"target_field_stride_bytes": 16,
-			"target_color_rgba8_buffer": RID(),
-			"target_color_rgba8_bytes": PackedByteArray(),
-			"target_color_rgba8_byte_count": 0,
+			"target_visual_rgba8_buffer": RID(),
+			"target_visual_rgba8_bytes": PackedByteArray(),
+			"target_visual_rgba8_byte_count": 0,
 			"target_color_format": "none",
 			"target_color_stride_bytes": 0,
 			"has_target": true,
@@ -3595,8 +3593,8 @@ func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Diction
 		}
 
 	var color_input_settings := settings.duplicate(false)
-	color_input_settings["target_color_rgba8_bytes"] = color_input_bytes
-	var color_bytes := _target_color_rgba8_bytes_from_settings(color_input_settings, voxel_count)
+	color_input_settings["target_visual_rgba8_bytes"] = color_input_bytes
+	var color_bytes := _target_visual_rgba8_bytes_from_settings(color_input_settings, voxel_count)
 	var has_color := color_bytes.size() >= expected_color_bytes
 	return {
 		"ready": true,
@@ -3613,9 +3611,9 @@ func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Diction
 		"expected_byte_count": expected_field_bytes,
 		"target_field_format": "vec4",
 		"target_field_stride_bytes": 16,
-		"target_color_rgba8_buffer": RID(),
-		"target_color_rgba8_bytes": color_bytes,
-		"target_color_rgba8_byte_count": color_bytes.size(),
+		"target_visual_rgba8_buffer": RID(),
+		"target_visual_rgba8_bytes": color_bytes,
+		"target_visual_rgba8_byte_count": color_bytes.size(),
 		"target_color_format": "rgba8_u32",
 		"target_color_stride_bytes": 4,
 		"has_target": has_color,
@@ -3640,13 +3638,7 @@ func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected
 	var summary: Dictionary = target_read_buffers.get("resident_target_read_buffer_handoff_summary", {})
 	var raw_field = target_read_buffers.get(
 		"target_field_buffer",
-		target_read_buffers.get(
-			"resident_target_field_buffer",
-			summary.get(
-				"target_field_buffer",
-				summary.get("resident_target_field_buffer", summary.get("target_color_rgba8_buffer", RID()))
-			)
-		)
+		summary.get("target_field_buffer", RID())
 	)
 	var field_buffer: RID = raw_field if raw_field is RID else RID()
 	if not field_buffer.is_valid():
@@ -3682,9 +3674,9 @@ func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected
 		"expected_byte_count": expected_field_bytes,
 		"target_field_format": str(target_read_buffers.get("target_field_format", summary.get("target_field_format", "vec4"))),
 		"target_field_stride_bytes": int(target_read_buffers.get("target_field_stride_bytes", summary.get("target_field_stride_bytes", 16))),
-		"target_color_rgba8_buffer": RID(),
-		"target_color_rgba8_bytes": PackedByteArray(),
-		"target_color_rgba8_byte_count": 0,
+		"target_visual_rgba8_buffer": RID(),
+		"target_visual_rgba8_bytes": PackedByteArray(),
+		"target_visual_rgba8_byte_count": 0,
 		"target_color_format": "none",
 		"target_color_stride_bytes": 0,
 		"has_target": true,
@@ -3770,9 +3762,9 @@ func _blocked_target_read_buffer_pack(
 		"expected_byte_count": expected_field_bytes,
 		"target_field_format": "vec4",
 		"target_field_stride_bytes": 16,
-		"target_color_rgba8_buffer": RID(),
-		"target_color_rgba8_bytes": PackedByteArray(),
-		"target_color_rgba8_byte_count": actual_color_bytes,
+		"target_visual_rgba8_buffer": RID(),
+		"target_visual_rgba8_bytes": PackedByteArray(),
+		"target_visual_rgba8_byte_count": actual_color_bytes,
 		"target_color_format": "rgba8_u32",
 		"target_color_stride_bytes": 4,
 		"has_target": false,
@@ -3794,7 +3786,7 @@ func _blocked_target_read_buffer_pack(
 func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 	var raw_field = pack.get("target_field_buffer", RID())
 	var field_buffer: RID = raw_field if raw_field is RID else RID()
-	var raw_color = pack.get("target_color_rgba8_buffer", RID())
+	var raw_color = pack.get("target_visual_rgba8_buffer", RID())
 	var color_buffer: RID = raw_color if raw_color is RID else RID()
 	return {
 		"ready": bool(pack.get("ready", false)),
@@ -3810,9 +3802,9 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 		"target_field_byte_count": int(pack.get("target_field_byte_count", 0)),
 		"target_field_format": str(pack.get("target_field_format", "none")),
 		"target_field_stride_bytes": int(pack.get("target_field_stride_bytes", 0)),
-		"target_color_rgba8_buffer_rid": "valid" if color_buffer.is_valid() else "none",
-		"target_color_rgba8_buffer_rid_valid": color_buffer.is_valid(),
-		"target_color_rgba8_byte_count": int(pack.get("target_color_rgba8_byte_count", 0)),
+		"target_visual_rgba8_buffer_rid": "valid" if color_buffer.is_valid() else "none",
+		"target_visual_rgba8_buffer_rid_valid": color_buffer.is_valid(),
+		"target_visual_rgba8_byte_count": int(pack.get("target_visual_rgba8_byte_count", 0)),
 		"expected_byte_count": int(pack.get("expected_byte_count", 0)),
 		"target_color_format": str(pack.get("target_color_format", "none")),
 		"target_color_stride_bytes": int(pack.get("target_color_stride_bytes", 0)),
@@ -3828,10 +3820,10 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 	}
 
 
-## 通过 GPU 计算着色器（pack_target_field）将 target_color_rgba8、场景复杂度与碰撞字段
+## 通过 GPU 计算着色器（pack_target_field）将 target_visual_rgba8、场景复杂度与碰撞字段
 ## 合并为单个 vec4 target_field 缓冲区；输入无效或管线未就绪时返回全零缓冲区。
 func _ensure_combined_target_field_buffer(complexity_buffer: RID, collision_buffer: RID, target_color_buffer: RID, voxel_count: int) -> RID:
-	# Combines target_color_rgba8 (u32 RGBA8) with scene/collision fields into a single vec4 target_field buffer.
+	# Combines target_visual_rgba8 (u32 RGBA8) with scene/collision fields into a single vec4 target_field buffer.
 	# target_field.a = completely = max(scene_complexity, collision); zero means the voxel is empty.
 	if not target_color_buffer.is_valid() or not complexity_buffer.is_valid() or not collision_buffer.is_valid():
 		return _create_zero_target_field_buffer(voxel_count)

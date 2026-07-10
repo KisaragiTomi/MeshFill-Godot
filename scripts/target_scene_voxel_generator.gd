@@ -482,7 +482,7 @@ static func decode_target_read_buffers_gpu(
 		return packed
 
 	var completely_out: PackedByteArray = packed.get("target_completely_bytes", PackedByteArray())
-	var color_out: PackedByteArray = packed.get("target_color_rgba8_bytes", PackedByteArray())
+	var color_out: PackedByteArray = packed.get("target_visual_rgba8_bytes", PackedByteArray())
 	if completely_out.size() < expected_collision_bytes or color_out.size() < expected_visual_bytes:
 		packed["valid"] = false
 		packed["reason"] = "target_gpu_readback_size_mismatch"
@@ -608,7 +608,7 @@ func derive_target_packed_buffers(
 	var color_rgba8_out_buffer := storage_buffer_zero(
 		voxel_count * 4 if readback_packed_buffers else 4,
 		SCOPE_FRAME,
-		"target_color_rgba8_out"
+		"target_visual_rgba8_out"
 	)
 	var stats_out_buffer := storage_buffer_zero(TARGET_STATS_BYTE_SIZE, SCOPE_FRAME, "target_pack_stats_u32")
 
@@ -690,7 +690,7 @@ func derive_target_packed_buffers(
 		"target_completely_source": "gpu_target_completely_buffer" if completely_valid else "gpu_derived_visual_collision",
 		"target_completely_bytes": packed_completely,
 		"target_field_bytes": target_field_bytes,
-		"target_color_rgba8_bytes": packed_color,
+		"target_visual_rgba8_bytes": packed_color,
 		"max_completely": stats.get("max_completely", 0.0),
 		"max_occupancy": stats.get("max_occupancy", stats.get("max_completely", 0.0)),
 		"max_collision": stats.get("max_collision", 0.0),
@@ -723,7 +723,7 @@ func derive_target_stats(
 	)
 	stats.erase("target_completely_bytes")
 	stats.erase("target_field_bytes")
-	stats.erase("target_color_rgba8_bytes")
+	stats.erase("target_visual_rgba8_bytes")
 	stats["stats_only"] = true
 	return stats
 
@@ -846,7 +846,7 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 		"collision_bytes": collision_bytes,  # 源 collision buffer 字节
 		"target_completely_bytes": completely_bytes,  # GPU 解码后的 max(complexity, collision)
 		"target_field_bytes": target_field_bytes,
-		"target_color_rgba8_bytes": color_rgba8_bytes, # GPU 打包后的 target_color
+		"target_visual_rgba8_bytes": color_rgba8_bytes, # GPU 打包后的 target_color
 		"max_completely": stats.get("max_completely", 0.0), # GPU stats: max target completely in dirty dispatch
 		"max_occupancy": stats.get("max_occupancy", stats.get("max_completely", 0.0)),
 		"max_collision": stats.get("max_collision", 0.0), # GPU stats: max target collision in dirty dispatch

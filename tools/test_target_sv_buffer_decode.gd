@@ -16,7 +16,7 @@ func _init() -> void:
 		_test_decode_target_read_buffers_gpu_or_skip,
 		_test_decode_rejects_missing_buffers,
 		_test_vpg_accepts_prepacked_target_field,
-		_test_vpg_accepts_prepacked_target_color_rgba8,
+		_test_vpg_accepts_prepacked_target_visual_rgba8,
 		_test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads,
 		_test_scene_placement_actor_prefers_prepacked_target_bytes,
 		_test_scene_placement_actor_keeps_brush_sv_control_metadata_only,
@@ -349,7 +349,7 @@ func _test_decode_target_read_buffers_gpu_or_skip() -> bool:
 		return false
 
 	var field_bytes: PackedFloat32Array = decoded.get("target_field_bytes", PackedFloat32Array())
-	var color_bytes: PackedByteArray = decoded.get("target_color_rgba8_bytes", PackedByteArray())
+	var color_bytes: PackedByteArray = decoded.get("target_visual_rgba8_bytes", PackedByteArray())
 	var completely_bytes: PackedByteArray = decoded.get("target_completely_bytes", PackedByteArray())
 	if field_bytes.size() != voxel_count * 4 \
 			or color_bytes.size() != voxel_count * 4 \
@@ -382,8 +382,8 @@ func _test_decode_rejects_missing_buffers() -> bool:
 	return true
 
 
-func _test_vpg_accepts_prepacked_target_color_rgba8() -> bool:
-	print("[TargetSVBufferDecode] test_vpg_accepts_prepacked_target_color_rgba8...")
+func _test_vpg_accepts_prepacked_target_visual_rgba8() -> bool:
+	print("[TargetSVBufferDecode] test_vpg_accepts_prepacked_target_visual_rgba8...")
 	var voxel_count := 3
 	var colors := PackedColorArray([
 		Color(1.0, 0.0, 0.0, 0.25),
@@ -397,8 +397,8 @@ func _test_vpg_accepts_prepacked_target_color_rgba8() -> bool:
 	prepacked.encode_u32(voxel_count * 4, 0x12345678)
 
 	var generator := VoxelPlacementGeneratorScript.new()
-	var from_prepacked := generator._target_color_rgba8_bytes_from_settings({
-		"target_color_rgba8_bytes": prepacked,
+	var from_prepacked := generator._target_visual_rgba8_bytes_from_settings({
+		"target_visual_rgba8_bytes": prepacked,
 	}, voxel_count)
 	if from_prepacked.size() != voxel_count * 4:
 		push_error("  FAIL: prepacked target color bytes should be trimmed to voxel_count")
@@ -407,7 +407,7 @@ func _test_vpg_accepts_prepacked_target_color_rgba8() -> bool:
 		push_error("  FAIL: prepacked target color bytes mismatch")
 		return false
 
-	var fallback := generator._target_color_rgba8_bytes_from_settings({}, voxel_count)
+	var fallback := generator._target_visual_rgba8_bytes_from_settings({}, voxel_count)
 	if fallback.size() != voxel_count * 4:
 		push_error("  FAIL: missing prepacked target color should allocate a zero buffer")
 		return false
@@ -484,7 +484,7 @@ func _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads() ->
 
 	var actor := ScenePlacementActorScript.new()
 	var target_buffers := actor.prepare_target_read_buffers_from_common_gpu({
-		"target_color_rgba8_bytes": color_bytes,
+		"target_visual_rgba8_bytes": color_bytes,
 	}, {"grid_size": grid_size})
 	if not bool(target_buffers.get("ok", false)):
 		actor.dispose(true)
@@ -584,7 +584,7 @@ func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 		push_error("  FAIL: GPU packed target buffers failed: %s" % str(packed))
 		return false
 	var field_bytes: PackedFloat32Array = packed.get("target_field_bytes", PackedFloat32Array())
-	var color_rgba8_bytes: PackedByteArray = packed.get("target_color_rgba8_bytes", PackedByteArray())
+	var color_rgba8_bytes: PackedByteArray = packed.get("target_visual_rgba8_bytes", PackedByteArray())
 	var completely_bytes: PackedByteArray = packed.get("target_completely_bytes", PackedByteArray())
 	if field_bytes.size() != voxel_count * 4 \
 			or color_rgba8_bytes.size() != voxel_count * 4 \
@@ -685,7 +685,7 @@ func _test_gpu_derive_target_stats_only_or_skip() -> bool:
 	if not bool(packed.get("stats_only", false)):
 		push_error("  FAIL: derive_target_stats should report stats_only=true")
 		return false
-	if packed.has("target_field_bytes") or packed.has("target_color_rgba8_bytes") or packed.has("target_color_rgba32f_bytes"):
+	if packed.has("target_field_bytes") or packed.has("target_visual_rgba8_bytes") or packed.has("target_color_rgba32f_bytes"):
 		push_error("  FAIL: derive_target_stats should not expose packed readback keys")
 		return false
 	if not _close_q8(float(packed.get("max_occupancy", 0.0)), 0.8):
@@ -743,7 +743,7 @@ func _test_gpu_generated_occupancy_buffer_or_skip() -> bool:
 	var visual_bytes: PackedByteArray = result.get("visual_bytes", PackedByteArray())
 	var collision_bytes: PackedByteArray = result.get("collision_bytes", PackedByteArray())
 	var occupancy_bytes: PackedFloat32Array = result.get("target_field_bytes", PackedFloat32Array())
-	var color_rgba8_bytes: PackedByteArray = result.get("target_color_rgba8_bytes", PackedByteArray())
+	var color_rgba8_bytes: PackedByteArray = result.get("target_visual_rgba8_bytes", PackedByteArray())
 	if occupancy_bytes.size() != voxel_count * 4:
 		push_error("  FAIL: GPU target field buffer size mismatch: got %d expected %d" % [occupancy_bytes.size(), voxel_count * 4])
 		return false

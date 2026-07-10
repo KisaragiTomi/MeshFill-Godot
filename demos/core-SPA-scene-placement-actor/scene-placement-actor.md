@@ -232,7 +232,7 @@ var result := spa.run_placement_pipeline(
     {                     # placement_common settings
         "global_quota": 500,
         "target_completely_bytes": target_completely_bytes,
-        "target_color_rgba8_bytes": target_color_rgba8_bytes,
+        "target_visual_rgba8_bytes": target_visual_rgba8_bytes,
         "write_accepted_placements_to_gpu_runtime": true,
     }
 )

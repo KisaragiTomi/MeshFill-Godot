@@ -19,8 +19,8 @@ layout(set = 1, binding = 2, std430) restrict buffer TargetCompletely {
     uint target_completely_r8_words[];
 };
 
-layout(set = 1, binding = 3, std430) restrict buffer TargetColorRgba8 {
-    uint target_color_rgba8[];
+layout(set = 1, binding = 3, std430) restrict buffer TargetVisualRgba8Dup {
+    uint target_visual_rgba8_dup[];
 };
 
 layout(set = 1, binding = 4, std430) restrict buffer TargetStats {
@@ -185,7 +185,7 @@ void main() {
     target_visual_rgba8[idx] = rgba8;
     store_collision_r8(idx_u, voxel.collision);
     store_completely_r8(idx_u, completely);
-    target_color_rgba8[idx] = rgba8;
+    target_visual_rgba8_dup[idx] = rgba8;
 
     atomicMax(target_stats[TARGET_STATS_MAX_COMPLETELY], quantize_unit(completely));
     atomicMax(target_stats[TARGET_STATS_MAX_COLLISION], quantize_unit(voxel.collision));

@@ -29,8 +29,8 @@ layout(set = 0, binding = 3, std430) restrict buffer TargetCompletelyOut {
     uint target_completely_out_r8_words[];
 };
 
-layout(set = 0, binding = 4, std430) restrict writeonly buffer TargetColorRgba8Out {
-    uint target_color_rgba8_out[];
+layout(set = 0, binding = 4, std430) restrict writeonly buffer TargetVisualRgba8Out {
+    uint target_visual_rgba8_out[];
 };
 
 layout(set = 0, binding = 5, std430) restrict buffer TargetStatsOut {
@@ -110,7 +110,7 @@ void main() {
 
     if (write_packed_buffers != 0) {
         store_completely_r8(idx, completely);
-        target_color_rgba8_out[idx] = visual_word;
+        target_visual_rgba8_out[idx] = visual_word;
     }
     atomicMax(target_stats_out[TARGET_STATS_MAX_COMPLETELY], quantize_unit(completely));
     atomicMax(target_stats_out[TARGET_STATS_MAX_COLLISION], quantize_unit(collision));

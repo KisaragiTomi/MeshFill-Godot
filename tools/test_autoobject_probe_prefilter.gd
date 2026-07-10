@@ -398,7 +398,7 @@ func _test_prefilter_borrows_scene_placement_actor_target_read_buffers_or_blocks
 
 	var actor := ScenePlacementActorScript.new()
 	var target_buffers := actor.prepare_target_read_buffers_from_common_gpu({
-		"target_color_rgba8_bytes": color_bytes,
+		"target_visual_rgba8_bytes": color_bytes,
 	}, {"grid_size": grid_size})
 	if not bool(target_buffers.get("ok", false)):
 		actor.dispose(true)
