@@ -18,12 +18,6 @@ const INTERNAL_FIELD_KEYS := [
 static func complexity(scene_voxel: Dictionary) -> float:
 	return clampf(float(scene_voxel.get("complexity", 0.0)), 0.0, 1.0)
 
-static func collision(scene_voxel: Dictionary) -> float:
-	return clampf(float(scene_voxel.get("collision", 0.0)), 0.0, 1.0)
-
-static func is_occupied(scene_voxel: Dictionary, occupied_epsilon: float) -> bool:
-	return maxf(complexity(scene_voxel), collision(scene_voxel)) > occupied_epsilon
-
 static func accepted(source: Dictionary) -> Dictionary:
 	var accepted_complexity := complexity(source)
 	var shared_fields := {
@@ -69,18 +63,3 @@ static func has_only_accepted_fields(scene_voxel: Dictionary, include_internal: 
 		if not accepts_key(str(key), include_internal):
 			return false
 	return true
-
-static func flat_index(scene_voxel: Dictionary, xz_res: int, total_slices: int) -> int:
-	var voxel_xz = scene_voxel.get("voxel_xz", Vector2i(-1, -1))
-	if not voxel_xz is Vector2i:
-		return -1
-
-	var px: Vector2i = voxel_xz
-	if px.x < 0 or px.x >= xz_res or px.y < 0 or px.y >= xz_res:
-		return -1
-
-	var slice_index := int(scene_voxel.get("slice_index", 0))
-	if slice_index < 0 or slice_index >= total_slices:
-		return -1
-
-	return px.x + xz_res * (px.y + xz_res * slice_index)

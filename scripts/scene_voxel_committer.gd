@@ -85,7 +85,6 @@ const SCENE_VOXEL_TILE_FLAG_MASK := 512
 const CHANNEL_COUNT := VoxelGeneral.CHANNEL_COUNT
 
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
-const SceneVoxelProfileScript := preload("res://scripts/scene_voxel_profile.gd")
 const SceneVoxelSourceRecordScript := preload("res://scripts/scene_voxel_source_record.gd")
 const SceneVoxelScript := preload("res://scripts/scene_voxel.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")

@@ -8,7 +8,8 @@
 
 | File | Purpose |
 | --- | --- |
-| `scripts/auto_asset_factory.gd` | 脚手架 / 导入 helper；创建和保存 `AutoObject` asset、`AssetDescriptor`，并提供 ISWS wrapper。 |
+| `scripts/auto_asset_factory.gd` | mesh 加载 helper（`load_mesh` / `load_source_mesh`：mesh 树查找、UE collision-helper 过滤、变换烘焙）。 |
+| `scripts/auto_object.gd` | canonical descriptor 创建（`create_voxel_descriptor`）与 ISWS 构造（`make_instance_stamp_write_spec`）。 |
 | `scripts/asset_descriptor.gd` | 持久化 descriptor-backed `AutoObject` 资产默认语义，并保存 mesh / scatter / visual helper。 |
 
 ## 核心契约
@@ -16,7 +17,7 @@
 - [`AssetDescriptor`](asset-descriptor.md) 是资产默认体素语义的 canonical source；脚本化资产不要把 profile 或 metadata 当成第二套权威。
 - `AutoVoxelProfile` 只作为已有资产 / 导入 preset fallback；新脚手架不再输出单独的 profile 产物。
 - 物体和植被都走 descriptor-backed `AutoObject` / `AssetDescriptor` 路径；旧 typed 子类不再作为资产定义入口。
-- 运行时写入 payload 统一称为 `instance_stamp_write_spec` / `ISWS`；当前 helper 同时提供 canonical wrapper 和 legacy `make_*_voxel_write_spec()` 名称。
+- 运行时写入 payload 统一称为 `instance_stamp_write_spec` / `ISWS`；canonical 构造入口是 `AutoObject.make_instance_stamp_write_spec()`，`AutoObject.make_voxel_write_spec()` 是同语义的 legacy API name。
 
 ## 范围与生命周期
 
@@ -33,36 +34,36 @@
 
 ## 脚本入口
 
-`AutoAssetFactory`（`scripts/auto_asset_factory.gd`）是一组 GDScript 静态 helper（mesh / 高度图加载、descriptor / profile 创建、资源保存、ISWS wrapper），不再有独立的 JSON 命令行工具。从编辑器脚本或 `@tool` 节点直接调用即可创建 / 更新资产。
+`AutoAssetFactory`（`scripts/auto_asset_factory.gd`）现在只保留 mesh 加载 helper（`load_mesh` / `load_source_mesh`，含 UE collision-helper 过滤和变换烘焙）。descriptor 创建、ISWS 构造这些语义已收敛到 canonical `AutoObject`（`scripts/auto_object.gd`）：`AutoObject.create_voxel_descriptor()`、`AutoObject.make_instance_stamp_write_spec()`。资源落盘直接用 `ResourceSaver.save()`。从编辑器脚本或 `@tool` 节点直接调用即可。
 
-物体资产（`AutoObject` 场景）：
+物体 mesh 加载（`AutoObject` 原型）：`AutoAssetFactory` 现在只保留 mesh 加载 helper（`load_mesh` / `load_source_mesh`）。物体资产本身用 `AutoObject` 直接配置，descriptor 语义用 `AutoObject.create_voxel_descriptor()` 创建。
 
 ```gdscript
-var asset := AutoAssetFactory.load_or_new_object_asset("res://assets/objects/cliff_03_asset.tscn")
-AutoAssetFactory.create_or_update_object_asset(
-    asset,
-    AutoAssetFactory.load_mesh("res://geo/cliff_03.FBX"),
-    AutoAssetFactory.load_texture_or_raw("res://geo/cliff_03_height.raw"),
-    4.2,                           # mesh_size
-    null,                          # profile fallback（可选）
-    Color(0.55, 0.5, 0.45, 1.0),   # entry_color
-    1.0,                           # entry_complexity
-    [],                            # collision
-)
-AutoAssetFactory.save_object_asset(asset, "res://assets/objects/cliff_03_asset.tscn")
+# 已有 mesh 存在：geo/cliff_01.FBX、geo/cliff_02.FBX。
+var mesh := AutoAssetFactory.load_mesh("res://geo/cliff_01.FBX")
+var obj := AutoObject.new()
+obj.configure_object({
+    "mesh": mesh,
+    "mesh_size": 4.2,
+    "color": Color(0.55, 0.5, 0.45, 1.0),   # a 与 complexity 同步
+    "complexity": 1.0,
+    "collision": [],
+})
 ```
 
-植被 / descriptor 资产（`AssetDescriptor` `.tres`）：
+植被 / descriptor 资产（`AssetDescriptor` `.tres`）：descriptor 由 canonical `AutoObject.create_voxel_descriptor()` 创建，用 `ResourceSaver.save()` 落盘。
 
 ```gdscript
-var descriptor := AutoAssetFactory.create_voxel_descriptor(
+var descriptor := AutoObject.create_voxel_descriptor(
     Color(0.9, 0.35, 0.5, 0.7),    # entry_color
     0.7,                           # entry_complexity
     0.25,                          # default_radius
     [],                            # collision
 )
-AutoAssetFactory.save_resource(descriptor, "res://assets/vegetation/flower_descriptor.tres")
+ResourceSaver.save(descriptor, "res://assets/vegetation/leaf_descriptor.tres")
 ```
+
+> 上面两段为示意用法。`assets/vegetation/` 下已有实际 descriptor `.tres`（见 [AssetDescriptor 统一 Demo](res://demos/asset-descriptor-demo/asset-descriptor.md)），新增资产时优先复制这些现成资源再调整字段。
 
 ## 输入规则
 
@@ -86,14 +87,15 @@ AutoAssetFactory.save_resource(descriptor, "res://assets/vegetation/flower_descr
 
 ## Object Config
 
+以下 config 只描述 `configure_object()` 接受的字段形状（不是命令行工具的输入）；示意用途，`mesh` 指向已有 `geo/cliff_01.FBX`。
+
 ```json
 {
   "type": "object",
-  "asset_id": "cliff_03",
+  "asset_id": "cliff_01",
   "subtype": "cliff",
-  "asset_path": "res://assets/objects/cliff_03_asset.tscn",
-  "mesh": "res://geo/cliff_03.FBX",
-  "mesh_height_texture": "res://geo/cliff_03_height.raw",
+  "asset_path": "res://assets/objects/cliff_01_asset.tscn",
+  "mesh": "res://geo/cliff_01.FBX",
   "mesh_size": 4.2,
   "color": [0.55, 0.5, 0.45, 1.0],
   "complexity": 1.0,
@@ -106,25 +108,27 @@ AutoAssetFactory.save_resource(descriptor, "res://assets/vegetation/flower_descr
 
 | Output | Meaning |
 | --- | --- |
-| `asset_path` | `AutoObject` 场景资产，含 mesh、`mesh_height_texture`、随机参数、`asset_id` 和 descriptor-backed shared fields。 |
+| `asset_path` | `AutoObject` 场景资产，含 mesh、随机参数、`asset_id` 和 descriptor-backed shared fields。 |
 
-`AutoAssetFactory.create_or_update_object_asset()` 会从已有 descriptor 读取 shared fields fallback，再用显式 `color` / `complexity` / `collision` 覆盖，并把结果归一化后交给 `configure_object()`。`sync_exported_fields` 只同步 Inspector mirror；不要把 `voxel_profile` 写成唯一语义权威。
+`AutoObject.configure_object()` 会从已有 descriptor 读取 shared fields fallback，再用显式 `color` / `complexity` / `collision` 覆盖并归一化。`color.a` 与 `complexity` 同步；不要把 `voxel_profile` 写成唯一语义权威。
 
 ## Vegetation Config
+
+以下同为示意 config；实际已有 descriptor 见 `assets/vegetation/sm_test_leaf_test2_asset.tres`。
 
 ```json
 {
   "type": "vegetation",
-  "subtype": "flower",
-  "asset_id": "flower",
-  "asset_path": "res://assets/vegetation/flower_descriptor.tres",
+  "subtype": "leaf",
+  "asset_id": "sm_test_leaf",
+  "asset_path": "res://assets/vegetation/sm_test_leaf_test2_asset.tres",
   "channel": 0,
   "radius": 0.25,
   "color": [0.9, 0.35, 0.5, 0.7],
   "complexity": 0.7,
   "collision": [],
   "visual_layer": 14,
-  "group": "placed_flowers",
+  "group": "placed_leaves",
   "mesh_create_method": "create_sample_autoobject_mesh"
 }
 ```
@@ -135,21 +139,21 @@ AutoAssetFactory.save_resource(descriptor, "res://assets/vegetation/flower_descr
 
 `subtype` 是当前脚手架的 specialize 输入：它生成默认 `group`，并写入 descriptor 的 `object_subtype` 兼容字段。它不是新的核心语义来源；新的 GPU runtime object schema 仍不应把 `object_subtype` 当成语义门。更细资产身份优先使用 `asset_id`、descriptor path 或未来 `profile_id`。
 
-`mesh_create_method` 白名单保持很小：当前只保留 `create_sample_autoobject_mesh` 作为脚手架示例。如果有外部模型，改用 `"mesh": "res://geo/flower.glb"`。
+`mesh_create_method` 白名单保持很小：当前只保留 `create_sample_autoobject_mesh` 作为脚手架示例。如果有外部模型，改用 `"mesh": "res://geo/SM_TestLeaf_Test2.FBX"`。
 
 草、树叶、细枝这类柔性部分保持 `collision: []`。只有粗树干或大块刚体才写带 `collision_strength` 的 collision sample。
 
 ## Runtime Use
 
 ```gdscript
-var flower_asset := load("res://assets/vegetation/flower_descriptor.tres") as AssetDescriptor
-var config := flower_asset.make_instance_config()
-register_brush_autoobject(flower_asset.make_instance_config())
+var leaf_asset := load("res://assets/vegetation/sm_test_leaf_test2_asset.tres") as AssetDescriptor
+var config := leaf_asset.make_instance_config()
+register_brush_autoobject(leaf_asset.make_instance_config())
 ```
 
 高度场生成器直接使用 descriptor-backed `AutoObject` 原型。生成结果复制原型并落到场景，运行时从 descriptor-backed 字段派生 `instance_stamp_write_spec` / `ISWS`。当前 `AutoObject.make_instance_stamp_write_spec()` 是 canonical wrapper，`make_voxel_write_spec()` 是 legacy API name。
 
-脚本侧需要直接构造 runtime record 时，使用 canonical `AutoObject.make_instance_stamp_write_spec()`，或使用 `AutoAssetFactory.make_object_voxel_write_spec()`、`make_vegetation_voxel_write_spec()`、profile fallback 的 `make_profile_voxel_write_spec()` 等 helper。这些 helper 返回当前 ISWS payload；函数名里的 `voxel_write_spec` 只保留兼容命名。
+脚本侧需要直接构造 runtime record 时，使用 canonical `AutoObject.make_instance_stamp_write_spec()`。它返回当前 ISWS payload；`AutoObject.make_voxel_write_spec()` 是同语义的 legacy API name。（`AutoAssetFactory` 上早先的 `make_object_voxel_write_spec()` / `make_vegetation_voxel_write_spec()` / `make_profile_voxel_write_spec()` wrapper 已删除，统一走 `AutoObject`。）
 
 高度场 / object placement 可以在 record extra fields 中补 `mesh_index`；descriptor-backed `AutoObject` 可以通过 instance config 提供 `object_subtype`、`channel` 和 `radius`。这些是 runtime record extra，不进入 `SharedPropertyType.SHARED_FIELD_KEYS`。
 

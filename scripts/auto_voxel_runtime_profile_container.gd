@@ -490,19 +490,9 @@ func export_profile_table() -> Array[Dictionary]:
 	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_profile_table)
 
 
-## export_profile_table 的别名，返回 staging profile table 深拷贝。
-func get_profile_table() -> Array[Dictionary]:
-	return export_profile_table()
-
-
 ## 返回 staging probe range 列表的深拷贝数组。
 func export_probe_ranges() -> Array[Dictionary]:
 	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_probe_ranges)
-
-
-## export_probe_ranges 的别名，返回 probe range 列表深拷贝。
-func get_probe_ranges() -> Array[Dictionary]:
-	return export_probe_ranges()
 
 
 ## 返回 staging pivot range 列表的深拷贝数组。
@@ -510,34 +500,14 @@ func export_pivot_ranges() -> Array[Dictionary]:
 	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_pivot_ranges)
 
 
-## export_pivot_ranges 的别名，返回 pivot range 列表深拷贝。
-func get_pivot_ranges() -> Array[Dictionary]:
-	return export_pivot_ranges()
-
-
 ## 返回 staging probe 记录列表的深拷贝数组。
 func export_probe_records() -> Array[Dictionary]:
 	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_probe_records)
 
 
-## export_probe_records 的别名，返回 probe 记录列表深拷贝。
-func get_probe_records() -> Array[Dictionary]:
-	return export_probe_records()
-
-
 ## 返回 staging pivot 记录列表的深拷贝数组。
 func export_pivot_records() -> Array[Dictionary]:
 	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_pivot_records)
-
-
-## export_pivot_records 的别名，返回 pivot 记录列表深拷贝。
-func get_pivot_records() -> Array[Dictionary]:
-	return export_pivot_records()
-
-
-## readback_debug_snapshot 的别名，返回完整调试快照字典。
-func to_debug_dictionary() -> Dictionary:
-	return readback_debug_snapshot()
 
 
 ## 推进 staging_revision 并使 uploaded_revision 失效、runtime 标记为未就绪，表示 staging 数据已变更需重新上传。
