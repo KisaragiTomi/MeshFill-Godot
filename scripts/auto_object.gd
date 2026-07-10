@@ -507,11 +507,6 @@ func get_record_object_type() -> String:
 	return record_type if not record_type.is_empty() else "object"
 
 
-## Deprecated: object_subtype is removed from canonical schema. Always returns "".
-func get_record_object_subtype() -> String:
-	return ""
-
-
 func get_record_auto_source(fallback: String = "generated") -> String:
 	var source := str(voxel_write_spec.get("auto_source", voxel_write_spec.get("placement_source", voxel_write_spec.get("source", ""))))
 	return source if not source.is_empty() else fallback

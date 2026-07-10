@@ -7,7 +7,6 @@ const DEFAULT_CAPTURE_SIZE := TerrainConfigScript.CAPTURE_SIZE
 const DEFAULT_MAX_HEIGHT := TerrainConfigScript.MAX_HEIGHT
 const DEFAULT_TERRAIN_NAME := TerrainConfigScript.TERRAIN_NAME
 const TERRAIN_GROUP := "meshfill_utils_terrain"
-const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 
 static func reuse_shared_terrain(host: Node, overrides := {}) -> Dictionary:
@@ -190,10 +189,6 @@ static func ensure_terrain_initialized(root: Node, options := {}) -> Dictionary:
 	if root == null:
 		return {"ok": false, "reason": "missing_root"}
 	return reuse_shared_terrain(root, options)
-
-
-static func _ordered_uint_to_float(key: int) -> float:
-	return BufferUtils.float_from_ordered_u32(key)
 
 
 static func _terrain_result(terrain: MeshInstance3D, created: bool, terrain_name: String) -> Dictionary:

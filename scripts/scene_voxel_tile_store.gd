@@ -2596,6 +2596,11 @@ func try_apply_gpu_autoobject_object_ref_update_pass(deltas: Array) -> Dictionar
 	result["refs_per_tile"] = int(uploaded_summary.get("refs_per_tile", result.get("refs_per_tile", SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT)))
 
 	var update_stats := _update_gpu_autoobject_object_refs_from_dirty_deltas(deltas)
+	return _assemble_object_ref_update_result(update_stats, result)
+
+## 将对象引用更新统计合并进结果字典（含溢出处理），两条通道共用
+
+func _assemble_object_ref_update_result(update_stats: Dictionary, result: Dictionary) -> Dictionary:
 	var dispatched := bool(update_stats.get("gpu_dispatched", false))
 	var dispatch_count := int(update_stats.get("dispatch_group_count", 0)) if dispatched else 0
 	var ok := bool(update_stats.get("ok", false))
@@ -2702,44 +2707,7 @@ func try_apply_gpu_autoobject_object_ref_update_pass_from_buffer(
 		dirty_delta_capacity,
 		dirty_delta_source
 	)
-	var dispatched := bool(update_stats.get("gpu_dispatched", false))
-	var dispatch_count := int(update_stats.get("dispatch_group_count", 0)) if dispatched else 0
-	var ok := bool(update_stats.get("ok", false))
-	var reason := str(update_stats.get("reason", "object_ref_update_failed"))
-
-	result["ok"] = ok
-	result["reason"] = reason
-	result["object_ref_update_result"] = update_stats
-	result["object_ref_update_stats_available"] = bool(update_stats.get("stats_available", false))
-	result["object_ref_update_source"] = str(update_stats.get("source", "none"))
-	result["object_ref_update_shader"] = str(update_stats.get("shader", SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_NAME))
-	result["object_ref_update_reason"] = reason
-	result["object_ref_update_gpu_dispatched"] = dispatched
-	result["object_ref_update_dispatch_count"] = dispatch_count
-	result["object_ref_update_dispatch_group_count"] = int(update_stats.get("dispatch_group_count", 0)) if dispatched else 0
-	result["resident_gpu_dirty_delta_update_pass"] = ok and dispatched
-	result["resident_gpu_dirty_delta_update_pass_owner"] = "SceneVoxelCommitter" if ok and dispatched else "none"
-	result["resident_gpu_dirty_delta_update_pass_shader"] = SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_NAME if ok and dispatched else "none"
-	result["resident_gpu_dirty_delta_update_pass_dispatch_count"] = dispatch_count
-	result["object_ref_capacity"] = int(update_stats.get("object_ref_capacity", result.get("object_ref_capacity", 0)))
-	result["object_ref_tile_count"] = int(update_stats.get("object_ref_tile_count", result.get("object_ref_tile_count", 0)))
-	result["object_ref_tile_grid_size"] = update_stats.get("object_ref_tile_grid_size", result.get("object_ref_tile_grid_size", Vector3i.ZERO))
-	result["object_ref_overflow_count"] = int(update_stats.get("overflow", 0))
-	result["object_ref_non_numeric_count"] = int(update_stats.get("non_numeric", 0))
-	result["object_ref_duplicate_count"] = int(update_stats.get("duplicate", 0))
-	result["object_ref_touched_count"] = int(update_stats.get("touched", 0))
-	result["object_ref_removed_slot_count"] = int(update_stats.get("removed_slots", 0))
-	result["object_ref_inserted_slot_count"] = int(update_stats.get("inserted_slots", 0))
-	result["object_ref_invalid_bounds_count"] = int(update_stats.get("invalid_bounds", 0))
-	result["object_ref_skipped_count"] = int(update_stats.get("skipped", 0))
-	_merge_scene_voxel_tile_object_ref_transient_dirty_result(result, update_stats)
-
-	if int(result.get("object_ref_overflow_count", 0)) > 0:
-		_scene_voxel_tile_object_ref_rebuild_required = true
-		_scene_voxel_tile_object_ref_overflow_count += int(result.get("object_ref_overflow_count", 0))
-		result["object_ref_rebuild_required"] = true
-
-	return result
+	return _assemble_object_ref_update_result(update_stats, result)
 
 ## 应用单个GPU自动对象的脏增量并标记瓦片脏
 

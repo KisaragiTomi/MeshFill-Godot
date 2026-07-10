@@ -6,7 +6,7 @@ const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const TargetSceneVoxelGeneratorScript := preload("res://scripts/target_scene_voxel_generator.gd")
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
 const VoxelDisplay := preload("res://scripts/utils/voxel_display.gd")
-const VoxelFieldDisplayGPU := preload("res://scripts/utils/voxel_field_display_gpu.gd")
+const DisplayChannelUtils := preload("res://scripts/utils/display_channel_utils.gd")
 const HEIGHT_PATH := "res://textures/scene_height_0_1.png"
 const GUIDANCE_NODE := "GuidanceVoxels"
 const BRUSH_NODE := "BrushTetraVoxels"
@@ -208,7 +208,7 @@ func build_guidance_voxels() -> void:
 		{
 			"xz_res": _texture_size,
 			"slice_count": _slice_count,
-			"view_mode": _view_mode(),
+			"view_mode": DisplayChannelUtils.channel_to_view_mode(display_channel),
 			"capture_size": _capture_size,
 			"display_scale": display_scale,
 			"vertical_span": _vertical_span,
@@ -223,15 +223,6 @@ func build_guidance_voxels() -> void:
 		if fresnel_enabled:
 			_apply_fresnel_material(instance)
 		_add_generated(instance)
-
-
-func _view_mode() -> int:
-	match display_channel:
-		DisplayChannel.COMPLEXITY:
-			return VoxelFieldDisplayGPU.VIEW_COMPLEXITY
-		DisplayChannel.COLLISION:
-			return VoxelFieldDisplayGPU.VIEW_COLLISION
-	return VoxelFieldDisplayGPU.VIEW_TARGET_COLOR
 
 
 func _decoded_color_rgba(voxel_count: int) -> PackedFloat32Array:
@@ -253,17 +244,7 @@ func _apply_fresnel_material(instance: MultiMeshInstance3D) -> void:
 	var mesh := instance.multimesh.mesh
 	if mesh == null:
 		return
-	var mat := StandardMaterial3D.new()
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	mat.vertex_color_use_as_albedo = true
-	mat.rim_enabled = true
-	mat.rim = 0.65
-	mat.rim_tint = 0.25
-	mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
-	instance.material_override = mat
+	instance.material_override = DisplayChannelUtils.create_fresnel_rim_material()
 
 
 # ---- Brush painting --------------------------------------------------------

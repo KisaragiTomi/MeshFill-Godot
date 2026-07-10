@@ -1,10 +1,6 @@
 class_name AutoAssetFactory
 extends RefCounted
 
-const AutoObject := preload("res://scripts/auto_object.gd")
-const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
-const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
-const FsUtils := preload("res://scripts/utils/fs_utils.gd")
 const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
 
 

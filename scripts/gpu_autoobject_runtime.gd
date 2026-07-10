@@ -533,21 +533,10 @@ func _dispatch_accepted_placement_resident_shader(
 		make_storage_uniform(2, stamp_bounds_rid),
 		make_storage_uniform(3, reserved_ids_buffer),
 	], shader, 0, SCOPE_FRAME, "autoobject_resident_accepted_placement_set0")
-	var set1 := create_uniform_set([
-		make_storage_uniform(0, _alive_buffer),
-		make_storage_uniform(1, _generation_buffer),
-		make_storage_uniform(2, _type_buffer),
-		make_storage_uniform(3, _profile_buffer),
-		make_storage_uniform(4, _flags_buffer),
-		make_storage_uniform(5, _bounds_min_buffer),
-		make_storage_uniform(6, _bounds_max_buffer),
-		make_storage_uniform(7, _previous_bounds_min_buffer),
-		make_storage_uniform(8, _previous_bounds_max_buffer),
-		make_storage_uniform(9, _transform_buffer),
-		make_storage_uniform(10, _dirty_delta_buffer),
-		make_storage_uniform(11, _dirty_count_buffer),
-		make_storage_uniform(12, stats_buffer),
-	], shader, 1, SCOPE_FRAME, "autoobject_resident_accepted_placement_set1")
+	var set1 := create_uniform_set(
+		_pack_accepted_placement_uniforms(0, stats_buffer),
+		shader, 1, SCOPE_FRAME, "autoobject_resident_accepted_placement_set1"
+	)
 	if not set0.is_valid() or not set1.is_valid():
 		gc_frame()
 		return {"ok": false, "reason": "resident_shader_uniform_set_failed", "applied_on_gpu": false}
@@ -1354,22 +1343,8 @@ func _try_apply_accepted_placement_record_shader(
 		base_result["resident_gpu_allocator_writeback_blocked_reason"] = "accepted_placement_record_shader_setup_failed"
 		return base_result
 
-	var uniforms := [
-		make_storage_uniform(0, accepted_buffer),
-		make_storage_uniform(1, _alive_buffer),
-		make_storage_uniform(2, _generation_buffer),
-		make_storage_uniform(3, _type_buffer),
-		make_storage_uniform(4, _profile_buffer),
-		make_storage_uniform(5, _flags_buffer),
-		make_storage_uniform(6, _bounds_min_buffer),
-		make_storage_uniform(7, _bounds_max_buffer),
-		make_storage_uniform(8, _previous_bounds_min_buffer),
-		make_storage_uniform(9, _previous_bounds_max_buffer),
-		make_storage_uniform(10, _transform_buffer),
-		make_storage_uniform(11, _dirty_delta_buffer),
-		make_storage_uniform(12, _dirty_count_buffer),
-		make_storage_uniform(13, stats_buffer),
-	]
+	var uniforms := [make_storage_uniform(0, accepted_buffer)]
+	uniforms.append_array(_pack_accepted_placement_uniforms(1, stats_buffer))
 	var uniform_set := create_uniform_set(uniforms, shader, 0, SCOPE_FRAME, "autoobject_apply_accepted_placements_set0")
 	if not uniform_set.is_valid():
 		gc_frame()
@@ -1637,6 +1612,28 @@ func _pack_accepted_placement_record_shader_push(
 		stats_u32_count = ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT,
 	})
 
+
+
+## 组装接受放置 shader 共享的对象状态 uniform 块（alive..stats 共 13 个存储缓冲区，
+## 按固定顺序绑定，起始 binding 由 base_binding 决定）。两条 dispatch 路径共用此块：
+## 记录路径把它拼在 accepted_buffer(binding 0) 之后（base_binding=1，同一 set0），
+## 驻留路径把它单独放到 set1（base_binding=0）。
+func _pack_accepted_placement_uniforms(base_binding: int, stats_buffer: RID) -> Array:
+	return [
+		make_storage_uniform(base_binding + 0, _alive_buffer),
+		make_storage_uniform(base_binding + 1, _generation_buffer),
+		make_storage_uniform(base_binding + 2, _type_buffer),
+		make_storage_uniform(base_binding + 3, _profile_buffer),
+		make_storage_uniform(base_binding + 4, _flags_buffer),
+		make_storage_uniform(base_binding + 5, _bounds_min_buffer),
+		make_storage_uniform(base_binding + 6, _bounds_max_buffer),
+		make_storage_uniform(base_binding + 7, _previous_bounds_min_buffer),
+		make_storage_uniform(base_binding + 8, _previous_bounds_max_buffer),
+		make_storage_uniform(base_binding + 9, _transform_buffer),
+		make_storage_uniform(base_binding + 10, _dirty_delta_buffer),
+		make_storage_uniform(base_binding + 11, _dirty_count_buffer),
+		make_storage_uniform(base_binding + 12, stats_buffer),
+	]
 
 
 ## 从 stats 缓冲区读回接受放置着色器的统计信息（调试路径）。

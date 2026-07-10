@@ -340,10 +340,7 @@ func _sync_brush_btn(active: bool) -> void:
 	if _brush_btn.button_pressed != active:
 		_brush_btn.set_pressed_no_signal(active)
 	var style := StyleBoxFlat.new()
-	style.corner_radius_top_left = 4
-	style.corner_radius_top_right = 4
-	style.corner_radius_bottom_left = 4
-	style.corner_radius_bottom_right = 4
+	style.set_corner_radius_all(4)
 	style.content_margin_left = 8.0
 	style.content_margin_right = 8.0
 	style.content_margin_top = 4.0
@@ -466,12 +463,7 @@ func _create_geo_scan_toolbar() -> void:
 	_geo_scan_btn.pressed.connect(_on_geo_scan_pressed)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _geo_scan_btn)
 
-	_geo_scan_status_label = Label.new()
-	_geo_scan_status_label.name = "MeshFillGeoFbxScanStatus"
-	_geo_scan_status_label.custom_minimum_size = Vector2(190, 0)
-	_geo_scan_status_label.clip_text = true
-	_geo_scan_status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_geo_scan_status_label.add_theme_font_size_override("font_size", 13)
+	_geo_scan_status_label = _make_toolbar_status_label("MeshFillGeoFbxScanStatus", "", 190, 13)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _geo_scan_status_label)
 
 	_sync_geo_scan_toolbar_from_scene()
@@ -479,12 +471,10 @@ func _create_geo_scan_toolbar() -> void:
 
 func _remove_geo_scan_toolbar() -> void:
 	if _geo_scan_btn != null:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _geo_scan_btn)
-		_geo_scan_btn.queue_free()
+		_free_toolbar_control(_geo_scan_btn)
 		_geo_scan_btn = null
 	if _geo_scan_status_label != null:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _geo_scan_status_label)
-		_geo_scan_status_label.queue_free()
+		_free_toolbar_control(_geo_scan_status_label)
 		_geo_scan_status_label = null
 
 
@@ -562,12 +552,7 @@ func _create_asset_descriptor_debug_toolbar() -> void:
 	_asset_descriptor_debug_menu.get_popup().id_pressed.connect(_on_asset_descriptor_debug_action_pressed)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _asset_descriptor_debug_menu)
 
-	_asset_descriptor_debug_status_label = Label.new()
-	_asset_descriptor_debug_status_label.name = "MeshFillAssetDescriptorDebugStatus"
-	_asset_descriptor_debug_status_label.custom_minimum_size = Vector2(260, 0)
-	_asset_descriptor_debug_status_label.clip_text = true
-	_asset_descriptor_debug_status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_asset_descriptor_debug_status_label.add_theme_font_size_override("font_size", 13)
+	_asset_descriptor_debug_status_label = _make_toolbar_status_label("MeshFillAssetDescriptorDebugStatus", "", 260, 13)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _asset_descriptor_debug_status_label)
 
 	_sync_asset_descriptor_debug_toolbar_from_scene()
@@ -575,12 +560,10 @@ func _create_asset_descriptor_debug_toolbar() -> void:
 
 func _remove_asset_descriptor_debug_toolbar() -> void:
 	if _asset_descriptor_debug_menu != null:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _asset_descriptor_debug_menu)
-		_asset_descriptor_debug_menu.queue_free()
+		_free_toolbar_control(_asset_descriptor_debug_menu)
 		_asset_descriptor_debug_menu = null
 	if _asset_descriptor_debug_status_label != null:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _asset_descriptor_debug_status_label)
-		_asset_descriptor_debug_status_label.queue_free()
+		_free_toolbar_control(_asset_descriptor_debug_status_label)
 		_asset_descriptor_debug_status_label = null
 	_asset_descriptor_debug_action_ids.clear()
 	_asset_descriptor_debug_host_instance_id = 0
@@ -705,12 +688,7 @@ func _create_asset_descriptor_bake_toolbar() -> void:
 	_bake_descriptor_btn.pressed.connect(_on_bake_descriptor_pressed)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _bake_descriptor_btn)
 
-	_bake_descriptor_status_label = Label.new()
-	_bake_descriptor_status_label.name = "MeshFillAssetDescriptorBakeStatus"
-	_bake_descriptor_status_label.custom_minimum_size = Vector2(220, 0)
-	_bake_descriptor_status_label.clip_text = true
-	_bake_descriptor_status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_bake_descriptor_status_label.add_theme_font_size_override("font_size", 13)
+	_bake_descriptor_status_label = _make_toolbar_status_label("MeshFillAssetDescriptorBakeStatus", "", 220, 13)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _bake_descriptor_status_label)
 
 	_sync_asset_descriptor_bake_toolbar_from_scene()
@@ -718,12 +696,10 @@ func _create_asset_descriptor_bake_toolbar() -> void:
 
 func _remove_asset_descriptor_bake_toolbar() -> void:
 	if _bake_descriptor_btn != null:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _bake_descriptor_btn)
-		_bake_descriptor_btn.queue_free()
+		_free_toolbar_control(_bake_descriptor_btn)
 		_bake_descriptor_btn = null
 	if _bake_descriptor_status_label != null:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _bake_descriptor_status_label)
-		_bake_descriptor_status_label.queue_free()
+		_free_toolbar_control(_bake_descriptor_status_label)
 		_bake_descriptor_status_label = null
 
 
@@ -819,12 +795,7 @@ func _create_volume_score_toolbar() -> void:
 	_voxel_score_btn.pressed.connect(_on_voxel_score_pressed)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _voxel_score_btn)
 
-	_anchor_score_status_label = Label.new()
-	_anchor_score_status_label.tooltip_text = "Selected anchor top-k asset scores"
-	_anchor_score_status_label.custom_minimum_size = Vector2(520, 0)
-	_anchor_score_status_label.clip_text = true
-	_anchor_score_status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_anchor_score_status_label.add_theme_font_size_override("font_size", 13)
+	_anchor_score_status_label = _make_toolbar_status_label("", "Selected anchor top-k asset scores", 520, 13)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _anchor_score_status_label)
 
 	_sync_volume_score_toolbar_from_scene()
@@ -832,16 +803,13 @@ func _create_volume_score_toolbar() -> void:
 
 func _remove_volume_score_toolbar() -> void:
 	if _generate_anchor_btn != null:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _generate_anchor_btn)
-		_generate_anchor_btn.queue_free()
+		_free_toolbar_control(_generate_anchor_btn)
 		_generate_anchor_btn = null
 	if _voxel_score_btn != null:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _voxel_score_btn)
-		_voxel_score_btn.queue_free()
+		_free_toolbar_control(_voxel_score_btn)
 		_voxel_score_btn = null
 	if _anchor_score_status_label != null:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _anchor_score_status_label)
-		_anchor_score_status_label.queue_free()
+		_free_toolbar_control(_anchor_score_status_label)
 		_anchor_score_status_label = null
 
 
@@ -853,6 +821,30 @@ func _make_toolbar_action_button(label: String, tooltip: String) -> Button:
 	btn.add_theme_font_size_override("font_size", 13)
 	btn.custom_minimum_size = Vector2(78, 0)
 	return btn
+
+
+# Shared clip-and-ellipsis status Label used by the geo-scan / AD-debug / bake /
+# volume-score toolbars. Only assigns node_name / tooltip when non-empty so the
+# volume-score label (unnamed, custom tooltip) stays byte-identical to its old
+# inline construction.
+func _make_toolbar_status_label(node_name: String, tooltip: String, min_width: float, font_size: int) -> Label:
+	var status := Label.new()
+	if not node_name.is_empty():
+		status.name = node_name
+	if not tooltip.is_empty():
+		status.tooltip_text = tooltip
+	status.custom_minimum_size = Vector2(min_width, 0)
+	status.clip_text = true
+	status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	status.add_theme_font_size_override("font_size", font_size)
+	return status
+
+
+# Shared toolbar teardown: detach the control from the spatial-editor menu and
+# free it. Callers null out their own member reference afterward.
+func _free_toolbar_control(control: Control) -> void:
+	remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, control)
+	control.queue_free()
 
 
 func _on_generate_anchor_pressed() -> void:
@@ -926,14 +918,8 @@ func _create_voxel_visibility_panel() -> void:
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.055, 0.07, 0.09, 0.58)
 	style.border_color = Color(0.28, 0.66, 0.95, 0.35)
-	style.border_width_left = 1
-	style.border_width_top = 1
-	style.border_width_right = 1
-	style.border_width_bottom = 1
-	style.corner_radius_top_left = 3
-	style.corner_radius_top_right = 3
-	style.corner_radius_bottom_left = 3
-	style.corner_radius_bottom_right = 3
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(3)
 	style.content_margin_left = 4.0
 	style.content_margin_right = 4.0
 	style.content_margin_top = 2.0
@@ -1046,14 +1032,8 @@ func _apply_voxel_visibility_button_style(button: BaseButton, active: bool, disa
 	var normal := StyleBoxFlat.new()
 	normal.bg_color = bg
 	normal.border_color = border
-	normal.border_width_left = 1
-	normal.border_width_top = 1
-	normal.border_width_right = 1
-	normal.border_width_bottom = 1
-	normal.corner_radius_top_left = 2
-	normal.corner_radius_top_right = 2
-	normal.corner_radius_bottom_left = 2
-	normal.corner_radius_bottom_right = 2
+	normal.set_border_width_all(1)
+	normal.set_corner_radius_all(2)
 	normal.content_margin_left = 3.0
 	normal.content_margin_right = 3.0
 	normal.content_margin_top = 0.0

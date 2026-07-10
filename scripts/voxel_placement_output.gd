@@ -1,6 +1,6 @@
 class_name VoxelPlacementOutput
 
-## GPU-capable placement output conversion plus CPU-only scene instantiation helpers.
+## GPU placement output conversion (placement result records → world-space results).
 extends "res://scripts/godot_compute_shader_base.gd"
 
 const AutoObject := preload("res://scripts/auto_object.gd")
@@ -44,62 +44,6 @@ const VOXEL_WRITE_SPEC_CONFIG_KEYS := [
 	"voxel_write_spec",
 	"world_capture_size",
 ]
-
-
-## 将 voxel write spec 记录与节点绑定：刷新节点间距与实例 ID，补全 id/位置/缩放/旋转/auto_id/node_path
-## 等字段后写回节点，返回节点上最终保存的记录。
-static func attach_placement_voxel_write_spec(node: AutoObject, record: Dictionary) -> Dictionary:
-	if node == null or record.is_empty():
-		return {}
-	var rec := record.duplicate(true)
-	node.refresh_bound_spacing()
-	var instance_id := node.refresh_instance_id()
-	var record_id := str(rec.get("id", node.name))
-	if record_id.is_empty():
-		record_id = node.name
-	rec["id"] = record_id
-	rec["mesh_name"] = node.name
-	rec["position"] = node.position
-	rec["scale"] = node.scale
-	rec["rotation_degrees"] = rec.get("rotation_degrees", node.rotation_degrees)
-	rec["instance_id"] = instance_id
-	rec["auto_instance_id"] = instance_id
-	if node.auto_id.is_empty():
-		node.auto_id = record_id
-	rec["auto_id"] = node.auto_id
-	rec["auto_object_id"] = node.auto_id
-	rec["instance_mesh_id"] = instance_id
-	rec["mesh_instance_id"] = instance_id
-	if not rec.has("auto_source"):
-		rec["auto_source"] = node.get_record_auto_source("voxel_placement")
-	if not rec.has("object_type"):
-		rec["object_type"] = node.get_record_object_type()
-	if node.is_inside_tree():
-		rec["node_path"] = str(node.get_path())
-	node.set_instance_stamp_write_spec(rec)
-	return node.get_instance_stamp_write_spec()
-
-
-
-## 委托 VoxelGeneral.world_to_texture_pixel：将世界坐标换算为纹理像素坐标。
-static func world_to_texture_pixel(
-	world_pos: Vector3,
-	capture_size: float,
-	resolution: int
-) -> Vector2i:
-	return VoxelGeneral.world_to_texture_pixel(world_pos, capture_size, resolution)
-
-
-
-## 委托 VoxelGeneral.world_to_volume_pixel：将世界坐标换算为体积纹理像素坐标。
-static func world_to_volume_pixel(
-	world_pos: Vector3,
-	resolution: int,
-	p_grid_origin: Vector3,
-	p_voxel_size: Vector3
-) -> Vector2i:
-	return VoxelGeneral.world_to_volume_pixel(world_pos, resolution, p_grid_origin, p_voxel_size)
-
 
 
 static func results_to_world_gpu(

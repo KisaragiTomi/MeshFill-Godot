@@ -11,16 +11,15 @@ const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
 const ComputeShaderBaseScript := preload("res://scripts/godot_compute_shader_base.gd")
 const VoxelDisplayScript := preload("res://scripts/utils/voxel_display.gd")
-const VoxelFieldDisplayGPUScript := preload("res://scripts/utils/voxel_field_display_gpu.gd")
+
+const DisplayChannelUtils := preload("res://scripts/utils/display_channel_utils.gd")
 
 const DISPLAY_NODE := "TargetSVVoxels"
 const GENERATED_GROUP := "meshfill_targetsv_generated"
 
-enum DisplayChannel { COLOR, COMPLEXITY, COLLISION }
-
 @export_group("Display")
 @export var display_visible: bool = true
-@export_enum("Color", "Complexity", "Collision") var display_channel: int = DisplayChannel.COLOR
+@export_enum("Color", "Complexity", "Collision") var display_channel: int = DisplayChannelUtils.CHANNEL_COLOR
 @export_range(0.0, 1.0, 0.001) var occupancy_threshold: float = 0.001
 @export var display_scale: float = 1.0
 @export var fresnel_enabled: bool = true
@@ -176,7 +175,7 @@ func _build_field_display() -> MultiMeshInstance3D:
 		{
 			"xz_res": _texture_size,
 			"slice_count": _slice_count,
-			"view_mode": _view_mode(),
+			"view_mode": DisplayChannelUtils.channel_to_view_mode(display_channel),
 			"capture_size": _capture_size,
 			"display_scale": display_scale,
 			"vertical_span": _vertical_span,
@@ -197,29 +196,10 @@ func _build_field_display() -> MultiMeshInstance3D:
 	return instance
 
 
-func _view_mode() -> int:
-	match display_channel:
-		DisplayChannel.COMPLEXITY:
-			return VoxelFieldDisplayGPUScript.VIEW_COMPLEXITY
-		DisplayChannel.COLLISION:
-			return VoxelFieldDisplayGPUScript.VIEW_COLLISION
-	return VoxelFieldDisplayGPUScript.VIEW_TARGET_COLOR
-
-
 func _apply_fresnel_material(instance: MultiMeshInstance3D) -> void:
 	if instance == null:
 		return
-	var mat := StandardMaterial3D.new()
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	mat.vertex_color_use_as_albedo = true
-	mat.rim_enabled = true
-	mat.rim = 0.65
-	mat.rim_tint = 0.25
-	mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
-	instance.material_override = mat
+	instance.material_override = DisplayChannelUtils.create_fresnel_rim_material()
 
 
 func set_display_visible(val: bool) -> void:
@@ -237,7 +217,7 @@ func is_display_visible() -> bool:
 
 
 func switch_display_channel(channel: int) -> void:
-	var next := clampi(channel, DisplayChannel.COLOR, DisplayChannel.COLLISION)
+	var next := clampi(channel, DisplayChannelUtils.CHANNEL_COLOR, DisplayChannelUtils.CHANNEL_COLLISION)
 	if display_channel == next and get_node_or_null(DISPLAY_NODE) != null:
 		return
 	display_channel = next
