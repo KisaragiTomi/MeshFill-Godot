@@ -65,6 +65,7 @@ layout(push_constant, std430) uniform Params {
 const uint SUMMARY_SCENE_COUNT_OFFSET = 4u;
 const uint SUMMARY_COLLISION_COUNT_OFFSET = 5u;
 
+// @@GEN route_tile_id_codec — SSOT scripts/utils/route_tile_shared_glsl.gd (regen; verify: tools/verify_glsl_gen_blocks.gd)
 ivec3 tile_pos_from_id(uint tile_id) {
     int x = int(tile_id % uint(tile_grid_asset_count.x));
     int z = int((tile_id / uint(tile_grid_asset_count.x)) % uint(tile_grid_asset_count.z));
@@ -81,6 +82,7 @@ bool tile_in_bounds(ivec3 p) {
         && p.y >= 0 && p.y < tile_grid_asset_count.y
         && p.z >= 0 && p.z < tile_grid_asset_count.z;
 }
+// @@END route_tile_id_codec
 
 // Returns true if the tile has scene or collision content,
 // using max(scene_count, collision_count) > 0 as the criterion.
