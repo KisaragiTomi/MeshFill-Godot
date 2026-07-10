@@ -538,9 +538,9 @@ func _build_topk_hud_lines() -> Array[String]:
 	return lines
 
 
-func _asset_name_by_id(asset_id: int) -> String:
-	if asset_id >= 0 and asset_id < _assets.size():
-		var obj: AutoObject = _assets[asset_id]
+func _asset_name_by_id(asset_index: int) -> String:
+	if asset_index >= 0 and asset_index < _assets.size():
+		var obj: AutoObject = _assets[asset_index]
 		if obj != null:
 			return obj.name
 	return "?"

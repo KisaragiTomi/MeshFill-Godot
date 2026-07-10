@@ -297,10 +297,10 @@ func _test_prefilter_decode_output_contract() -> bool:
 	if profiles.size() != asset_count:
 		push_error("  FAIL: expected one candidate_route_profiles entry per asset")
 		return false
-	for asset_id in range(asset_count):
-		if not profiles[asset_id] is Dictionary \
-		   or int((profiles[asset_id] as Dictionary).get("asset_index", -1)) != asset_id:
-			push_error("  FAIL: candidate_route_profiles[%d] should carry asset_index=%d" % [asset_id, asset_id])
+	for asset_index in range(asset_count):
+		if not profiles[asset_index] is Dictionary \
+		   or int((profiles[asset_index] as Dictionary).get("asset_index", -1)) != asset_index:
+			push_error("  FAIL: candidate_route_profiles[%d] should carry asset_index=%d" % [asset_index, asset_index])
 			return false
 
 	var anchors: Array = result.get("anchors", [])

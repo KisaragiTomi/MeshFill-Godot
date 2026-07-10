@@ -87,7 +87,7 @@ var _autoobject_runtime_capacity := 1024
 ## External references (borrowed, not owned).
 var _sv_committer: SceneVoxelCommitter
 
-## Asset registry — parallel arrays mapping asset_id → descriptor + profile_id.
+## Asset registry — parallel arrays mapping asset_index → descriptor + profile_id.
 var _registered_descriptors: Array[AssetDescriptor] = []
 var _registered_profile_ids: Array[int] = []
 var _registered_mesh: Array[Mesh] = []
@@ -510,11 +510,11 @@ func get_registered_profile_ids() -> Array[int]:
 	return _registered_profile_ids.duplicate()
 
 
-## 根据 asset_id 返回对应 profile_id；越界或无效时返回 -1
-func get_profile_id_for_asset(asset_id: int) -> int:
-	if asset_id < 0 or asset_id >= _registered_profile_ids.size():
+## 根据 asset_index 返回对应 profile_id；越界或无效时返回 -1
+func get_profile_id_for_asset(asset_index: int) -> int:
+	if asset_index < 0 or asset_index >= _registered_profile_ids.size():
 		return -1
-	return _registered_profile_ids[asset_id]
+	return _registered_profile_ids[asset_index]
 
 
 ## 返回已注册 Mesh 数组；供 mesh description 上传与外部查询
@@ -533,11 +533,11 @@ func get_registered_autoobject_refs() -> Array[AutoObject]:
 	return _registered_autoobject_refs.duplicate()
 
 
-## 更新指定 asset_id 的 AutoObject 引用；由 own_autoobject 或外部在创建实例后调用
-func set_registered_autoobject_ref(asset_id: int, autoobject_ref: AutoObject) -> bool:
-	if asset_id < 0 or asset_id >= _registered_autoobject_refs.size():
+## 更新指定 asset_index 的 AutoObject 引用；由 own_autoobject 或外部在创建实例后调用
+func set_registered_autoobject_ref(asset_index: int, autoobject_ref: AutoObject) -> bool:
+	if asset_index < 0 or asset_index >= _registered_autoobject_refs.size():
 		return false
-	_registered_autoobject_refs[asset_id] = autoobject_ref
+	_registered_autoobject_refs[asset_index] = autoobject_ref
 	_free_cached_wrappers()
 	_mark_mesh_description_changed()
 	if is_initialized():
@@ -545,8 +545,8 @@ func set_registered_autoobject_ref(asset_id: int, autoobject_ref: AutoObject) ->
 	return true
 
 
-## 接管 AutoObject 的生命周期所有权，可选绑定 asset_id；同时注册到 autoobject_ref 表；由 SPA 负责创建 autoobject 场景时调用
-func own_autoobject(autoobject_ref: AutoObject, asset_id: int = -1) -> bool:
+## 接管 AutoObject 的生命周期所有权，可选绑定 asset_index；同时注册到 autoobject_ref 表；由 SPA 负责创建 autoobject 场景时调用
+func own_autoobject(autoobject_ref: AutoObject, asset_index: int = -1) -> bool:
 	if autoobject_ref == null:
 		return false
 	_prune_owned_autoobjects()
@@ -554,12 +554,12 @@ func own_autoobject(autoobject_ref: AutoObject, asset_id: int = -1) -> bool:
 		_owned_autoobjects.append(autoobject_ref)
 	autoobject_ref.set_meta("spa_owned", true)
 	autoobject_ref.set_meta("spa_owner", "ScenePlacementActor")
-	if asset_id >= 0:
-		autoobject_ref.set_meta("spa_asset_id", asset_id)
-		if asset_id < _registered_autoobject_refs.size():
-			var registered_ref: AutoObject = _registered_autoobject_refs[asset_id]
+	if asset_index >= 0:
+		autoobject_ref.set_meta("spa_asset_id", asset_index)
+		if asset_index < _registered_autoobject_refs.size():
+			var registered_ref: AutoObject = _registered_autoobject_refs[asset_index]
 			if registered_ref == null or registered_ref.is_queued_for_deletion():
-				set_registered_autoobject_ref(asset_id, autoobject_ref)
+				set_registered_autoobject_ref(asset_index, autoobject_ref)
 	return true
 
 
@@ -570,11 +570,11 @@ func release_autoobject(autoobject_ref: AutoObject) -> bool:
 	var removed := _owned_autoobjects.has(autoobject_ref)
 	if removed:
 		_owned_autoobjects.erase(autoobject_ref)
-	var released_asset_id := int(autoobject_ref.get_meta("spa_asset_id", -1))
+	var released_asset_index := int(autoobject_ref.get_meta("spa_asset_id", -1))
 	_clear_autoobject_owner_metadata(autoobject_ref)
-	if released_asset_id >= 0 and released_asset_id < _registered_autoobject_refs.size():
-		if _registered_autoobject_refs[released_asset_id] == autoobject_ref:
-			set_registered_autoobject_ref(released_asset_id, _find_owned_autoobject_for_asset(released_asset_id))
+	if released_asset_index >= 0 and released_asset_index < _registered_autoobject_refs.size():
+		if _registered_autoobject_refs[released_asset_index] == autoobject_ref:
+			set_registered_autoobject_ref(released_asset_index, _find_owned_autoobject_for_asset(released_asset_index))
 	_prune_owned_autoobjects()
 	return removed
 
@@ -605,24 +605,24 @@ func has_owned_autoobject(autoobject_ref: AutoObject) -> bool:
 	return autoobject_ref != null and _owned_autoobjects.has(autoobject_ref)
 
 
-## 查找 AutoObject 在注册表中的 asset_id；未找到返回 -1
+## 查找 AutoObject 在注册表中的 asset_index；未找到返回 -1
 func get_asset_id_for_autoobject(autoobject_ref: AutoObject) -> int:
 	if autoobject_ref == null:
 		return -1
 	for i in range(_registered_autoobject_refs.size()):
 		if _registered_autoobject_refs[i] == autoobject_ref:
 			return i
-	var meta_asset_id := int(autoobject_ref.get_meta("spa_asset_id", -1))
-	if meta_asset_id >= 0 and meta_asset_id < _registered_descriptors.size():
-		return meta_asset_id
+	var meta_asset_index := int(autoobject_ref.get_meta("spa_asset_id", -1))
+	if meta_asset_index >= 0 and meta_asset_index < _registered_descriptors.size():
+		return meta_asset_index
 	return -1
 
 
-## 在自有 AutoObject 中查找绑定了指定 asset_id 的实例；由 pipeline 分配 autoobject 时调用
-func _find_owned_autoobject_for_asset(asset_id: int) -> AutoObject:
+## 在自有 AutoObject 中查找绑定了指定 asset_index 的实例；由 pipeline 分配 autoobject 时调用
+func _find_owned_autoobject_for_asset(asset_index: int) -> AutoObject:
 	_prune_owned_autoobjects()
 	for obj in _owned_autoobjects:
-		if obj != null and int(obj.get_meta("spa_asset_id", -1)) == asset_id:
+		if obj != null and int(obj.get_meta("spa_asset_id", -1)) == asset_index:
 			return obj
 	return null
 
@@ -693,13 +693,13 @@ func _descriptor_from_autoobject_asset(autoobject_ref: AutoObject) -> AssetDescr
 # Mesh Description GPU 缓冲
 # --------------------------------------------------------------------------
 
-## 返回指定 asset_id 的 mesh description 字典（含 mesh 路径、source 路径、标志位等）；由调试与 mesh description buffer 上传路径调用
-func get_mesh_description_for_asset(asset_id: int) -> Dictionary:
-	if asset_id < 0 or asset_id >= _registered_descriptors.size():
+## 返回指定 asset_index 的 mesh description 字典（含 mesh 路径、source 路径、标志位等）；由调试与 mesh description buffer 上传路径调用
+func get_mesh_description_for_asset(asset_index: int) -> Dictionary:
+	if asset_index < 0 or asset_index >= _registered_descriptors.size():
 		return {}
-	var descriptor := _registered_descriptors[asset_id] as AssetDescriptor
-	var mesh_ref: Mesh = _registered_mesh[asset_id] if asset_id < _registered_mesh.size() else null
-	var autoobject_ref: AutoObject = _registered_autoobject_refs[asset_id] if asset_id < _registered_autoobject_refs.size() else null
+	var descriptor := _registered_descriptors[asset_index] as AssetDescriptor
+	var mesh_ref: Mesh = _registered_mesh[asset_index] if asset_index < _registered_mesh.size() else null
+	var autoobject_ref: AutoObject = _registered_autoobject_refs[asset_index] if asset_index < _registered_autoobject_refs.size() else null
 	if mesh_ref == null and descriptor != null:
 		mesh_ref = descriptor.get_mesh()
 
@@ -724,8 +724,8 @@ func get_mesh_description_for_asset(asset_id: int) -> Dictionary:
 		source_mesh_surface_count = source_mesh_ref.get_surface_count()
 
 	return {
-		"asset_id": asset_id,
-		"profile_id": _registered_profile_ids[asset_id],
+		"asset_index": asset_index,
+		"profile_id": _registered_profile_ids[asset_index],
 		"descriptor": descriptor,
 		"autoobject_ref": autoobject_ref,
 		"asset_name": descriptor.asset_id if descriptor != null else "",
@@ -744,8 +744,8 @@ func get_mesh_description_for_asset(asset_id: int) -> Dictionary:
 ## 返回所有已注册资产的 mesh description 字典列表；由调试与外部查询调用
 func get_registered_mesh_descriptions() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
-	for asset_id in range(_registered_descriptors.size()):
-		result.append(get_mesh_description_for_asset(asset_id))
+	for asset_index in range(_registered_descriptors.size()):
+		result.append(get_mesh_description_for_asset(asset_index))
 	return result
 
 
@@ -1217,8 +1217,8 @@ func _upload_mesh_description_buffer() -> bool:
 func _pack_mesh_description_bytes() -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(_registered_descriptors.size() * MESH_DESCRIPTION_STRIDE_BYTES)
-	for asset_id in range(_registered_descriptors.size()):
-		var description := get_mesh_description_for_asset(asset_id)
+	for asset_index in range(_registered_descriptors.size()):
+		var description := get_mesh_description_for_asset(asset_index)
 		var mesh_ref: Mesh = description.get("mesh", null)
 		var source_mesh_ref: Mesh = description.get("source_mesh", null)
 		var mesh_aabb: AABB = description.get("mesh_aabb", AABB())
@@ -1234,8 +1234,8 @@ func _pack_mesh_description_bytes() -> PackedByteArray:
 		if not source_path.is_empty():
 			flags |= MESH_DESCRIPTION_FLAG_HAS_SOURCE_PATH
 
-		var base := asset_id * MESH_DESCRIPTION_STRIDE_BYTES
-		bytes.encode_s32(base + 0, asset_id)
+		var base := asset_index * MESH_DESCRIPTION_STRIDE_BYTES
+		bytes.encode_s32(base + 0, asset_index)
 		bytes.encode_s32(base + 4, int(description.get("profile_id", -1)))
 		bytes.encode_s32(base + 8, flags)
 		bytes.encode_s32(base + 12, int(description.get("mesh_surface_count", 0)))
@@ -1277,7 +1277,7 @@ static func _decode_mesh_description_bytes(bytes: PackedByteArray, record_count:
 			BufferUtils.decode_vec4_xyz(bytes, base + 80)
 		)
 		result.append({
-			"asset_id": bytes.decode_s32(base + 0),
+			"asset_index": bytes.decode_s32(base + 0),
 			"profile_id": bytes.decode_s32(base + 4),
 			"flags": bytes.decode_s32(base + 8),
 			"mesh_surface_count": bytes.decode_s32(base + 12),
@@ -2103,12 +2103,12 @@ func _build_autoobject_array_for_pipeline() -> Array:
 ## 构建每个已注册资产的 placement 定义字典（profile_id、descriptor、mesh）；由 run_placement_pipeline 传入 placer 时调用
 func _build_placement_asset_defs() -> Array:
 	var asset_defs: Array = []
-	for asset_id in range(_registered_descriptors.size()):
-		var d := _registered_descriptors[asset_id] as AssetDescriptor
+	for asset_index in range(_registered_descriptors.size()):
+		var d := _registered_descriptors[asset_index] as AssetDescriptor
 		var entry: Dictionary = {
 			"descriptor": d,
-			"asset_index": asset_id,
-			"profile_id": _registered_profile_ids[asset_id],
+			"asset_index": asset_index,
+			"profile_id": _registered_profile_ids[asset_index],
 			"collision": d.get_collision() if d != null else [],
 		}
 		asset_defs.append(entry)
@@ -2162,7 +2162,7 @@ static func _make_lightweight_autoobject(descriptor: AssetDescriptor, mesh_ref: 
 	obj.context_sensing_radius = descriptor.context_sensing_radius
 	obj.collision = descriptor.collision.duplicate(true)
 	obj.set_meta("profile_id", profile_id)
-	obj.set_meta("asset_id", asset_index)
+	obj.set_meta("asset_index", asset_index)
 	return obj
 
 

@@ -256,12 +256,12 @@ func run_stamp_only_commit_check() -> Dictionary:
 	return SPATestScript.check_stamp_only_commit_and_blend_sv()
 
 
-func own_autoobject(autoobject_ref: Object, asset_id: int = -1) -> bool:
+func own_autoobject(autoobject_ref: Object, asset_index: int = -1) -> bool:
 	if _spa == null or not _spa.has_method("own_autoobject"):
 		return false
 	if not (autoobject_ref is AutoObject):
 		return false
-	return bool(_spa.call("own_autoobject", autoobject_ref, asset_id))
+	return bool(_spa.call("own_autoobject", autoobject_ref, asset_index))
 
 
 ## 在视口屏幕坐标处执行选择（按当前模式分派）

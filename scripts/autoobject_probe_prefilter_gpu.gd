@@ -655,7 +655,7 @@ func _pack_all_probes(
 		return _pack_profile_container_probes(autoobjects, asset_count, voxel_size, runtime_profile_container)
 
 	# Build flat probe buffer and per-asset probe ranges.
-	# probe_range[asset_id] = (start_index, probe_count).
+	# probe_range[asset_index] = (start_index, probe_count).
 	# Anchor meaning is represented by the anchor voxel position, not by an
 	# explicit anchor_kind in the GPU record.
 
@@ -737,22 +737,22 @@ func _pack_profile_container_probes(
 	var range_bytes := PackedByteArray()
 	range_bytes.resize(maxi(asset_count, 1) * 8)
 	var profile_ids: Array[int] = []
-	for asset_id in range(asset_count):
-		var autoobject := autoobjects[asset_id] as Object
+	for asset_index in range(asset_count):
+		var autoobject := autoobjects[asset_index] as Object
 		if autoobject == null:
 			profile_ids.append(-1)
-			range_bytes.encode_u32(asset_id * 8 + 0, 0)
-			range_bytes.encode_u32(asset_id * 8 + 4, 0)
+			range_bytes.encode_u32(asset_index * 8 + 0, 0)
+			range_bytes.encode_u32(asset_index * 8 + 4, 0)
 			continue
 		var profile_id := _profile_id_from_autoobject(autoobject, runtime_profile_container)
 		if profile_id < 0:
-			return _blocked_probe_pack("missing_profile_id_for_asset:%d" % asset_id, autoobjects, asset_count, voxel_size)
+			return _blocked_probe_pack("missing_profile_id_for_asset:%d" % asset_index, autoobjects, asset_count, voxel_size)
 		var probe_range := _profile_container_probe_range(runtime_profile_container, profile_id)
 		if probe_range.is_empty():
 			return _blocked_probe_pack("missing_probe_range_for_profile:%d" % profile_id, autoobjects, asset_count, voxel_size)
 		profile_ids.append(profile_id)
-		range_bytes.encode_u32(asset_id * 8 + 0, int(probe_range.get("start", 0)))
-		range_bytes.encode_u32(asset_id * 8 + 4, int(probe_range.get("count", 0)))
+		range_bytes.encode_u32(asset_index * 8 + 0, int(probe_range.get("start", 0)))
+		range_bytes.encode_u32(asset_index * 8 + 4, int(probe_range.get("count", 0)))
 
 	return {
 		"ok": true,
@@ -1667,9 +1667,9 @@ static func _semantic_probe_density(autoobject: Object) -> float:
 ## 构造路由 Profile 的调试副本数组，缺失条目用空 Profile 填充。
 static func _route_extent_debug(route_extents: Array, asset_count: int) -> Array[Dictionary]:
 	var debug: Array[Dictionary] = []
-	for asset_id in range(asset_count):
-		if asset_id < route_extents.size() and route_extents[asset_id] is Dictionary:
-			debug.append((route_extents[asset_id] as Dictionary).duplicate(true))
+	for asset_index in range(asset_count):
+		if asset_index < route_extents.size() and route_extents[asset_index] is Dictionary:
+			debug.append((route_extents[asset_index] as Dictionary).duplicate(true))
 		else:
-			debug.append(_empty_route_extent(asset_id))
+			debug.append(_empty_route_extent(asset_index))
 	return debug

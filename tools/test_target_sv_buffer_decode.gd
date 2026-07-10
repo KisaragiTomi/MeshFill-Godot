@@ -188,7 +188,7 @@ func _test_scene_placement_actor_exposes_mesh_descriptions() -> bool:
 		push_error("  FAIL: expected one decoded mesh description record")
 		return false
 	var gpu_record: Dictionary = decoded[0]
-	if int(gpu_record.get("asset_id", -1)) != 0 or int(gpu_record.get("profile_id", -1)) != profile_id:
+	if int(gpu_record.get("asset_index", -1)) != 0 or int(gpu_record.get("profile_id", -1)) != profile_id:
 		actor.dispose()
 		push_error("  FAIL: decoded SPA mesh description ids mismatch: %s" % str(gpu_record))
 		return false
