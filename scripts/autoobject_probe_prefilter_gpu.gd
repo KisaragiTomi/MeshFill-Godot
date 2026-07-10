@@ -1120,9 +1120,9 @@ func _append_shader_tile_ids_for_scene_voxel_tile(tile: Dictionary, tile_grid: V
 	for ty in range(tile_min.y, tile_max.y + 1):
 		for tz in range(tile_min.z, tile_max.z + 1):
 			for tx in range(tile_min.x, tile_max.x + 1):
-				var tile_id := _tile_pos_to_id(Vector3i(tx, ty, tz), tile_grid)
-				if tile_id >= 0 and result.find(tile_id) < 0:
-					result.append(tile_id)
+				var tile_index := _tile_pos_to_id(Vector3i(tx, ty, tz), tile_grid)
+				if tile_index >= 0 and result.find(tile_index) < 0:
+					result.append(tile_index)
 
 
 ## 返回 sv 中所有 Tile 的线性 ID 列表（全量扫描模式）。
@@ -1161,20 +1161,20 @@ static func _score_asset_block_dispatch_groups(asset_count: int) -> int:
 	return groups_z
 
 
-## 过滤并去重 tile_id 列表，只保留 [0, tile_count) 范围内的有效 ID。
+## 过滤并去重 tile_index 列表，只保留 [0, tile_count) 范围内的有效 ID。
 static func _sanitize_prefilter_tile_ids(values: Array[int], tile_count: int) -> Array[int]:
 	var result: Array[int] = []
 	if tile_count <= 0:
 		return result
 	var seen := {}
 	for raw_id in values:
-		var tile_id := int(raw_id)
-		if tile_id < 0 or tile_id >= tile_count:
+		var tile_index := int(raw_id)
+		if tile_index < 0 or tile_index >= tile_count:
 			continue
-		if seen.has(tile_id):
+		if seen.has(tile_index):
 			continue
-		seen[tile_id] = true
-		result.append(tile_id)
+		seen[tile_index] = true
+		result.append(tile_index)
 	return result
 
 
@@ -1627,16 +1627,16 @@ static func _tile_pos_in_bounds(p: Vector3i, tile_grid: Vector3i) -> bool:
 	)
 
 
-## 将 Tile 三维坐标转换为线性 tile_id（X-major，Z 次之，Y 最高）。
+## 将 Tile 三维坐标转换为线性 tile_index（X-major，Z 次之，Y 最高）。
 static func _tile_pos_to_id(p: Vector3i, tile_grid: Vector3i) -> int:
 	return p.x + tile_grid.x * (p.z + tile_grid.z * p.y)
 
 
-## 将线性 tile_id 还原为三维 Tile 坐标 Vector3i。
-static func _tile_id_to_pos(tile_id: int, tile_grid: Vector3i) -> Vector3i:
-	var tx := tile_id % tile_grid.x
-	var tz := (tile_id / tile_grid.x) % tile_grid.z
-	var ty := tile_id / (tile_grid.x * tile_grid.z)
+## 将线性 tile_index 还原为三维 Tile 坐标 Vector3i。
+static func _tile_id_to_pos(tile_index: int, tile_grid: Vector3i) -> Vector3i:
+	var tx := tile_index % tile_grid.x
+	var tz := (tile_index / tile_grid.x) % tile_grid.z
+	var ty := tile_index / (tile_grid.x * tile_grid.z)
 	return Vector3i(tx, ty, tz)
 
 

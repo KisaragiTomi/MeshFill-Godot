@@ -39,15 +39,15 @@ const CAPTURE_SIZE := 16.0
 var _committer: SceneVoxelCommitter
 var _tile_multimesh_instance: MultiMeshInstance3D
 var _wire_multimesh_instance: MultiMeshInstance3D
-var _tile_instance_indices: Dictionary = {}  # tile_id -> instance_index
-var _tile_aabbs: Dictionary = {}  # tile_id -> AABB (world space)
+var _tile_instance_indices: Dictionary = {}  # tile_key -> instance_index
+var _tile_aabbs: Dictionary = {}  # tile_key -> AABB (world space)
 var _tile_container: Node3D
 var _wire_container: Node3D
 var _hud: Control
 var _metric_labels: Dictionary = {}
 
 var _demo_tick := 0
-var _selected_tile_id: String = ""
+var _selected_tile_key: String = ""
 
 
 func _ready() -> void:
@@ -316,8 +316,8 @@ func _build_tile_meshes() -> void:
 	_tile_instance_indices.clear()
 	_tile_aabbs.clear()
 	var i := 0
-	for tile_id in tiles.keys():
-		var tile: Dictionary = tiles[tile_id]
+	for tile_key in tiles.keys():
+		var tile: Dictionary = tiles[tile_key]
 		var vm: Vector3i = tile["voxel_min"]
 		var world_pos := _voxel_to_world(vm) + half_size
 
@@ -325,8 +325,8 @@ func _build_tile_meshes() -> void:
 		wm.set_instance_transform(i, Transform3D(Basis.IDENTITY, world_pos))
 		mm.set_instance_color(i, CLEAN_COLOR)
 
-		_tile_instance_indices[tile_id] = i
-		_tile_aabbs[tile_id] = AABB(world_pos - box_size * 0.5, box_size)
+		_tile_instance_indices[tile_key] = i
+		_tile_aabbs[tile_key] = AABB(world_pos - box_size * 0.5, box_size)
 		i += 1
 
 
@@ -393,15 +393,15 @@ func _update_tile_colors() -> void:
 	var sv := _committer.get_sv()
 	var tiles: Dictionary = sv.get("scene_voxel_tiles", {})
 
-	for tile_id in tiles.keys():
-		var idx: int = _tile_instance_indices.get(tile_id, -1)
+	for tile_key in tiles.keys():
+		var idx: int = _tile_instance_indices.get(tile_key, -1)
 		if idx < 0:
 			continue
-		var tile: Dictionary = tiles[tile_id]
+		var tile: Dictionary = tiles[tile_key]
 		var color := _compute_tile_color(tile)
 		var is_dirty := bool(tile.get("dirty", false))
 		# Emission hint for selected tile: blend yellow into albedo
-		if tile_id == _selected_tile_id:
+		if tile_key == _selected_tile_key:
 			color = Color(1.0, 1.0, 0.5, maxf(color.a, 0.5))
 		elif is_dirty:
 			color.a = color.a  # keep alpha from blend
@@ -443,7 +443,7 @@ func _editor_viewport_input(viewport_camera: Camera3D, event: InputEvent) -> boo
 			KEY_C:
 				# Clear all dirty
 				_committer.clear_sv_dirty()
-				_selected_tile_id = ""
+				_selected_tile_key = ""
 				_full_refresh()
 				return true
 			KEY_D:
@@ -466,29 +466,29 @@ func _ray_pick_tile(camera: Camera3D, screen_pos: Vector2) -> void:
 	var dir := camera.project_ray_normal(screen_pos)
 	var ray_length := 1000.0
 
-	var best_tile_id := ""
+	var best_tile_key := ""
 	var best_dist := ray_length
 
-	for tile_id in _tile_aabbs.keys():
-		var aabb: AABB = _tile_aabbs[tile_id]
+	for tile_key in _tile_aabbs.keys():
+		var aabb: AABB = _tile_aabbs[tile_key]
 		var hit = aabb.intersects_ray(from, dir)
 		if hit is Vector3:
 			var dist := from.distance_to(hit)
 			if dist < best_dist:
 				best_dist = dist
-				best_tile_id = str(tile_id)
+				best_tile_key = str(tile_key)
 
-	_selected_tile_id = best_tile_id
+	_selected_tile_key = best_tile_key
 	_update_selection_display()
 	_full_refresh()
 
 
 func _update_selection_display() -> void:
-	if _selected_tile_id.is_empty():
+	if _selected_tile_key.is_empty():
 		_metric_labels["selected"].text = "Selected: none"
 		return
 
-	var tile: Dictionary = _committer.get_scene_voxel_tiles().get(_selected_tile_id, {})
+	var tile: Dictionary = _committer.get_scene_voxel_tiles().get(_selected_tile_key, {})
 	if tile.is_empty():
 		_metric_labels["selected"].text = "Selected: --"
 		return
@@ -523,12 +523,12 @@ func _apply_demo_update() -> void:
 	var flags: Dictionary = combos[_demo_tick % combos.size()]
 
 	# Apply to a random subset of tiles
-	var tile_ids := _committer.get_scene_voxel_tiles().keys()
-	tile_ids.sort()
-	var count := maxi(1, int(ceil(float(tile_ids.size()) / 3.0)))
+	var tile_keys := _committer.get_scene_voxel_tiles().keys()
+	tile_keys.sort()
+	var count := maxi(1, int(ceil(float(tile_keys.size()) / 3.0)))
 	for i in range(count):
-		var tile_id: String = tile_ids[(i * 7 + _demo_tick * 3) % tile_ids.size()]
-		var tile: Dictionary = _committer.get_scene_voxel_tiles().get(tile_id, {})
+		var tile_key: String = tile_keys[(i * 7 + _demo_tick * 3) % tile_keys.size()]
+		var tile: Dictionary = _committer.get_scene_voxel_tiles().get(tile_key, {})
 		if tile.is_empty():
 			continue
 		var coord: Vector3i = tile["tile_coord"]

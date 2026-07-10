@@ -240,9 +240,9 @@ func _default_scene_voxel_tile_record(tile_coord: Vector3i) -> Dictionary:
 
 	return {
 
-		"scene_voxel_tile_id": SceneVoxelTileCodecScript.tile_id(tile_coord),
+		"scene_voxel_tile_id": SceneVoxelTileCodecScript.tile_key(tile_coord),
 
-		"tile_id": SceneVoxelTileCodecScript.tile_id(tile_coord),
+		"tile_key": SceneVoxelTileCodecScript.tile_key(tile_coord),
 
 		"tile_coord": tile_coord,
 
@@ -493,10 +493,10 @@ func _append_scene_voxel_tile_record_refs_for_bounds(
 		return
 
 	_for_each_scene_voxel_tile_in_bounds(voxel_min, voxel_max, func(tile_coord: Vector3i):
-		var tile_id := SceneVoxelTileCodecScript.tile_id(tile_coord)
-		var tile: Dictionary = _scene_voxel_tiles.get(tile_id, _default_scene_voxel_tile_record(tile_coord))
+		var tile_key := SceneVoxelTileCodecScript.tile_key(tile_coord)
+		var tile: Dictionary = _scene_voxel_tiles.get(tile_key, _default_scene_voxel_tile_record(tile_coord))
 		tile = _append_scene_voxel_tile_record_refs(tile, record, unique_source)
-		_scene_voxel_tiles[tile_id] = tile
+		_scene_voxel_tiles[tile_key] = tile
 	)
 
 ## 重建 tile 紧凑对象引用区间，统计溢出并更新调试 ID 列表
@@ -511,9 +511,9 @@ func _rebuild_scene_voxel_tile_compact_ranges() -> void:
 
 	_scene_voxel_tile_object_ref_overflow_tile_ids.clear()
 
-	var tile_ids := _scene_voxel_tiles.keys()
+	var tile_keys := _scene_voxel_tiles.keys()
 
-	tile_ids.sort()
+	tile_keys.sort()
 
 	var refs_per_tile := SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT
 
@@ -525,9 +525,9 @@ func _rebuild_scene_voxel_tile_compact_ranges() -> void:
 
 	_scene_voxel_tile_fixed_object_ref_slot_count = fixed_tile_count * refs_per_tile
 
-	for tile_id in tile_ids:
+	for tile_key in tile_keys:
 
-		var tile: Dictionary = _scene_voxel_tiles[tile_id]
+		var tile: Dictionary = _scene_voxel_tiles[tile_key]
 
 		var object_debug_range := _append_scene_voxel_tile_debug_range(
 			_scene_voxel_tile_object_ids_debug,
@@ -552,17 +552,17 @@ func _rebuild_scene_voxel_tile_compact_ranges() -> void:
 
 			_scene_voxel_tile_object_ref_overflow_count += object_debug_range.y - refs_per_tile
 
-			_scene_voxel_tile_object_ref_overflow_tile_ids.append(str(tile_id))
+			_scene_voxel_tile_object_ref_overflow_tile_ids.append(str(tile_key))
 
-		_scene_voxel_tiles[tile_id] = tile
+		_scene_voxel_tiles[tile_key] = tile
 
 ## 重建 tile 源引用，重置引用字段后按 GPU autoobject 引用重新填充
 
 func _rebuild_scene_voxel_tile_source_refs() -> void:
 
-	for tile_id in _scene_voxel_tiles.keys():
+	for tile_key in _scene_voxel_tiles.keys():
 
-		var tile: Dictionary = _scene_voxel_tiles[tile_id]
+		var tile: Dictionary = _scene_voxel_tiles[tile_key]
 
 		tile["auto_object_ids_debug"] = []
 
@@ -574,7 +574,7 @@ func _rebuild_scene_voxel_tile_source_refs() -> void:
 
 		tile["object_debug_range_count"] = 0
 
-		_scene_voxel_tiles[tile_id] = tile
+		_scene_voxel_tiles[tile_key] = tile
 
 	for raw_ref in _scene_voxel_tile_gpu_autoobject_refs.values():
 
@@ -612,9 +612,9 @@ func _touch_scene_voxel_tile(tile_coord: Vector3i, dirty_flags = {}, source_reco
 
 	)
 
-	var tile_id := SceneVoxelTileCodecScript.tile_id(coord)
+	var tile_key := SceneVoxelTileCodecScript.tile_key(coord)
 
-	var tile: Dictionary = _scene_voxel_tiles.get(tile_id, _default_scene_voxel_tile_record(coord))
+	var tile: Dictionary = _scene_voxel_tiles.get(tile_key, _default_scene_voxel_tile_record(coord))
 
 	var bounds := _scene_voxel_tile_bounds(coord)
 
@@ -650,7 +650,7 @@ func _touch_scene_voxel_tile(tile_coord: Vector3i, dirty_flags = {}, source_reco
 
 	tile = _append_scene_voxel_tile_record_refs(tile, source_record, true)
 
-	_scene_voxel_tiles[tile_id] = tile
+	_scene_voxel_tiles[tile_key] = tile
 
 	_mark_scene_voxel_tile_staging_dirty("touch_scene_voxel_tile")
 
@@ -670,9 +670,9 @@ func _touch_scene_voxel_tile_from_voxel(slice_index: int, voxel_xz: Vector2i, di
 
 func _reset_scene_voxel_tile_summaries() -> void:
 
-	for tile_id in _scene_voxel_tiles.keys():
+	for tile_key in _scene_voxel_tiles.keys():
 
-		var tile: Dictionary = _scene_voxel_tiles[tile_id]
+		var tile: Dictionary = _scene_voxel_tiles[tile_key]
 
 		tile["complexity_minmax"] = Vector2.ZERO
 
@@ -684,7 +684,7 @@ func _reset_scene_voxel_tile_summaries() -> void:
 
 		tile["summary"] = _scene_voxel_tile_summary(tile)
 
-		_scene_voxel_tiles[tile_id] = tile
+		_scene_voxel_tiles[tile_key] = tile
 
 	_mark_scene_voxel_tile_staging_dirty("summary_reset")
 
@@ -694,9 +694,9 @@ func _update_scene_voxel_tile_scene_summary(slice_index: int, voxel_xz: Vector2i
 
 	var coord := _scene_voxel_tile_coord_from_voxel(Vector3i(voxel_xz.x, slice_index, voxel_xz.y))
 
-	var tile_id := SceneVoxelTileCodecScript.tile_id(coord)
+	var tile_key := SceneVoxelTileCodecScript.tile_key(coord)
 
-	var tile: Dictionary = _scene_voxel_tiles.get(tile_id, _default_scene_voxel_tile_record(coord))
+	var tile: Dictionary = _scene_voxel_tiles.get(tile_key, _default_scene_voxel_tile_record(coord))
 
 	var count := int(tile.get("scene_voxel_count", 0))
 
@@ -716,7 +716,7 @@ func _update_scene_voxel_tile_scene_summary(slice_index: int, voxel_xz: Vector2i
 
 	tile["summary"] = _scene_voxel_tile_summary(tile)
 
-	_scene_voxel_tiles[tile_id] = tile
+	_scene_voxel_tiles[tile_key] = tile
 
 	_mark_scene_voxel_tile_staging_dirty("scene_summary_rebuild")
 
@@ -726,9 +726,9 @@ func _update_scene_voxel_tile_collision_summary(slice_index: int, voxel_xz: Vect
 
 	var coord := _scene_voxel_tile_coord_from_voxel(Vector3i(voxel_xz.x, slice_index, voxel_xz.y))
 
-	var tile_id := SceneVoxelTileCodecScript.tile_id(coord)
+	var tile_key := SceneVoxelTileCodecScript.tile_key(coord)
 
-	var tile: Dictionary = _scene_voxel_tiles.get(tile_id, _default_scene_voxel_tile_record(coord))
+	var tile: Dictionary = _scene_voxel_tiles.get(tile_key, _default_scene_voxel_tile_record(coord))
 
 	var count := int(tile.get("collision_voxel_count", 0))
 
@@ -748,7 +748,7 @@ func _update_scene_voxel_tile_collision_summary(slice_index: int, voxel_xz: Vect
 
 	tile["summary"] = _scene_voxel_tile_summary(tile)
 
-	_scene_voxel_tiles[tile_id] = tile
+	_scene_voxel_tiles[tile_key] = tile
 
 	_mark_scene_voxel_tile_staging_dirty("collision_summary_rebuild")
 
@@ -756,9 +756,9 @@ func _update_scene_voxel_tile_collision_summary(slice_index: int, voxel_xz: Vect
 
 func _clear_scene_voxel_tile_dirty_flags() -> void:
 
-	for tile_id in _scene_voxel_tiles.keys():
+	for tile_key in _scene_voxel_tiles.keys():
 
-		var tile: Dictionary = _scene_voxel_tiles[tile_id]
+		var tile: Dictionary = _scene_voxel_tiles[tile_key]
 
 		tile["dirty_flags"] = {}
 
@@ -770,7 +770,7 @@ func _clear_scene_voxel_tile_dirty_flags() -> void:
 
 		tile["summary"] = _scene_voxel_tile_summary(tile)
 
-		_scene_voxel_tiles[tile_id] = tile
+		_scene_voxel_tiles[tile_key] = tile
 
 	_mark_scene_voxel_tile_staging_dirty("dirty_clear")
 
@@ -780,13 +780,13 @@ func _copy_scene_voxel_tile() -> Dictionary:
 
 	var result := {}
 
-	for tile_id in _scene_voxel_tiles.keys():
+	for tile_key in _scene_voxel_tiles.keys():
 
-		var tile: Dictionary = _scene_voxel_tiles[tile_id]
+		var tile: Dictionary = _scene_voxel_tiles[tile_key]
 
 		if bool(tile.get("dirty", false)):
 
-			result[tile_id] = tile.duplicate(true)
+			result[tile_key] = tile.duplicate(true)
 
 	return result
 
@@ -836,7 +836,7 @@ func _mark_sv_tile_dirty(
 
 	_sv_dirty_tiles[key] = {
 
-		"tile_id": key,  # dirty tile storage key
+		"tile_key": key,  # dirty tile storage key
 
 		"clip_level": 0,  # clipmap level; 0 in current SV
 
@@ -1336,11 +1336,11 @@ func _decode_scene_voxel_tile_object_ref_transient_dirty_tiles(
 		if flag_bits == 0:
 			continue
 		var tile_coord := _scene_voxel_tile_coord_from_object_ref_tile_index(tile_index, tile_grid)
-		var tile_id := SceneVoxelTileCodecScript.tile_id(tile_coord)
-		tile_ids.append(tile_id)
+		var tile_key := SceneVoxelTileCodecScript.tile_key(tile_coord)
+		tile_ids.append(tile_key)
 		tile_indices.append(tile_index)
-		flag_bits_by_tile_id[tile_id] = flag_bits
-		flags_by_tile_id[tile_id] = SceneVoxelTileCodecScript.flags_from_bits(flag_bits)
+		flag_bits_by_tile_id[tile_key] = flag_bits
+		flags_by_tile_id[tile_key] = SceneVoxelTileCodecScript.flags_from_bits(flag_bits)
 
 	return {
 		"flagged_tile_count": flagged_tile_count,
@@ -2051,8 +2051,8 @@ func _pack_scene_voxel_tile_fixed_object_ref_hash_bytes(
 	var bytes := PackedByteArray()
 	bytes.resize(tile_count * safe_refs_per_tile * SCENE_VOXEL_TILE_REF_STRIDE_BYTES)
 
-	for tile_id in tile_ids:
-		var tile: Dictionary = _scene_voxel_tiles.get(tile_id, {})
+	for tile_key in tile_ids:
+		var tile: Dictionary = _scene_voxel_tiles.get(tile_key, {})
 		var tile_coord: Vector3i = tile.get("tile_coord", Vector3i.ZERO)
 		var tile_index := _scene_voxel_tile_flattened_tile_index(tile_coord, tile_grid)
 		if tile_index < 0 or tile_index >= tile_count:
@@ -2137,9 +2137,9 @@ func _pack_scene_voxel_tile_numeric_object_ref_bytes(refs_per_tile: int = SCENE_
 					return
 			_scene_voxel_tile_object_ref_rebuild_required = true
 			_scene_voxel_tile_object_ref_overflow_count += 1
-			var tile_id := SceneVoxelTileCodecScript.tile_id(tile_coord)
-			if not _scene_voxel_tile_object_ref_overflow_tile_ids.has(tile_id):
-				_scene_voxel_tile_object_ref_overflow_tile_ids.append(tile_id)
+			var tile_key := SceneVoxelTileCodecScript.tile_key(tile_coord)
+			if not _scene_voxel_tile_object_ref_overflow_tile_ids.has(tile_key):
+				_scene_voxel_tile_object_ref_overflow_tile_ids.append(tile_key)
 		)
 
 	return bytes
@@ -2376,8 +2376,8 @@ func _apply_scene_voxel_tile_reduce_summaries(reduced: Dictionary) -> void:
 			continue
 		var summary: Dictionary = raw_summary
 		var tile_coord: Vector3i = summary.get("tile_coord", Vector3i.ZERO)
-		var tile_id := SceneVoxelTileCodecScript.tile_id(tile_coord)
-		var tile: Dictionary = _scene_voxel_tiles.get(tile_id, _default_scene_voxel_tile_record(tile_coord))
+		var tile_key := SceneVoxelTileCodecScript.tile_key(tile_coord)
+		var tile: Dictionary = _scene_voxel_tiles.get(tile_key, _default_scene_voxel_tile_record(tile_coord))
 		var scene_count := int(summary.get("scene_voxel_count", 0))
 		var collision_count := int(summary.get("collision_voxel_count", 0))
 		tile["scene_voxel_count"] = scene_count
@@ -2385,7 +2385,7 @@ func _apply_scene_voxel_tile_reduce_summaries(reduced: Dictionary) -> void:
 		tile["complexity_minmax"] = summary.get("complexity_minmax", Vector2.ZERO)
 		tile["collision_minmax"] = summary.get("collision_minmax", Vector2.ZERO)
 		tile["summary"] = _scene_voxel_tile_summary(tile)
-		_scene_voxel_tiles[tile_id] = tile
+		_scene_voxel_tiles[tile_key] = tile
 	if not summaries.is_empty():
 		_mark_scene_voxel_tile_staging_dirty("tile_summary_reduce")
 
@@ -2410,7 +2410,7 @@ func _legacy_sv_tiles_from_reduce_summaries(
 		if scene_count > 0:
 			var scene_key := SceneVoxelTileCodecScript.sv_tile_key(slice_index, px, "scene", tile_size)
 			tiles[scene_key] = {
-				"tile_id": scene_key,
+				"tile_key": scene_key,
 				"clip_level": 0,
 				"layer": "scene",
 				"tile_size": tile_size,
@@ -2428,7 +2428,7 @@ func _legacy_sv_tiles_from_reduce_summaries(
 		if collision_count > 0:
 			var collision_key := SceneVoxelTileCodecScript.sv_tile_key(slice_index, px, "collision", tile_size)
 			tiles[collision_key] = {
-				"tile_id": collision_key,
+				"tile_key": collision_key,
 				"clip_level": 0,
 				"layer": "collision",
 				"tile_size": tile_size,
@@ -2997,9 +2997,9 @@ func get_scene_voxel_tiles() -> Dictionary:
 
 func get_scene_voxel_tile(tile_coord: Vector3i) -> Dictionary:
 
-	var tile_id := SceneVoxelTileCodecScript.tile_id(tile_coord)
+	var tile_key := SceneVoxelTileCodecScript.tile_key(tile_coord)
 
-	var record = _scene_voxel_tiles.get(tile_id, {})
+	var record = _scene_voxel_tiles.get(tile_key, {})
 
 	if record is Dictionary:
 

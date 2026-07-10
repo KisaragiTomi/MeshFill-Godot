@@ -95,7 +95,7 @@ static func tile_info_for_voxel(voxel_coord: Vector3i, grid_size: Vector3i, tile
 		"coord": coord,
 	}
 
-static func tile_id(tile_coord: Vector3i) -> String:
+static func tile_key(tile_coord: Vector3i) -> String:
 	return "%d:%d:%d" % [tile_coord.x, tile_coord.y, tile_coord.z]
 
 static func object_ref_count(tile_record: Dictionary) -> int:
@@ -368,8 +368,8 @@ static func pack_record_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictio
 	bytes.resize(tile_ids.size() * RECORD_STRIDE_BYTES)
 
 	for i in range(tile_ids.size()):
-		var tile_id := tile_ids[i]
-		var tile: Dictionary = scene_voxel_tiles.get(tile_id, {})
+		var tile_key := tile_ids[i]
+		var tile: Dictionary = scene_voxel_tiles.get(tile_key, {})
 		var base := i * RECORD_STRIDE_BYTES
 		var tile_coord: Vector3i = tile.get("tile_coord", Vector3i.ZERO)
 		var tile_size: Vector3i = tile.get("tile_size", default_tile_size)
@@ -394,7 +394,7 @@ static func pack_record_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictio
 		bytes.encode_s32(base + 100, int(tile.get("collision_voxel_count", 0)))
 		bytes.encode_s32(base + 104, 0)  # was non_empty
 		bytes.encode_s32(base + 108, 1 if bool(tile.get("updated_this_commit", false)) else 0)
-		bytes.encode_u32(base + 112, HashUtils.stable_u32_from_string(tile_id))
+		bytes.encode_u32(base + 112, HashUtils.stable_u32_from_string(tile_key))
 		bytes.encode_s32(base + 116, 1 if bool(tile.get("dirty", false)) else 0)
 		bytes.encode_s32(base + 120, 0)
 		bytes.encode_s32(base + 124, 0)

@@ -3390,7 +3390,7 @@ func _decode_records(bytes: PackedByteArray, record_count: int) -> Array[Diction
 		records.append({
 			"voxel_origin": Vector3i(int(roundf(pose.x)), int(roundf(pose.y)), int(roundf(pose.z))),
 			"score": pose.w,
-			"tile_id": int(roundf(ids.x)),
+			"tile_index": int(roundf(ids.x)),
 			"asset_index": int(roundf(ids.y)),
 			"rotation_index": int(roundf(ids.z)),
 			"scale_index": int(roundf(ids.w)),

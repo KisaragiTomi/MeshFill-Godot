@@ -171,7 +171,7 @@ static func _pack_placement_result_records(results: Array[Dictionary]) -> Packed
 		bytes.encode_float(base + 4, float(origin.y))
 		bytes.encode_float(base + 8, float(origin.z))
 		bytes.encode_float(base + 12, float(r.get("score", 0.0)))
-		bytes.encode_float(base + 16, float(r.get("tile_id", 0)))
+		bytes.encode_float(base + 16, float(r.get("tile_index", 0)))
 		bytes.encode_float(base + 20, float(r.get("asset_index", 0)))
 		bytes.encode_float(base + 24, float(r.get("rotation_index", 0)))
 		bytes.encode_float(base + 28, float(r.get("scale_index", 0)))
