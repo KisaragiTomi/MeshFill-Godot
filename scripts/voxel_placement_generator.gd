@@ -1496,7 +1496,7 @@ func run_minimal(
 			placement_valid_count = int(score_sum_bytes.decode_u32(4))
 	# tile_topk is a GPU-internal producer for reduce→result→stamp; the per-tile records are
 	# no longer read back to the CPU. Scoring readback now flows through the per-voxel debug
-	# buffer (placement_score + best_rotation_slot channels), read via read_debug_voxel below.
+	# buffer (placement_score + best_rotation_slot channels), read via debug_read_voxel_channels below.
 	var compact_state_chain := _compact_delta_state_chain_requested(settings)
 	var _gpu_resident_field_input: bool = _complexity_field_gpu_resident
 	var read_full_field_outputs := bool(settings.get("read_full_field_outputs", false))
@@ -1517,7 +1517,7 @@ func run_minimal(
 	if read_stamp_deltas:
 		decoded_stamp_deltas = _decode_stamp_deltas(stamp_delta_data, stamp_delta_count)
 	var stamp_bounds_data := _rd.buffer_get_data(stamp_bounds_buffer, 0, result_count * STAMP_BOUNDS_STRIDE * 16) if read_placement_results else PackedByteArray()
-	var read_debug_voxel := bool(settings.get("read_debug_voxel", false))
+	var read_debug_voxel := bool(settings.get("debug_read_voxel_channels", false))
 	var debug_voxel_data := _rd.buffer_get_data(debug_voxel_buffer) if read_debug_voxel else PackedByteArray()
 	var score_contract_debug_data := _rd.buffer_get_data(score_contract_debug_buffer)
 	var score_contract_debug := _decode_score_contract_debug(score_contract_debug_data)

@@ -630,7 +630,7 @@ static func check_resident_placement_writeback() -> Dictionary:
 		"auto_voxel_runtime_profile_container": spa.get_runtime_profile_container(),
 		"scene_voxel_committer": committer,
 		"mesh_description_buffer": spa.get_mesh_description_buffer(),
-		"runtime_writeback_options": {"readback_stats": true},
+		"runtime_writeback_options": {"debug_read_stats": true},
 		# Fresh-world bootstrap: SVTile numeric object refs are only confirmed
 		# after the first object-ref update pass; allow the documented debug
 		# fallback so the same-type-exclusion contract does not block this

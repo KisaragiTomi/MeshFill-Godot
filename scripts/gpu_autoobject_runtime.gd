@@ -507,7 +507,7 @@ func spawn_batch_from_accepted_placement_gpu_buffers(
 
 
 ## 构建双 uniform set（set0=VPG 常驻输入，set1=运行时状态）并调度常驻放置 shader。
-## 生产路径零回读：dirty 计数用算术镜像；readback_stats 仅调试用。
+## 生产路径零回读：dirty 计数用算术镜像；debug_read_stats 仅调试用。
 func _dispatch_accepted_placement_resident_shader(
 	placement_results_rid: RID,
 	world_results_rid: RID,
@@ -583,7 +583,7 @@ func _dispatch_accepted_placement_resident_shader(
 		"dispatch_group_count": group_count,
 		"accepted_placement_record_shader_stats": {},
 	}
-	if bool(options.get("readback_stats", false)):
+	if bool(options.get("debug_read_stats", false)):
 		var stats := _read_accepted_placement_record_shader_stats(stats_buffer)
 		var count_result := _read_dirty_delta_count_result()
 		gc_frame()
@@ -1372,7 +1372,7 @@ func _try_apply_accepted_placement_record_shader(
 	submit_and_sync()
 
 	# P0 #9: Stats readback is debug-only. Production path uses fence+barrier without readback.
-	var readback_stats := bool(options.get("readback_stats", false))
+	var readback_stats := bool(options.get("debug_read_stats", false))
 	if readback_stats:
 		var stats := _read_accepted_placement_record_shader_stats(stats_buffer)
 		var stats_ok := int(stats.get("applied", 0)) == record_count \
@@ -1638,7 +1638,7 @@ func _pack_accepted_placement_uniforms(base_binding: int, stats_buffer: RID) -> 
 
 ## 从 stats 缓冲区读回接受放置着色器的统计信息（调试路径）。
 # Debug-only: reads GPU stats buffer via buffer_get_data after accepted placement shader dispatch.
-# Production path (readback_stats=false) skips this readback entirely.
+# Production path (debug_read_stats=false) skips this readback entirely.
 func _read_accepted_placement_record_shader_stats(stats_buffer: RID) -> Dictionary:
 	var bytes := _read_buffer_bytes(stats_buffer, 0, ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT * 4)
 	if bytes.size() < ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT * 4:

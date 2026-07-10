@@ -369,7 +369,7 @@ func _run_scoring() -> void:
 			"asset_index": a, "asset_color": col, "rotation_slots": rotation_slots, "top_k": 1,
 			"scoring_dimensions": dims, "asset_dimension_profile": profile,
 			"env_channel_field_floats": _env_channel_floats, "env_channel_count": 5,
-			"target_field_bytes": _target_field_bytes, "read_debug_voxel": true,
+			"target_field_bytes": _target_field_bytes, "debug_read_voxel_channels": true,
 		}
 		var out: Dictionary = vpg.run_minimal(_complexity_field, _collision_field, fp, grid, settings)
 		var dbg: PackedFloat32Array = out.get("debug_voxel", PackedFloat32Array())
@@ -378,11 +378,13 @@ func _run_scoring() -> void:
 			var av := _anchor_voxel(ai)
 			var vidx := av.x + grid.x * (av.z + grid.z * av.y)   # shader voxel_index order
 			var score := -INF
-			var base := vidx * 8 + 4                              # DEBUG_CH_PLACEMENT_SCORE
-			if base >= 0 and base < dbg.size():
+			var rotation_slot := 0
+			var base := vidx * 8 + 4                              # DEBUG_CH_PLACEMENT_SCORE (ch 4 of 8)
+			if base >= 0 and base + 1 < dbg.size():
 				score = dbg[base]
+				rotation_slot = int(round(dbg[base + 1]))        # DEBUG_CH_BEST_ROTATION_SLOT (ch 5)
 			anchor_results.append({
-				"score": score, "valid": score > -1.0e17, "rotation_slot": 0, "voxel": av})
+				"score": score, "valid": score > -1.0e17, "rotation_slot": rotation_slot, "voxel": av})
 		_results.append({"ok": true, "asset_index": a, "anchor_results": anchor_results})
 	if vpg.has_method("dispose"):
 		vpg.dispose()
