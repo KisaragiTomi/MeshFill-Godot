@@ -230,11 +230,35 @@ func _connect_geo_scan_buttons() -> void:
 func _on_scan_updated_geo_pressed() -> void:
 	var result := _scan_geo_assets(false)
 	_update_geo_scan_status(_format_geo_scan_result(result))
+	_auto_bake_descriptors_after_scan(result)
 
 
 func _on_full_rescan_geo_pressed() -> void:
 	var result := _scan_geo_assets(true)
 	_update_geo_scan_status(_format_geo_scan_result(result))
+	_auto_bake_descriptors_after_scan(result)
+
+
+# After a geo FBX scan, automatically bake AssetDescriptors for the freshly
+# imported meshes (same as the plugin toolbar's Bake AD button) so the scan
+# and the on-disk .tres descriptors stay in sync. Appends a one-line bake
+# summary to the scan status.
+func _auto_bake_descriptors_after_scan(scan_result: Dictionary) -> void:
+	var bake := bake_scene_descriptors()
+	if not (bake is Dictionary):
+		return
+	var status := "%s\n%s" % [_format_geo_scan_result(scan_result), _format_descriptor_bake_status(bake)]
+	_update_geo_scan_status(status)
+
+
+func _format_descriptor_bake_status(bake: Dictionary) -> String:
+	if not bool(bake.get("ok", false)) and int(bake.get("baked", 0)) == 0:
+		return "Bake AD: %s" % str(bake.get("reason", "nothing baked"))
+	return "Bake AD: baked=%d failed=%d total=%d" % [
+		int(bake.get("baked", 0)),
+		int(bake.get("failed", 0)),
+		int(bake.get("total", 0)),
+	]
 
 
 func _scan_geo_assets(full_rescan: bool) -> Dictionary:
