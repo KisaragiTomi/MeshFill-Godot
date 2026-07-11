@@ -56,9 +56,9 @@ const ACCEPTED_PLACEMENT_RECORD_STAT_DIRTY_BASE := 6
 const ACCEPTED_PLACEMENT_RECORD_STAT_DISPATCHED := 7
 const GPU_BUFFER_ALIVE := "alive"
 const GPU_BUFFER_GENERATION := "generation"
-const GPU_BUFFER_TYPE := "type"
+const GPU_BUFFER_TYPE := "object_type"
 const GPU_BUFFER_PROFILE := "profile"
-const GPU_BUFFER_FLAGS := "flags"
+const GPU_BUFFER_FLAGS := "object_flags"
 const GPU_BUFFER_BOUNDS_MIN := "bounds_min"
 const GPU_BUFFER_BOUNDS_MAX := "bounds_max"
 const GPU_BUFFER_PREVIOUS_BOUNDS_MIN := "previous_bounds_min"
@@ -333,7 +333,7 @@ func spawn_batch_from_accepted_placement_records(
 			"object_id": object_id,
 			"profile_id": int(spawn_params.get("profile_id", -1)),
 			"object_type": int(spawn_params.get("object_type", 0)),
-			"object_flags": _object_flags_from_value(spawn_params.get("object_flags", spawn_params.get("flags", 0))),
+			"object_flags": _object_flags_from_value(spawn_params.get("object_flags", 0)),
 			"generation": generation,
 			"voxel_min": voxel_min,
 			"voxel_max": voxel_max,
@@ -771,7 +771,7 @@ func spawn_from_bounds(params: Dictionary) -> int:
 		bounds.voxel_max,
 		params.get("transform", Transform3D.IDENTITY),
 		params.get("dirty_flags", {}),
-		_object_flags_from_value(params.get("object_flags", params.get("flags", 0)))
+		_object_flags_from_value(params.get("object_flags", 0))
 	)
 
 
@@ -800,7 +800,7 @@ func update_transform(
 	var generation := int(previous.get("generation", 0))
 	var profile_id := int(previous.get("profile_id", -1))
 	var object_type := int(previous.get("object_type", 0))
-	var object_flags := int(previous.get("object_flags", previous.get("flags", 0)))
+	var object_flags := int(previous.get("object_flags", 0))
 
 	if not _write_object_state(
 		object_id,
@@ -874,7 +874,7 @@ func update_profile(object_id: int, profile_id: int, arg3 = {}, arg4 = null, arg
 	var bounds := _normalize_bounds(new_min, new_max)
 	var generation := int(previous.get("generation", 0))
 	var object_type := int(previous.get("object_type", 0))
-	var object_flags := int(previous.get("object_flags", previous.get("flags", 0)))
+	var object_flags := int(previous.get("object_flags", 0))
 	var transform: Transform3D = previous.get("transform", Transform3D.IDENTITY)
 
 	if not _write_object_state(
@@ -976,7 +976,7 @@ func kill(object_id: int, dirty_flags: Dictionary = {}) -> bool:
 	var generation := int(previous.get("generation", 0)) + 1
 	var profile_id := int(previous.get("profile_id", -1))
 	var object_type := int(previous.get("object_type", 0))
-	var object_flags := int(previous.get("object_flags", previous.get("flags", 0)))
+	var object_flags := int(previous.get("object_flags", 0))
 	var transform: Transform3D = previous.get("transform", Transform3D.IDENTITY)
 
 	if not _write_object_state(
@@ -1174,7 +1174,7 @@ func _execute_staged_command(command: Dictionary) -> Dictionary:
 			return _enqueue_result(ok, object_id, "ok" if ok else "update_profile_failed")
 		"updateflags":
 			var object_id := int(command.get("object_id", -1))
-			var object_flags := _object_flags_from_value(command.get("object_flags", command.get("flags", 0)))
+			var object_flags := _object_flags_from_value(command.get("object_flags", 0))
 			var ok := update_flags(object_id, object_flags, command.get("dirty_flags", {}))
 			return _enqueue_result(ok, object_id, "ok" if ok else "update_flags_failed")
 		"kill":
@@ -1433,7 +1433,7 @@ func _pack_bulk_spawn_records(queued: Array) -> Array[Dictionary]:
 			"object_id": object_id,
 			"profile_id": int(command.get("profile_id", -1)),
 			"object_type": int(command.get("object_type", 0)),
-			"object_flags": _object_flags_from_value(command.get("object_flags", command.get("flags", 0))),
+			"object_flags": _object_flags_from_value(command.get("object_flags", 0)),
 			"generation": generation,
 			"voxel_min": bounds.voxel_min,
 			"voxel_max": bounds.voxel_max,
@@ -1675,7 +1675,7 @@ func _spawn_from_staged_bounds(command: Dictionary) -> int:
 		bounds.voxel_max,
 		command.get("transform", Transform3D.IDENTITY),
 		command.get("dirty_flags", {}),
-		_object_flags_from_value(command.get("object_flags", command.get("flags", 0)))
+		_object_flags_from_value(command.get("object_flags", 0))
 	)
 
 
@@ -2230,11 +2230,11 @@ func get_gpu_buffer(buffer_name: String) -> RID:
 		return _alive_buffer
 	if name == GPU_BUFFER_GENERATION or name == "autoobject_generation":
 		return _generation_buffer
-	if name == GPU_BUFFER_TYPE or name == "autoobject_type":
+	if name == GPU_BUFFER_TYPE:
 		return _type_buffer
 	if name == GPU_BUFFER_PROFILE or name == "autoobject_profile":
 		return _profile_buffer
-	if name == GPU_BUFFER_FLAGS or name == "object_flags" or name == "autoobject_flags":
+	if name == GPU_BUFFER_FLAGS:
 		return _flags_buffer
 	if name == GPU_BUFFER_BOUNDS_MIN or name == "autoobject_bounds_min":
 		return _bounds_min_buffer
@@ -2642,7 +2642,6 @@ func _read_object_state(object_id: int) -> Dictionary:
 		"profile_id": profile_id,
 		"object_type": object_type,
 		"object_flags": object_flags,
-		"flags": object_flags,
 		"voxel_min": voxel_min,
 		"voxel_max": voxel_max,
 		"previous_voxel_min": previous_voxel_min,

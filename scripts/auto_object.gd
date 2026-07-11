@@ -120,7 +120,7 @@ static func make_profile_instance_stamp_write_spec(
 
 	var record := SharedPropertyTypeScript.apply_to_record(extra_fields, shared_fields)
 	record["id"] = record_id                            # record id / debug handle
-	record["type"] = object_type                        # runtime object type/group
+	record["object_type"] = object_type                 # runtime object type/group
 	record["position"] = position                       # instance world position
 	record["rotation_mode"] = "XYZ"                     # rotation_degrees interpretation
 	record["rotation_degrees"] = rotation_degrees       # instance rotation
@@ -503,7 +503,7 @@ func get_collision(default_radius: float = 0.0) -> Array[Dictionary]:
 
 
 func get_record_object_type() -> String:
-	var record_type := str(instance_stamp_write_spec.get("type", instance_stamp_write_spec.get("object_type", "")))
+	var record_type := str(instance_stamp_write_spec.get("object_type", instance_stamp_write_spec.get("type", "")))
 	return record_type if not record_type.is_empty() else "object"
 
 
@@ -804,13 +804,9 @@ func _sync_record_identity_from_config(config: Dictionary) -> void:
 	elif config.has("source"):
 		instance_stamp_write_spec["auto_source"] = str(config.source)
 	if config.has("object_type"):
-		var configured_type := str(config.object_type)
-		instance_stamp_write_spec["type"] = configured_type
-		instance_stamp_write_spec["object_type"] = configured_type
-	elif config.has("type") and not instance_stamp_write_spec.has("type"):
-		var configured_record_type := str(config.type)
-		instance_stamp_write_spec["type"] = configured_record_type
-		instance_stamp_write_spec["object_type"] = configured_record_type
+		instance_stamp_write_spec["object_type"] = str(config.object_type)
+	elif config.has("type") and not instance_stamp_write_spec.has("object_type"):
+		instance_stamp_write_spec["object_type"] = str(config.type)
 
 
 func _normalize_anchor_kind_array(kinds) -> PackedStringArray:

@@ -49,7 +49,7 @@ const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := CandidateRouteSchemaScript.RANGE_STR
 const REQUIRED_GPU_RUNTIME_BUFFERS := [
 	"alive",
 	"generation",
-	"type",
+	"object_type",
 	"profile",
 	"bounds_min",
 	"bounds_max",
