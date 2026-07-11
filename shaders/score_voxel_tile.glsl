@@ -707,23 +707,36 @@ FieldSample sample_field_trilinear(vec3 pf) {
     return s;
 }
 
-// Float twin of rotate_footprint_offset_y: rigid yaw (NO round, NO scale) so the
-// footprint sample position stays a genuine float for trilinear sampling. Same
-// convention: rx = ca*x + sa*z ; rz = -sa*x + ca*z ; y unchanged.
-vec3 rotate_footprint_offset_y_f(ivec3 fp, float ca, float sa) {
-    float rx =  ca * float(fp.x) + sa * float(fp.z);
-    float rz = -sa * float(fp.x) + ca * float(fp.z);
-    return vec3(rx, float(fp.y), rz);
+// @@GEN yaw_rotation_y — generated from scripts/utils/placement_shared_glsl.gd, do not edit
+// Canonical Y-yaw rotation, matching Basis(Vector3.UP, yaw):
+//   rx =  ca*x + sa*z ;  rz = -sa*x + ca*z ;  y unchanged.
+vec3 rotate_yaw_y(vec3 v, float ca, float sa) {
+    return vec3(ca * v.x + sa * v.z, v.y, -sa * v.x + ca * v.z);
 }
 
-ivec3 rotate_footprint_offset_y(ivec3 fp, float ca, float sa) {
-    // Yaw rotation of a footprint offset around the pivot origin (x,z plane).
-    // Convention matches the CPU sample prebake and the stamp shader:
-    //   rx =  ca*x + sa*z ;  rz = -sa*x + ca*z
-    float rx =  ca * float(fp.x) + sa * float(fp.z);
-    float rz = -sa * float(fp.x) + ca * float(fp.z);
-    return ivec3(int(round(rx)), fp.y, int(round(rz)));
+// Float variant for footprint offsets: rigid yaw (NO round, NO scale) so the
+// sample position stays a genuine float for trilinear sampling.
+vec3 rotate_footprint_offset_y_f(ivec3 fp, float ca, float sa) {
+    return rotate_yaw_y(vec3(fp), ca, sa);
 }
+
+// Voxel-snapped variant for integer footprint offsets (round x/z, keep y).
+ivec3 rotate_footprint_offset_y(ivec3 fp, float ca, float sa) {
+    vec3 r = rotate_yaw_y(vec3(fp), ca, sa);
+    return ivec3(int(round(r.x)), fp.y, int(round(r.z)));
+}
+
+// Yaw-only world transform: Basis(Vector3.UP, yaw) columns + instance origin
+// (column x = (cos, 0, -sin), column z = (sin, 0, cos)).
+mat4 yaw_transform_y(float ca, float sa, vec3 origin) {
+    return mat4(
+        vec4(ca, 0.0, -sa, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(sa, 0.0, ca, 0.0),
+        vec4(origin, 1.0)
+    );
+}
+// @@END yaw_rotation_y
 
 EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_count) {
     float rot_angle = rot_count > 1 ? float(rot_slot) * 6.28318530718 / float(rot_count) : 0.0;

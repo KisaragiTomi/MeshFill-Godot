@@ -171,6 +171,37 @@ void write_dirty_delta(uint dirty_index, int object_id, int object_generation, i
     dirty_delta_words[base + 19u] = meta.y;
 }
 
+// @@GEN yaw_rotation_y — generated from scripts/utils/placement_shared_glsl.gd, do not edit
+// Canonical Y-yaw rotation, matching Basis(Vector3.UP, yaw):
+//   rx =  ca*x + sa*z ;  rz = -sa*x + ca*z ;  y unchanged.
+vec3 rotate_yaw_y(vec3 v, float ca, float sa) {
+    return vec3(ca * v.x + sa * v.z, v.y, -sa * v.x + ca * v.z);
+}
+
+// Float variant for footprint offsets: rigid yaw (NO round, NO scale) so the
+// sample position stays a genuine float for trilinear sampling.
+vec3 rotate_footprint_offset_y_f(ivec3 fp, float ca, float sa) {
+    return rotate_yaw_y(vec3(fp), ca, sa);
+}
+
+// Voxel-snapped variant for integer footprint offsets (round x/z, keep y).
+ivec3 rotate_footprint_offset_y(ivec3 fp, float ca, float sa) {
+    vec3 r = rotate_yaw_y(vec3(fp), ca, sa);
+    return ivec3(int(round(r.x)), fp.y, int(round(r.z)));
+}
+
+// Yaw-only world transform: Basis(Vector3.UP, yaw) columns + instance origin
+// (column x = (cos, 0, -sin), column z = (sin, 0, cos)).
+mat4 yaw_transform_y(float ca, float sa, vec3 origin) {
+    return mat4(
+        vec4(ca, 0.0, -sa, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(sa, 0.0, ca, 0.0),
+        vec4(origin, 1.0)
+    );
+}
+// @@END yaw_rotation_y
+
 void main() {
     uint record_index = gl_GlobalInvocationID.x;
     uint record_count = uint(max(counts.x, 0));
@@ -233,17 +264,9 @@ void main() {
         voxel_max = voxel_origin + ivec3(1);
     }
 
-    // Yaw-only transform, matching Basis(Vector3.UP, yaw) column layout:
-    // column x = (cos, 0, -sin), column z = (sin, 0, cos), origin = instance position.
+    // Yaw-only transform via the shared canonical yaw block (yaw degrees in world_anchor.w).
     float yaw = radians(world_anchor.w);
-    float cos_y = cos(yaw);
-    float sin_y = sin(yaw);
-    mat4 transform = mat4(
-        vec4(cos_y, 0.0, -sin_y, 0.0),
-        vec4(0.0, 1.0, 0.0, 0.0),
-        vec4(sin_y, 0.0, cos_y, 0.0),
-        vec4(world_origin_score.xyz, 1.0)
-    );
+    mat4 transform = yaw_transform_y(cos(yaw), sin(yaw), world_origin_score.xyz);
 
     int object_generation = generation[object_id];
     object_type[object_id] = asset_params.y;

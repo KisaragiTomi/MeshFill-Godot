@@ -187,13 +187,36 @@ void write_stamp_bounds(uint result_index, ivec3 p) {
     atomicMax(stamp_bounds[base + 1u].z, uint(p.z + 1));
 }
 
-ivec3 rotate_footprint_offset_y(ivec3 fp, float ca, float sa) {
-    // Must match the scorer's yaw convention (score_voxel_tile.glsl):
-    //   rx =  ca*x + sa*z ;  rz = -sa*x + ca*z
-    float rx =  ca * float(fp.x) + sa * float(fp.z);
-    float rz = -sa * float(fp.x) + ca * float(fp.z);
-    return ivec3(int(round(rx)), fp.y, int(round(rz)));
+// @@GEN yaw_rotation_y — generated from scripts/utils/placement_shared_glsl.gd, do not edit
+// Canonical Y-yaw rotation, matching Basis(Vector3.UP, yaw):
+//   rx =  ca*x + sa*z ;  rz = -sa*x + ca*z ;  y unchanged.
+vec3 rotate_yaw_y(vec3 v, float ca, float sa) {
+    return vec3(ca * v.x + sa * v.z, v.y, -sa * v.x + ca * v.z);
 }
+
+// Float variant for footprint offsets: rigid yaw (NO round, NO scale) so the
+// sample position stays a genuine float for trilinear sampling.
+vec3 rotate_footprint_offset_y_f(ivec3 fp, float ca, float sa) {
+    return rotate_yaw_y(vec3(fp), ca, sa);
+}
+
+// Voxel-snapped variant for integer footprint offsets (round x/z, keep y).
+ivec3 rotate_footprint_offset_y(ivec3 fp, float ca, float sa) {
+    vec3 r = rotate_yaw_y(vec3(fp), ca, sa);
+    return ivec3(int(round(r.x)), fp.y, int(round(r.z)));
+}
+
+// Yaw-only world transform: Basis(Vector3.UP, yaw) columns + instance origin
+// (column x = (cos, 0, -sin), column z = (sin, 0, cos)).
+mat4 yaw_transform_y(float ca, float sa, vec3 origin) {
+    return mat4(
+        vec4(ca, 0.0, -sa, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(sa, 0.0, ca, 0.0),
+        vec4(origin, 1.0)
+    );
+}
+// @@END yaw_rotation_y
 
 void main() {
     uint footprint_count = uint(max(grid_size_counts.w, 0));

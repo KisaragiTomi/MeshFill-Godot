@@ -3,8 +3,9 @@ extends SceneTree
 
 ## Desync guard for codegen-shared GLSL blocks.
 ##
-## Two SSOTs feed generated `// @@GEN <name> ... // @@END <name>` regions:
-##   - RouteTileSharedGLSL: verbatim shared blocks (block name = the SSOT key).
+## Three SSOTs feed generated `// @@GEN <name> ... // @@END <name>` regions:
+##   - RouteTileSharedGLSL / PlacementSharedGLSL: verbatim shared blocks
+##     (block name = the SSOT key).
 ##   - DebugBufferSet: GPU debug carrier declarations generated per-schema, with
 ##     block name `debug_set <schema.name>` and per-consumer set/binding overrides.
 ## For every declared block, verifies each consumer shader's marked region matches
@@ -14,26 +15,28 @@ extends SceneTree
 ##   godot --headless --script tools/verify_glsl_gen_blocks.gd
 
 const RouteTileSharedGLSL := preload("res://scripts/utils/route_tile_shared_glsl.gd")
+const PlacementSharedGLSL := preload("res://scripts/utils/placement_shared_glsl.gd")
 const DebugBufferSet := preload("res://scripts/utils/debug_buffer_set.gd")
 
 
 func _init() -> void:
 	var checked := 0
 	var failures := 0
-	for block_name in RouteTileSharedGLSL.block_names():
-		var expected: String = RouteTileSharedGLSL.block(block_name)
-		var consumers: Array = RouteTileSharedGLSL.CONSUMERS.get(block_name, [])
-		for shader_path in consumers:
-			checked += 1
-			var actual = _extract_block(shader_path, block_name)
-			if actual == null:
-				push_error("[glsl-gen] %s :: %s — @@GEN block not found" % [shader_path, block_name])
-				failures += 1
-			elif _norm(String(actual)) != _norm(expected):
-				push_error("[glsl-gen] %s :: %s — block DIVERGED from SSOT" % [shader_path, block_name])
-				failures += 1
-			else:
-				print("[glsl-gen] OK   %s :: %s" % [shader_path, block_name])
+	for ssot in [RouteTileSharedGLSL, PlacementSharedGLSL]:
+		for block_name in ssot.block_names():
+			var expected: String = ssot.block(block_name)
+			var consumers: Array = ssot.CONSUMERS.get(block_name, [])
+			for shader_path in consumers:
+				checked += 1
+				var actual = _extract_block(shader_path, block_name)
+				if actual == null:
+					push_error("[glsl-gen] %s :: %s — @@GEN block not found" % [shader_path, block_name])
+					failures += 1
+				elif _norm(String(actual)) != _norm(expected):
+					push_error("[glsl-gen] %s :: %s — block DIVERGED from SSOT" % [shader_path, block_name])
+					failures += 1
+				else:
+					print("[glsl-gen] OK   %s :: %s" % [shader_path, block_name])
 
 	# DebugBufferSet: one @@GEN block per (schema, shader, section); set/binding per consumer.
 	for entry in DebugBufferSet.CONSUMERS:

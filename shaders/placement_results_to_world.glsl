@@ -30,6 +30,37 @@ layout(push_constant, std430) uniform Params {
 
 const float MIN_VOXEL_SIZE = 0.0001;
 
+// @@GEN yaw_rotation_y — generated from scripts/utils/placement_shared_glsl.gd, do not edit
+// Canonical Y-yaw rotation, matching Basis(Vector3.UP, yaw):
+//   rx =  ca*x + sa*z ;  rz = -sa*x + ca*z ;  y unchanged.
+vec3 rotate_yaw_y(vec3 v, float ca, float sa) {
+    return vec3(ca * v.x + sa * v.z, v.y, -sa * v.x + ca * v.z);
+}
+
+// Float variant for footprint offsets: rigid yaw (NO round, NO scale) so the
+// sample position stays a genuine float for trilinear sampling.
+vec3 rotate_footprint_offset_y_f(ivec3 fp, float ca, float sa) {
+    return rotate_yaw_y(vec3(fp), ca, sa);
+}
+
+// Voxel-snapped variant for integer footprint offsets (round x/z, keep y).
+ivec3 rotate_footprint_offset_y(ivec3 fp, float ca, float sa) {
+    vec3 r = rotate_yaw_y(vec3(fp), ca, sa);
+    return ivec3(int(round(r.x)), fp.y, int(round(r.z)));
+}
+
+// Yaw-only world transform: Basis(Vector3.UP, yaw) columns + instance origin
+// (column x = (cos, 0, -sin), column z = (sin, 0, cos)).
+mat4 yaw_transform_y(float ca, float sa, vec3 origin) {
+    return mat4(
+        vec4(ca, 0.0, -sa, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(sa, 0.0, ca, 0.0),
+        vec4(origin, 1.0)
+    );
+}
+// @@END yaw_rotation_y
+
 void main() {
 	uint idx = gl_GlobalInvocationID.x;
 	uint record_count = uint(max(params.counts.x, 0));
@@ -57,11 +88,7 @@ void main() {
 	vec3 safe_voxel_size = max(params.voxel_size.xyz, vec3(MIN_VOXEL_SIZE));
 	vec3 anchor_position = params.grid_origin.xyz + origin_score.xyz * safe_voxel_size;
 	vec3 pivot = params.pivot_offset.xyz;
-	vec3 pivot_world_offset = vec3(
-		pivot.x * cos_y + pivot.z * sin_y,
-		pivot.y,
-		-pivot.x * sin_y + pivot.z * cos_y
-	);
+	vec3 pivot_world_offset = rotate_yaw_y(pivot, cos_y, sin_y);
 	vec3 instance_position = anchor_position - pivot_world_offset;
 	float valid = debug1.y > 0.5 ? 1.0 : 0.0;
 
