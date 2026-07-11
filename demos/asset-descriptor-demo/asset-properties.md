@@ -80,7 +80,7 @@ Probe 采样是 GPU prefilter 阶段对每个 anchor×asset 组合执行的核�
 
 | 缓冲区 | Shader 标识 | 类型 | 说明 |
 | --- | --- | --- | --- |
-| `TargetSV_B` | `target_field` | `readonly buffer<vec4>` | 目标场景引导场。**`.rgb`** = 目标颜色，**`.a`** = completeness（`max(scene_complexity, collision)`），表示该体素被占用的完整度。 |
+| `TargetSV_B` | `target_field` | `readonly buffer<vec4>` | 目标场景引导场。**`.rgb`** = 目标颜色，**`.a`** = completeness（`max(complexity, collision)`），表示该体素被占用的完整度。 |
 | `SV[t-1]` | `complexity_coll` | `readonly buffer<vec2>` | 上一帧的场景体素场。**`.x`** = scene complexity（场景复杂度/占用），**`.y`** = scene collision（场景碰撞/实体强度）。 |
 
 ### 评分通道与计算公式
@@ -162,7 +162,7 @@ committed `SceneVoxel` 的 accepted fields 是 `complexity`、`color`、`collisi
 
 ## Metadata 规则
 
-Metadata 只保留索引、回查和调试入口。当前 `AutoObject._sync_auto_metadata()` 写入 `auto_id`、`auto_instance_id` / `instance_id` 和 `instance_mesh_id`；`set_instance_stamp_write_spec()` 写 canonical metadata key `instance_stamp_write_spec` 暴露 `ISWS` handle（旧 key `voxel_write_spec` 仅作 read-compat alias 保留）。
+Metadata 只保留索引、回查和调试入口。当前 `AutoObject._sync_auto_metadata()` 写入 `auto_id` 与 `instance_id`；`set_instance_stamp_write_spec()` 写 canonical metadata key `instance_stamp_write_spec` 暴露 `ISWS` handle（旧 key `voxel_write_spec` 仅作 read-compat alias 保留），spec 自身只携带 canonical `instance_id`。
 
 `auto_source`、`object_type`、`object_subtype` 等来源 / 分组字段可以存在于 `ISWS` record 或 debug record 中，但不要新增一套 metadata 语义镜像。新增资产语义字段时优先进入 [`AssetDescriptor`](asset-descriptor.md)。
 

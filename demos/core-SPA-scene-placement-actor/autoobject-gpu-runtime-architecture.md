@@ -34,7 +34,7 @@
 
 ## Debug Ownership: BrushSV / AutoSV
 
-`BrushSV` 常驻于 SPA 编排生命周期内（内容面即 SPA 常驻 brush field 对：`stamp_brush_sv_records()` 写入、`clear_brush_sv()` 清除），并作为 SPA 持久化 / 序列化内容的一部分保存；它不进 committed `SceneVoxel`，只在 `BlendSV` 读取合成时参与。`AutoSV` 即 committed SV 常驻 field（纯 auto），可经 debug readback 作为调试观察面。
+`BrushSV` 常驻于 SPA 编排生命周期内（内容面即 SPA 常驻 brush field 对：`write_brush_sv_records()` 写入、`clear_brush_sv()` 清除），并作为 SPA 持久化 / 序列化内容的一部分保存；它不进 committed `SceneVoxel`，只在 `BlendSV` 读取合成时参与。`AutoSV` 即 committed SV 常驻 field（纯 auto），可经 debug readback 作为调试观察面。
 
 因此，调试能力不再依赖 CPU 侧保留一份 `BrushSV` / `AutoSV` 的完整内容镜像。内容型 source of truth 以 SPA 常驻数据、source write / commit 输出和 GPU debug buffer 为准。
 
@@ -54,7 +54,7 @@ CPU 侧如需保留状态，只能保存控制面元数据：
 | --- | --- | --- | --- |
 | Authoring entry | `AutoObject.make_instance_stamp_write_spec()` | descriptor-backed fields、placement context、source metadata | `ISWS` / source write record；不是资产默认语义来源。 |
 | Probe prefilter | `AutoObjectProbePrefilterGPU.run_probe_prefilter()` | `SV[t - 1]` fields、`TargetSV_B` read buffers、AutoObjects、dirty tile ids | anchors、candidate voxel-region votes、docs-facing `candidate_voxel_regions_by_asset`；legacy `candidate_voxel_sparses_by_asset` 仅兼容/debug。SPA 构建 autoobjects 数组并注入 profile_container 的 borrowed probe_records buffer。 |
-| Physical placement | `VoxelPlacementGenerator.run_multi_asset()` | scene/collision fields、asset defs、grid、routed candidate regions、optional runtime/profile GPU buffers | accepted placements、stamp deltas、updated temp scene/collision fields；`write_accepted_placements_to_gpu_runtime=true` 时，VPG 还会把 accepted placements 写入 `GPUAutoObjectRuntime` 并回报 `gpu_autoobject_runtime_writeback`；显式传入 `scene_voxel_committer` + `create_voxel_write_spec=true` 时，同一 accepted placement 会生成 `ISWS` / source record 并回报 `instance_stamp_writeback`。GPU runtime/profile contract enabled 时，VPG 必须完成 contract validation、borrow/bind 对象和 profile buffers，并在 placement pass 中 consumed。SPA 注入 profile_container 和 gpu_runtime 到 placement settings。 |
+| Physical placement | `VoxelPlacementGenerator.run_multi_asset()` | scene/collision fields、asset defs、grid、routed candidate regions、optional runtime/profile GPU buffers | accepted placements、stamp deltas、updated temp scene/collision fields；`write_accepted_placements_to_gpu_runtime=true` 时，VPG 还会把 accepted placements 写入 `GPUAutoObjectRuntime` 并回报 `gpu_autoobject_runtime_writeback`；显式传入 `scene_voxel_committer`（GPU state chain）时，stamp pass 原位提交 committed SV 并回报 `instance_stamp_writeback`（mode = `gpu_state_chain_stamp`）。GPU runtime/profile contract enabled 时，VPG 必须完成 contract validation、borrow/bind 对象和 profile buffers，并在 placement pass 中 consumed。SPA 注入 profile_container 和 gpu_runtime 到 placement settings。 |
 | Dirty delta handoff | `SceneVoxelCommitter.apply_gpu_autoobject_dirty_delta()` | object id、old/new voxel bounds、dirty flags | affected `SceneVoxelTile` dirty set and debug object refs. |
 | Commit | `SceneVoxelCommitter.commit_scene_voxels()` | VPG state-chain stamp（已原位落场）+ pending CPU 入口盖章记录 | committed `SceneVoxel` resident fields（纯 auto）+ tile 摘要. |
 

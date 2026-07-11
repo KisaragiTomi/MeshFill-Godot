@@ -58,7 +58,7 @@ Placement / VPG 的 `TILE_SIZE = 8` 是 candidate voxel region / shader workgrou
 | --- | --- | --- | --- | --- |
 | Grid 参数、voxel size、origin | `SceneVoxelCommitter` / SV owner | `grid_size`、`voxel_size`、`grid_origin`。 | `tile_coord`、`tile_size`、`voxel_min`、`voxel_max`、`base_rect`。 | SV owner。 |
 | Dirty state | `SceneVoxelCommitter` / SV owner | affected voxel bounds、dirty flags、commit epoch。 | `dirty_flags`、`epoch`、`updated_this_commit`、`dirty_scene_voxel_tiles` snapshot。 | SV owner staging table。 |
-| Committed scene/collision summary | `SceneVoxelCommitter` / SV owner | committed `SceneVoxel`、`collision_field` / terrain base collision。 | `scene_minmax`、`collision_minmax`、scene/collision counts。 | committed SV，可重建 summary。 |
+| Committed scene/collision summary | `SceneVoxelCommitter` / SV owner | committed `SceneVoxel`、`collision_field` / terrain base collision。 | `complexity_minmax`、`collision_minmax`、scene/collision counts。 | committed SV，可重建 summary。 |
 | Object refs / dirty delta | `GPUAutoObjectRuntime` / current handoff | `object_id`、previous/current voxel bounds、dirty flags。 | `_scene_voxel_tile_gpu_autoobject_refs`、`object_range_start` / `object_range_count`、debug id range。 | runtime object pool / AutoObject authoring side；tile 只保存 refs。 |
 | Target guidance | `TargetSV_B` / target owner | target / brush-composited guidance dirty。 | routing / scoring dirty trigger only。 | TargetSV / BrushSV cache；不写 committed source。 |
 
@@ -80,7 +80,7 @@ Grid initialized / resized
 - `SceneVoxelTile` 随 SV grid 生命周期存在；grid 参数变化、load、repair 或 migration 等维护路径等价于 mark all tiles dirty。
 - dirty producer 只提交 affected voxel bounds；`SceneVoxelCommitter` 负责把 bounds 映射到 tile ids。
 - object/source debug ranges 是发布快照，不能作为 AutoObject runtime 或 source stream 的权威存储。
-- summary 可由 committed fields 重建；不要把 `scene_minmax` / `collision_minmax` 当作 committed payload。
+- summary 可由 committed fields 重建；不要把 `complexity_minmax` / `collision_minmax` 当作 committed payload。
 - `staging_revision` 是 SV owner control plane 的变更序号；`uploaded_revision` 只有在 GPU storage buffers 成功上传后才追上。两者不一致时，summary 必须报告 stale，`readback_scene_voxel_tile_debug_snapshot()` 不返回 runtime snapshot。
 
 ## CPU / GPU 边界
@@ -107,7 +107,7 @@ Grid initialized / resized
 | `dirty_flags` | `int` / `Dictionary` | `scene`、`collision`、`auto`、`brush`、`target`、`object_refs` 等 dirty 位 |
 | `epoch` | `int` | 每次变脏递增，用于 GPU/CPU buffer 同步和 stale query 检查 |
 | `last_commit_tick` | `int` | debug record 中复制的 committed SV 全局 epoch；不表达 per-voxel 或 per-tile provenance |
-| `scene_minmax` | `Vector2` | committed `complexity` 的粗略 min/max summary |
+| `complexity_minmax` | `Vector2` | committed `complexity` 的粗略 min/max summary |
 | `collision_minmax` | `Vector2` | committed `collision` 的粗略 min/max summary |
 | 内容判定 | — | 该 tile 内是否存在非空 scene/collision 信息，通过 `scene_count > 0 || collision_count > 0` 判断 |
 | `object_range_start` | `int` | 指向 compacted object id buffer 的起点；当前实现指向 `scene_voxel_tile_object_ids_debug` |
@@ -189,7 +189,7 @@ AutoObject / brush / profile / placement dirty producer
 | 更新方式 | 结论 | 说明 |
 | --- | --- | --- |
 | `SceneVoxelTile` dirty | 正常入口 | 所有局部更新统一进入 tile dirty 和 dirty flags。 |
-| Brush / manual edit | dirty producer | 笔刷内容写 SPA 常驻 `BrushSV` 旁路层（`stamp_brush_sv_records()`），不进 committed `SceneVoxel`；仅触发 tile 的 brush/scoring dirty。 |
+| Brush / manual edit | dirty producer | 笔刷内容写 SPA 常驻 `BrushSV` 旁路层（`write_brush_sv_records()`），不进 committed `SceneVoxel`；仅触发 tile 的 brush/scoring dirty。 |
 | TargetSV / guidance | guidance dirty producer | 只更新 routing / scoring / prefilter，不标记 committed SV source dirty。 |
 | Profile hot update | dirty producer | 从 profile 引用反查 objects，再映射到 affected tiles。 |
 | Full invalidate | 维护入口 | load、grid 参数变化、repair、migration 时使用；等价于 dirty all tiles。 |
@@ -284,7 +284,7 @@ placement/exclusion 的邻域查询走 per-voxel object refs（直接通过 voxe
 - dirty flags、object/source debug range、summary 都属于 SV owner staging / debug sidecar。
 - 有 `RenderingDevice` 时，tile record、summary、dirty index、object ref 和 source ref 必须上传到 GPU storage buffers，并通过 readback 验收。
 - runtime resident success 以 GPU buffer summary / valid RIDs / upload revision 为准；CPU staging、debug label 或 snapshot 不能替代 resident metadata。
-- `scene_minmax`、`collision_minmax` 不写回 committed per-voxel payload。判断是否有内容使用 `scene_count > 0 || collision_count > 0`。
+- `complexity_minmax`、`collision_minmax` 不写回 committed per-voxel payload。判断是否有内容使用 `scene_count > 0 || collision_count > 0`。
 
 ## 测试场景
 

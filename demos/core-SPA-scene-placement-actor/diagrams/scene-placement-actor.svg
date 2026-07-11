@@ -180,7 +180,7 @@
     <g id="commit-result">
       <rect class="node" x="875" y="700" width="275" height="105" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
       <text class="node-title" x="893" y="728">Phase 2: Commit + result</text>
-      <text class="small"><tspan x="893" y="750">apply_voxel_write_spec(record)</tspan><tspan x="893" y="767">updates _last_pipeline_result</tspan></text>
+      <text class="small"><tspan x="893" y="750">apply_instance_stamp_write_spec(record)</tspan><tspan x="893" y="767">updates _last_pipeline_result</tspan></text>
     </g>
 
     <g id="sv-resident-fields">
@@ -192,7 +192,7 @@
     <g id="target-read-buffers">
       <rect class="node" x="1270" y="330" width="300" height="105" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
       <text class="node-title" x="1288" y="358">TargetSV_B read buffers</text>
-      <text class="small"><tspan x="1288" y="380">target_occupancy_bytes</tspan><tspan x="1288" y="397">target_color_rgba8_bytes</tspan><tspan x="1288" y="414">guidance only, caller supplied</tspan></text>
+      <text class="small"><tspan x="1288" y="380">target_completeness_bytes</tspan><tspan x="1288" y="397">target_visual_rgba8_bytes</tspan><tspan x="1288" y="414">guidance only, caller supplied</tspan></text>
     </g>
 
     <g id="scene-voxel-committer">
