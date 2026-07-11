@@ -68,7 +68,7 @@ func _test_descriptor_backed_asset_semantics() -> bool:
 
 	var obj = AutoObjectScript.new()
 	obj.name = "descriptor_contract_object"
-	obj.voxel_descriptor = descriptor
+	obj.asset_descriptor = descriptor
 
 	# Conflicting exported fields must not become a second authority for new
 	# semantic reads or record construction.

@@ -9,7 +9,7 @@
 | File | Purpose |
 | --- | --- |
 | `scripts/auto_asset_factory.gd` | mesh 加载 helper（`load_mesh` / `load_source_mesh`：mesh 树查找、UE collision-helper 过滤、变换烘焙）。 |
-| `scripts/auto_object.gd` | canonical descriptor 创建（`create_voxel_descriptor`）与 ISWS 构造（`make_instance_stamp_write_spec`）。 |
+| `scripts/auto_object.gd` | canonical descriptor 创建（`create_asset_descriptor`）与 ISWS 构造（`make_instance_stamp_write_spec`）。 |
 | `scripts/asset_descriptor.gd` | 持久化 descriptor-backed `AutoObject` 资产默认语义，并保存 mesh / scatter / visual helper。 |
 
 ## 核心契约
@@ -34,9 +34,9 @@
 
 ## 脚本入口
 
-`AutoAssetFactory`（`scripts/auto_asset_factory.gd`）现在只保留 mesh 加载 helper（`load_mesh` / `load_source_mesh`，含 UE collision-helper 过滤和变换烘焙）。descriptor 创建、ISWS 构造这些语义已收敛到 canonical `AutoObject`（`scripts/auto_object.gd`）：`AutoObject.create_voxel_descriptor()`、`AutoObject.make_instance_stamp_write_spec()`。资源落盘直接用 `ResourceSaver.save()`。从编辑器脚本或 `@tool` 节点直接调用即可。
+`AutoAssetFactory`（`scripts/auto_asset_factory.gd`）现在只保留 mesh 加载 helper（`load_mesh` / `load_source_mesh`，含 UE collision-helper 过滤和变换烘焙）。descriptor 创建、ISWS 构造这些语义已收敛到 canonical `AutoObject`（`scripts/auto_object.gd`）：`AutoObject.create_asset_descriptor()`、`AutoObject.make_instance_stamp_write_spec()`。资源落盘直接用 `ResourceSaver.save()`。从编辑器脚本或 `@tool` 节点直接调用即可。
 
-物体 mesh 加载（`AutoObject` 原型）：`AutoAssetFactory` 现在只保留 mesh 加载 helper（`load_mesh` / `load_source_mesh`）。物体资产本身用 `AutoObject` 直接配置，descriptor 语义用 `AutoObject.create_voxel_descriptor()` 创建。
+物体 mesh 加载（`AutoObject` 原型）：`AutoAssetFactory` 现在只保留 mesh 加载 helper（`load_mesh` / `load_source_mesh`）。物体资产本身用 `AutoObject` 直接配置，descriptor 语义用 `AutoObject.create_asset_descriptor()` 创建。
 
 ```gdscript
 # 已有 mesh 存在：geo/cliff_01.FBX、geo/cliff_02.FBX。
@@ -51,10 +51,10 @@ obj.configure_object({
 })
 ```
 
-植被 / descriptor 资产（`AssetDescriptor` `.tres`）：descriptor 由 canonical `AutoObject.create_voxel_descriptor()` 创建，用 `ResourceSaver.save()` 落盘。
+植被 / descriptor 资产（`AssetDescriptor` `.tres`）：descriptor 由 canonical `AutoObject.create_asset_descriptor()` 创建，用 `ResourceSaver.save()` 落盘。
 
 ```gdscript
-var descriptor := AutoObject.create_voxel_descriptor(
+var descriptor := AutoObject.create_asset_descriptor(
     Color(0.9, 0.35, 0.5, 0.7),    # entry_color
     0.7,                           # entry_complexity
     0.25,                          # default_radius

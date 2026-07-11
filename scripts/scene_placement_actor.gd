@@ -656,12 +656,12 @@ func _clear_autoobject_owner_metadata(autoobject_ref: AutoObject) -> void:
 func _descriptor_from_autoobject_asset(autoobject_ref: AutoObject) -> AssetDescriptor:
 	if autoobject_ref == null:
 		return null
-	var descriptor := autoobject_ref.voxel_descriptor as AssetDescriptor
+	var descriptor := autoobject_ref.asset_descriptor as AssetDescriptor
 	if descriptor == null:
 		autoobject_ref.get_voxel_color()
-		descriptor = autoobject_ref.voxel_descriptor as AssetDescriptor
+		descriptor = autoobject_ref.asset_descriptor as AssetDescriptor
 	if descriptor == null:
-		descriptor = AutoObject.create_voxel_descriptor(
+		descriptor = AutoObject.create_asset_descriptor(
 			autoobject_ref.voxel_color,
 			autoobject_ref.voxel_complexity,
 			autoobject_ref.mesh_size * 0.5,
@@ -671,7 +671,7 @@ func _descriptor_from_autoobject_asset(autoobject_ref: AutoObject) -> AssetDescr
 			autoobject_ref.semantic_probe_density,
 			autoobject_ref.context_sensing_radius
 		) as AssetDescriptor
-		autoobject_ref.voxel_descriptor = descriptor
+		autoobject_ref.asset_descriptor = descriptor
 	if descriptor == null:
 		return null
 	if descriptor.asset_id.is_empty() and not autoobject_ref.asset_id.is_empty():
@@ -2154,7 +2154,7 @@ static func _make_lightweight_autoobject(descriptor: AssetDescriptor, mesh_ref: 
 	## Only exposes get_semantic_probes() and get_collision() — enough for prefilter.
 	## profile_id is the actual GPU profile ID from the actor's registry.
 	var obj := AutoObject.new()
-	obj.voxel_descriptor = descriptor
+	obj.asset_descriptor = descriptor
 	obj.mesh = mesh_ref if mesh_ref != null else descriptor.mesh
 	obj.voxel_color = descriptor.get_color()
 	obj.voxel_complexity = descriptor.get_complexity()

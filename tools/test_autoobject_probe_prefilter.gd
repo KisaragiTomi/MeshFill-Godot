@@ -709,7 +709,7 @@ func _test_prefilter_borrows_profile_container_probe_records_or_skip() -> bool:
 		print("  SKIP: no RenderingDevice available for profile container upload")
 		return true
 	var profile_id: int = container.register_descriptor(
-		asset.voxel_descriptor,
+		asset.asset_descriptor,
 		0.0,
 		asset.semantic_probe_density,
 		Vector3.ONE,

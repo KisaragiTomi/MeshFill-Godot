@@ -915,7 +915,7 @@ func _register_all_assets() -> void:
 	for i in range(_meshes.size()):
 		var color := DemoAssets.asset_color(i)
 		var collision_samples := _collision_samples_from_mesh(voxelizer, _meshes[i], color)
-		var descriptor := AutoObjectScript.create_voxel_descriptor(
+		var descriptor := AutoObjectScript.create_asset_descriptor(
 			color, color.a, 1.0, collision_samples)
 		_descriptors.append(descriptor)
 		var pid: int = _spa.register_asset(descriptor, _meshes[i])

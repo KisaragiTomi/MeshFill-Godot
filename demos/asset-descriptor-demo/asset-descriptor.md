@@ -55,12 +55,12 @@ AssetDescriptor
 
 ## 与 AutoObject 的边界
 
-`AutoObject` 是运行时节点、prototype、debug entry 和 legacy API 兼容入口。它可以持有 `voxel_descriptor`，也可以通过 Inspector / config 接收 mirror 字段，但默认语义读取必须收敛到 descriptor-backed getter：
+`AutoObject` 是运行时节点、prototype、debug entry 和 legacy API 兼容入口。它可以持有 `asset_descriptor`，也可以通过 Inspector / config 接收 mirror 字段，但默认语义读取必须收敛到 descriptor-backed getter：
 
 ```text
 AutoObject config / Inspector mirror
   -> configure_auto_object()
-  -> voxel_descriptor
+  -> asset_descriptor
   -> get_voxel_color() / get_voxel_complexity() / get_collision() / get_semantic_probes()
 ```
 

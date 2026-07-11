@@ -140,7 +140,7 @@ func test_autoobject_asset_entry() -> Dictionary:
 		"id": "test_autoobject_asset",
 		"name": "TestAutoObjectAsset",
 		"mesh": desc.mesh,
-		"voxel_descriptor": desc,
+		"asset_descriptor": desc,
 	})
 
 	var profile_id := spa.register_autoobject_asset(obj)
@@ -190,13 +190,13 @@ func test_replace_all_autoobject_assets() -> Dictionary:
 	obj_a.configure_auto_object({
 		"id": "test_replace_a",
 		"name": "TestReplaceA",
-		"voxel_descriptor": AutoVoxelFixture.make_spa_test_descriptor("test_replace_a"),
+		"asset_descriptor": AutoVoxelFixture.make_spa_test_descriptor("test_replace_a"),
 	})
 	var obj_b := AutoObjectScript.new()
 	obj_b.configure_auto_object({
 		"id": "test_replace_b",
 		"name": "TestReplaceB",
-		"voxel_descriptor": AutoVoxelFixture.make_spa_test_descriptor("test_replace_b"),
+		"asset_descriptor": AutoVoxelFixture.make_spa_test_descriptor("test_replace_b"),
 	})
 	var assets := [obj_a, obj_b]
 
@@ -582,7 +582,7 @@ static func check_resident_placement_writeback() -> Dictionary:
 	var collision_samples: Array = []
 	for z in range(2):
 		collision_samples.append({"voxel": Vector3i(0, 0, z), "collision_strength": 1.0})
-	var descriptor = AutoObjectScript.create_voxel_descriptor(Color(0.3, 0.8, 0.4, 1.0), 1.0, 1.0, collision_samples)
+	var descriptor = AutoObjectScript.create_asset_descriptor(Color(0.3, 0.8, 0.4, 1.0), 1.0, 1.0, collision_samples)
 	var profile_id: int = spa.register_asset(descriptor)
 	# SVTile object-ref buffers must be resident for the same-type-exclusion
 	# contract (score shader binds them); a fresh committer starts unuploaded.

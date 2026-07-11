@@ -118,7 +118,7 @@
     <g id="autoobject-runtime-node">
     <rect class="node" x="465" y="350" width="290" height="115" rx="8" fill="url(#autoobject-dot-bg)" stroke="#0891b2"/>
     <text class="node-title" x="483" y="378">AutoObject runtime node</text>
-    <text class="small"><tspan x="483" y="400">voxel_descriptor entry</tspan><tspan x="483" y="417">runtime identity and placement</tspan><tspan x="483" y="434">descriptor-backed getters</tspan></text>
+    <text class="small"><tspan x="483" y="400">asset_descriptor entry</tspan><tspan x="483" y="417">runtime identity and placement</tspan><tspan x="483" y="434">descriptor-backed getters</tspan></text>
     </g>
     <g id="sharedpropertytype">
     <rect class="node" x="465" y="520" width="290" height="120" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>

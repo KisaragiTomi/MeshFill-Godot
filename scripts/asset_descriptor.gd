@@ -286,8 +286,8 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 
 	if not cfg.has("voxel_profile") and voxel_profile != null:
 		cfg["voxel_profile"] = voxel_profile
-	if not cfg.has("voxel_descriptor"):
-		cfg["voxel_descriptor"] = self
+	if not cfg.has("asset_descriptor"):
+		cfg["asset_descriptor"] = self
 	if not cfg.has("color"):
 		cfg["color"] = get_color()
 	if not cfg.has("complexity"):

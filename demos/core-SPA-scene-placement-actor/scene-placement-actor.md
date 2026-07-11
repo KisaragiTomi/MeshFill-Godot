@@ -153,7 +153,7 @@ register_asset() 写入
 _build_autoobject_array_for_pipeline()
   ├── _registered_autoobject_refs[i] != null → 使用场景节点
   └── _registered_autoobject_refs[i] == null → 创建 lightweight wrapper
-        obj.voxel_descriptor = descriptor
+        obj.asset_descriptor = descriptor
         obj.mesh = mesh_ref
         obj.set_meta("profile_id", profile_id)  ← 用于 prefilter
         obj.set_meta("asset_id", asset_index)

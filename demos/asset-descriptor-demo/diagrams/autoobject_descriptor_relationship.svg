@@ -106,9 +106,9 @@
     <text class="node-title" x="113" y="598">Runtime profile TODO</text>
     <text class="small"><tspan x="113" y="620">profile registry not implemented</tspan><tspan x="113" y="637">future GPU profile_id sampling</tspan></text>
     </g>
-    <g id="autoobject.voxel_descriptor">
+    <g id="autoobject.asset_descriptor">
     <rect class="node" x="590" y="170" width="320" height="130" rx="8" fill="url(#autoobject-dot-bg)" stroke="#0891b2"/>
-    <text class="node-title" x="608" y="198">AutoObject.voxel_descriptor</text>
+    <text class="node-title" x="608" y="198">AutoObject.asset_descriptor</text>
     <text class="small"><tspan x="608" y="220">single descriptor entry</tspan><tspan x="608" y="237">creates descriptor when missing</tspan><tspan x="608" y="254">runtime node owns identity</tspan></text>
     </g>
     <g id="descriptor-backed-getters">

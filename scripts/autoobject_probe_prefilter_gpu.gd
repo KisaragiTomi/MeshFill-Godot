@@ -1205,7 +1205,7 @@ func _profile_container_ready_to_borrow(runtime_profile_container: Object) -> bo
 	return probe_buffer.is_valid()
 
 
-## 从 autoobject 的元数据、属性或 voxel_descriptor 中解析 profile_id。
+## 从 autoobject 的元数据、属性或 asset_descriptor 中解析 profile_id。
 func _profile_id_from_autoobject(autoobject: Object, runtime_profile_container: Object) -> int:
 	if autoobject == null:
 		return -1
@@ -1224,9 +1224,9 @@ func _profile_id_from_autoobject(autoobject: Object, runtime_profile_container: 
 			return int(write_spec.get(profile_key, -1))
 	if not runtime_profile_container.has_method("get_profile_id_for_descriptor"):
 		return -1
-	if not VariantUtils.has_property(autoobject, "voxel_descriptor"):
+	if not VariantUtils.has_property(autoobject, "asset_descriptor"):
 		return -1
-	var descriptor = autoobject.get("voxel_descriptor")
+	var descriptor = autoobject.get("asset_descriptor")
 	if not descriptor is Resource:
 		return -1
 	var density := _semantic_probe_density(autoobject) if VariantUtils.has_property(autoobject, "semantic_probe_density") else -1.0
@@ -1645,11 +1645,11 @@ static func _tile_id_to_pos(tile_index: int, tile_grid: Vector3i) -> Vector3i:
 	return Vector3i(tx, ty, tz)
 
 
-## 从 autoobject 或其 voxel_descriptor 中读取 context_sensing_radius。
+## 从 autoobject 或其 asset_descriptor 中读取 context_sensing_radius。
 static func _object_context_sensing_radius(autoobject: Object) -> float:
 	if autoobject == null:
 		return 0.0
-	var descriptor = autoobject.get("voxel_descriptor") if VariantUtils.has_property(autoobject, "voxel_descriptor") else null
+	var descriptor = autoobject.get("asset_descriptor") if VariantUtils.has_property(autoobject, "asset_descriptor") else null
 	if descriptor is Resource and VariantUtils.has_property(descriptor, "context_sensing_radius"):
 		return maxf(float(descriptor.get("context_sensing_radius")), 0.0)
 	if VariantUtils.has_property(autoobject, "context_sensing_radius"):
