@@ -137,7 +137,7 @@ route_score = combine(candidate_score, probe_score, support_hint)
 	"candidate_voxel_regions_by_asset": {},     # docs-facing per-asset candidate regions
 	"autoobject_candidate_voxel_sparses": {},   # legacy/debug per-asset candidate regions
 	"candidate_voxel_sparses_by_asset": {},     # legacy alias for same candidate-region contract
-	"candidate_route_profiles": [(,             # readback expansion debug
+	"candidate_route_extents": [(,              # readback expansion debug
 	"anchor_count": 0,                          # collected anchor count
 	"profile_probe_pack": {},                   # probe pack source / borrowed buffer debug
 	"prefilter_reason": "ok",                   # ok / no-RD / blocked reason

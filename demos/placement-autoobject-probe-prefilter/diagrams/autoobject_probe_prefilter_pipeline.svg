@@ -202,7 +202,7 @@
     <g>
       <rect class="node" x="1040" y="648" width="430" height="150" rx="8" fill="url(#note-hatch)" stroke="#64748b"/>
       <text class="node-title" x="1058" y="676">Debug outputs (opt-in)</text>
-      <text class="small"><tspan x="1058" y="698">anchors · anchor_count（debug_read_anchors）</tspan><tspan x="1058" y="715">candidate_voxel_regions_by_asset（debug/API）</tspan><tspan x="1058" y="732">legacy alias: candidate_voxel_sparses_by_asset</tspan><tspan x="1058" y="749">route_profiles / route pack debug</tspan><tspan x="1058" y="766">非生产消费路径 · 生产路径无 CPU 回读</tspan></text>
+      <text class="small"><tspan x="1058" y="698">anchors · anchor_count（debug_read_anchors）</tspan><tspan x="1058" y="715">candidate_voxel_regions_by_asset（debug/API）</tspan><tspan x="1058" y="732">legacy alias: candidate_voxel_sparses_by_asset</tspan><tspan x="1058" y="749">route_extents / route pack debug</tspan><tspan x="1058" y="766">非生产消费路径 · 生产路径无 CPU 回读</tspan></text>
     </g>
   </g>
 

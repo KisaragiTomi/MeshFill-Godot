@@ -187,9 +187,9 @@ tile_radius = footprint bounds
 当前保证：
 
 - `interpolation_guard_voxels` 至少为 `1`。
-- route profile 使用 `get_collision()` 烘焙出的 footprint bounds。
-- route profile 使用 semantic probe offset bounds。
-- `candidate_route_profiles` 暴露这些值用于 debug。
+- route extent 使用 `get_collision()` 烘焙出的 footprint bounds。
+- route extent 使用 semantic probe offset bounds。
+- `candidate_route_extents` 暴露这些值用于 debug。
 - 扩张后的 docs-facing 结果写入 `candidate_voxel_regions_by_asset`，作为 debug/API 输出；旧 `candidate_voxel_sparses_by_asset` 只作为 legacy/debug alias。
 - 默认 `candidate_route_handoff_payload` 由 CPU vote-entry pack 生成，保持 score-sorted route order。
 - 启用 `use_gpu_candidate_route_pack` 或同义 option 时，`candidate_route_handoff_payload` 可由 GPU route pack pass 生成，metadata 标记 `source_label = "gpu_vote_buffer_gpu_pack"`、`score_order_preserved = false`。
@@ -207,7 +207,7 @@ prefilter 常驻 candidate_route_record_rid / candidate_route_range_rid（schema
   -> score_voxel_tile.glsl                                        # score 细筛：footprint / collision / clearance
   -> accepted placements
   -> optional GPUAutoObjectRuntime writeback（GPU-direct 常驻）
-  -> optional scene_voxel_committer + create_voxel_write_spec
+  -> optional scene_voxel_committer（state-chain stamp 原位提交）
   -> instance_stamp_writeback
   -> dirty SceneVoxelTile / commit_scene_voxels()
 ```
@@ -217,7 +217,7 @@ prefilter 常驻 candidate_route_record_rid / candidate_route_range_rid（schema
 边界：
 
 - prefilter 只减少候选，不直接写入 scene。
-- `candidate_route_profiles` 不参与 physical score。
+- `candidate_route_extents` 不参与 physical score。
 - 空 candidate regions 表示该 asset 本轮 skip，不回退 full grid。
 - `score_voxel_tile.glsl` 仍负责 footprint、collision、clearance、target coverage 和 target color fit。
 - `score_voxel_tile.glsl` 不做 semantic dot、MLP、`semantic_score` 或 `route_score`。

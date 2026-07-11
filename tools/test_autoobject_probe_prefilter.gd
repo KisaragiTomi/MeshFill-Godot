@@ -14,7 +14,7 @@ func _init() -> void:
 	var ok := true
 	ok = ok and _test_position_only_anchor_layers()
 	ok = ok and _test_candidate_routes_expand_for_probe_footprint_context_guard()
-	ok = ok and _test_candidate_route_profile_debug_schema()
+	ok = ok and _test_candidate_route_extent_debug_schema()
 	ok = ok and _test_prefilter_dispatch_bounds_helpers()
 	ok = ok and _test_prefilter_decode_output_contract()
 	ok = ok and _test_scene_voxel_tile_dirty_bounds_feed_shader_tile_ids()
@@ -135,7 +135,7 @@ func _test_position_only_anchor_layers() -> bool:
 	return true
 func _test_candidate_routes_expand_for_probe_footprint_context_guard() -> bool:
 	print("[AutoObjectProbePrefilter] test_candidate_routes_expand_for_probe_footprint_context_guard...")
-	var profile := Prefilter._build_route_extent_from_arrays(
+	var extent := Prefilter._build_route_extent_from_arrays(
 		[
 			ProbeProfile.make_probe(Vector3(9.0, 0.0, 0.0), Color.WHITE, 0.0, 1.0, 0.0, 0.0, "test"),
 		],
@@ -146,24 +146,24 @@ func _test_candidate_routes_expand_for_probe_footprint_context_guard() -> bool:
 		2.0,
 		0
 	)
-	var tile_radius: Vector3i = profile.get("tile_radius", Vector3i.ZERO)
+	var tile_radius: Vector3i = extent.get("tile_radius", Vector3i.ZERO)
 	if tile_radius.x < 2:
 		push_error("  FAIL: expected probe/context route expansion on X, got %s" % str(tile_radius))
 		return false
 	if tile_radius.y < 1 or tile_radius.z < 1:
 		push_error("  FAIL: interpolation guard should expand neighboring voxel regions, got %s" % str(tile_radius))
 		return false
-	if int(profile.get("interpolation_guard_voxels", 0)) < 1:
+	if int(extent.get("interpolation_guard_voxels", 0)) < 1:
 		push_error("  FAIL: interpolation guard must be at least 1 voxel")
 		return false
 
-	print("  OK: tile_radius=%s interpolation_guard=%d" % [str(tile_radius), int(profile.get("interpolation_guard_voxels", 0))])
+	print("  OK: tile_radius=%s interpolation_guard=%d" % [str(tile_radius), int(extent.get("interpolation_guard_voxels", 0))])
 	return true
 
 
-func _test_candidate_route_profile_debug_schema() -> bool:
-	print("[AutoObjectProbePrefilter] test_candidate_route_profile_debug_schema...")
-	var profile := Prefilter._build_route_extent_from_arrays(
+func _test_candidate_route_extent_debug_schema() -> bool:
+	print("[AutoObjectProbePrefilter] test_candidate_route_extent_debug_schema...")
+	var extent := Prefilter._build_route_extent_from_arrays(
 		[
 			ProbeProfile.make_probe(Vector3(0.0, 2.0, -3.0), Color.WHITE, 0.0, 1.0, 0.0, 0.0, "schema"),
 		],
@@ -185,25 +185,25 @@ func _test_candidate_route_profile_debug_schema() -> bool:
 		"interpolation_guard_voxels",
 		"tile_radius",
 	]:
-		if not profile.has(key):
-			push_error("  FAIL: route profile missing key %s" % key)
+		if not extent.has(key):
+			push_error("  FAIL: route extent missing key %s" % key)
 			return false
-	if int(profile.get("asset_index", -1)) != 7:
-		push_error("  FAIL: route profile should preserve asset_index")
+	if int(extent.get("asset_index", -1)) != 7:
+		push_error("  FAIL: route extent should preserve asset_index")
 		return false
-	if not profile.get("probe_min", null) is Vector3i or not profile.get("probe_max", null) is Vector3i:
-		push_error("  FAIL: route profile probe bounds should be Vector3i")
+	if not extent.get("probe_min", null) is Vector3i or not extent.get("probe_max", null) is Vector3i:
+		push_error("  FAIL: route extent probe bounds should be Vector3i")
 		return false
-	if not profile.get("footprint_min", null) is Vector3i or not profile.get("footprint_max", null) is Vector3i:
-		push_error("  FAIL: route profile footprint bounds should be Vector3i")
+	if not extent.get("footprint_min", null) is Vector3i or not extent.get("footprint_max", null) is Vector3i:
+		push_error("  FAIL: route extent footprint bounds should be Vector3i")
 		return false
-	if not profile.get("context_radius_voxels", null) is Vector3i or not profile.get("tile_radius", null) is Vector3i:
-		push_error("  FAIL: route profile context/tile radius should be Vector3i")
+	if not extent.get("context_radius_voxels", null) is Vector3i or not extent.get("tile_radius", null) is Vector3i:
+		push_error("  FAIL: route extent context/tile radius should be Vector3i")
 		return false
-	if int(profile.get("interpolation_guard_voxels", 0)) < 1:
-		push_error("  FAIL: route profile interpolation guard should be at least 1")
+	if int(extent.get("interpolation_guard_voxels", 0)) < 1:
+		push_error("  FAIL: route extent interpolation guard should be at least 1")
 		return false
-	print("  OK: route profile schema keys=%d" % profile.keys().size())
+	print("  OK: route extent schema keys=%d" % extent.keys().size())
 	return true
 
 
@@ -293,14 +293,14 @@ func _test_prefilter_decode_output_contract() -> bool:
 		push_error("  FAIL: decode output must stay GPU-first with no CPU fallback")
 		return false
 
-	var profiles: Array = result.get("candidate_route_profiles", [])
-	if profiles.size() != asset_count:
-		push_error("  FAIL: expected one candidate_route_profiles entry per asset")
+	var extents: Array = result.get("candidate_route_extents", [])
+	if extents.size() != asset_count:
+		push_error("  FAIL: expected one candidate_route_extents entry per asset")
 		return false
 	for asset_index in range(asset_count):
-		if not profiles[asset_index] is Dictionary \
-		   or int((profiles[asset_index] as Dictionary).get("asset_index", -1)) != asset_index:
-			push_error("  FAIL: candidate_route_profiles[%d] should carry asset_index=%d" % [asset_index, asset_index])
+		if not extents[asset_index] is Dictionary \
+		   or int((extents[asset_index] as Dictionary).get("asset_index", -1)) != asset_index:
+			push_error("  FAIL: candidate_route_extents[%d] should carry asset_index=%d" % [asset_index, asset_index])
 			return false
 
 	var anchors: Array = result.get("anchors", [])
@@ -311,7 +311,7 @@ func _test_prefilter_decode_output_contract() -> bool:
 		push_error("  FAIL: anchor debug readback should not expose anchor_kind")
 		return false
 
-	print("  OK: empty resident aliases profiles=%d anchors=%d" % [profiles.size(), anchors.size()])
+	print("  OK: empty resident aliases extents=%d anchors=%d" % [extents.size(), anchors.size()])
 	prefilter.dispose()
 	return true
 

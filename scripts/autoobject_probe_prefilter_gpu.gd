@@ -497,7 +497,7 @@ func _run_candidate_route_gpu_pack_pass(
 
 	_release_candidate_route_gpu_pack_payload_buffers()
 	var record_capacity := maxi(asset_count * tile_count, 0)
-	var route_radius_buf := storage_buffer_from_bytes(_pack_route_profile_radius_bytes(route_extents, asset_count), SCOPE_FRAME, "candidate_route_profile_radii")
+	var route_radius_buf := storage_buffer_from_bytes(_pack_route_extent_radius_bytes(route_extents, asset_count), SCOPE_FRAME, "candidate_route_extent_radii")
 	var route_mark_buf := storage_buffer_zero(record_capacity * 4, SCOPE_FRAME, "candidate_route_tile_marks")
 	var record_buf := storage_buffer_zero(record_capacity * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES, SCOPE_PERSISTENT, "candidate_route_records_gpu_%s" % ("expand" if use_expand else "pack"))
 	var range_buf := storage_buffer_zero(asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES, SCOPE_PERSISTENT, "candidate_route_ranges_gpu_%s" % ("expand" if use_expand else "pack"))
@@ -831,7 +831,7 @@ func _decode_results(
 		"autoobject_candidate_voxel_sparses": {},                     # per-asset regions live in resident GPU route buffers
 		"candidate_voxel_regions_by_asset": {},
 		"candidate_voxel_sparses_by_asset": {},
-		"candidate_route_profiles": route_debug,                       # route expansion debug
+		"candidate_route_extents": route_debug,                        # route expansion debug
 		"candidate_route_readback_source": "resident_route_snapshot",
 		"candidate_route_runtime_read_source": "resident",
 		"candidate_route_input_contract": route_contract,
@@ -1001,7 +1001,7 @@ func _empty_result(reason: String = "empty", probe_pack: Dictionary = {}, pipeli
 		"autoobject_candidate_voxel_sparses": {},   # per-asset candidate regions
 		"candidate_voxel_regions_by_asset": {},
 		"candidate_voxel_sparses_by_asset": {},
-		"candidate_route_profiles": [],             # route expansion debug
+		"candidate_route_extents": [],              # route expansion debug
 		"candidate_route_readback_source": "none",
 		"candidate_route_runtime_read_source": "none",
 		"candidate_route_input_contract": route_contract,
@@ -1332,7 +1332,7 @@ func _pack_u32_array_from_int(values: Array[int]) -> PackedByteArray:
 
 
 ## 将每个资源的路由半径（tile_radius）打包为 GPU 所需的字节缓冲区（每资源 16 字节）。
-func _pack_route_profile_radius_bytes(route_extents: Array, asset_count: int) -> PackedByteArray:
+func _pack_route_extent_radius_bytes(route_extents: Array, asset_count: int) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(maxi(asset_count, 1) * 16)
 	for asset_index in range(maxi(asset_count, 0)):
@@ -1502,28 +1502,28 @@ static func _probe_metric_weights(p: Dictionary) -> Vector3:
 	)
 
 
-## 为所有 autoobject 构建路由 Profile 数组（probe/footprint/tile_radius）。
+## 为所有 autoobject 构建路由 extent 数组（probe/footprint/tile_radius）。
 static func _build_route_extents(autoobjects: Array, asset_count: int, voxel_size: Vector3) -> Array[Dictionary]:
-	var profiles: Array[Dictionary] = []
+	var extents: Array[Dictionary] = []
 	for obj_idx in range(asset_count):
 		var autoobject := autoobjects[obj_idx] as Object
 		if autoobject == null:
-			profiles.append(_empty_route_extent(obj_idx))
+			extents.append(_empty_route_extent(obj_idx))
 			continue
 		var probes: Array = autoobject.call("get_semantic_probes", _semantic_probe_density(autoobject)) if autoobject.has_method("get_semantic_probes") else []
 		var collisions: Array = autoobject.call("get_collision") if autoobject.has_method("get_collision") else []
 		var context_radius := _object_context_sensing_radius(autoobject)
-		profiles.append(_build_route_extent_from_arrays(
+		extents.append(_build_route_extent_from_arrays(
 			probes,
 			collisions,
 			voxel_size,
 			context_radius,
 			obj_idx
 		))
-	return profiles
+	return extents
 
 
-## 返回指定 asset_index 的空路由 Profile 默认值字典。
+## 返回指定 asset_index 的空路由 extent 默认值字典。
 static func _empty_route_extent(asset_index: int) -> Dictionary:
 	return {
 		"asset_index": asset_index,                 # asset index in current registry
@@ -1537,7 +1537,7 @@ static func _empty_route_extent(asset_index: int) -> Dictionary:
 	}
 
 
-## 根据探针偏移、碰撞脚印和上下文感知半径计算路由 Profile（tile_radius 等）。
+## 根据探针偏移、碰撞脚印和上下文感知半径计算路由 extent（tile_radius 等）。
 static func _build_route_extent_from_arrays(
 	probes: Array,
 	collision: Array,
@@ -1664,7 +1664,7 @@ static func _semantic_probe_density(autoobject: Object) -> float:
 	return 1.0
 
 
-## 构造路由 Profile 的调试副本数组，缺失条目用空 Profile 填充。
+## 构造路由 extent 的调试副本数组，缺失条目用空 extent 填充。
 static func _route_extent_debug(route_extents: Array, asset_count: int) -> Array[Dictionary]:
 	var debug: Array[Dictionary] = []
 	for asset_index in range(asset_count):

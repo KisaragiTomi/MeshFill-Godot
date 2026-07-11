@@ -14,7 +14,7 @@
 //   tile_summaries[]            — 8 uints per tile (32 bytes), words [4]=scene_count, [5]=collision_count
 //   asset_tile_votes[]          — dense per-asset tile votes, layout:
 //                                  votes[asset_id * tile_count + tile_id] = score
-//   route_profile_radii[]       — per-asset expansion radius, uvec4(xyz, 0)
+//   route_extent_radii[]        — per-asset expansion radius, uvec4(xyz, 0)
 // Outputs:
 //   candidate_route_records[]   — uvec4(tile_id, 0, 0, 0) per expanded tile
 //   candidate_route_ranges[]    — uvec4(record_start, record_count, 0, 0) per asset
@@ -32,8 +32,8 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer VoxelRegionVotes {
     float asset_tile_votes[];
 };
 
-layout(set = 0, binding = 2, std430) restrict readonly buffer RouteProfileRadii {
-    uvec4 route_profile_radii[];
+layout(set = 0, binding = 2, std430) restrict readonly buffer RouteExtentRadii {
+    uvec4 route_extent_radii[];
 };
 
 layout(set = 0, binding = 3, std430) restrict buffer RouteTileMarks {
@@ -118,7 +118,7 @@ void main() {
             route_tile_marks[asset_base + tid] = 0u;
         }
 
-        uvec4 raw_radius = route_profile_radii[asset_id];
+        uvec4 raw_radius = route_extent_radii[asset_id];
         ivec3 radius = ivec3(raw_radius.xyz);
         for (uint center_id = 0u; center_id < tile_count; center_id++) {
             // --- Skip empty tiles ---
