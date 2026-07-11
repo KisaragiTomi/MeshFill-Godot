@@ -3,13 +3,13 @@
 
 // Result-level feedback pass: compares a transient BlendSV field pair against
 // the TargetSV_B read buffers. One thread per voxel; accumulates quantized
-// stats via atomicAdd. completely = max(complexity alpha, collision).
+// stats via atomicAdd. completeness = max(complexity alpha, collision).
 //
 // Stats layout (uint):
 //   0: blend occupied voxel count
 //   1: target occupied voxel count
 //   2: overlap voxel count (both occupied)
-//   3: sum |blend_completely - target_completely| * QUANT
+//   3: sum |blend_completeness - target_completeness| * QUANT
 //   4: sum color distance (rgb, overlap voxels only) * QUANT
 //   5: processed voxel count
 
@@ -65,16 +65,16 @@ void main() {
     }
 
     vec4 blend_rgba = unpack_rgba8(blend_complexity_rgba8[index]);
-    float blend_completely = max(blend_rgba.a, read_collision_r8(index, false));
+    float blend_completeness = max(blend_rgba.a, read_collision_r8(index, false));
 
     vec4 target_rgba = unpack_rgba8(target_visual_rgba8[index]);
-    float target_completely = target_rgba.a;
+    float target_completeness = target_rgba.a;
     if (has_target_collision != 0) {
-        target_completely = max(target_completely, read_collision_r8(index, true));
+        target_completeness = max(target_completeness, read_collision_r8(index, true));
     }
 
-    bool blend_occupied = blend_completely > occupied_epsilon;
-    bool target_occupied = target_completely > occupied_epsilon;
+    bool blend_occupied = blend_completeness > occupied_epsilon;
+    bool target_occupied = target_completeness > occupied_epsilon;
 
     if (blend_occupied) {
         atomicAdd(feedback_stats[0], 1u);
@@ -82,7 +82,7 @@ void main() {
     if (target_occupied) {
         atomicAdd(feedback_stats[1], 1u);
     }
-    atomicAdd(feedback_stats[3], uint(round(abs(blend_completely - target_completely) * quant_scale)));
+    atomicAdd(feedback_stats[3], uint(round(abs(blend_completeness - target_completeness) * quant_scale)));
     if (blend_occupied && target_occupied) {
         atomicAdd(feedback_stats[2], 1u);
         float color_distance = distance(blend_rgba.rgb, target_rgba.rgb) / sqrt(3.0);

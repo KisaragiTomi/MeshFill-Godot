@@ -103,7 +103,7 @@ var voxel_size: Vector3  ## World-space size of one voxel
 
 var grid_origin: Vector3  ## World-space origin for voxel index conversion
 
-## Packed RGBA completely field: one value per explicit channel, representing how completely each voxel is filled.
+## Packed RGBA completeness field: one value per explicit channel, representing how completely filled each voxel is.
 ## When max(complexity, collision) == 0, the voxel is empty (nothing there).
 
 ## Source collision scalar field generated through the shared max-stamp path.

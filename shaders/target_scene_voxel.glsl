@@ -15,8 +15,8 @@ layout(set = 1, binding = 1, std430) restrict buffer TargetCollision {
     uint target_collision_r8_words[];
 };
 
-layout(set = 1, binding = 2, std430) restrict buffer TargetCompletely {
-    uint target_completely_r8_words[];
+layout(set = 1, binding = 2, std430) restrict buffer TargetCompleteness {
+    uint target_completeness_r8_words[];
 };
 
 layout(set = 1, binding = 3, std430) restrict buffer TargetVisualRgba8Dup {
@@ -27,7 +27,7 @@ layout(set = 1, binding = 4, std430) restrict buffer TargetStats {
     uint target_stats[];
 };
 
-const uint TARGET_STATS_MAX_COMPLETELY = 0u;
+const uint TARGET_STATS_MAX_COMPLETENESS = 0u;
 const uint TARGET_STATS_MAX_COLLISION = 1u;
 const uint TARGET_STATS_ACTIVE_COUNT = 2u;
 const uint TARGET_STATS_COLLISION_COUNT = 3u;
@@ -154,10 +154,10 @@ void store_collision_r8(uint idx, float value) {
     atomicOr(target_collision_r8_words[word_index], pack_r8(value) << shift);
 }
 
-void store_completely_r8(uint idx, float value) {
+void store_completeness_r8(uint idx, float value) {
     uint word_index = idx >> 2u;
     uint shift = (idx & 3u) * 8u;
-    atomicOr(target_completely_r8_words[word_index], pack_r8(value) << shift);
+    atomicOr(target_completeness_r8_words[word_index], pack_r8(value) << shift);
 }
 
 uint quantize_unit(float value) {
@@ -179,19 +179,19 @@ void main() {
     TargetVoxel voxel = evaluate_voxel(p, id.y);
     int idx = voxel_index(p, id.y);
     uint idx_u = uint(idx);
-    float completely = max(voxel.value, voxel.collision);
+    float completeness = max(voxel.value, voxel.collision);
     uint rgba8 = pack_rgba8(vec4(voxel.color, voxel.value));
 
     target_visual_rgba8[idx] = rgba8;
     store_collision_r8(idx_u, voxel.collision);
-    store_completely_r8(idx_u, completely);
+    store_completeness_r8(idx_u, completeness);
     target_visual_rgba8_dup[idx] = rgba8;
 
-    atomicMax(target_stats[TARGET_STATS_MAX_COMPLETELY], quantize_unit(completely));
+    atomicMax(target_stats[TARGET_STATS_MAX_COMPLETENESS], quantize_unit(completeness));
     atomicMax(target_stats[TARGET_STATS_MAX_COLLISION], quantize_unit(voxel.collision));
-    if (completely > TARGET_STATS_ACTIVE_THRESHOLD) {
+    if (completeness > TARGET_STATS_ACTIVE_THRESHOLD) {
         atomicAdd(target_stats[TARGET_STATS_ACTIVE_COUNT], 1u);
-        atomicMax(target_stats[TARGET_STATS_MIN_ACTIVE_PACKED], TARGET_STATS_MIN_PACK_BASE - quantize_unit(completely));
+        atomicMax(target_stats[TARGET_STATS_MIN_ACTIVE_PACKED], TARGET_STATS_MIN_PACK_BASE - quantize_unit(completeness));
     }
     if (voxel.collision > TARGET_STATS_ACTIVE_THRESHOLD) {
         atomicAdd(target_stats[TARGET_STATS_COLLISION_COUNT], 1u);

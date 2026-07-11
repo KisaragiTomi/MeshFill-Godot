@@ -188,7 +188,7 @@ func _test_fixture_buffers_decode() -> bool:
 	if not bool(decoded.get("valid", false)):
 		push_error("  FAIL: decode_target_read_buffers rejected fixture: %s" % str(decoded))
 		ok = false
-	if float(decoded.get("max_completely", 0.0)) <= 0.0:
+	if float(decoded.get("max_completeness", 0.0)) <= 0.0:
 		push_error("  FAIL: decoded target occupancy is empty")
 		ok = false
 	if float(decoded.get("max_collision", 0.0)) <= 0.0:
@@ -210,7 +210,7 @@ func _test_fixture_buffers_decode() -> bool:
 	if ok:
 		print("  OK: %d voxels decode with max occupancy %.3f and max collision %.3f" % [
 			voxel_count,
-			float(decoded.get("max_completely", 0.0)),
+			float(decoded.get("max_completeness", 0.0)),
 			float(decoded.get("max_collision", 0.0)),
 		])
 	return ok

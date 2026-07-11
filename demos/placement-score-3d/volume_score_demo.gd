@@ -419,7 +419,7 @@ func _ensure_target_env_ready() -> bool:
 		return false
 	var voxel_count := grid.x * grid.y * grid.z
 	var t_coll: PackedFloat32Array = decoded.get("target_collision", PackedFloat32Array())
-	var t_comp: PackedFloat32Array = decoded.get("target_completely", PackedFloat32Array())
+	var t_comp: PackedFloat32Array = decoded.get("target_completeness", PackedFloat32Array())
 	var t_color: PackedColorArray = decoded.get("target_color", PackedColorArray())
 	_env_channel_floats = PackedFloat32Array(); _env_channel_floats.resize(voxel_count * 5)
 	_target_field_bytes = PackedFloat32Array(); _target_field_bytes.resize(voxel_count * 4)

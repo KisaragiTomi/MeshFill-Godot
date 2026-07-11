@@ -75,7 +75,7 @@
   <!-- TargetSV_B -->
   <rect class="node" x="48" y="285" width="234" height="80" rx="7" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
   <text class="node-title" x="66" y="310">TargetSV_B fields</text>
-  <text class="small"><tspan x="66" y="330">target_field[sp].rgb = color</tspan><tspan x="66" y="346">target_field[sp].a = completely</tspan></text>
+  <text class="small"><tspan x="66" y="330">target_field[sp].rgb = color</tspan><tspan x="66" y="346">target_field[sp].a = completeness</tspan></text>
 
   <!-- Anchor -->
   <rect class="node" x="48" y="390" width="234" height="60" rx="7" fill="#ede9fe" stroke="#7c3aed"/>

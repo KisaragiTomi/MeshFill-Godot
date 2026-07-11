@@ -24,7 +24,7 @@
 - committed `SceneVoxel` 是**纯 auto** 状态，唯一提交路径是 stamp：VPG 的 GPU state-chain stamp 原位写入常驻 field（stamp 即提交），CPU 入口（`apply_instance_stamp_write_spec`）的盖章记录在 `commit_scene_voxels()` 时一次稀疏散射进同一常驻 field。不存在 per-voxel source-candidate 裁决/blend 提交管线。
 - `BrushSV`（场景笔刷层）常驻挂在 SPA 生命周期上，不进入 committed `SceneVoxel`。physical sampling / prefilter 的读取场是按需合成的 `BlendSV`（committed SV + `BrushSV`，brush 覆盖优先、collision 取 max）；brush 为空时读取场直通 committed SV 常驻对，零合成开销。`BlendSV` 是临时读取产物，pipeline 结束即释放。
 - 物理可放置性仍由 `score_voxel_tile.glsl` 的 footprint、collision、clearance、overlap 和候选级 target fit 决定；读取场为 `BlendSV` 时，stamp 双写 `BlendSV` 工作场与 committed SV 常驻场（同批次避让读 blend，提交落 auto）。
-- 结果级 feedback score 由 `ScenePlacementActor.score_blendsv_feedback_against_target()` 临时合成 `BlendSV` 与当前 target read buffer（通常是 `TargetSV_B`，没有 target brush 时等价于 `TargetSV`）对比 completely / color 重合度，读回统计后立即删除临时体素，`BrushSV` 常驻保留。
+- 结果级 feedback score 由 `ScenePlacementActor.score_blendsv_feedback_against_target()` 临时合成 `BlendSV` 与当前 target read buffer（通常是 `TargetSV_B`，没有 target brush 时等价于 `TargetSV`）对比 completeness / color 重合度，读回统计后立即删除临时体素，`BrushSV` 常驻保留。
 - 同类型 `AutoObject` 的 `min_spacing` 互斥收敛到 GPU object runtime / profile buffer contract；当前最终 footprint / collision 仍由 GPU score 确认。
 - `GPUAutoObjectRuntime` 只拥有 runtime object state、profile id、bounds / exclusion inputs 和 dirty object delta；per-voxel object refs、SV grid、`SceneVoxelTile` dirty、source range rebuild、commit 和 SV resident fields 仍由 `SceneVoxelCommitter` / SV owner 维护。
 - runtime metadata 只能提供查询、索引、debug 和候选剪枝，不成为资产默认值或 committed SceneVoxel 的第二套权威状态。
@@ -47,7 +47,7 @@
 | BrushSV overlay | `ScenePlacementActor`（`stamp_brush_sv_records()` / `clear_brush_sv()`） | 场景笔刷常驻旁路层（复杂度 RGBA8 + 碰撞 R8 field 对），挂 SPA 生命周期，不进 committed `SceneVoxel`；手动操控/移动 autoobject 时该对象转为提供 `BrushSV`，其 auto 侧按 dirty 剔除重放。 |
 | Commit / final state | `SceneVoxelCommitter.commit_scene_voxels()` | **Stamp-only commit**：散射 pending CPU 入口盖章记录进常驻 field、推进 commit tick 并重建 tile 摘要；VPG 的 state-chain stamp 在 placement 期间已原位提交。committed `SceneVoxel` = 常驻 field 对（纯 auto + terrain base collision 种子）。 |
 | BlendSV read product | `ScenePlacementActor.compose_blend_sv_fields()` | 按需合成 committed SV + `BrushSV` 的临时读取对（brush 覆盖优先 / collision max）；供 3D score 物理采样与 TargetSV 对比使用，用完即删，不落地、不提交。 |
-| Result feedback | `ScenePlacementActor.score_blendsv_feedback_against_target()` | 低频检测 GPU pass；临时合成 `BlendSV` 与 `TargetSV_B` / `TargetSV` 对比 complexity 和 completely overlap（即 `max(complexity, collision)` 的重合度），统计读回后即释放临时体素。 |
+| Result feedback | `ScenePlacementActor.score_blendsv_feedback_against_target()` | 低频检测 GPU pass；临时合成 `BlendSV` 与 `TargetSV_B` / `TargetSV` 对比 complexity 和 completeness overlap（即 `max(complexity, collision)` 的重合度），统计读回后即释放临时体素。 |
 | SV resident buffers | `SceneVoxelCommitter` | SV 自持一对持久 scene/collision GPU resident field buffers（stamp 的持久写入目标）、grid metadata 和 dirty regions；stamp 即提交，读取侧经 BlendSV 按需合成。 |
 | Query projection | metadata / `GPUAutoObjectRuntime` / `AutoVoxelRuntimeProfileContainer` / `SceneVoxelTile` | 提供运行时 object id 查询、profile id、调试 lookup、dirty object ranges 和局部 rebuild 索引；`GPUAutoObjectRuntime` 不拥有 SV grid 或 commit，`AutoVoxelRuntimeProfileContainer` 不作为 CPU-side placement 替代路径。通过 SPA 暴露统一访问接口。 |
 

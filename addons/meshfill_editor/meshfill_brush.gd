@@ -165,7 +165,7 @@ func _decode_channels() -> void:
 		decoded = TargetSceneVoxelGeneratorScript.decode_target_read_buffers(
 			_visual_bytes, _collision_bytes, _texture_size, _slice_count
 		)
-	_decoded_occupancy = decoded.get("target_completely", PackedFloat32Array())
+	_decoded_occupancy = decoded.get("target_completeness", PackedFloat32Array())
 	_decoded_color = decoded.get("target_color", PackedColorArray())
 	var decoded_collision: PackedFloat32Array = decoded.get("target_collision", PackedFloat32Array())
 	if _decoded_occupancy.is_empty() or _decoded_color.is_empty():

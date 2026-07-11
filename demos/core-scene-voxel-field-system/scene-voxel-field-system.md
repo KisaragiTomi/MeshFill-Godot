@@ -20,9 +20,9 @@ committed `SceneVoxel` 采用 **stamp-only commit**：常驻 complexity/collisio
 - [`AssetDescriptor`](../asset-descriptor-demo/asset-descriptor.md) / `AutoVoxelProfile` 是资产默认语义来源；`AutoObject` 负责把 descriptor/profile 语义构造成本轮 `instance_stamp_write_spec`（`ISWS`）。
 - shared fields 只有 `color`、`complexity`、`collision`。`collision` 是权威 shared field。
 - committed `SceneVoxel` 对外 read payload 最小化为 `complexity`、`color`、`collision`，可选 `auto_mix`。`channel` 只属于 source/write context，不进入 committed read payload；`complexity` 是唯一强度字段。
-- `occupied`、`type`、`source_type`、`source_voxel_type`、`commit_tick` 不作为 committed per-voxel payload；占用由 completely（即 `max(complexity, collision)`）是否非 0 推导，source provenance 放在 source/debug buffer，commit tick 只作为当前 SV snapshot 的全局 epoch。
+- `occupied`、`type`、`source_type`、`source_voxel_type`、`commit_tick` 不作为 committed per-voxel payload；占用由 completeness（即 `max(complexity, collision)`）是否非 0 推导，source provenance 放在 source/debug buffer，commit tick 只作为当前 SV snapshot 的全局 epoch。
 - `TargetSceneVoxel` record 只作为 target / guidance metadata；写入阶段会跳过它，不进入 `AutoSceneVoxel` / `BrushSceneVoxel` source stream，也不进入 committed `SceneVoxel`。
-- `TargetSceneVoxelGenerator.decode_target_read_buffers()` 可把 `TargetSV_B` raw `rgba8/r8` cache 解码成 `target_completely`（即 `max(complexity, collision)`） / `target_color`；这是 routing / scoring read input，不是 source write。
+- `TargetSceneVoxelGenerator.decode_target_read_buffers()` 可把 `TargetSV_B` raw `rgba8/r8` cache 解码成 `target_completeness`（即 `max(complexity, collision)`） / `target_color`；这是 routing / scoring read input，不是 source write。
 - committed stamp 只接受归一化后的 auto record；`TargetSceneVoxel` / `TargetSV_B` 在 `apply_instance_stamp_write_spec()` 边界保持 guidance-only / skip。brush 内容写 SPA 的 `BrushSV` 常驻层（`stamp_brush_sv_records()`），不进 committed `SceneVoxel`。
 - `SceneVoxelCommitter` 的 `_instance_stamp_write_specs` 是逐对象盖章记录集（脏区/全量重放的依据）；`_volume.scene_voxels` 是盖章时直写的调试/查询投影，不是运行时权威状态。
 - SV 自持一对持久 complexity/collision 常驻 field buffer（stamp 直写目标；碰撞场以 terrain base 为种子）、grid metadata 和 dirty regions；读取侧经 `BlendSV` 按需合成（brush 为空时直通）。
@@ -45,7 +45,7 @@ committed `SceneVoxel` 采用 **stamp-only commit**：常驻 complexity/collisio
 | `BlendSV` read product | 按需合成的临时读取对（3D score / TargetSV 对比）。 | committed SV 常驻对 + `BrushSV` 常驻对。 | 临时 blend field 对（brush 覆盖优先 / collision max），用完即删。 | `ScenePlacementActor.compose_blend_sv_fields()`；不落地、不提交。 |
 | SV resident state | 提供 placement、prefilter、validation 和 debug 的稳定读取输入。 | committed `SceneVoxel`、terrain collision、grid metadata、dirty tile state。 | `complexity_field`、`collision_field`、grid metadata、dirty snapshots、debug ranges。 | `SceneVoxelCommitter._rebuild_sv()` 发布的 `_sv` snapshot。 |
 | `SceneVoxelTile` + per-voxel object refs | 记录两级（voxel + tile）object refs、粗粒度 dirty、bounds、source ranges 和 summary。 | affected voxel bounds、source write、GPU AutoObject dirty delta bridge。 | `dirty_scene_voxel_tiles`、per-voxel object refs、tile 级 object/source debug ranges、summary。 | `SceneVoxelCommitter._scene_voxel_tiles` staging table + per-voxel object-ref GPU buffer；详见 [`scenevoxeltile.md`](../core-scenevoxeltile/scenevoxeltile.md)。 |
-| `TargetSceneVoxel` / `TargetSV_B` | target / guidance read input。 | target generator、BrushSV 合成、persisted target buffers。 | `target_completely`（即 `max(complexity, collision)`，值为 0 表示体素为空）、`target_color`、feedback target。 | TargetSV / BrushSV 持久化缓存；不进入 source write。 |
+| `TargetSceneVoxel` / `TargetSV_B` | target / guidance read input。 | target generator、BrushSV 合成、persisted target buffers。 | `target_completeness`（即 `max(complexity, collision)`，值为 0 表示体素为空）、`target_color`、feedback target。 | TargetSV / BrushSV 持久化缓存；不进入 source write。 |
 
 ## 生命周期
 
@@ -74,7 +74,7 @@ AssetDescriptor / AutoVoxelProfile
 | --- | --- | --- |
 | CPU / GDScript | descriptor / `ISWS` 归一化、pending field 散射记录收集、`SceneVoxelTile` command staging、`commit_scene_voxels()` 编排、debug buffer readback 解码和 persisted target decode。 | GPU object pool hot state、field 数值写入（stamp/散射在 GPU 上完成）、shader 内临时 same-batch duplicate buffers。 |
 | GPU compute | `stamp_voxel_field.glsl` state-chain stamp（读 BlendSV 工作场时双写 committed SV）、`scatter_sv_field_records.glsl` CPU 入口记录散射、`compose_blend_sv_fields.glsl` BlendSV 合成、`score_blendsv_feedback.glsl` 结果级对比、probe prefilter（`pack_prefilter_field_pair.glsl` 常驻场转换）、candidate voxel-region routing、`score_voxel_tile.glsl` physical scoring。 | `SceneVoxelTile` source of truth、TargetSV source write、GDScript staging/debug Dictionary 投影。 |
-| Boundary buffer | `complexity_field` / `collision_field`、`target_completely` / `target_color`、candidate voxel-region ids、placement result buffers。 | `collision_field` 不是第二套 collision source of truth；它由 committed `SceneVoxel.collision` 与 terrain base collision 发布。 |
+| Boundary buffer | `complexity_field` / `collision_field`、`target_completeness` / `target_color`、candidate voxel-region ids、placement result buffers。 | `collision_field` 不是第二套 collision source of truth；它由 committed `SceneVoxel.collision` 与 terrain base collision 发布。 |
 
 GPU pass 读取 `BlendSV` 读取场生成候选；被接受的 placement 由 stamp pass 原位提交进 committed SV 常驻 field（stamp 即提交）。
 
@@ -102,7 +102,7 @@ Committed `SceneVoxel` 只接受自己的 per-voxel 字段：
 
 常用 source-only 字段的逐项含义维护在 `SceneVoxelSourceRecord.prepare_source_record()` 与 `SceneVoxelCommitter._make_stamped_scene_voxel_template()` 中。
 
-硬边界：可提交 stamp record 只来自 auto 路径。`TargetSceneVoxel` record 会被标记为 `target_guidance_only` 并在 `apply_instance_stamp_write_spec()` 中提前返回；即使 `TargetSV_B` 已解码为 `target_completely` / `target_color`，这些 buffer 也只能作为 read input 或 target-side dirty trigger。brush 内容经 SPA `stamp_brush_sv_records()` 写常驻 `BrushSV` 层。
+硬边界：可提交 stamp record 只来自 auto 路径。`TargetSceneVoxel` record 会被标记为 `target_guidance_only` 并在 `apply_instance_stamp_write_spec()` 中提前返回；即使 `TargetSV_B` 已解码为 `target_completeness` / `target_color`，这些 buffer 也只能作为 read input 或 target-side dirty trigger。brush 内容经 SPA `stamp_brush_sv_records()` 写常驻 `BrushSV` 层。
 
 `SceneVoxelCommitter` 内部的 `_pending_sv_field_records` 收集 CPU 入口盖章产生的 field 散射记录（x, z, slice, complexity, rgb, collision；complexity < 0 表示仅写碰撞）。`commit_scene_voxels()` 把它们一次稀疏散射进常驻 field（`scatter_sv_field_records.glsl`：复杂度覆盖写、碰撞 atomic max）。GPU dispatch 失败在提交摘要中报告 `field_scatter_reason`，不静默回退 CPU。
 
@@ -171,7 +171,7 @@ AssetDescriptor / brush edit
 - 手动操控/移动 autoobject 时该对象转为提供 `BrushSV`；其 auto 侧按 dirty 剔除重放（`_rebuild_scene_voxels_from_records()`），SV 剔除后自洽干净。
 - `commit_scene_voxels()` 是对外 committed read model 发布点：散射 pending 记录、推进 tick、重建 tile 摘要；提交是幂等的（重放同一记录集输出恒等）。
 - placement 物理采样读取 `BlendSV` 读取场；stamp 双写保证同批次避让看得到本批已放置对象，而提交只落 auto。
-- 结果级 feedback 是低频检测：`SPA.score_blendsv_feedback_against_target()` 临时合成 `BlendSV`、与 `TargetSV_B` / `TargetSV` 对比 completely / color 重合度，读回统计后立即删除临时体素。
+- 结果级 feedback 是低频检测：`SPA.score_blendsv_feedback_against_target()` 临时合成 `BlendSV`、与 `TargetSV_B` / `TargetSV` 对比 completeness / color 重合度，读回统计后立即删除临时体素。
 
 ## 数据格式
 
@@ -180,9 +180,9 @@ SV 与 TargetSV 的 per-voxel 强度字段统一为 8bit unorm，归一化到 `[
 解包路径分两种，取决于该字段当前是 GPU **texture** 还是 **storage buffer**：
 
 - texture（如 SV resident field 用 `R8_UNORM` / `R8G8B8A8_UNORM` image）：GPU 采样自动把 unorm 映射回 `[0, 1]` 的 `float`，shader 端无需手动解包。
-- storage buffer（如 TargetSV 的 collision / completely raw byte 缓存、SV source record packing）：8bit 值以打包字节存放，shader 端必须显式 `float(byte) / 255.0` 解包，CPU 端必须按 `u8` 步长打包/读取，不能继续用 `PackedFloat32Array` 的 fp32 步长。
+- storage buffer（如 TargetSV 的 collision / completeness raw byte 缓存、SV source record packing）：8bit 值以打包字节存放，shader 端必须显式 `float(byte) / 255.0` 解包，CPU 端必须按 `u8` 步长打包/读取，不能继续用 `PackedFloat32Array` 的 fp32 步长。
 
-> 实现注意：当前 canonical SV / TargetSV 体素源数据已经统一到 8bit：color / complexity 使用 `RGBA8`，collision / completely 使用 `R8`，storage buffer 路径按字节打包并在 shader 中显式解包。`rgba32f` / `r32f` 只保留在旧资产兼容、调试视图或地形中间图像路径。
+> 实现注意：当前 canonical SV / TargetSV 体素源数据已经统一到 8bit：color / complexity 使用 `RGBA8`，collision / completeness 使用 `R8`，storage buffer 路径按字节打包并在 shader 中显式解包。`rgba32f` / `r32f` 只保留在旧资产兼容、调试视图或地形中间图像路径。
 
 | 字段 | 含义 | 格式 | 取值 |
 | --- | --- | --- | --- |
@@ -190,13 +190,13 @@ SV 与 TargetSV 的 per-voxel 强度字段统一为 8bit unorm，归一化到 `[
 | `complexity` | 视觉强度 / alpha；唯一强度分量 | `R8` unorm | `[0, 1]`。 |
 | `collision` | 刚体占用分量 | `R8` unorm | `[0, 1]`。 |
 | `target_color` | target 颜色 / complexity | `RGBA8` unorm | 每通道 `[0, 1]`。 |
-| `target_completely` | target 合成占用 = `max(complexity, collision)` | 由 `RGBA8` + `R8` 解码 | `[0, 1]`，`0` 表示空。 |
+| `target_completeness` | target 合成占用 = `max(complexity, collision)` | 由 `RGBA8` + `R8` 解码 | `[0, 1]`，`0` 表示空。 |
 
 术语统一：
 
-- `completely` 指**合成占用量** `max(complexity, collision)`，是唯一的"占用强度"叫法；废弃 `occupancy` 作为字段/概念名。SV 侧派生量在 prose 中写作 `completely`，target 侧字段名为 `target_completely`。
-- `complexity`（视觉强度分量）与 `collision`（刚体分量）是独立输入分量，语义不变，不被 `completely` 取代。
-- `occupied` 仍是布尔派生态：`completely != 0`。它不是存储字段。
+- `completeness` 指**合成占用量** `max(complexity, collision)`，是唯一的"占用强度"叫法；废弃 `occupancy` 作为字段/概念名。SV 侧派生量在 prose 中写作 `completeness`，target 侧字段名为 `target_completeness`。
+- `complexity`（视觉强度分量）与 `collision`（刚体分量）是独立输入分量，语义不变，不被 `completeness` 取代。
+- `occupied` 仍是布尔派生态：`completeness != 0`。它不是存储字段。
 
 8bit unorm 约束：
 

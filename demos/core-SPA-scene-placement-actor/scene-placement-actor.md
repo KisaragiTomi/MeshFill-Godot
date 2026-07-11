@@ -231,7 +231,7 @@ var result := spa.run_placement_pipeline(
     4,                    # prefilter_topk
     {                     # placement_common settings
         "global_quota": 500,
-        "target_completely_bytes": target_completely_bytes,
+        "target_completeness_bytes": target_completeness_bytes,
         "target_visual_rgba8_bytes": target_visual_rgba8_bytes,
         "write_accepted_placements_to_gpu_runtime": true,
     }

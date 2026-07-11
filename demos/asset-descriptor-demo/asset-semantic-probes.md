@@ -110,8 +110,8 @@ scene      = SV[t - 1([sample_pos(
 ```text
 color_fit      = 1 - distance(target.rgb, expected.rgb) / sqrt(3)
 complexity_fit = 1 - abs(target.a - expected.a)
-collision_fit  = 1 - abs(target_completely - expected_collision)
-empty_fit      = 1 - max(target.a, target_completely, complexity_field)
+collision_fit  = 1 - abs(target_completeness - expected_collision)
+empty_fit      = 1 - max(target.a, target_completeness, complexity_field)
 support_fit    = max(complexity_field_below, collision_field_below)
 ```
 

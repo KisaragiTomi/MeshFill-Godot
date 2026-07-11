@@ -1,9 +1,9 @@
 #[compute]
 #version 450
 
-// Imports a source mask into a specific channel of the packed RGBA completely image.
+// Imports a source mask into a specific channel of the packed RGBA completeness image.
 // Each RGBA channel represents one configured layer; pixel value = complexity when occupied.
-// completely = max(complexity, collision) per channel; completely == 0 means empty (nothing there).
+// completeness = max(complexity, collision) per channel; completeness == 0 means empty (nothing there).
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 

@@ -113,8 +113,8 @@ func _prepare_display_fields() -> bool:
 
 	var target_color: PackedColorArray = decoded.get("target_color", PackedColorArray())
 	var target_collision: PackedFloat32Array = decoded.get("target_collision", PackedFloat32Array())
-	var target_completely: PackedFloat32Array = decoded.get("target_completely", PackedFloat32Array())
-	if target_color.size() < _voxel_count or target_completely.size() < _voxel_count:
+	var target_completeness: PackedFloat32Array = decoded.get("target_completeness", PackedFloat32Array())
+	if target_color.size() < _voxel_count or target_completeness.size() < _voxel_count:
 		_last_display_reason = "target_decode_size_mismatch"
 		return false
 
@@ -142,7 +142,7 @@ func _prepare_display_fields() -> bool:
 		var collision := clampf(_collision[i], 0.0, 1.0)
 		_color_rgba[color_base + 3] = complexity
 		_collision[i] = collision
-		_occupancy[i] = clampf(target_completely[i], 0.0, 1.0) if i < target_completely.size() else maxf(complexity, collision)
+		_occupancy[i] = clampf(target_completeness[i], 0.0, 1.0) if i < target_completeness.size() else maxf(complexity, collision)
 		if _occupancy[i] > occupancy_threshold:
 			_active_voxel_count += 1
 

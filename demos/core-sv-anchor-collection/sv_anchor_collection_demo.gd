@@ -165,7 +165,7 @@ func _build_fields_from_terrain() -> void:
 		push_error("[SVAnchorDemo] TargetSV decode failed: %s" % str(decoded))
 		return
 
-	var occupancy: PackedFloat32Array = decoded.get("target_completely", PackedFloat32Array())
+	var occupancy: PackedFloat32Array = decoded.get("target_completeness", PackedFloat32Array())
 	var target_color: PackedColorArray = decoded.get("target_color", PackedColorArray())
 	var collision_decoded: PackedFloat32Array = decoded.get("target_collision", PackedFloat32Array())
 	_target_field = PackedFloat32Array()

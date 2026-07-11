@@ -1065,7 +1065,7 @@ func release_blend_sv_fields() -> void:
 	_blend_sv_voxel_count = 0
 
 
-## 结果级 feedback：临时合成 BlendSV，与 TargetSV_B 读取缓冲对比 completely/color 重合度，
+## 结果级 feedback：临时合成 BlendSV，与 TargetSV_B 读取缓冲对比 completeness/color 重合度，
 ## 读回统计后立即删除临时体素。target_visual_rgba8_bytes 的 alpha 即 target completeness。
 func score_blendsv_feedback_against_target(
 	target_visual_rgba8_bytes: PackedByteArray,
@@ -1143,7 +1143,7 @@ func score_blendsv_feedback_against_target(
 	var blend_occupied := stats_bytes.decode_u32(0)
 	var target_occupied := stats_bytes.decode_u32(4)
 	var overlap := stats_bytes.decode_u32(8)
-	var completely_diff_sum := float(stats_bytes.decode_u32(12)) / BLENDSV_FEEDBACK_QUANT_SCALE
+	var completeness_diff_sum := float(stats_bytes.decode_u32(12)) / BLENDSV_FEEDBACK_QUANT_SCALE
 	var color_distance_sum := float(stats_bytes.decode_u32(16)) / BLENDSV_FEEDBACK_QUANT_SCALE
 	var processed := stats_bytes.decode_u32(20)
 	var union_count := blend_occupied + target_occupied - overlap
@@ -1157,7 +1157,7 @@ func score_blendsv_feedback_against_target(
 		"target_occupied_count": int(target_occupied),
 		"overlap_count": int(overlap),
 		"overlap_score": float(overlap) / float(maxi(union_count, 1)),
-		"completely_diff_mean": completely_diff_sum / float(maxi(int(processed), 1)),
+		"completeness_diff_mean": completeness_diff_sum / float(maxi(int(processed), 1)),
 		"color_distance_mean": color_distance_sum / float(maxi(int(overlap), 1)),
 	}
 
@@ -2696,8 +2696,8 @@ func _resident_target_read_buffer_handoff_summary(
 
 ## 从 SV complexity/collision field 构建 GPU-resident target read buffer 合约（用于 prefilter 目标评分）；由 run_placement_pipeline 与外部拆分 pipeline 时调用
 func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dictionary) -> Dictionary:
-	# GPU-specialized: combines target color + completely (max(complexity_field, collision_field)) into a single vec4 target_field buffer.
-	# completely == 0 means the voxel is empty (nothing there).
+	# GPU-specialized: combines target color + completeness (max(complexity_field, collision_field)) into a single vec4 target_field buffer.
+	# completeness == 0 means the voxel is empty (nothing there).
 	log_name = "ScenePlacementActorTargetReadBuffers"
 	_release_resident_target_read_buffer_handoff()
 	var expected_bytes := _expected_target_byte_count(sv)
@@ -2758,7 +2758,7 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		"target_read_color_input_rgba8_u32"
 	)
 
-	# 场景 completely 输入：绑定 sv 携带的常驻 8-bit field 读取对（BlendSV 或 committed SV，
+	# 场景 completeness 输入：绑定 sv 携带的常驻 8-bit field 读取对（BlendSV 或 committed SV，
 	# 格式与本 shader 输入契约一致，零拷贝）。CPU 投影打包回退已移除——无常驻 RID 直接报错。
 	var raw_resident_complexity = sv.get("resident_complexity_field_read_rid", RID())
 	var raw_resident_collision = sv.get("resident_collision_field_read_rid", RID())

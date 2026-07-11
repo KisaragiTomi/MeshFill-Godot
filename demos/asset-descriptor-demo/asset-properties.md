@@ -80,7 +80,7 @@ Probe 采样是 GPU prefilter 阶段对每个 anchor×asset 组合执行的核�
 
 | 缓冲区 | Shader 标识 | 类型 | 说明 |
 | --- | --- | --- | --- |
-| `TargetSV_B` | `target_field` | `readonly buffer<vec4>` | 目标场景引导场。**`.rgb`** = 目标颜色，**`.a`** = completely（`max(scene_complexity, collision)`），表示该体素被占用的完整度。 |
+| `TargetSV_B` | `target_field` | `readonly buffer<vec4>` | 目标场景引导场。**`.rgb`** = 目标颜色，**`.a`** = completeness（`max(scene_complexity, collision)`），表示该体素被占用的完整度。 |
 | `SV[t-1]` | `complexity_coll` | `readonly buffer<vec2>` | 上一帧的场景体素场。**`.x`** = scene complexity（场景复杂度/占用），**`.y`** = scene collision（场景碰撞/实体强度）。 |
 
 ### 评分通道与计算公式
@@ -122,8 +122,8 @@ support_fit = max(complexity_coll_below.x, complexity_coll_below.y)
 | Probe 期望字段 | 采样来源 | 缓冲区通道 |
 | --- | --- | --- |
 | `expected_color.rgb` | `target_field.rgb` | TargetSV_B 颜色通道 |
-| `expected_complexity` | `target_field.a` | TargetSV_B completely 通道 |
-| `expected_collision` | `target_field.a` | TargetSV_B completely 通道（同一值） |
+| `expected_complexity` | `target_field.a` | TargetSV_B completeness 通道 |
+| `expected_collision` | `target_field.a` | TargetSV_B completeness 通道（同一值） |
 | 场景复杂度 | `complexity_coll.x` | SV 上一个帧的 complexity |
 | 场景碰撞 | `complexity_coll.y` | SV 上一个帧的 collision |
 | 下方支撑 | `complexity_coll[below].xy` | SV 下方体素的 complexity/collision |

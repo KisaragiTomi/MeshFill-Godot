@@ -328,7 +328,7 @@ func _test_decode_target_read_buffers_gpu_or_skip() -> bool:
 		return false
 	if str(decoded.get("target_color_decode_format", "")) != "rgba8" \
 			or int(decoded.get("target_color_stride_bytes", 0)) != 4 \
-			or int(decoded.get("target_completely_stride_bytes", 0)) != 1:
+			or int(decoded.get("target_completeness_stride_bytes", 0)) != 1:
 		push_error("  FAIL: GPU decode format metadata mismatch: %s" % str(decoded))
 		return false
 
@@ -350,10 +350,10 @@ func _test_decode_target_read_buffers_gpu_or_skip() -> bool:
 
 	var field_bytes: PackedFloat32Array = decoded.get("target_field_bytes", PackedFloat32Array())
 	var color_bytes: PackedByteArray = decoded.get("target_visual_rgba8_bytes", PackedByteArray())
-	var completely_bytes: PackedByteArray = decoded.get("target_completely_bytes", PackedByteArray())
+	var completeness_bytes: PackedByteArray = decoded.get("target_completeness_bytes", PackedByteArray())
 	if field_bytes.size() != voxel_count * 4 \
 			or color_bytes.size() != voxel_count * 4 \
-			or completely_bytes.size() != voxel_count:
+			or completeness_bytes.size() != voxel_count:
 		push_error("  FAIL: GPU decoded byte buffers have wrong size")
 		return false
 	if str(decoded.get("target_stats_source", "")) != "target_sv_pack_read_buffers_compute":
@@ -585,10 +585,10 @@ func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 		return false
 	var field_bytes: PackedFloat32Array = packed.get("target_field_bytes", PackedFloat32Array())
 	var color_rgba8_bytes: PackedByteArray = packed.get("target_visual_rgba8_bytes", PackedByteArray())
-	var completely_bytes: PackedByteArray = packed.get("target_completely_bytes", PackedByteArray())
+	var completeness_bytes: PackedByteArray = packed.get("target_completeness_bytes", PackedByteArray())
 	if field_bytes.size() != voxel_count * 4 \
 			or color_rgba8_bytes.size() != voxel_count * 4 \
-			or completely_bytes.size() != voxel_count:
+			or completeness_bytes.size() != voxel_count:
 		push_error("  FAIL: GPU packed buffer sizes mismatch")
 		return false
 	var field_values := field_bytes
@@ -637,8 +637,8 @@ func _test_gpu_derive_target_packed_buffers_or_skip() -> bool:
 	if color_rgba8_bytes.slice(strong_collision_idx * 4, (strong_collision_idx + 1) * 4) != expected_color_bytes:
 		push_error("  FAIL: GPU packed RGBA8 mismatch at strong collision voxel")
 		return false
-	if not _close_q8(float(completely_bytes[strong_collision_idx]) / 255.0, 0.8):
-		push_error("  FAIL: GPU packed completely R8 mismatch at strong collision voxel")
+	if not _close_q8(float(completeness_bytes[strong_collision_idx]) / 255.0, 0.8):
+		push_error("  FAIL: GPU packed completeness R8 mismatch at strong collision voxel")
 		return false
 
 	print("  OK: GPU read-buffer pack produced target field plus canonical R8/RGBA8 bytes")

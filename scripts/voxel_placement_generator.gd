@@ -3824,7 +3824,7 @@ func _target_read_buffer_summary(pack: Dictionary) -> Dictionary:
 ## 合并为单个 vec4 target_field 缓冲区；输入无效或管线未就绪时返回全零缓冲区。
 func _ensure_combined_target_field_buffer(complexity_buffer: RID, collision_buffer: RID, target_color_buffer: RID, voxel_count: int) -> RID:
 	# Combines target_visual_rgba8 (u32 RGBA8) with scene/collision fields into a single vec4 target_field buffer.
-	# target_field.a = completely = max(complexity, collision); zero means the voxel is empty.
+	# target_field.a = completeness = max(complexity, collision); zero means the voxel is empty.
 	if not target_color_buffer.is_valid() or not complexity_buffer.is_valid() or not collision_buffer.is_valid():
 		return _create_zero_target_field_buffer(voxel_count)
 
