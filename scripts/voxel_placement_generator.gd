@@ -1517,8 +1517,8 @@ func run_minimal(
 	if read_stamp_deltas:
 		decoded_stamp_deltas = _decode_stamp_deltas(stamp_delta_data, stamp_delta_count)
 	var stamp_bounds_data := _rd.buffer_get_data(stamp_bounds_buffer, 0, result_count * STAMP_BOUNDS_STRIDE * 16) if read_placement_results else PackedByteArray()
-	var read_debug_voxel := bool(settings.get("debug_read_voxel_channels", false))
-	var debug_voxel_data := _rd.buffer_get_data(debug_voxel_buffer) if read_debug_voxel else PackedByteArray()
+	var debug_read_voxel := bool(settings.get("debug_read_voxel_channels", false))
+	var debug_voxel_data := _rd.buffer_get_data(debug_voxel_buffer) if debug_read_voxel else PackedByteArray()
 	var score_contract_debug_data := _rd.buffer_get_data(score_contract_debug_buffer)
 	var score_contract_debug := _decode_score_contract_debug(score_contract_debug_data)
 	var read_route_adapter_debug := bool(route_settings.get("read_candidate_route_sparse_adapter_debug", false))
@@ -1593,8 +1593,8 @@ func run_minimal(
 		"stamp_delta_readback_source": "stamp_shader_storage_buffer" if read_stamp_deltas else "disabled",
 		"stamp_bounds": _decode_stamp_bounds(stamp_bounds_data, result_count, grid_size),
 		"stamp_bounds_source": "stamp_shader_storage_buffer",
-		"debug_voxel": _decode_float_array(debug_voxel_data, voxel_count * NUM_DEBUG_CHANNELS) if read_debug_voxel else PackedFloat32Array(),
-		"debug_voxel_readback_source": "score_shader_debug_voxel_buffer" if read_debug_voxel else "disabled",
+		"debug_voxel": _decode_float_array(debug_voxel_data, voxel_count * NUM_DEBUG_CHANNELS) if debug_read_voxel else PackedFloat32Array(),
+		"debug_voxel_readback_source": "score_shader_debug_voxel_buffer" if debug_read_voxel else "disabled",
 		"debug_channel_names": DEBUG_CHANNEL_NAMES,
 		"debug_channel_count": NUM_DEBUG_CHANNELS,
 		"debug_channel_max": score_contract_debug.get("debug_channel_max", PackedFloat32Array()),
@@ -2615,7 +2615,7 @@ func _dispatch_candidate_route_sparse_adapter(
 
 
 ## 将候选路由稀疏适配器的调度结果汇总为契约字典（候选数量、range/record 读取信息、间接参数状态等）。
-## 当 read_debug_snapshot 为 true 时，才会从 GPU 回读计数缓冲区、间接参数缓冲区与稀疏 ID 缓冲区生成调试快照；
+## 当 debug_read_snapshot 为 true 时，才会从 GPU 回读计数缓冲区、间接参数缓冲区与稀疏 ID 缓冲区生成调试快照；
 ## 默认（非调试）情况下不进行任何 CPU 回读，候选数量在语义上完全由 GPU 端间接参数缓冲区持有。
 func _read_candidate_route_sparse_adapter_result(
 	candidate_tile_buffer: RID,
@@ -2625,10 +2625,10 @@ func _read_candidate_route_sparse_adapter_result(
 	tile_count: int,
 	output_capacity: int,
 	score_dispatch: Dictionary = {},
-	read_debug_snapshot: bool = false
+	debug_read_snapshot: bool = false
 ) -> Dictionary:
 	var ids := PackedInt32Array()
-	if read_debug_snapshot:
+	if debug_read_snapshot:
 		ids.resize(output_capacity)
 		ids.fill(tile_count)
 	var count_words := PackedInt32Array()
@@ -2636,7 +2636,7 @@ func _read_candidate_route_sparse_adapter_result(
 	var debug_count_snapshot_source := "disabled"
 	var debug_sparse_ids_snapshot_source := "disabled"
 	var debug_indirect_args_snapshot_source := "disabled"
-	if read_debug_snapshot and candidate_route_adapter_count_buffer.is_valid():
+	if debug_read_snapshot and candidate_route_adapter_count_buffer.is_valid():
 		var count_bytes := _rd.buffer_get_data(
 			candidate_route_adapter_count_buffer,
 			0,
@@ -2647,7 +2647,7 @@ func _read_candidate_route_sparse_adapter_result(
 			count_words[i] = int(count_bytes.decode_u32(i * 4))
 		debug_count_snapshot_source = "route_adapter_count_buffer_debug_readback"
 	var indirect_words := PackedInt32Array()
-	if read_debug_snapshot and candidate_route_indirect_args_buffer.is_valid():
+	if debug_read_snapshot and candidate_route_indirect_args_buffer.is_valid():
 		indirect_words.resize(3)
 		var indirect_bytes := _rd.buffer_get_data(
 			candidate_route_indirect_args_buffer,
@@ -2658,9 +2658,9 @@ func _read_candidate_route_sparse_adapter_result(
 		for i in range(indirect_available):
 			indirect_words[i] = int(indirect_bytes.decode_u32(i * 4))
 		debug_indirect_args_snapshot_source = "route_adapter_indirect_args_debug_readback"
-	var debug_requested_count := clampi(int(count_words[0]), 0, output_capacity) if read_debug_snapshot else 0
+	var debug_requested_count := clampi(int(count_words[0]), 0, output_capacity) if debug_read_snapshot else 0
 	var debug_ids := PackedInt32Array()
-	if read_debug_snapshot and candidate_tile_buffer.is_valid() and debug_requested_count > 0:
+	if debug_read_snapshot and candidate_tile_buffer.is_valid() and debug_requested_count > 0:
 		var bytes := _rd.buffer_get_data(candidate_tile_buffer, 0, output_capacity * 4)
 		var available := mini(int(bytes.size() / 4), output_capacity)
 		for i in range(available):
@@ -2689,16 +2689,16 @@ func _read_candidate_route_sparse_adapter_result(
 		"candidate_count_semantics": "gpu_owned_runtime_count",
 		"candidate_count_cpu_readback_required": false,
 		"count_words": count_words,
-		"count_record_reads": int(count_words[1]) if read_debug_snapshot else int(route_binding_debug.get("sparse_adapter_range_count", 0)),
-		"count_truncation_or_overflow": int(count_words[2]) if read_debug_snapshot else 0,
-		"count_magic": int(count_words[3]) if read_debug_snapshot else 0,
+		"count_record_reads": int(count_words[1]) if debug_read_snapshot else int(route_binding_debug.get("sparse_adapter_range_count", 0)),
+		"count_truncation_or_overflow": int(count_words[2]) if debug_read_snapshot else 0,
+		"count_magic": int(count_words[3]) if debug_read_snapshot else 0,
 		"indirect_args_words": indirect_words,
 		"indirect_args_ready": candidate_route_indirect_args_buffer.is_valid(),
 		"indirect_args_layout": "u32x3_group_count_xyz",
 		"indirect_args_source": "route_adapter_indirect_args_buffer",
-		"debug_snapshot_enabled": read_debug_snapshot,
-		"debug_snapshot_status": "available" if read_debug_snapshot else "disabled",
-		"debug_count_snapshot": int(count_words[0]) if read_debug_snapshot else -1,
+		"debug_snapshot_enabled": debug_read_snapshot,
+		"debug_snapshot_status": "available" if debug_read_snapshot else "disabled",
+		"debug_count_snapshot": int(count_words[0]) if debug_read_snapshot else -1,
 		"debug_count_snapshot_source": debug_count_snapshot_source,
 		"debug_sparse_ids_snapshot": debug_ids,
 		"debug_sparse_ids_snapshot_source": debug_sparse_ids_snapshot_source,
@@ -2892,13 +2892,13 @@ func _create_candidate_route_binding_set(route_binding: Dictionary) -> RID:
 
 ## 读取候选路由绑定的调试缓冲区数据，解析为带命名字段的调试信息字典。
 ## 若未启用调试快照或调试缓冲区无效，则返回不读取任何数据的默认结果。
-func _read_candidate_route_binding_debug(route_binding: Dictionary, read_debug_snapshot: bool = false) -> Dictionary:
+func _read_candidate_route_binding_debug(route_binding: Dictionary, debug_read_snapshot: bool = false) -> Dictionary:
 	var debug_buffer: RID = route_binding.get("debug_buffer", RID())
 	var words := PackedInt32Array()
 	words.resize(CANDIDATE_ROUTE_BINDING_DEBUG_WORDS)
-	if not read_debug_snapshot or not debug_buffer.is_valid():
+	if not debug_read_snapshot or not debug_buffer.is_valid():
 		return {
-			"read_source": "disabled" if not read_debug_snapshot else "none",
+			"read_source": "disabled" if not debug_read_snapshot else "none",
 			"word_count": CANDIDATE_ROUTE_BINDING_DEBUG_WORDS,
 			"words": words,
 			"enabled": false,
