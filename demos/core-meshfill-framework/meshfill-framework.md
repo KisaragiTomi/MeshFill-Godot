@@ -21,7 +21,7 @@
 - probe prefilter 只减少候选 `AutoObject` / voxel regions，不直接写最终 `SceneVoxel`；当前 score / top-K 留在本轮 GPU dispatch 内部，readback 只输出 anchors、candidate voxel regions 和 debug profile，不能作为运行时成功路径替代 GPU resident buffer contract。
 - Candidate voxel regions 必须保守扩张，覆盖 asset footprint、probe 插值采样半径、context 半径和插值 guard，宁可让更多 voxel 进入候选，也不要漏掉可能得分高的位置。
 - 语义向量匹配只在每个 anchor 的粗筛候选资产内做 rerank / validate / prune，不遍历全资产库。
-- committed `SceneVoxel` 是**纯 auto** 状态，唯一提交路径是 stamp：VPG 的 GPU state-chain stamp 原位写入常驻 field（stamp 即提交），CPU 入口（`apply_voxel_write_spec`）的盖章记录在 `commit_scene_voxels()` 时一次稀疏散射进同一常驻 field。不存在 per-voxel source-candidate 裁决/blend 提交管线。
+- committed `SceneVoxel` 是**纯 auto** 状态，唯一提交路径是 stamp：VPG 的 GPU state-chain stamp 原位写入常驻 field（stamp 即提交），CPU 入口（`apply_instance_stamp_write_spec`）的盖章记录在 `commit_scene_voxels()` 时一次稀疏散射进同一常驻 field。不存在 per-voxel source-candidate 裁决/blend 提交管线。
 - `BrushSV`（场景笔刷层）常驻挂在 SPA 生命周期上，不进入 committed `SceneVoxel`。physical sampling / prefilter 的读取场是按需合成的 `BlendSV`（committed SV + `BrushSV`，brush 覆盖优先、collision 取 max）；brush 为空时读取场直通 committed SV 常驻对，零合成开销。`BlendSV` 是临时读取产物，pipeline 结束即释放。
 - 物理可放置性仍由 `score_voxel_tile.glsl` 的 footprint、collision、clearance、overlap 和候选级 target fit 决定；读取场为 `BlendSV` 时，stamp 双写 `BlendSV` 工作场与 committed SV 常驻场（同批次避让读 blend，提交落 auto）。
 - 结果级 feedback score 由 `ScenePlacementActor.score_blendsv_feedback_against_target()` 临时合成 `BlendSV` 与当前 target read buffer（通常是 `TargetSV_B`，没有 target brush 时等价于 `TargetSV`）对比 completely / color 重合度，读回统计后立即删除临时体素，`BrushSV` 常驻保留。
@@ -43,7 +43,7 @@
 | Candidate routing | `candidate_voxel_regions_by_asset` / legacy `candidate_voxel_sparses_by_asset` debug view，`candidate_route_profiles` debug | Host readback 后按 footprint、probe offset、context radius 和 interpolation guard 扩张为每个 asset 的 candidate voxel regions；这是 VPG candidate 输入，不是 CPU placement 替代路径。 |
 | Physical placement | `VoxelPlacementGenerator` / placement shaders | 只对 routed asset / candidate voxel regions 做 GPU score、reduce、stamp；可在 GPU scoring 前执行同类型 candidate voxel-region 剪枝；如果 asset 没有候选区域，本轮可跳过。SPA 创建 placer worker 并注入共享 RD + profile_container。 |
 | Instance stamp write spec | `instance_stamp_write_spec` / `ISWS` builders | 统一创建或更新本次实例 / stamp 写入 record，保存位置、像素、channel、collision、source 和 debug handle。 |
-| Auto stamp records | `SceneVoxelCommitter._voxel_write_specs` | CPU 入口（demo/手动 auto 放置）的逐对象盖章记录，是脏区/全量重放（`_rebuild_scene_voxels_from_records`）的持久记录集；VPG 放置不产生 per-voxel source 记录，stamp 直接落常驻 field。 |
+| Auto stamp records | `SceneVoxelCommitter._instance_stamp_write_specs` | CPU 入口（demo/手动 auto 放置）的逐对象盖章记录，是脏区/全量重放（`_rebuild_scene_voxels_from_records`）的持久记录集；VPG 放置不产生 per-voxel source 记录，stamp 直接落常驻 field。 |
 | BrushSV overlay | `ScenePlacementActor`（`stamp_brush_sv_records()` / `clear_brush_sv()`） | 场景笔刷常驻旁路层（复杂度 RGBA8 + 碰撞 R8 field 对），挂 SPA 生命周期，不进 committed `SceneVoxel`；手动操控/移动 autoobject 时该对象转为提供 `BrushSV`，其 auto 侧按 dirty 剔除重放。 |
 | Commit / final state | `SceneVoxelCommitter.commit_scene_voxels()` | **Stamp-only commit**：散射 pending CPU 入口盖章记录进常驻 field、推进 commit tick 并重建 tile 摘要；VPG 的 state-chain stamp 在 placement 期间已原位提交。committed `SceneVoxel` = 常驻 field 对（纯 auto + terrain base collision 种子）。 |
 | BlendSV read product | `ScenePlacementActor.compose_blend_sv_fields()` | 按需合成 committed SV + `BrushSV` 的临时读取对（brush 覆盖优先 / collision max）；供 3D score 物理采样与 TargetSV 对比使用，用完即删，不落地、不提交。 |
@@ -59,7 +59,7 @@
 | Prefilter | `SV[t - 1]` resident fields、`TargetSV_B`、descriptor-backed probes、dirty tile ids | anchors、GPU-internal `anchor_autoobject_topk`、candidate voxel-region votes | 只收窄候选；不做最终 physical placement。SPA 通过 `_build_autoobject_array_for_pipeline()` 构建输入，注入 profile_container 的 borrowed GPU buffers。 |
 | Candidate routing | voxel-region votes、asset footprint、probe offsets、context radius、interpolation guard | `candidate_voxel_regions_by_asset` / legacy `candidate_voxel_sparses_by_asset`、`candidate_route_profiles` debug | 输出偏召回的 candidate voxel regions；空候选 asset 本轮跳过。 |
 | Physical placement | routed asset defs、`BlendSV` 读取场（brush 为空时即 committed SV 常驻对）、`TargetSV_B` target buffers | accepted placements、`gpu_autoobject_runtime_writeback`、`instance_stamp_writeback`（mode = `gpu_state_chain_stamp`） | `score_voxel_tile.glsl` 负责 footprint、collision、clearance、overlap 和 target fit；stamp 原位提交 committed SV（读取场为 BlendSV 时双写）。SPA 注入 profile_container 和 gpu_runtime 到 placement settings。 |
-| Commit | VPG state-chain stamp（已落）、pending CPU 入口盖章记录 | committed `SceneVoxel[tick]` 常驻 fields、tile 摘要 | `commit_scene_voxels()` 是 stamp-only 提交发布点：散射 pending 记录 + tick + tile 摘要，无裁决/blend。CPU 入口经 `sv_committer.apply_voxel_write_spec()`。 |
+| Commit | VPG state-chain stamp（已落）、pending CPU 入口盖章记录 | committed `SceneVoxel[tick]` 常驻 fields、tile 摘要 | `commit_scene_voxels()` 是 stamp-only 提交发布点：散射 pending 记录 + tick + tile 摘要，无裁决/blend。CPU 入口经 `sv_committer.apply_instance_stamp_write_spec()`。 |
 | Feedback | 临时合成 `BlendSV`、`TargetSV_B` / `TargetSV` | result-level target feedback score | 只评价提交结果；不替代候选评分；临时体素用完即删。 |
 
 ## Runtime Flow

@@ -17,7 +17,7 @@
 - [`AssetDescriptor`](asset-descriptor.md) 是资产默认体素语义的 canonical source；脚本化资产不要把 profile 或 metadata 当成第二套权威。
 - `AutoVoxelProfile` 只作为已有资产 / 导入 preset fallback；新脚手架不再输出单独的 profile 产物。
 - 物体和植被都走 descriptor-backed `AutoObject` / `AssetDescriptor` 路径；旧 typed 子类不再作为资产定义入口。
-- 运行时写入 payload 统一称为 `instance_stamp_write_spec` / `ISWS`；canonical 构造入口是 `AutoObject.make_instance_stamp_write_spec()`，`AutoObject.make_voxel_write_spec()` 是同语义的 legacy API name。
+- 运行时写入 payload 统一称为 `instance_stamp_write_spec` / `ISWS`；canonical 构造入口是 `AutoObject.make_instance_stamp_write_spec()`。
 
 ## 范围与生命周期
 
@@ -151,9 +151,9 @@ var config := leaf_asset.make_instance_config()
 register_brush_autoobject(leaf_asset.make_instance_config())
 ```
 
-高度场生成器直接使用 descriptor-backed `AutoObject` 原型。生成结果复制原型并落到场景，运行时从 descriptor-backed 字段派生 `instance_stamp_write_spec` / `ISWS`。当前 `AutoObject.make_instance_stamp_write_spec()` 是 canonical wrapper，`make_voxel_write_spec()` 是 legacy API name。
+高度场生成器直接使用 descriptor-backed `AutoObject` 原型。生成结果复制原型并落到场景，运行时从 descriptor-backed 字段派生 `instance_stamp_write_spec` / `ISWS`。当前 `AutoObject.make_instance_stamp_write_spec()` 是 canonical 构造入口。
 
-脚本侧需要直接构造 runtime record 时，使用 canonical `AutoObject.make_instance_stamp_write_spec()`。它返回当前 ISWS payload；`AutoObject.make_voxel_write_spec()` 是同语义的 legacy API name。（`AutoAssetFactory` 上早先的 `make_object_voxel_write_spec()` / `make_vegetation_voxel_write_spec()` / `make_profile_voxel_write_spec()` wrapper 已删除，统一走 `AutoObject`。）
+脚本侧需要直接构造 runtime record 时，使用 canonical `AutoObject.make_instance_stamp_write_spec()`。它返回当前 ISWS payload。（`AutoAssetFactory` 上早先的同类 write-spec wrapper 已删除，统一走 `AutoObject`。）
 
 高度场 / object placement 可以在 record extra fields 中补 `mesh_index`；descriptor-backed `AutoObject` 可以通过 instance config 提供 `object_subtype`、`channel` 和 `radius`。这些是 runtime record extra，不进入 `SharedPropertyType.SHARED_FIELD_KEYS`。
 

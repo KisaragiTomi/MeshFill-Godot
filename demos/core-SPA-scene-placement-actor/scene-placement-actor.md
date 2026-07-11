@@ -199,7 +199,7 @@ _build_placement_asset_defs(candidate_regions)
 | `AutoVoxelRuntimeProfileContainer` | SPA 拥有并管理 | SPA → container: `register_descriptor()`, `upload_profiles()`；container → prefilter/placer: borrowed GPU buffers |
 | `AutoObjectProbePrefilterGPU` | SPA 懒创建、注入 RD | SPA → prefilter: SV fields + autoobjects + profile_container；prefilter → SPA: candidate regions |
 | `VoxelPlacementGenerator` | SPA 懒创建、注入 RD | SPA → placer: scene/collision fields + asset_defs + profile_container；placer → SPA: accepted placements |
-| `SceneVoxelCommitter` | SPA 借用引用 | SPA → committer: `commit_scene_voxels()`（stamp-only 提交定稿；CPU 入口盖章走 `apply_voxel_write_spec()`） |
+| `SceneVoxelCommitter` | SPA 借用引用 | SPA → committer: `commit_scene_voxels()`（stamp-only 提交定稿；CPU 入口盖章走 `apply_instance_stamp_write_spec()`） |
 | `GPUAutoObjectRuntime` | SPA 默认拥有；legacy/test 可外部注入 | SPA → runtime: placement settings 注入 `gpu_autoobject_runtime` |
 | `SceneVoxel` / SV resident | SPA 不直接持有 | SV fields 由调用方传入 `run_placement_pipeline()`，SPA 不管理 |
 | `TargetSV_B` | SPA 不持有 | 每帧由调用方传入，SPA 只透传 |

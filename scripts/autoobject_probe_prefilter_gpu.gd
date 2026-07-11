@@ -1215,8 +1215,8 @@ func _profile_id_from_autoobject(autoobject: Object, runtime_profile_container: 
 		if VariantUtils.has_property(autoobject, profile_key):
 			return int(autoobject.get(profile_key))
 	var write_spec := {}
-	if autoobject.has_method("get_voxel_write_spec"):
-		var raw_spec = autoobject.call("get_voxel_write_spec")
+	if autoobject.has_method("get_instance_stamp_write_spec"):
+		var raw_spec = autoobject.call("get_instance_stamp_write_spec")
 		if raw_spec is Dictionary:
 			write_spec = raw_spec as Dictionary
 	for profile_key in ["profile_id", "auto_voxel_profile_id", "runtime_profile_id", "asset_profile_id"]:

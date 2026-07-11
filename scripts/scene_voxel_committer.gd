@@ -363,17 +363,17 @@ func _is_valid_channel(channel: int) -> bool:
 
 	return VoxelGeneralScript.is_valid_channel(channel)
 
-## 将世界半径（米）换算为基础分辨率下的像素半径；委托 VoxelGeneralScript；由 _record_radius_px 和 apply_voxel_write_spec 调用
+## 将世界半径（米）换算为基础分辨率下的像素半径；委托 VoxelGeneralScript；由 _record_radius_px 和 apply_instance_stamp_write_spec 调用
 func _radius_to_px(radius_m: float) -> int:
 
 	return VoxelGeneralScript.world_radius_to_texture_radius(radius_m, _capture_size, _base_res)
 
 ## 返回全部已注册体素写入规格的深度副本；由 ScenePlacementActor、调试工具、_rebuild_scene_voxels_from_records 调用
-func get_voxel_write_specs() -> Array[Dictionary]:
+func get_instance_stamp_write_specs() -> Array[Dictionary]:
 
 	var records: Array[Dictionary] = []
 
-	for record in _voxel_write_specs:
+	for record in _instance_stamp_write_specs:
 
 		var typed_record := record as Dictionary
 
@@ -381,18 +381,18 @@ func get_voxel_write_specs() -> Array[Dictionary]:
 
 	return records
 
-## Get one placed mesh voxel_write_spec by id.
+## Get one placed mesh instance_stamp_write_spec by id.
 
 ## 按网格ID获取单条体素写入规格记录
-func get_voxel_write_spec(mesh_id: String) -> Dictionary:
+func get_instance_stamp_write_spec(mesh_id: String) -> Dictionary:
 
-	if not _voxel_write_spec_index.has(mesh_id):
+	if not _instance_stamp_write_spec_index.has(mesh_id):
 
 		return {}
 
-	var idx: int = _voxel_write_spec_index[mesh_id]
+	var idx: int = _instance_stamp_write_spec_index[mesh_id]
 
-	var record: Dictionary = _voxel_write_specs[idx]
+	var record: Dictionary = _instance_stamp_write_specs[idx]
 
 	return record.duplicate(true)
 
@@ -649,6 +649,7 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 	var collision_summary_field := PackedFloat32Array()
 
 	if not collision_summary_buffer.is_valid():
+		push_error("[SceneVoxelCommitter] SV resident collision-summary field buffer unavailable; recomputing on CPU")
 		collision_summary_field = _make_sv_collision_record_summary_field(collision, xz_res, total_slices)
 
 	_volume["collision_field"] = _resample_collision_field(_terrain_base_collision_field, xz_res)
@@ -1003,13 +1004,13 @@ func _make_stamped_scene_voxel_template(
 	return scene_voxel
 
 ## 应用单条体素写入规格并返回提交报告(占位/实例盖章写入的统一入口)
-func apply_voxel_write_spec(record: Dictionary, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
+func apply_instance_stamp_write_spec(record: Dictionary, defer_blend: bool = false, generation_tick: int = -1) -> Dictionary:
 	if record.is_empty():
 		return {}
 
 	var write_tick := generation_tick if generation_tick >= 0 else _next_write_tick()
 	var rec := SceneVoxelSourceRecordScript.prepare_source_record(record, write_tick)
-	var record_id := str(rec.get("id", "mesh_%d" % _voxel_write_specs.size()))
+	var record_id := str(rec.get("id", "mesh_%d" % _instance_stamp_write_specs.size()))
 	rec["id"] = record_id
 	if SceneVoxelTargetScript.is_target_type(str(rec.get("source_voxel_type", ""))):
 		rec["target_guidance_only"] = true
@@ -1098,12 +1099,12 @@ func apply_voxel_write_spec(record: Dictionary, defer_blend: bool = false, gener
 	rec["collision_source_attached"] = not updated_collision_layers.is_empty()
 	rec["collision_buffer_applied"] = collision_buffer_applied
 
-	if _voxel_write_spec_index.has(record_id):
-		var idx: int = _voxel_write_spec_index[record_id]
-		_voxel_write_specs[idx] = rec
+	if _instance_stamp_write_spec_index.has(record_id):
+		var idx: int = _instance_stamp_write_spec_index[record_id]
+		_instance_stamp_write_specs[idx] = rec
 	else:
-		_voxel_write_spec_index[record_id] = _voxel_write_specs.size()
-		_voxel_write_specs.append(rec)
+		_instance_stamp_write_spec_index[record_id] = _instance_stamp_write_specs.size()
+		_instance_stamp_write_specs.append(rec)
 
 	if not defer_blend and not _volume.is_empty():
 		commit_scene_voxels(write_tick)
@@ -1118,13 +1119,13 @@ func apply_voxel_write_spec(record: Dictionary, defer_blend: bool = false, gener
 
 var _volume: Dictionary = {}
 
-## Per placed runtime voxel_write_spec entries. These connect runtime MeshInstance3D nodes back
+## Per placed runtime instance_stamp_write_spec entries. These connect runtime MeshInstance3D nodes back
 
 ## to the voxel channel data that was stamped for them.
 
-var _voxel_write_specs: Array[Dictionary] = []
+var _instance_stamp_write_specs: Array[Dictionary] = []
 
-var _voxel_write_spec_index: Dictionary = {}
+var _instance_stamp_write_spec_index: Dictionary = {}
 
 var _sv: Dictionary = {}
 
@@ -1146,13 +1147,13 @@ var _committed_tick: int = 0
 var _sv_dirty: bool = true
 
 ## 根据当前体素体积刷新所有写入规格的体素坐标与切片索引
-func _update_voxel_write_specs_for_volume() -> void:
+func _update_instance_stamp_write_specs_for_volume() -> void:
 	if _volume.is_empty():
 		return
 	var xz_res: int = _volume.xz_res
 	var meta: Array = _volume.slice_meta
-	for ri in range(_voxel_write_specs.size()):
-		var record: Dictionary = _voxel_write_specs[ri]
+	for ri in range(_instance_stamp_write_specs.size()):
+		var record: Dictionary = _instance_stamp_write_specs[ri]
 		var base_px: Vector2i = record.get("base_pixel", Vector2i.ZERO)
 		var voxel_px := _volume_px_from_base(base_px, xz_res)
 		record["voxel_xz"] = voxel_px
@@ -1174,8 +1175,8 @@ func _update_voxel_write_specs_for_volume() -> void:
 			collision_layer["volume_xz_resolution"] = xz_res
 			collision_layers[ci] = collision_layer
 		record["collision"] = collision_layers
-		_voxel_write_specs[ri] = record
-		_voxel_write_spec_index[str(record.id)] = ri
+		_instance_stamp_write_specs[ri] = record
+		_instance_stamp_write_spec_index[str(record.id)] = ri
 
 ## 从已有写入规格记录重建场景体素状态（清空常驻 field 后逐记录重放 stamp）
 func _rebuild_scene_voxels_from_records() -> void:
@@ -1196,11 +1197,11 @@ func _rebuild_scene_voxels_from_records() -> void:
 
 	_tile_store.reset_resident_field_buffers()
 
-	var records := get_voxel_write_specs()
+	var records := get_instance_stamp_write_specs()
 
 	for record in records:
 
-		apply_voxel_write_spec(record, true, write_tick)
+		apply_instance_stamp_write_spec(record, true, write_tick)
 
 ## Stamp-only 提交发布点：散射 pending 盖章记录进常驻 field，推进 tick 并重建 tile 摘要。
 ## VPG 的 GPU state-chain stamp 已原位写入常驻 field；本函数只负责 CPU 入口盖章的散射与发布。
@@ -1282,7 +1283,7 @@ func build_voxel_volume(
 
 	var xz_res := xz_resolution if xz_resolution > 0 else maxi(_base_res / 2, 32)
 
-	var descriptors := SceneVoxelVolumeChannelsScript.collect_descriptors(channel_profiles, _voxel_write_specs, CHANNEL_COUNT)
+	var descriptors := SceneVoxelVolumeChannelsScript.collect_descriptors(channel_profiles, _instance_stamp_write_specs, CHANNEL_COUNT)
 
 	var slices: Array[Image] = []
 
@@ -1410,7 +1411,7 @@ func build_voxel_volume(
 
 			_mark_sv_rect_dirty(typed_dirty_rect)
 
-	_update_voxel_write_specs_for_volume()
+	_update_instance_stamp_write_specs_for_volume()
 
 	_rebuild_scene_voxels_from_records()
 
@@ -1653,7 +1654,7 @@ func _scene_voxel_in_dirty_scene_voxel_tiles(scene_voxel: Dictionary, dirty_scen
 ## 返回 tile 坐标对应的体素包围盒字典；由 _mark_legacy_sv_tiles_for_scene_voxel_tile 调用，委托 _tile_store
 func _scene_voxel_tile_bounds(tile_coord: Vector3i) -> Dictionary:
 	return _tile_store._scene_voxel_tile_bounds(tile_coord)
-## 从写入规格记录推算 SceneVoxelTile 包围盒；由 apply_voxel_write_spec 调用，委托 _tile_store
+## 从写入规格记录推算 SceneVoxelTile 包围盒；由 apply_instance_stamp_write_spec 调用，委托 _tile_store
 func _scene_voxel_tile_bounds_from_record(record: Dictionary) -> Dictionary:
 	return _tile_store._scene_voxel_tile_bounds_from_record(record)
 ## 返回当前 SceneVoxelTile 的三维体素尺寸 Vector3i；由 _rebuild_sv 调用，委托 _tile_store
@@ -1701,7 +1702,7 @@ func is_scene_voxel_tile_gpu_ready() -> bool:
 ## 将所有 SceneVoxelTile 标记为脏；由 _mark_scene_voxel_full_rebuild_dirty 调用，委托 _tile_store
 func mark_all_scene_voxel_tiles_dirty(dirty_flags = {}, source_record: Dictionary = {}) -> Dictionary:
 	return _tile_store.mark_all_scene_voxel_tiles_dirty(dirty_flags, source_record)
-## 将指定体素包围盒内的 SceneVoxelTile 标记为脏；由 apply_voxel_write_spec 调用，委托 _tile_store
+## 将指定体素包围盒内的 SceneVoxelTile 标记为脏；由 apply_instance_stamp_write_spec 调用，委托 _tile_store
 func mark_scene_voxel_tile_bounds_dirty(voxel_min: Vector3i, voxel_max: Vector3i, dirty_flags = {}, source_record: Dictionary = {}) -> void:
 	_tile_store.mark_scene_voxel_tile_bounds_dirty(voxel_min, voxel_max, dirty_flags, source_record)
 ## 标记指定 tile 坐标为脏；由外部直接调用路径使用，委托 _tile_store
@@ -1727,7 +1728,7 @@ func try_apply_gpu_autoobject_object_ref_update_pass_from_buffer(dirty_delta_buf
 ## 创建指定分辨率的空白 R32F 碰撞图像；由 _init 初始化碰撞场时调用，委托 _field_builder
 func _create_collision_image(resolution: int) -> Image:
 	return _field_builder._create_collision_image(resolution)
-## 将 collision_layers 盖印到 source 碰撞场并返回更新后的层列表；由 apply_voxel_write_spec 调用，委托 _field_builder
+## 将 collision_layers 盖印到 source 碰撞场并返回更新后的层列表；由 apply_instance_stamp_write_spec 调用，委托 _field_builder
 func _make_source_collision(base_px: Vector2i, collision_layers: Array, rec: Dictionary = {}) -> Array[Dictionary]:
 	return _field_builder._make_source_collision(base_px, collision_layers, rec)
 ## 从 collision 字典构建体素级别碰撞 float field；由 _rebuild_sv 调用，委托 _field_builder
@@ -1755,10 +1756,10 @@ func _stamp_collect_voxel_disc_gpu(slice_images: Array,
 	value: float,
 	compare_mode: int) -> Dictionary:
 	return _field_builder._stamp_collect_voxel_disc_gpu(slice_images, center_px, radius_px, value, compare_mode)
-## 将复杂度值盖印到 occupancy RGBA 图像的指定通道；由 apply_voxel_write_spec 调用，委托 _field_builder
+## 将复杂度值盖印到 occupancy RGBA 图像的指定通道；由 apply_instance_stamp_write_spec 调用，委托 _field_builder
 func _stamp_occupancy_channel(base_px: Vector2i, channel: int, radius_px: int, complexity: float) -> void:
 	_field_builder._stamp_occupancy_channel(base_px, channel, radius_px, complexity)
-## 将 collision_layers 盖印到共享碰撞场并返回成功应用的层列表；由 apply_voxel_write_spec 调用，委托 _field_builder
+## 将 collision_layers 盖印到共享碰撞场并返回成功应用的层列表；由 apply_instance_stamp_write_spec 调用，委托 _field_builder
 func _stamp_shared_field_layers(base_px: Vector2i, field_layers: Array, rec: Dictionary = {}) -> Array[Dictionary]:
 	return _field_builder._stamp_shared_field_layers(base_px, field_layers, rec)
 ## 将外部掩码图像导入到指定 occupancy 通道，按 complexity 混合；由 ScenePlacementActor 导入地形遮罩时调用，委托 _field_builder

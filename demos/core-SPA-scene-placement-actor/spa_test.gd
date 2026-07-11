@@ -719,7 +719,7 @@ static func check_stamp_only_commit_and_blend_sv() -> Dictionary:
 		"channel": 0,
 		"radius": 2.0,
 	}
-	committer.apply_voxel_write_spec(record)
+	committer.apply_instance_stamp_write_spec(record)
 	committer.build_voxel_volume(volume_res, [
 		{"channel": 0, "color": Color(0.2, 0.6, 0.8, 0.7), "complexity": 0.7, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
 	])

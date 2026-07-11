@@ -85,7 +85,7 @@ func _populate_test_data() -> void:
 
 	for rec in test_records:
 		var record := _make_voxel_record(rec[0], rec[1], rec[2], rec[3], rec[4], rec[5])
-		_committer.apply_voxel_write_spec(record)
+		_committer.apply_instance_stamp_write_spec(record)
 
 		# Mark dirty tiles after each write, with specific flags
 		var bounds := _compute_record_voxel_bounds(rec[1], rec[2], rec[5])

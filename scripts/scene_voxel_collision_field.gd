@@ -966,7 +966,7 @@ func set_terrain_base_collision_field(base_collision: Image) -> void:
 
 		_committer._sv_dirty = true
 
-## Get every placed mesh voxel_write_spec.
+## Get every placed mesh instance_stamp_write_spec.
 
 ## 获取全部体素写入规格记录列表
 

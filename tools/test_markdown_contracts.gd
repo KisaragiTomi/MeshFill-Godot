@@ -94,11 +94,11 @@ func _test_descriptor_backed_asset_semantics() -> bool:
 	var record := obj.make_instance_stamp_write_spec("descriptor_contract_record", Vector2i(4, 4), 8)
 	var record_color: Color = record.get("color", Color.TRANSPARENT)
 	if not record_color.is_equal_approx(descriptor_color):
-		push_error("  FAIL: voxel_write_spec record did not use descriptor color: %s" % str(record_color))
+		push_error("  FAIL: instance_stamp_write_spec record did not use descriptor color: %s" % str(record_color))
 		obj.free()
 		return false
 	if absf(float(record.get("complexity", -1.0)) - 0.35) > 0.001:
-		push_error("  FAIL: voxel_write_spec record did not use descriptor complexity")
+		push_error("  FAIL: instance_stamp_write_spec record did not use descriptor complexity")
 		obj.free()
 		return false
 	var record_collision: Array = record.get("collision", [])
@@ -106,7 +106,7 @@ func _test_descriptor_backed_asset_semantics() -> bool:
 	# the record; non-terrain collision is ignored at the committer stamping stage,
 	# not stripped from the descriptor-backed record.
 	if record_collision.is_empty() or record_collision[0].get("voxel", Vector3i.ZERO) != Vector3i(1, 0, 0):
-		push_error("  FAIL: voxel_write_spec record should carry descriptor collision: %s" % str(record_collision))
+		push_error("  FAIL: instance_stamp_write_spec record should carry descriptor collision: %s" % str(record_collision))
 		obj.free()
 		return false
 
@@ -171,7 +171,7 @@ func _test_committed_scene_voxel_accepted_fields() -> bool:
 		"radius": 2.0,
 	}
 
-	committer.apply_voxel_write_spec(record)
+	committer.apply_instance_stamp_write_spec(record)
 	committer.build_voxel_volume(8, [
 		{"channel": 0, "color": Color(0.2, 0.6, 0.8, 0.7), "complexity": 0.7, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
 	])
@@ -231,7 +231,7 @@ func _test_terrain_collision_survives_zero_complexity_writes() -> bool:
 		"channel": 0,
 		"radius": 1.0,
 	}
-	committer.apply_voxel_write_spec(record)
+	committer.apply_instance_stamp_write_spec(record)
 	committer.build_voxel_volume(8, [
 		{"channel": 0, "color": Color(0.4, 0.4, 0.4, 1.0), "complexity": 1.0, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
 	])

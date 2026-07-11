@@ -22,7 +22,7 @@ static func descriptor_from_entry(entry: Dictionary, default_subdivisions: int =
 		"subdivisions": maxi(int(entry.get("subdivisions", default_subdivisions)), 1),
 	}
 
-static func collect_descriptors(channel_profiles, voxel_write_specs: Array[Dictionary], channel_count: int) -> Array[Dictionary]:
+static func collect_descriptors(channel_profiles, instance_stamp_write_specs: Array[Dictionary], channel_count: int) -> Array[Dictionary]:
 	var descriptors_by_channel: Dictionary = {}
 
 	if channel_profiles is int:
@@ -43,7 +43,7 @@ static func collect_descriptors(channel_profiles, voxel_write_specs: Array[Dicti
 			for ch in range(mini(raw_profiles.size(), channel_count)):
 				descriptors_by_channel[ch] = descriptor_from_entry({"channel": ch}, maxi(int(raw_profiles[ch]), 1))
 
-	for record in voxel_write_specs:
+	for record in instance_stamp_write_specs:
 		if not record is Dictionary:
 			continue
 		var rec := record as Dictionary

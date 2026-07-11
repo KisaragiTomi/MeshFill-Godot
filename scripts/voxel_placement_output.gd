@@ -20,7 +20,7 @@ const SCENE_PLACEMENT_ACTOR_CONFIG_KEYS := [
 	"spa",
 ]
 const SCENE_VOXEL_COMMITTER_CONFIG_KEY := "scene_voxel_committer"
-const VOXEL_WRITE_SPEC_CONFIG_KEYS := [
+const INSTANCE_STAMP_WRITE_SPEC_CONFIG_KEYS := [
 	"asset",
 	"base_pixel",
 	"capture_size",

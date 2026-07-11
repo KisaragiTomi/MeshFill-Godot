@@ -9,7 +9,7 @@ const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd
 const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 const ANCHOR_KIND := "anchor"
 const INSTANCE_STAMP_WRITE_SPEC_META_KEY := "instance_stamp_write_spec"
-const VOXEL_WRITE_SPEC_META_KEY := "voxel_write_spec"  ## Deprecated: use INSTANCE_STAMP_WRITE_SPEC_META_KEY
+const VOXEL_WRITE_SPEC_META_KEY := "voxel_write_spec"  ## Deprecated read-compat alias; new writes use INSTANCE_STAMP_WRITE_SPEC_META_KEY
 const SELECTABLE_GROUP := "autoobject_selectable"
 const SELECTABLE_META_KEY := "autoobject_selectable"
 const SELECTED_META_KEY := "autoobject_selected"
@@ -42,7 +42,7 @@ const SELECTED_META_KEY := "autoobject_selected"
 @export var random_scale: Vector2 = Vector2(1.0, 1.0)        # 随机缩放范围（rock）
 @export var random_height_offset: Vector2 = Vector2(0.0, 0.0) # 随机高度偏移范围（rock）
 @export var mesh_index: int = -1                             # placement result 资产索引
-var voxel_write_spec: Dictionary = {}                         # 当前实例写入场景体素系统的 record handle
+var instance_stamp_write_spec: Dictionary = {}                         # 当前实例写入场景体素系统的 record handle
 var min_spacing_auto: bool = true                             # 是否按 bound_min_length 自动 spacing
 
 
@@ -50,12 +50,12 @@ func _ready() -> void:
 	_sync_selectable_metadata()
 
 
-static func voxel_write_spec_meta_keys() -> Array:
+static func instance_stamp_write_spec_meta_keys() -> Array:
 	return [INSTANCE_STAMP_WRITE_SPEC_META_KEY, VOXEL_WRITE_SPEC_META_KEY]
 
 
-static func voxel_write_spec_from_config(config: Dictionary) -> Dictionary:
-	for key in voxel_write_spec_meta_keys():
+static func instance_stamp_write_spec_from_config(config: Dictionary) -> Dictionary:
+	for key in instance_stamp_write_spec_meta_keys():
 		var raw_record = config.get(key, {})
 		if raw_record is Dictionary:
 			var record := raw_record as Dictionary
@@ -97,7 +97,7 @@ static func create_voxel_descriptor(
 	return descriptor
 
 
-static func make_profile_voxel_write_spec(
+static func make_profile_instance_stamp_write_spec(
 	record_id: String,
 	object_type: String,
 	position: Vector3,
@@ -503,12 +503,12 @@ func get_collision(default_radius: float = 0.0) -> Array[Dictionary]:
 
 
 func get_record_object_type() -> String:
-	var record_type := str(voxel_write_spec.get("type", voxel_write_spec.get("object_type", "")))
+	var record_type := str(instance_stamp_write_spec.get("type", instance_stamp_write_spec.get("object_type", "")))
 	return record_type if not record_type.is_empty() else "object"
 
 
 func get_record_auto_source(fallback: String = "generated") -> String:
-	var source := str(voxel_write_spec.get("auto_source", voxel_write_spec.get("placement_source", voxel_write_spec.get("source", ""))))
+	var source := str(instance_stamp_write_spec.get("auto_source", instance_stamp_write_spec.get("placement_source", instance_stamp_write_spec.get("source", ""))))
 	return source if not source.is_empty() else fallback
 
 
@@ -548,7 +548,7 @@ func make_voxel_profile(default_radius: float = -1.0) -> AutoVoxelProfile:
 	)
 
 
-func get_voxel_write_spec_extra_fields(extra_fields: Dictionary = {}) -> Dictionary:
+func get_instance_stamp_write_spec_extra_fields(extra_fields: Dictionary = {}) -> Dictionary:
 	var fields := extra_fields.duplicate(true)
 	if not fields.has("mesh_index"):
 		fields["mesh_index"] = mesh_index
@@ -567,7 +567,7 @@ func make_instance_stamp_write_spec(
 ) -> Dictionary:
 	var radius := get_record_radius()
 	var bounds_y := get_record_y_bounds()
-	return make_profile_voxel_write_spec(
+	return make_profile_instance_stamp_write_spec(
 		record_id,
 		get_record_object_type(),
 		position,
@@ -580,17 +580,8 @@ func make_instance_stamp_write_spec(
 		bounds_y.x,
 		bounds_y.y,
 		[],
-		get_voxel_write_spec_extra_fields(extra_fields)
+		get_instance_stamp_write_spec_extra_fields(extra_fields)
 	)
-
-## Deprecated: use make_instance_stamp_write_spec() instead.
-func make_voxel_write_spec(
-	record_id: String,
-	base_pixel: Vector2i,
-	volume_xz_resolution: int,
-	extra_fields: Dictionary = {}
-) -> Dictionary:
-	return make_instance_stamp_write_spec(record_id, base_pixel, volume_xz_resolution, extra_fields)
 
 
 func set_pivot_variants(variants: Array) -> void:
@@ -728,48 +719,41 @@ func _get_default_semantic_probe_radius() -> float:
 	return maxf(radius, 0.5)
 
 
-func set_voxel_write_spec(record: Dictionary) -> void:
+func set_instance_stamp_write_spec(record: Dictionary) -> void:
 	refresh_instance_id()
-	voxel_write_spec = record.duplicate(true)
-	voxel_write_spec["instance_id"] = instance_id
+	instance_stamp_write_spec = record.duplicate(true)
+	instance_stamp_write_spec["instance_id"] = instance_id
 	if auto_id.is_empty():
-		auto_id = str(voxel_write_spec.get("id", name))
+		auto_id = str(instance_stamp_write_spec.get("id", name))
 	if name.is_empty():
 		name = auto_id
-	voxel_write_spec["auto_id"] = auto_id
-	if voxel_write_spec.has("min_spacing_auto"):
-		min_spacing_auto = bool(voxel_write_spec.min_spacing_auto)
-	if voxel_write_spec.has("min_spacing"):
-		min_spacing = maxf(float(voxel_write_spec.min_spacing), 0.0)
-		if not voxel_write_spec.has("min_spacing_auto"):
+	instance_stamp_write_spec["auto_id"] = auto_id
+	if instance_stamp_write_spec.has("min_spacing_auto"):
+		min_spacing_auto = bool(instance_stamp_write_spec.min_spacing_auto)
+	if instance_stamp_write_spec.has("min_spacing"):
+		min_spacing = maxf(float(instance_stamp_write_spec.min_spacing), 0.0)
+		if not instance_stamp_write_spec.has("min_spacing_auto"):
 			min_spacing_auto = false
-	if voxel_write_spec.has("bound_min_length"):
-		bound_min_length = maxf(float(voxel_write_spec.bound_min_length), 0.0)
+	if instance_stamp_write_spec.has("bound_min_length"):
+		bound_min_length = maxf(float(instance_stamp_write_spec.bound_min_length), 0.0)
 	refresh_bound_spacing()
-	voxel_write_spec["bound_min_length"] = bound_min_length
-	voxel_write_spec["min_spacing"] = min_spacing
-	voxel_write_spec["min_spacing_auto"] = min_spacing_auto
+	instance_stamp_write_spec["bound_min_length"] = bound_min_length
+	instance_stamp_write_spec["min_spacing"] = min_spacing
+	instance_stamp_write_spec["min_spacing_auto"] = min_spacing_auto
 	_sync_auto_metadata()
-	set_meta(INSTANCE_STAMP_WRITE_SPEC_META_KEY, voxel_write_spec)
-	set_meta(VOXEL_WRITE_SPEC_META_KEY, voxel_write_spec)
+	set_meta(INSTANCE_STAMP_WRITE_SPEC_META_KEY, instance_stamp_write_spec)
 
-
-func get_voxel_write_spec() -> Dictionary:
-	if voxel_write_spec.is_empty():
-		var meta_record := _get_voxel_write_spec_metadata()
-		if not meta_record.is_empty():
-			set_voxel_write_spec(meta_record)
-	return voxel_write_spec.duplicate(true)
-
-func set_instance_stamp_write_spec(record: Dictionary) -> void:
-	set_voxel_write_spec(record)
 
 func get_instance_stamp_write_spec() -> Dictionary:
-	return get_voxel_write_spec()
+	if instance_stamp_write_spec.is_empty():
+		var meta_record := _get_instance_stamp_write_spec_metadata()
+		if not meta_record.is_empty():
+			set_instance_stamp_write_spec(meta_record)
+	return instance_stamp_write_spec.duplicate(true)
 
 
-func _get_voxel_write_spec_metadata() -> Dictionary:
-	for key in voxel_write_spec_meta_keys():
+func _get_instance_stamp_write_spec_metadata() -> Dictionary:
+	for key in instance_stamp_write_spec_meta_keys():
 		if not has_meta(key):
 			continue
 		var raw_record = get_meta(key)
@@ -814,19 +798,19 @@ func _clear_state_mirror_metadata() -> void:
 
 func _sync_record_identity_from_config(config: Dictionary) -> void:
 	if config.has("auto_source"):
-		voxel_write_spec["auto_source"] = str(config.auto_source)
+		instance_stamp_write_spec["auto_source"] = str(config.auto_source)
 	elif config.has("placement_source"):
-		voxel_write_spec["auto_source"] = str(config.placement_source)
+		instance_stamp_write_spec["auto_source"] = str(config.placement_source)
 	elif config.has("source"):
-		voxel_write_spec["auto_source"] = str(config.source)
+		instance_stamp_write_spec["auto_source"] = str(config.source)
 	if config.has("object_type"):
 		var configured_type := str(config.object_type)
-		voxel_write_spec["type"] = configured_type
-		voxel_write_spec["object_type"] = configured_type
-	elif config.has("type") and not voxel_write_spec.has("type"):
+		instance_stamp_write_spec["type"] = configured_type
+		instance_stamp_write_spec["object_type"] = configured_type
+	elif config.has("type") and not instance_stamp_write_spec.has("type"):
 		var configured_record_type := str(config.type)
-		voxel_write_spec["type"] = configured_record_type
-		voxel_write_spec["object_type"] = configured_record_type
+		instance_stamp_write_spec["type"] = configured_record_type
+		instance_stamp_write_spec["object_type"] = configured_record_type
 
 
 func _normalize_anchor_kind_array(kinds) -> PackedStringArray:
