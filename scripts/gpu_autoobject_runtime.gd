@@ -119,16 +119,13 @@ var _gpu_ready := false
 var _not_ready_reason := ""
 
 var _free_ids: Array[int] = []
-var _command_queue: Array[Dictionary] = []
 var _dirty_delta_count := 0
 var _flush_epoch := 0
-var _command_flush_epoch := 0
 # P0 #5: The VPG always explicitly passes use_accepted_placement_record_shader=true
-# when calling flush_command_queue or spawn_batch_from_accepted_placement_records.
-# This flag is kept as the default for callers that don't pass explicit options
-# (e.g. direct flush_command_queue() calls without the VPG bridge).
+# when calling spawn_batch_from_accepted_placement_records. The legacy command-queue
+# flush path that consumed this flag as its default was removed; the flag remains as
+# an SPA-facing toggle (set/get_use_resident_accepted_placement_writeback).
 var _use_resident_accepted_placement_writeback := false
-var _reserved_object_ids := {}
 
 var _alive_buffer: RID
 var _generation_buffer: RID
@@ -157,10 +154,7 @@ func configure_capacity(p_max_objects: int, p_enable_gpu: bool = true) -> void:
 	dirty_delta_capacity = maxi(max_objects * DIRTY_DELTA_CAPACITY_MULTIPLIER, 1)
 	_dirty_delta_count = 0
 	_flush_epoch = 0
-	_command_flush_epoch = 0
 	_free_ids.clear()
-	_reserved_object_ids.clear()
-	_command_queue.clear()
 	for i in range(max_objects):
 		_free_ids.append(max_objects - 1 - i)
 	_create_gpu_buffers()
@@ -189,77 +183,6 @@ func set_use_resident_accepted_placement_writeback(enabled: bool) -> void:
 ## 返回当前是否启用驻留放置记录 Shader 回写模式。
 func get_use_resident_accepted_placement_writeback() -> bool:
 	return _use_resident_accepted_placement_writeback
-
-
-## 预分配指定数量的对象 ID 用于后续的接受放置批量操作，分配失败时自动回滚。
-func reserve_accepted_placement_object_ids(record_count: int) -> Dictionary:
-	if not _gpu_ready:
-		return _object_id_reservation_result(false, "runtime_not_ready", [], record_count)
-	if record_count < 0:
-		return _object_id_reservation_result(false, "invalid_record_count", [], record_count)
-	if record_count == 0:
-		return _object_id_reservation_result(true, "ok", [], record_count)
-
-	var reserved_ids: Array[int] = []
-	for _i in range(record_count):
-		var object_id := _allocate_id()
-		if object_id < 0:
-			rollback_accepted_placement_object_ids(reserved_ids)
-			return _object_id_reservation_result(false, "capacity_full", [], record_count)
-		if bool(_read_object_state(object_id).get("alive", false)):
-			rollback_accepted_placement_object_ids(reserved_ids)
-			return _object_id_reservation_result(false, "allocated_id_already_alive", [], record_count)
-		_reserved_object_ids[object_id] = true
-		reserved_ids.append(object_id)
-	return _object_id_reservation_result(true, "ok", reserved_ids, record_count)
-
-
-## 回滚已预分配但未提交的对象 ID，将其归还到空闲池。
-func rollback_accepted_placement_object_ids(object_ids) -> Dictionary:
-	var ids := _object_id_array_from_value(object_ids)
-	var released_ids: Array[int] = []
-	var skipped_ids: Array[int] = []
-	for object_id in ids:
-		if _release_reserved_object_id_for_rollback(object_id):
-			released_ids.append(object_id)
-		else:
-			skipped_ids.append(object_id)
-	return {
-		"ok": skipped_ids.is_empty(),
-		"reason": "ok" if skipped_ids.is_empty() else "some_ids_not_released",
-		"object_ids": ids,
-		"released_object_ids": released_ids,
-		"skipped_object_ids": skipped_ids,
-		"released_count": released_ids.size(),
-		"skipped_count": skipped_ids.size(),
-		"reserved_object_id_count": _reserved_object_ids.size(),
-		"runtime_ready": _gpu_ready,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"readback_source": "gpu_storage_buffers" if _gpu_ready else "none",
-	}
-
-
-## 在 Shader 写入成功后将预分配的对象 ID 标记为已提交，移出预分配集合。
-func finalize_accepted_placement_object_id_reservation(object_ids, accepted_record_result: Dictionary = {}) -> Dictionary:
-	var ids := _object_id_array_from_value(object_ids)
-	if not _gpu_ready:
-		return _object_id_finalize_result(false, "runtime_not_ready", ids, [])
-	if not bool(accepted_record_result.get("ok", false)) \
-			or not bool(accepted_record_result.get("accepted_placement_record_shader_consumed", false)):
-		return _object_id_finalize_result(false, "accepted_record_shader_success_required", ids, [])
-
-	var finalized_ids: Array[int] = []
-	for object_id in ids:
-		if not _is_reserved_object_id(object_id):
-			return _object_id_finalize_result(false, "object_id_not_reserved", ids, finalized_ids)
-		if not _is_alive_id(object_id):
-			return _object_id_finalize_result(false, "reserved_object_id_not_alive", ids, finalized_ids)
-		finalized_ids.append(object_id)
-
-	for object_id in finalized_ids:
-		_reserved_object_ids.erase(object_id)
-	return _object_id_finalize_result(true, "ok", ids, finalized_ids)
 
 
 ## 通过 GPU Shader 批量生成对象（仅 GPU 路径），失败时原子回滚所有已分配 ID。
@@ -319,7 +242,7 @@ func spawn_batch_from_accepted_placement_records(
 			}
 		object_ids.append(object_id)
 
-	# Step 2: Build internal record format (same as _pack_bulk_spawn_records).
+	# Step 2: Build internal record format.
 	# Read generation from GPU resident buffer to preserve recycled-ID state.
 	var records: Array[Dictionary] = []
 	for i in range(spawn_records.size()):
@@ -1010,275 +933,6 @@ func kill(object_id: int, dirty_flags: Dictionary = {}) -> bool:
 	)
 
 
-## 将命令放入队列（同 stage_command 的别名）。
-func enqueue(command: Dictionary) -> Dictionary:
-	return stage_command(command)
-
-
-## 验证并暂存一条命令到命令队列，spawn 命令会自动分配对象 ID。
-func stage_command(command: Dictionary) -> Dictionary:
-	var command_name := _command_name(command)
-	if not _gpu_ready:
-		return _stage_result(false, int(command.get("object_id", -1)), "runtime_not_ready", command_name)
-	if not _command_appends_dirty_delta(command_name) and command_name != "requestsnapshot":
-		var unknown := _stage_result(false, int(command.get("object_id", -1)), "unknown_command", command_name)
-		unknown["command"] = command_name
-		return unknown
-
-	var staged := command.duplicate(true)
-	staged["_staged_command_name"] = command_name
-	var object_id := int(staged.get("object_id", -1))
-	if command_name == "spawn":
-		if not _can_stage_dirty_delta_command():
-			return _stage_result(false, object_id, "dirty_delta_capacity_full", command_name)
-		if object_id >= 0:
-			if not _is_reserved_object_id(object_id):
-				return _stage_result(false, object_id, "object_id_not_reserved", command_name)
-			if bool(_read_object_state(object_id).get("alive", false)):
-				return _stage_result(false, object_id, "reserved_object_id_already_alive", command_name)
-		else:
-			object_id = _allocate_id()
-			if object_id < 0:
-				return _stage_result(false, -1, "capacity_full", command_name)
-		staged["object_id"] = object_id
-		staged["_reserved_object_id"] = true
-	elif _command_appends_dirty_delta(command_name):
-		if not _is_valid_id(object_id):
-			return _stage_result(false, object_id, "invalid_object_id", command_name)
-		if not _can_stage_dirty_delta_command():
-			return _stage_result(false, object_id, "dirty_delta_capacity_full", command_name)
-
-	_command_queue.append(staged)
-	return _stage_result(true, object_id, "queued", command_name)
-
-
-## 执行命令队列中的所有命令；若全为 spawn 命令则走批量路径，否则逐条执行。
-func flush_command_queue(options: Dictionary = {}) -> Dictionary:
-	var resolved_options := options.duplicate(true)
-	if not resolved_options.has("use_accepted_placement_record_shader"):
-		resolved_options["use_accepted_placement_record_shader"] = _use_resident_accepted_placement_writeback
-	if not _gpu_ready:
-		return {
-			"ok": false,
-			"reason": "runtime_not_ready",
-			"command_count": _command_queue.size(),
-			"applied_count": 0,
-			"failed_count": _command_queue.size(),
-			"results": [],
-			"pending_command_count": _command_queue.size(),
-			"runtime_ready": _gpu_ready,
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"readback_source": "none",
-			"runtime_command_flush_mode": "none",
-			"resident_gpu_allocator_writeback": false,
-			"resident_gpu_allocator_writeback_mode": "none",
-			"accepted_placement_record_schema_version": ACCEPTED_PLACEMENT_RECORD_SCHEMA_VERSION,
-			"accepted_placement_record_stride_bytes": ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
-		}
-
-	var queued := _command_queue.duplicate(true)
-	_command_queue.clear()
-	var bulk_spawn_gate := _bulk_spawn_flush_gate(queued)
-	if bool(bulk_spawn_gate.get("ok", false)):
-		return _flush_bulk_spawn_command_queue(queued, resolved_options)
-
-	var results: Array[Dictionary] = []
-	var ok := true
-	var applied_count := 0
-	var failed_count := 0
-	for staged in queued:
-		var result := _execute_staged_command(staged)
-		results.append(result)
-		if bool(result.get("ok", false)):
-			applied_count += 1
-		else:
-			failed_count += 1
-			ok = false
-			if bool(staged.get("_reserved_object_id", false)) and not bool(staged.get("accepted_placement_object_id_reserved", false)):
-				_release_reserved_id(int(staged.get("object_id", -1)))
-	_command_flush_epoch += 1
-	return {
-		"ok": ok,
-		"reason": "ok" if ok else "command_failed",
-		"command_count": queued.size(),
-		"applied_count": applied_count,
-		"failed_count": failed_count,
-		"results": results,
-		"pending_command_count": _command_queue.size(),
-		"pending_dirty_delta_count": get_pending_dirty_delta_count(),
-		"command_flush_epoch": _command_flush_epoch,
-		"runtime_ready": _gpu_ready,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"readback_source": "gpu_storage_buffers" if ok else "none",
-		"runtime_command_flush_mode": "cpu_per_command_buffer_update",
-		"bulk_spawn_blocked_reason": str(bulk_spawn_gate.get("reason", "not_all_spawn")),
-		"resident_gpu_allocator_writeback": false,
-		"resident_gpu_allocator_writeback_mode": "none",
-		"accepted_placement_record_schema_version": ACCEPTED_PLACEMENT_RECORD_SCHEMA_VERSION,
-		"accepted_placement_record_stride_bytes": ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
-		"accepted_placement_record_shader_consumed": false,
-	}
-
-
-## flush_command_queue 的别名。
-func flush_commands(options: Dictionary = {}) -> Dictionary:
-	return flush_command_queue(options)
-
-
-## 清空命令队列，对预分配但未提交的 ID 执行回滚。
-func clear_command_queue() -> void:
-	for staged in _command_queue:
-		if bool(staged.get("_reserved_object_id", false)) and not bool(staged.get("accepted_placement_object_id_reserved", false)):
-			_release_reserved_id(int(staged.get("object_id", -1)))
-	_command_queue.clear()
-
-
-## 返回命令队列中待执行的命令数。
-func get_pending_command_count() -> int:
-	return _command_queue.size()
-
-
-## 根据命令名称派发并执行单条已暂存命令（spawn/updatetransform/kill 等）。
-func _execute_staged_command(command: Dictionary) -> Dictionary:
-	var command_name := str(command.get("command", command.get("type", ""))).to_lower()
-	command_name = str(command.get("_staged_command_name", command_name))
-	match command_name:
-		"spawn":
-			var object_id := _spawn_from_staged_bounds(command)
-			return _enqueue_result(object_id >= 0, object_id, "ok" if object_id >= 0 else "spawn_failed")
-		"updatetransform":
-			var object_id := int(command.get("object_id", -1))
-			var bounds := _bounds_from_params(command)
-			var ok := update_transform(
-				object_id,
-				command.get("transform", Transform3D.IDENTITY),
-				bounds.voxel_min,
-				bounds.voxel_max,
-				command.get("dirty_flags", {})
-			)
-			return _enqueue_result(ok, object_id, "ok" if ok else "update_transform_failed")
-		"updateprofile":
-			var object_id := int(command.get("object_id", -1))
-			var profile_id := int(command.get("profile_id", command.get("new_profile_id", command.get("runtime_profile_id", -1))))
-			var bounds := _bounds_from_params(command)
-			var has_bounds := _command_has_bounds(command)
-			var ok := update_profile(
-				object_id,
-				profile_id,
-				command.get("dirty_flags", {}),
-				bounds.voxel_min if has_bounds else null,
-				bounds.voxel_max if has_bounds else null
-			)
-			return _enqueue_result(ok, object_id, "ok" if ok else "update_profile_failed")
-		"updateflags":
-			var object_id := int(command.get("object_id", -1))
-			var object_flags := _object_flags_from_value(command.get("object_flags", 0))
-			var ok := update_flags(object_id, object_flags, command.get("dirty_flags", {}))
-			return _enqueue_result(ok, object_id, "ok" if ok else "update_flags_failed")
-		"kill":
-			var object_id := int(command.get("object_id", -1))
-			var ok := kill(object_id, command.get("dirty_flags", {}))
-			return _enqueue_result(ok, object_id, "ok" if ok else "kill_failed")
-		"requestsnapshot":
-			var result := _enqueue_result(true, int(command.get("object_id", -1)), "ok")
-			result["snapshot"] = get_selected_debug_summary(command.get("object_ids", []))
-			result["readback_source"] = "gpu_storage_buffers"
-			return result
-		_:
-			var result := _enqueue_result(false, int(command.get("object_id", -1)), "unknown_command")
-			result["command"] = command_name
-			return result
-
-
-## 检查命令队列是否满足批量 spawn 条件（全为 spawn、ID 有效、dirty delta 容量充足）。
-func _bulk_spawn_flush_gate(queued: Array) -> Dictionary:
-	if queued.is_empty():
-		return {"ok": false, "reason": "empty_command_queue"}
-	if not _gpu_ready or _rd == null or not _all_required_buffers_valid():
-		return {"ok": false, "reason": "runtime_not_ready"}
-	for staged in queued:
-		if str((staged as Dictionary).get("_staged_command_name", "")) != "spawn":
-			return {"ok": false, "reason": "not_all_spawn"}
-	if _dirty_delta_count + queued.size() > dirty_delta_capacity:
-		return {"ok": false, "reason": "dirty_delta_capacity_full"}
-	for staged in queued:
-		var object_id := int((staged as Dictionary).get("object_id", -1))
-		if not _is_valid_id(object_id):
-			return {"ok": false, "reason": "invalid_object_id", "object_id": object_id}
-		if not bool((staged as Dictionary).get("_reserved_object_id", false)):
-			return {"ok": false, "reason": "missing_reserved_object_id", "object_id": object_id}
-		if bool(_read_object_state(object_id).get("alive", false)):
-			return {"ok": false, "reason": "reserved_object_id_already_alive", "object_id": object_id}
-	return {"ok": true, "reason": "ok"}
-
-
-## 将全 spawn 命令队列通过 GPU Shader（或 CPU 批量写入）一次性提交，返回批量结果字典。
-func _flush_bulk_spawn_command_queue(queued: Array, options: Dictionary = {}) -> Dictionary:
-	var records := _pack_bulk_spawn_records(queued)
-	var accepted_placement_record_bytes := _pack_accepted_placement_spawn_records(records)
-	var shader_result := _try_apply_accepted_placement_record_shader(
-		records,
-		accepted_placement_record_bytes,
-		options
-	)
-	var attempted := bool(shader_result.get("attempted", false))
-	var write_result := shader_result if attempted else _upload_bulk_spawn_records(records)
-	var ok := bool(write_result.get("ok", false))
-	var results: Array[Dictionary] = []
-	var applied_count := 0
-	var failed_count := 0
-	var flush_mode := str(write_result.get("runtime_command_flush_mode", "resident_accepted_placement_record_shader_writeback" if attempted else "cpu_bulk_spawn_buffer_update"))
-	for i in range(records.size()):
-		var record: Dictionary = records[i]
-		var staged: Dictionary = queued[i]
-		var object_id := int(record.get("object_id", -1))
-		var result := _enqueue_result(ok, object_id, "ok" if ok else str(write_result.get("reason", "bulk_spawn_write_failed")))
-		result["runtime_command_flush_mode"] = flush_mode
-		results.append(result)
-		if ok:
-			applied_count += 1
-		else:
-			failed_count += 1
-			if bool(staged.get("_reserved_object_id", false)) and not bool(staged.get("accepted_placement_object_id_reserved", false)):
-				_release_reserved_id(object_id)
-	if ok:
-		_dirty_delta_count = int(write_result.get("pending_dirty_delta_count", _dirty_delta_count))
-	_command_flush_epoch += 1
-	return {
-		"ok": ok,
-		"reason": "ok" if ok else str(write_result.get("reason", "bulk_spawn_write_failed")),
-		"command_count": queued.size(),
-		"applied_count": applied_count,
-		"failed_count": failed_count,
-		"results": results,
-		"pending_command_count": _command_queue.size(),
-		"pending_dirty_delta_count": get_pending_dirty_delta_count(),
-		"command_flush_epoch": _command_flush_epoch,
-		"runtime_ready": _gpu_ready,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"readback_source": "gpu_storage_buffers" if ok else "none",
-		"runtime_command_flush_mode": flush_mode,
-		"resident_gpu_allocator_writeback": false,
-		"resident_gpu_allocator_writeback_mode": str(write_result.get("resident_gpu_allocator_writeback_mode", "none")),
-		"accepted_placement_record_source": "resident_accepted_placement_record_shader" if attempted else "cpu_bulk_spawn_command_staging_debug_buffer",
-		"accepted_placement_record_schema_version": ACCEPTED_PLACEMENT_RECORD_SCHEMA_VERSION,
-		"accepted_placement_record_stride_bytes": ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
-		"accepted_placement_record_count": records.size(),
-		"accepted_placement_record_byte_count": accepted_placement_record_bytes.size(),
-		"accepted_placement_record_debug_packed": accepted_placement_record_bytes.size() == records.size() * ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
-		"accepted_placement_record_shader_consumed": bool(write_result.get("accepted_placement_record_shader_consumed", false)),
-		"accepted_placement_record_shader_name": str(write_result.get("accepted_placement_record_shader_name", "none")),
-		"accepted_placement_record_shader_path": str(write_result.get("accepted_placement_record_shader_path", "none")),
-		"accepted_placement_record_shader_dispatch_count": int(write_result.get("accepted_placement_record_shader_dispatch_count", 0)),
-		"accepted_placement_record_shader_local_size_x": ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X,
-		"accepted_placement_record_shader_stats": write_result.get("accepted_placement_record_shader_stats", {}),
-		"resident_gpu_allocator_writeback_blocked_reason": str(write_result.get("resident_gpu_allocator_writeback_blocked_reason", "none" if ok and attempted else "no_resident_allocator_shader_dispatch")),
-	}
-
-
 ## 尝试通过 GPU 着色器批量写入接受放置记录；成功返回 ok=true，未启用则直接返回被阻塞结果。
 func _try_apply_accepted_placement_record_shader(
 	records: Array[Dictionary],
@@ -1420,35 +1074,6 @@ func _try_apply_accepted_placement_record_shader(
 	return base_result
 
 
-## 将已暂存的 spawn 命令列表转换为内部记录字典数组，含边界、变换、dirty 位等字段。
-func _pack_bulk_spawn_records(queued: Array) -> Array[Dictionary]:
-	var records: Array[Dictionary] = []
-	for i in range(queued.size()):
-		var staged = queued[i]
-		var command := staged as Dictionary
-		var object_id := int(command.get("object_id", -1))
-		var bounds := _bounds_from_params(command)
-		var generation := _read_generation(object_id)
-		records.append({
-			"object_id": object_id,
-			"profile_id": int(command.get("profile_id", -1)),
-			"object_type": int(command.get("object_type", 0)),
-			"object_flags": _object_flags_from_value(command.get("object_flags", 0)),
-			"generation": generation,
-			"voxel_min": bounds.voxel_min,
-			"voxel_max": bounds.voxel_max,
-			"previous_voxel_min": bounds.voxel_min,
-			"previous_voxel_max": bounds.voxel_max,
-			"transform": command.get("transform", Transform3D.IDENTITY),
-			"dirty_flags": _merge_dirty_flags(command.get("dirty_flags", {})),
-			"dirty_flag_bits": _dirty_flags_to_bits(command.get("dirty_flags", {})),
-			"asset_index": int(command.get("asset_index", -1)),
-			"result_index": int(command.get("result_index", i)),
-			"reserved": int(command.get("reserved", 0)),
-		})
-	return records
-
-
 ## 将内部记录字典数组打包为 GPU 着色器所需的字节缓冲区（每条记录 128 字节）。
 func _pack_accepted_placement_spawn_records(records: Array[Dictionary]) -> PackedByteArray:
 	var bytes := PackedByteArray()
@@ -1471,126 +1096,6 @@ func _pack_accepted_placement_spawn_records(records: Array[Dictionary]) -> Packe
 		bytes.encode_s32(base + ACCEPTED_PLACEMENT_RECORD_RESULT_INDEX_OFFSET, int(record.get("result_index", i)))
 		bytes.encode_s32(base + ACCEPTED_PLACEMENT_RECORD_RESERVED_OFFSET, int(record.get("reserved", 0)))
 	return bytes
-
-
-## 通过 CPU 逐缓冲区批量写入 spawn 记录到 GPU 存储缓冲区（调试/回退路径）。
-func _upload_bulk_spawn_records(records: Array[Dictionary]) -> Dictionary:
-	if records.is_empty():
-		return {"ok": true, "reason": "ok", "pending_dirty_delta_count": _dirty_delta_count}
-	if not _write_bulk_scalar_buffer(_generation_buffer, records, "generation"):
-		return {"ok": false, "reason": "generation_buffer_update_failed"}
-	if not _write_bulk_scalar_buffer(_type_buffer, records, "object_type"):
-		return {"ok": false, "reason": "type_buffer_update_failed"}
-	if not _write_bulk_scalar_buffer(_profile_buffer, records, "profile_id"):
-		return {"ok": false, "reason": "profile_buffer_update_failed"}
-	if not _write_bulk_scalar_buffer(_flags_buffer, records, "object_flags"):
-		return {"ok": false, "reason": "flags_buffer_update_failed"}
-	if not _write_bulk_bounds_buffer(_bounds_min_buffer, records, "voxel_min"):
-		return {"ok": false, "reason": "bounds_min_buffer_update_failed"}
-	if not _write_bulk_bounds_buffer(_bounds_max_buffer, records, "voxel_max"):
-		return {"ok": false, "reason": "bounds_max_buffer_update_failed"}
-	if not _write_bulk_bounds_buffer(_previous_bounds_min_buffer, records, "previous_voxel_min"):
-		return {"ok": false, "reason": "previous_bounds_min_buffer_update_failed"}
-	if not _write_bulk_bounds_buffer(_previous_bounds_max_buffer, records, "previous_voxel_max"):
-		return {"ok": false, "reason": "previous_bounds_max_buffer_update_failed"}
-	if not _write_bulk_transform_buffer(records):
-		return {"ok": false, "reason": "transform_buffer_update_failed"}
-	if not _write_bulk_spawn_dirty_deltas(records):
-		return {"ok": false, "reason": "dirty_delta_buffer_update_failed"}
-	if not _write_bulk_scalar_buffer(_alive_buffer, records, "_alive"):
-		return {"ok": false, "reason": "alive_buffer_update_failed"}
-	var next_dirty_count := _dirty_delta_count + records.size()
-	if not _write_dirty_count(next_dirty_count, false):
-		return {"ok": false, "reason": "dirty_count_write_failed"}
-	submit_and_sync()
-	return {"ok": true, "reason": "ok", "pending_dirty_delta_count": next_dirty_count}
-
-
-## 按对象 ID 批量写入单个标量字段（int32）到指定 GPU 缓冲区。
-func _write_bulk_scalar_buffer(buffer: RID, records: Array[Dictionary], value_key: String) -> bool:
-	return _write_bulk_record_ranges(buffer, records, OBJECT_SCALAR_STRIDE_BYTES, func(bytes: PackedByteArray, offset: int, record: Dictionary) -> void:
-		var value := 1 if value_key == "_alive" else int(record.get(value_key, 0))
-		bytes.encode_s32(offset, value)
-	)
-
-
-## 按对象 ID 批量写入 Vector3i 边界字段（ivec4）到指定 GPU 缓冲区。
-func _write_bulk_bounds_buffer(buffer: RID, records: Array[Dictionary], value_key: String) -> bool:
-	return _write_bulk_record_ranges(buffer, records, OBJECT_BOUNDS_STRIDE_BYTES, func(bytes: PackedByteArray, offset: int, record: Dictionary) -> void:
-		var value: Vector3i = record.get(value_key, Vector3i.ZERO)
-		BufferUtils.encode_vec3i4(bytes, offset, value)
-	)
-
-
-## 按对象 ID 批量写入 Transform3D 字段（mat4）到变换缓冲区。
-func _write_bulk_transform_buffer(records: Array[Dictionary]) -> bool:
-	return _write_bulk_record_ranges(_transform_buffer, records, OBJECT_TRANSFORM_STRIDE_BYTES, func(bytes: PackedByteArray, offset: int, record: Dictionary) -> void:
-		var transform: Transform3D = record.get("transform", Transform3D.IDENTITY)
-		BufferUtils.encode_transform_mat4(bytes, offset, transform)
-	)
-
-
-## 按 object_id 排序后将记录分成连续段，逐段调用 _write_bulk_record_range 写入。
-func _write_bulk_record_ranges(buffer: RID, records: Array[Dictionary], stride: int, encode_record: Callable) -> bool:
-	var sorted := records.duplicate()
-	sorted.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		return int(a.get("object_id", -1)) < int(b.get("object_id", -1))
-	)
-	var range_records: Array[Dictionary] = []
-	var range_start_id := -1
-	var previous_id := -1
-	for record in sorted:
-		var object_id := int((record as Dictionary).get("object_id", -1))
-		if range_records.is_empty():
-			range_start_id = object_id
-			previous_id = object_id
-		elif object_id != previous_id + 1:
-			if not _write_bulk_record_range(buffer, range_start_id, range_records, stride, encode_record):
-				return false
-			range_records.clear()
-			range_start_id = object_id
-		range_records.append(record)
-		previous_id = object_id
-	if not range_records.is_empty() and not _write_bulk_record_range(buffer, range_start_id, range_records, stride, encode_record):
-		return false
-	return true
-
-
-## 将连续对象 ID 段的记录打包为字节并写入 GPU 缓冲区的对应偏移。
-func _write_bulk_record_range(
-	buffer: RID,
-	range_start_id: int,
-	range_records: Array[Dictionary],
-	stride: int,
-	encode_record: Callable
-) -> bool:
-	var bytes := PackedByteArray()
-	bytes.resize(range_records.size() * stride)
-	for i in range(range_records.size()):
-		encode_record.call(bytes, i * stride, range_records[i])
-	return _write_buffer(buffer, range_start_id * stride, bytes, false)
-
-
-## 将批量 spawn 记录的 dirty delta 条目打包为字节并追加写入 dirty delta 缓冲区。
-func _write_bulk_spawn_dirty_deltas(records: Array[Dictionary]) -> bool:
-	var bytes := PackedByteArray()
-	bytes.resize(records.size() * DIRTY_DELTA_STRIDE_BYTES)
-	for i in range(records.size()):
-		var record := records[i]
-		var base := i * DIRTY_DELTA_STRIDE_BYTES
-		var old_min: Vector3i = record.get("previous_voxel_min", Vector3i.ZERO)
-		var old_max: Vector3i = record.get("previous_voxel_max", Vector3i.ONE)
-		var new_min: Vector3i = record.get("voxel_min", old_min)
-		var new_max: Vector3i = record.get("voxel_max", old_max)
-		bytes.encode_s32(base + 0, int(record.get("object_id", -1)))
-		bytes.encode_s32(base + 4, int(record.get("object_type", 0)))
-		bytes.encode_s32(base + 8, int(record.get("profile_id", -1)))
-		bytes.encode_s32(base + 12, int(record.get("generation", 0)))
-		BufferUtils.encode_vec3i4_with_w(bytes, base + 16, old_min, 0)
-		BufferUtils.encode_vec3i4_with_w(bytes, base + 32, old_max, 1)
-		BufferUtils.encode_vec3i4_with_w(bytes, base + 48, new_min, _dirty_flags_to_bits(record.get("dirty_flags", {})))
-		BufferUtils.encode_vec3i4_with_w(bytes, base + 64, new_max, _flush_epoch)
-	return _write_buffer(_dirty_delta_buffer, _dirty_delta_count * DIRTY_DELTA_STRIDE_BYTES, bytes, false)
 
 
 ## 构造接受放置记录着色器所需的 push constant 字节（32 字节）。
@@ -1661,176 +1166,6 @@ func _read_accepted_placement_record_shader_stats(stats_buffer: RID) -> Dictiona
 		"dispatched": bytes.decode_u32(ACCEPTED_PLACEMENT_RECORD_STAT_DISPATCHED * 4),
 		"readback_source": "accepted_placement_record_stats_buffer",
 	}
-
-
-## 从已暂存命令字典中解析边界后调用 _spawn_with_reserved_id。
-func _spawn_from_staged_bounds(command: Dictionary) -> int:
-	var object_id := int(command.get("object_id", -1))
-	var bounds := _bounds_from_params(command)
-	return _spawn_with_reserved_id(
-		object_id,
-		int(command.get("profile_id", -1)),
-		int(command.get("object_type", 0)),
-		bounds.voxel_min,
-		bounds.voxel_max,
-		command.get("transform", Transform3D.IDENTITY),
-		command.get("dirty_flags", {}),
-		_object_flags_from_value(command.get("object_flags", 0))
-	)
-
-
-## 构造 stage_command 的标准返回字典。
-func _stage_result(ok: bool, object_id: int, reason: String, command_name: String) -> Dictionary:
-	return {
-		"ok": ok,
-		"object_id": object_id,
-		"reason": reason,
-		"command": command_name,
-		"queued": ok,
-		"staged": ok,
-		"pending_command_count": _command_queue.size(),
-		"runtime_ready": _gpu_ready,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"runtime_read_source": "none",
-		"readback_source": "none",
-	}
-
-
-## 将命令字典中的命令名标准化为小写规范形式（如 "updatebounds" → "updatetransform"）。
-func _command_name(command: Dictionary) -> String:
-	var command_name := str(command.get("command", command.get("type", ""))).to_lower()
-	match command_name:
-		"spawn", "spawnobject":
-			return "spawn"
-		"updatetransform", "update_transform", "updatebounds", "update_bounds":
-			return "updatetransform"
-		"updateprofile", "update_profile":
-			return "updateprofile"
-		"updateflags", "update_flags":
-			return "updateflags"
-		"kill", "killobject", "free", "freeobject":
-			return "kill"
-		"requestsnapshot", "request_snapshot", "snapshot":
-			return "requestsnapshot"
-	return command_name
-
-
-## 判断给定命令名是否会追加 dirty delta（spawn/updatetransform/updateprofile/updateflags/kill）。
-func _command_appends_dirty_delta(command_name: String) -> bool:
-	return command_name in ["spawn", "updatetransform", "updateprofile", "updateflags", "kill"]
-
-
-## 检查当前队列中的 dirty delta 数量是否还未超出容量上限。
-func _can_stage_dirty_delta_command() -> bool:
-	return _gpu_ready and _dirty_delta_count + _queued_dirty_delta_command_count() < dirty_delta_capacity
-
-
-## 统计命令队列中会追加 dirty delta 的命令数量。
-func _queued_dirty_delta_command_count() -> int:
-	var count := 0
-	for staged in _command_queue:
-		if _command_appends_dirty_delta(str(staged.get("_staged_command_name", ""))):
-			count += 1
-	return count
-
-
-## 将未存活的 object_id 归还到空闲池（若尚未在空闲池中）。
-func _release_reserved_id(object_id: int) -> void:
-	if not _is_valid_id(object_id):
-		return
-	if _free_ids.find(object_id) < 0 and not _is_alive_id(object_id):
-		_free_ids.append(object_id)
-
-
-## 在回滚时释放预分配的 object_id：移出预分配集合并归还空闲池。
-func _release_reserved_object_id_for_rollback(object_id: int) -> bool:
-	if not _is_reserved_object_id(object_id):
-		return false
-	if _is_alive_id(object_id):
-		return false
-	if _free_ids.find(object_id) >= 0:
-		return false
-	_reserved_object_ids.erase(object_id)
-	_free_ids.append(object_id)
-	return true
-
-
-## 检查 object_id 是否处于预分配状态（已分配但未提交）。
-func _is_reserved_object_id(object_id: int) -> bool:
-	return _is_valid_id(object_id) and bool(_reserved_object_ids.get(object_id, false))
-
-
-## 将 Dictionary/Array/PackedInt32Array/int 等值统一转换为 Array[int] 对象 ID 列表。
-func _object_id_array_from_value(value) -> Array[int]:
-	var ids: Array[int] = []
-	if value is Dictionary:
-		var dict := value as Dictionary
-		return _object_id_array_from_value(dict.get("object_ids", dict.get("reserved_object_ids", [])))
-	if value is PackedInt32Array:
-		for raw_id in value:
-			ids.append(int(raw_id))
-		return ids
-	if value is Array:
-		for raw_id in value:
-			ids.append(int(raw_id))
-		return ids
-	if value is int or value is float:
-		ids.append(int(value))
-	return ids
-
-
-## 构造 reserve_accepted_placement_object_ids 的标准返回字典。
-func _object_id_reservation_result(ok: bool, reason: String, object_ids: Array[int], requested_count: int) -> Dictionary:
-	return {
-		"ok": ok,
-		"reason": reason,
-		"object_ids": object_ids,
-		"reserved_object_ids": object_ids,
-		"reserved_count": object_ids.size() if ok else 0,
-		"requested_count": requested_count,
-		"reserved_object_id_count": _reserved_object_ids.size(),
-		"runtime_ready": _gpu_ready,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"readback_source": "gpu_storage_buffers" if ok and _gpu_ready else "none",
-		"reservation_state": "reserved_not_alive" if ok else "none",
-		"accepted_placement_record_shader_consumed": false,
-		"commit_status": "accepted_record_shader_success_required",
-	}
-
-
-## 构造 finalize_accepted_placement_object_id_reservation 的标准返回字典。
-func _object_id_finalize_result(ok: bool, reason: String, object_ids: Array[int], finalized_ids: Array[int]) -> Dictionary:
-	return {
-		"ok": ok,
-		"reason": reason,
-		"object_ids": object_ids,
-		"finalized_object_ids": finalized_ids,
-		"finalized_count": finalized_ids.size(),
-		"reserved_object_id_count": _reserved_object_ids.size(),
-		"runtime_ready": _gpu_ready,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"readback_source": "gpu_storage_buffers" if ok else "none",
-		"commit_status": "committed" if ok else "accepted_record_shader_success_required",
-	}
-
-
-## 构造单条命令执行结果的标准返回字典。
-func _enqueue_result(ok: bool, object_id: int, reason: String) -> Dictionary:
-	return {
-		"ok": ok,
-		"object_id": object_id,
-		"reason": reason,
-		"runtime_ready": _gpu_ready,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"runtime_read_source": "none",
-		"readback_source": "none",
-		"queued": false,
-	}
-
 
 
 # P0 Task #2: Resident GPU dirty delta → SceneVoxelTile update pass.
@@ -2196,8 +1531,6 @@ func get_selected_debug_summary(object_ids: Array = []) -> Dictionary:
 		"max_objects": max_objects,
 		"live_count": get_live_count(),
 		"free_count": _free_ids.size() if _gpu_ready else 0,
-		"reserved_object_id_count": _reserved_object_ids.size() if _gpu_ready else 0,
-		"pending_command_count": get_pending_command_count(),
 		"pending_delta_count": get_pending_dirty_delta_count(),
 		"dirty_delta_capacity": dirty_delta_capacity,
 		"runtime_ready": _gpu_ready,
@@ -2205,14 +1538,11 @@ func get_selected_debug_summary(object_ids: Array = []) -> Dictionary:
 		"cpu_fallback": false,
 		"readback_snapshot": _gpu_ready,
 		"readback_source": "gpu_storage_buffers" if _gpu_ready else "none",
-		"command_staging": true,
-		"staging_live_state": false,
 		"accepted_placement_record_contract": get_accepted_placement_record_contract(),
 		"accepted_placement_record_schema_version": ACCEPTED_PLACEMENT_RECORD_SCHEMA_VERSION,
 		"accepted_placement_record_stride_bytes": ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
 		"resident_gpu_allocator_writeback": false,
 		"resident_gpu_allocator_writeback_mode": "none",
-		"accepted_placement_object_id_reservation": true,
 		"reason": _not_ready_reason,
 		"objects": summaries,
 	}
@@ -2275,11 +1605,7 @@ func get_gpu_buffer_summary() -> Dictionary:
 		"max_objects": max_objects,
 		"live_count": get_live_count(),
 		"free_count": _free_ids.size() if _gpu_ready else 0,
-		"reserved_object_id_count": _reserved_object_ids.size() if _gpu_ready else 0,
 		"dirty_delta_capacity": dirty_delta_capacity,
-		"pending_command_count": get_pending_command_count(),
-		"command_staging": true,
-		"staging_live_state": false,
 		"alive_buffer": _alive_buffer.is_valid(),
 		"generation_buffer": _generation_buffer.is_valid(),
 		"type_buffer": _type_buffer.is_valid(),
@@ -2293,7 +1619,6 @@ func get_gpu_buffer_summary() -> Dictionary:
 		"accepted_placement_record_stride_bytes": ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES,
 		"resident_gpu_allocator_writeback": false,
 		"resident_gpu_allocator_writeback_mode": "none",
-		"accepted_placement_object_id_reservation": true,
 		"buffers": buffers,
 	}
 
@@ -2895,16 +2220,6 @@ func _bounds_from_params(params: Dictionary) -> Dictionary:
 	return _normalize_bounds(min_v, max_v)
 
 
-## 检查参数字典中是否包含边界字段（voxel_min/voxel_max 等）。
-func _command_has_bounds(params: Dictionary) -> bool:
-	if params.has("voxel_bounds") and params["voxel_bounds"] is Dictionary:
-		return true
-	for key in ["voxel_min", "voxel_max", "bounds_min", "bounds_max", "new_voxel_min", "new_voxel_max"]:
-		if params.has(key):
-			return true
-	return false
-
-
 ## 规范化边界（委托给静态方法），确保 max > min。
 func _normalize_bounds(voxel_min: Vector3i, voxel_max: Vector3i) -> Dictionary:
 	return _normalize_bounds_static(voxel_min, voxel_max)
@@ -2937,8 +2252,3 @@ static func _normalize_bounds_static(voxel_min: Vector3i, voxel_max: Vector3i) -
 ## 检查 object_id 是否在 [0, max_objects) 范围内。
 func _is_valid_id(object_id: int) -> bool:
 	return object_id >= 0 and object_id < max_objects
-
-
-## 检查 object_id 是否有效且对应对象当前存活。
-func _is_alive_id(object_id: int) -> bool:
-	return _is_valid_id(object_id) and bool(_read_object_state(object_id).get("alive", false))

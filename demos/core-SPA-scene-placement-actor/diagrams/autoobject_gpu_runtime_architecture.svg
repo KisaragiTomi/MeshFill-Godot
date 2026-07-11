@@ -114,10 +114,10 @@
       <text class="small"><tspan x="103" y="215">AutoObject / AssetDescriptor</tspan><tspan x="103" y="232">editor + import + debug only</tspan><tspan x="103" y="249">not per-instance runtime nodes</tspan></text>
     </g>
 
-    <g id="command-queue">
+    <g id="object-commands">
       <rect class="node" x="85" y="330" width="280" height="120" rx="8" fill="url(#autoobject-dot-bg)" stroke="#0891b2"/>
-      <text class="node-title" x="103" y="358">Command queue</text>
-      <text class="small"><tspan x="103" y="380">spawn / kill / update transform</tspan><tspan x="103" y="397">set profile / flags</tspan><tspan x="103" y="414">procedural spawn may stay GPU-only</tspan></text>
+      <text class="node-title" x="103" y="358">Direct object commands</text>
+      <text class="small"><tspan x="103" y="380">spawn / kill / update transform</tspan><tspan x="103" y="397">set profile / flags</tspan><tspan x="103" y="414">batch spawn via resident records</tspan></text>
     </g>
 
     <g id="debug-lookup">

@@ -186,7 +186,6 @@ func _new_gpu_autoobject_runtime_writeback_skeleton(spawn_api: String, enabled: 
 		"accepted_placement_record_source": "vpg_resident_placement_buffers" if enabled else "none",
 		"accepted_placement_origin_record_source": "vpg_resident_placement_buffers" if enabled else "none",
 		"accepted_placement_spawn_api": spawn_api,
-		"cpu_batched_command_queue_bridge": false,
 		"cpu_batch_bridge": false,
 		"runtime_command_flush_mode": "none",
 		"accepted_placement_record_schema_version": 0,
@@ -209,8 +208,6 @@ func _new_gpu_autoobject_runtime_writeback_skeleton(spawn_api: String, enabled: 
 		"failed_count": 0,
 		"object_ids": [],
 		"spawned_result_indices": [],
-		"command_queue_stage_count": 0,
-		"command_queue_flush_count": 0,
 	}
 
 
@@ -267,15 +264,12 @@ func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: 
 		"accepted_placement_record_source",
 		"accepted_placement_origin_record_source",
 		"accepted_placement_spawn_api",
-		"cpu_batched_command_queue_bridge",
 		"cpu_batch_bridge",
 		"accepted_placement_record_stride_bytes",
 	]:
 		if source.has(key):
 			target[key] = source[key]
 	_merge_gpu_autoobject_runtime_flush_contract(target, source)
-	target["command_queue_stage_count"] = int(target.get("command_queue_stage_count", 0)) + int(source.get("command_queue_stage_count", 0))
-	target["command_queue_flush_count"] = int(target.get("command_queue_flush_count", 0)) + int(source.get("command_queue_flush_count", 0))
 	if not bool(target.get("ok", false)):
 		target["readback_source"] = "none"
 		target["runtime_read_source"] = "none"

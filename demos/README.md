@@ -23,7 +23,7 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, and
 | --- | --- |
 | [`core-meshfill-framework/meshfill-framework.md`](core-meshfill-framework/meshfill-framework.md) | MeshFill ownership model, runtime flow, current modules, and framework rules |
 | [`core-SPA-scene-placement-actor/scene-placement-actor.md`](core-SPA-scene-placement-actor/scene-placement-actor.md) | SPA ownership, asset registry, profile GPU buffer lifecycle, and prefilter -> placement -> commit orchestration |
-| [`core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md`](core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md) | GPU-first runtime architecture for million-scale `AutoObject`, including GPU object buffers, profile container, command queues, per-voxel object refs, and SV commit boundaries |
+| [`core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md`](core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md) | GPU-first runtime architecture for million-scale `AutoObject`, including GPU object buffers, profile container, direct object APIs with resident batch spawn, per-voxel object refs, and SV commit boundaries |
 | [`asset-descriptor-demo/asset-descriptor.md`](asset-descriptor-demo/asset-descriptor.md) | `AssetDescriptor` unified definition, field groups, and authoring rules |
 | [`asset-descriptor-demo/asset-properties.md`](asset-descriptor-demo/asset-properties.md) | Current `AutoObject`, descriptor, profile, and metadata field reference |
 | [`core-scene-voxel-field-system/scene-voxel-field-system.md`](core-scene-voxel-field-system/scene-voxel-field-system.md) | SV write payloads, source voxel writes, final `SceneVoxel`, and GPU-resident SV query channels |
