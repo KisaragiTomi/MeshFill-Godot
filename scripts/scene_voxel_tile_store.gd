@@ -2783,7 +2783,7 @@ func apply_gpu_autoobject_dirty_delta(delta: Dictionary, dispatch_object_ref_upd
 
 		"object_id": object_id,
 
-		"auto_object_id": object_id,
+		"record_id": object_id,
 
 		"source_id": "gpu_autoobject:%s" % object_id,
 

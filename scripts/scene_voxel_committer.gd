@@ -993,7 +993,6 @@ func _make_stamped_scene_voxel_template(
 	var record_id := str(record.get("record_id", record.get("id", "")))
 	scene_voxel["record_id"] = record_id
 	scene_voxel["source_id"] = str(record.get("source_id", record_id))
-	scene_voxel["auto_object_id"] = str(record.get("auto_object_id", record.get("auto_id", record_id)))
 	var collision_layers: Array = record.get("collision", [])
 	if not collision_layers.is_empty():
 		scene_voxel = SharedPropertyTypeScript.apply_to_scene_voxel(

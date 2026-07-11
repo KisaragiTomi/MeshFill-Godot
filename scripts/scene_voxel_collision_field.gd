@@ -652,11 +652,7 @@ func _make_source_collision(base_px: Vector2i, collision_layers: Array, rec: Dic
 
 		source_layer["record_id"] = str(rec.get("id", ""))
 
-		source_layer["auto_object_id"] = str(rec.get("auto_object_id", rec.get("auto_id", rec.get("id", ""))))
-
-		source_layer["auto_instance_id"] = int(rec.get("auto_instance_id", rec.get("instance_id", 0)))
-
-		source_layer["instance_mesh_id"] = int(rec.get("instance_mesh_id", rec.get("mesh_instance_id", rec.get("instance_id", 0))))
+		source_layer["instance_id"] = int(rec.get("instance_id", rec.get("auto_instance_id", rec.get("instance_mesh_id", rec.get("mesh_instance_id", 0)))))
 
 		source_layer["collision_buffer_applied"] = false
 
@@ -862,9 +858,7 @@ func _stamp_shared_field_layer(base_px: Vector2i, source_layer: Dictionary, rec:
 		"effective_radius": layer.get("effective_radius", 0.0),
 		"source_voxel_type": str(layer.get("source_voxel_type", rec.get("source_voxel_type", ""))),
 		"record_id": str(layer.get("record_id", rec.get("id", ""))),
-		"auto_object_id": str(rec.get("auto_object_id", rec.get("auto_id", rec.get("id", "")))),
-		"auto_instance_id": int(rec.get("auto_instance_id", rec.get("instance_id", 0))),
-		"instance_mesh_id": int(rec.get("instance_mesh_id", rec.get("mesh_instance_id", 0))),
+		"instance_id": int(rec.get("instance_id", rec.get("auto_instance_id", rec.get("instance_mesh_id", rec.get("mesh_instance_id", 0))))),
 	}
 
 	var voxel_px := _stamp_scalar_volume_disc(

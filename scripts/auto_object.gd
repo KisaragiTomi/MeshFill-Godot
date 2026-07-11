@@ -743,7 +743,6 @@ func set_instance_stamp_write_spec(record: Dictionary) -> void:
 		auto_id = str(instance_stamp_write_spec.get("id", name))
 	if name.is_empty():
 		name = auto_id
-	instance_stamp_write_spec["auto_id"] = auto_id
 	if instance_stamp_write_spec.has("min_spacing_auto"):
 		min_spacing_auto = bool(instance_stamp_write_spec.min_spacing_auto)
 	if instance_stamp_write_spec.has("min_spacing"):
