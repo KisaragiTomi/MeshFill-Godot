@@ -1,12 +1,23 @@
 # AutoObject Probe Prefilter
 
-本文记录 AutoObject probe 粗筛的当前实现契约。粗筛从 BlendSV-backed `SV[t - 1]` 与 `TargetSV_B` 中提取 position-only anchors，用 descriptor-backed semantic probes 给可用 `AutoObject` 打分，输出 per-asset candidate voxel regions。最终物理可放置性仍由 `score_voxel_tile.glsl` 精筛。
+本文记录 AutoObject probe 粗筛的当前实现契约。粗筛从 `TargetSV_B` 目标体积内部提取 position-only anchors（唯一门控 `target_field.a > min_target_interest`），用 descriptor-backed semantic probes 给可用 `AutoObject` 打分，归约成 per-asset 候选体素区域，并以 GPU 常驻 `candidate_route_records` / `candidate_route_ranges` 缓冲交接给放置阶段。最终物理可放置性仍由 `score_voxel_tile.glsl` 精筛（score 细筛）。
 
 ![AutoObject probe prefilter pipeline](diagrams/autoobject_probe_prefilter_pipeline.svg)
 
 ![AutoObject probe scoring logic](diagrams/autoobject_probe_scoring_logic.svg)
 
 当前实现已稳定：GPU pipeline、Host、Anchor、Probe source、Candidate regions、Route profile debug 均已实现，CPU scoring path 已删除。以下输入/输出契约仅作为架构参考。
+
+## 两级漏斗：probe 粗筛 → score 细筛
+
+放置走两级漏斗，本 demo 只负责第一级（probe 粗筛）：
+
+| 级别 | 子系统 | 对象 / 粒度 | 手段 | 产出 |
+| --- | --- | --- | --- | --- |
+| **probe 粗筛** | `AutoObjectProbePrefilterGPU.run_probe_prefilter` | 每 anchor × 每 asset | probe 三线性采样打分 + top-K + `min_prefilter_score` 阈值 | 候选体素区域 → 常驻 record/range 路由 |
+| **score 细筛** | `VoxelPlacementGenerator.run_minimal` → `score_voxel_tile.glsl` | 路由 tile 内每候选原点 × 每 yaw 旋转 | footprint / collision / clearance（penalty-only） | 被接受的放置 |
+
+边界：粗筛只减少候选、决定"去哪 / 放什么"，从不写 `SceneVoxel`、从不替代 `score_voxel_tile.glsl` 的物理评分；细筛决定"到底放不放 / 怎么放"。两级之间靠 GPU 常驻 `candidate_route_records` / `candidate_route_ranges` 缓冲交接，生产路径无 CPU 回读（anchor 位置回读 debug-only）。粗筛评的是 target 体积内部的 anchors，细筛评的是路由 tile 里的候选原点——是两批不同的对象。
 
 ## 运行方式
 
@@ -21,9 +32,9 @@
 
 | 数据 | 来源 | 用途 |
 | --- | --- | --- |
-| `SV[t - 1].complexity_field` | BlendSV-backed resident scene query channel | anchor 可放置性、占用、支撑、probe 场景采样。 |
+| `SV[t - 1].complexity_field` | BlendSV-backed resident scene query channel | probe 场景复杂度采样（"已有内容"拟合）；不再参与 anchor 门控。 |
 | `SV[t - 1].collision_field` | BlendSV-backed resident collision query channel | anchor / probe collision sampling。 |
-| `target_completely` | `TargetSV_B` complexity / collision read buffer | target demand 与 probe collision fit。 |
+| `target_completeness` | `TargetSV_B` complexity / collision read buffer | target demand 与 probe collision fit。 |
 | `target_color` | `TargetSV_B` packed RGBA8 color / complexity | probe color / complexity fit。 |
 | `autoobjects` | 当前可用 asset registry | 提供 semantic probes、collision samples、context radius。 |
 | `voxel_sparse_ids` | dirty voxel regions / dirty tiles | 限定 anchor collection 的更新范围。 |
@@ -36,48 +47,49 @@
 
 ## GPU Pipeline
 
-```text
-dirty voxel regions
-  -> collect_sv_anchors.glsl
-  -> score_anchor_asset_probes.glsl
-  -> select_anchor_topk.glsl
-  -> reduce_anchor_topk_to_voxel_regions.glsl
-  -> readback voxel-region votes
-  -> expand by candidate_route_profiles
+单次 `run_probe_prefilter()` 内一条 GPU 管线跑完，host 不回读 `anchor_count`（除 debug）：
 
-opt-in route payload branch:
-dense voxel-region votes
-  -> pack_candidate_route_records_from_votes.glsl
-  -> readback schema-v1 record_bytes / range_bytes
+```text
+dirty voxel regions / dirty tiles
+  -> collect_sv_anchors.glsl                       # 收集 target 体积内部 anchors（atomic append）
+  -> prefilter_anchor_dispatch_finalize.glsl       # anchor_count -> 间接派发参数（无 CPU 回读）
+  -> score_anchor_asset_probes.glsl                # 间接派发；每 anchor x asset probe 采样打分
+  -> select_anchor_topk.glsl                       # 间接派发；每 anchor 选 top-K asset
+  -> reduce_anchor_topk_to_voxel_regions.glsl      # top-K 聚合成 [asset x tile] 稀疏投票
+  -> pack_candidate_route_records_from_votes.glsl  # 按 route radius 膨胀，产出 schema-v1 record/range
+  -> 常驻 candidate_route_record_rid / candidate_route_range_rid（SCOPE_PERSISTENT，交接放置阶段）
 ```
+
+`tile_summaries_rid` 有效时，pack 走 `expand_scene_voxel_tile_routes.glsl` 变体。anchor 位置数组 / count 回读是 debug-only（`debug_read_anchors`，用于 `result["anchors"]` 可视化），默认关闭，路由路径全 GPU-first。
 
 Shader 职责：
 
 | Shader | 职责 |
 | --- | --- |
-| `collect_sv_anchors.glsl` | 从 dirty tile / voxel regions 中收集统一 position-only anchors；只收 supported candidates（自身满足阈值且下方 support 足够）。 |
+| `collect_sv_anchors.glsl` | 从 dirty tile / voxel 收集统一 position-only anchors；唯一门控 `target_field.a > min_target_interest`（cell 在 target 体积内部），atomic-append 进 anchor 缓冲。 |
+| `prefilter_anchor_dispatch_finalize.glsl` | 单线程把 GPU 常驻 `anchor_count` 转成 score / top-K 的间接派发参数（`gx = 256`，`gy = ceil(count / 256)`）；`count == 0` -> 0 组 -> 空帧自然穿过，host 永不回读。 |
 | `score_anchor_asset_probes.glsl` | 每个 anchor / asset 组合按 probes 采样 `SV` 与 `TargetSV_B` buffer，输出 asset score。 |
-| `select_anchor_topk.glsl` | 为每个 anchor 选择 top-K assets。 |
+| `select_anchor_topk.glsl` | 为每个 anchor 选择 top-K assets（低于 `min_prefilter_score` 的 asset 被拒绝）。 |
 | `reduce_anchor_topk_to_voxel_regions.glsl` | 把 anchor top-K 聚合成 `voxel_sparse_votes[asset_id * tile_count + tile_id]`。 |
-| `pack_candidate_route_records_from_votes.glsl` | Opt-in producer pass，把 dense votes 按 route radius 标记后输出 schema-v1 `candidate_route_records` / `candidate_route_ranges` bytes。 |
+| `pack_candidate_route_records_from_votes.glsl` | 把 dense votes 按 route radius 标记膨胀后输出 schema-v1 `candidate_route_records` / `candidate_route_ranges`，作为常驻 GPU 路由交接给放置阶段。 |
 
-`reduce_anchor_topk_to_voxel_regions.glsl` 只聚合 anchor 所在 tile vote。footprint、probe offset、context radius 和 interpolation guard 的扩张发生在 `autoobject_probe_prefilter_gpu.gd` 的 readback 解码阶段。
+`reduce_anchor_topk_to_voxel_regions.glsl` 只聚合 anchor 所在 tile vote。footprint、probe offset、context radius 和 interpolation guard 的膨胀由 `pack_candidate_route_records_from_votes.glsl` 依据每 asset 的 `route_extent` 在 GPU 内完成。
 
-Opt-in route payload branch 使用同一份 `candidate_route_profiles.tile_radius` 在 GPU 中扩张候选集合。该分支的 record 顺序是 per-asset tile-id ascending，不声明 CPU score order；默认 CPU pack 仍保持 score desc、tile_id asc 的排序，用于避免静默改变 placement capacity / tie 行为。
+GPU route pack 的 record 顺序是 per-asset tile-id ascending（`candidate_set_equivalent_not_score_sorted`，非按分排序）。产出的 `candidate_route_records` / `candidate_route_ranges` 是 SCOPE_PERSISTENT 常驻缓冲，跨 `gc_frame()` 存活并交接给放置阶段；旧的 CPU vote-entry pack 与 CPU 候选路由消费路径已删除（候选路由 = resident-GPU-only）。
 
 ## Anchor 规则
 
 当前 anchor 是 position-only：
 
 ```text
-anchor_buffer[i] = uvec4(voxel_x, voxel_y, voxel_z, 0)
+anchor_buffer[i] = uvec4(voxel_x, voxel_y, voxel_z, 0)   # 位置本身承载放置含义，无 anchor_kind
 ```
 
-来源是统一的 position-only anchor，不再写入或区分 `ground` / `target_top` kind：
+唯一门控（Houdini `Pipeline.hip` 对齐，`i@anchor = volumesample(targetVol, 0, P) > 0` 的 GPU 孪生），不再写入或区分 `ground` / `target_top` kind：
 
-- Supported candidate position：当前 voxel 满足 target 阈值、scene/collision 阈值，并且下方 support 足够。
+- **cell 在 target 体积内部**：`target_field[idx].a > min_target_interest`（`.a` = completeness = `max(complexity, collision)`）。
 
-最终物理支撑仍由 placement footprint scoring 确认；`ground` / `target_top` 名称只作为配置输入同义词归一到 `anchor`。
+旧的 scene-occupancy / collision / support-below 门控已删除：score 阶段已惩罚 collision/overlap 并强制物件间距，anchor 阶段再测一遍属冗余（还多一次 field 读 + 一次下方邻居探测）。最终物理支撑仍由 placement footprint scoring 确认；`ground` / `target_top` 名称只作为配置输入同义词归一到 `anchor`。
 
 ## Probe 规则
 
@@ -85,7 +97,7 @@ Probe 通过 `AutoObject.get_semantic_probes(density)` 获取，通常来自 `As
 
 Probe packed 字段含义维护在 `scripts/semantic_probe_profile.gd` 的 probe record 构造和 `scripts/autoobject_probe_prefilter_gpu.gd` 的 probe packing 代码旁。
 
-采样越界时，`score_anchor_asset_probes.glsl` 会把 sample position clamp 到 grid 内，再读取 `complexity_field`、`collision_field`、`target_completely` 与 `target_color`。这同样适用于 `TargetSV_B` 边界：边界外不会直接视为空白。
+采样越界时，`score_anchor_asset_probes.glsl` 会把 sample position clamp 到 grid 内，再读取 `complexity_field`、`collision_field`、`target_completeness` 与 `target_color`。这同样适用于 `TargetSV_B` 边界：边界外不会直接视为空白。
 
 ### Probe 评分公式 (`eval_probe`)
 
@@ -187,17 +199,20 @@ tile_radius = footprint bounds
 ## 与 Placement 的关系
 
 ```text
-prefilter candidate_voxel_regions_by_asset / legacy candidate_voxel_sparses_by_asset
-  -> VoxelPlacementGenerator.run_multi_asset()
+prefilter 常驻 candidate_route_record_rid / candidate_route_range_rid（schema-v1，SCOPE_PERSISTENT）
+  -> ScenePlacementActor 常驻路由交接（track_borrowed_rid + 路由契约 settings）
+  -> VoxelPlacementGenerator.run_multi_asset() -> run_minimal()   # 候选路由 = resident-GPU-only，无 CPU fallback
   -> optional same-type exclusion
-  -> run_minimal()
-  -> score_voxel_tile.glsl
+  -> candidate_route_sparse_adapter.glsl 展开候选稀疏 tile
+  -> score_voxel_tile.glsl                                        # score 细筛：footprint / collision / clearance
   -> accepted placements
-  -> optional GPUAutoObjectRuntime writeback
+  -> optional GPUAutoObjectRuntime writeback（GPU-direct 常驻）
   -> optional scene_voxel_committer + create_voxel_write_spec
   -> instance_stamp_writeback
   -> dirty SceneVoxelTile / commit_scene_voxels()
 ```
+
+`candidate_voxel_regions_by_asset`（及 legacy `candidate_voxel_sparses_by_asset` alias）现为 debug / API 输出，不是生产消费路径。
 
 边界：
 
@@ -212,7 +227,7 @@ prefilter candidate_voxel_regions_by_asset / legacy candidate_voxel_sparses_by_a
 
 `TargetSV_B` 是 guidance / target 输入，不是 committed source voxel stream：
 
-- `target_completely` 和 `target_color` 从 `TargetSV_B` 映射而来。
+- `target_completeness` 和 `target_color` 从 `TargetSV_B` 映射而来。
 - `TargetSceneVoxel` guidance record 会跳过 source buffers。
 - committed `SceneVoxel` 由 stamp（VPG state-chain / CPU 入口盖章）和 `commit_scene_voxels()` 发布，纯 auto；brush 内容在 SPA 常驻 `BrushSV` 层。
 

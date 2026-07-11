@@ -1,174 +1,203 @@
-﻿# MeshFill 3D Object Volume Score：单物体体积采样评分
+# MeshFill 3D Object Volume Score：单物体体积采样评分
 
-本文记录 3D placement score 阶段的设计契约：对单个候选物体，先按 asset footprint 预烘每个旋转角度的有效 sample records，再围绕 anchor 采样 `SV` 与 `TargetSV_B` 内容并评分。每个旋转槽只访问该槽实际会命中 footprint 的 sample，单槽 sample 数按 asset 尺寸裁剪并硬性限制在 `32^3` 以内。
+本文记录 3D placement score 阶段的设计契约：对每个候选原点（anchor voxel），在 shader 内按
+`rotation_slots` 个 yaw 旋转 asset footprint，对场景场（`SV` / `TargetSV_B`）做三线性体积采样并
+评分，取最优 yaw 写回。评分并入 `VoxelPlacementGenerator`（VPG）的评分阶段，不再是独立管线。
 
-> 状态：**已合并进生产放置管线（in-shader 旋转方案）**。3D 体积评分不再走独立两遍管线，而是并入 `VoxelPlacementGenerator` 的评分阶段：`shaders/score_voxel_tile.glsl` 现对每个候选原点在 shader 内扫 `rotation_slots`（默认 12）个 yaw，逐一用其完整物理模型（clearance/solid + runtime same-type avoidance + candidate route）评分并取最优槽写入 tile_topk 记录；`shaders/stamp_voxel_field.glsl` 按记录里的最优槽旋转 footprint 盖章；旋转经现有 record→`results_to_world_gpu`→实例 yaw 以同一 Godot `Basis(UP,θ)` 约定一致贯通，reduce 原样复用。生产路径（SPA → `run_multi_asset`）已在编辑器 Vulkan 下验证。
->
-> 原独立两遍 demo 管线 `scripts/object_volume_score_gpu.gd`（`score_object_subtile.glsl` + `reduce_object_rotation_scores.glsl`）已**退役删除**，其评分并入 `VoxelPlacementGenerator`（VPG）。
->
-> **当前实现：`demos/placement-score-3d/volume_score_demo.gd` 是一个 volume-score provider**，向同场景兄弟 `CoreSPADemo`（ScenePlacementActor）`register_volume_score_provider` 注册，接管编辑器工具栏「Anchors」「Score」按钮与 Anchor 模式点选：
-> - **Anchors**：`VolumeScore3D.generate_anchors` 在场景场表面按 `anchor_spacing`（默认 = VPG `TILE_SIZE` = 8，1 锚点/tile）铺锚点。
-> - **Score**：对每个 `AssetDescriptor` 资产用 `VPG.run_minimal`（`candidate_voxel_sparses` = 锚点所属 tile、`read_tile_topk`、in-shader 12 旋转）评分，读回每 tile 最佳 `{voxel, score, rotation}` 记录映射回锚点，得每锚点 × 每资产的 top-k 排名；点选锚点显示其排名与最优朝向。
-> - 退役的 `ObjectVolumeScoreGpu.*`（build_anchor_asset_topk / best_asset_per_anchor / …）已在 provider 内以纯数据函数就地重写，不复活两遍管线。
->
-> **放置的物体（每锚点胜出资产）一律实例化真实 `AssetDescriptor` 的 mesh（`get_mesh()`），绝不用占位方盒子**（见项目 `CLAUDE.md`「Placement / Score Demos: Render Real AssetDescriptor Assets」）：资产在 `.tscn` 里以 `ext_resource` 挂到 `@export Array[AssetDescriptor] placement_assets`（默认 `assets/vegetation/sm_test_leaf_test2_asset.tres`）；footprint（评分用）按 mesh AABB 比例导出，展示则把 mesh 缩放贴合 footprint、按最优 yaw 旋转、底面贴地。`AssetDescriptor` 已标 `@tool`，其 `get_mesh()` 等方法方能在编辑器 @tool demo 里运行。
->
-> 同场景 `CoreSPADemo` 以 `spawn_autoobjects_on_start = false` 关闭默认 65536 autoobject 批量 spawn（该 provider 场景不需要 autoobject）；`selection_mode = 3`（Anchor）使锚点点选开箱即用。
->
-> ⚠️ 下文「数据流 / Dispatch 布局 / Sample Record 预烘 / 12 旋转评分 / Reduce 汇总 / 输出记录」等章节描述的是**已删除的两遍原型设计**，仅作历史参考；当前实现见 `shaders/score_voxel_tile.glsl` 的 in-shader 旋转与 `scripts/voxel_placement_generator.gd`。
+## 现状与归属
 
-2.5D heightfield 路径已废弃移除。3D 路径只接替「物理 score」阶段，上游 probe prefilter 与候选路由契约不变。
+- **评分器**：`shaders/score_voxel_tile.glsl` 是唯一评分器。每个候选原点在 shader 内扫
+  `rotation_slots`（默认 `12`）个 yaw，逐一用完整物理/语义模型评分并取最优槽；
+  `shaders/stamp_voxel_field.glsl` 按记录里的最优槽旋转 footprint 盖章；旋转经现有
+  record→`results_to_world_gpu`→实例 yaw 以同一 Godot `Basis(UP, θ)` 约定贯通，
+  `shaders/reduce_voxel_tiles.glsl` 原样复用。生产路径（SPA → `run_multi_asset`）已在编辑器
+  Vulkan 下验证。
+- **退役**：原独立两遍原型 `scripts/object_volume_score_gpu.gd`（`score_object_subtile.glsl` +
+  `reduce_object_rotation_scores.glsl`）及其 **CPU 预烘 per-rotation sample records** 方案已**删除**
+  ——改为 footprint 烘一次、shader 内旋转采样。2.5D heightfield 路径亦已废弃移除。
+- **Demo provider**：`demos/placement-score-3d/volume_score_demo.gd` 是一个 volume-score
+  provider，向同场景兄弟 `CoreSPADemo`（`ScenePlacementActor`）`register_volume_score_provider`
+  注册，接管编辑器工具栏「Anchors」「Score」按钮与 Anchor 模式点选：
+  - **Anchors**：`VolumeScore3D.generate_anchors` 在场景场表面按 `anchor_spacing`（默认 `32`）铺锚点。
+  - **Score**：对每个 `AssetDescriptor` 资产用 `VPG.run_minimal`（`debug_read_voxel_channels`、in-shader
+    `12` 旋转、维度评分）评分，从 per-voxel debug buffer 按锚点体素回读
+    `{score, best_rotation_slot}`，得每锚点 × 每资产 top-k 排名；点选锚点显示排名与最优朝向。
+- **放置物体一律实例真实 mesh**：每锚点胜出资产实例化 `AssetDescriptor.get_mesh()`，绝不用占位
+  方盒子（见 `CLAUDE.md`「Placement / Score Demos」）。资产在 `.tscn` 以 `ext_resource` 挂到
+  `@export Array[AssetDescriptor] placement_assets`；footprint 取自 descriptor collision 剖面，展示时
+  按 mesh AABB 缩放贴合 footprint、按最优 yaw 旋转、底面贴地。`AssetDescriptor` 已标 `@tool`，其
+  `get_mesh()` 等方法方能在编辑器 @tool demo 里运行。
+- 同场景 `CoreSPADemo` 以 `spawn_autoobjects_on_start = false` 关默认 autoobject 批量 spawn；
+  `selection_mode = 3`（Anchor）使锚点点选开箱即用。
 
 ## 运行方式
 
-> **@tool 编辑器模式，禁止 F6。**
->
-> 在 Godot 编辑器中双击打开 `.tscn` 场景文件即可。脚本在编辑器视口中实时运行，R 重算和 [/] 调间距均在视口内操作。
-> F6（Run Current Scene）和 F5（Run Project）被 `core_demo_contract_fixture.gd` 守卫代码禁止。
+> **@tool 编辑器模式，禁止 F6。** 在 Godot 编辑器中双击打开 `.tscn` 即可，脚本在视口实时运行，
+> R 重算、`[` / `]` 调间距。F6（Run Current Scene）和 F5（Run Project）被
+> `core_demo_contract_fixture.gd` 守卫代码禁止。
 
 ## 术语
 
 | 术语 | 含义 |
 | --- | --- |
-| `volume` | 整个 voxel data domain / buffer；不是单个元素。 |
+| `volume` | 整个 voxel 数据 buffer；不是单个元素。 |
 | `voxel` | `volume` 中的单个 `(x, y, z)` cell。 |
-| `rotation sample set` | 单个 asset 在某个 yaw slot 下实际会命中 footprint 的有效 sample records。 |
-| `sample group` | `rotation sample set` 内的 512 条 sample records，一个 workgroup 拥有一个 group。 |
-| `rotation slot` | 12 个待评测旋转角度之一；默认绕 Y 轴 yaw，步进 `30°`。 |
+| `anchor` | 候选放置原点体素，取自 target 体积内（`target_field.a > min_target_interest`）。 |
+| `collision` | asset 的占据体素集（每格 `local_pos` + `collision_strength` + `flags` + `weight`，含派生 clearance），register 时烘一次并常驻、评分时 shader 内按 yaw 旋转。旧词「footprint」（每次现打包）退役。 |
+| `channels` | asset 的语义通道向量 `[collision-mean, complexity, color.rgb]`，dims 里与环境通道 MATCH 的资产目标值；源自 descriptor 属性、常驻。 |
+| `rotation slot` | `rotation_slots` 个待评测 yaw 之一；绕 Y 轴，步进 `360 / rotation_slots` 度。 |
 
 ## 设计常量
 
-| 常量 | 值 | 说明 |
+| 常量 | 值 | 来源 / 说明 |
 | --- | --- | --- |
-| `MAX_VARIANT_AXIS` | `32` | 单轴 variant 估算上限。 |
-| `MAX_VARIANTS_PER_ROTATION` | `32^3` | 每个 rotation slot 的有效 sample record 上限。 |
-| `MIN_SAMPLE_EXTENT` | `1` | 极小物体 (<=10cm) 单体素检测。 |
-| `OBJECT_SAMPLE_EXTENT` | **动态** | 调试/显示字段；真实评分使用 per-rotation 有效 sample records。 |
-| `SAMPLE_GROUP_SIZE` | `8^3 = 512` | 一个 workgroup 处理的 sample record 数；对齐 `local_size`。 |
-| `SAMPLE_GROUP_COUNT` | **动态** | `ceil(max_rotation_sample_count / 512)`；最大 `64`。 |
-| `ROTATION_SLOTS` | `12` | 一次评测的旋转角度数。 |
-| `LOCAL_SIZE` | `8 x 8 x 8 = 512` | 每个 sample-group workgroup 的线程数。 |
-
-`ROTATION_SLOTS` / yaw 轴向通过 push constant 和 CPU 预烘 sample records 传入 shader。每 asset dispatch 使用独立的 sample group 参数。
+| `rotation_slots` | `12` | 每候选原点评测的 yaw 档数（VPG 成员默认、demo `@export`）。 |
+| `TILE_SIZE` / `local_size` | `8` / `8×8×8 = 512` | score dispatch：一个 workgroup 一个 tile，512 线程各评一个候选原点。 |
+| `FOOTPRINT_CAPACITY` | `128` | 单 asset footprint 体素上限（shared 内存装载）。 |
+| `NUM_DEBUG_CHANNELS` | `8` | per-voxel debug buffer 通道数（评分回读来源，见「评分回读」）。 |
+| `top_k` | `1..8`（demo `1`） | per-tile top-K；demo 每锚点取最优 1。 |
+| `MAX_SCORING_DIMENSIONS` | `16` | 维度评分表上限（`_dim_count` 钳制）。 |
+| `env_channel_count` | 动态（demo `5`） | 环境通道数：collision / complexity / color r/g/b。 |
+| `asset_dimension_profile` | `8` 槽 | 每资产维度画像 = 资产 `channels`（`ScoreConfig` SSBO `cfg_asset_profile0/1`）；目标改为常驻直读，见「常驻 collision 与 channels」。 |
 
 ## 数据流
 
 ```text
-candidate object (anchor voxel + asset footprint + descriptor)
-  -> CPU prebake valid sample records per rotation slot, capped to 32^3
-  -> dispatch SAMPLE_GROUP_COUNT workgroups, one per 512 sample records
-  -> Pass A: score_object_subtile.glsl
-       for each of 12 rotation slots: sample only valid records for that slot
-       write per-(sample_group, rotation) partial record
-  -> barrier
-  -> Pass B: reduce_object_rotation_scores.glsl
-       sum sample-group partials per rotation slot
-       pick best rotation slot for this object
-  -> per-object score record (best score + best rotation + per-channel breakdown)
-  -> feed into existing accepted-placement / commit path
+anchor voxel (target 体积内) + asset collision (register 时常驻) + descriptor
+  -> VPG.run_minimal(每资产一次；debug_read_voxel_channels)
+  -> score_voxel_tile.glsl：一个 workgroup 一个 tile，512 线程各评一个候选原点
+       每原点在 shader 内扫 rotation_slots 个 yaw：
+         footprint offset 按 yaw 旋转（NO CPU 预烘）-> 连续场景坐标
+         -> 对 SV / TargetSV_B 做 8 邻三线性采样 -> 按维度 / 物理模型评分
+       取最优 yaw，写 per-voxel debug buffer（placement_score + best_rotation_slot）
+  -> CPU 从 debug buffer 按锚点体素回读 {score, best_rotation_slot}
+  -> 每锚点 × 每资产 top-k 排名（demo），或经 reduce -> result -> stamp 生产盖章
 ```
 
-每个候选物体对应一组 `SAMPLE_GROUP_COUNT` workgroups。多候选物体批处理时，dispatch 在 X 轴堆叠 sample group、用 `gl_WorkGroupID.y`（或 push constant base offset）选择候选物体，避免每物体单独提交。
+## 采样与旋转
 
-## Dispatch 布局
+- **shader 内旋转**：collision 体素集（rotation-invariant）以 `footprint_pos_strength` /
+  `footprint_weight_flags` 布局提供（≤ `FOOTPRINT_CAPACITY`）；shader 对每个 yaw slot 用
+  `rotate_footprint_offset_y_f`（rigid yaw，无 round、无 scale）把每个体素 offset 旋成连续坐标
+  `pf = anchor + rotated_offset`。CPU 不预烘 per-rotation 副本。
+- **来源**：collision 取自 descriptor（`get_collision()` → `bake_footprint`，含 clearance）；无 collision
+  剖面时按 mesh AABB 体素跨度建实心集。此份数据**在 register 时烘一次并常驻**、score 阶段按
+  `profile_id` 直读——见「常驻 collision 与 channels」节。
+- **三线性采样**：`sample_field_trilinear` 在连续位置 `pf` 对 complexity（RGBA8 `.a`）与
+  collision（R8）各取 8 邻。越界角点权重计 0，按命中权重和 `wsum` 归一化——贴边 sample 不被网格
+  边缘错误变暗；仅 8 邻全越界（`wsum == 0`）时跳过该 sample，与 prefilter 越界规则一致。
+- **pivot**：footprint offset 先减 `footprint_pivot`（shift-then-rotate 顺序），再施 yaw。
 
-| 维度 | 映射 | 说明 |
-| --- | --- | --- |
-| `gl_WorkGroupID.x` | sample group id | 每组 512 条预烘 sample records。 |
-| `gl_WorkGroupID.y` | 候选物体 id | 批处理多个候选物体；单物体时为 `1`。 |
-| `gl_LocalInvocationID.xyz` | group 内 sample lane `(8,8,8)` | 每线程负责一条 sample record。 |
+## 常驻 collision 与 channels（footprint 退役）
 
-sample 坐标解码：
+> 状态：**迁移中（方案 B2）**。已实现：in-shader 旋转 / trilinear / 维度评分 / debug 回读。目标
+> （本节）：descriptor 的 collision 与语义 channels 在 `register_asset` 时**烘一次并常驻**，score
+> 阶段按 `profile_id` 直读，不再每次 `run_minimal` 重打包。落地后移除本状态注记。
 
-```text
-sample_index   = group_id * 512 + local_index
-sample_record  = rotation_records[rotation_slot][sample_index]   # vec4: xyz=连续场景体素偏移, w=float(footprint props 索引)
-sample_pos     = anchor + sample_record.xyz                      # 连续坐标，不取整到体素中心
-# 在 sample_pos 处对 SV / TargetSV_B 做 8 邻三线性插值采样
-```
+「footprint」作为「CPU 每次 `run_minimal` 现打包」的概念**退役**——它本质就是 descriptor 的
+collision（含派生 clearance）。改为在 `ScenePlacementActor.register_asset` 时经
+`AssetDescriptor.bake_footprint`（含 clearance / 去重 / 截断 `FOOTPRINT_CAPACITY`）**烘一次**，
+上传成按 `profile_id` 索引的常驻 buffer。
 
-三线性采样的 8 个邻居体素中，越界角点（`< 0` 或 `>= grid`）权重计 0，再按命中权重和 `wsum` 归一化，因此贴边 sample 不会被网格边缘错误变暗；整条 sample 仅在 8 邻全部越界（`wsum == 0`）时跳过，与 prefilter 越界规则一致。
+两类常驻数据（挂在 profile 容器 / SPA 下，按 `profile_id`）：
 
-## Sample Record 预烘
+| 数据 | 是什么 | 角色 | arity | 来源 |
+| --- | --- | --- | --- | --- |
+| `collision`（空间） | 占据体素集（`local_pos`+strength+flags+weight，含派生 clearance） | 决定在哪采样、算 collision/clearance | per-voxel | `get_collision()` → `bake_footprint`（register 时一次） |
+| `channels`（语义） | `[collision-mean, complexity, color.r, color.g, color.b]` | dims 里与环境通道 MATCH 的资产目标值 | per-asset | descriptor 属性（`get_color` / `get_complexity` / collision 均值） |
 
-核心观察：**有效采样集合与 asset 旋转有关**。因此 CPU 侧对每个 asset footprint 预烘 `ROTATION_SLOTS` 份 sample records：
+**扁平 buffer + range**：所有 asset 的 collision 拼进一个扁平数组，每 asset 的 `collision_range`
+（`start` / `count`）标出自己的切片（与 `probe_range` / `pivot_range` 同款，见
+`auto_voxel_runtime_profile_container.gd`）。register 时补上该扁平 collision buffer 的上传（现
+`GPU_BUFFER_NAMES` 仅 3 个、缺 collision）。
 
-```text
-# GPU 采样记录（frac_records）：连续偏移，供 8 邻三线性插值采样
-sample_record = vec4(rotated_frac_offset.xyz, float(footprint_props_index))
-# 整数记录（records）：上面偏移的量化版（x/z round、y floor），仅供 CPU 算 bounds 与去重键
-```
+**B2 绑定（与 set1 避让契约解耦）**：常驻 collision buffer 绑在 **set0**（同现在的
+`footprint_pos_strength` / `footprint_weight_flags`），`collision_range` 的 `start` / `count` 走
+**`ScoreConfig` SSBO（set0 binding 10）**，**不**走 set1 的 profile table。故 footprint 不依赖 set1
+profile 绑定——该绑定正是当前 `run_multi_asset` 的 blocker（`score_runtime_profile_binding_missing`）；
+B2 下无论避让契约绑没绑上都能评分。（未采用的 B1 = 挂 set1 profile table 直读，会把 footprint
+绑死在该 blocker 上，故弃。）
 
-每个 rotation slot 的 sample 取自 descriptor `voxel_profile.collision` 的体素位置（每个 occupied footprint voxel 烘成一条 collision sample），逐点做 局部体素 → 世界（`aabb_min + (coord+0.5)·cell_size`，相对 `pivot_local` 并按 yaw 旋转）→ ÷ 场景 `voxel_size` = 场景体素偏移。`voxel_profile.collision` 是唯一采样来源——缺失或无点采样时该 asset 视为无有效采样（`no_profile_samples`），不再维护或回退稠密 occupancy 网格。按旋转后的 offset 去重；如果某个 slot 的 sample 数超过 `32^3`，按稳定步长抽样保留覆盖。GPU Pass A 只读取这些 sample records，并对 scene 越界 sample 做 guard skip。
+**channels 直读**：dims 的资产值（`asset_profile_value(d)`）改读常驻 channels（profile table 的
+`color_complexity` + `density` 已常驻，补 `collision-mean`），不再每次经 `asset_dimension_profile`
+→ `ScoreConfig` 组装副本。
 
-## 12 旋转评分
+**对 `run_multi_asset` 的影响**：per-asset × per-pivot 循环里**零 footprint 打包**（register 时一次），
+消掉每 pivot 的重复开销；footprint / channels 按 `profile_id` 常驻直读，故**调用方须先
+`register_asset`**（demo 亦改为向 SPA 注册，不再本地持 footprint）。因 B2 走 set0 + `ScoreConfig`、
+不与 set1 契约耦合，`run_multi_asset` footprint 不受该绑定状态影响。
 
-每个 workgroup 对 12 个 rotation slot 各算一份 partial：
+## 维度评分（data-driven）
 
-```text
-for slot in 0..11:
-    yaw = slot * (360 / ROTATION_SLOTS)   # 默认 30° 步进
-    partial[slot] = 0
-    for each sample_record in sample_group:
-        sample_pos = anchor + sample_record.xyz          # 连续坐标
-        (s, t, wsum) = trilinear_sample(SV, TargetSV_B, sample_pos)
-        if wsum > 0:                                     # 至少一个邻居在网格内
-            partial[slot] += weighted_fit(asset, s, t)   # 采样值已按 wsum 归一化
-```
+评分有两条路径，由 `dim_count`（= `scoring_dimensions.size()`，钳到 `MAX_SCORING_DIMENSIONS`）选择：
 
-`weighted_fit` 复用现有物理 + target fit 维度：target coverage、complexity fit、color fit、solid collision、clearance。具体权重沿用 `score_voxel_tile.glsl` 当前语义，本文不重新定义权重默认值。
-
-footprint 旋转使用 forward 预烘：遍历 asset footprint voxel，按 yaw 旋转后写入 scene-relative sample offset。
-
-## Reduce 汇总
-
-Pass A 每个 workgroup 输出一条 partial 记录：`SAMPLE_GROUP_COUNT x ROTATION_SLOTS` 个 partial。
-
-汇总避免 float `atomicAdd`，改用独立 reduce pass：
-
-```text
-partial_buffer[object_id][sample_group_id][slot]   # Pass A 写，slot 独占，无竞争
-  -> reduce_object_rotation_scores.glsl
-       每个 (object_id, slot) 求和 sample-group partial
-       得到 object_rotation_score[object_id][slot]
-  -> 组内比较 12 个 slot，选最大值
-  -> object_score_record[object_id] = (best_score, best_slot, channel_breakdown)
-```
-
-写法约束：
-
-- partial slot 由 `(sample_group_id, slot)` 唯一确定，Pass A 写入无需原子操作。
-- 跨 sample group 求和放到 Pass B，按 `(object_id, slot)` 分组，可用一个 workgroup 处理一个 object 的 `12 x SAMPLE_GROUP_COUNT` 归约。
-- 最优旋转选择在 Pass B 组内做 `12` 路 max-reduce，输出单条 per-object 记录。
-
-## 输出记录
-
-per-object score record 字段含义维护在对应 GDScript owner 的 readback 解码处（实现时补充）。计划字段：
+- **`dim_count > 0`（维度语义评分，demo 走此路）**：每个维度是一条 `DimRecord`：
 
 ```gdscript
-{
-	"object_id": 0,             # int, 候选物体 id
-	"best_score": 0.0,          # float, 12 旋转中最高分
-	"best_rotation_slot": 0,    # int, 0..11，最优 yaw slot
-	"best_yaw_degrees": 0.0,    # float, best_rotation_slot * 步进角
-	"channel_breakdown": [],    # per-channel fit，调试用，对齐 score_voxel_tile 通道
-	"valid": true,              # bool, 是否有有效采样
-}
+{"channel": 0, "mode": 0, "weight": 1.0, "min": 0.0, "max": 1.0}
+# channel: env 通道索引；mode: 0=MATCH（PENALTY/GATE 保留未实现）
+# weight:  该维权重；min/max: 约束区间（MATCH 下不约束有效性）
 ```
+
+  每 footprint voxel、每维度在其最近体素读 env 通道值 `env`，与该资产画像值
+  `asset_profile_value(d)`（= 常驻 `channels`，见上节；迁移前为每次经 `asset_dimension_profile`
+  组装的副本）做 MATCH fit：`fit = clamp(1 - |env - av|, 0, 1)`，累加
+  `weight * fit * footprint_weight`。最终 `score = semantic_score / semantic_weight`（`>= 0`，仍高于
+  `INVALID_SCORE`）。有效性 = coverage-only（`has_target == 0` 或 footprint 命中 target）。env 场按
+  `env_channels[voxel * env_channel_count + ch]` 扁平布局上传（demo 5 通道见「设计常量」）。
+
+- **`dim_count == 0`（legacy penalty-only）**：
+  `score = -(solid_collision·w_col + complexity_overlap·w_ovl + clearance_overlap·w_clr)`，
+  有效性 = collision/clearance 阈值门 + target coverage 门。support 已退役（正项移除），有效分
+  `<= 0`；`INVALID_SCORE = -1e18` 作无效哨兵，valid-but-negative 仍是真正的胜者。
+
+> 权重/约束沿用 `score_voxel_tile.glsl` 当前语义，本文不重定义默认值。penalty 权重、
+> `env_channel_count` 与 8 槽资产画像存 `ScoreConfig` SSBO（binding 10），以让 push constant
+> 保持在 Godot 的 128 字节上限内。
+
+## 评分回读（debug buffer）
+
+评分结果经 **per-voxel debug buffer** 回读，`tile_topk` **不再回读 CPU**（`tile_topk_buffer` 仍是
+GPU 内部 `reduce -> result -> stamp` 生产盖章链的生产者，未变）。
+
+debug buffer 每 voxel `NUM_DEBUG_CHANNELS = 8` 个 float：
+
+| ch | 名称 | 含义 |
+| --- | --- | --- |
+| 0 | `target_coverage` | footprint 命中 target 的加权比例 |
+| 1 | `target_complexity_fit` | `1 - mean |target complexity - collision strength|` |
+| 2 | `target_color_fit` | `1 - mean RGB 距离 to asset_color` |
+| 3 | `target_density` | footprint 下 target complexity 均值 |
+| 4 | `placement_score` | 最终分（yaw sweep 最优） |
+| 5 | `best_rotation_slot` | 最优 yaw 槽索引 `0..rotation_slots-1`（复用退役的 `support_ratio` 槽） |
+| 6 | `solid_collision` | 实心碰撞惩罚项 |
+| 7 | `clearance_overlap` | clearance 重叠惩罚项 |
+
+- CPU 按锚点体素索引读通道：布局（index_space=`voxel_dense_xzy`、通道号、stride）来自
+  `DebugBufferSet(VOXEL_DEBUG_CHANNELS)` 单一真源——demo 用 `voxel_dense_xzy_index(av, grid)` +
+  `channel_index("placement_score")` / `channel_index("best_rotation_slot")`，不再硬编码 `vidx*8+4/5`。
+- `run_minimal` 输出已移除 `tile_topk` / `tile_topk_readback_source` 键；打开 `debug_read_voxel_channels`
+  即从 `score_shader_debug_voxel_buffer` 回读 `debug_voxel`（禁用时整键不发；通道名/数查
+  `DebugBufferSet.VOXEL_DEBUG_CHANNELS`，不再随结果回显）。
 
 ## 契约边界
 
-- 本路径只接替 placement **physical / target fit score** 阶段，不改 probe prefilter、候选路由、commit 契约。
-- 上游候选仍由 `autoobject-probe-prefilter.md` 的 prefilter 提供；空候选仍直接 skip，不回退 full grid。
-- score 不写 committed `SceneVoxel`；接受的 placement 由 VPG state-chain stamp 原位提交（`instance_stamp_writeback.accepted_placement_writeback_mode == "gpu_state_chain_stamp"`）。
-- `TargetSV_B` 只作为 target / guidance 输入采样，不进入 committed source，越界 clamp 规则同 prefilter。
-- score 不做 semantic dot / MLP / route rerank；语义重排仍是候选内 TODO。
-- 不引入 float `atomicAdd`；跨 sample group 汇总只通过独立 reduce pass。
+- 本路径只接替 placement **physical / semantic score** 阶段，不改 probe prefilter、候选路由、
+  commit 契约（上游候选仍由 `autoobject-probe-prefilter.md` 的 prefilter 提供）。
+- 空候选直接 skip，不回退 full grid。
+- score 不写 committed `SceneVoxel`；接受的 placement 由 VPG state-chain stamp 原位提交
+  （`instance_stamp_writeback.accepted_placement_writeback_mode == "gpu_state_chain_stamp"`）。
+- `TargetSV_B` 只作 target / guidance 采样输入，不进 committed source，越界 clamp 规则同 prefilter。
+- 不引入 float `atomicAdd`。
+- **常驻 collision / channels 按 `profile_id` 索引**：调用方须先 `register_asset`；未注册的资产无常驻
+  collision → 该资产评分被阻断（与 prefilter 的 `missing_probe_range_for_profile` 同族，新增
+  `missing_collision_range`）。
 
 ## Open Questions
 
-- ~~是否对所有 asset 固定采样窗口。~~ **已解决**：每个 asset 按 occupied footprint 预烘 per-rotation sample records，单槽最多 `32^3` 条；GPU dispatch 使用实际 sample group count。
-- 12 旋转是否只绕 Y，还是需要少量 pitch / roll slot 支持斜面贴合。
-- sample-group partial buffer 在多候选物体批处理下的容量上限与回收策略（复用 `GodotComputeShaderBase` 的 scope GC）。
-- ~~forward / inverse footprint 旋转哪种更适合当前路径。~~ **已选择 forward 预烘**：CPU 遍历 occupied footprint voxel → 按 yaw 旋转成 scene-relative sample offset → GPU 只采样有效 records。
-- ~~与 `score_voxel_tile.glsl` 的 `8^3` 路径是并存还是完全替换，迁移期如何对账。~~ **已解决**：完全替换——`score_voxel_tile.glsl` 演化为 in-shader 12 旋转体积评分，成为唯一评分器；独立两遍管线取代待退役。
+- 12 旋转是否只绕 Y，还是需少量 pitch / roll slot 支持斜面贴合。
+- 维度评分的 PENALTY / GATE `mode`（当前仅 MATCH 实现）与语义重排（route rerank）仍是 TODO。
+- 稀疏 tile 下 512 线程对非 anchor 体素的早退开销：是否值得改紧凑 anchor 派发。
+- 常驻 collision（B2）落地验证：`run_multi_asset` 在当前场景被 `score_runtime_profile_binding_missing`
+  挡在评分前，故其 B2 行为**在本场景验不到**；只能经 demo 的 `run_minimal`（注册资产 + 读常驻
+  collision + debug 回读）桥验证读路径。该 profile-binding 根因仍未查透（见 mem）。
