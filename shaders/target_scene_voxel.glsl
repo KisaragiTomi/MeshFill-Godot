@@ -19,10 +19,6 @@ layout(set = 1, binding = 2, std430) restrict buffer TargetCompleteness {
     uint target_completeness_r8_words[];
 };
 
-layout(set = 1, binding = 3, std430) restrict buffer TargetVisualRgba8Dup {
-    uint target_visual_rgba8_dup[];
-};
-
 layout(set = 1, binding = 4, std430) restrict buffer TargetStats {
     uint target_stats[];
 };
@@ -185,7 +181,6 @@ void main() {
     target_visual_rgba8[idx] = rgba8;
     store_collision_r8(idx_u, voxel.collision);
     store_completeness_r8(idx_u, completeness);
-    target_visual_rgba8_dup[idx] = rgba8;
 
     atomicMax(target_stats[TARGET_STATS_MAX_COMPLETENESS], quantize_unit(completeness));
     atomicMax(target_stats[TARGET_STATS_MAX_COLLISION], quantize_unit(voxel.collision));

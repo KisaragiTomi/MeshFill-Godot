@@ -769,7 +769,6 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	var visual_buffer := storage_buffer_zero(voxel_count * TARGET_RGBA8_STRIDE_BYTES) # RGBA8 u32 color+complexity
 	var collision_buffer := storage_buffer_zero(r8_word_byte_count)       # collision R8, 4 voxels per uint
 	var completeness_buffer := storage_buffer_zero(r8_word_byte_count)      # max(complexity, collision) R8, 4 voxels per uint
-	var color_rgba8_buffer := storage_buffer_zero(voxel_count * 4)       # uint RGBA8 for placement shaders
 	var stats_buffer := storage_buffer_zero(TARGET_STATS_BYTE_SIZE)       # u32 max completeness/collision/count stats
 
 	var set0 := create_uniform_set([
@@ -781,7 +780,6 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 		make_storage_uniform(0, visual_buffer),
 		make_storage_uniform(1, collision_buffer),
 		make_storage_uniform(2, completeness_buffer),
-		make_storage_uniform(3, color_rgba8_buffer),
 		make_storage_uniform(4, stats_buffer),
 	], _shader, 1)
 	var set2 := create_uniform_set([
@@ -818,7 +816,6 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	var completeness_word_bytes := _rd.buffer_get_data(completeness_buffer, 0, r8_word_byte_count)
 	var collision_bytes := _r8_bytes_from_word_bytes(collision_word_bytes, voxel_count)
 	var completeness_bytes := _r8_bytes_from_word_bytes(completeness_word_bytes, voxel_count)
-	var color_rgba8_bytes := _rd.buffer_get_data(color_rgba8_buffer)
 	var target_field_bytes := _target_field_vec4_from_rgba8_and_r8(visual_bytes, completeness_bytes, voxel_count)
 	var stats_bytes := _rd.buffer_get_data(stats_buffer, 0, TARGET_STATS_BYTE_SIZE)
 	var preview_data := _rd.texture_get_data(preview_tex, 0)
@@ -846,7 +843,7 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 		"collision_bytes": collision_bytes,  # 源 collision buffer 字节
 		"target_completeness_bytes": completeness_bytes,  # GPU 解码后的 max(complexity, collision)
 		"target_field_bytes": target_field_bytes,
-		"target_visual_rgba8_bytes": color_rgba8_bytes, # GPU 打包后的 target_color
+		"target_visual_rgba8_bytes": visual_bytes, # 与 visual_bytes 同一 RGBA8 数据（A-2：删除重复 dup buffer 后复用 binding0 回读）
 		"max_completeness": stats.get("max_completeness", 0.0), # GPU stats: max target completeness in dirty dispatch
 		"max_occupancy": stats.get("max_occupancy", stats.get("max_completeness", 0.0)),
 		"max_collision": stats.get("max_collision", 0.0), # GPU stats: max target collision in dirty dispatch
