@@ -1556,6 +1556,17 @@ func run_minimal(
 	if debug_read_voxel:
 		output["debug_voxel"] = _decode_float_array(debug_voxel_data, voxel_count * NUM_DEBUG_CHANNELS)
 		output["debug_voxel_readback_source"] = "score_shader_debug_voxel_buffer"
+	# golden-master 素材（《统一Debug承载与输出字典精简方案》落地顺序第 6 步）：
+	# 开关门控的确定性文本快照（稳定键序 + q1000 反量化），diag 级默认不发。
+	# 桥客户端跑固定 demo（现有 call_method 即可）后取本键存 goldens/*.approved.txt，
+	# 作为后续大扫的前后对照；score_contract 字节恒读，voxel 通道段随 debug_read_voxel。
+	if bool(settings.get("debug_read_golden_snapshot", false)):
+		var golden_sections: Array[String] = [
+			DebugBufferSetScript.new(DebugBufferSetScript.SCORE_CONTRACT_STATS).golden_snapshot(self, score_contract_debug_data),
+		]
+		if debug_read_voxel:
+			golden_sections.append(DebugBufferSetScript.new(DebugBufferSetScript.VOXEL_DEBUG_CHANNELS).golden_snapshot(self, debug_voxel_data))
+		output["golden_snapshot"] = "\n".join(golden_sections)
 	if bool(_state_chain_contract.get("cpu_state_chaining", false)):
 		output["cpu_state_chain"] = _state_chain_contract
 	if bool(_state_chain_contract.get("gpu_state_chaining", false)):
