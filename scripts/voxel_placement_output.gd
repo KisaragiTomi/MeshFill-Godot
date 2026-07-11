@@ -3,7 +3,6 @@ class_name VoxelPlacementOutput
 ## GPU placement output conversion (placement result records → world-space results).
 extends "res://scripts/godot_compute_shader_base.gd"
 
-const AutoObject := preload("res://scripts/auto_object.gd")
 const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 const PlacementResultCodec := preload("res://scripts/utils/placement_result_codec.gd")
 
@@ -14,36 +13,6 @@ const PLACEMENT_RESULT_STRIDE_BYTES := RECORD_STRIDE * VEC4_BYTES
 const WORLD_RESULT_STRIDE_BYTES := WORLD_RESULT_STRIDE * VEC4_BYTES
 const RESULTS_TO_WORLD_SHADER_PATH := "res://shaders/placement_results_to_world.glsl"
 const RESULTS_TO_WORLD_LOCAL_SIZE := 64
-const SCENE_PLACEMENT_ACTOR_CONFIG_KEYS := [
-	"scene_placement_actor",
-	"placement_actor",
-	"spa",
-]
-const SCENE_VOXEL_COMMITTER_CONFIG_KEY := "scene_voxel_committer"
-const INSTANCE_STAMP_WRITE_SPEC_CONFIG_KEYS := [
-	"asset",
-	"base_pixel",
-	"capture_size",
-	"create_voxel_write_spec",
-	"defer_blend",
-	"generation_tick",
-	"grid_origin",
-	"grid_size",
-	"group",
-	"groups",
-	"material",
-	"mesh",
-	"name",
-	"placement_mesh",
-	"record_id",
-	SCENE_VOXEL_COMMITTER_CONFIG_KEY,
-	"texture_resolution",
-	"voxel_size",
-	"volume_xz_resolution",
-	AutoObject.INSTANCE_STAMP_WRITE_SPEC_META_KEY,
-	"voxel_write_spec",
-	"world_capture_size",
-]
 
 
 static func results_to_world_gpu(

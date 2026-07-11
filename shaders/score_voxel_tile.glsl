@@ -7,7 +7,7 @@
 // so the score is penalty-only (collision/complexity/clearance overlap). The
 // support_ratio/support_hit/support_total record slots are retained for layout
 // stability but are always 0.
-// Output is TileTopKBuffer, encoded as 4 vec4 records per candidate:
+// Output is the TileTopK buffer, encoded as 4 vec4 records per candidate:
 //   0: vec4(voxel_origin.xyz, score)
 //   1: vec4(tile_id, asset_index, rotation_index, scale_index)
 //   2: vec4(support_ratio[=0], solid_collision, complexity_overlap, clearance_overlap)
