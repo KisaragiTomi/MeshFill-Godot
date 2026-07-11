@@ -16,6 +16,7 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 ## CLAUDE.md rule "Placement / Score Demos: Render Real AssetDescriptor Assets".
 
 const VolumeScore3D := preload("res://scripts/utils/volume_score_3d.gd")
+const DebugBufferSetScript := preload("res://scripts/utils/debug_buffer_set.gd")
 const DemoUI := preload("res://scripts/utils/demo_ui.gd")
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
@@ -373,16 +374,23 @@ func _run_scoring() -> void:
 		}
 		var out: Dictionary = vpg.run_minimal(_complexity_field, _collision_field, fp, grid, settings)
 		var dbg: PackedFloat32Array = out.get("debug_voxel", PackedFloat32Array())
+		# debug_voxel 的通道布局/索引空间来自 DebugBufferSet(VOXEL_DEBUG_CHANNELS) 单一真源，
+		# 不再硬编码 stride 8 / 通道号 4,5 / 展开公式。
+		var voxel_dbg := DebugBufferSetScript.new(DebugBufferSetScript.VOXEL_DEBUG_CHANNELS)
+		var channel_stride := voxel_dbg.channel_count()
+		var score_channel := voxel_dbg.channel_index("placement_score")
+		var rotation_channel := voxel_dbg.channel_index("best_rotation_slot")
 		var anchor_results: Array[Dictionary] = []
 		for ai in range(_anchors.size()):
 			var av := _anchor_voxel(ai)
-			var vidx := av.x + grid.x * (av.z + grid.z * av.y)   # shader voxel_index order
+			var vidx := DebugBufferSetScript.voxel_dense_xzy_index(av, grid)
 			var score := -INF
 			var rotation_slot := 0
-			var base := vidx * 8 + 4                              # DEBUG_CH_PLACEMENT_SCORE (ch 4 of 8)
-			if base >= 0 and base + 1 < dbg.size():
-				score = dbg[base]
-				rotation_slot = int(round(dbg[base + 1]))        # DEBUG_CH_BEST_ROTATION_SLOT (ch 5)
+			var score_index := vidx * channel_stride + score_channel
+			var rotation_index := vidx * channel_stride + rotation_channel
+			if score_index >= 0 and rotation_index < dbg.size():
+				score = dbg[score_index]
+				rotation_slot = int(round(dbg[rotation_index]))
 			anchor_results.append({
 				"score": score, "valid": score > -1.0e17, "rotation_slot": rotation_slot, "voxel": av})
 		_results.append({"ok": true, "asset_index": a, "anchor_results": anchor_results})

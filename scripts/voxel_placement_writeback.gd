@@ -10,6 +10,7 @@ var _generator: VoxelPlacementGenerator = null
 
 const AutoObject := preload("res://scripts/auto_object.gd")
 const PlacementResultCodec := preload("res://scripts/utils/placement_result_codec.gd")
+const ReportSchema := preload("res://scripts/utils/report_schema.gd")
 
 const RESULTS_TO_WORLD_SHADER_PATH := "res://shaders/placement_results_to_world.glsl"
 const RESULT_RECORD_STRIDE_VEC4 := 4
@@ -169,25 +170,13 @@ static func _merge_gpu_autoobject_runtime_flush_contract(target: Dictionary, sou
 
 
 
-## 创建一份初始的 GPU AutoObject 运行时写回报告(所有计数/数组字段先置空或置零)，
-## 依据 runtime_provider/profile_container 摘要与 enabled 开关填充初始状态。
-func _new_gpu_autoobject_runtime_writeback_report(
-	runtime_provider: Object,
-	profile_container: Object,
-	gpu_contract: Dictionary,
-	enabled: bool
-) -> Dictionary:
-	var runtime_summary := _generator._object_summary(runtime_provider)
-	var profile_summary := _generator._object_summary(profile_container)
-	var spawn_api := _runtime_writeback_spawn_api(runtime_provider) if enabled else "none"
+## GPU AutoObject 运行时写回报告的共有骨架（两个 builder 逐字重复的 ~30 个置空/置零默认键）。
+## 收敛为一处 SSOT（键清单/分级见 ReportSchema.WRITEBACK_REPORT）；spawn_api/enabled 参数化少数
+## 随 enabled 变的键。各 builder 从骨架起手，再覆盖自己的 ok/reason/计数/摘要等差异键。
+func _new_gpu_autoobject_runtime_writeback_skeleton(spawn_api: String, enabled: bool) -> Dictionary:
 	return {
-		"ok": enabled and bool(gpu_contract.get("ok", false)),
-		"reason": str(gpu_contract.get("reason", "not_requested")) if enabled else "not_requested",
-		"writeback_reason": "",
 		"gpu_first": true,
 		"cpu_fallback": false,
-		"readback_source": "gpu_storage_buffers" if enabled and bool(gpu_contract.get("ok", false)) else "none",
-		"runtime_read_source": "gpu_storage_buffers" if enabled and bool(gpu_contract.get("ok", false)) else "none",
 		"accepted_placement_writeback_mode": _runtime_writeback_mode_from_api(spawn_api, enabled),
 		"accepted_placement_record_source": "vpg_resident_placement_buffers" if enabled else "none",
 		"accepted_placement_origin_record_source": "vpg_resident_placement_buffers" if enabled else "none",
@@ -211,16 +200,35 @@ func _new_gpu_autoobject_runtime_writeback_report(
 		"resident_gpu_allocator_record_stride_bytes": 0,
 		"resident_gpu_allocator_owner": "none",
 		"resident_gpu_allocator_writeback_blocked_reason": "none",
-		"accepted_count": 0,
 		"spawned_count": 0,
 		"failed_count": 0,
 		"object_ids": [],
 		"spawned_result_indices": [],
 		"command_queue_stage_count": 0,
 		"command_queue_flush_count": 0,
-		"runtime_summary": runtime_summary,
-		"profile_summary": profile_summary,
 	}
+
+
+## 创建一份初始的 GPU AutoObject 运行时写回报告(所有计数/数组字段先置空或置零)，
+## 依据 runtime_provider/profile_container 摘要与 enabled 开关填充初始状态。
+func _new_gpu_autoobject_runtime_writeback_report(
+	runtime_provider: Object,
+	profile_container: Object,
+	gpu_contract: Dictionary,
+	enabled: bool
+) -> Dictionary:
+	var spawn_api := _runtime_writeback_spawn_api(runtime_provider) if enabled else "none"
+	var ready := enabled and bool(gpu_contract.get("ok", false))
+	var report := _new_gpu_autoobject_runtime_writeback_skeleton(spawn_api, enabled)
+	report["ok"] = ready
+	report["reason"] = str(gpu_contract.get("reason", "not_requested")) if enabled else "not_requested"
+	report["writeback_reason"] = ""
+	report["readback_source"] = "gpu_storage_buffers" if ready else "none"
+	report["runtime_read_source"] = "gpu_storage_buffers" if ready else "none"
+	report["accepted_count"] = 0
+	report["runtime_summary"] = _generator._object_summary(runtime_provider)
+	report["profile_summary"] = _generator._object_summary(profile_container)
+	return report
 
 
 
@@ -293,47 +301,16 @@ func _write_accepted_placements_to_gpu_runtime(
 	var spawn_api := _runtime_writeback_spawn_api(runtime_provider)
 	var record_count := int(asset_result.get("result_count", 0))
 	var handoff: Dictionary = asset_result.get("placement_result_buffers", {})
-	var report := {
-		"ok": true,
-		"reason": "gpu_runtime_writeback_ready",
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"readback_source": "gpu_storage_buffers",
-		"runtime_read_source": "gpu_storage_buffers",
-		"accepted_placement_writeback_mode": _runtime_writeback_mode_from_api(spawn_api, true),
-		"accepted_placement_record_source": "vpg_resident_placement_buffers",
-		"accepted_placement_origin_record_source": "vpg_resident_placement_buffers",
-		"accepted_placement_spawn_api": spawn_api,
-		"cpu_batched_command_queue_bridge": false,
-		"cpu_batch_bridge": false,
-		"runtime_command_flush_mode": "none",
-		"accepted_placement_record_schema_version": 0,
-		"accepted_placement_record_stride_bytes": 0,
-		"accepted_placement_record_count": 0,
-		"accepted_placement_record_byte_count": 0,
-		"accepted_placement_record_debug_packed": false,
-		"accepted_placement_record_shader_consumed": false,
-		"accepted_placement_record_shader_name": "none",
-		"accepted_placement_record_shader_path": "none",
-		"accepted_placement_record_shader_dispatch_count": 0,
-		"accepted_placement_record_shader_local_size_x": 0,
-		"accepted_placement_record_shader_stats": {},
-		"resident_gpu_allocator_writeback": false,
-		"resident_gpu_allocator_writeback_mode": "none",
-		"resident_gpu_allocator_record_stride_bytes": 0,
-		"resident_gpu_allocator_owner": "none",
-		"resident_gpu_allocator_writeback_blocked_reason": "none",
-		"accepted_count": record_count,
-		"spawned_count": 0,
-		"failed_count": 0,
-		"object_ids": [],
-		"spawned_result_indices": [],
-		"command_queue_stage_count": 0,
-		"command_queue_flush_count": 0,
-		"asset_index": asset_index,
-		"profile_id": int(per_asset_settings.get("profile_id", -1)),
-		"object_type": _runtime_writeback_object_type(asset_def, per_asset_settings, common_settings),
-	}
+	# 共有骨架（~30 键）来自 SSOT；此路径 always-enabled，故 skeleton(spawn_api, true) + 差异键覆盖。
+	var report := _new_gpu_autoobject_runtime_writeback_skeleton(spawn_api, true)
+	report["ok"] = true
+	report["reason"] = "gpu_runtime_writeback_ready"
+	report["readback_source"] = "gpu_storage_buffers"
+	report["runtime_read_source"] = "gpu_storage_buffers"
+	report["accepted_count"] = record_count
+	report["asset_index"] = asset_index
+	report["profile_id"] = int(per_asset_settings.get("profile_id", -1))
+	report["object_type"] = _runtime_writeback_object_type(asset_def, per_asset_settings, common_settings)
 	if runtime_provider == null or spawn_api == "none":
 		report["ok"] = false
 		report["reason"] = "missing_gpu_autoobject_runtime_writeback_target"

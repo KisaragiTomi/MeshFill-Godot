@@ -34,8 +34,7 @@ const SCORE_SUM_SHADER_PATH := "res://shaders/placement_result_score_sum.glsl"
 const DELTA_STRIDE := 2
 const STAMP_BOUNDS_STRIDE := 2
 const NUM_DEBUG_CHANNELS := 8
-const SCORE_CONTRACT_DEBUG_WORDS := 48
-const SCORE_CONTRACT_MAGIC := 0x4D465052 # MFPR: MeshFill placement runtime/profile.
+# score_contract_debug 的 48 字布局/magic/48 槽名表已收敛到 DebugBufferSet(SCORE_CONTRACT_STATS)。
 const CANDIDATE_ROUTE_BINDING_DEBUG_WORDS := 16
 const CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS := 4
 const CANDIDATE_ROUTE_INDIRECT_ARGS_BYTES := 12
@@ -43,6 +42,7 @@ const CANDIDATE_ROUTE_SPARSE_ADAPTER_LOCAL_SIZE := 64
 const GPU_RUNTIME_PROVIDER_CONFIG_KEY := "gpu_autoobject_runtime"
 const GPU_PROFILE_CONTAINER_CONFIG_KEY := "auto_voxel_runtime_profile_container"
 const CandidateRouteSchemaScript := preload("res://scripts/candidate_route_schema.gd")
+const DebugBufferSetScript := preload("res://scripts/utils/debug_buffer_set.gd")
 const CANDIDATE_ROUTE_SCHEMA_VERSION := CandidateRouteSchemaScript.SCHEMA_VERSION
 const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := CandidateRouteSchemaScript.RECORD_STRIDE_BYTES
 const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := CandidateRouteSchemaScript.RANGE_STRIDE_BYTES
@@ -62,66 +62,8 @@ const REQUIRED_GPU_PROFILE_BUFFERS := [
 	"probe_records",
 	"pivot_records",
 ]
-const DEBUG_CHANNEL_NAMES: PackedStringArray = [
-	"target_coverage",
-	"target_complexity_fit",
-	"target_color_fit",
-	"target_density",
-	"placement_score",
-	"best_rotation_slot",
-	"solid_collision",
-	"clearance_overlap",
-]
-const SCORE_CONTRACT_DEBUG_NAMES: PackedStringArray = [
-	"magic",
-	"contract_enabled",
-	"runtime_object_capacity",
-	"profile_count",
-	"alive_object_reads",
-	"profile_records_matched",
-	"runtime_overlap_tests",
-	"runtime_overlap_hits",
-	"profile_table_reads",
-	"asset_profile_id",
-	"candidate_invocations",
-	"profile_complexity_q1000",
-	"runtime_profile_reads",
-	"runtime_profile_matches",
-	"probe_record_reads",
-	"reserved_profile_side_read",
-	"pivot_record_reads",
-	"probe_weight_q1000",
-	"reserved_profile_side_metric",
-	"pivot_bias_q1000",
-	"profile_probe_count",
-	"reserved_profile_side_count",
-	"profile_pivot_count",
-	"debug_max_target_coverage_q1000",
-	"debug_max_target_complexity_fit_q1000",
-	"debug_max_target_color_fit_q1000",
-	"debug_max_target_density_q1000",
-	"debug_max_placement_score_q1000",
-	"debug_max_best_rotation_slot",
-	"debug_max_solid_collision_q1000",
-	"debug_max_clearance_overlap_q1000",
-	"runtime_spacing_tests",
-	"runtime_spacing_profile_matches",
-	"runtime_spacing_rejections",
-	"runtime_spacing_min_distance_q1000",
-	"scene_voxel_tile_object_ref_enabled",
-	"scene_voxel_tile_object_ref_tile_reads",
-	"scene_voxel_tile_object_ref_slot_reads",
-	"scene_voxel_tile_object_ref_object_reads",
-	"scene_voxel_tile_object_ref_duplicate_reads",
-	"reserved40",
-	"reserved41",
-	"reserved42",
-	"reserved43",
-	"reserved44",
-	"reserved45",
-	"reserved46",
-	"reserved47",
-]
+# debug_voxel 通道名/score_contract_debug 48 槽名表均已收敛进 DebugBufferSet（VOXEL_DEBUG_CHANNELS /
+# SCORE_CONTRACT_STATS）——唯一真源；输出不再回显 debug_channel_names/count（消费者查 schema）。
 const SCENE_VOXEL_COMMITTER_CONFIG_KEY := "scene_voxel_committer"
 const SCENE_VOXEL_TILE_OBJECT_REF_BUFFER_NAME := "scene_voxel_tile_object_refs"
 const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
@@ -883,7 +825,6 @@ func _run_multi_asset_session(
 			"stamp_delta_count": best_gpu_out.get("stamp_delta_count", 0),
 			"stamp_delta_readback_source": best_gpu_out.get("stamp_delta_readback_source", ""),
 			"stamp_bounds": best_gpu_out.get("stamp_bounds", []),
-			"stamp_bounds_source": best_gpu_out.get("stamp_bounds_source", ""),
 			"pivot_variant": best_pivot,
 			"pivot_variant_count": pivot_variants.size(),
 			"placement_result_buffers": best_gpu_out.get("placement_result_buffers", {}),
@@ -1575,36 +1516,31 @@ func run_minimal(
 		_state_chain_contract = _compact_delta_state_chain_contract(voxel_count, stamp_delta_count, decoded_stamp_deltas.size())
 	else:
 		_state_chain_contract = _full_field_readback_contract(voxel_count, "complexity_collision_storage_buffer_full_field_readback_disabled", false)
+	# 输出字典精简（《统一Debug承载与输出字典精简方案.md》方案二，零读者键已 grep 核实后删除）：
+	#   派生键(删): result_readback_bytes = result_count*RECORD_STRIDE*16；candidate_count = candidate_tile_count*top_k；
+	#             debug_channel_count = names.size()
+	#   提升拷贝(删，只嵌套一次): complexity/collision_field_out_source + _byte_count → 见 full_field_readback；
+	#                           debug_channel_max(_source) → 见 gpu_runtime_profile_binding_debug
+	#   恒定 provenance(删): result_readback_count_source、stamp_bounds_source（值永不变）
+	#   schema 回显(删): debug_channel_names → 查询 DebugBufferSet.VOXEL_DEBUG_CHANNELS（布局元数据，非本次结果）
+	#   空占位(删): debug_voxel/_readback_source 仅 debug_read_voxel 时才发（禁用整键不发，消费者用 has()/get 默认）
+	#   多路径 source 保留: stamp_delta_count_source / stamp_delta_readback_source / candidate_voxel_dispatch_mode（真有分支）
 	var output := {
 		"result_count": result_count,
-		"result_readback_bytes": result_readback_bytes,
-		"result_readback_count_source": "reduce_shader_result_count_buffer",
 		"results": _decode_records(result_data, result_count),
 		"complexity_field_out": SceneVoxelTileCodecScript.decode_complexity_field_rgba8_alpha_bytes(scene_out_data, voxel_count) if read_full_field_outputs else PackedFloat32Array(),
 		"collision_field_out": SceneVoxelTileCodecScript.decode_collision_field_r8_word_bytes(collision_out_data, voxel_count) if read_full_field_outputs else PackedFloat32Array(),
-		"complexity_field_out_source": _state_chain_contract.get("complexity_field_out_source", ""),
-		"collision_field_out_source": _state_chain_contract.get("collision_field_out_source", ""),
-		"complexity_field_out_byte_count": _state_chain_contract.get("complexity_field_out_byte_count", 0),
-		"collision_field_out_byte_count": _state_chain_contract.get("collision_field_out_byte_count", 0),
 		"full_field_readback": _state_chain_contract,
 		"stamp_deltas": decoded_stamp_deltas,
 		"stamp_delta_count": stamp_delta_count,
 		"stamp_delta_count_source": "stamp_shader_storage_buffer" if need_stamp_delta_count else "skipped_gpu_resident_state_chain",
 		"stamp_delta_readback_source": "stamp_shader_storage_buffer" if read_stamp_deltas else "disabled",
 		"stamp_bounds": _decode_stamp_bounds(stamp_bounds_data, result_count, grid_size),
-		"stamp_bounds_source": "stamp_shader_storage_buffer",
-		"debug_voxel": _decode_float_array(debug_voxel_data, voxel_count * NUM_DEBUG_CHANNELS) if debug_read_voxel else PackedFloat32Array(),
-		"debug_voxel_readback_source": "score_shader_debug_voxel_buffer" if debug_read_voxel else "disabled",
-		"debug_channel_names": DEBUG_CHANNEL_NAMES,
-		"debug_channel_count": NUM_DEBUG_CHANNELS,
-		"debug_channel_max": score_contract_debug.get("debug_channel_max", PackedFloat32Array()),
-		"debug_channel_max_source": score_contract_debug.get("debug_channel_max_source", ""),
 		"tile_count": tile_count,
 		"tile_counts": tile_counts,
 		"candidate_tile_count": candidate_tile_count,
 		"candidate_tile_ids": candidate_tile_ids,
 		"candidate_voxel_dispatch_mode": "direct_all_tiles" if direct_all_tiles else "sparse_buffer",
-		"candidate_count": candidate_tile_count * top_k,
 		"gpu_runtime_profile_contract": gpu_contract,
 		"gpu_runtime_profile_binding_debug": score_contract_debug,
 		"candidate_route_readback_source": _candidate_route_readback_source_from_settings(route_settings),
@@ -1615,6 +1551,10 @@ func run_minimal(
 	}
 	if str(gpu_contract.get("reason", "")) != "not_requested":
 		output["cpu_fallback"] = false
+	# 空占位规则：debug_voxel 仅在被请求回读时整键发送（禁用时不发空数组占位）。
+	if debug_read_voxel:
+		output["debug_voxel"] = _decode_float_array(debug_voxel_data, voxel_count * NUM_DEBUG_CHANNELS)
+		output["debug_voxel_readback_source"] = "score_shader_debug_voxel_buffer"
 	if bool(_state_chain_contract.get("cpu_state_chaining", false)):
 		output["cpu_state_chain"] = _state_chain_contract
 	if bool(_state_chain_contract.get("gpu_state_chaining", false)):
@@ -1703,8 +1643,8 @@ func _gpu_contract_blocked_minimal_output(
 	candidate_tile_ids: PackedInt32Array,
 	contract: Dictionary
 ) -> Dictionary:
-	var debug_empty := PackedFloat32Array()
-	debug_empty.resize(voxel_count * NUM_DEBUG_CHANNELS)
+	# 与 run_minimal 成功输出同口径精简：field_out_source/_byte_count 只在 full_field_readback 嵌套一次；
+	# debug_voxel 空占位/schema 回显(debug_channel_names/count)/派生 candidate_count/恒定 stamp_bounds_source 均不发。
 	var full_field_readback := _full_field_readback_contract(voxel_count, "input_cpu_state_no_gpu_readback", false)
 	return {
 		"ok": false,
@@ -1712,23 +1652,14 @@ func _gpu_contract_blocked_minimal_output(
 		"results": [],
 		"complexity_field_out": complexity_data,
 		"collision_field_out": collision_data,
-		"complexity_field_out_source": full_field_readback.get("complexity_field_out_source", ""),
-		"collision_field_out_source": full_field_readback.get("collision_field_out_source", ""),
-		"complexity_field_out_byte_count": full_field_readback.get("complexity_field_out_byte_count", 0),
-		"collision_field_out_byte_count": full_field_readback.get("collision_field_out_byte_count", 0),
 		"full_field_readback": full_field_readback,
 		"stamp_deltas": [],
 		"stamp_delta_readback_source": "none",
 		"stamp_bounds": [],
-		"stamp_bounds_source": "none",
-		"debug_voxel": debug_empty,
-		"debug_channel_names": DEBUG_CHANNEL_NAMES,
-		"debug_channel_count": NUM_DEBUG_CHANNELS,
 		"tile_count": tile_count,
 		"tile_counts": tile_counts,
 		"candidate_tile_count": candidate_tile_ids.size(),
 		"candidate_tile_ids": candidate_tile_ids,
-		"candidate_count": 0,
 		"gpu_runtime_profile_contract": contract,
 		"contract_blocked": true,
 		"skipped_gpu_runtime_profile_contract": true,
@@ -1749,31 +1680,21 @@ func _empty_prefilter_output(
 	tile_counts: Vector3i,
 	candidate_tile_ids: PackedInt32Array
 ) -> Dictionary:
-	var debug_empty := PackedFloat32Array()
-	debug_empty.resize(voxel_count * NUM_DEBUG_CHANNELS)
+	# 同口径精简（见 _gpu_contract_blocked_minimal_output）：只嵌套一次、不发空占位/schema 回显/派生键。
 	var full_field_readback := _full_field_readback_contract(voxel_count, "input_cpu_state_prefilter_skip", false)
 	return {
 		"result_count": 0,
 		"results": [],
 		"complexity_field_out": complexity_data,
 		"collision_field_out": collision_data,
-		"complexity_field_out_source": full_field_readback.get("complexity_field_out_source", ""),
-		"collision_field_out_source": full_field_readback.get("collision_field_out_source", ""),
-		"complexity_field_out_byte_count": full_field_readback.get("complexity_field_out_byte_count", 0),
-		"collision_field_out_byte_count": full_field_readback.get("collision_field_out_byte_count", 0),
 		"full_field_readback": full_field_readback,
 		"stamp_deltas": [],
 		"stamp_delta_readback_source": "none",
 		"stamp_bounds": [],
-		"stamp_bounds_source": "none",
-		"debug_voxel": debug_empty,
-		"debug_channel_names": DEBUG_CHANNEL_NAMES,
-		"debug_channel_count": NUM_DEBUG_CHANNELS,
 		"tile_count": tile_count,
 		"tile_counts": tile_counts,
 		"candidate_tile_count": 0,
 		"candidate_tile_ids": candidate_tile_ids,
-		"candidate_count": 0,
 		"skipped_prefilter": true,
 	}
 
@@ -2842,11 +2763,13 @@ func _prepare_candidate_route_binding(settings: Dictionary, direct_all_tiles: bo
 		track_borrowed_rid(record_rid, KIND_BUFFER, SCOPE_FRAME, "candidate_route_records")
 		track_borrowed_rid(range_rid, KIND_BUFFER, SCOPE_FRAME, "candidate_route_ranges")
 
-	var debug_bytes := PackedByteArray()
-	debug_bytes.resize(CANDIDATE_ROUTE_BINDING_DEBUG_WORDS * 4)
-	debug_bytes.encode_u32(0, 1 if bindable else 0)
-	debug_bytes.encode_u32(4, maxi(range_count, 0) if bindable else 0)
-	var debug_buffer := storage_buffer_from_bytes(debug_bytes, SCOPE_FRAME, "candidate_route_binding_debug")
+	# DebugBufferSet 承载：schema(debug_buffer_set.gd) 是 GLSL 声明 + 16 字布局 + 解码名的单一真源。
+	# word0=enabled、word1=range_count 由 CPU 按 bindable 播种（reset），其余字由 shader 写。
+	var route_debug_set := DebugBufferSetScript.new(DebugBufferSetScript.CANDIDATE_ROUTE_BINDING_STATS)
+	var debug_buffer := route_debug_set.allocate(self, 0, {
+		"enabled": 1 if bindable else 0,
+		"range_count": maxi(range_count, 0) if bindable else 0,
+	}, SCOPE_FRAME, "candidate_route_binding_debug")
 
 	if has_resident_contract:
 		resident_contract["vpg_binds_route_buffers"] = bindable
@@ -2863,6 +2786,7 @@ func _prepare_candidate_route_binding(settings: Dictionary, direct_all_tiles: bo
 		"record_buffer": record_rid if bindable else RID(),
 		"range_buffer": range_rid if bindable else RID(),
 		"debug_buffer": debug_buffer,
+		"debug_set": route_debug_set,
 		"bindable": bindable,
 		"bindable_block_reason": bindable_block_reason,
 		"range_count": range_count if bindable else 0,
@@ -2908,29 +2832,33 @@ func _read_candidate_route_binding_debug(route_binding: Dictionary, debug_read_s
 			"sparse_adapter_output_capacity": int(route_binding.get("record_capacity", 0)),
 			"sparse_adapter_record_capacity": int(route_binding.get("record_capacity", 0)),
 		}
-	var bytes := _rd.buffer_get_data(debug_buffer, 0, CANDIDATE_ROUTE_BINDING_DEBUG_WORDS * 4)
-	var available := mini(int(bytes.size() / 4), CANDIDATE_ROUTE_BINDING_DEBUG_WORDS)
-	for i in range(available):
-		words[i] = bytes.decode_s32(i * 4)
+	# DebugBufferSet.readback() 按 schema 解码：words + values{slot_name: raw_int}。
+	# 下游 _merge/输出仍消费扁平顶层键，故这里把 schema 的 values 映射回既有形状（enabled 转 bool）。
+	var route_debug_set = route_binding.get("debug_set", null)
+	if route_debug_set == null:
+		route_debug_set = DebugBufferSetScript.new(DebugBufferSetScript.CANDIDATE_ROUTE_BINDING_STATS)
+		route_debug_set.buffer = debug_buffer
+	var decoded: Dictionary = route_debug_set.readback(self)
+	var v: Dictionary = decoded.get("values", {})
 	return {
 		"read_source": "score_shader_candidate_route_binding_debug",
 		"word_count": CANDIDATE_ROUTE_BINDING_DEBUG_WORDS,
-		"words": words,
-		"enabled": int(words[0]) != 0,
-		"range_count": int(words[1]),
-		"range_reads": int(words[2]),
-		"record_reads": int(words[3]),
-		"first_range_start": int(words[4]),
-		"first_range_count": int(words[5]),
-		"first_record_x": int(words[6]),
-		"first_record_y": int(words[7]),
-		"sparse_adapter_candidate_count": int(words[8]) if words.size() > 8 else 0,
-		"sparse_adapter_record_reads": int(words[9]) if words.size() > 9 else 0,
-		"sparse_adapter_range_index": int(words[10]) if words.size() > 10 else 0,
-		"sparse_adapter_output_capacity": int(words[11]) if words.size() > 11 else 0,
-		"sparse_adapter_range_start": int(words[12]) if words.size() > 12 else 0,
-		"sparse_adapter_range_count": int(words[13]) if words.size() > 13 else 0,
-		"sparse_adapter_record_capacity": int(words[14]) if words.size() > 14 else 0,
+		"words": decoded.get("words", words),
+		"enabled": int(v.get("enabled", 0)) != 0,
+		"range_count": int(v.get("range_count", 0)),
+		"range_reads": int(v.get("range_reads", 0)),
+		"record_reads": int(v.get("record_reads", 0)),
+		"first_range_start": int(v.get("first_range_start", 0)),
+		"first_range_count": int(v.get("first_range_count", 0)),
+		"first_record_x": int(v.get("first_record_x", 0)),
+		"first_record_y": int(v.get("first_record_y", 0)),
+		"sparse_adapter_candidate_count": int(v.get("sparse_adapter_candidate_count", 0)),
+		"sparse_adapter_record_reads": int(v.get("sparse_adapter_record_reads", 0)),
+		"sparse_adapter_range_index": int(v.get("sparse_adapter_range_index", 0)),
+		"sparse_adapter_output_capacity": int(v.get("sparse_adapter_output_capacity", 0)),
+		"sparse_adapter_range_start": int(v.get("sparse_adapter_range_start", 0)),
+		"sparse_adapter_range_count": int(v.get("sparse_adapter_range_count", 0)),
+		"sparse_adapter_record_capacity": int(v.get("sparse_adapter_record_capacity", 0)),
 	}
 
 
@@ -3070,20 +2998,15 @@ func _pack_score_contract_params(gpu_contract: Dictionary, settings: Dictionary)
 
 
 ## 将 score 着色器写回的原始调试计数缓冲区字节解码为带命名字段的字典，
-## 字段名称对应 SCORE_CONTRACT_DEBUG_NAMES 中定义的布局（魔数、运行时/
+## 字段名称对应 DebugBufferSet(SCORE_CONTRACT_STATS) 定义的 48 槽布局（魔数、运行时/
 ## 画像读取计数、重叠测试、间距排斥、场景体素瓦片对象引用等），
 ## 同时提取各调试通道的最大值（debug_channel_max）供问题定位使用。
 func _decode_score_contract_debug(bytes: PackedByteArray) -> Dictionary:
-	var available_bytes := mini(bytes.size(), SCORE_CONTRACT_DEBUG_WORDS * 4)
-	available_bytes -= available_bytes % 4
-	var available_words := int(available_bytes / 4)
-	var words := PackedInt32Array()
-	words.resize(SCORE_CONTRACT_DEBUG_WORDS)
-	for i in range(available_words):
-		words[i] = bytes.decode_s32(i * 4)
-	var values := {}
-	for i in range(SCORE_CONTRACT_DEBUG_NAMES.size()):
-		values[SCORE_CONTRACT_DEBUG_NAMES[i]] = words[i]
+	# DebugBufferSet(SCORE_CONTRACT_STATS) 是 48 字布局 + 48 槽名表 + magic 的单一真源；
+	# readback 给出 words + values{name:raw_int} + magic_ok。下方扁平访问器为契约报告形状
+	# （_annotate_score_contract_debug 逐字段消费），保持不变（语义不动）。
+	var decoded := DebugBufferSetScript.new(DebugBufferSetScript.SCORE_CONTRACT_STATS).readback(self, bytes)
+	var words: PackedInt32Array = decoded.get("words", PackedInt32Array())
 	var debug_channel_max := PackedFloat32Array()
 	debug_channel_max.resize(NUM_DEBUG_CHANNELS)
 	var debug_max_word_offset := 23
@@ -3093,10 +3016,10 @@ func _decode_score_contract_debug(bytes: PackedByteArray) -> Dictionary:
 			debug_channel_max[i] = float(words[word_index]) / 1000.0
 	return {
 		"read_source": "score_shader_storage_buffer",
-		"word_count": SCORE_CONTRACT_DEBUG_WORDS,
+		"word_count": int(decoded.get("word_count", 0)),
 		"words": words,
-		"values": values,
-		"magic_ok": int(words[0]) == SCORE_CONTRACT_MAGIC,
+		"values": decoded.get("values", {}),
+		"magic_ok": bool(decoded.get("magic_ok", false)),
 		"contract_enabled": int(words[1]) != 0,
 		"runtime_object_capacity": int(words[2]),
 		"profile_count": int(words[3]),
@@ -3131,11 +3054,9 @@ func _decode_score_contract_debug(bytes: PackedByteArray) -> Dictionary:
 
 
 ## 生成用于重置的 score 调试缓冲区字节数据，仅写入用于校验的魔数（magic）。
+## 布局/magic 由 DebugBufferSet(SCORE_CONTRACT_STATS) schema 统一提供（reset_bytes 全零 + 写 magic）。
 func _pack_score_contract_debug_reset() -> PackedByteArray:
-	var bytes := PackedByteArray()
-	bytes.resize(SCORE_CONTRACT_DEBUG_WORDS * 4)
-	bytes.encode_u32(0, SCORE_CONTRACT_MAGIC)
-	return bytes
+	return DebugBufferSetScript.new(DebugBufferSetScript.SCORE_CONTRACT_STATS).reset_bytes()
 
 
 ## 结合 score 着色器实际写回的调试计数，对 gpu_contract 进行事后标注：

@@ -30,6 +30,7 @@ const SceneVoxelCommitter := preload("res://scripts/scene_voxel_committer.gd")
 const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generator.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const HashUtils := preload("res://scripts/utils/hash_utils.gd")
+const ReportSchema := preload("res://scripts/utils/report_schema.gd")
 
 const MESH_DESCRIPTION_BUFFER := "mesh_description"
 const MESH_DESCRIPTION_STRIDE_BYTES := 128
@@ -2709,46 +2710,25 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 	var color_valid := not source_color.is_empty()
 	var color_source := "target_visual_rgba8_bytes" if color_valid else "zero_filled"
 
-	if not ensure_device(true, false):
-		return {
-			"ok": false,
-			"reason": "missing_rendering_device",
-			"gpu_first": true,
-			"cpu_fallback": false,
+	# 同族失败 dict（×6，仅 reason 不同）收敛为本地工厂：ReportSchema.fail 产出规范
+	# {ok:false, reason, gpu_first, cpu_fallback} + 运行时 extra；reason 逐字透传（含喂给 summary）。
+	var _fail := func(fail_reason: String) -> Dictionary:
+		return ReportSchema.fail(ReportSchema.TARGET_READ_BUFFER_FAILURE, fail_reason, {
 			"expected_byte_count": expected_bytes,
 			"voxel_count": voxel_count,
 			"resident_target_read_buffer_handoff": false,
 			"resident_target_read_buffer_handoff_summary": _resident_target_read_buffer_handoff_summary(
-				false,
-				"missing_rendering_device",
-				expected_bytes,
-				voxel_count,
-				color_source,
-				Vector3i.ZERO
-			),
-		}
+				false, fail_reason, expected_bytes, voxel_count, color_source, Vector3i.ZERO),
+		})
+
+	if not ensure_device(true, false):
+		return _fail.call("missing_rendering_device")
 
 	var shader := load_compute_shader("res://shaders/pack_target_field.glsl", SCOPE_FRAME, "prepare_target_read_buffers")
 	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "prepare_target_read_buffers")
 	if not shader.is_valid() or not pipeline.is_valid():
 		gc_frame()
-		return {
-			"ok": false,
-			"reason": "target_read_buffer_prep_shader_not_ready",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"expected_byte_count": expected_bytes,
-			"voxel_count": voxel_count,
-			"resident_target_read_buffer_handoff": false,
-			"resident_target_read_buffer_handoff_summary": _resident_target_read_buffer_handoff_summary(
-				false,
-				"target_read_buffer_prep_shader_not_ready",
-				expected_bytes,
-				voxel_count,
-				color_source,
-				Vector3i.ZERO
-			),
-		}
+		return _fail.call("target_read_buffer_prep_shader_not_ready")
 
 	var zero_bytes := PackedByteArray()
 	zero_bytes.resize(expected_bytes)
@@ -2767,23 +2747,7 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 	if not resident_complexity_input.is_valid() or not resident_collision_input.is_valid():
 		push_error("ScenePlacementActorTargetReadBuffers: missing resident SV field read RIDs (resident_complexity_field_read_rid / resident_collision_field_read_rid); CPU field-pack fallback removed.")
 		gc_frame()
-		return {
-			"ok": false,
-			"reason": "target_read_buffer_prep_resident_field_inputs_missing",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"expected_byte_count": expected_bytes,
-			"voxel_count": voxel_count,
-			"resident_target_read_buffer_handoff": false,
-			"resident_target_read_buffer_handoff_summary": _resident_target_read_buffer_handoff_summary(
-				false,
-				"target_read_buffer_prep_resident_field_inputs_missing",
-				expected_bytes,
-				voxel_count,
-				color_source,
-				Vector3i.ZERO
-			),
-		}
+		return _fail.call("target_read_buffer_prep_resident_field_inputs_missing")
 	var complexity_input_buffer := resident_complexity_input
 	var collision_input_buffer := resident_collision_input
 
@@ -2798,23 +2762,7 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		if resident_handoff_enabled:
 			release_rid(target_field_output_buffer)
 		gc_frame()
-		return {
-			"ok": false,
-			"reason": "target_read_buffer_prep_storage_buffer_failed",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"expected_byte_count": expected_bytes,
-			"voxel_count": voxel_count,
-			"resident_target_read_buffer_handoff": false,
-			"resident_target_read_buffer_handoff_summary": _resident_target_read_buffer_handoff_summary(
-				false,
-				"target_read_buffer_prep_storage_buffer_failed",
-				expected_bytes,
-				voxel_count,
-				color_source,
-				Vector3i.ZERO
-			),
-		}
+		return _fail.call("target_read_buffer_prep_storage_buffer_failed")
 
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, color_input_buffer),
@@ -2826,23 +2774,7 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		if resident_handoff_enabled:
 			release_rid(target_field_output_buffer)
 		gc_frame()
-		return {
-			"ok": false,
-			"reason": "target_read_buffer_prep_uniform_set_failed",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"expected_byte_count": expected_bytes,
-			"voxel_count": voxel_count,
-			"resident_target_read_buffer_handoff": false,
-			"resident_target_read_buffer_handoff_summary": _resident_target_read_buffer_handoff_summary(
-				false,
-				"target_read_buffer_prep_uniform_set_failed",
-				expected_bytes,
-				voxel_count,
-				color_source,
-				Vector3i.ZERO
-			),
-		}
+		return _fail.call("target_read_buffer_prep_uniform_set_failed")
 
 	var push := PushConstantLayout.new(TARGET_READ_BUFFER_PREP_PUSH).pack({
 		voxel_count = voxel_count,
@@ -2854,23 +2786,7 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		if resident_handoff_enabled:
 			release_rid(target_field_output_buffer)
 		gc_frame()
-		return {
-			"ok": false,
-			"reason": "target_read_buffer_prep_compute_list_begin_failed",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"expected_byte_count": expected_bytes,
-			"voxel_count": voxel_count,
-			"resident_target_read_buffer_handoff": false,
-			"resident_target_read_buffer_handoff_summary": _resident_target_read_buffer_handoff_summary(
-				false,
-				"target_read_buffer_prep_compute_list_begin_failed",
-				expected_bytes,
-				voxel_count,
-				color_source,
-				Vector3i.ZERO
-			),
-		}
+		return _fail.call("target_read_buffer_prep_compute_list_begin_failed")
 	_gpu_dispatch_pipeline_sets(cl, pipeline, [set0], push, groups)
 	end_compute_list()
 	submit_and_sync()

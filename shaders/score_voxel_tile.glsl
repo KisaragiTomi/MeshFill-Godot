@@ -57,9 +57,11 @@ layout(set = 0, binding = 6, std430) restrict readonly buffer TargetField {
     vec4 target_field[];
 };
 
+// @@GEN debug_set voxel_debug_channels decl
 layout(set = 0, binding = 7, std430) restrict buffer DebugVoxelOutput {
-    float debug_voxel[];
+    float debug_voxel[];  // 8 channels/element, index space: voxel_dense_xzy
 };
+// @@END debug_set voxel_debug_channels decl
 
 // Phase-2 data-driven dimension scoring (see scoring-dimensions-design.md). Environment
 // channels (collision/complexity/color...) laid out flat: env_channels[voxel*env_channel_count + ch].
@@ -139,9 +141,11 @@ layout(set = 1, binding = 7, std430) restrict readonly buffer ScoreRuntimeProfil
     ivec4 object_ref_modes; // full-scan debug fallback, require object refs, numeric schema confirmed, reserved
 };
 
+// @@GEN debug_set score_contract_stats decl
 layout(set = 1, binding = 8, std430) restrict buffer ScoreRuntimeProfileDebug {
     uint score_contract_debug[];
 };
+// @@END debug_set score_contract_stats decl
 
 layout(set = 1, binding = 9, std430) restrict readonly buffer RuntimeProbeRecords {
     RuntimeProbeRecord runtime_probe_records[];
@@ -163,9 +167,26 @@ layout(set = 2, binding = 1, std430) restrict readonly buffer CandidateRouteRang
     uvec4 candidate_route_ranges[];
 };
 
+// @@GEN debug_set candidate_route_binding_stats
 layout(set = 2, binding = 2, std430) restrict buffer CandidateRouteBindingDebug {
     uint candidate_route_binding_debug[];
 };
+const uint CANDIDATE_ROUTE_BINDING_ENABLED = 0u;
+const uint CANDIDATE_ROUTE_BINDING_RANGE_COUNT = 1u;
+const uint CANDIDATE_ROUTE_BINDING_RANGE_READS = 2u;
+const uint CANDIDATE_ROUTE_BINDING_RECORD_READS = 3u;
+const uint CANDIDATE_ROUTE_BINDING_FIRST_RANGE_START = 4u;
+const uint CANDIDATE_ROUTE_BINDING_FIRST_RANGE_COUNT = 5u;
+const uint CANDIDATE_ROUTE_BINDING_FIRST_RECORD_X = 6u;
+const uint CANDIDATE_ROUTE_BINDING_FIRST_RECORD_Y = 7u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_CANDIDATE_COUNT = 8u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RECORD_READS = 9u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_INDEX = 10u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_OUTPUT_CAPACITY = 11u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_START = 12u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_COUNT = 13u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RECORD_CAPACITY = 14u;
+// @@END debug_set candidate_route_binding_stats
 
 layout(push_constant, std430) uniform Params {
     ivec4 grid_size_tile_count;    // x, y, z, total tile count
@@ -190,15 +211,18 @@ const uint FOOTPRINT_CAPACITY = 128u;
 // valid-but-penalized candidate still beats an invalid one in the per-tile max-select.
 const float INVALID_SCORE = -1.0e18;
 const uint RECORD_STRIDE = 4u;
+// @@GEN debug_set voxel_debug_channels consts
 const uint NUM_DEBUG_CHANNELS = 8u;
-const uint DEBUG_CH_TARGET_COVERAGE   = 0u;
-const uint DEBUG_CH_TARGET_COMPLEXITY_FIT  = 1u;
-const uint DEBUG_CH_TARGET_COLOR_FIT  = 2u;
-const uint DEBUG_CH_TARGET_DENSITY    = 3u;
-const uint DEBUG_CH_PLACEMENT_SCORE   = 4u;
+const uint DEBUG_CH_TARGET_COVERAGE = 0u;
+const uint DEBUG_CH_TARGET_COMPLEXITY_FIT = 1u;
+const uint DEBUG_CH_TARGET_COLOR_FIT = 2u;
+const uint DEBUG_CH_TARGET_DENSITY = 3u;
+const uint DEBUG_CH_PLACEMENT_SCORE = 4u;
 const uint DEBUG_CH_BEST_ROTATION_SLOT = 5u;
-const uint DEBUG_CH_SOLID_COLLISION   = 6u;
+const uint DEBUG_CH_SOLID_COLLISION = 6u;
 const uint DEBUG_CH_CLEARANCE_OVERLAP = 7u;
+// @@END debug_set voxel_debug_channels consts
+// @@GEN debug_set score_contract_stats consts
 const uint SCORE_CONTRACT_MAGIC = 0x4D465052u;
 const uint SCORE_DEBUG_MAGIC = 0u;
 const uint SCORE_DEBUG_ENABLED = 1u;
@@ -230,6 +254,7 @@ const uint SCORE_DEBUG_OBJECT_REF_TILE_READS = 36u;
 const uint SCORE_DEBUG_OBJECT_REF_SLOT_READS = 37u;
 const uint SCORE_DEBUG_OBJECT_REF_OBJECT_READS = 38u;
 const uint SCORE_DEBUG_OBJECT_REF_DUPLICATE_READS = 39u;
+// @@END debug_set score_contract_stats consts
 const int RUNTIME_CONTRACT_SCAN_CAP = 4096;
 const int PROFILE_CONTRACT_SCAN_CAP = 1024;
 
@@ -580,29 +605,29 @@ void write_runtime_profile_contract_header(float profile_complexity) {
 }
 
 void touch_candidate_route_binding(uint group_index) {
-    if (candidate_route_binding_debug[0] == 0u) {
+    if (candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_ENABLED] == 0u) {
         return;
     }
 
-    uint range_count = candidate_route_binding_debug[1];
+    uint range_count = candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_RANGE_COUNT];
     if (range_count == 0u) {
         return;
     }
 
     uint range_index = min(group_index, range_count - 1u);
     uvec4 route_range = candidate_route_ranges[range_index];
-    atomicAdd(candidate_route_binding_debug[2], 1u);
-    candidate_route_binding_debug[4] = route_range.x;
-    candidate_route_binding_debug[5] = route_range.y;
+    atomicAdd(candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_RANGE_READS], 1u);
+    candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_FIRST_RANGE_START] = route_range.x;
+    candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_FIRST_RANGE_COUNT] = route_range.y;
 
     if (route_range.y == 0u) {
         return;
     }
 
     uvec4 route_record = candidate_route_records[route_range.x];
-    atomicAdd(candidate_route_binding_debug[3], 1u);
-    candidate_route_binding_debug[6] = route_record.x;
-    candidate_route_binding_debug[7] = route_record.y;
+    atomicAdd(candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_RECORD_READS], 1u);
+    candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_FIRST_RECORD_X] = route_record.x;
+    candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_FIRST_RECORD_Y] = route_record.y;
 }
 
 bool in_grid_bounds(ivec3 p) {

@@ -48,9 +48,11 @@ layout(set = 0, binding = 5, std430) restrict buffer CandidateRouteRanges {
     uvec4 candidate_route_ranges[];
 };
 
+// @@GEN debug_set candidate_route_debug
 layout(set = 0, binding = 6, std430) restrict buffer CandidateRouteDebug {
     uint candidate_route_debug[];
 };
+// @@END debug_set candidate_route_debug
 
 layout(push_constant, std430) uniform Params {
     ivec4 tile_grid_asset_count; // xyz = tile grid dims, w = asset_count

@@ -20,9 +20,26 @@ layout(set = 0, binding = 2, std430) restrict buffer CandidateVoxelRegions {
     uint candidate_tile_ids[];
 };
 
+// @@GEN debug_set candidate_route_binding_stats
 layout(set = 0, binding = 3, std430) restrict buffer CandidateRouteBindingDebug {
     uint candidate_route_binding_debug[];
 };
+const uint CANDIDATE_ROUTE_BINDING_ENABLED = 0u;
+const uint CANDIDATE_ROUTE_BINDING_RANGE_COUNT = 1u;
+const uint CANDIDATE_ROUTE_BINDING_RANGE_READS = 2u;
+const uint CANDIDATE_ROUTE_BINDING_RECORD_READS = 3u;
+const uint CANDIDATE_ROUTE_BINDING_FIRST_RANGE_START = 4u;
+const uint CANDIDATE_ROUTE_BINDING_FIRST_RANGE_COUNT = 5u;
+const uint CANDIDATE_ROUTE_BINDING_FIRST_RECORD_X = 6u;
+const uint CANDIDATE_ROUTE_BINDING_FIRST_RECORD_Y = 7u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_CANDIDATE_COUNT = 8u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RECORD_READS = 9u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_INDEX = 10u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_OUTPUT_CAPACITY = 11u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_START = 12u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_COUNT = 13u;
+const uint CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RECORD_CAPACITY = 14u;
+// @@END debug_set candidate_route_binding_stats
 
 layout(set = 0, binding = 4, std430) restrict buffer CandidateRouteAdapterCount {
     uint candidate_route_adapter_count[];
@@ -49,11 +66,11 @@ void main() {
     uint record_count = route_range.y;
 
     if (record_index_in_range == 0u) {
-        candidate_route_binding_debug[10] = range_index;
-        candidate_route_binding_debug[11] = output_capacity;
-        candidate_route_binding_debug[12] = record_start;
-        candidate_route_binding_debug[13] = record_count;
-        candidate_route_binding_debug[14] = record_capacity;
+        candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_INDEX] = range_index;
+        candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_OUTPUT_CAPACITY] = output_capacity;
+        candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_START] = record_start;
+        candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_COUNT] = record_count;
+        candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RECORD_CAPACITY] = record_capacity;
         candidate_route_adapter_count[1] = min(record_count, output_capacity);
         candidate_route_adapter_count[2] = record_count > output_capacity ? record_count - output_capacity : 0u;
         candidate_route_adapter_count[3] = 0x52414341u; // "RACA"
@@ -63,7 +80,7 @@ void main() {
     if (record_start >= record_capacity || record_index_in_range >= record_capacity - record_start) return;
 
     uvec4 route_record = candidate_route_records[record_start + record_index_in_range];
-    atomicAdd(candidate_route_binding_debug[9], 1u);
+    atomicAdd(candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RECORD_READS], 1u);
 
     uint tile_id = route_record.x;
     if (tile_id >= tile_count) return;
@@ -80,5 +97,5 @@ void main() {
     }
 
     candidate_tile_ids[write_index] = tile_id;
-    atomicAdd(candidate_route_binding_debug[8], 1u);
+    atomicAdd(candidate_route_binding_debug[CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_CANDIDATE_COUNT], 1u);
 }
