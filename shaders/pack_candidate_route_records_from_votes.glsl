@@ -5,11 +5,15 @@
 // Inputs:
 //   asset_tile_votes[asset_id * tile_count + tile_id] = vote score
 //   route_extent_radii[asset_id].xyz = route expansion radius in tile units
+//   tile_summaries[] (optional)      = 8 uints per tile; when use_summary_filter != 0,
+//                                      vote centers whose summary has no scene/collision
+//                                      content are skipped (a dummy buffer is bound and
+//                                      the filter disabled when no resident summaries exist)
 // Outputs:
 //   candidate_route_records[] = uvec4(tile_id, 0, 0, 0)
 //   candidate_route_ranges[]  = uvec4(record_start, record_count, 0, 0)
 //
-// This opt-in producer pass preserves candidate sets, but writes each asset range
+// This producer pass preserves candidate sets, but writes each asset range
 // in ascending tile_id order. It intentionally does not claim CPU score ordering.
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
@@ -40,13 +44,33 @@ layout(set = 0, binding = 5, std430) restrict buffer CandidateRouteDebug {
 };
 // @@END debug_set candidate_route_debug
 
+layout(set = 0, binding = 6, std430) restrict readonly buffer TileSummaries {
+    uint tile_summaries[];
+};
+
 layout(push_constant, std430) uniform Params {
     ivec4 tile_grid_asset_count; // xyz = tile grid dims, w = asset_count
     uint tile_count;
     uint record_capacity;
     float vote_threshold;
+    uint summary_stride_uints;   // 8 = SCENE_VOXEL_TILE_SUMMARY_STRIDE_BYTES / 4
+    uint use_summary_filter;     // 1 = skip vote centers whose tile summary is empty
     uint _pad0;
+    uint _pad1;
+    uint _pad2;
 };
+
+const uint SUMMARY_SCENE_COUNT_OFFSET = 4u;
+const uint SUMMARY_COLLISION_COUNT_OFFSET = 5u;
+
+// Returns true if the tile has scene or collision content
+// (max(scene_count, collision_count) > 0). Empty tiles are pointless to
+// expand — the score shader would discard them anyway.
+bool tile_has_content(uint tile_id) {
+    uint base = tile_id * summary_stride_uints;
+    return tile_summaries[base + SUMMARY_SCENE_COUNT_OFFSET] > 0u
+        || tile_summaries[base + SUMMARY_COLLISION_COUNT_OFFSET] > 0u;
+}
 
 // @@GEN route_tile_id_codec — SSOT scripts/utils/route_tile_shared_glsl.gd (regen; verify: tools/verify_glsl_gen_blocks.gd)
 ivec3 tile_pos_from_id(uint tile_id) {
@@ -73,8 +97,10 @@ void main() {
     uint positive_votes = 0u;
     uint duplicate_marks = 0u;
     uint overflow_records = 0u;
+    uint skipped_empty_tiles = 0u; // diagnostic: vote centers skipped by the summary filter
 
-    if (asset_count == 0u || tile_count == 0u || record_capacity == 0u) {
+    if (asset_count == 0u || tile_count == 0u || record_capacity == 0u
+        || (use_summary_filter != 0u && summary_stride_uints < 8u)) {
         candidate_route_debug[0] = 0u;
         candidate_route_debug[1] = 0u;
         candidate_route_debug[2] = 0u;
@@ -91,6 +117,11 @@ void main() {
         uvec4 raw_radius = route_extent_radii[asset_id];
         ivec3 radius = ivec3(raw_radius.xyz);
         for (uint center_id = 0u; center_id < tile_count; center_id++) {
+            if (use_summary_filter != 0u && !tile_has_content(center_id)) {
+                skipped_empty_tiles++;
+                continue;
+            }
+
             float vote = asset_tile_votes[asset_base + center_id];
             if (vote <= vote_threshold) continue;
             positive_votes++;
@@ -137,4 +168,5 @@ void main() {
     candidate_route_debug[6] = tile_count;
     candidate_route_debug[7] = record_capacity;
     candidate_route_debug[8] = written_records;
+    candidate_route_debug[9] = skipped_empty_tiles; // 0 when the summary filter is off
 }

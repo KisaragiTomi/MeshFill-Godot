@@ -144,11 +144,11 @@ const CANDIDATE_ROUTE_BINDING_STATS := {
 	],
 }
 
-## candidate_route_debug（pack_candidate_route_records_from_votes.glsl set0 binding5 与
-## expand_scene_voxel_tile_routes.glsl set0 binding6，16 字，magic 在 word4——pack "GPRP"、
-## expand "ESVR" 各不同）。此 buffer [b]只写不回读[/b]（CPU 从不解码），故这里仅把两 shader
-## 逐字相同的[b]声明[/b]收敛为 codegen（desync guard 盯住这对 90% 拷贝的声明不漂移）；magic 与
-## 逐槽写入因 shader 而异，留在各自 shader 手写（不生成常量、不进 magic）。slots 仅作布局文档。
+## candidate_route_debug（pack_candidate_route_records_from_votes.glsl set0 binding5，
+## 16 字，magic "GPRP" 在 word4）。此 buffer [b]只写不回读[/b]（CPU 从不解码），故仅把
+## [b]声明[/b]收敛为 codegen；magic 与逐槽写入留在 shader 手写（不生成常量、不进 magic）。
+## slots 仅作布局文档。（原 expand_scene_voxel_tile_routes.glsl 消费者已并入 pack——
+## summary 空 tile 过滤成为同一 shader 的 use_summary_filter 开关。）
 const CANDIDATE_ROUTE_DEBUG := {
 	"name": "candidate_route_debug",
 	"kind": KIND_STAT_SLOTS,
@@ -204,9 +204,8 @@ const CONSUMERS := [
 	# candidate_route_binding_debug —— pilot：decl+consts 一体块（binding 处无既有独立常量段）。
 	{"schema": CANDIDATE_ROUTE_BINDING_STATS, "shader": "res://shaders/score_voxel_tile.glsl", "set": 2, "binding": 2},
 	{"schema": CANDIDATE_ROUTE_BINDING_STATS, "shader": "res://shaders/candidate_route_sparse_adapter.glsl", "set": 0, "binding": 3},
-	# candidate_route_debug —— 只写不回读，仅声明入 codegen（盯住 pack/expand 声明不漂移）。
+	# candidate_route_debug —— 只写不回读，仅声明入 codegen。
 	{"schema": CANDIDATE_ROUTE_DEBUG, "shader": "res://shaders/pack_candidate_route_records_from_votes.glsl", "set": 0, "binding": 5},
-	{"schema": CANDIDATE_ROUTE_DEBUG, "shader": "res://shaders/expand_scene_voxel_tile_routes.glsl", "set": 0, "binding": 6},
 	# score_contract_debug —— decl 与 consts 分处两段（binding 扎堆区 / 常量扎堆区），故分 section。
 	{"schema": SCORE_CONTRACT_STATS, "shader": "res://shaders/score_voxel_tile.glsl", "section": SECTION_DECL},
 	{"schema": SCORE_CONTRACT_STATS, "shader": "res://shaders/score_voxel_tile.glsl", "section": SECTION_CONSTS},

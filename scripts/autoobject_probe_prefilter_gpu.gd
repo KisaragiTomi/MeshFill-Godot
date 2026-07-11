@@ -43,7 +43,6 @@ const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := CandidateRouteSchemaScript.RECORD_S
 const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := CandidateRouteSchemaScript.RANGE_STRIDE_BYTES
 const CANDIDATE_ROUTE_GPU_PACK_SOURCE_LABEL := "gpu_vote_buffer_gpu_pack"
 const CANDIDATE_ROUTE_GPU_PACK_PASS := "pack_candidate_route_records_from_votes"
-const CANDIDATE_ROUTE_GPU_EXPAND_PASS := "expand_scene_voxel_tile_routes"
 const SCENE_VOXEL_TILE_SUMMARY_STRIDE_UINTS := 8  ## 32 bytes per summary / 4 bytes per uint
 
 # ---------------------------------------------------------------------------
@@ -71,14 +70,10 @@ const REDUCE_PUSH := [
 	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["tile_count", "int"],
 	["_pad0", "uint"], ["asset_count", "uint"], ["topk", "uint"], ["_pad1", "uint"],
 ]
-const ROUTE_EXPAND_PUSH := [
-	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["asset_count", "int"],
-	["tile_count", "uint"], ["record_capacity", "uint"], ["summary_stride_uints", "uint"], ["epsilon", "float"],
-	["_pad0", "uint"],
-]
 const ROUTE_PACK_PUSH := [
 	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["asset_count", "int"],
-	["tile_count", "uint"], ["record_capacity", "uint"], ["epsilon", "float"], ["_pad0", "uint"],
+	["tile_count", "uint"], ["record_capacity", "uint"], ["epsilon", "float"], ["summary_stride_uints", "uint"],
+	["use_summary_filter", "uint"], ["_pad0", "uint"], ["_pad1", "uint"], ["_pad2", "uint"],
 ]
 const FIELD_PAIR_PUSH := [
 	["voxel_count", "int"], ["_pad0", "int"], ["_pad1", "int"], ["_pad2", "int"],
@@ -104,14 +99,12 @@ var _shader_score: RID
 var _shader_topk: RID
 var _shader_reduce: RID
 var _shader_route_pack: RID
-var _shader_route_expand: RID
 var _pipeline_collect: RID
 var _pipeline_anchor_finalize: RID
 var _pipeline_score: RID
 var _pipeline_topk: RID
 var _pipeline_reduce: RID
 var _pipeline_route_pack: RID
-var _pipeline_route_expand: RID
 var _candidate_route_gpu_pack_record_buf: RID
 var _candidate_route_gpu_pack_range_buf: RID
 
@@ -148,10 +141,9 @@ func run_probe_prefilter(
 	elif not ensure_device(true, true):
 		return _empty_result("missing_rendering_device")
 
-	var use_expand_shader := tile_summaries_rid.is_valid()
-	_load_shaders(use_expand_shader)
-	if not _pipeline_rids_ready(use_expand_shader):
-		var pipeline_status := _pipeline_readiness(use_expand_shader)
+	_load_shaders()
+	if not _pipeline_rids_ready():
+		var pipeline_status := _pipeline_readiness()
 		var blocked_result := _empty_result("prefilter_shader_pipeline_not_ready", {}, pipeline_status)
 		_free_gpu()
 		return blocked_result
@@ -188,16 +180,15 @@ func _run_gpu_pipeline(
 	var tile_count := tile_grid.x * tile_grid.y * tile_grid.z
 	var safe_tile_ids := _sanitize_prefilter_tile_ids(tile_ids, tile_count)
 	if safe_tile_ids.is_empty():
-		var pipeline_status := _pipeline_readiness(tile_summaries_rid.is_valid())
+		var pipeline_status := _pipeline_readiness()
 		return _empty_result("no_valid_candidate_tiles", {}, pipeline_status)
 
 	# ---- Normalize GPU buffer inputs ----
 
-	var use_expand_shader := tile_summaries_rid.is_valid()
 	var target_buffer_pack := _target_read_buffer_pack(target_read_buffers, voxel_count)
 	if not bool(target_buffer_pack.get("ready", false)):
 		var blocked_reason := str(target_buffer_pack.get("reason", "target_read_buffer_not_ready"))
-		var blocked_result := _empty_result(blocked_reason, {}, _pipeline_readiness(use_expand_shader))
+		var blocked_result := _empty_result(blocked_reason, {}, _pipeline_readiness())
 		blocked_result["target_read_buffer_source"] = str(target_buffer_pack.get("target_read_buffer_source", "none"))
 		blocked_result["target_read_buffer_summary"] = _target_read_buffer_summary(target_buffer_pack)
 		blocked_result["target_read_buffer_blocked_reason"] = blocked_reason
@@ -213,7 +204,7 @@ func _run_gpu_pipeline(
 
 	var complexity_collision_buf := _make_complexity_collision_buffer(sv, voxel_count)
 	if not complexity_collision_buf.is_valid():
-		var field_pipeline_status := _pipeline_readiness(use_expand_shader)
+		var field_pipeline_status := _pipeline_readiness()
 		_free_gpu()
 		return _empty_result("complexity_collision_field_buffer_not_ready", probe_pack, field_pipeline_status)
 	# Target read buffers must be a resident GPU handoff (borrowed); the CPU
@@ -245,7 +236,7 @@ func _run_gpu_pipeline(
 		anchor_buf, anchor_count_buf,
 		grid_size, tile_grid, safe_tile_ids.size()
 	):
-		var pipeline_status := _pipeline_readiness(use_expand_shader)
+		var pipeline_status := _pipeline_readiness()
 		_free_gpu()
 		return _empty_result("collect_anchor_dispatch_bounds_exceeded", probe_pack, pipeline_status)
 
@@ -263,7 +254,7 @@ func _run_gpu_pipeline(
 		grid_size, voxel_size,
 		tile_grid, tile_count, asset_count
 	):
-		var pipeline_status := _pipeline_readiness(use_expand_shader)
+		var pipeline_status := _pipeline_readiness()
 		_free_gpu()
 		return _empty_result("score_topk_reduce_compute_list_begin_failed", probe_pack, pipeline_status)
 
@@ -290,7 +281,7 @@ func _run_gpu_pipeline(
 		actual_anchor_count = mini(BufferUtils.decode_u32_count(anchor_count_bytes), ANCHOR_CAPACITY)
 		anchors_bytes = _rd.buffer_get_data(anchor_buf, 0, actual_anchor_count * 16)
 	var resident_route_payload_ready := _candidate_route_payload_has_resident_rids(gpu_route_pack_payload)
-	var pipeline_status := _pipeline_readiness(use_expand_shader)
+	var pipeline_status := _pipeline_readiness()
 
 	if resident_route_payload_ready:
 		gc_frame()
@@ -473,7 +464,8 @@ func _dispatch_score_topk_reduce(
 	return true
 
 
-## 执行 GPU 路由打包 Pass（pack 或 expand），将稀疏投票缓冲区转换为 schema-v1 记录/范围 RID，返回驻留载荷字典。
+## 执行 GPU 路由打包 Pass，将稀疏投票缓冲区转换为 schema-v1 记录/范围 RID，返回驻留载荷字典。
+## tile_summaries_rid 有效时启用 summary 空 tile 过滤（历史上的 expand 变体，现为同一 shader 的开关）。
 func _run_candidate_route_gpu_pack_pass(
 	asset_tile_votes_buf: RID,
 	route_extents: Array,
@@ -483,8 +475,8 @@ func _run_candidate_route_gpu_pack_pass(
 	tile_summaries_rid: RID = RID()
 ) -> Dictionary:
 	var use_expand := tile_summaries_rid.is_valid()
-	var shader_rid := _shader_route_expand if use_expand else _shader_route_pack
-	var pipeline_rid := _pipeline_route_expand if use_expand else _pipeline_route_pack
+	var shader_rid := _shader_route_pack
+	var pipeline_rid := _pipeline_route_pack
 
 	if not shader_rid.is_valid() or not pipeline_rid.is_valid():
 		return _candidate_route_gpu_pack_blocked(
@@ -502,63 +494,45 @@ func _run_candidate_route_gpu_pack_pass(
 	var record_buf := storage_buffer_zero(record_capacity * CANDIDATE_ROUTE_RECORD_STRIDE_BYTES, SCOPE_PERSISTENT, "candidate_route_records_gpu_%s" % ("expand" if use_expand else "pack"))
 	var range_buf := storage_buffer_zero(asset_count * CANDIDATE_ROUTE_RANGE_STRIDE_BYTES, SCOPE_PERSISTENT, "candidate_route_ranges_gpu_%s" % ("expand" if use_expand else "pack"))
 	var debug_buf := storage_buffer_zero(64, SCOPE_FRAME, "candidate_route_gpu_%s_debug" % ("expand" if use_expand else "pack"))
+	# The summaries binding is always present; without a resident tile-summary
+	# buffer the filter is disabled and a dummy buffer satisfies the binding.
+	var summaries_rid := tile_summaries_rid
+	if not use_expand:
+		summaries_rid = storage_buffer_zero(SCENE_VOXEL_TILE_SUMMARY_STRIDE_UINTS * 4, SCOPE_FRAME, "candidate_route_summary_filter_dummy")
 	if (
 		not route_radius_buf.is_valid()
 		or not route_mark_buf.is_valid()
 		or not record_buf.is_valid()
 		or not range_buf.is_valid()
 		or not debug_buf.is_valid()
+		or not summaries_rid.is_valid()
 	):
 		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_storage_buffer_failed" % ("expand" if use_expand else "pack"))
 
-	var bindings := []
-	if use_expand:
-		bindings = [
-			make_storage_uniform(0, tile_summaries_rid),
-			make_storage_uniform(1, asset_tile_votes_buf),
-			make_storage_uniform(2, route_radius_buf),
-			make_storage_uniform(3, route_mark_buf),
-			make_storage_uniform(4, record_buf),
-			make_storage_uniform(5, range_buf),
-			make_storage_uniform(6, debug_buf),
-		]
-	else:
-		bindings = [
-			make_storage_uniform(0, asset_tile_votes_buf),
-			make_storage_uniform(1, route_radius_buf),
-			make_storage_uniform(2, route_mark_buf),
-			make_storage_uniform(3, record_buf),
-			make_storage_uniform(4, range_buf),
-			make_storage_uniform(5, debug_buf),
-		]
+	var bindings := [
+		make_storage_uniform(0, asset_tile_votes_buf),
+		make_storage_uniform(1, route_radius_buf),
+		make_storage_uniform(2, route_mark_buf),
+		make_storage_uniform(3, record_buf),
+		make_storage_uniform(4, range_buf),
+		make_storage_uniform(5, debug_buf),
+		make_storage_uniform(6, summaries_rid),
+	]
 	var set0 := create_uniform_set(bindings, shader_rid, 0, SCOPE_PASS, "candidate_route_gpu_%s" % ("expand" if use_expand else "pack"))
 	if not set0.is_valid():
 		return _candidate_route_gpu_pack_blocked("candidate_route_gpu_%s_uniform_set_failed" % ("expand" if use_expand else "pack"))
 
-	var push := PackedByteArray()
-	if use_expand:
-		# Expand shader uses more push constants
-		push = PushConstantLayout.new(ROUTE_EXPAND_PUSH).pack({
-			tile_grid_x = tile_grid.x,
-			tile_grid_y = tile_grid.y,
-			tile_grid_z = tile_grid.z,
-			asset_count = asset_count,
-			tile_count = tile_count,
-			record_capacity = record_capacity,
-			summary_stride_uints = SCENE_VOXEL_TILE_SUMMARY_STRIDE_UINTS,
-			epsilon = 0.0001,
-		})
-	else:
-		# Pack shader uses exactly 32 bytes
-		push = PushConstantLayout.new(ROUTE_PACK_PUSH).pack({
-			tile_grid_x = tile_grid.x,
-			tile_grid_y = tile_grid.y,
-			tile_grid_z = tile_grid.z,
-			asset_count = asset_count,
-			tile_count = tile_count,
-			record_capacity = record_capacity,
-			epsilon = 0.0001,
-		})
+	var push := PushConstantLayout.new(ROUTE_PACK_PUSH).pack({
+		tile_grid_x = tile_grid.x,
+		tile_grid_y = tile_grid.y,
+		tile_grid_z = tile_grid.z,
+		asset_count = asset_count,
+		tile_count = tile_count,
+		record_capacity = record_capacity,
+		epsilon = 0.0001,
+		summary_stride_uints = SCENE_VOXEL_TILE_SUMMARY_STRIDE_UINTS,
+		use_summary_filter = 1 if use_expand else 0,
+	})
 
 	var cl := begin_compute_list()
 	if cl < 0:
@@ -866,16 +840,14 @@ static func _result_has_resident_candidate_route_payload(result: Dictionary) -> 
 	return raw_payload is Dictionary and _candidate_route_payload_has_resident_rids(raw_payload as Dictionary)
 
 
-## 加载并编译所有计算着色器，按需加载路由打包/展开 Shader，同时创建对应管线 RID。
-func _load_shaders(load_route_expand: bool = false) -> void:
+## 加载并编译所有计算着色器，同时创建对应管线 RID。
+func _load_shaders() -> void:
 	_shader_collect = load_compute_shader("res://shaders/collect_sv_anchors.glsl")
 	_shader_anchor_finalize = load_compute_shader("res://shaders/prefilter_anchor_dispatch_finalize.glsl")
 	_shader_score = load_compute_shader("res://shaders/score_anchor_asset_probes.glsl")
 	_shader_topk = load_compute_shader("res://shaders/select_anchor_topk.glsl")
 	_shader_reduce = load_compute_shader("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl")
 	_shader_route_pack = load_compute_shader("res://shaders/pack_candidate_route_records_from_votes.glsl")
-	if load_route_expand:
-		_shader_route_expand = load_compute_shader("res://shaders/expand_scene_voxel_tile_routes.glsl")
 	if _shader_collect.is_valid():
 		_pipeline_collect = create_compute_pipeline(_shader_collect)
 	if _shader_anchor_finalize.is_valid():
@@ -888,12 +860,10 @@ func _load_shaders(load_route_expand: bool = false) -> void:
 		_pipeline_reduce = create_compute_pipeline(_shader_reduce)
 	if _shader_route_pack.is_valid():
 		_pipeline_route_pack = create_compute_pipeline(_shader_route_pack)
-	if _shader_route_expand.is_valid():
-		_pipeline_route_expand = create_compute_pipeline(_shader_route_expand)
 
 
-## 检查核心四个管线 RID 是否全部有效，可选验证路由打包或展开管线。
-func _pipeline_rids_ready(require_route_expand: bool = false) -> bool:
+## 检查核心管线与路由打包管线的 RID 是否全部有效。
+func _pipeline_rids_ready() -> bool:
 	var core_ready := (
 		_shader_collect.is_valid() and _pipeline_collect.is_valid()
 		and _shader_anchor_finalize.is_valid() and _pipeline_anchor_finalize.is_valid()
@@ -903,13 +873,11 @@ func _pipeline_rids_ready(require_route_expand: bool = false) -> bool:
 	)
 	if not core_ready:
 		return false
-	if require_route_expand:
-		return _shader_route_expand.is_valid() and _pipeline_route_expand.is_valid()
 	return _shader_route_pack.is_valid() and _pipeline_route_pack.is_valid()
 
 
 ## 返回每个 Pass 的 shader/pipeline 有效性状态字典，用于调试和错误报告。
-func _pipeline_readiness(route_expand_requested: bool = false) -> Dictionary:
+func _pipeline_readiness() -> Dictionary:
 	var collect := _pipeline_pass_readiness(_shader_collect, _pipeline_collect)
 	var anchor_finalize := _pipeline_pass_readiness(_shader_anchor_finalize, _pipeline_anchor_finalize)
 	var score := _pipeline_pass_readiness(_shader_score, _pipeline_score)
@@ -917,17 +885,12 @@ func _pipeline_readiness(route_expand_requested: bool = false) -> Dictionary:
 	var reduce := _pipeline_pass_readiness(_shader_reduce, _pipeline_reduce)
 	var route_pack := _pipeline_pass_readiness(_shader_route_pack, _pipeline_route_pack)
 	route_pack["requested"] = true
-	var route_expand := _pipeline_pass_readiness(_shader_route_expand, _pipeline_route_expand)
-	route_expand["requested"] = route_expand_requested
 	var all_ready := bool(collect.get("ready", false)) \
 		and bool(anchor_finalize.get("ready", false)) \
 		and bool(score.get("ready", false)) \
 		and bool(topk.get("ready", false)) \
-		and bool(reduce.get("ready", false))
-	if route_expand_requested:
-		all_ready = all_ready and bool(route_expand.get("ready", false))
-	else:
-		all_ready = all_ready and bool(route_pack.get("ready", false))
+		and bool(reduce.get("ready", false)) \
+		and bool(route_pack.get("ready", false))
 	return {
 		"collect": collect,
 		"anchor_finalize": anchor_finalize,
@@ -935,7 +898,6 @@ func _pipeline_readiness(route_expand_requested: bool = false) -> Dictionary:
 		"topk": topk,
 		"reduce": reduce,
 		"route_pack": route_pack,
-		"route_expand": route_expand,
 		"all_ready": all_ready,
 	}
 
@@ -960,14 +922,12 @@ func _free_gpu() -> void:
 	_pipeline_topk = RID()
 	_pipeline_reduce = RID()
 	_pipeline_route_pack = RID()
-	_pipeline_route_expand = RID()
 	_shader_collect = RID()
 	_shader_anchor_finalize = RID()
 	_shader_score = RID()
 	_shader_topk = RID()
 	_shader_reduce = RID()
 	_shader_route_pack = RID()
-	_shader_route_expand = RID()
 
 
 ## dispose 完成后清空驻留路由缓冲区的 RID 引用。

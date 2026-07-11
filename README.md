@@ -89,7 +89,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 
 ## GPU 优先架构
 
-项目包含 80 个 GLSL compute shader，核心路径全部 GPU 化：
+项目包含 44 个 GLSL compute shader，核心路径全部 GPU 化：
 
 - **目标生成**：`target_scene_voxel.glsl` 生成 TargetSV visual/collision buffers
 - **探针评分**：`score_anchor_asset_probes.glsl` 对标 anchor 和资产探针
@@ -129,7 +129,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 ## 技术栈
 
 - **引擎**：Godot 4.x（RenderingDevice + Vulkan）
-- **计算**：80 个 GLSL compute shader
+- **计算**：44 个 GLSL compute shader
 - **调度**：compute-pass toolkit（`PushConstantLayout` / `ComputeKernel` / `ComputePassChain`）统一 GPU 派发与 barrier 编排
 - **语言**：GDScript（编排层） + GLSL（GPU 计算层）
 - **数据**：体素存储缓冲区（storage buffer）、3D 纹理、SceneVoxelTile 稀疏瓦片管理

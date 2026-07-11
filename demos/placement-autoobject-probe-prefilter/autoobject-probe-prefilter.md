@@ -60,7 +60,7 @@ dirty voxel regions / dirty tiles
   -> 常驻 candidate_route_record_rid / candidate_route_range_rid（SCOPE_PERSISTENT，交接放置阶段）
 ```
 
-`tile_summaries_rid` 有效时，pack 走 `expand_scene_voxel_tile_routes.glsl` 变体。anchor 位置数组 / count 回读是 debug-only（`debug_read_anchors`，用于 `result["anchors"]` 可视化），默认关闭，路由路径全 GPU-first。
+`tile_summaries_rid` 有效时，pack 启用 summary 空 tile 过滤（`use_summary_filter`，跳过无 scene/collision 内容的 vote center；原独立 expand shader 已并入 pack）。anchor 位置数组 / count 回读是 debug-only（`debug_read_anchors`，用于 `result["anchors"]` 可视化），默认关闭，路由路径全 GPU-first。
 
 Shader 职责：
 

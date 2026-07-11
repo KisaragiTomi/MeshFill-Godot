@@ -2,9 +2,10 @@
 class_name RouteTileSharedGLSL
 extends RefCounted
 
-## SSOT (single source of truth) for GLSL blocks shared VERBATIM between
-##   shaders/pack_candidate_route_records_from_votes.glsl
-##   shaders/expand_scene_voxel_tile_routes.glsl
+## SSOT (single source of truth) for the route tile-id codec GLSL block.
+## (Historically shared between the pack/expand shader pair; expand has since
+## been folded into pack_candidate_route_records_from_votes.glsl, which stays
+## on the codegen block so future consumers keep a single authority.)
 ##
 ## This project compiles shaders from raw source strings via
 ## shader_compile_spirv_from_source() (no RDShaderFile preprocessor), so `#include`
@@ -49,7 +50,6 @@ bool tile_in_bounds(ivec3 p) {
 const CONSUMERS := {
 	"route_tile_id_codec": [
 		"res://shaders/pack_candidate_route_records_from_votes.glsl",
-		"res://shaders/expand_scene_voxel_tile_routes.glsl",
 	],
 }
 
