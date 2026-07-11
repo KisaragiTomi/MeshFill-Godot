@@ -11,8 +11,14 @@ const WORLD_RESULT_STRIDE := 4
 const VEC4_BYTES := 16
 const PLACEMENT_RESULT_STRIDE_BYTES := RECORD_STRIDE * VEC4_BYTES
 const WORLD_RESULT_STRIDE_BYTES := WORLD_RESULT_STRIDE * VEC4_BYTES
-const RESULTS_TO_WORLD_SHADER_PATH := "res://shaders/placement_results_to_world.glsl"
 const RESULTS_TO_WORLD_LOCAL_SIZE := 64
+## 共享派发骨架的 fail_step → 本文件既有 reason 诊断字符串（逐字保持）。
+const WORLD_DISPATCH_FAIL_REASONS := {
+	"shader": "placement_output_world_shader_not_ready",
+	"world_buffer": "placement_output_world_buffer_create_failed",
+	"uniform_set": "placement_output_world_uniform_set_failed",
+	"compute_list": "placement_output_world_compute_list_begin_failed",
+}
 
 
 static func results_to_world_gpu(
@@ -59,37 +65,26 @@ func _results_to_world_gpu(
 		dispose()
 		return _results_to_world_gpu_blocked("missing_rendering_device", record_count)
 
-	var shader := load_compute_shader(RESULTS_TO_WORLD_SHADER_PATH)
-	var pipeline := create_compute_pipeline(shader)
-	if not shader.is_valid() or not pipeline.is_valid():
-		dispose()
-		return _results_to_world_gpu_blocked("placement_output_world_shader_not_ready", record_count)
-
 	var input_buffer := storage_buffer_from_bytes(input_bytes, SCOPE_FRAME, "placement_results_in_vec4")
-	var output_buffer := storage_buffer_zero(record_count * WORLD_RESULT_STRIDE_BYTES, SCOPE_FRAME, "placement_world_results_out_vec4")
-	if not input_buffer.is_valid() or not output_buffer.is_valid():
+	if not input_buffer.is_valid():
 		dispose()
 		return _results_to_world_gpu_blocked("placement_output_world_buffer_create_failed", record_count)
 
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, input_buffer),
-		make_storage_uniform(1, output_buffer),
-	], shader, 0, SCOPE_PASS, "placement_results_to_world_set0")
-	if not set0.is_valid():
-		dispose()
-		return _results_to_world_gpu_blocked("placement_output_world_uniform_set_failed", record_count)
-
 	var safe_voxel_size := VoxelGeneral.safe_voxel_size(voxel_size)
 	var pivot_offset := VariantUtils.vector3_from_value(pivot_variant.get("offset", Vector3.ZERO), Vector3.ZERO)
-	var push := _pack_results_to_world_push(record_count, rotation_count, grid_origin, safe_voxel_size, pivot_offset)
-	var groups := dispatch_groups_1d(record_count, RESULTS_TO_WORLD_LOCAL_SIZE)
-	var cl := begin_compute_list()
-	if cl < 0:
+	var dispatched := PlacementResultCodec.dispatch_results_to_world(
+		self, input_buffer, record_count, rotation_count,
+		grid_origin, safe_voxel_size, pivot_offset,
+		SCOPE_PERSISTENT, "placement_world_results_out_vec4", "placement_results_to_world_set0"
+	)
+	if not bool(dispatched.get("ok", false)):
 		dispose()
-		return _results_to_world_gpu_blocked("placement_output_world_compute_list_begin_failed", record_count)
-	_gpu_dispatch_pipeline_sets(cl, pipeline, [set0], push, groups)
-	end_compute_list()
-	submit_and_sync(true)
+		return _results_to_world_gpu_blocked(
+			str(WORLD_DISPATCH_FAIL_REASONS.get(str(dispatched.get("fail_step", "")), "placement_output_world_shader_not_ready")),
+			record_count
+		)
+	var output_buffer: RID = dispatched.get("world_results_rid", RID())
+	var groups: Vector3i = dispatched.get("dispatch_groups", Vector3i.ONE)
 
 	var out_bytes := _rd.buffer_get_data(output_buffer, 0, record_count * WORLD_RESULT_STRIDE_BYTES)
 	dispose()
@@ -153,17 +148,6 @@ static func _pack_placement_result_records(results: Array[Dictionary]) -> Packed
 		bytes.encode_float(base + 56, float(r.get("support_hit", 0.0)))
 		bytes.encode_float(base + 60, float(r.get("support_total", 0.0)))
 	return bytes
-
-
-## 委托给 PlacementResultCodec（与 writeback 共享的 results→world push 布局）。
-static func _pack_results_to_world_push(
-	record_count: int,
-	rotation_count: int,
-	grid_origin: Vector3,
-	voxel_size: Vector3,
-	pivot_offset: Vector3
-) -> PackedByteArray:
-	return PlacementResultCodec.pack_results_to_world_push(record_count, rotation_count, grid_origin, voxel_size, pivot_offset)
 
 
 static func _decode_world_result_bytes(

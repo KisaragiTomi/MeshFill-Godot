@@ -12,6 +12,7 @@ const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec
 const VoxelPlacementWritebackScript := preload("res://scripts/voxel_placement_writeback.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
+const TargetReadBufferBorrow := preload("res://scripts/utils/target_read_buffer_borrow.gd")
 var _placement_writeback = null
 
 ## Lazily creates the delegated placement writeback helper.
@@ -3550,61 +3551,38 @@ func _target_read_buffer_pack(settings: Dictionary, voxel_count: int) -> Diction
 
 
 ## 尝试直接复用外部（ScenePlacementActor）持有的常驻 GPU target_field 缓冲区，避免额外的 CPU 回读/上传。
-## 依次校验 RID 是否有效、RenderingDevice 是否与本对象一致、字节数是否匹配期望大小；
-## 全部通过则返回 ready=true 的"借用"数据包，否则返回 ready=false 并附带失败原因字符串。
+## 解析/校验核心（RID 有效性 → RenderingDevice 一致 → 字节数匹配）共享自
+## TargetReadBufferBorrow；成功字典键集留在本文件（契约测试逐字断言）。
 func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected_field_bytes: int) -> Dictionary:
-	if target_read_buffers.is_empty():
-		return {"ready": false, "reason": "resident_handoff_absent"}
-
-	var summary: Dictionary = target_read_buffers.get("resident_target_read_buffer_handoff_summary", {})
-	var raw_field = target_read_buffers.get(
-		"target_field_buffer",
-		summary.get("target_field_buffer", RID())
-	)
-	var field_buffer: RID = raw_field if raw_field is RID else RID()
-	if not field_buffer.is_valid():
-		return {"ready": false, "reason": "resident_target_read_buffer_rid_invalid"}
-
-	var raw_source_rd = target_read_buffers.get("rendering_device", summary.get("rendering_device", null))
-	var source_rd: RenderingDevice = raw_source_rd as RenderingDevice
-	if source_rd == null or _rd == null or source_rd != _rd:
-		return {"ready": false, "reason": "resident_target_read_buffer_rendering_device_mismatch"}
-
-	var field_byte_count := int(target_read_buffers.get(
-		"target_field_byte_count",
-		summary.get(
-			"target_field_byte_count",
-			target_read_buffers.get("expected_byte_count", summary.get("expected_byte_count", 0))
-		)
-	))
-	if field_byte_count != expected_field_bytes:
-		return {"ready": false, "reason": "resident_target_read_buffer_byte_count_mismatch"}
+	var resolved := TargetReadBufferBorrow.resolve(target_read_buffers, expected_field_bytes, _rd)
+	if not bool(resolved.get("ok", false)):
+		return {"ready": false, "reason": str(resolved.get("reason", "resident_handoff_absent"))}
 
 	return {
 		"ready": true,
 		"target_read_buffer_source": "borrowed_scene_placement_actor_resident",
 		"target_read_buffer_ownership": "borrowed_external",
-		"target_read_buffer_lifetime": str(target_read_buffers.get("resident_target_read_buffer_lifetime", summary.get("target_read_buffer_lifetime", "ScenePlacementActor owned"))),
+		"target_read_buffer_lifetime": str(resolved.get("lifetime", "ScenePlacementActor owned")),
 		"target_read_buffers_borrowed": true,
 		"target_read_buffers_uploaded": false,
 		"target_field_bytes_uploaded": false,
 		"target_color_bytes_uploaded": false,
-		"target_field_buffer": field_buffer,
+		"target_field_buffer": resolved.get("field_buffer", RID()),
 		"target_field_bytes": PackedFloat32Array(),
-		"target_field_byte_count": field_byte_count,
+		"target_field_byte_count": int(resolved.get("field_byte_count", 0)),
 		"expected_byte_count": expected_field_bytes,
-		"target_field_format": str(target_read_buffers.get("target_field_format", summary.get("target_field_format", "vec4"))),
-		"target_field_stride_bytes": int(target_read_buffers.get("target_field_stride_bytes", summary.get("target_field_stride_bytes", 16))),
+		"target_field_format": str(resolved.get("field_format", "vec4")),
+		"target_field_stride_bytes": int(resolved.get("field_stride_bytes", 16)),
 		"target_visual_rgba8_buffer": RID(),
 		"target_visual_rgba8_bytes": PackedByteArray(),
 		"target_visual_rgba8_byte_count": 0,
 		"target_color_format": "none",
 		"target_color_stride_bytes": 0,
 		"has_target": true,
-		"owner": str(target_read_buffers.get("resident_target_read_buffer_owner", summary.get("owner", "ScenePlacementActor"))),
-		"producer": str(summary.get("producer", "ScenePlacementActorTargetReadBuffers")),
+		"owner": str(resolved.get("owner", "ScenePlacementActor")),
+		"producer": str(resolved.get("producer", "ScenePlacementActorTargetReadBuffers")),
 		"borrowed_from": "ScenePlacementActor",
-		"source_reason": str(summary.get("reason", "ok")),
+		"source_reason": str(resolved.get("source_reason", "ok")),
 		"rendering_device_match": true,
 		"rid_valid": true,
 		"gpu_first": true,

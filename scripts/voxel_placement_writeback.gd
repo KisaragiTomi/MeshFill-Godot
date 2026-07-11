@@ -12,9 +12,14 @@ const AutoObject := preload("res://scripts/auto_object.gd")
 const PlacementResultCodec := preload("res://scripts/utils/placement_result_codec.gd")
 const ReportSchema := preload("res://scripts/utils/report_schema.gd")
 
-const RESULTS_TO_WORLD_SHADER_PATH := "res://shaders/placement_results_to_world.glsl"
-const RESULT_RECORD_STRIDE_VEC4 := 4
-const WORLD_RESULT_STRIDE_VEC4 := 4
+## 共享派发骨架（PlacementResultCodec.dispatch_results_to_world）的 fail_step →
+## 本文件既有 reason 诊断字符串（逐字保持）。
+const WORLD_CONVERT_FAIL_REASONS := {
+	"shader": "world_convert_shader_not_ready",
+	"world_buffer": "world_convert_buffer_create_failed",
+	"uniform_set": "world_convert_uniform_set_failed",
+	"compute_list": "world_convert_compute_list_failed",
+}
 
 
 ## --- 迁移自 generator 的 writeback 函数 ---
@@ -427,31 +432,18 @@ func _dispatch_world_results_resident(
 ) -> Dictionary:
 	if _rd == null:
 		return {"ok": false, "reason": "missing_rendering_device"}
-	var shader := load_compute_shader(RESULTS_TO_WORLD_SHADER_PATH, SCOPE_FRAME, "placement_results_to_world")
-	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "placement_results_to_world")
-	if not shader.is_valid() or not pipeline.is_valid():
-		return {"ok": false, "reason": "world_convert_shader_not_ready"}
-	var world_buffer := storage_buffer_zero(record_count * WORLD_RESULT_STRIDE_VEC4 * 16, SCOPE_FRAME, "vpg_resident_world_results")
-	if not world_buffer.is_valid():
-		return {"ok": false, "reason": "world_convert_buffer_create_failed"}
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, placement_results_rid),
-		make_storage_uniform(1, world_buffer),
-	], shader, 0, SCOPE_PASS, "vpg_resident_world_results_set0")
-	if not set0.is_valid():
-		return {"ok": false, "reason": "world_convert_uniform_set_failed"}
 	var voxel_size_value = world_convert_params.get("voxel_size", Vector3.ONE)
 	var voxel_size: Vector3 = voxel_size_value if voxel_size_value is Vector3 else Vector3.ONE
 	var grid_origin_value = world_convert_params.get("grid_origin", Vector3.ZERO)
 	var grid_origin: Vector3 = grid_origin_value if grid_origin_value is Vector3 else Vector3.ZERO
-	var push := PlacementResultCodec.pack_results_to_world_push(record_count, rotation_count, grid_origin, voxel_size, pivot_offset)
-	var cl := begin_compute_list()
-	if cl < 0:
-		return {"ok": false, "reason": "world_convert_compute_list_failed"}
-	_gpu_dispatch_pipeline_sets(cl, pipeline, [set0], push, Vector3i(ceil_div(record_count, 64), 1, 1))
-	end_compute_list()
-	submit_and_sync(true)
-	return {"ok": true, "reason": "ok", "world_results_rid": world_buffer}
+	var dispatched := PlacementResultCodec.dispatch_results_to_world(
+		self, placement_results_rid, record_count, rotation_count,
+		grid_origin, voxel_size, pivot_offset,
+		SCOPE_FRAME, "vpg_resident_world_results", "vpg_resident_world_results_set0"
+	)
+	if not bool(dispatched.get("ok", false)):
+		return {"ok": false, "reason": str(WORLD_CONVERT_FAIL_REASONS.get(str(dispatched.get("fail_step", "")), "world_convert_shader_not_ready"))}
+	return {"ok": true, "reason": "ok", "world_results_rid": dispatched.get("world_results_rid", RID())}
 
 
 ## 按优先级(common_settings → asset_def → per_asset_settings)解析写回用的数值 object_type，都未设置则返回 0。

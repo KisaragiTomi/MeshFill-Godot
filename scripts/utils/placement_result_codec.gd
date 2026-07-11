@@ -8,6 +8,48 @@ extends RefCounted
 const RESULTS_TO_WORLD_SHADER_PATH := "res://shaders/placement_results_to_world.glsl"
 const RECORD_STRIDE_VEC4 := 4        # 每条 placement result 记录 = 4 × vec4
 const WORLD_RESULT_STRIDE_VEC4 := 4  # 每条 world 结果 = 4 × vec4
+const RESULTS_TO_WORLD_LOCAL_SIZE := 64
+
+
+## results→world 的共享派发骨架（shader → pipeline → world 缓冲 → set0 → push →
+## dispatch → submit）。owner 为 GodotComputeShaderBase 实例；world 缓冲固定
+## SCOPE_FRAME（output 用后即 dispose，writeback 由 runtime 消费后 gc_frame 释放）。
+## 失败返回 {"ok": false, "fail_step": shader|world_buffer|uniform_set|compute_list}，
+## 由调用方映射为各自既有的 reason 诊断字符串；成功返回 world_results_rid 与 dispatch_groups。
+static func dispatch_results_to_world(
+	owner,
+	placement_results_rid: RID,
+	record_count: int,
+	rotation_count: int,
+	grid_origin: Vector3,
+	voxel_size: Vector3,
+	pivot_offset: Vector3,
+	shader_scope: String,
+	world_buffer_label: String,
+	set_label: String
+) -> Dictionary:
+	var shader: RID = owner.load_compute_shader(RESULTS_TO_WORLD_SHADER_PATH, shader_scope, "placement_results_to_world")
+	var pipeline: RID = owner.create_compute_pipeline(shader, shader_scope, "placement_results_to_world")
+	if not shader.is_valid() or not pipeline.is_valid():
+		return {"ok": false, "fail_step": "shader"}
+	var world_buffer: RID = owner.storage_buffer_zero(record_count * WORLD_RESULT_STRIDE_VEC4 * 16, owner.SCOPE_FRAME, world_buffer_label)
+	if not world_buffer.is_valid():
+		return {"ok": false, "fail_step": "world_buffer"}
+	var set0: RID = owner.create_uniform_set([
+		owner.make_storage_uniform(0, placement_results_rid),
+		owner.make_storage_uniform(1, world_buffer),
+	], shader, 0, owner.SCOPE_PASS, set_label)
+	if not set0.is_valid():
+		return {"ok": false, "fail_step": "uniform_set"}
+	var push := pack_results_to_world_push(record_count, rotation_count, grid_origin, voxel_size, pivot_offset)
+	var groups := Vector3i(owner.ceil_div(record_count, RESULTS_TO_WORLD_LOCAL_SIZE), 1, 1)
+	var cl: int = owner.begin_compute_list()
+	if cl < 0:
+		return {"ok": false, "fail_step": "compute_list"}
+	owner._gpu_dispatch_pipeline_sets(cl, pipeline, [set0], push, groups)
+	owner.end_compute_list()
+	owner.submit_and_sync(true)
+	return {"ok": true, "world_results_rid": world_buffer, "dispatch_groups": groups}
 
 
 ## 打包 results→world pass 的 64 字节 push constant:

@@ -24,6 +24,7 @@ const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_ge
 const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+const TargetReadBufferBorrow := preload("res://scripts/utils/target_read_buffer_borrow.gd")
 
 const TILE_SIZE := 8
 const MAX_ASSETS := 256
@@ -1320,52 +1321,35 @@ func _target_read_buffer_pack(target_read_buffers: Dictionary, voxel_count: int)
 	)
 
 
-## 尝试从 target_read_buffers 字典借用已驻留的目标场缓冲区 RID，校验设备和字节数。
+## 尝试从 target_read_buffers 字典借用已驻留的目标场缓冲区 RID（解析/校验核心
+## 共享自 TargetReadBufferBorrow；成功字典键集留在本文件，契约测试逐字断言）。
 func _borrowed_target_read_buffer_pack(target_read_buffers: Dictionary, expected_floats: int) -> Dictionary:
-	if target_read_buffers.is_empty():
-		return {"ready": false, "reason": "resident_handoff_absent"}
-
-	var summary: Dictionary = target_read_buffers.get("resident_target_read_buffer_handoff_summary", {})
-	var raw_field = target_read_buffers.get(
-		"target_field_buffer",
-		target_read_buffers.get("resident_target_field_buffer", summary.get("target_field_buffer", RID()))
+	var resolved := TargetReadBufferBorrow.resolve(
+		target_read_buffers,
+		expected_floats * 4,
+		_rd,
+		["target_field_buffer", "resident_target_field_buffer"]
 	)
-	var field_buffer: RID = raw_field if raw_field is RID else RID()
-	if not field_buffer.is_valid():
-		return {"ready": false, "reason": "resident_target_read_buffer_rid_invalid"}
-
-	var raw_source_rd = target_read_buffers.get("rendering_device", summary.get("rendering_device", null))
-	var source_rd: RenderingDevice = raw_source_rd as RenderingDevice
-	if source_rd == null or _rd == null or source_rd != _rd:
-		return {"ready": false, "reason": "resident_target_read_buffer_rendering_device_mismatch"}
-
-	var field_byte_count := int(target_read_buffers.get(
-		"target_field_byte_count",
-		summary.get(
-			"target_field_byte_count",
-			target_read_buffers.get("expected_byte_count", summary.get("expected_byte_count", 0))
-		)
-	))
-	if field_byte_count != expected_floats * 4:
-		return {"ready": false, "reason": "resident_target_read_buffer_byte_count_mismatch"}
+	if not bool(resolved.get("ok", false)):
+		return {"ready": false, "reason": str(resolved.get("reason", "resident_handoff_absent"))}
 
 	return {
 		"ready": true,
 		"target_read_buffer_source": "borrowed_scene_placement_actor_resident",
 		"target_read_buffer_ownership": "borrowed_external",
-		"target_read_buffer_lifetime": str(target_read_buffers.get("resident_target_read_buffer_lifetime", summary.get("target_read_buffer_lifetime", "ScenePlacementActor owned"))),
+		"target_read_buffer_lifetime": str(resolved.get("lifetime", "ScenePlacementActor owned")),
 		"target_read_buffers_borrowed": true,
 		"target_read_buffers_uploaded": false,
-		"target_field_buffer": field_buffer,
+		"target_field_buffer": resolved.get("field_buffer", RID()),
 		"target_field_bytes": PackedFloat32Array(),
-		"target_field_byte_count": field_byte_count,
+		"target_field_byte_count": int(resolved.get("field_byte_count", 0)),
 		"expected_byte_count": expected_floats * 4,
-		"target_field_format": str(target_read_buffers.get("target_field_format", summary.get("target_field_format", "vec4"))),
-		"target_field_stride_bytes": int(target_read_buffers.get("target_field_stride_bytes", summary.get("target_field_stride_bytes", 16))),
-		"owner": str(target_read_buffers.get("resident_target_read_buffer_owner", summary.get("owner", "ScenePlacementActor"))),
-		"producer": str(summary.get("producer", "ScenePlacementActorTargetReadBuffers")),
+		"target_field_format": str(resolved.get("field_format", "vec4")),
+		"target_field_stride_bytes": int(resolved.get("field_stride_bytes", 16)),
+		"owner": str(resolved.get("owner", "ScenePlacementActor")),
+		"producer": str(resolved.get("producer", "ScenePlacementActorTargetReadBuffers")),
 		"borrowed_from": "ScenePlacementActor",
-		"source_reason": str(summary.get("reason", "ok")),
+		"source_reason": str(resolved.get("source_reason", "ok")),
 		"rendering_device_match": true,
 		"rid_valid": true,
 		"gpu_first": true,
