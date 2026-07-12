@@ -213,8 +213,8 @@ const VPG_RUN_REPORT := {
 }
 
 ## VoxelPlacementGenerator run_multi_asset 顶层输出族（成功 / contract-blocked 两变体的
-## 共同 SSOT，全部经 build() 发出）。expand 轮（2026-07-12）：全部现发键进 core/contract，
-## 输出逐键等同；diag 再分级是后续 migrate 轮的单独决策（TODO(migrate) 标注候选）。
+## 共同 SSOT，全部经 build() 发出）。migrate 轮（2026-07-12）已落：6 个零消费者键降入 diag，
+## 仅 common_settings 的 "include_diagnostics"（默认 false）请求时输出。
 ## 条件键（缺席时 build 跳过，在场性由收集处决定）：
 ##   仅 blocked 变体：ok/contract_blocked/skipped_gpu_runtime_profile_contract/gpu_first/
 ##     runtime_read_source/readback_source（成功变体故意不发 ok——SPA 1598/1925 的 ok 门
@@ -239,20 +239,26 @@ const VPG_MULTI_ASSET_REPORT := {
 	"core": [
 		"ok", "asset_results", "total_placed",
 		"complexity_field_out", "collision_field_out",
-		# TODO(migrate): processing_order 零代码读者（仅文档提及）——migrate 轮候选降 diag。
-		"processing_order",
 	],
 	"contract": [
 		"contract_blocked", "cpu_fallback",
 		"gpu_runtime_profile_contract",
-		"gpu_state_chain", "cpu_state_chain",
+		"cpu_state_chain",
 		"instance_stamp_writeback",
 		"gpu_autoobject_runtime_writeback",
 		"candidate_route_readback_source", "candidate_route_runtime_read_source",
 		"candidate_route_input_contract",
 		"target_read_buffer_summary",
-		# TODO(migrate): 下四键仅 blocked 变体、值恒定（恒定 provenance）且零运行时读者——
-		# migrate 轮候选降 diag（gpu_state_chain 顶层亦零读者，SPA 只读 cpu_state_chain）。
+	],
+	"diag": [
+		# migrate 轮全项目 grep 复核：零运行时读者（SPA 链只读 cpu_state_chain/instance_stamp_writeback，
+		# 不读顶层 gpu_state_chain；processing_order 仅文档提及；同名读点全在其他报告族——
+		# run_minimal 族的 gpu_state_chain contract、mesh_description/prefilter/profile 容器/
+		# tile store/committer 摘要、writeback 族报告；test_markdown_contracts/test_core_demo_contracts
+		# 的 runtime_read_source 等为文档措辞/源码文本断言，非本族输出读取）。
+		# 其中 skipped_gpu_runtime_profile_contract/gpu_first/runtime_read_source/readback_source
+		# 仅 blocked 变体、值恒定（恒定 provenance）——彻底删除是后续单独决策，本轮仅降级到 diag。
+		"processing_order", "gpu_state_chain",
 		"skipped_gpu_runtime_profile_contract", "gpu_first",
 		"runtime_read_source", "readback_source",
 	],
@@ -261,7 +267,8 @@ const VPG_MULTI_ASSET_REPORT := {
 
 ## run_multi_asset 的 per-asset asset_result 族（成功 / 配额跳过 skipped_quota / 空 collision·
 ## 空 sample-range·空结果占位 / blocked per-asset 五变体的共同 SSOT，全部经 build() 发出）。
-## expand 轮（2026-07-12）：全部现发键进 core/contract，输出逐键等同。
+## migrate 轮（2026-07-12）已落：10 个零消费者键降入 diag，仅 common_settings 的
+## "include_diagnostics"（默认 false）请求时输出。
 ## 条件键（缺席时 build 跳过）：
 ##   仅 blocked 变体：ok/contract_blocked/gpu_first/runtime_read_source/readback_source
 ##     （成功路径的 contract_blocked 写点是死分支——blocked 的 run_minimal 输出令会话整体早退）；
@@ -283,14 +290,11 @@ const VPG_MULTI_ASSET_RESULT := {
 	"name": "vpg_run_multi_asset_result",
 	"core": [
 		"ok", "asset_index", "results", "world_results", "result_count",
-		"stamp_deltas", "stamp_delta_count", "stamp_bounds",
+		"stamp_delta_count",
 		"placement_score_sum", "placement_valid_count", "placement_result_buffers",
-		# TODO(migrate): pivot_variant/pivot_variant_count/placement_output_gpu/
-		# placement_output_readback_source/skipped_quota/stamp_bounds/stamp_deltas（per-asset）
-		# 零运行时读者——migrate 轮候选降 diag。
-		"pivot_variant", "pivot_variant_count", "pivot_offset_world", "rotation_slots_used",
-		"placement_output_gpu", "placement_output_readback_source",
-		"skipped_quota",
+		# pivot_offset_world/rotation_slots_used 留 core：voxel_placement_writeback
+		# _write_accepted_placements_to_gpu_runtime 逐资产读取（世界变换重建输入）。
+		"pivot_offset_world", "rotation_slots_used",
 	],
 	"contract": [
 		"contract_blocked", "cpu_fallback",
@@ -301,7 +305,19 @@ const VPG_MULTI_ASSET_RESULT := {
 		"candidate_route_input_contract", "candidate_route_binding_debug",
 		"target_read_buffer_summary",
 		"gpu_autoobject_runtime_writeback",
-		# TODO(migrate): 下三键仅 blocked 变体、值恒定且零读者——migrate 轮候选降 diag。
+	],
+	"diag": [
+		# migrate 轮全项目 grep 复核：零运行时读者（writeback 循环/spa_test/SPA 链均不读；
+		# per-asset stamp_deltas/stamp_bounds 的内部读点全在发射之前的 best_gpu_out——
+		# 那是 run_minimal 族输出（其 stamp_deltas/stamp_bounds 在该族为 core，勿混）；
+		# stamp_bounds_rid 读点走 placement_result_buffers 内嵌 handoff，非本键；
+		# auto_object 的 "pivot_variant_count" 是 Node meta 清理名单、voxel_placement_output
+		# 的 "pivot_variant" 写在 world_results 逐条目 dict——均非本族键）。
+		# 其中 gpu_first/runtime_read_source/readback_source 仅 blocked 变体、值恒定
+		#（恒定 provenance）——彻底删除是后续单独决策，本轮仅降级到 diag。
+		"pivot_variant", "pivot_variant_count",
+		"placement_output_gpu", "placement_output_readback_source",
+		"skipped_quota", "stamp_deltas", "stamp_bounds",
 		"gpu_first", "runtime_read_source", "readback_source",
 	],
 	# derived: —（本族无纯派生键）。

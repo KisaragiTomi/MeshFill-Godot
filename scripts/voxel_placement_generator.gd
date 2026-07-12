@@ -570,8 +570,9 @@ static func _apply_stamp_deltas_to_cpu_state(
 #   seed (int, default -1 = nondeterministic): RNG seed for weight shuffle
 # Returns: {asset_results: [{asset_index, results, world_results, result_count}],
 #           complexity_field_out, collision_field_out, total_placed,
-#           processing_order: [original indices in execution order],
 #           gpu_autoobject_runtime_writeback: optional runtime writeback report}
+# (diag keys like processing_order only with settings include_diagnostics=true;
+#  see ReportSchema.VPG_MULTI_ASSET_REPORT / VPG_MULTI_ASSET_RESULT)
 ## 多资产序列化放置流水线的顶层入口：先按 priority/weight 对 asset_defs 排序，再逐个资产
 ## 调用 run_minimal，对 pivot_variants（锚点变体）逐一尝试放置并保留评分最高者；根据配置
 ## 在 GPU 常驻、CPU 直接回写、紧凑 stamp-delta 三种状态链模式间传递更新后的
@@ -1730,8 +1731,8 @@ func _emit_run_report(values: Dictionary, include_diagnostics: bool = false) -> 
 
 
 ## 唯一发射口：run_multi_asset 顶层输出族（成功/blocked 两变体）一律经 ReportSchema.build
-## 组装。expand 轮全部键在 core/contract，diag tier 为空——include_diagnostics 现已接线
-##（common_settings 的 "include_diagnostics" 键，与 run_minimal 同口径），今日无行为差异
+## 组装。diag tier 仅 include_diagnostics（common_settings 的 "include_diagnostics" 键，
+## 与 run_minimal 同口径）时输出
 ##（键清单/分级/消费者名单见 ReportSchema.VPG_MULTI_ASSET_REPORT）。
 func _emit_multi_asset_report(values: Dictionary, include_diagnostics: bool = false) -> Dictionary:
 	return ReportSchema.build(ReportSchema.VPG_MULTI_ASSET_REPORT, values, include_diagnostics)
