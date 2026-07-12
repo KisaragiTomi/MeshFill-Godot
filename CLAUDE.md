@@ -12,10 +12,16 @@ you do not need to ask first.** A fresh launch reliably picks up edited `@tool` 
 shaders (a reused editor keeps stale in-memory versions), and closing before opening keeps it
 single-instance.
 
-Check first, then close + relaunch:
+**⚠ Scope every check/kill to THIS project.** Other projects' godot processes may run
+concurrently on this machine (e.g. smoke tests from a parallel session on another repo);
+they do not hold MeshFill's single-instance lock or port 6800, and must NOT be killed.
+Never use a bare `Get-Process -Name "godot*"` sweep — filter by command line:
 
 ```powershell
-Get-Process -Name "godot*" -ErrorAction SilentlyContinue | Stop-Process -Force
+# check + kill: only godot processes whose command line references this project
+Get-CimInstance Win32_Process -Filter "Name like 'godot%'" |
+    Where-Object { $_.CommandLine -match 'MeshFill-Godot' } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 2
 # delete a stale lock if present, then launch:
 Remove-Item "$env:APPDATA\Godot\app_userdata\MeshFill-Godot\editor_instance.lock" -Force -ErrorAction SilentlyContinue
