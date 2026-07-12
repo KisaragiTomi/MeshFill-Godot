@@ -337,9 +337,10 @@ func _voxel_to_world(voxel_coord: Vector3i) -> Vector3:
 func _full_refresh() -> void:
 	var sv := _committer.get_sv()
 
-	# Update tile count stats
-	var tile_count := int(sv.get("scene_voxel_tile_count", 0))
-	var dirty_count := int(sv.get("dirty_scene_voxel_tile_count", 0))
+	# Update tile count stats (counts come from the tile store / commit-time dirty snapshot)
+	var tile_count := _committer.get_scene_voxel_tiles().size()
+	var dirty_tiles: Dictionary = sv.get("dirty_scene_voxel_tiles", {})
+	var dirty_count := dirty_tiles.size()
 	var clean_count := tile_count - dirty_count
 	var ts: Vector3i = _committer._scene_voxel_tile_size()
 
@@ -391,20 +392,16 @@ func _update_tile_colors() -> void:
 		return
 	var mm: MultiMesh = _tile_multimesh_instance.multimesh
 	var sv := _committer.get_sv()
-	var tiles: Dictionary = sv.get("scene_voxel_tiles", {})
+	# Commit-time dirty snapshot: tiles absent from it render clean.
+	var dirty_tiles: Dictionary = sv.get("dirty_scene_voxel_tiles", {})
 
-	for tile_key in tiles.keys():
-		var idx: int = _tile_instance_indices.get(tile_key, -1)
-		if idx < 0:
-			continue
-		var tile: Dictionary = tiles[tile_key]
+	for tile_key in _tile_instance_indices.keys():
+		var idx: int = _tile_instance_indices[tile_key]
+		var tile: Dictionary = dirty_tiles.get(tile_key, {})
 		var color := _compute_tile_color(tile)
-		var is_dirty := bool(tile.get("dirty", false))
 		# Emission hint for selected tile: blend yellow into albedo
 		if tile_key == _selected_tile_key:
 			color = Color(1.0, 1.0, 0.5, maxf(color.a, 0.5))
-		elif is_dirty:
-			color.a = color.a  # keep alpha from blend
 		mm.set_instance_color(idx, color)
 
 

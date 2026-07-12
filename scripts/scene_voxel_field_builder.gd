@@ -1,65 +1,25 @@
-class_name SceneVoxelCollisionField
+class_name SceneVoxelFieldBuilder
 
-## 场景体素碰撞/占据场与盖章子系统(Stage 3 抽出)。拥有 occupancy 与 terrain-base collision field 的真实存储，
-## 以及 disc 盖章、collision 场 make/resample/merge、shared field layers、occupancy 盖章、mask import。
-## committer 通过同名转发属性(occupancy/_terrain_base_collision_field/...)对外暴露，自身核心代码无需改动。
+## committer 的 field 构建/盖章工具箱(原 SceneVoxelCollisionField，2026-07-12 更名归位——
+## collision 已与 color/complexity 同级为普通逐体素通道，不再独占一个"子系统"名义)。内容：
+## - 通用 stamp/采样原语：2D disc 盖章(occupancy 用)、3D disc 盖章+记录采集
+##   (_stamp_collect_voxel_disc_gpu，complexity 体积盖章的实际执行者)、单像素 GPU 采样(query_voxel 用)；
+## - occupancy 通道存储与盖章(遗留 2.5D 通道系统，volume 构建读取)；
+## - terrain-base collision：2D 底图存储/重采样 + 3D 体积场生成(tile_store 碰撞常驻场种子)；
+## - write-spec collision 点采样记录(cell map 直写)与记录→tile 摘要 merge。
+## committer 通过同名转发属性(occupancy/_terrain_base_collision_field/...)对外暴露。
 extends "res://scripts/godot_compute_shader_base.gd"
 
 const VOXEL_OCCUPIED_EPSILON := VoxelGeneral.VOXEL_OCCUPIED_EPSILON
 
 const SV_RESIDENT_TILE_SIZE := 8
 
-const SCENE_VOXEL_TILE_SIZE_SETTING := "meshfill/scene_voxel_tile/size_voxels"
-
-const DEFAULT_SCENE_VOXEL_TILE_SIZE := Vector3i(4, 4, 4)
-
-const SCENE_VOXEL_TILE_RECORD_BUFFER := "scene_voxel_tile_records"
-const SCENE_VOXEL_TILE_SUMMARY_BUFFER := "scene_voxel_tile_summaries"
-const SCENE_VOXEL_TILE_OBJECT_REF_BUFFER := "scene_voxel_tile_object_refs"
-const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER := "scene_voxel_tile_complexity_field"
-const SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER := "scene_voxel_tile_collision_field"
-const SCENE_VOXEL_TILE_GPU_BUFFER_NAMES := [
-	SCENE_VOXEL_TILE_RECORD_BUFFER,
-	SCENE_VOXEL_TILE_SUMMARY_BUFFER,
-	SCENE_VOXEL_TILE_OBJECT_REF_BUFFER,
-	SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER,
-	SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER,
-]
-const SCENE_VOXEL_TILE_RECORD_STRIDE_BYTES := 128
-const SCENE_VOXEL_TILE_SUMMARY_STRIDE_BYTES := 32
-const SCENE_VOXEL_TILE_INDEX_STRIDE_BYTES := 4
-const SCENE_VOXEL_TILE_REF_STRIDE_BYTES := 4
-const SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT := 8
-const SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_PATH := "res://shaders/scene_voxel_tile_object_ref_update.glsl"
-const SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_NAME := "scene_voxel_tile_object_ref_update.glsl"
-const SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_LOCAL_SIZE_X := 64
-const SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_STATS_CAPACITY := 10
-const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_DELTA_STRIDE_BYTES := 80
-const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_SCENE_VOXEL_TILE := 0
-const SCENE_VOXEL_TILE_OBJECT_REF_DIRTY_FLAG_SCHEMA_GPU_AUTOOBJECT_RUNTIME := 1
-const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_NUMERIC := "u32_numeric_ref_key_v1"
-const SCENE_VOXEL_TILE_OBJECT_REF_SCHEMA_LEGACY_HASH := "legacy_stable_hash_debug"
-const SCENE_VOXEL_TILE_FIELD_STRIDE_BYTES := 4
-const SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE := 6
-const SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE := 8
+# stamp-collect 记录的量化尺度(与 stamp_collect_voxel_disc_3d.glsl 一致)
 const SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE := 1000000.0
-const SCENE_VOXEL_TILE_FLAG_COMPLEXITY := 1
-const SCENE_VOXEL_TILE_FLAG_COLLISION := 2
-const SCENE_VOXEL_TILE_FLAG_AUTO := 4
-const SCENE_VOXEL_TILE_FLAG_BRUSH := 8
-const SCENE_VOXEL_TILE_FLAG_TARGET := 16
-const SCENE_VOXEL_TILE_FLAG_ROUTING := 32
-const SCENE_VOXEL_TILE_FLAG_SCORING := 64
-const SCENE_VOXEL_TILE_FLAG_FEEDBACK := 128
-const SCENE_VOXEL_TILE_FLAG_OBJECT_REFS := 256
-const SCENE_VOXEL_TILE_FLAG_MASK := 512
 
 const CHANNEL_COUNT := VoxelGeneral.CHANNEL_COUNT
 
 ## --- push-constant schemas (std430; migrated from manual encode sequences) ---
-const IMPORT_MASK_PUSH := [
-	["channel", "int"], ["complexity", "float"], ["threshold", "float"], ["base_res", "int"],
-]
 const STAMP_DISC_PUSH := [
 	["width", "int"], ["height", "int"], ["center_x", "int"], ["center_y", "int"],
 	["radius_px", "int"], ["channel", "int"], ["_pad0", "int"], ["_pad1", "int"],
@@ -94,7 +54,8 @@ const SceneVoxelTargetScript := preload("res://scripts/scene_voxel_target.gd")
 const VoxelGeneralScript := preload("res://scripts/utils/voxel_general.gd")
 
 
-## committer 反向引用(读 _volume/_base_res/_capture_size/_sv_dirty，调 _is_valid_channel/_radius_to_px 等)。
+## committer 反向引用(读 _volume/_base_res/_sv_dirty，调 _is_valid_channel/_volume_px_from_base/
+## _mark_sv_tile_dirty/_mark_scene_voxel_full_rebuild_dirty)。
 var _committer: SceneVoxelCommitter = null
 var _gpu_ready: bool = false
 
@@ -106,8 +67,6 @@ var _terrain_base_collision_field: Image
 var _sampler: RID
 
 ## --- collision compute shader 管线(本组件拥有) ---
-var _shader_import: RID
-var _pipeline_import: RID
 var _shader_stamp_r32_disc: RID
 var _pipeline_stamp_r32_disc: RID
 var _shader_stamp_rgba_channel_disc: RID
@@ -122,12 +81,11 @@ var _pipeline_sample_r32_pixel: RID
 
 func setup(committer, base_resolution: int) -> void:
 	_committer = committer
-	log_name = "SceneVoxelCollisionField"
+	log_name = "SceneVoxelFieldBuilder"
 	_init_collision_gpu()
 
 func _init_collision_gpu() -> void:
 	var specs := {
-		"import": "res://shaders/channel_import_mask.glsl",
 		"stamp_r32_disc": "res://shaders/stamp_r32_disc.glsl",
 		"stamp_rgba_channel_disc": "res://shaders/stamp_rgba_channel_disc.glsl",
 		"merge_sv_collision_records": "res://shaders/merge_sv_collision_records.glsl",
@@ -153,62 +111,6 @@ func teardown() -> void:
 func _create_collision_image(resolution: int) -> Image:
 
 	return VoxelGeneralScript.create_r32_image(resolution)
-
-func import_mask_channel(channel: int, mask_img: Image, complexity: float = 1.0) -> void:
-
-	assert(_gpu_ready, "[SceneVoxelCommitter] GPU not ready — cannot import mask")
-
-	if not _committer._is_valid_channel(channel):
-
-		push_error("[SceneVoxelCommitter] Invalid channel: %d" % channel)
-
-		return
-
-	_gpu_import_mask(channel, clampf(complexity, 0.0, 1.0), mask_img)
-
-## GPU 执行通道掩码导入，将掩码按复杂度写入 occupancy 纹理
-
-func _gpu_import_mask(channel: int, complexity: float, mask_img: Image) -> void:
-
-	var tex_src := upload_texture_2d(mask_img)
-
-	var tex_occ := create_rw_texture_2d(_committer._base_res, _committer._base_res, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT, RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)
-
-	# Upload current occupancy into rw texture
-
-	var occ_rgba := occupancy.duplicate()
-
-	if occ_rgba.get_format() != Image.FORMAT_RGBAH:
-
-		occ_rgba.convert(Image.FORMAT_RGBAH)
-
-	_rd.texture_update(tex_occ, 0, occ_rgba.get_data())
-
-	var set0 := create_uniform_set([make_sampler_uniform(0, _sampler, tex_src)], _shader_import, 0)
-
-	var set1 := create_uniform_set([make_image_uniform(0, tex_occ)], _shader_import, 1)
-
-	var push := PushConstantLayout.new(IMPORT_MASK_PUSH).pack({
-		channel = channel,
-		complexity = complexity,
-		threshold = 0.01,
-		base_res = _committer._base_res,
-	})
-
-	var groups := ceil_div(_committer._base_res, 32)
-
-	if not _gpu_dispatch_and_sync(_pipeline_import, [set0, set1], push, Vector3i(groups, groups, 1)):
-		gc_frame()
-		push_error("[SceneVoxelCommitter] Channel import compute list begin failed")
-		return
-
-	# Read back packed occupancy
-
-	var data := _rd.texture_get_data(tex_occ, 0)
-
-	occupancy = Image.create_from_data(_committer._base_res, _committer._base_res, false, Image.FORMAT_RGBAH, data)
-
-	gc_frame()
 
 ## ─── Core Operations (GPU only) ───
 
@@ -491,32 +393,9 @@ func _sample_scalar_image_pixel_gpu(img: Image, px: Vector2i) -> Dictionary:
 		"cpu_fallback": false,
 	}
 
-## 计算碰撞记录的有效半径（半径减腐蚀加膨胀）
-
-func _collision_effective_radius(collision: Dictionary) -> float:
-
-	return VoxelGeneralScript.collision_effective_radius(collision)
-
-## 判断碰撞记录是否为点采样类型（含 voxel/local_pos/voxel_offset）
-
-func _is_point_collision_sample(collision: Dictionary) -> bool:
-
-	return VoxelGeneralScript.is_point_collision_sample(collision)
-
-## 从多种类型（Vector3i/Vector3/Array/Dictionary）解析出 Vector3i
-
-func _collision_local_voxel(collision: Dictionary) -> Vector3i:
-
-	return VoxelGeneralScript.collision_local_voxel(collision)
-
-## 计算碰撞层在底图上的基础像素坐标（点采样类型叠加本地偏移）
-
-func _collision_layer_base_px(base_px: Vector2i, collision: Dictionary) -> Vector2i:
-
-	return VoxelGeneralScript.collision_layer_base_px(base_px, collision, _committer._base_res)
-
-## 规范化共享场层列表，统一字段并计算有效半径与像素半径
-
+## 规范化共享场层列表。collision 只有 per-voxel 点采样一种形态
+## （collision_from_fields → normalize_collision_samples 已在上游过滤并警告非点条目，
+## 旧 cylinder/box 分支 2026-07-12 移除）。
 func _normalize_shared_field_layers(field_layers: Array, base_px: Vector2i = Vector2i(-1, -1)) -> Array[Dictionary]:
 
 	var result: Array[Dictionary] = []
@@ -535,67 +414,29 @@ func _normalize_shared_field_layers(field_layers: Array, base_px: Vector2i = Vec
 
 			continue
 
-		if _is_point_collision_sample(collision_entry):
-
-			var local := _collision_local_voxel(collision_entry)
-
-			collision_entry["voxel"] = local
-
-			collision_entry["local_pos"] = local
-
-			if not collision_entry.has("collision_strength"):
-
-				collision_entry["collision_strength"] = 1.0
-
-			collision_entry["collision_strength"] = clampf(float(collision_entry.get("collision_strength", 1.0)), 0.0, 1.0)
-
-			collision_entry["radius_px"] = maxi(int(collision_entry.get("radius_px", 0)), 0)
-
-			collision_entry["effective_radius"] = 0.0
-
-			if not collision_entry.has("slice_index"):
-
-				collision_entry["slice_index"] = local.y
-
-			if base_px.x >= 0 and base_px.y >= 0:
-
-				collision_entry["base_pixel"] = _collision_layer_base_px(base_px, collision_entry)
-
-			result.append(collision_entry)
+		if not VoxelGeneralScript.is_point_collision_sample(collision_entry):
 
 			continue
 
-		var effective_radius := _collision_effective_radius(collision_entry)
+		var local := VoxelGeneralScript.collision_local_voxel(collision_entry)
 
-		if effective_radius <= 0.0:
+		collision_entry["voxel"] = local
 
-			continue
-
-		collision_entry["shape"] = str(collision_entry.get("shape", "cylinder"))
-
-		collision_entry["radius"] = maxf(float(collision_entry.get("radius", effective_radius)), 0.0)
-
-		collision_entry["effective_radius"] = effective_radius
-
-		collision_entry["radius_px"] = _committer._radius_to_px(effective_radius)
-
-		if not collision_entry.has("collision_strength"):
-
-			collision_entry["collision_strength"] = 1.0
+		collision_entry["local_pos"] = local
 
 		collision_entry["collision_strength"] = clampf(float(collision_entry.get("collision_strength", 1.0)), 0.0, 1.0)
 
-		if not collision_entry.has("y_min"):
+		collision_entry["radius_px"] = maxi(int(collision_entry.get("radius_px", 0)), 0)
 
-			collision_entry["y_min"] = 0.0
+		collision_entry["effective_radius"] = 0.0
 
-		if not collision_entry.has("y_max"):
+		if not collision_entry.has("slice_index"):
 
-			collision_entry["y_max"] = 2.0
+			collision_entry["slice_index"] = local.y
 
 		if base_px.x >= 0 and base_px.y >= 0:
 
-			collision_entry["base_pixel"] = base_px
+			collision_entry["base_pixel"] = VoxelGeneralScript.collision_layer_base_px(base_px, collision_entry, _committer._base_res)
 
 		result.append(collision_entry)
 
@@ -628,7 +469,7 @@ func _make_source_collision(base_px: Vector2i, collision_layers: Array, rec: Dic
 		# Collision is per-voxel point samples: source records carry no shape radius.
 		var radius_px := 0
 
-		var layer_base_px := _collision_layer_base_px(base_px, layer)
+		var layer_base_px := VoxelGeneralScript.collision_layer_base_px(base_px, layer, _committer._base_res)
 
 		var source_layer := layer.duplicate(true)
 
@@ -642,7 +483,7 @@ func _make_source_collision(base_px: Vector2i, collision_layers: Array, rec: Dic
 
 		source_layer["radius_px"] = radius_px
 
-		source_layer["collision_shape"] = str(layer.get("shape", "point" if _is_point_collision_sample(layer) else "cylinder"))
+		source_layer["collision_shape"] = str(layer.get("shape", "point"))
 
 		source_layer["collision_radius"] = layer.get("radius", 0.0)
 
@@ -665,34 +506,6 @@ func _make_source_collision(base_px: Vector2i, collision_layers: Array, rec: Dic
 func _field_cell_key(field_name: String, px: Vector2i) -> String:
 
 	return "%s:%d:%d" % [field_name, px.x, px.y]
-
-## 确保体量对象中包含重采样后的碰撞层字段
-
-func _ensure_volume_collision_layer() -> void:
-
-	if _committer._volume.is_empty():
-
-		return
-
-	var xz_res: int = _committer._volume.xz_res
-
-	if not _committer._volume.has("terrain_base_collision_field"):
-
-		_committer._volume["terrain_base_collision_field"] = _resample_collision_field(_terrain_base_collision_field, xz_res)
-
-	if not _committer._volume.has("source_collision_field"):
-
-		_committer._volume["source_collision_field"] = _create_collision_image(xz_res)
-
-	if not _committer._volume.has("collision_field"):
-
-		var img := _resample_collision_field(_terrain_base_collision_field, xz_res)
-
-		_committer._volume["collision_field"] = img
-
-	if not _committer._volume.has("collision"):
-
-		_committer._volume["collision"] = {}
 
 ## 重采样碰撞场到指定 XZ 分辨率，GPU 失败时返回空白图像
 
@@ -769,61 +582,10 @@ func _resample_collision_field_gpu(source_img: Image, xz_res: int) -> Image:
 	return result
 
 
-## 在体量场的圆形区域盖印标量值，并收集变更像素更新单元映射
-
-func _stamp_scalar_volume_disc(
-	field_name: String,
-	cell_map_name: String,
-	cell_key_prefix: String,
-	dirty_layer: String,
-	base_px: Vector2i,
-	radius_px: int,
-	value_key: String,
-	value: float,
-	cell_template: Dictionary
-) -> Vector2i:
-
-	if _committer._volume.is_empty():
-
-		return base_px
-
-	_ensure_volume_collision_layer()
-
-	var xz_res: int = _committer._volume.xz_res
-
-	var field_img: Image = _committer._volume.get(field_name, _create_collision_image(xz_res))
-
-	var voxel_px := _committer._volume_px_from_base(base_px, xz_res)
-
-	var radius_vol := _committer._volume_radius_from_base_radius(radius_px, xz_res)
-
-	var cell_map: Dictionary = _committer._volume.get(cell_map_name, {})
-
-	var field_value := clampf(value, 0.0, 1.0)
-
-	# Stamp + collect the flat collision field as a depth-1 voxel volume.
-	var stamp_result := _stamp_collect_voxel_disc_gpu([field_img], voxel_px, radius_vol, field_value, 0)
-	var updated_slices: Array = stamp_result.get("slices", [field_img])
-	if updated_slices.size() > 0 and updated_slices[0] is Image:
-		field_img = updated_slices[0]
-	for rec in stamp_result.get("records", []):
-		var px := Vector2i(int(rec.x), int(rec.z))
-		var cell := cell_template.duplicate(true)
-		cell[value_key] = field_value
-		cell["base_pixel"] = base_px
-		cell["voxel_xz"] = px
-		cell["slice_index"] = int(cell.get("slice_index", 0))
-		cell["radius_px"] = radius_px
-		cell_map[_field_cell_key(cell_key_prefix, px)] = cell
-		_committer._mark_sv_tile_dirty(int(cell.slice_index), px, dirty_layer, SV_RESIDENT_TILE_SIZE, cell)
-
-	_committer._volume[field_name] = field_img
-
-	_committer._volume[cell_map_name] = cell_map
-
-	return voxel_px
-
-## 盖印单个共享场层到碰撞与复杂度场，返回更新后的层字典
+## 盖印单个共享场层：collision 是逐体素点采样，直接写 _volume["collision"] cell map
+## （单体素、仅当强度高于既有值时更新——与旧的 depth-1 盘形 stamp(radius=0,
+## compare_mode=0) 语义等价；整场 GPU 上传/回读的往返 2026-07-12 移除）。
+## 返回更新后的层字典。
 
 func _stamp_shared_field_layer(base_px: Vector2i, source_layer: Dictionary, rec: Dictionary = {}) -> Dictionary:
 
@@ -835,43 +597,51 @@ func _stamp_shared_field_layer(base_px: Vector2i, source_layer: Dictionary, rec:
 
 	var layer := normalized[0]
 
-	# Collision footprint is per-voxel point samples: exactly one voxel per collision
-	# cell, no radius disc (fixed-shape spreading retired). The scorer's CollisionField
-	# is built by the radius-free atomic-max record merge (merge_sv_collision_records),
-	# so a 0-radius record collection is a pure point sample. (shape/radius on the layer
-	# stay only as inert write-spec metadata; nothing in the field build reads them.)
-	var radius_px := 0
-
 	var collision_strength := clampf(float(layer.get("collision_strength", 1.0)), 0.0, 1.0)
 
 	layer["collision_strength"] = collision_strength
 
-	var layer_base_px := _collision_layer_base_px(base_px, layer)
+	var layer_base_px := VoxelGeneralScript.collision_layer_base_px(base_px, layer, _committer._base_res)
 
-	# Non-terrain collision is recorded as per-voxel samples into _volume["collision"]
-	# by _stamp_scalar_volume_disc below; terrain base is merged in _make_sv_collision_field.
+	var voxel_px := layer_base_px
 
-	var cell_template := {
-		"slice_index": int(layer.get("slice_index", 0)),
-		"collision_shape": str(layer.get("shape", "point" if _is_point_collision_sample(layer) else "cylinder")),
-		"collision_radius": layer.get("radius", 0.0),
-		"effective_radius": layer.get("effective_radius", 0.0),
-		"source_voxel_type": str(layer.get("source_voxel_type", rec.get("source_voxel_type", ""))),
-		"record_id": str(layer.get("record_id", rec.get("id", ""))),
-		"instance_id": int(rec.get("instance_id", rec.get("auto_instance_id", rec.get("instance_mesh_id", rec.get("mesh_instance_id", 0))))),
-	}
+	if not _committer._volume.is_empty():
 
-	var voxel_px := _stamp_scalar_volume_disc(
-		"source_collision_field",
-		"collision",
-		"collision",
-		"collision",
-		layer_base_px,
-		radius_px,
-		"collision_strength",
-		collision_strength,
-		cell_template
-	)
+		var xz_res: int = _committer._volume.xz_res
+
+		voxel_px = _committer._volume_px_from_base(layer_base_px, xz_res)
+
+		var cell_map: Dictionary = _committer._volume.get("collision", {})
+
+		var cell_key := _field_cell_key("collision", voxel_px)
+
+		var previous := 0.0
+
+		if cell_map.get(cell_key) is Dictionary:
+
+			previous = clampf(float((cell_map[cell_key] as Dictionary).get("collision_strength", 0.0)), 0.0, 1.0)
+
+		if collision_strength > previous:
+
+			var cell := {
+				"slice_index": int(layer.get("slice_index", 0)),
+				"collision_shape": str(layer.get("shape", "point")),
+				"collision_radius": layer.get("radius", 0.0),
+				"effective_radius": layer.get("effective_radius", 0.0),
+				"source_voxel_type": str(layer.get("source_voxel_type", rec.get("source_voxel_type", ""))),
+				"record_id": str(layer.get("record_id", rec.get("id", ""))),
+				"instance_id": int(rec.get("instance_id", rec.get("auto_instance_id", rec.get("instance_mesh_id", rec.get("mesh_instance_id", 0))))),
+				"collision_strength": collision_strength,
+				"base_pixel": layer_base_px,
+				"voxel_xz": voxel_px,
+				"radius_px": 0,
+			}
+
+			cell_map[cell_key] = cell
+
+			_committer._mark_sv_tile_dirty(int(cell.slice_index), voxel_px, "collision", SV_RESIDENT_TILE_SIZE, cell)
+
+		_committer._volume["collision"] = cell_map
 
 	layer["base_pixel"] = layer_base_px
 
@@ -883,7 +653,7 @@ func _stamp_shared_field_layer(base_px: Vector2i, source_layer: Dictionary, rec:
 
 	return layer
 
-## 盖印多个共享场层并刷新合并碰撞场，返回更新后的层列表
+## 盖印多个共享场层，返回更新后的层列表
 
 func _stamp_shared_field_layers(base_px: Vector2i, field_layers: Array, rec: Dictionary = {}) -> Array[Dictionary]:
 
@@ -899,32 +669,15 @@ func _stamp_shared_field_layers(base_px: Vector2i, field_layers: Array, rec: Dic
 
 			updated.append(stamped)
 
-	# The merged collision_field depends only on the terrain base + resolution
-	# (resample_collision_field.glsl reads only _terrain_base_collision_field, never the
-	# per-layer stamp), so resample once after all layers instead of redundantly per layer.
-	# Guarded on updated so the empty-layers case stays a no-op exactly as before (the old
-	# per-layer resample only ran when a layer was actually stamped).
-	if not updated.is_empty() and not _committer._volume.is_empty():
-
-		_committer._volume["collision_field"] = _resample_collision_field(_terrain_base_collision_field, _committer._volume.xz_res)
-
 	return updated
 
-## 清空源碰撞场缓存并重置体量中的碰撞层字段
+## 重置体量中的碰撞记录 cell map
 
 func _clear_shared_field_cache() -> void:
 
 	if _committer._volume.is_empty():
 
 		return
-
-	var xz_res: int = _committer._volume.xz_res
-
-	var img := _resample_collision_field(_terrain_base_collision_field, xz_res)
-
-	_committer._volume["source_collision_field"] = _create_collision_image(xz_res)
-
-	_committer._volume["collision_field"] = img
 
 	_committer._volume["collision"] = {}
 
@@ -952,37 +705,11 @@ func set_terrain_base_collision_field(base_collision: Image) -> void:
 
 		_committer._volume["terrain_base_collision_field"] = _resample_collision_field(_terrain_base_collision_field, xz_res)
 
-		_committer._volume["collision_field"] = _resample_collision_field(_terrain_base_collision_field, xz_res)
-
 		_committer._mark_scene_voxel_full_rebuild_dirty("terrain_base_collision")
 
 	else:
 
 		_committer._sv_dirty = true
-
-## Get every placed mesh instance_stamp_write_spec.
-
-## 获取全部体素写入规格记录列表
-
-func _make_sv_collision_field(collision: Dictionary, xz_res: int, total_slices: int) -> PackedFloat32Array:
-
-	var terrain_base_img: Image = _committer._volume.get("terrain_base_collision_field", _resample_collision_field(_terrain_base_collision_field, xz_res))
-
-	var field := _make_terrain_base_collision_volume_field(terrain_base_img, xz_res, total_slices)
-
-	if collision.is_empty():
-
-		return field
-
-	var merged_field := _merge_sv_collision_records_gpu(field, collision, xz_res, total_slices)
-
-	if merged_field.size() == field.size():
-
-		return merged_field
-
-	push_error("[SceneVoxelCommitter] SV collision record merge compute failed")
-
-	return field
 
 ## 生成仅含碰撞记录摘要的碰撞场(不含地形基底)
 

@@ -618,7 +618,7 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 	# committer 拆分后 tile/collision/debug 术语分布在抽出的子系统中;按子系统簇校验合约。
 	# (source staging 子系统已随 stamp-only commit 删除)
 	committer_source += TestUtils.read_text("res://scripts/scene_voxel_tile_store.gd")
-	committer_source += TestUtils.read_text("res://scripts/scene_voxel_collision_field.gd")
+	committer_source += TestUtils.read_text("res://scripts/scene_voxel_field_builder.gd")
 	committer_source += TestUtils.read_text("res://scripts/scene_voxel_debug.gd")
 	for missing in DemoContractUtils.find_missing_terms(committer_source, [
 		"ensure_scene_voxel_tile_buffers_uploaded",

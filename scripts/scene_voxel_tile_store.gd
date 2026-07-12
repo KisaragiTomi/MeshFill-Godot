@@ -102,7 +102,7 @@ const SceneVoxelDebugScript := preload("res://scripts/scene_voxel_debug.gd")
 
 
 ## committer 反向引用：读取 grid_size/_volume/_sv/_base_res/_generation_tick/_committed_tick，
-## 并回调 _make_sv_collision_field / _mark_legacy_sv_tiles_for_scene_voxel_tile / 写 _sv_dirty。
+## 并回调 _field_builder._make_terrain_base_collision_volume_field / 写 _sv_dirty。
 ## 由 committer 在 setup() 中设置，teardown() 中置空以打破引用环。
 var _committer: SceneVoxelCommitter = null
 
@@ -789,11 +789,6 @@ func _copy_scene_voxel_tile() -> Dictionary:
 			result[tile_key] = tile.duplicate(true)
 
 	return result
-
-## 返回当前所有脏 SV 像素瓦片(_sv_dirty_tiles)的快照字典；由 committer 提交路径调用，对应 _sv["dirty_tiles"]
-func _copy_sv_pixel_tile() -> Dictionary:
-
-	return _sv_dirty_tiles.duplicate(true)
 
 ## 统一清除全部脏标记：SV 像素瓦片(_sv_dirty_tiles) + committer 脏矩形(_sv_dirty_rects) + SceneVoxelTile 脏标志(B)；由 committer 提交路径与 clear_sv_dirty 调用
 func clear_all_dirty() -> void:
@@ -2388,59 +2383,6 @@ func _apply_scene_voxel_tile_reduce_summaries(reduced: Dictionary) -> void:
 		_scene_voxel_tiles[tile_key] = tile
 	if not summaries.is_empty():
 		_mark_scene_voxel_tile_staging_dirty("tile_summary_reduce")
-
-## 从归约摘要生成旧版场景与碰撞瓦片记录字典
-
-func _legacy_sv_tiles_from_reduce_summaries(
-	reduced: Dictionary,
-	tile_size: int,
-	dirty_tiles_snapshot: Dictionary
-) -> Dictionary:
-	var tiles: Dictionary = {}
-	var summaries: Array = reduced.get("summaries", [])
-	for raw_summary in summaries:
-		if not raw_summary is Dictionary:
-			continue
-		var summary: Dictionary = raw_summary
-		var tile_coord: Vector3i = summary.get("tile_coord", Vector3i.ZERO)
-		var px := Vector2i(tile_coord.x * tile_size, tile_coord.z * tile_size)
-		var slice_index := tile_coord.y
-		var scene_count := int(summary.get("scene_voxel_count", 0))
-		var complexity_minmax: Vector2 = summary.get("complexity_minmax", Vector2.ZERO)
-		if scene_count > 0:
-			var scene_key := SceneVoxelTileCodecScript.sv_tile_key(slice_index, px, "scene", tile_size)
-			tiles[scene_key] = {
-				"tile_key": scene_key,
-				"clip_level": 0,
-				"layer": "scene",
-				"tile_size": tile_size,
-				"bounds": SceneVoxelTileCodecScript.sv_tile_bounds(px, tile_size),
-				"dirty": false,
-				"updated_this_commit": dirty_tiles_snapshot.has(scene_key),
-				"distance_or_occupancy": "occupancy",
-				"scene_voxel_count": scene_count,
-				"collision_voxel_count": 0,
-				"max_complexity": complexity_minmax.y,
-			}
-
-		var collision_count := int(summary.get("collision_voxel_count", 0))
-		var collision_minmax: Vector2 = summary.get("collision_minmax", Vector2.ZERO)
-		if collision_count > 0:
-			var collision_key := SceneVoxelTileCodecScript.sv_tile_key(slice_index, px, "collision", tile_size)
-			tiles[collision_key] = {
-				"tile_key": collision_key,
-				"clip_level": 0,
-				"layer": "collision",
-				"tile_size": tile_size,
-				"bounds": SceneVoxelTileCodecScript.sv_tile_bounds(px, tile_size),
-				"dirty": false,
-				"updated_this_commit": dirty_tiles_snapshot.has(collision_key),
-				"distance_or_occupancy": "occupancy",
-				"scene_voxel_count": 0,
-				"collision_voxel_count": collision_count,
-				"max_complexity": collision_minmax.y,
-			}
-	return tiles
 
 ## 重建场景体素(SV)状态并发布最终摘要快照
 

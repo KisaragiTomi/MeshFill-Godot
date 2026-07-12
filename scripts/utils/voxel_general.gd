@@ -395,7 +395,7 @@ static func normalize_collision_samples(source: Array, _default_radius: float = 
 		collision["voxel"] = voxel              # local voxel coordinate
 		collision["collision_strength"] = clampf(float(collision.get("collision_strength", 1.0)), 0.0, 1.0)
 		if not collision.has("weight"):
-			collision["weight"] = 1.0           # placement footprint weight
+			collision["weight"] = 1.0           # placement sample weight
 		result.append(collision)
 	return result
 
