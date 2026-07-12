@@ -1389,8 +1389,13 @@ func run_minimal(
 		return blocked_output
 
 	# DebugBufferSet 承载：schema(VOXEL_DEBUG_CHANNELS) 是 GLSL 声明 + 通道名/数的单一真源。
+	# 写侧 gate：仅当本次运行请求 voxel 通道回读（debug_read_voxel_channels，golden 路径已同置）
+	# 时才分配全量场并置 ScoreConfig cfg_debug_write_mask bit0；否则绑 1 元素 dummy（32 B）、
+	# shader 跳过写入。回读走同一 debug_read_voxel 门，dummy 永不被读。
+	var debug_read_voxel := bool(settings.get("debug_read_voxel_channels", false))
 	var voxel_debug_set := DebugBufferSetScript.new(DebugBufferSetScript.VOXEL_DEBUG_CHANNELS)
-	var debug_voxel_buffer := voxel_debug_set.allocate(self, voxel_count, {}, SCOPE_FRAME)
+	var debug_voxel_buffer := voxel_debug_set.allocate(self, voxel_count if debug_read_voxel else 1, {}, SCOPE_FRAME)
+	var debug_write_mask := 1 if debug_read_voxel else 0
 	var score_contract_debug_buffer := storage_buffer_from_bytes(_pack_score_contract_debug_reset())
 	var candidate_route_adapter_count_buffer := RID()
 	var candidate_route_indirect_args_buffer := RID()
@@ -1441,7 +1446,8 @@ func run_minimal(
 		has_target,
 		gpu_contract,
 		route_settings,
-		sample_pivot_voxels
+		sample_pivot_voxels,
+		debug_write_mask
 	)
 	if resident_route_sparse_gpu:
 		resident_route_sparse["score_dispatch_indirect"] = bool(score_dispatch.get("score_dispatch_indirect", false))
@@ -1520,7 +1526,6 @@ func run_minimal(
 	if read_stamp_deltas:
 		decoded_stamp_deltas = _decode_stamp_deltas(stamp_delta_data, stamp_delta_count)
 	var stamp_bounds_data := _rd.buffer_get_data(stamp_bounds_buffer, 0, result_count * STAMP_BOUNDS_STRIDE * 16) if read_placement_results else PackedByteArray()
-	var debug_read_voxel := bool(settings.get("debug_read_voxel_channels", false))
 	var debug_voxel_data := _rd.buffer_get_data(debug_voxel_buffer) if debug_read_voxel else PackedByteArray()
 	var score_contract_debug_data := _rd.buffer_get_data(score_contract_debug_buffer)
 	var score_contract_debug := _decode_score_contract_debug(score_contract_debug_data)
@@ -2410,16 +2415,18 @@ func _pack_dimension_table(dims: Array) -> PackedByteArray:
 	return bytes
 
 
-## ScoreConfig SSBO bytes (std430, 80 B) for set0 binding 10. Holds what used to ride the push
+## ScoreConfig SSBO bytes (std430, 96 B) for set0 binding 10. Holds what used to ride the push
 ## constant but no longer fits under Godot's 128-byte limit:
-##   cfg_score_weights   (vec4)  @0  : [reserved(support retired), collision_penalty, overlap_penalty, clearance_penalty]
-##   cfg_dim_meta        (ivec4) @16 : [env_channel_count, 0, 0, 0]
-##   cfg_asset_profile0  (vec4)  @32 : asset dimension profile channels 0..3
-##   cfg_asset_profile1  (vec4)  @48 : asset dimension profile channels 4..7
-##   cfg_sample_range    (ivec4) @64 : [sample_start (collision_records 起始偏移), 0, 0, 0]
-func _pack_score_config(sample_start: int) -> PackedByteArray:
+##   cfg_score_weights     (vec4)  @0  : [reserved(support retired), collision_penalty, overlap_penalty, clearance_penalty]
+##   cfg_dim_meta          (ivec4) @16 : [env_channel_count, 0, 0, 0]
+##   cfg_asset_profile0    (vec4)  @32 : asset dimension profile channels 0..3
+##   cfg_asset_profile1    (vec4)  @48 : asset dimension profile channels 4..7
+##   cfg_sample_range      (ivec4) @64 : [sample_start (collision_records 起始偏移), 0, 0, 0]
+##   cfg_debug_write_mask  (uint)  @80 : observability 写侧 gate 位掩码（bit0 = voxel_debug_channels）
+##   cfg_debug_pad0..2     (uint)  @84/@88/@92 : reserved (0)
+func _pack_score_config(sample_start: int, debug_write_mask: int) -> PackedByteArray:
 	var bytes := PackedByteArray()
-	bytes.resize(80)
+	bytes.resize(96)
 	bytes.encode_float(0, 0.0)  # cfg_score_weights.x reserved — support retired
 	bytes.encode_float(4, collision_penalty)
 	bytes.encode_float(8, overlap_penalty)
@@ -2429,6 +2436,7 @@ func _pack_score_config(sample_start: int) -> PackedByteArray:
 		var v := _asset_dimension_profile[pi] if pi < _asset_dimension_profile.size() else 0.0
 		bytes.encode_float(32 + pi * 4, v)
 	bytes.encode_s32(64, maxi(sample_start, 0))  # 68/72/76 stay 0
+	bytes.encode_u32(80, maxi(debug_write_mask, 0))  # 84/88/92 stay 0
 	return bytes
 
 
@@ -2453,7 +2461,8 @@ func _dispatch_score(
 	has_target: int,
 	gpu_contract: Dictionary,
 	settings: Dictionary,
-	sample_pivot: Vector3i
+	sample_pivot: Vector3i,
+	debug_write_mask: int
 ) -> Dictionary:
 	# Phase-2 dimension-scoring bindings 8/9. dim_count == 0 (every legacy caller) makes the
 	# shader ignore them, but the uniform set must still bind valid buffers — use zero stubs.
@@ -2468,7 +2477,7 @@ func _dispatch_score(
 		_pack_dimension_table(_scoring_dimensions), SCOPE_FRAME, "scoring_dimension_table")
 	# ScoreConfig SSBO (binding 10): penalty weights + env_channel_count + per-asset profile
 	# + sample_start, moved off the push constant so the push stays <= 128 bytes (Godot limit).
-	var score_config_buffer := storage_buffer_from_bytes(_pack_score_config(sample_start), SCOPE_FRAME, "score_config")
+	var score_config_buffer := storage_buffer_from_bytes(_pack_score_config(sample_start, debug_write_mask), SCOPE_FRAME, "score_config")
 	# binding 2 = 容器常驻 collision_records（binding 3 已随双 buffer 布局退役）。
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, complexity_buffer),

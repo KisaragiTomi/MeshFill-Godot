@@ -14,6 +14,8 @@
 //   3: vec4(ignored_sample, valid, support_hit[=0], support_total[=0])
 //
 // DebugVoxelOutput: NUM_DEBUG_CHANNELS floats per voxel for visualization.
+// Write-gated by ScoreConfig cfg_debug_write_mask bit 0 (set only when the run requests
+// the voxel-channel readback; a dummy buffer is bound and the writes are skipped otherwise).
 // Channel layout:
 //   0: target_coverage   — weighted fraction of collision samples overlapping target
 //   1: target_complexity_fit  — 1 − mean |target complexity - collision strength|, higher = better
@@ -84,13 +86,18 @@ layout(set = 0, binding = 9, std430) restrict readonly buffer DimensionTable {
 };
 
 // Config moved out of the push constant (Godot caps push constants at 128 bytes): penalty
-// weights + env_channel_count + the per-asset dimension profile (8 slots).
+// weights + env_channel_count + the per-asset dimension profile (8 slots). 96 bytes
+// (see voxel_placement_generator._pack_score_config for the offset table).
 layout(set = 0, binding = 10, std430) restrict readonly buffer ScoreConfig {
     vec4 cfg_score_weights;    // x reserved (support retired); y/z/w = collision/overlap/clearance penalty
     ivec4 cfg_dim_meta;        // x = env_channel_count, yzw = reserved
     vec4 cfg_asset_profile0;   // per-asset dimension profile values, dims 0..3
     vec4 cfg_asset_profile1;   // per-asset dimension profile values, dims 4..7
     ivec4 cfg_sample_range;    // x = this asset's start offset in collision_records, yzw reserved
+    uint cfg_debug_write_mask; // per-family observability write gate: bit0 = voxel_debug_channels
+    uint cfg_debug_pad0;
+    uint cfg_debug_pad1;
+    uint cfg_debug_pad2;
 };
 
 layout(set = 1, binding = 0, std430) restrict readonly buffer RuntimeAlive {
@@ -964,18 +971,23 @@ void write_record(uint slot, ivec3 origin, EvalResult r, uint tile_id, int best_
 
 void write_debug_voxel(ivec3 origin, EvalResult r, int best_rotation_slot) {
     if (!in_grid_bounds(origin)) return;
-    uint base = uint(voxel_index(origin)) * NUM_DEBUG_CHANNELS;
-    debug_voxel[base + DEBUG_CH_TARGET_COVERAGE]   = r.target_coverage;
-    debug_voxel[base + DEBUG_CH_TARGET_COMPLEXITY_FIT]   = r.target_complexity_fit;
-    debug_voxel[base + DEBUG_CH_TARGET_COLOR_FIT]   = r.target_color_dist;
-    debug_voxel[base + DEBUG_CH_TARGET_DENSITY]     = r.target_density;
-    debug_voxel[base + DEBUG_CH_PLACEMENT_SCORE]    = r.score;
-    // Winning yaw slot for this voxel (only meaningful when r.valid); reuses the retired
-    // support_ratio channel so the CPU reads score + rotation from this one debug buffer.
-    debug_voxel[base + DEBUG_CH_BEST_ROTATION_SLOT] = r.valid ? float(best_rotation_slot) : 0.0;
-    debug_voxel[base + DEBUG_CH_SOLID_COLLISION]    = r.solid_collision;
-    debug_voxel[base + DEBUG_CH_CLEARANCE_OVERLAP]  = r.clearance_overlap;
+    // Observability gate: the voxel channel field is only written when the run requests the
+    // readback (cfg_debug_write_mask bit 0); a tiny dummy buffer is bound when disabled.
+    if ((cfg_debug_write_mask & 1u) != 0u) {
+        uint base = uint(voxel_index(origin)) * NUM_DEBUG_CHANNELS;
+        debug_voxel[base + DEBUG_CH_TARGET_COVERAGE]   = r.target_coverage;
+        debug_voxel[base + DEBUG_CH_TARGET_COMPLEXITY_FIT]   = r.target_complexity_fit;
+        debug_voxel[base + DEBUG_CH_TARGET_COLOR_FIT]   = r.target_color_dist;
+        debug_voxel[base + DEBUG_CH_TARGET_DENSITY]     = r.target_density;
+        debug_voxel[base + DEBUG_CH_PLACEMENT_SCORE]    = r.score;
+        // Winning yaw slot for this voxel (only meaningful when r.valid); reuses the retired
+        // support_ratio channel so the CPU reads score + rotation from this one debug buffer.
+        debug_voxel[base + DEBUG_CH_BEST_ROTATION_SLOT] = r.valid ? float(best_rotation_slot) : 0.0;
+        debug_voxel[base + DEBUG_CH_SOLID_COLLISION]    = r.solid_collision;
+        debug_voxel[base + DEBUG_CH_CLEARANCE_OVERLAP]  = r.clearance_overlap;
+    }
 
+    // Contract-tier debug_max stats (score_contract_debug): always-on, NOT gated.
     atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_TARGET_COVERAGE], q1000(r.target_coverage));
     atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_TARGET_COMPLEXITY_FIT], q1000(r.target_complexity_fit));
     atomicMax(score_contract_debug[SCORE_DEBUG_DEBUG_MAX_BASE + DEBUG_CH_TARGET_COLOR_FIT], q1000(r.target_color_dist));
