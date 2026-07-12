@@ -37,8 +37,8 @@ const RECORD_STRIDE := 4
 const SCORE_SUM_SHADER_PATH := "res://shaders/placement_result_score_sum.glsl"
 const DELTA_STRIDE := 2
 const STAMP_BOUNDS_STRIDE := 2
-const NUM_DEBUG_CHANNELS := 8
-# score_contract_debug 的 48 字布局/magic/48 槽名表已收敛到 DebugBufferSet(SCORE_CONTRACT_STATS)。
+# debug_voxel 的 8 通道布局/score_contract_debug 的 48 字布局/magic/48 槽名表均已收敛到
+# DebugBufferSet(VOXEL_DEBUG_CHANNELS / SCORE_CONTRACT_STATS)。
 const CANDIDATE_ROUTE_BINDING_DEBUG_WORDS := 16
 const CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS := 4
 const CANDIDATE_ROUTE_INDIRECT_ARGS_BYTES := 12
@@ -1364,7 +1364,9 @@ func run_minimal(
 		_free_gpu()
 		return blocked_output
 
-	var debug_voxel_buffer := storage_buffer_zero(voxel_count * NUM_DEBUG_CHANNELS * 4)
+	# DebugBufferSet 承载：schema(VOXEL_DEBUG_CHANNELS) 是 GLSL 声明 + 通道名/数的单一真源。
+	var voxel_debug_set := DebugBufferSetScript.new(DebugBufferSetScript.VOXEL_DEBUG_CHANNELS)
+	var debug_voxel_buffer := voxel_debug_set.allocate(self, voxel_count, {}, SCOPE_FRAME)
 	var score_contract_debug_buffer := storage_buffer_from_bytes(_pack_score_contract_debug_reset())
 	var candidate_route_adapter_count_buffer := RID()
 	var candidate_route_indirect_args_buffer := RID()
@@ -1591,7 +1593,7 @@ func run_minimal(
 		output["cpu_fallback"] = false
 	# 空占位规则：debug_voxel 仅在被请求回读时整键发送（禁用时不发空数组占位）。
 	if debug_read_voxel:
-		output["debug_voxel"] = _decode_float_array(debug_voxel_data, voxel_count * NUM_DEBUG_CHANNELS)
+		output["debug_voxel"] = voxel_debug_set.readback(self, debug_voxel_data).get("data", PackedFloat32Array())
 		output["debug_voxel_readback_source"] = "score_shader_debug_voxel_buffer"
 	# golden-master 素材（《统一Debug承载与输出字典精简方案》落地顺序第 6 步）：
 	# 开关门控的确定性文本快照（稳定键序 + q1000 反量化），diag 级默认不发。
@@ -1602,7 +1604,7 @@ func run_minimal(
 			DebugBufferSetScript.new(DebugBufferSetScript.SCORE_CONTRACT_STATS).golden_snapshot(self, score_contract_debug_data),
 		]
 		if debug_read_voxel:
-			golden_sections.append(DebugBufferSetScript.new(DebugBufferSetScript.VOXEL_DEBUG_CHANNELS).golden_snapshot(self, debug_voxel_data))
+			golden_sections.append(voxel_debug_set.golden_snapshot(self, debug_voxel_data))
 		output["golden_snapshot"] = "\n".join(golden_sections)
 	if bool(_state_chain_contract.get("cpu_state_chaining", false)):
 		output["cpu_state_chain"] = _state_chain_contract
@@ -3117,10 +3119,12 @@ func _decode_score_contract_debug(bytes: PackedByteArray) -> Dictionary:
 	# （_annotate_score_contract_debug 逐字段消费），保持不变（语义不动）。
 	var decoded := DebugBufferSetScript.new(DebugBufferSetScript.SCORE_CONTRACT_STATS).readback(self, bytes)
 	var words: PackedInt32Array = decoded.get("words", PackedInt32Array())
+	# debug_max 通道数与 debug_voxel 通道场同构，取自 VOXEL_DEBUG_CHANNELS schema。
+	var debug_channel_count := DebugBufferSetScript.new(DebugBufferSetScript.VOXEL_DEBUG_CHANNELS).channel_count()
 	var debug_channel_max := PackedFloat32Array()
-	debug_channel_max.resize(NUM_DEBUG_CHANNELS)
+	debug_channel_max.resize(debug_channel_count)
 	var debug_max_word_offset := 23
-	for i in range(NUM_DEBUG_CHANNELS):
+	for i in range(debug_channel_count):
 		var word_index := debug_max_word_offset + i
 		if word_index < words.size():
 			debug_channel_max[i] = float(words[word_index]) / 1000.0
@@ -3350,11 +3354,6 @@ func _normalize_float_array(values: PackedFloat32Array, expected_size: int) -> P
 	var result := values.duplicate()
 	result.resize(expected_size)
 	return result
-
-
-## 将原始字节数据解码为指定数量的 32 位浮点数组，容忍数据不足（不足部分补零）。
-func _decode_float_array(bytes: PackedByteArray, value_count: int) -> PackedFloat32Array:
-	return BufferUtils.decode_float_buffer(bytes, value_count)
 
 
 ## 将 GPU 结果缓冲区中的原始字节解码为放置结果记录数组（Array[Dictionary]）。
