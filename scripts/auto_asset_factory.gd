@@ -33,6 +33,17 @@ static func resolve_source_mesh(
 	return {"mesh": fallback_mesh, "cache": false}
 
 
+## resolve_source_mesh + 命中缓存时回写 owner.source_mesh 的共享收尾
+## （原 AssetDescriptor.get_source_mesh / AutoObject.get_source_mesh 逐行重复的解析+缓存舞步）。
+## owner 需有 source_mesh_path / source_mesh 属性（鸭子类型，两个调用方均满足）。
+static func resolve_cached_source_mesh(owner: Object, current_mesh: Mesh, fallback_mesh: Mesh) -> Mesh:
+	var resolved := resolve_source_mesh(owner.source_mesh_path, owner.source_mesh, current_mesh, fallback_mesh)
+	var resolved_mesh: Mesh = resolved.get("mesh", null)
+	if resolved.get("cache", false):
+		owner.source_mesh = resolved_mesh
+	return resolved_mesh
+
+
 ## 网格树查找 / UE 碰撞辅助体过滤 / 变换烘焙已与 DemoAssets 合并(原三份近逐字重复)。
 ## 委托版差异均为更安全方向:identity 变换直接返回源网格、空 surface 跳过、法线尺寸校验更严。
 static func _find_mesh_info_in_tree(

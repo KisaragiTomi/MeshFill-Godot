@@ -478,11 +478,7 @@ func get_source_mesh() -> Mesh:
 	var factory_script = load("res://scripts/auto_asset_factory.gd")
 	if factory_script == null:
 		return source_mesh if source_mesh != null else mesh
-	var resolved: Dictionary = factory_script.resolve_source_mesh(source_mesh_path, source_mesh, mesh, mesh)
-	var resolved_mesh: Mesh = resolved.get("mesh", null)
-	if resolved.get("cache", false):
-		source_mesh = resolved_mesh
-	return resolved_mesh
+	return factory_script.resolve_cached_source_mesh(self, mesh, mesh)
 
 
 func get_axis_center_xz() -> Vector2:
