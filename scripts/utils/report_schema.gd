@@ -144,8 +144,9 @@ const WRITEBACK_REPORT := {
 }
 
 ## VoxelPlacementGenerator run_minimal 输出族（成功 / contract-blocked / empty-prefilter 三变体
-## 的共同 SSOT，全部经 build() 发出）。expand 轮（2026-07-12）：全部键在 core/contract——输出
-## 与迁移前逐键相同；降 diag 是下一轮（候选见 core 内 TODO(migrate) 段）。
+## 的共同 SSOT，全部经 build() 发出）。migrate 轮（2026-07-12）已落：15 个零消费者的
+## provenance/诊断键降入 diag，仅 placement settings 的 "include_diagnostics"（默认 false）
+## 请求时输出。
 ## 条件键（缺席时 build 跳过，在场性由收集处决定）：
 ##   仅 blocked 变体：ok/contract_blocked/skipped_gpu_runtime_profile_contract/gpu_first/
 ##     runtime_read_source/readback_source；target_read_buffer_source/_blocked_reason 仅两个
@@ -182,14 +183,6 @@ const VPG_RUN_REPORT := {
 		"placement_score_sum", "placement_valid_count", "placement_result_buffers",
 		"debug_voxel", "golden_snapshot", "score_timing_profile",
 		"skipped_prefilter",
-		# TODO(migrate): 下列零读者 provenance/诊断键为下一轮 diag 候选（本轮仅 expand 不降级）。
-		"tile_count", "tile_counts", "candidate_tile_count", "candidate_tile_ids",
-		"candidate_voxel_dispatch_mode",
-		"stamp_delta_count_source", "debug_voxel_readback_source",
-		"gpu_runtime_profile_binding_debug", "placement_results_readback_skipped",
-		"gpu_first", "readback_source", "runtime_read_source",
-		"skipped_gpu_runtime_profile_contract",
-		"target_read_buffer_source", "target_read_buffer_blocked_reason",
 	],
 	"contract": [
 		"contract_blocked", "cpu_fallback",
@@ -200,7 +193,22 @@ const VPG_RUN_REPORT := {
 		"candidate_route_input_contract", "candidate_route_binding_debug",
 		"target_read_buffer_summary",
 	],
-	# diag: —（expand 轮为空；上方 TODO(migrate) 键待下一轮降入）。
+	"diag": [
+		# migrate 轮全项目 grep 复核：零运行时读者（run_multi_asset per-pivot 消费/volume_score_demo/
+		# SPA 链均不读；同名读点全在其他报告族——writeback merge、tile store/prefilter/容器摘要、
+		# _target_read_buffer_pack 内部 pack dict；test_markdown_contracts/test_core_demo_contracts
+		# 的 runtime_read_source 为文档措辞断言，非本族输出读取）。
+		# 其中 gpu_first/readback_source/runtime_read_source/skipped_gpu_runtime_profile_contract/
+		# stamp_delta_count_source/debug_voxel_readback_source 值恒定或近恒定（恒定 provenance）——
+		# 彻底删除是后续单独决策，本轮仅降级到 diag。
+		"tile_count", "tile_counts", "candidate_tile_count", "candidate_tile_ids",
+		"candidate_voxel_dispatch_mode",
+		"stamp_delta_count_source", "debug_voxel_readback_source",
+		"gpu_runtime_profile_binding_debug", "placement_results_readback_skipped",
+		"gpu_first", "readback_source", "runtime_read_source",
+		"skipped_gpu_runtime_profile_contract",
+		"target_read_buffer_source", "target_read_buffer_blocked_reason",
+	],
 	# derived: —（六类冗余清扫已删派生键，见 run_minimal 输出组装处注释）。
 }
 

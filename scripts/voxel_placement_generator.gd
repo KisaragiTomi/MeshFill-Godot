@@ -1133,6 +1133,7 @@ func run_minimal(
 	settings: Dictionary = {}
 ) -> Dictionary:
 	_apply_settings(settings)
+	var include_diagnostics := bool(settings.get("include_diagnostics", false))
 	# 分阶段计时(score→reduce→stamp 瓶颈定位)。关闭时全程零开销:mark() 空操作,
 	# 下方各 pass 后的额外 submit_and_sync 只在 _prof.enabled 时插入。见 ScoreTimingProfiler。
 	var _prof := ScoreTimingProfilerScript.new(
@@ -1193,7 +1194,9 @@ func run_minimal(
 			tile_count,
 			tile_counts,
 			candidate_tile_ids,
-			gpu_contract
+			gpu_contract,
+			{},
+			include_diagnostics
 		)
 	if candidate_tile_count <= 0:
 		return _empty_prefilter_output(
@@ -1202,7 +1205,9 @@ func run_minimal(
 			voxel_count,
 			tile_count,
 			tile_counts,
-			candidate_tile_ids
+			candidate_tile_ids,
+			{},
+			include_diagnostics
 		)
 
 	log_name = "VoxelPlacementGenerator"
@@ -1215,7 +1220,9 @@ func run_minimal(
 			tile_count,
 			tile_counts,
 			candidate_tile_ids,
-			_gpu_contract_result(false, "missing_rendering_device")
+			_gpu_contract_result(false, "missing_rendering_device"),
+			{},
+			include_diagnostics
 		)
 
 	_load_shaders()
@@ -1228,7 +1235,9 @@ func run_minimal(
 			tile_count,
 			tile_counts,
 			candidate_tile_ids,
-			_gpu_contract_result(false, "placement_shader_pipeline_not_ready")
+			_gpu_contract_result(false, "placement_shader_pipeline_not_ready"),
+			{},
+			include_diagnostics
 		)
 
 	var object_ref_contract := _prepare_scene_voxel_tile_object_ref_exclusion(gpu_contract, settings, tile_counts)
@@ -1242,7 +1251,9 @@ func run_minimal(
 			tile_count,
 			tile_counts,
 			candidate_tile_ids,
-			gpu_contract
+			gpu_contract,
+			{},
+			include_diagnostics
 		)
 
 	var resident_route_requested := str(settings.get("candidate_route_readback_source", "none")) != "none" \
@@ -1270,7 +1281,9 @@ func run_minimal(
 		return _gpu_contract_blocked_minimal_output(
 			complexity_data, collision_data, voxel_count, tile_count, tile_counts,
 			candidate_tile_ids,
-			_gpu_contract_result(false, "resident_candidate_route_unavailable:%s" % route_block_reason)
+			_gpu_contract_result(false, "resident_candidate_route_unavailable:%s" % route_block_reason),
+			{},
+			include_diagnostics
 		)
 	if candidate_tile_count <= 0:
 		_free_gpu()
@@ -1285,7 +1298,8 @@ func run_minimal(
 				"candidate_route_readback_source": _candidate_route_readback_source_from_settings(route_settings),
 				"candidate_route_runtime_read_source": _candidate_route_runtime_read_source_from_settings(route_settings),
 				"candidate_route_input_contract": _candidate_route_input_contract_from_settings(route_settings),
-			}
+			},
+			include_diagnostics
 		)
 
 	var candidate_count := candidate_tile_count * top_k
@@ -1332,7 +1346,8 @@ func run_minimal(
 				"target_read_buffer_summary": _target_read_buffer_summary(target_buffer_pack),
 				"target_read_buffer_source": str(target_buffer_pack.get("target_read_buffer_source", "none")),
 				"target_read_buffer_blocked_reason": blocked_reason,
-			}
+			},
+			include_diagnostics
 		)
 		_free_gpu()
 		return blocked_output
@@ -1367,7 +1382,8 @@ func run_minimal(
 				"target_read_buffer_summary": _target_read_buffer_summary(target_buffer_pack),
 				"target_read_buffer_source": str(target_buffer_pack.get("target_read_buffer_source", "none")),
 				"target_read_buffer_blocked_reason": "target_field_buffer_not_ready",
-			}
+			},
+			include_diagnostics
 		)
 		_free_gpu()
 		return blocked_output
@@ -1542,7 +1558,8 @@ func run_minimal(
 			tile_counts,
 			candidate_tile_ids,
 			gpu_contract,
-			{"gpu_runtime_profile_binding_debug": score_contract_debug}
+			{"gpu_runtime_profile_binding_debug": score_contract_debug},
+			include_diagnostics
 		)
 		_free_gpu()
 		return blocked_output
@@ -1649,7 +1666,7 @@ func run_minimal(
 		gc_frame()
 	else:
 		_free_gpu()
-	return _emit_run_report(output)
+	return _emit_run_report(output, include_diagnostics)
 
 
 ## 当 GPU 运行时契约校验失败时，为 run_multi_asset 构造统一的"已阻断"空结果：
@@ -1698,16 +1715,17 @@ func _gpu_contract_blocked_multi_asset_output(
 
 ## 唯一发射口：run_minimal 输出族（成功/blocked/empty-prefilter 三变体）一律经
 ## ReportSchema.build 组装（values 里未声明的键 authoring-time push_error）。build 按
-## values.has 跳过缺席键，条件键的在场性由收集处决定；expand 轮全部键在 core/contract，
-## 无 diag 门（键清单/分级/消费者名单见 ReportSchema.VPG_RUN_REPORT）。
-func _emit_run_report(values: Dictionary) -> Dictionary:
-	return ReportSchema.build(ReportSchema.VPG_RUN_REPORT, values)
+## values.has 跳过缺席键，条件键的在场性由收集处决定；diag tier 仅 include_diagnostics
+##（placement settings 的 "include_diagnostics" 键）时输出
+##（键清单/分级/消费者名单见 ReportSchema.VPG_RUN_REPORT）。
+func _emit_run_report(values: Dictionary, include_diagnostics: bool = false) -> Dictionary:
+	return ReportSchema.build(ReportSchema.VPG_RUN_REPORT, values, include_diagnostics)
 
 
 ## 当 GPU 运行时契约校验失败或设备/管线未就绪时，为 run_minimal 构造统一的"已阻断"空结果，
 ## 包含空的放置结果与调试通道占位数据，并原样返回输入的 complexity/collision 字段。
 ## extra 承载各阻断点的附加键（target_read_buffer_* / gpu_runtime_profile_binding_debug），
-## 在发射前并入，保证全部键走同一 schema 刹车。
+## 在发射前并入，保证全部键（含 extra）走同一 schema 刹车与 diag 门。
 func _gpu_contract_blocked_minimal_output(
 	complexity_data: PackedFloat32Array,
 	collision_data: PackedFloat32Array,
@@ -1716,7 +1734,8 @@ func _gpu_contract_blocked_minimal_output(
 	tile_counts: Vector3i,
 	candidate_tile_ids: PackedInt32Array,
 	contract: Dictionary,
-	extra: Dictionary = {}
+	extra: Dictionary = {},
+	include_diagnostics: bool = false
 ) -> Dictionary:
 	# 与 run_minimal 成功输出同口径精简：field_out_source/_byte_count 只在 full_field_readback 嵌套一次；
 	# debug_voxel 空占位/schema 回显(debug_channel_names/count)/派生 candidate_count/恒定 stamp_bounds_source 均不发。
@@ -1745,12 +1764,12 @@ func _gpu_contract_blocked_minimal_output(
 	}
 	for key in extra:
 		values[key] = extra[key]
-	return _emit_run_report(values)
+	return _emit_run_report(values, include_diagnostics)
 
 
 ## 当候选 tile 预筛选结果为空时，为 run_minimal 构造空结果输出，
 ## 跳过本次 GPU 派发，直接原样返回输入的 complexity/collision 字段。
-## extra 承载 route 解析后空候选点的 candidate_route_* 附加键。
+## extra 承载 route 解析后空候选点的 candidate_route_* 附加键（经同一 schema 刹车与 diag 门）。
 func _empty_prefilter_output(
 	complexity_data: PackedFloat32Array,
 	collision_data: PackedFloat32Array,
@@ -1758,7 +1777,8 @@ func _empty_prefilter_output(
 	tile_count: int,
 	tile_counts: Vector3i,
 	candidate_tile_ids: PackedInt32Array,
-	extra: Dictionary = {}
+	extra: Dictionary = {},
+	include_diagnostics: bool = false
 ) -> Dictionary:
 	# 同口径精简（见 _gpu_contract_blocked_minimal_output）：只嵌套一次、不发空占位/schema 回显/派生键。
 	var full_field_readback := _full_field_readback_contract(voxel_count, "input_cpu_state_prefilter_skip", false)
@@ -1779,7 +1799,7 @@ func _empty_prefilter_output(
 	}
 	for key in extra:
 		values[key] = extra[key]
-	return _emit_run_report(values)
+	return _emit_run_report(values, include_diagnostics)
 
 
 ## 将 settings 字典中的可选覆盖值应用到打分/放置相关成员变量（top_k、各类惩罚权重、资产索引等），
