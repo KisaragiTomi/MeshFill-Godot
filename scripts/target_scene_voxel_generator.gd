@@ -3,18 +3,10 @@ extends "res://scripts/godot_compute_shader_base.gd"
 
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
+const DebugBufferSetScript := preload("res://scripts/utils/debug_buffer_set.gd")
 
-const TARGET_STATS_BYTE_SIZE := 28
-const TARGET_STATS_QUANT_SCALE := 1000000.0
-const TARGET_STATS_MIN_PACK_BASE := 1000001.0
-const TARGET_STATS_ACTIVE_THRESHOLD := 0.001
-const TARGET_STATS_MAX_COMPLETENESS_OFFSET := 0
-const TARGET_STATS_MAX_COLLISION_OFFSET := 4
-const TARGET_STATS_ACTIVE_COUNT_OFFSET := 8
-const TARGET_STATS_COLLISION_COUNT_OFFSET := 12
-const TARGET_STATS_VISUAL_COUNT_OFFSET := 16
-const TARGET_STATS_MIN_ACTIVE_PACKED_OFFSET := 20
-const TARGET_STATS_MAX_VISUAL_OFFSET := 24
+# 布局/量化/反转-min 编码的单一真源 = DebugBufferSet.TARGET_STATS schema。
+const TARGET_STATS_ACTIVE_THRESHOLD := DebugBufferSetScript.TARGET_STATS_ACTIVE_THRESHOLD
 const TARGET_PACK_PUSH_BYTE_SIZE := 16
 const TARGET_PACK_PUSH_VOXEL_COUNT_OFFSET := 0
 const TARGET_PACK_PUSH_USE_COLLISION_OFFSET := 4  # set to 1 to derive completeness from max(complexity, collision) when no completeness input
@@ -81,29 +73,19 @@ var _sampler: RID
 
 
 static func _decode_target_stats(stats_bytes: PackedByteArray) -> Dictionary:
-	if stats_bytes.size() < TARGET_STATS_BYTE_SIZE:
-		return {
-			"max_completeness": 0.0,
-			"max_occupancy": 0.0,
-			"max_collision": 0.0,
-			"active_voxel_count": 0,
-			"collision_voxel_count": 0,
-			"visual_voxel_count": 0,
-			"min_active_completeness": 0.0,
-			"min_active_occupancy": 0.0,
-			"max_visual_complexity": 0.0,
-		}
-	var min_active_packed := stats_bytes.decode_u32(TARGET_STATS_MIN_ACTIVE_PACKED_OFFSET)
+	var stats_set := DebugBufferSetScript.new(DebugBufferSetScript.TARGET_STATS)
+	var words: PackedInt32Array = stats_set.readback(null, stats_bytes).get("words", PackedInt32Array())
+	var shaped: Dictionary = stats_set.decode_shaped(words)
 	return {
-		"max_completeness": float(stats_bytes.decode_u32(TARGET_STATS_MAX_COMPLETENESS_OFFSET)) / TARGET_STATS_QUANT_SCALE,
-		"max_occupancy": float(stats_bytes.decode_u32(TARGET_STATS_MAX_COMPLETENESS_OFFSET)) / TARGET_STATS_QUANT_SCALE,
-		"max_collision": float(stats_bytes.decode_u32(TARGET_STATS_MAX_COLLISION_OFFSET)) / TARGET_STATS_QUANT_SCALE,
-		"active_voxel_count": int(stats_bytes.decode_u32(TARGET_STATS_ACTIVE_COUNT_OFFSET)),
-		"collision_voxel_count": int(stats_bytes.decode_u32(TARGET_STATS_COLLISION_COUNT_OFFSET)),
-		"visual_voxel_count": int(stats_bytes.decode_u32(TARGET_STATS_VISUAL_COUNT_OFFSET)),
-		"min_active_completeness": (TARGET_STATS_MIN_PACK_BASE - float(min_active_packed)) / TARGET_STATS_QUANT_SCALE if min_active_packed > 0 else 0.0,
-		"min_active_occupancy": (TARGET_STATS_MIN_PACK_BASE - float(min_active_packed)) / TARGET_STATS_QUANT_SCALE if min_active_packed > 0 else 0.0,
-		"max_visual_complexity": float(stats_bytes.decode_u32(TARGET_STATS_MAX_VISUAL_OFFSET)) / TARGET_STATS_QUANT_SCALE,
+		"max_completeness": float(shaped.get("max_completeness", 0.0)),
+		"max_occupancy": float(shaped.get("max_completeness", 0.0)),
+		"max_collision": float(shaped.get("max_collision", 0.0)),
+		"active_voxel_count": int(shaped.get("active_voxel_count", 0)),
+		"collision_voxel_count": int(shaped.get("collision_voxel_count", 0)),
+		"visual_voxel_count": int(shaped.get("visual_voxel_count", 0)),
+		"min_active_completeness": float(shaped.get("min_active_completeness", 0.0)),
+		"min_active_occupancy": float(shaped.get("min_active_completeness", 0.0)),
+		"max_visual_complexity": float(shaped.get("max_visual_complexity", 0.0)),
 	}
 
 
@@ -601,7 +583,8 @@ func derive_target_packed_buffers(
 		SCOPE_FRAME,
 		"target_visual_rgba8_out"
 	)
-	var stats_out_buffer := storage_buffer_zero(TARGET_STATS_BYTE_SIZE, SCOPE_FRAME, "target_pack_stats_u32")
+	var stats_set := DebugBufferSetScript.new(DebugBufferSetScript.TARGET_STATS)
+	var stats_out_buffer := stats_set.allocate(self, 0, {}, SCOPE_FRAME, "target_pack_stats_u32")
 
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, visual_buffer),
@@ -643,7 +626,7 @@ func derive_target_packed_buffers(
 		packed_completeness = _r8_bytes_from_word_bytes(completeness_words, voxel_count)
 		packed_color = _rd.buffer_get_data(color_rgba8_out_buffer, 0, voxel_count * 4)
 	var target_field_bytes := _target_field_vec4_from_rgba8_and_r8(packed_color, packed_completeness, voxel_count) if readback_packed_buffers else PackedFloat32Array()
-	var stats_bytes := _rd.buffer_get_data(stats_out_buffer, 0, TARGET_STATS_BYTE_SIZE)
+	var stats_bytes := _rd.buffer_get_data(stats_out_buffer, 0, stats_set.byte_count())
 	var stats := _decode_target_stats(stats_bytes)
 	_free_gpu()
 
@@ -760,7 +743,8 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	var visual_buffer := storage_buffer_zero(voxel_count * TARGET_RGBA8_STRIDE_BYTES) # RGBA8 u32 color+complexity
 	var collision_buffer := storage_buffer_zero(r8_word_byte_count)       # collision R8, 4 voxels per uint
 	var completeness_buffer := storage_buffer_zero(r8_word_byte_count)      # max(complexity, collision) R8, 4 voxels per uint
-	var stats_buffer := storage_buffer_zero(TARGET_STATS_BYTE_SIZE)       # u32 max completeness/collision/count stats
+	var stats_set := DebugBufferSetScript.new(DebugBufferSetScript.TARGET_STATS)
+	var stats_buffer := stats_set.allocate(self, 0, {}, SCOPE_FRAME, "target_stats_u32")  # u32 stats（DebugBufferSet TARGET_STATS）
 
 	var set0 := create_uniform_set([
 		make_sampler_uniform(0, _sampler, tex_scene),
@@ -808,7 +792,7 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	var collision_bytes := _r8_bytes_from_word_bytes(collision_word_bytes, voxel_count)
 	var completeness_bytes := _r8_bytes_from_word_bytes(completeness_word_bytes, voxel_count)
 	var target_field_bytes := _target_field_vec4_from_rgba8_and_r8(visual_bytes, completeness_bytes, voxel_count)
-	var stats_bytes := _rd.buffer_get_data(stats_buffer, 0, TARGET_STATS_BYTE_SIZE)
+	var stats_bytes := _rd.buffer_get_data(stats_buffer, 0, stats_set.byte_count())
 	var preview_data := _rd.texture_get_data(preview_tex, 0)
 	var preview_img := Image.create_from_data(texture_size, texture_size, false, Image.FORMAT_RGBAH, preview_data)
 	var stats := _decode_target_stats(stats_bytes)

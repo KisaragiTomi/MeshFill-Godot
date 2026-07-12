@@ -9,7 +9,7 @@
 // Outputs:
 //   binding 3: r8 completeness buffer packed four voxels per uint
 //   binding 4: rgba8 packed as uint, high-to-low bytes RGBA
-//   binding 5: u32 stats buffer: max completeness, max collision, active/collision/visual voxel counts, min active completeness, max visual complexity
+//   binding 5: u32 stats buffer (DebugBufferSet TARGET_STATS: magic + schema_version header, then named stat slots)
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
@@ -33,19 +33,21 @@ layout(set = 0, binding = 4, std430) restrict writeonly buffer TargetVisualRgba8
     uint target_visual_rgba8_out[];
 };
 
-layout(set = 0, binding = 5, std430) restrict buffer TargetStatsOut {
-    uint target_stats_out[];
+// @@GEN debug_set target_stats
+layout(set = 0, binding = 5, std430) restrict buffer TargetStats {
+    uint target_stats[];
 };
-
-const uint TARGET_STATS_MAX_COMPLETENESS = 0u;
-const uint TARGET_STATS_MAX_COLLISION = 1u;
-const uint TARGET_STATS_ACTIVE_COUNT = 2u;
-const uint TARGET_STATS_COLLISION_COUNT = 3u;
-const uint TARGET_STATS_VISUAL_COUNT = 4u;
-const uint TARGET_STATS_MIN_ACTIVE_PACKED = 5u;
-const uint TARGET_STATS_MAX_VISUAL = 6u;
+const uint TARGET_STATS_MAGIC = 0x4D465453u;
+const uint TARGET_STATS_MAX_COMPLETENESS = 2u;
+const uint TARGET_STATS_MAX_COLLISION = 3u;
+const uint TARGET_STATS_ACTIVE_COUNT = 4u;
+const uint TARGET_STATS_COLLISION_COUNT = 5u;
+const uint TARGET_STATS_VISUAL_COUNT = 6u;
+const uint TARGET_STATS_MIN_ACTIVE_PACKED = 7u;
+const uint TARGET_STATS_MAX_VISUAL = 8u;
 const uint TARGET_STATS_MIN_PACK_BASE = 1000001u;
 const float TARGET_STATS_ACTIVE_THRESHOLD = 0.001;
+// @@END debug_set target_stats
 
 layout(push_constant, std430) uniform Params {
     int voxel_count;                 // byte 0: total voxels to scan
@@ -112,17 +114,17 @@ void main() {
         store_completeness_r8(idx, completeness);
         target_visual_rgba8_out[idx] = visual_word;
     }
-    atomicMax(target_stats_out[TARGET_STATS_MAX_COMPLETENESS], quantize_unit(completeness));
-    atomicMax(target_stats_out[TARGET_STATS_MAX_COLLISION], quantize_unit(collision));
+    atomicMax(target_stats[TARGET_STATS_MAX_COMPLETENESS], quantize_unit(completeness));
+    atomicMax(target_stats[TARGET_STATS_MAX_COLLISION], quantize_unit(collision));
     if (completeness > TARGET_STATS_ACTIVE_THRESHOLD) {
-        atomicAdd(target_stats_out[TARGET_STATS_ACTIVE_COUNT], 1u);
-        atomicMax(target_stats_out[TARGET_STATS_MIN_ACTIVE_PACKED], TARGET_STATS_MIN_PACK_BASE - quantize_unit(completeness));
+        atomicAdd(target_stats[TARGET_STATS_ACTIVE_COUNT], 1u);
+        atomicMax(target_stats[TARGET_STATS_MIN_ACTIVE_PACKED], TARGET_STATS_MIN_PACK_BASE - quantize_unit(completeness));
     }
     if (collision > TARGET_STATS_ACTIVE_THRESHOLD) {
-        atomicAdd(target_stats_out[TARGET_STATS_COLLISION_COUNT], 1u);
+        atomicAdd(target_stats[TARGET_STATS_COLLISION_COUNT], 1u);
     }
     if (complexity > TARGET_STATS_ACTIVE_THRESHOLD) {
-        atomicAdd(target_stats_out[TARGET_STATS_VISUAL_COUNT], 1u);
+        atomicAdd(target_stats[TARGET_STATS_VISUAL_COUNT], 1u);
     }
-    atomicMax(target_stats_out[TARGET_STATS_MAX_VISUAL], quantize_unit(complexity));
+    atomicMax(target_stats[TARGET_STATS_MAX_VISUAL], quantize_unit(complexity));
 }

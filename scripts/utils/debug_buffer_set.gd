@@ -20,7 +20,8 @@ extends RefCounted
 ##
 ## 两种形态（不做万能 buffer）：
 ##   [b]stat_slots[/b]：`[可选 magic 头] + N 个命名 u32 槽`，写侧 atomicAdd（计数）/ atomicMax（峰值）
-##       / q1000（定点量化）。覆盖 contract debug、route debug、TARGET_STATS_*。
+##       / q1000·q1000000（定点量化）/ inverted_min（atomicMax(BASE-q) 取最小）。覆盖 contract debug、
+##       route debug、target_stats。
 ##   [b]channel_field[/b]：`元素数 × 通道数` float 场，直接写、按声明的 index_space 寻址。覆盖
 ##       debug_voxel 8 通道。schema [b]必须[/b]声明 index_space（本项目现存 voxel_dense_xzy /
 ##       tile / sparse 三种索引约定并存，配错即乱码）。
@@ -38,6 +39,8 @@ const KIND_CHANNEL_FIELD := "channel_field"
 const DECODE_INT := "int"
 const DECODE_BOOL := "bool"
 const DECODE_Q1000 := "q1000"   # float(word) / 1000.0（写侧 q1000 定点，[0,1] 或非负域）
+const DECODE_Q1000000 := "q1000000"   # float(word) / 1000000.0（写侧 quantize_unit 定点）
+const DECODE_INVERTED_MIN := "inverted_min"   # atomicMax(BASE - q) 反转 min 编码；slot 携带 base（= 量化上限 + 1），word 0 = 未写→0.0
 
 # ── schema 单一真源（SSOT）：每个 buffer 一份，GLSL 声明与 GDScript 解码都从这里派生 ──
 
@@ -198,6 +201,44 @@ const VOXEL_DEBUG_CHANNELS := {
 	],
 }
 
+## target_stats（TargetSV 生成/pack 双 shader 共写的统计块，9 字，magic "MFTS" + schema_version 头）。
+## q1000000 定点（shader 侧 quantize_unit）；min 用 MIN_PACK_BASE 反转编码：atomicMax(BASE - q)，
+## CPU 解码 (BASE - word) / (BASE - 1)，word 0 = 无 active voxel。set/binding 因 shader 而异
+## （target_scene_voxel set1/b4、target_sv_pack_read_buffers set0/b5），emit 时按 consumer 覆盖。
+const TARGET_STATS_MIN_PACK_BASE := 1000001
+const TARGET_STATS_ACTIVE_THRESHOLD := 0.001
+const TARGET_STATS := {
+	"name": "target_stats",
+	"kind": KIND_STAT_SLOTS,
+	"glsl_struct": "TargetStats",
+	"glsl_array": "target_stats",
+	"set": 1,
+	"binding": 4,
+	"word_count": 9,
+	"magic": 0x4D465453,        # "MFTS": MeshFill target stats
+	"magic_word": 0,
+	"magic_const": "TARGET_STATS_MAGIC",
+	"reset_magic": true,
+	"version": 1,
+	"version_word": 1,
+	"const_prefix": "TARGET_STATS_",
+	"extra_consts": [
+		{"glsl": "TARGET_STATS_MIN_PACK_BASE", "type": "uint", "value": TARGET_STATS_MIN_PACK_BASE},
+		{"glsl": "TARGET_STATS_ACTIVE_THRESHOLD", "type": "float", "value": TARGET_STATS_ACTIVE_THRESHOLD},
+	],
+	"slots": [
+		{"index": 0, "name": "magic"},
+		{"index": 1, "name": "schema_version"},
+		{"index": 2, "name": "max_completeness", "glsl": "TARGET_STATS_MAX_COMPLETENESS", "op": "max", "decode": DECODE_Q1000000},
+		{"index": 3, "name": "max_collision", "glsl": "TARGET_STATS_MAX_COLLISION", "op": "max", "decode": DECODE_Q1000000},
+		{"index": 4, "name": "active_voxel_count", "glsl": "TARGET_STATS_ACTIVE_COUNT", "op": "add"},
+		{"index": 5, "name": "collision_voxel_count", "glsl": "TARGET_STATS_COLLISION_COUNT", "op": "add"},
+		{"index": 6, "name": "visual_voxel_count", "glsl": "TARGET_STATS_VISUAL_COUNT", "op": "add"},
+		{"index": 7, "name": "min_active_completeness", "glsl": "TARGET_STATS_MIN_ACTIVE_PACKED", "op": "max", "decode": DECODE_INVERTED_MIN, "base": TARGET_STATS_MIN_PACK_BASE},
+		{"index": 8, "name": "max_visual_complexity", "glsl": "TARGET_STATS_MAX_VISUAL", "op": "max", "decode": DECODE_Q1000000},
+	],
+}
+
 ## 每个生成块被哪些 shader 承载（供 verify_glsl_gen_blocks.gd 扫描；set/binding 按 shader 覆盖）。
 ## 每项：{schema, overrides:{set,binding}}。marker 名统一 debug_set <schema.name>。
 const CONSUMERS := [
@@ -212,6 +253,9 @@ const CONSUMERS := [
 	# debug_voxel —— 同样 decl / consts 分处两段。
 	{"schema": VOXEL_DEBUG_CHANNELS, "shader": "res://shaders/score_voxel_tile.glsl", "section": SECTION_DECL},
 	{"schema": VOXEL_DEBUG_CHANNELS, "shader": "res://shaders/score_voxel_tile.glsl", "section": SECTION_CONSTS},
+	# target_stats —— 双 shader 承载，decl+consts 一体块（binding 处紧跟既有常量段）。
+	{"schema": TARGET_STATS, "shader": "res://shaders/target_scene_voxel.glsl", "set": 1, "binding": 4},
+	{"schema": TARGET_STATS, "shader": "res://shaders/target_sv_pack_read_buffers.glsl", "set": 0, "binding": 5},
 ]
 
 
@@ -402,6 +446,11 @@ func decode_shaped(words: PackedInt32Array) -> Dictionary:
 				out[str(slot.get("name", ""))] = raw != 0
 			DECODE_Q1000:
 				out[str(slot.get("name", ""))] = float(raw) / 1000.0
+			DECODE_Q1000000:
+				out[str(slot.get("name", ""))] = float(raw) / 1000000.0
+			DECODE_INVERTED_MIN:
+				var base := float(slot.get("base", 0))
+				out[str(slot.get("name", ""))] = (base - float(raw)) / maxf(base - 1.0, 1.0) if raw > 0 else 0.0
 			_:
 				out[str(slot.get("name", ""))] = raw
 	return out
@@ -483,6 +532,11 @@ static func _emit_stat_slots_body(schema_dict: Dictionary, overrides: Dictionary
 	for slot in schema_dict.get("slots", []):
 		if slot.has("glsl"):
 			const_lines.append("const uint %s = %du;" % [str(slot["glsl"]), int(slot.get("index", 0))])
+	for extra in schema_dict.get("extra_consts", []):
+		if str(extra.get("type", "uint")) == "float":
+			const_lines.append("const float %s = %s;" % [str(extra["glsl"]), str(extra["value"])])
+		else:
+			const_lines.append("const uint %s = %du;" % [str(extra["glsl"]), int(extra["value"])])
 	return _join_sections(decl_lines, const_lines, section)
 
 

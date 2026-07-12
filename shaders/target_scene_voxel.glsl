@@ -19,19 +19,21 @@ layout(set = 1, binding = 2, std430) restrict buffer TargetCompleteness {
     uint target_completeness_r8_words[];
 };
 
+// @@GEN debug_set target_stats
 layout(set = 1, binding = 4, std430) restrict buffer TargetStats {
     uint target_stats[];
 };
-
-const uint TARGET_STATS_MAX_COMPLETENESS = 0u;
-const uint TARGET_STATS_MAX_COLLISION = 1u;
-const uint TARGET_STATS_ACTIVE_COUNT = 2u;
-const uint TARGET_STATS_COLLISION_COUNT = 3u;
-const uint TARGET_STATS_VISUAL_COUNT = 4u;
-const uint TARGET_STATS_MIN_ACTIVE_PACKED = 5u;
-const uint TARGET_STATS_MAX_VISUAL = 6u;
+const uint TARGET_STATS_MAGIC = 0x4D465453u;
+const uint TARGET_STATS_MAX_COMPLETENESS = 2u;
+const uint TARGET_STATS_MAX_COLLISION = 3u;
+const uint TARGET_STATS_ACTIVE_COUNT = 4u;
+const uint TARGET_STATS_COLLISION_COUNT = 5u;
+const uint TARGET_STATS_VISUAL_COUNT = 6u;
+const uint TARGET_STATS_MIN_ACTIVE_PACKED = 7u;
+const uint TARGET_STATS_MAX_VISUAL = 8u;
 const uint TARGET_STATS_MIN_PACK_BASE = 1000001u;
 const float TARGET_STATS_ACTIVE_THRESHOLD = 0.001;
+// @@END debug_set target_stats
 
 layout(rgba16f, set = 2, binding = 0) uniform image2D rw_preview;
 
