@@ -1,0 +1,179 @@
+golden volume_score v1
+meta asset_count=3 anchor_count=64 grid=256x16x256 rotation_slots=12 anchor_spacing=32
+asset 0 name=geo_sm_testleaf_test2
+score_contract_stats stat_slots magic_ok=true word_count=48
+  magic=1296453714
+  contract_enabled=false
+  runtime_object_capacity=0
+  profile_count=0
+  alive_object_reads=0
+  profile_records_matched=0
+  runtime_overlap_tests=0
+  runtime_overlap_hits=0
+  profile_table_reads=0
+  asset_profile_id=0
+  candidate_invocations=0
+  profile_complexity_q1000=0.0
+  runtime_profile_reads=0
+  runtime_profile_matches=0
+  probe_record_reads=0
+  reserved_profile_side_read=0
+  pivot_record_reads=0
+  probe_weight_q1000=0.0
+  reserved_profile_side_metric=0
+  pivot_bias_q1000=0.0
+  profile_probe_count=0
+  reserved_profile_side_count=0
+  profile_pivot_count=0
+  debug_max_target_coverage_q1000=1.0
+  debug_max_target_complexity_fit_q1000=0.902
+  debug_max_target_color_fit_q1000=0.928
+  debug_max_target_density_q1000=0.941
+  debug_max_placement_score_q1000=0.439
+  debug_max_best_rotation_slot=0.011
+  debug_max_solid_collision_q1000=1.0
+  debug_max_clearance_overlap_q1000=1.0
+  runtime_spacing_tests=0
+  runtime_spacing_profile_matches=0
+  runtime_spacing_rejections=0
+  runtime_spacing_min_distance_q1000=0.0
+  scene_voxel_tile_object_ref_enabled=false
+  scene_voxel_tile_object_ref_tile_reads=0
+  scene_voxel_tile_object_ref_slot_reads=0
+  scene_voxel_tile_object_ref_object_reads=0
+  scene_voxel_tile_object_ref_duplicate_reads=0
+  reserved40=0
+  reserved41=0
+  reserved42=0
+  reserved43=0
+  reserved44=0
+  reserved45=0
+  reserved46=0
+  reserved47=0
+voxel_debug_channels channel_field index_space=voxel_dense_xzy channels=8 element_count=1048576
+  channel target_coverage
+  channel target_complexity_fit
+  channel target_color_fit
+  channel target_density
+  channel placement_score
+  channel best_rotation_slot
+  channel solid_collision
+  channel clearance_overlap
+asset 1 name=geo_cliff_01
+score_contract_stats stat_slots magic_ok=true word_count=48
+  magic=1296453714
+  contract_enabled=false
+  runtime_object_capacity=0
+  profile_count=0
+  alive_object_reads=0
+  profile_records_matched=0
+  runtime_overlap_tests=0
+  runtime_overlap_hits=0
+  profile_table_reads=0
+  asset_profile_id=0
+  candidate_invocations=0
+  profile_complexity_q1000=0.0
+  runtime_profile_reads=0
+  runtime_profile_matches=0
+  probe_record_reads=0
+  reserved_profile_side_read=0
+  pivot_record_reads=0
+  probe_weight_q1000=0.0
+  reserved_profile_side_metric=0
+  pivot_bias_q1000=0.0
+  profile_probe_count=0
+  reserved_profile_side_count=0
+  profile_pivot_count=0
+  debug_max_target_coverage_q1000=1.0
+  debug_max_target_complexity_fit_q1000=0.698
+  debug_max_target_color_fit_q1000=0.781
+  debug_max_target_density_q1000=0.6
+  debug_max_placement_score_q1000=0.298
+  debug_max_best_rotation_slot=0.011
+  debug_max_solid_collision_q1000=0.0
+  debug_max_clearance_overlap_q1000=1.0
+  runtime_spacing_tests=0
+  runtime_spacing_profile_matches=0
+  runtime_spacing_rejections=0
+  runtime_spacing_min_distance_q1000=0.0
+  scene_voxel_tile_object_ref_enabled=false
+  scene_voxel_tile_object_ref_tile_reads=0
+  scene_voxel_tile_object_ref_slot_reads=0
+  scene_voxel_tile_object_ref_object_reads=0
+  scene_voxel_tile_object_ref_duplicate_reads=0
+  reserved40=0
+  reserved41=0
+  reserved42=0
+  reserved43=0
+  reserved44=0
+  reserved45=0
+  reserved46=0
+  reserved47=0
+voxel_debug_channels channel_field index_space=voxel_dense_xzy channels=8 element_count=1048576
+  channel target_coverage
+  channel target_complexity_fit
+  channel target_color_fit
+  channel target_density
+  channel placement_score
+  channel best_rotation_slot
+  channel solid_collision
+  channel clearance_overlap
+asset 2 name=geo_cliff_02
+score_contract_stats stat_slots magic_ok=true word_count=48
+  magic=1296453714
+  contract_enabled=false
+  runtime_object_capacity=0
+  profile_count=0
+  alive_object_reads=0
+  profile_records_matched=0
+  runtime_overlap_tests=0
+  runtime_overlap_hits=0
+  profile_table_reads=0
+  asset_profile_id=0
+  candidate_invocations=0
+  profile_complexity_q1000=0.0
+  runtime_profile_reads=0
+  runtime_profile_matches=0
+  probe_record_reads=0
+  reserved_profile_side_read=0
+  pivot_record_reads=0
+  probe_weight_q1000=0.0
+  reserved_profile_side_metric=0
+  pivot_bias_q1000=0.0
+  profile_probe_count=0
+  reserved_profile_side_count=0
+  profile_pivot_count=0
+  debug_max_target_coverage_q1000=1.0
+  debug_max_target_complexity_fit_q1000=0.4
+  debug_max_target_color_fit_q1000=0.781
+  debug_max_target_density_q1000=0.733
+  debug_max_placement_score_q1000=0.354
+  debug_max_best_rotation_slot=0.011
+  debug_max_solid_collision_q1000=0.0
+  debug_max_clearance_overlap_q1000=1.0
+  runtime_spacing_tests=0
+  runtime_spacing_profile_matches=0
+  runtime_spacing_rejections=0
+  runtime_spacing_min_distance_q1000=0.0
+  scene_voxel_tile_object_ref_enabled=false
+  scene_voxel_tile_object_ref_tile_reads=0
+  scene_voxel_tile_object_ref_slot_reads=0
+  scene_voxel_tile_object_ref_object_reads=0
+  scene_voxel_tile_object_ref_duplicate_reads=0
+  reserved40=0
+  reserved41=0
+  reserved42=0
+  reserved43=0
+  reserved44=0
+  reserved45=0
+  reserved46=0
+  reserved47=0
+voxel_debug_channels channel_field index_space=voxel_dense_xzy channels=8 element_count=1048576
+  channel target_coverage
+  channel target_complexity_fit
+  channel target_color_fit
+  channel target_density
+  channel placement_score
+  channel best_rotation_slot
+  channel solid_collision
+  channel clearance_overlap

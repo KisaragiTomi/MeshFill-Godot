@@ -69,6 +69,10 @@ var _target_field_bytes := PackedFloat32Array()    # voxel_count * 4: [r, g, b, 
 var _complexity_field := PackedFloat32Array()      # voxel_count(=completeness): bounds/coverage
 var _collision_field := PackedFloat32Array()       # voxel_count(=collision)
 
+# ---- Golden-master capture（统一Debug承载方案 步骤6 消费链）------------------
+var _capture_golden_sections := false
+var _golden_sections: Array[String] = []
+
 # ---- Display Nodes ---------------------------------------------------------
 var _hud_label: Label
 var _display_root: Node3D
@@ -184,6 +188,32 @@ func calculate_voxel_scores() -> Dictionary:
 	_update_hud()
 	_notify_spa_selected_anchor_changed()
 	return _status(true)
+
+
+## Golden-master 消费链入口（统一Debug承载方案 步骤6）：跑固定评分管线
+## （debug_read_golden_snapshot；voxel 通道段随既有 debug_read_voxel_channels 一起进快照），
+## 返回稳定文本快照（meta 只含固定配置/计数，刻意不含耗时等非确定值）。
+## 桥调用：call_method path=VolumeScore method=run_golden_snapshot —— 见 tools/golden_snapshot_check.js。
+func run_golden_snapshot() -> String:
+	if not Engine.is_editor_hint():
+		return "ERROR not_editor_hint"
+	_capture_golden_sections = true
+	_golden_sections.clear()
+	var status := run_volume_score_pipeline()
+	_capture_golden_sections = false
+	if not bool(status.get("ok", false)):
+		return "ERROR pipeline_not_ok anchors=%d scored=%s" % [
+			int(status.get("anchors", 0)), str(status.get("scored", false))]
+	if _golden_sections.is_empty():
+		return "ERROR golden_snapshot_empty"
+	var grid: Vector3i = _scene_fields.get("grid", Vector3i.ZERO)
+	var lines: Array[String] = [
+		"golden volume_score v1",
+		"meta asset_count=%d anchor_count=%d grid=%dx%dx%d rotation_slots=%d anchor_spacing=%d" % [
+			_assets.size(), _total_anchors, grid.x, grid.y, grid.z, rotation_slots, anchor_spacing],
+	]
+	lines.append_array(_golden_sections)
+	return "\n".join(lines)
 
 
 func has_volume_score_anchors() -> bool:
@@ -401,12 +431,16 @@ func _run_scoring() -> void:
 			"scoring_dimensions": dims, "asset_dimension_profile": profile,
 			"env_channel_field_floats": _env_channel_floats, "env_channel_count": 5,
 			"target_field_bytes": _target_field_bytes, "debug_read_voxel_channels": true,
+			"debug_read_golden_snapshot": _capture_golden_sections,
 			"auto_voxel_runtime_profile_container": profile_container,
 			"profile_id": profile_ids[a],
 			"score_timing_profile": profile_score_timing,
 			"score_timing_label": str(_assets[a].get("name", "asset_%d" % a)),
 		}
 		var out: Dictionary = vpg.run_minimal(_complexity_field, _collision_field, grid, settings)
+		if _capture_golden_sections:
+			_golden_sections.append("asset %d name=%s" % [a, str(_assets[a].get("name", "asset_%d" % a))])
+			_golden_sections.append(str(out.get("golden_snapshot", "")))
 		var dbg: PackedFloat32Array = out.get("debug_voxel", PackedFloat32Array())
 		# debug_voxel 的通道布局/索引空间来自 DebugBufferSet(VOXEL_DEBUG_CHANNELS) 单一真源，
 		# 不再硬编码 stride 8 / 通道号 4,5 / 展开公式。

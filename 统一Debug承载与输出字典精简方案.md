@@ -115,7 +115,7 @@ void dbg_max(uint slot, uint v) { atomicMax(score_stats[2u + slot], v); }
 
 ### 与 golden-master 协同
 
-统一解码（带名、q1000 反量化、稳定键序）产出的 dict 即 golden 快照素材：桥跑固定 demo → `readback()` → 存 `goldens/*.approved.txt` → 大扫前后 diff。承载统一后这条链只需一个桥方法。
+统一解码（带名、q1000 反量化、稳定键序）产出的 dict 即 golden 快照素材：桥跑固定 demo → `readback()` → 存 `goldens/*.approved.txt` → 大扫前后 diff。承载统一后这条链只需一个桥方法。消费链入口：`node tools/golden_snapshot_check.js`（经桥 `call_method` 调 placement-score-3d 的 `VolumeScore.run_golden_snapshot()`，首跑写基线 `goldens/volume_score_golden.approved.txt`，再跑输出 GOLDEN PASS / GOLDEN DIFF）。
 
 ## 方案二：ReportSchema（输出字典分级精简）
 
