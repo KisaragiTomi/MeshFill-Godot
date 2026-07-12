@@ -42,7 +42,7 @@ TargetSceneVoxel（目标画布）            Placement Pipeline（生成管线�
 | 模块 | 文件 | 职责 |
 | --- | --- | --- |
 | **SPA**（ScenePlacementActor） | `scripts/scene_placement_actor.gd` | 运行时统一编排器，管理资产注册、GPU buffer 生命周期、prefilter→placement→commit 三阶段流水线 |
-| **TargetSV** | `scripts/target_scene_voxel_generator.gd` | 目标体素画布，GPU 生成/持久化/解码，对外提供 `target_occupancy` + `target_color` |
+| **TargetSV** | `scripts/target_scene_voxel_generator.gd` | 目标体素画布，GPU 生成/持久化/解码，对外提供 `target_completeness`/`target_collision` + `target_color` |
 | **AssetDescriptor** | `scripts/asset_descriptor.gd` | 资产语义描述符，定义每个可放置物体的默认 color/complexity/collision/探针 |
 | **Probe Prefilter** | `scripts/autoobject_probe_prefilter_gpu.gd` | GPU 语义探针粗筛，从 TargetSV 和 SV[t-1] 中提取 anchor，匹配候选资产 |
 | **VoxelPlacementGenerator** | `scripts/voxel_placement_generator.gd` | GPU 放置评分与放置：数据驱动语义维度打分（per-dimension MATCH，`score_voxel_tile.glsl`）+ collision 采样/clearance 精筛（资产形状读 profile 容器常驻 `collision_records`，无每-run 烘焙；support 已由 anchor 阶段保证，不再评分） |

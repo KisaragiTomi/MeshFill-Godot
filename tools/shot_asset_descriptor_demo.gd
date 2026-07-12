@@ -100,13 +100,11 @@ func _capture_and_check(inst: Node) -> bool:
 	await ShotUtils.settle_frames(self, 0)
 	ok = _shot("02_after_contract") and ok
 
-	# 激活全部 mesh debug 显示：探针 + buffer info
-	if inst.has_method("_toggle_all_probes"):
-		inst._toggle_all_probes()
-		print("[SHOT] activated all probes")
-	if inst.has_method("_toggle_buffer_info"):
-		inst._toggle_buffer_info()
-		print("[SHOT] activated buffer info")
+	# 激活 mesh debug 显示：语义探针（demo 现存的唯一 toggle；旧 _toggle_all_probes/
+	# _toggle_buffer_info 已不存在，原 has_method 守卫使本段静默空转）
+	if inst.has_method("_toggle_probes"):
+		inst._toggle_probes()
+		print("[SHOT] activated probes")
 
 	var terrain3 := inst.find_child("Terrain", true, false) as Node3D
 	if terrain3 != null:

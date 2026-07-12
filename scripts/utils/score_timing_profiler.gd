@@ -6,7 +6,7 @@ extends RefCounted
 ## (score / reduce / stamp / score_sum),还是回读(buffer_get_data)阶段吃掉了时间。
 ##
 ## 为什么不能简单地在各 _dispatch_* 外面套墙钟:VPG 平时把 score/reduce/stamp 全部录进
-## 各自的 compute list、只在收尾做一次 submit_and_sync(见 run_minimal :1425),GPU 是异步执行的,
+## 各自的 compute list、只在收尾做一次 submit_and_sync(见 run_minimal 的收尾同步),GPU 是异步执行的,
 ## 故 dispatch 调用返回时 GPU 还没跑 —— 在 dispatch 外套墙钟只量到“录命令”的 CPU 开销,量不到
 ## 任一 pass 的真实 GPU 耗时。
 ##

@@ -2,8 +2,9 @@ extends SceneTree
 
 const CommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 
-# Functional test for SceneVoxelCommitter._stamp_collect_voxel_disc_gpu (the 3D
-# voxel stamp+collect pass that replaced the per-slice 2D _collect_disc_pixels_gpu).
+# Functional test for SceneVoxelFieldBuilder._stamp_collect_voxel_disc_gpu (the 3D
+# voxel stamp+collect pass, reached via committer._field_builder; it replaced the
+# per-slice 2D _collect_disc_pixels_gpu).
 # Validates the stamped volume and the collected records against a CPU reference
 # for all three compare modes. Run non-headless Vulkan:
 #   godot --path . --rendering-driver vulkan --script tools/test_stamp_collect_voxel_disc.gd

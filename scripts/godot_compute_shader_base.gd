@@ -76,7 +76,7 @@ func ensure_device(prefer_local_device: bool = true, allow_global_fallback: bool
 
 	if _rd == null:
 		if DisplayServer.get_name() == "headless":
-			push_error("%s: no RenderingDevice — 当前以 --headless 启动，GPU 路径不可用。请改用 --rendering-driver vulkan 运行（参见 tools/run_test.ps1）。" % log_name)
+			push_error("%s: no RenderingDevice — 当前以 --headless 启动，GPU 路径不可用。请改用 --rendering-driver vulkan 运行（编辑器启动命令见 CLAUDE.md）。" % log_name)
 		else:
 			push_error("%s: no RenderingDevice available" % log_name)
 		return false

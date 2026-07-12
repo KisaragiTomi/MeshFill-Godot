@@ -100,6 +100,7 @@ func _test_scene_placement_actor_exposes_mesh_descriptions() -> bool:
 		"mesh_description_test",
 		mesh,
 		source_mesh,
+		# 仅作元数据串入库(source_mesh 已直给,解析路径不会被加载);文件不存在不影响本测试。
 		"res://geo/source_leaf.FBX"
 	)
 

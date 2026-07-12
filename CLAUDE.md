@@ -113,5 +113,5 @@ assigned to a typed `@export Array[AssetDescriptor]` (resolved by the scene load
 `_ready`) over runtime folder-scan `load()`.
 
 Reference implementation: [`demos/placement-score-3d/volume_score_demo.gd`](demos/placement-score-3d/volume_score_demo.gd)
-(`placement_assets` export → `_load_descriptors` → `_build_asset_defs` → `_render_placements`),
+(`placement_assets` export → `_load_descriptors` → `_ensure_assets_ready` → `_build_winning_anchor_content`),
 and the `@tool` marker on [`scripts/asset_descriptor.gd`](scripts/asset_descriptor.gd).

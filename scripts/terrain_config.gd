@@ -13,7 +13,7 @@ extends RefCounted
 ##
 ## 任何地形 (运行时生成或编辑期 bake) 都必须满足该比例:
 ##   capture_size / max_height == 1024.0 / 120.0
-## 否则视为不合规, 需要重新 bake (tools/bake_utils_terrain.gd)。
+## 否则视为不合规, 需要按此比例重新 bake 地形数据。
 
 ## 采样窗口 / 地形水平边长 (世界单位); 对应 bgeo x/z 跨度 1024。
 const CAPTURE_SIZE := 1024.0

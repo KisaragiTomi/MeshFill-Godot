@@ -166,16 +166,3 @@ static func pack_push_ints_floats(ints: PackedInt32Array, floats: PackedFloat32A
 	return bytes
 
 
-## 将 GPU atomic-min/max 使用的单调有序 uint 键还原为 float（翻转符号位编码的逆变换）。
-## 与 height_stats_minmax.glsl / height_normal_from_height.glsl 中的编码端配对。
-## 原 TerrainInitializer._ordered_uint_to_float。
-static func float_from_ordered_u32(key: int) -> float:
-	var bits := 0
-	if (key & 0x80000000) != 0:
-		bits = key ^ 0x80000000
-	else:
-		bits = (~key) & 0xFFFFFFFF
-	var bytes := PackedByteArray()
-	bytes.resize(4)
-	bytes.encode_u32(0, bits)
-	return bytes.decode_float(0)

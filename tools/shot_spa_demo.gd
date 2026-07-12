@@ -1,5 +1,8 @@
 extends SceneTree
 
+# 对共享 demo 底座场景(utils_demo_setup.tscn:地形+相机架)做 spa_cam_* 系列
+# 相机角度截图;不实例任何 SPA 场景内容(命名沿用历史截图系列前缀)。
+
 const SETUP_PATH := "res://demos/utils_demo_setup.tscn"
 const SHOT_DIR := "res://_shots"
 const ShotUtils := preload("res://scripts/utils/shot_utils.gd")
