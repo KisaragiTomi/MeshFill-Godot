@@ -835,6 +835,7 @@ func _run_multi_asset_session(
 			"pivot_variant_count": pivot_variants.size(),
 			"placement_result_buffers": best_gpu_out.get("placement_result_buffers", {}),
 			"placement_score_sum": best_gpu_out.get("placement_score_sum", 0.0),
+			"placement_valid_count": best_gpu_out.get("placement_valid_count", 0),
 			"rotation_slots_used": asset_rotation_slots,
 			"pivot_offset_world": VariantUtils.vector3_from_value(best_pivot.get("offset", Vector3.ZERO), Vector3.ZERO),
 		}

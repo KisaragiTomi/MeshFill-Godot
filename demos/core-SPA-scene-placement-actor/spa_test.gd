@@ -674,8 +674,13 @@ static func check_resident_placement_writeback() -> Dictionary:
 			failures.append("raw results not empty (CPU dict readback still active)")
 		if not (ar.get("placement_result_buffers", {}) as Dictionary).is_empty():
 			failures.append("placement_result_buffers not released (RID leak)")
-		if total_placed > 0 and float(ar.get("placement_score_sum", 0.0)) <= 0.0:
-			failures.append("placement_score_sum=%s (score-sum pass not effective)" % str(ar.get("placement_score_sum", 0.0)))
+		# Penalty-only scoring: valid placements score <= 0 (clean run == 0.0), so the sum
+		# cannot distinguish "pass ran, all clean" from "pass never ran" — assert on the
+		# valid count instead, and keep a positive-sum corruption guard.
+		if total_placed > 0 and int(ar.get("placement_valid_count", -1)) != total_placed:
+			failures.append("placement_valid_count=%s != total_placed=%d (score-sum pass not effective)" % [str(ar.get("placement_valid_count", "missing")), total_placed])
+		if float(ar.get("placement_score_sum", 0.0)) > 0.0:
+			failures.append("placement_score_sum=%s > 0 (impossible under penalty-only scoring)" % str(ar.get("placement_score_sum", 0.0)))
 
 	var detail := "spawned=%d live=%d->%d api=%s shader_consumed=%s stats_applied=%s" % [
 		spawned, live_before, live_after,
