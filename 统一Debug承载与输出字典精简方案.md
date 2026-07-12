@@ -12,9 +12,9 @@
 > - **步骤 4 ◐** `report_schema.gd` ✅ 落地，`fail()` 已收编 SPA ×7 失败字典；**writeback 报告三步走完 ✅（expand `cb95a1b` → migrate/contract `774e1fa`）**——`WRITEBACK_REPORT` 分级定稿 core 7 / contract 26 / diag 9（gpu_first、cpu_fallback、readback_source、runtime_read_source、accepted_placement_record_source、accepted_placement_origin_record_source、cpu_batch_bridge、runtime_summary、profile_summary，逐键新鲜 grep 零消费者后降级）；**diag 请求口径已定（Open Question 2 解决）= placement settings 键 `include_diagnostics`（默认 false）**，10 个发射点 + merge 后突变全部门控，flag-on 输出与旧全集逐字节一致；恒定 provenance 键暂留 diag、整删是单独决定；⚠此家族失败路径发全骨架、勿套 `fail()`。**VPG run 输出三步走完 ✅（expand `8a21d7e` → migrate `6f891c4`）**——`VPG_RUN_REPORT` 分级定稿 core 15 / contract 12 / diag 15（15 个候选逐键复核零读者后全降；同名键在 tile-store/route-adapter/prefilter/committer 等其他家族的读取均已甄别）；`include_diagnostics` 贯通 11 个发射点，extras 在 build 前并入 values 不绕门；golden_snapshot/score_timing_profile 留 core 用自身 settings 门。**步骤 4 至此全部完成**（run_multi_asset 输出家族有意独立未迁，恒定 provenance 键整删是单独决定）。
 > - **步骤 5 ✅（`e281670`）** `TARGET_STATS_*` 三处声明收编完成：DebugBufferSet 新增 `q1000000`/`inverted_min`（base 随槽位声明）decode kind + `extra_consts` 生成段；双 shader `@@GEN` 块（set/binding 不变，槽位因 magic+version 头 +2）、generator 10 个手写常量删除、9 个输出键名逐字保留；guard 14/14；运行期证据=TargetSV 缓存行 `non_empty=136632` 迁移前后一致。新 shader/新报告默认走两套设施的约定自此无手写 stats 样板可循。
 > - **步骤 6 ✅（生产 `b0ff085` + 消费 `89d9c4d`）** 消费链闭环：`volume_score_demo.run_golden_snapshot()`（桥 call_method 直达，确定性——score_ms 刻意排除）+ `tools/golden_snapshot_check.js`（BASELINE CREATED / GOLDEN PASS / GOLDEN DIFF+unified diff）+ `goldens/volume_score_golden.approved.txt` 首基线（179 行，3 资产 ×64 锚点）已进 git；端到端两跑验证过。⚠ 基线是机器/驱动本地的——换 GPU/驱动或评分逻辑正当变更后 re-approve。
-> - 成本约定未落的一条：**写侧门控未实现**（config SSBO `debug_enabled` + 禁用绑 dummy buffer），当前仅 readback 门控、shader 恒写观测通道。
+> - **写侧门控 ✅（`b559a2e`）**：ScoreConfig SSBO 80→96B 加 `cfg_debug_write_mask`（bit0=voxel 通道写使能，未来家族占后续位——**Open Question 1 就此解决：按 pass 的 config SSBO 承载 per-family bitmask**）；启用条件与读回门同一 `debug_read_voxel_channels` 表达式不可能脱钩；禁用时绑 1 元素 dummy、写成本归零；golden check 迁移后仍 PASS（flag-on 路径逐位不变的硬证据）。
 >
-> **剩余工作（按价值排序）**：~~① VPG debug_voxel 收编 ChannelField~~（✅ `e496ac4`）~~② writeback 报告三步~~（✅ `cb95a1b`+`774e1fa`）~~③ VPG run 输出 schema+分级~~（✅ `8a21d7e`+`6f891c4`）~~④ TARGET_STATS 迁移~~（✅ `e281670`）~~⑤ golden-master 消费链~~（✅ `89d9c4d`）⑥ 观测实例写侧门控（顺带解决 Open Question 1 的 bitmask 粒度）——**唯一剩余项**。
+> **🎉 方案六步 + 全部剩余工作至此执行完毕（2026-07-12）**：~~①~~（`e496ac4`）~~②~~（`cb95a1b`+`774e1fa`）~~③~~（`8a21d7e`+`6f891c4`）~~④~~（`e281670`）~~⑤~~（`89d9c4d`）~~⑥~~（`b559a2e`）。后续为机会主义项：恒定 provenance 键整删、run_multi_asset 输出家族迁移、`debug_read_*` 散点开关归并、writeback merge 后再发射的硬门——均低优先级，未来轮次或需要时再做。
 
 ## 现状
 
@@ -176,6 +176,6 @@ static func fail(schema: Dictionary, reason: String) -> Dictionary:
 
 ## Open Questions
 
-- observability 实例的 gate 粒度：全局单开关，还是按 shader 家族分开关（config SSBO 一个 bitmask 即可承载）。
+- ✅ ~~observability 实例的 gate 粒度~~：已定为**按 pass 的 config SSBO 承载 per-family bitmask**（`b559a2e`，bit0=voxel 通道，后续家族占后续位）。
 - ✅ ~~`diag` 请求口径~~：已定为 placement settings 键 `include_diagnostics`（默认 false，`774e1fa`）；与 `debug_read_*` 散点开关的归并留给各报告家族迁移时机会主义处理。
 - ✅ ~~VPG run 输出零读者键定级~~：migrate 轮逐键 grep 完成，15 键降 diag（`6f891c4`，名单见 `VPG_RUN_REPORT` schema 注释）。
