@@ -657,14 +657,6 @@ func get_anchor_pivot_offset(anchor_kind: String = ANCHOR_KIND) -> Vector3:
 	return VariantUtils.vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
 
 
-func get_anchor_relative_footprint_aabb(anchor_kind: String = ANCHOR_KIND) -> AABB:
-	var local_aabb := _collision_local_aabb()
-	if local_aabb.size.length_squared() <= 0.0001 and mesh != null:
-		local_aabb = mesh.get_aabb()
-	var pivot_offset := get_anchor_pivot_offset(anchor_kind)
-	return AABB(local_aabb.position - pivot_offset, local_aabb.size)
-
-
 func set_collision(voxels: Array) -> void:
 	collision = VoxelGeneral.normalize_collision_samples(voxels)
 	var descriptor = _ensure_asset_descriptor()
@@ -852,34 +844,3 @@ func _canonical_anchor_kind(anchor_kind: String) -> String:
 	return ""
 
 
-func _collision_local_aabb() -> AABB:
-	var collisions := get_collision(bound_min_length)
-	var has_bounds := false
-	var min_p := Vector3(INF, INF, INF)
-	var max_p := Vector3(-INF, -INF, -INF)
-	for raw_collision in collisions:
-		if not raw_collision is Dictionary:
-			continue
-		var collision := raw_collision as Dictionary
-		var bounds := _collision_bounds(collision)
-		if bounds.size.length_squared() <= 0.000001:
-			continue
-		min_p.x = minf(min_p.x, bounds.position.x)
-		min_p.y = minf(min_p.y, bounds.position.y)
-		min_p.z = minf(min_p.z, bounds.position.z)
-		max_p.x = maxf(max_p.x, bounds.position.x + bounds.size.x)
-		max_p.y = maxf(max_p.y, bounds.position.y + bounds.size.y)
-		max_p.z = maxf(max_p.z, bounds.position.z + bounds.size.z)
-		has_bounds = true
-	if not has_bounds:
-		return AABB()
-	return AABB(min_p, max_p - min_p)
-
-
-func _collision_bounds(collision: Dictionary) -> AABB:
-	# Only per-voxel point collision samples are supported; box/cylinder
-	# primitives are no longer recognised and contribute no bounds.
-	if collision.has("voxel") or collision.has("local_pos") or collision.has("voxel_offset"):
-		var voxel_pos := VariantUtils.vector3_from_value(collision.get("voxel", collision.get("local_pos", collision.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
-		return AABB(voxel_pos - Vector3(0.5, 0.5, 0.5), Vector3.ONE)
-	return AABB()

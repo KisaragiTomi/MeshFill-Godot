@@ -11,7 +11,7 @@ committed `SceneVoxel` 采用 **stamp-only commit**：常驻 complexity/collisio
 - `instance_stamp_write_spec`（`ISWS`）如何经 `apply_instance_stamp_write_spec()` 盖章进入常驻 field 与公共投影。
 - `commit_scene_voxels()` 如何完成 stamp-only 提交发布（散射 pending 记录 + tile 摘要）。
 - committed per-voxel payload、source-only 字段和 debug buffer/readback 边界。
-- canonical `collision` 字段、placement footprint `collision` record/API、terrain base collision 与 `collision_field` 的归属。
+- canonical `collision` 字段、placement `collision` 采样 record/API、terrain base collision 与 `collision_field` 的归属。
 - SV resident buffers、dirty voxel regions / dirty tiles 的所有权。
 
 ## 核心契约
@@ -206,7 +206,7 @@ SV 与 TargetSV 的 per-voxel 强度字段统一为 8bit unorm，归一化到 `[
 
 ## Collision
 
-`collision` 是 descriptor、config、shared fields 和 placement runtime footprint record/API 的规范字段。
+`collision` 是 descriptor、config、shared fields 和 placement runtime 采样 record/API 的规范字段。
 
 ```text
 descriptor/profile
@@ -215,16 +215,16 @@ descriptor/profile
 record/source voxel
   color / complexity
   collision
-  collision footprint record if entering placement/commit internals
+  collision sample record if entering placement/commit internals
 
 committed SceneVoxel
   complexity / color
   collision
 ```
 
-Footprint authoring 仍可用局部 sample 列表描述形状：
+形状授权仍用局部 collision sample 列表描述：
 
-局部 collision sample 字段含义维护在 [`VoxelGeneral.normalize_collision_samples()`](../asset-descriptor-demo/asset-descriptor.md)、`SharedPropertyType.collision_from_fields()` 和 `AssetDescriptor.bake_footprint()` 附近；`SceneVoxelCommitter` 只复用共享 field stamp 路径发布 resident field。
+局部 collision sample 字段含义维护在 [`VoxelGeneral.normalize_collision_samples()`](../asset-descriptor-demo/asset-descriptor.md)、`SharedPropertyType.collision_from_fields()` 和 `AutoVoxelRuntimeProfileContainer._bake_collision_records()` 附近；`SceneVoxelCommitter` 只复用共享 field stamp 路径发布 resident field。
 
 `collision_field` 是 SV resident GPU collision read channel，由 committed `SceneVoxel.collision` 与 terrain base collision 发布得到。它不改变 `collision` 的语义归属，也不是第二套权威数据。
 
@@ -243,7 +243,7 @@ SV 常驻显存状态由 `SceneVoxelCommitter` 持有；`SceneVoxel` 是其发�
 
 SV resident state 字段含义维护在 `SceneVoxelCommitter._rebuild_sv()` 的 `_sv` 返回字典和 dirty tile 构造处。
 
-`_scene_voxel_tiles` 是 CPU dirty staging table；`_rebuild_sv()` 只把 `scene_voxel_tiles`、`dirty_scene_voxel_tiles` 和 per-voxel object refs 作为快照发布给 debug、partial rebuild 和 resident GPU upload。runtime success 只能通过 `ensure_scene_voxel_tile_buffers_uploaded()`、GPU summary 和 readback 验证，不能由 CPU staging table 代替。tile summary、object/source ranges、per-voxel object refs 和 dirty flags 不写回 committed per-voxel payload。
+`_scene_voxel_tiles` 是 CPU dirty staging table；`_rebuild_sv()` 只把 `dirty_scene_voxel_tiles` 作为快照发布给 debug、partial rebuild 和 resident GPU upload（tile 总量与逐 tile 状态走 committer/tile-store API 查询，不再进 `_sv` 广告键）。runtime success 只能通过 `ensure_scene_voxel_tile_buffers_uploaded()`、GPU summary 和 readback 验证，不能由 CPU staging table 代替。tile summary、object/source ranges、per-voxel object refs 和 dirty flags 不写回 committed per-voxel payload。
 
 当前不实现 UE-style `Global Distance Field`。只有需要距离查询、软碰撞、GPU 大范围近似查询或多分辨率常驻查询结构时，再考虑 signed distance / clipmap。
 

@@ -69,11 +69,11 @@ score(voxel, asset) = ( Σ_d  dim[d].weight · fit( dim[d].mode,
                                                   AssetProfile[asset][d] ) )
                       / Σ_d dim[d].weight        // 归一化 → 落在 fit 量纲(MATCH ⟹ 0..1)
 
-valid(voxel, asset) = 有 target coverage(footprint 覆盖到 TargetSV 内容)   // 无约束型维度不设门;胜者 = 最高语义分
+valid(voxel, asset) = 有 target coverage(collision 采样覆盖到 TargetSV 内容)   // 无约束型维度不设门;胜者 = 最高语义分
 ```
 
-> GPU 版(`score_voxel_tile.glsl`, `dim_count > 0`)按 **footprint 权重**逐体素累加同一公式,分母是参与的
-> footprint 权重和;`valid` 仅要求 `target_coverage > 0`(MATCH 维度本身不淘汰),否则写 `INVALID_SCORE`
+> GPU 版(`score_voxel_tile.glsl`, `dim_count > 0`)按 **collision 采样权重**逐体素累加同一公式,分母是参与的
+> 采样权重和;`valid` 仅要求 `target_coverage > 0`(MATCH 维度本身不淘汰),否则写 `INVALID_SCORE`
 > (`-1e18`)哨兵。下游 reduce / stamp 一律按 **valid flag** 取舍,不看分数符号。
 
 **加一个新维度** → 追加 `Dimension` 一行 + `Field` 一个通道 + `AssetProfile` 一列;
@@ -104,7 +104,9 @@ shader 只按 `dimension_count` 循环,**不改**。这就是可拓展性的落�
   现有 `color` / `complexity` / `collision` 直接映射到对应维度;
   未来新维度在 descriptor 上加一个**可拓展的「维度画像」字段**(`dimension_name → value`)。
   ✔ 「打分判断源来自 asset descriptor」——**仅就资产这半边成立**。
-  （注:资产的 collision 画像应**由 descriptor 派生**,不再像现在那样在 demo 里手搓合成 footprint。)
+  （注:资产的 collision 画像**已由 descriptor 派生**——demo 与 SPA 同走 profile 容器注册,
+  注册期烘焙的 collision_records 常驻 GPU 供 score/stamp 直读;无 collision 的资产按 mesh AABB
+  合成采样注册,旧的每-run 形状烘焙通道已于 2026-07-11 删除。)
 
 - **环境侧**(`Field`,每体素通道)——来自 **TargetSV / 场景场**(环境),**不是 descriptor**。
 
@@ -166,9 +168,9 @@ tree 因 `collision_fit` 低、`color_fit` 不符而落败。
 - **Phase 1(历史,CPU 参考实现,已移除)**:最早用一版 CPU 数据驱动打分打通数据契约(维度表 / 资产画像 / 锚点特征聚合)并验证语义分化。**该 CPU 参考实现已随 Phase 2 落地删除**——`score_dimensions` / `_build_asset_profiles` / `_build_anchor_features` 等函数**在代码里已不存在**,仅此处留档;当前**无 CPU 打分路径**,demo 只保留 `_scoring_dimensions()`(声明维度集)。
   - 效果(当时):分数分化,放置按语义分布(不再树通吃)。
 - **Phase 2(已落,GPU)**:同一份数据契约(维度表 / 画像 / 多通道场)已端口进 `score_voxel_tile.glsl`(上面第 3 项),数据驱动 per-dimension MATCH 打分在 GPU 上跑通并经编辑器验证。
-  - support 分支 / 门 / 分项已移除(锚点已保证支撑),`support_ratio/hit/total` 记录槽保留但恒 0;footprint 烘焙不再产生 `FLAG_SUPPORT` ground-probe。
-  - per-voxel 内层已改为 **per-dimension 循环**:`score = Σ_d weight_d·fit_d`(MATCH = `1-|env_ch - asset_profile|`)按 footprint 权重归一;`dim_count == 0` 走原 penalty-only 分支(逐字节等价,向后兼容)。
-  - **维度表 / 资产画像 / 多通道场**由 VPG 打包:维度表 = set0 binding 9(`_pack_dimension_table`),多通道场 = binding 8;资产画像 + 惩罚权重 + `env_channel_count` 移入 **`ScoreConfig` SSBO(set0 binding 10,`_pack_score_config`)**——因 push constant 受 Godot **128 字节**上限所限(超限会被静默拒绝→shader 收到全零 push),打分参数不能再全塞 push。push 现固定为 8×16 = 128B。
+  - support 分支 / 门 / 分项已移除(锚点已保证支撑),`support_ratio/hit/total` 记录槽保留但恒 0;collision 采样烘焙(现于容器注册期)不再产生 `FLAG_SUPPORT` ground-probe。
+  - per-voxel 内层已改为 **per-dimension 循环**:`score = Σ_d weight_d·fit_d`(MATCH = `1-|env_ch - asset_profile|`)按采样权重归一;`dim_count == 0` 走原 penalty-only 分支(逐字节等价,向后兼容)。
+  - **维度表 / 资产画像 / 多通道场**由 VPG 打包:维度表 = set0 binding 9(`_pack_dimension_table`),多通道场 = binding 8;资产画像 + 惩罚权重 + `env_channel_count` + `collision_records` 起始偏移(`cfg_sample_range`,2026-07-11 新增)移入 **`ScoreConfig` SSBO(set0 binding 10,`_pack_score_config`)**——因 push constant 受 Godot **128 字节**上限所限(超限会被静默拒绝→shader 收到全零 push),打分参数不能再全塞 push。push 现固定为 8×16 = 128B。
   - 编辑器验证(placement-score-3d,256×16×256,3 资产 × 64 锚点):分数分化真实(如锚点 51 leaf 0.314 / cliff_02 0.230 / cliff_01 0.193;锚点 52/60 cliff_02 胜出),winner 随位置翻转,无 push/GPU 报错。
 
 ---

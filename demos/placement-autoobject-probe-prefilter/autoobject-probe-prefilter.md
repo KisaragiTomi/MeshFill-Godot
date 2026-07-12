@@ -15,7 +15,7 @@
 | 级别 | 子系统 | 对象 / 粒度 | 手段 | 产出 |
 | --- | --- | --- | --- | --- |
 | **probe 粗筛** | `AutoObjectProbePrefilterGPU.run_probe_prefilter` | 每 anchor × 每 asset | probe 三线性采样打分 + top-K + `min_prefilter_score` 阈值 | 候选体素区域 → 常驻 record/range 路由 |
-| **score 细筛** | `VoxelPlacementGenerator.run_minimal` → `score_voxel_tile.glsl` | 路由 tile 内每候选原点 × 每 yaw 旋转 | footprint / collision / clearance（penalty-only） | 被接受的放置 |
+| **score 细筛** | `VoxelPlacementGenerator.run_minimal` → `score_voxel_tile.glsl` | 路由 tile 内每候选原点 × 每 yaw 旋转 | collision 采样 / clearance（penalty-only） | 被接受的放置 |
 
 边界：粗筛只减少候选、决定"去哪 / 放什么"，从不写 `SceneVoxel`、从不替代 `score_voxel_tile.glsl` 的物理评分；细筛决定"到底放不放 / 怎么放"。两级之间靠 GPU 常驻 `candidate_route_records` / `candidate_route_ranges` 缓冲交接，生产路径无 CPU 回读（anchor 位置回读 debug-only）。粗筛评的是 target 体积内部的 anchors，细筛评的是路由 tile 里的候选原点——是两批不同的对象。
 
@@ -73,7 +73,7 @@ Shader 职责：
 | `reduce_anchor_topk_to_voxel_regions.glsl` | 把 anchor top-K 聚合成 `voxel_sparse_votes[asset_id * tile_count + tile_id]`。 |
 | `pack_candidate_route_records_from_votes.glsl` | 把 dense votes 按 route radius 标记膨胀后输出 schema-v1 `candidate_route_records` / `candidate_route_ranges`，作为常驻 GPU 路由交接给放置阶段。 |
 
-`reduce_anchor_topk_to_voxel_regions.glsl` 只聚合 anchor 所在 tile vote。footprint、probe offset、context radius 和 interpolation guard 的膨胀由 `pack_candidate_route_records_from_votes.glsl` 依据每 asset 的 `route_extent` 在 GPU 内完成。
+`reduce_anchor_topk_to_voxel_regions.glsl` 只聚合 anchor 所在 tile vote。collision 采样、probe offset、context radius 和 interpolation guard 的膨胀由 `pack_candidate_route_records_from_votes.glsl` 依据每 asset 的 `route_extent` 在 GPU 内完成。
 
 GPU route pack 的 record 顺序是 per-asset tile-id ascending（`candidate_set_equivalent_not_score_sorted`，非按分排序）。产出的 `candidate_route_records` / `candidate_route_ranges` 是 SCOPE_PERSISTENT 常驻缓冲，跨 `gc_frame()` 存活并交接给放置阶段；旧的 CPU vote-entry pack 与 CPU 候选路由消费路径已删除（候选路由 = resident-GPU-only）。
 
@@ -89,7 +89,7 @@ anchor_buffer[i] = uvec4(voxel_x, voxel_y, voxel_z, 0)   # 位置本身承载放
 
 - **cell 在 target 体积内部**：`target_field[idx].a > min_target_interest`（`.a` = completeness = `max(complexity, collision)`）。
 
-旧的 scene-occupancy / collision / support-below 门控已删除：score 阶段已惩罚 collision/overlap 并强制物件间距，anchor 阶段再测一遍属冗余（还多一次 field 读 + 一次下方邻居探测）。最终物理支撑仍由 placement footprint scoring 确认；`ground` / `target_top` 名称只作为配置输入同义词归一到 `anchor`。
+旧的 scene-occupancy / collision / support-below 门控已删除：score 阶段已惩罚 collision/overlap 并强制物件间距，anchor 阶段再测一遍属冗余（还多一次 field 读 + 一次下方邻居探测）。最终物理约束仍由 placement collision-sample scoring 确认；`ground` / `target_top` 名称只作为配置输入同义词归一到 `anchor`。
 
 ## Probe 规则
 
@@ -178,7 +178,7 @@ anchor_topk[anchor_id * 4 + k] = uvec2(asset_id, floatBitsToUint(score))
 `autoobject_probe_prefilter_gpu.gd` 为每个 asset 构建 route profile：
 
 ```text
-tile_radius = footprint bounds
+tile_radius = collision-sample bounds
             + semantic probe offset bounds
             + context_sensing_radius
             + interpolation_guard_voxels
@@ -187,14 +187,15 @@ tile_radius = footprint bounds
 当前保证：
 
 - `interpolation_guard_voxels` 至少为 `1`。
-- route extent 使用 `get_collision()` 烘焙出的 footprint bounds。
+- route extent 使用 `get_collision()` 直接求界的 collision-sample bounds（`collision_min` /
+  `collision_max`，含容器烘焙会追加的 clearance 行余量 +1y；无中间烘焙层）。
 - route extent 使用 semantic probe offset bounds。
 - `candidate_route_extents` 暴露这些值用于 debug。
 - 扩张后的 docs-facing 结果写入 `candidate_voxel_regions_by_asset`，作为 debug/API 输出；旧 `candidate_voxel_sparses_by_asset` 只作为 legacy/debug alias。
 - 默认 `candidate_route_handoff_payload` 由 CPU vote-entry pack 生成，保持 score-sorted route order。
 - 启用 `use_gpu_candidate_route_pack` 或同义 option 时，`candidate_route_handoff_payload` 可由 GPU route pack pass 生成，metadata 标记 `source_label = "gpu_vote_buffer_gpu_pack"`、`score_order_preserved = false`。
 
-相关测试覆盖 `candidate_routes_expand_for_probe_footprint_context_guard`。
+相关测试覆盖 `candidate_routes_expand_for_probe_collision_context_guard`。
 
 ## 与 Placement 的关系
 
@@ -204,7 +205,7 @@ prefilter 常驻 candidate_route_record_rid / candidate_route_range_rid（schema
   -> VoxelPlacementGenerator.run_multi_asset() -> run_minimal()   # 候选路由 = resident-GPU-only，无 CPU fallback
   -> optional same-type exclusion
   -> candidate_route_sparse_adapter.glsl 展开候选稀疏 tile
-  -> score_voxel_tile.glsl                                        # score 细筛：footprint / collision / clearance
+  -> score_voxel_tile.glsl                                        # score 细筛：collision 采样 / clearance
   -> accepted placements
   -> optional GPUAutoObjectRuntime writeback（GPU-direct 常驻）
   -> optional scene_voxel_committer（state-chain stamp 原位提交）
@@ -219,7 +220,7 @@ prefilter 常驻 candidate_route_record_rid / candidate_route_range_rid（schema
 - prefilter 只减少候选，不直接写入 scene。
 - `candidate_route_extents` 不参与 physical score。
 - 空 candidate regions 表示该 asset 本轮 skip，不回退 full grid。
-- `score_voxel_tile.glsl` 仍负责 footprint、collision、clearance、target coverage 和 target color fit。
+- `score_voxel_tile.glsl` 仍负责 collision 采样、clearance、target coverage 和 target color fit（资产形状读 profile 容器常驻 `collision_records`）。
 - `score_voxel_tile.glsl` 不做 semantic dot、MLP、`semantic_score` 或 `route_score`。
 - runtime writeback 和 `instance_stamp_writeback` 是 accepted placement 之后的显式 opt-in；prefilter 本身不拥有 runtime object state 或 committed SV source。
 

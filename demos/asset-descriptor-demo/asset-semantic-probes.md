@@ -21,7 +21,7 @@ Descriptor 通过 SPA（`ScenePlacementActor`）注册到 GPU profile container�
 | Source of truth | Probe 默认值在 descriptor / `SemanticProbeProfile`；candidate regions 在 prefilter readback；committed `SceneVoxel` 仍由 source write / blend 发布。 |
 | 候选边界 | prefilter 只减少候选；candidate-only rerank 不能把未进入候选集的 asset 加回。 |
 | 禁止事项 | 不遍历全资产库，不输出全局 `voxel_asset_topK`，不替代 `score_voxel_tile.glsl`。 |
-| 物理判断 | footprint、collision、clearance 仍由 placement score 阶段负责。 |
+| 物理判断 | collision 采样、clearance 仍由 placement score 阶段负责。 |
 | TargetSV_B 采样 | 越界 sample 先 clamp 到 grid 内最近有效 voxel，再读取 `TargetSV_B` read buffers。 |
 | 提交边界 | prefilter 不写 committed `SceneVoxel`；提交仍走 `AutoSceneVoxel` / `BrushSceneVoxel` source write 与 blend。 |
 
@@ -52,7 +52,7 @@ Descriptor 通过 SPA（`ScenePlacementActor`）注册到 GPU profile container�
 
 GPU prefilter 默认在 `run_probe_prefilter()` 内把 descriptor-backed probes 打包为 transient flat probe buffer + per-asset range；当调用方传入已 `runtime_ready` 且同一 `RenderingDevice` 上的 `AutoVoxelRuntimeProfileContainer` 时，prefilter 会直接借用 container 的 resident `probe_records` buffer，并只为当前 asset 顺序生成 transient `probe_range_buf`。`AutoVoxelRuntimeProfileContainer` 已负责把同一套 descriptor / profile 语义归一化为 `profile_table`、`probe_records` 和 `pivot_records` GPU storage buffers；VPG runtime/profile contract 只能在这些 resident buffers ready、bound、consumed 后通过。`ISWS` 可以携带本轮实例 stamp 上下文，但 probe 默认值仍来自 descriptor / profile side 的资产数据，不从 `ISWS` 反推，也不能把 CPU staging / debug readback snapshot 当作 runtime success。
 
-Prefilter 输出会附带 `profile_probe_pack` debug summary：transient descriptor probe packing、borrowed `probe_records`、profile id 映射和 no-RD / profile-container-not-ready blocked reason 都必须显式保持 `cpu_fallback=false`。该 summary 只说明 probe score pass 的输入来源；`pivot_records` 的绑定和消费仍由 VPG physical score contract 验收。（`collision_records` 已移除：物理评分只走 per-voxel footprint，不再有固定形状碰撞 record buffer。）
+Prefilter 输出会附带 `profile_probe_pack` debug summary：transient descriptor probe packing、borrowed `probe_records`、profile id 映射和 no-RD / profile-container-not-ready blocked reason 都必须显式保持 `cpu_fallback=false`。该 summary 只说明 probe score pass 的输入来源；`pivot_records` 的绑定和消费仍由 VPG physical score contract 验收。（`collision_records` 现为容器常驻的 per-voxel 点采样记录 buffer（2026-07-11 起，score/stamp 按 profile 的 `collision_range` 直读），与早年已删的固定形状碰撞 record buffer 无关。）
 
 ```text
 probe_data_buf[2 * i + 0( = vec4(offset.x, offset.y, offset.z, weight)
@@ -62,7 +62,7 @@ probe_range_buf[asset_id( = uvec2(start, count)
 
 ## 生成来源
 
-`SemanticProbeProfile.generate_from_mesh()` 按优先级生成候选点。`collision` 输入是通用 voxel 场的逐体素样本列表，每条目带 `local_pos` + 同级 `color` / `complexity` / `collision`。probe 的 collision 与 complexity 从同一个 voxel 读取，处于同一层级。不再支持手工 footprint 形状（cylinder / box）采样。
+`SemanticProbeProfile.generate_from_mesh()` 按优先级生成候选点。`collision` 输入是通用 voxel 场的逐体素样本列表，每条目带 `local_pos` + 同级 `color` / `complexity` / `collision`。probe 的 collision 与 complexity 从同一个 voxel 读取，处于同一层级。不再支持手工固定形状（cylinder / box）采样。
 
 | 优先级 | `shape_source` | `source` | 来源 | 用途 |
 | --- | --- | --- | --- | --- |
@@ -145,7 +145,7 @@ route_score = combine(candidate_score, probe_score, support_hint)
 }
 ```
 
-`reduce_anchor_topk_to_voxel_regions.glsl` 只聚合 anchor 所在 tile 的 vote。footprint、probe offset bounds、`context_sensing_radius` 与 `interpolation_guard_voxels >= 1` 的扩张在 readback 解码阶段完成，扩张结果仍只是 candidate voxel regions。它们不会写 source stream、不会改 `SV[t - 1(`，也不会发布 committed `SceneVoxel`。
+`reduce_anchor_topk_to_voxel_regions.glsl` 只聚合 anchor 所在 tile 的 vote。collision 采样范围、probe offset bounds、`context_sensing_radius` 与 `interpolation_guard_voxels >= 1` 的扩张在 readback 解码阶段完成，扩张结果仍只是 candidate voxel regions。它们不会写 source stream、不会改 `SV[t - 1(`，也不会发布 committed `SceneVoxel`。
 
 ## Anchor 语义
 

@@ -368,10 +368,11 @@ func is_autoobject_runtime_ready() -> bool:
 
 ## Register a single AssetDescriptor.  Returns its profile_id (>=0) or -1
 ## on failure.  The owned profile container immediately uploads profile table,
-## probe records, and pivot records to GPU. Descriptor collision is normalized
-## and indexed in the profile table, then baked/packed into placement footprint
-## buffers by downstream runtime steps instead of being exposed as a direct
-## shader-readable descriptor array.
+## probe records, pivot records and collision records to GPU. Descriptor
+## collision is normalized, baked once at registration (snap + clearance +
+## dedup) into the resident collision_records buffer, and score/stamp shaders
+## read that slice directly via the profile table's collision_range — there is
+## no per-run shape packing step anymore.
 func register_asset(descriptor: AssetDescriptor, mesh_ref: Mesh = null, autoobject_ref: AutoObject = null) -> int:
 	if not is_initialized():
 		push_error("ScenePlacementActor: not initialized.")

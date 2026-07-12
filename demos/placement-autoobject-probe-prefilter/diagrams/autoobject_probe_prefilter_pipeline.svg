@@ -133,7 +133,7 @@
     <g>
       <rect class="node" x="72" y="452" width="250" height="104" rx="8" fill="url(#autoobject-dot-bg)" stroke="#0891b2"/>
       <text class="node-title" x="90" y="480">AutoObject registry</text>
-      <text class="small"><tspan x="90" y="502">descriptor-backed probes</tspan><tspan x="90" y="519">collision footprint</tspan><tspan x="90" y="536">context radius</tspan></text>
+      <text class="small"><tspan x="90" y="502">descriptor-backed probes</tspan><tspan x="90" y="519">collision samples</tspan><tspan x="90" y="536">context radius</tspan></text>
     </g>
     <g>
       <rect class="node" x="72" y="586" width="250" height="86" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
@@ -197,7 +197,7 @@
     <g>
       <rect class="node" x="1040" y="486" width="430" height="118" rx="8" fill="#ffedd5" stroke="#ea580c"/>
       <text class="node-title" x="1058" y="514">VoxelPlacementGenerator · score 细筛</text>
-      <text class="small"><tspan x="1058" y="536">run_multi_asset() → run_minimal()（resident-GPU-only）</tspan><tspan x="1058" y="553">candidate_route_sparse_adapter → score_voxel_tile.glsl</tspan><tspan x="1058" y="570">footprint / collision / clearance（penalty-only）</tspan><tspan x="1058" y="587">→ accepted placements → GPUAutoObjectRuntime</tspan></text>
+      <text class="small"><tspan x="1058" y="536">run_multi_asset() → run_minimal()（resident-GPU-only）</tspan><tspan x="1058" y="553">candidate_route_sparse_adapter → score_voxel_tile.glsl</tspan><tspan x="1058" y="570">collision samples / clearance（penalty-only）</tspan><tspan x="1058" y="587">→ accepted placements → GPUAutoObjectRuntime</tspan></text>
     </g>
     <g>
       <rect class="node" x="1040" y="648" width="430" height="150" rx="8" fill="url(#note-hatch)" stroke="#64748b"/>

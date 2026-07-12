@@ -15,10 +15,10 @@
 //
 // DebugVoxelOutput: NUM_DEBUG_CHANNELS floats per voxel for visualization.
 // Channel layout:
-//   0: target_coverage   — weighted fraction of footprint overlapping target
+//   0: target_coverage   — weighted fraction of collision samples overlapping target
 //   1: target_complexity_fit  — 1 − mean |target complexity - collision strength|, higher = better
 //   2: target_color_fit  — 1 − mean RGB distance to asset_color, higher = better
-//   3: target_density    — average target complexity under footprint
+//   3: target_density    — average target complexity under the collision samples
 //   4: placement_score   — final candidate score (best over the yaw sweep at this voxel)
 //   5: best_rotation_slot — winning yaw slot index (0..rotation_slots-1) at this voxel;
 //                           reuses the retired support_ratio slot (support gone). CPU reads
@@ -37,13 +37,19 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
     uint collision_field_r8_words[];
 };
 
-layout(set = 0, binding = 2, std430) restrict readonly buffer FootprintPos {
-    ivec4 footprint_pos_strength[];
+// Asset shape source: the SPA runtime-profile container's resident collision_records
+// buffer (all registered profiles concatenated). This dispatch's slice is addressed by
+// cfg_sample_range.x (start) + ids_counts.x (count); records are baked at registration
+// (voxel-snapped + clearance probes + dedup), stride 32 bytes.
+struct CollisionSampleRecord {
+    ivec4 pos_strength;   // xyz = local voxel offset, w = collision_strength_q8 (0..255)
+    vec4 weight_flags;    // x = weight, y = flags (FLAG_CLEARANCE bit), z/w = reserved
 };
-
-layout(set = 0, binding = 3, std430) restrict readonly buffer FootprintWeight {
-    vec4 footprint_weight_flags[];
+layout(set = 0, binding = 2, std430) restrict readonly buffer CollisionSampleRecords {
+    CollisionSampleRecord collision_records[];
 };
+// binding = 3 retired (the old per-run weight/flags half; both halves now live in
+// the single CollisionSampleRecord stream above).
 
 layout(set = 0, binding = 4, std430) restrict buffer TileTopK {
     vec4 tile_topk[];
@@ -84,6 +90,7 @@ layout(set = 0, binding = 10, std430) restrict readonly buffer ScoreConfig {
     ivec4 cfg_dim_meta;        // x = env_channel_count, yzw = reserved
     vec4 cfg_asset_profile0;   // per-asset dimension profile values, dims 0..3
     vec4 cfg_asset_profile1;   // per-asset dimension profile values, dims 4..7
+    ivec4 cfg_sample_range;    // x = this asset's start offset in collision_records, yzw reserved
 };
 
 layout(set = 1, binding = 0, std430) restrict readonly buffer RuntimeAlive {
@@ -193,10 +200,10 @@ layout(push_constant, std430) uniform Params {
     ivec4 tile_counts_topk;        // tile_count_x, tile_count_y, tile_count_z, top_k
     ivec4 sample_min_pad;          // sample min xyz, .w = packed asset color (RGBA8)
     ivec4 sample_max_pad;          // sample max xyz exclusive, .w = has_target (0/1)
-    ivec4 ids_counts;              // footprint_count, asset_index, rotation_index, scale_index
+    ivec4 ids_counts;              // sample_count, asset_index, rotation_index, scale_index
     vec4 thresholds;               // solid_threshold, collision_limit, .z reserved (support retired), clearance_limit
     ivec4 dispatch_search;         // candidate_tile_count, search radius xyz
-    ivec4 footprint_pivot_pad;     // xyz = footprint pivot voxels (subtracted before yaw), w = dim_count (0 = penalty-only)
+    ivec4 sample_pivot_pad;        // xyz = pivot voxels (subtracted before yaw), w = dim_count (0 = penalty-only)
 };  // 128 bytes exactly (8 x 16) = Godot push-constant limit. score_weights / env_channel_count /
     // asset_profile moved to the ScoreConfig SSBO (binding 10).
 
@@ -204,7 +211,8 @@ layout(push_constant, std430) uniform Params {
 const uint FLAG_CLEARANCE = 2u;
 const uint TILE_SIZE = 8u;
 const uint LOCAL_COUNT = 512u;
-const uint FOOTPRINT_CAPACITY = 128u;
+// Mirrors AutoVoxelRuntimeProfileContainer.COLLISION_SAMPLE_CAPACITY (shared preload size).
+const uint COLLISION_SAMPLE_CAPACITY = 128u;
 
 // Sentinel score for "no valid candidate". Kept far below any real penalty-only
 // score (now that the support positive term is retired, valid scores are <= 0) so a
@@ -258,8 +266,8 @@ const uint SCORE_DEBUG_OBJECT_REF_DUPLICATE_READS = 39u;
 const int RUNTIME_CONTRACT_SCAN_CAP = 4096;
 const int PROFILE_CONTRACT_SCAN_CAP = 1024;
 
-shared ivec4 s_footprint_pos_strength[128];
-shared vec4 s_footprint_weight_flags[128];
+shared ivec4 s_sample_pos_strength[128];
+shared vec4 s_sample_weight_flags[128];
 shared float s_scores[512];
 shared ivec4 s_candidate_origins[512];
 
@@ -285,7 +293,7 @@ struct EvalResult {
     float target_density;
     float target_total_weight;
     float semantic_score;    // Phase-2 per-dimension weighted fit sum
-    float semantic_weight;   // Phase-2 divisor (footprint weight summed per scored dimension)
+    float semantic_weight;   // Phase-2 divisor (sample weight summed per scored dimension)
 };
 
 vec4 unpack_rgba8(uint packed) {
@@ -663,7 +671,7 @@ VoxelSample sample_voxel(ivec3 p) {
     return s;
 }
 
-// --- Trilinear scene-field sampling at a FLOAT footprint position ----------
+// --- Trilinear scene-field sampling at a FLOAT sample position --------------
 struct FieldSample {
     float complexity;
     float collision;
@@ -714,16 +722,16 @@ vec3 rotate_yaw_y(vec3 v, float ca, float sa) {
     return vec3(ca * v.x + sa * v.z, v.y, -sa * v.x + ca * v.z);
 }
 
-// Float variant for footprint offsets: rigid yaw (NO round, NO scale) so the
-// sample position stays a genuine float for trilinear sampling.
-vec3 rotate_footprint_offset_y_f(ivec3 fp, float ca, float sa) {
-    return rotate_yaw_y(vec3(fp), ca, sa);
+// Float variant for collision-sample offsets: rigid yaw (NO round, NO scale) so
+// the sample position stays a genuine float for trilinear sampling.
+vec3 rotate_sample_offset_y_f(ivec3 sample_offset, float ca, float sa) {
+    return rotate_yaw_y(vec3(sample_offset), ca, sa);
 }
 
-// Voxel-snapped variant for integer footprint offsets (round x/z, keep y).
-ivec3 rotate_footprint_offset_y(ivec3 fp, float ca, float sa) {
-    vec3 r = rotate_yaw_y(vec3(fp), ca, sa);
-    return ivec3(int(round(r.x)), fp.y, int(round(r.z)));
+// Voxel-snapped variant for integer collision-sample offsets (round x/z, keep y).
+ivec3 rotate_sample_offset_y(ivec3 sample_offset, float ca, float sa) {
+    vec3 r = rotate_yaw_y(vec3(sample_offset), ca, sa);
+    return ivec3(int(round(r.x)), sample_offset.y, int(round(r.z)));
 }
 
 // Yaw-only world transform: Basis(Vector3.UP, yaw) columns + instance origin
@@ -776,13 +784,13 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
     }
 
     int has_target = sample_max_pad.w;
-    int dim_count = footprint_pivot_pad.w;          // 0 = legacy penalty-only
+    int dim_count = sample_pivot_pad.w;             // 0 = legacy penalty-only
     int env_channel_count = cfg_dim_meta.x;
     if (has_target != 0) {
         if (!in_sample_bounds(candidate_origin)) {
             return r;
         }
-        // Legacy-only origin gate: in dims-mode the per-footprint semantic fit decides, so a
+        // Legacy-only origin gate: in dims-mode the per-sample semantic fit decides, so a
         // single low-completeness origin voxel must not reject the whole candidate.
         if (dim_count == 0 && target_field[voxel_index(candidate_origin)].a <= 0.01) {
             return r;
@@ -790,20 +798,20 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
     }
     vec4 asset_col = unpack_asset_color();
 
-    int footprint_count = min(ids_counts.x, int(FOOTPRINT_CAPACITY));
-    for (int i = 0; i < footprint_count; i++) {
-        ivec4 fp = s_footprint_pos_strength[i];
-        vec4 wf = s_footprint_weight_flags[i];
+    int sample_count = min(ids_counts.x, int(COLLISION_SAMPLE_CAPACITY));
+    for (int i = 0; i < sample_count; i++) {
+        ivec4 fp = s_sample_pos_strength[i];
+        vec4 wf = s_sample_weight_flags[i];
         float weight = max(wf.x, 0.0);
         uint flags = uint(max(wf.y, 0.0) + 0.5);
-        float footprint_collision_strength = clamp(float(fp.w) / 255.0, 0.0, 1.0);
-        // Pivot subtracted before yaw (shift-then-rotate order): translate the footprint
+        float sample_collision_strength = clamp(float(fp.w) / 255.0, 0.0, 1.0);
+        // Pivot subtracted before yaw (shift-then-rotate order): translate the sample
         // offset by -pivot first, then apply the yaw below.
-        ivec3 base_fp = fp.xyz - footprint_pivot_pad.xyz;
-        // Rigid transform (translate + yaw, NO scale) of the footprint offset to a
+        ivec3 base_fp = fp.xyz - sample_pivot_pad.xyz;
+        // Rigid transform (translate + yaw, NO scale) of the sample offset to a
         // FLOAT position; the scene field is TRILINEAR-sampled there. There are NO
         // integer-offset neighbor reads anywhere below.
-        vec3 rotated_fp = rot_count > 1 ? rotate_footprint_offset_y_f(base_fp, rot_ca, rot_sa) : vec3(base_fp);
+        vec3 rotated_fp = rot_count > 1 ? rotate_sample_offset_y_f(base_fp, rot_ca, rot_sa) : vec3(base_fp);
         vec3 pf = vec3(candidate_origin) + rotated_fp;
         ivec3 pn = ivec3(round(pf)); // nearest voxel for membership/validity predicates
 
@@ -819,10 +827,10 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
             continue;
         }
 
-        if (footprint_collision_strength >= thresholds.x) {
+        if (sample_collision_strength >= thresholds.x) {
             r.solid_collision += fs.collision * weight;
         } else {
-            r.complexity_overlap += fs.complexity * footprint_collision_strength * weight;
+            r.complexity_overlap += fs.complexity * sample_collision_strength * weight;
         }
 
         if ((flags & FLAG_CLEARANCE) != 0u) {
@@ -838,7 +846,7 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
             r.target_density += target_complexity * weight;
             if (target_complexity > 0.01) {
                 r.target_coverage += weight;
-                r.target_complexity_fit += abs(target_complexity - footprint_collision_strength) * weight;
+                r.target_complexity_fit += abs(target_complexity - sample_collision_strength) * weight;
                 r.target_color_dist += distance(target.rgb, asset_col.rgb) * weight;
             }
         }
@@ -864,9 +872,9 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
 
     if (dim_count > 0) {
         // Data-driven semantic score (design Phase 2): weighted mean of per-dimension MATCH fit
-        // over footprint voxels. MATCH dims are unconstrained, so validity is coverage-only (the
+        // over collision-sample voxels. MATCH dims are unconstrained, so validity is coverage-only (the
         // has_target coverage gate is retained). target_coverage here still holds the SUMMED
-        // footprint weight — the normalization block below reassigns it to a ratio AFTER this.
+        // sample weight — the normalization block below reassigns it to a ratio AFTER this.
         // semantic_score >= 0, so it still beats INVALID_SCORE in the per-tile max-select.
         r.valid = (has_target == 0 || r.target_coverage > 0.0);
         r.score = (r.valid && r.semantic_weight > 0.0)
@@ -1008,10 +1016,13 @@ void main() {
         return;
     }
 
-    int footprint_count = min(ids_counts.x, int(FOOTPRINT_CAPACITY));
-    if (local_index < uint(footprint_count)) {
-        s_footprint_pos_strength[local_index] = footprint_pos_strength[local_index];
-        s_footprint_weight_flags[local_index] = footprint_weight_flags[local_index];
+    int sample_count = min(ids_counts.x, int(COLLISION_SAMPLE_CAPACITY));
+    if (local_index < uint(sample_count)) {
+        // Preload this asset's slice of the container-resident collision_records
+        // (cfg_sample_range.x = start offset of this profile's baked samples).
+        CollisionSampleRecord sample_record = collision_records[uint(cfg_sample_range.x) + local_index];
+        s_sample_pos_strength[local_index] = sample_record.pos_strength;
+        s_sample_weight_flags[local_index] = sample_record.weight_flags;
     }
     if (local_index == 0u) {
         float profile_complexity = read_asset_profile_complexity();

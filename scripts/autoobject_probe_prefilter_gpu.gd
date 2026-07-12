@@ -21,7 +21,6 @@ extends "res://scripts/godot_compute_shader_base.gd"
 const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
-const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const TargetReadBufferBorrow := preload("res://scripts/utils/target_read_buffer_borrow.gd")
@@ -1446,7 +1445,7 @@ static func _probe_metric_weights(p: Dictionary) -> Vector3:
 	)
 
 
-## 为所有 autoobject 构建路由 extent 数组（probe/footprint/tile_radius）。
+## 为所有 autoobject 构建路由 extent 数组（probe/collision/tile_radius）。
 static func _build_route_extents(autoobjects: Array, asset_count: int, voxel_size: Vector3) -> Array[Dictionary]:
 	var extents: Array[Dictionary] = []
 	for obj_idx in range(asset_count):
@@ -1473,15 +1472,15 @@ static func _empty_route_extent(asset_index: int) -> Dictionary:
 		"asset_index": asset_index,                 # asset index in current registry
 		"probe_min": Vector3i.ZERO,                 # min probe offset in voxels
 		"probe_max": Vector3i.ZERO,                 # max probe offset in voxels
-		"footprint_min": Vector3i.ZERO,             # min footprint voxel
-		"footprint_max": Vector3i.ZERO,             # max footprint voxel
+		"collision_min": Vector3i.ZERO,             # min collision-sample voxel
+		"collision_max": Vector3i.ZERO,             # max collision-sample voxel (incl. clearance row)
 		"context_radius_voxels": Vector3i.ZERO,     # context radius in voxels
 		"interpolation_guard_voxels": 1,            # route expansion guard
 		"tile_radius": Vector3i.ONE,                # tile expansion radius
 	}
 
 
-## 根据探针偏移、碰撞脚印和上下文感知半径计算路由 extent（tile_radius 等）。
+## 根据探针偏移、碰撞采样和上下文感知半径计算路由 extent（tile_radius 等）。
 static func _build_route_extent_from_arrays(
 	probes: Array,
 	collision: Array,
@@ -1490,25 +1489,25 @@ static func _build_route_extent_from_arrays(
 	asset_index: int = 0
 ) -> Dictionary:
 	var probe_bounds := _probe_offset_voxel_bounds(probes, voxel_size)
-	var footprint_bounds := _footprint_voxel_bounds(collision, voxel_size)
+	var collision_bounds := _collision_sample_voxel_bounds(collision, voxel_size)
 	var context_radius_voxels := _radius_to_voxels(context_sensing_radius, voxel_size)
 	var guard := maxi(1, 1)
 	var min_pad := Vector3i(
-		mini(int(probe_bounds.get("min", Vector3i.ZERO).x), int(footprint_bounds.get("min", Vector3i.ZERO).x)) - context_radius_voxels.x - guard,
-		mini(int(probe_bounds.get("min", Vector3i.ZERO).y), int(footprint_bounds.get("min", Vector3i.ZERO).y)) - context_radius_voxels.y - guard,
-		mini(int(probe_bounds.get("min", Vector3i.ZERO).z), int(footprint_bounds.get("min", Vector3i.ZERO).z)) - context_radius_voxels.z - guard
+		mini(int(probe_bounds.get("min", Vector3i.ZERO).x), int(collision_bounds.get("min", Vector3i.ZERO).x)) - context_radius_voxels.x - guard,
+		mini(int(probe_bounds.get("min", Vector3i.ZERO).y), int(collision_bounds.get("min", Vector3i.ZERO).y)) - context_radius_voxels.y - guard,
+		mini(int(probe_bounds.get("min", Vector3i.ZERO).z), int(collision_bounds.get("min", Vector3i.ZERO).z)) - context_radius_voxels.z - guard
 	)
 	var max_pad := Vector3i(
-		maxi(int(probe_bounds.get("max", Vector3i.ZERO).x), int(footprint_bounds.get("max", Vector3i.ZERO).x)) + context_radius_voxels.x + guard,
-		maxi(int(probe_bounds.get("max", Vector3i.ZERO).y), int(footprint_bounds.get("max", Vector3i.ZERO).y)) + context_radius_voxels.y + guard,
-		maxi(int(probe_bounds.get("max", Vector3i.ZERO).z), int(footprint_bounds.get("max", Vector3i.ZERO).z)) + context_radius_voxels.z + guard
+		maxi(int(probe_bounds.get("max", Vector3i.ZERO).x), int(collision_bounds.get("max", Vector3i.ZERO).x)) + context_radius_voxels.x + guard,
+		maxi(int(probe_bounds.get("max", Vector3i.ZERO).y), int(collision_bounds.get("max", Vector3i.ZERO).y)) + context_radius_voxels.y + guard,
+		maxi(int(probe_bounds.get("max", Vector3i.ZERO).z), int(collision_bounds.get("max", Vector3i.ZERO).z)) + context_radius_voxels.z + guard
 	)
 	return {
 		"asset_index": asset_index,                                # asset index in current registry
 		"probe_min": probe_bounds.get("min", Vector3i.ZERO),       # min probe offset in voxels
 		"probe_max": probe_bounds.get("max", Vector3i.ZERO),       # max probe offset in voxels
-		"footprint_min": footprint_bounds.get("min", Vector3i.ZERO), # min footprint voxel
-		"footprint_max": footprint_bounds.get("max", Vector3i.ZERO), # max footprint voxel
+		"collision_min": collision_bounds.get("min", Vector3i.ZERO), # min collision-sample voxel
+		"collision_max": collision_bounds.get("max", Vector3i.ZERO), # max collision-sample voxel (incl. clearance row)
 		"context_radius_voxels": context_radius_voxels,            # context radius in voxels
 		"interpolation_guard_voxels": guard,                       # route expansion guard
 		"tile_radius": _padding_to_tile_radius(min_pad, max_pad),  # tile expansion radius
@@ -1536,20 +1535,36 @@ static func _probe_offset_voxel_bounds(probes: Array, voxel_size: Vector3) -> Di
 	return {"min": min_v, "max": max_v}
 
 
-## 计算碰撞脚印在体素坐标系下的 AABB（min/max）。
-static func _footprint_voxel_bounds(collision: Array, _voxel_size: Vector3) -> Dictionary:
-	var footprint: Array = AssetDescriptorScript.bake_footprint(collision, true, 1)
-	if footprint.is_empty():
-		return {"min": Vector3i.ZERO, "max": Vector3i.ZERO}
-	var min_v := Vector3i(2147483647, 2147483647, 2147483647)
-	var max_v := Vector3i(-2147483648, -2147483648, -2147483648)
-	for raw_entry in footprint:
+## 计算碰撞采样在体素坐标系下的 AABB（min/max）。直接扫 canonical collision samples
+## （无中间烘焙层）；容器注册期会在实心列顶上合成 1 层 clearance 探针，
+## 这里对应地把 max.y +1，保持与常驻 collision_records 的实际覆盖一致。
+static func _collision_sample_voxel_bounds(collision: Array, _voxel_size: Vector3) -> Dictionary:
+	var has_sample := false
+	var has_solid := false
+	var min_v := Vector3i.ZERO
+	var max_v := Vector3i.ZERO
+	for raw_entry in collision:
 		if not raw_entry is Dictionary:
 			continue
 		var entry := raw_entry as Dictionary
-		var p := VoxelGeneral.vector3i_from_value(entry.get("local_pos", Vector3i.ZERO), Vector3i.ZERO)
-		min_v = Vector3i(mini(min_v.x, p.x), mini(min_v.y, p.y), mini(min_v.z, p.z))
-		max_v = Vector3i(maxi(max_v.x, p.x), maxi(max_v.y, p.y), maxi(max_v.z, p.z))
+		if not VoxelGeneral.is_point_collision_sample(entry):
+			continue
+		if not bool(entry.get("enabled", true)):
+			continue
+		var p := VoxelGeneral.collision_local_voxel(entry)
+		if clampf(float(entry.get("collision_strength", 1.0)), 0.0, 1.0) > 0.0:
+			has_solid = true
+		if not has_sample:
+			min_v = p
+			max_v = p
+			has_sample = true
+		else:
+			min_v = Vector3i(mini(min_v.x, p.x), mini(min_v.y, p.y), mini(min_v.z, p.z))
+			max_v = Vector3i(maxi(max_v.x, p.x), maxi(max_v.y, p.y), maxi(max_v.z, p.z))
+	if not has_sample:
+		return {"min": Vector3i.ZERO, "max": Vector3i.ZERO}
+	if has_solid:
+		max_v.y += 1  # clearance 探针行（容器烘焙在列顶 +1 处合成）
 	return {"min": min_v, "max": max_v}
 
 

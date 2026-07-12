@@ -31,7 +31,7 @@
 - `SceneVoxelTile` 不进入 committed `SceneVoxel` per-voxel accepted fields。公开 `SceneVoxel` 查询仍只返回 `complexity`、`color`、`collision`，可选 `auto_mix`。`channel` 不进入 committed read model；`object_refs` 是独立 object-ref channel，通过 GPU resident buffers / readback 访问。
 - `SceneVoxelTile` 可以包装当前 `_sv_dirty_tiles` / `_sv_dirty_rects` 的语义；这些字段只是 implementation/storage compatibility，新 contract 和新 API 优先写 `SceneVoxelTile`。
 - `SceneVoxelTile` runtime metadata 和 committed scene/collision resident fields 是 GPU-first：`ensure_scene_voxel_tile_buffers_uploaded()` 成功后，tile record、summary、dirty index、object ref、source ref、`complexity_field` 和 `collision_field` 都以 GPU storage buffers / readback 为验收路径。`get_scene_voxel_tile_gpu_buffer_status()` 的 valid RID、record count、resident field source 和 upload revision 才能说明 runtime resident success；CPU dictionary / PackedFloat32Array 只做 command staging、debug label 和无 RD 时的 SKIP 判定。staging revision 前进后，旧 GPU buffers 会标记 stale，不能继续作为 runtime read source。
-- `SceneVoxelTile` 的 voxel bounds 必须覆盖真实 footprint 和 guard expansion，不能只用 object center 或 search radius 近似。
+- `SceneVoxelTile` 的 voxel bounds 必须覆盖真实 collision 采样范围和 guard expansion，不能只用 object center 或 search radius 近似。
 - 正常 committed SV 增量更新入口只接受 `SceneVoxelTile` dirty；AutoObject、brush、profile 和 placement 都只是 dirty producer。
 - Target guidance 变化只标记 routing / scoring / feedback 相关 dirty；`TargetSceneVoxel` / `TargetSV_B` 不进入 source write，不直接写 committed source，也不修改 `SceneVoxelTile` 的 source range。
 - `SVBrush` / source stamp 是 dirty tile 重建出的 source write intent，不是绕过 tile 的第二套 SV 写入入口。
@@ -70,7 +70,7 @@ Grid initialized / resized
   -> affected bounds mark SceneVoxelTile dirty
   -> tile stores dirty flags, epoch, voxel bounds and optional refs
   -> source/object ranges and summaries rebuild during SV commit
-  -> _rebuild_sv() publishes scene_voxel_tiles and dirty_scene_voxel_tiles
+  -> _rebuild_sv() publishes the dirty_scene_voxel_tiles snapshot
   -> dirty flags clear after successful SV snapshot
   -> optional auto-upload writes the post-publish clean tile metadata and resident scene/collision fields to GPU buffers
 ```
@@ -158,7 +158,7 @@ var scene_voxel_tile := {
 ```text
 AutoObject / brush / profile / placement dirty producer
   -> compute affected voxel bounds
-  -> expand by footprint AABB, probe offsets and interpolation guard
+  -> expand by collision-sample AABB, probe offsets and interpolation guard
   -> convert bounds to SceneVoxelTile ids
   -> mark dirty_flags and bump epoch
   -> rebuild only affected object/source/summary ranges

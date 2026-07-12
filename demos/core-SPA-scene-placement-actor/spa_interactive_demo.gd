@@ -925,7 +925,7 @@ func _register_all_assets() -> void:
 	_register_time_ms = float(Time.get_ticks_msec() - t0)
 
 
-## 用通用的 mesh 体素化路径为资产生成 per-voxel collision footprint samples
+## 用通用的 mesh 体素化路径为资产生成 per-voxel collision samples
 ## （替代早期硬编码的 cylinder 基元）。每个实心体素 → 一条 point collision sample。
 func _collision_samples_from_mesh(voxelizer, mesh: Mesh, color: Color) -> Array:
 	var samples: Array = []
@@ -933,7 +933,7 @@ func _collision_samples_from_mesh(voxelizer, mesh: Mesh, color: Color) -> Array:
 		return samples
 	var result: Dictionary = voxelizer.voxelize(mesh, maxi(asset_voxel_grid_count, 1), color, 0.9, 4)
 	if not bool(result.get("ok", false)):
-		push_warning("[SPA Demo] voxelize failed (%s); asset collision footprint is empty" % str(result.get("reason", "unknown")))
+		push_warning("[SPA Demo] voxelize failed (%s); asset collision samples are empty" % str(result.get("reason", "unknown")))
 		return samples
 	for v in result.get("voxels", []):
 		var strength := float(v.get("collision", 0.0))

@@ -13,15 +13,21 @@ const CanonicalHash := preload("res://scripts/utils/canonical_hash.gd")
 const PROFILE_TABLE_BUFFER := "profile_table"
 const PROBE_RECORD_BUFFER := "probe_records"
 const PIVOT_RECORD_BUFFER := "pivot_records"
+const COLLISION_RECORD_BUFFER := "collision_records"
 const GPU_BUFFER_NAMES := [
 	PROFILE_TABLE_BUFFER,
 	PROBE_RECORD_BUFFER,
 	PIVOT_RECORD_BUFFER,
+	COLLISION_RECORD_BUFFER,
 ]
 
 const PROFILE_TABLE_STRIDE_BYTES := 64
 const PROBE_RECORD_STRIDE_BYTES := 32
 const PIVOT_RECORD_STRIDE_BYTES := 32
+const COLLISION_RECORD_STRIDE_BYTES := 32
+# 每 profile 的 collision 记录上限：score/stamp shader 以 shared 数组预载全部记录，
+# 数组长度 128（见 score_voxel_tile.glsl 的 s_sample_* 声明），注册期在此截断。
+const COLLISION_SAMPLE_CAPACITY := 128
 
 var descriptor_hash_to_profile_id: Dictionary = {}
 var dirty_profile_ids: Array[int] = []
@@ -151,6 +157,7 @@ func upload_profiles(force: bool = false) -> bool:
 	var packed_profile_table := _pack_profile_table_bytes()
 	var packed_probes := _pack_probe_record_bytes()
 	var packed_pivots := _pack_pivot_record_bytes()
+	var packed_collisions := _pack_collision_record_bytes()
 
 	_release_gpu_buffers()
 	var ok := true
@@ -171,6 +178,12 @@ func upload_profiles(force: bool = false) -> bool:
 		packed_pivots,
 		_staging_pivot_records.size(),
 		PIVOT_RECORD_STRIDE_BYTES
+	)
+	ok = ok and _create_storage_buffer(
+		COLLISION_RECORD_BUFFER,
+		packed_collisions,
+		_staging_collision_records.size(),
+		COLLISION_RECORD_STRIDE_BYTES
 	)
 
 	if not ok:
@@ -219,6 +232,24 @@ func get_probe_buffer() -> RID:
 ## 返回 pivot record GPU buffer 的 RID。
 func get_pivot_buffer() -> RID:
 	return get_gpu_buffer(PIVOT_RECORD_BUFFER)
+
+
+## 返回 collision record GPU buffer 的 RID（score/stamp shader 的资产采样形状来源）。
+func get_collision_records_buffer() -> RID:
+	return get_gpu_buffer(COLLISION_RECORD_BUFFER)
+
+
+## 返回指定 profile_id 的 collision 记录 range（{start, count}，指向 collision_records
+## buffer 中该 profile 的烘焙采样区间）；未注册时返回 {start: 0, count: 0}。
+func get_collision_range_for_profile_id(profile_id: int) -> Dictionary:
+	if not _profile_id_to_table_entry.has(profile_id):
+		return {"start": 0, "count": 0}
+	var entry: Dictionary = _profile_id_to_table_entry[profile_id]
+	var collision_range: Dictionary = entry.get("collision_range", {})
+	return {
+		"start": int(collision_range.get("start", 0)),
+		"count": int(collision_range.get("count", 0)),
+	}
 
 
 ## 返回 GPU buffer 与 runtime 状态的诊断摘要（各 buffer 的 RID 有效性/record_count/stride/逻辑与实际字节数，以及 revision、dirty、last_upload_error 等控制面信息）。
@@ -306,6 +337,7 @@ func readback_debug_snapshot() -> Dictionary:
 		"profile_table_bytes": profile_table_bytes,
 		"probe_record_bytes": buffer_bytes.get(PROBE_RECORD_BUFFER, PackedByteArray()),
 		"pivot_record_bytes": buffer_bytes.get(PIVOT_RECORD_BUFFER, PackedByteArray()),
+		"collision_record_bytes": buffer_bytes.get(COLLISION_RECORD_BUFFER, PackedByteArray()),
 		"decoded_profile_table": _decode_profile_table_bytes(
 			profile_table_bytes,
 			int(_gpu_record_counts.get(PROFILE_TABLE_BUFFER, 0))
@@ -351,7 +383,16 @@ func register_normalized_profile(raw_profile: Dictionary) -> int:
 	var profile_index := _profile_order.size()
 	var probe_range := _append_range(_staging_probe_records, normalized.get("semantic_probes", []))
 	var pivot_range := _append_range(_staging_pivot_records, normalized.get("pivot_variants", []))
-	var collision_range := _append_range(_staging_collision_records, normalized.get("collision", []))
+	# collision staging 存的是 GPU 记录（对齐 + clearance + 去重 + 截断后的采样），
+	# 注册期烘焙一次；canonical collision 原样留在 normalized_data / profile_hash 里。
+	var bake_label := str(normalized.get("asset_id", ""))
+	if bake_label.is_empty():
+		bake_label = str(normalized.get("source_path", ""))
+	if bake_label.is_empty():
+		bake_label = "profile:%s" % profile_hash.left(12)
+	var collision_range := _append_range(
+		_staging_collision_records,
+		_bake_collision_records(normalized.get("collision", []), bake_label))
 
 	var probe_range_entry := _make_range_entry(profile_id, profile_index, probe_range)
 	var pivot_range_entry := _make_range_entry(profile_id, profile_index, pivot_range)
@@ -667,6 +708,85 @@ func _pack_pivot_record_bytes() -> PackedByteArray:
 	return bytes
 
 
+## 将 canonical collision samples 烘焙为 GPU collision 记录：过滤 disabled、按 xz 列顶
+## 追加 1 层 clearance 探针（strength 0 / FLAG_CLEARANCE / weight 0.5，score 的
+## clearance_overlap 硬门依赖它）、按体素去重（strength/weight 取 max、flags 取并），
+## 超出 COLLISION_SAMPLE_CAPACITY 时 clearance 优先保留并截断。
+## 取代旧的每-run 形状烘焙（2026-07-11 移入注册期）：每 profile 烘焙一次，随容器上传常驻。
+static func _bake_collision_records(collision: Array, label: String = "") -> Array[Dictionary]:
+	var baked: Array[Dictionary] = []
+	var top_by_xz := {}
+	for raw_entry in collision:
+		if not raw_entry is Dictionary:
+			continue
+		var entry := raw_entry as Dictionary
+		if not bool(entry.get("enabled", true)):
+			continue
+		var voxel := VoxelGeneral.collision_local_voxel(entry)
+		var collision_strength := clampf(float(entry.get("collision_strength", 1.0)), 0.0, 1.0)
+		baked.append({
+			"voxel": voxel,
+			"collision_strength": collision_strength,
+			"flags": int(entry.get("flags", 0)),
+			"weight": maxf(float(entry.get("weight", 1.0)), 0.0),
+		})
+		if collision_strength <= 0.0:
+			continue
+		var column_key := "%d,%d" % [voxel.x, voxel.z]
+		if not top_by_xz.has(column_key) or voxel.y > (top_by_xz[column_key] as Vector3i).y:
+			top_by_xz[column_key] = voxel
+	for raw_top in top_by_xz.values():
+		var top := raw_top as Vector3i
+		baked.append({
+			"voxel": Vector3i(top.x, top.y + 1, top.z),
+			"collision_strength": 0.0,
+			"flags": AssetDescriptorScript.FLAG_CLEARANCE,
+			"weight": 0.5,
+		})
+
+	var by_voxel := {}
+	for entry in baked:
+		var voxel: Vector3i = entry["voxel"]
+		var voxel_key := "%d,%d,%d" % [voxel.x, voxel.y, voxel.z]
+		if by_voxel.has(voxel_key):
+			var existing: Dictionary = by_voxel[voxel_key]
+			existing["collision_strength"] = maxf(float(existing["collision_strength"]), float(entry["collision_strength"]))
+			existing["flags"] = int(existing["flags"]) | int(entry["flags"])
+			existing["weight"] = maxf(float(existing["weight"]), float(entry["weight"]))
+		else:
+			by_voxel[voxel_key] = entry
+	var result: Array[Dictionary] = []
+	for entry in by_voxel.values():
+		result.append(entry)
+
+	if result.size() > COLLISION_SAMPLE_CAPACITY:
+		# clearance 探针排前：截断只丢物体质量细节，不丢 clearance_overlap 硬门的探针。
+		result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return int(a.get("flags", 0)) != 0 and int(b.get("flags", 0)) == 0)
+		push_warning("AutoVoxelRuntimeProfileContainer: collision records for '%s' has %d voxels, truncating to %d" % [label, result.size(), COLLISION_SAMPLE_CAPACITY])
+		result.resize(COLLISION_SAMPLE_CAPACITY)
+	return result
+
+
+## 将 staging collision 记录（已烘焙）按 COLLISION_RECORD_STRIDE_BYTES 打包为 GPU 字节流：
+## 每条 ivec4(voxel.xyz, collision_q8) + vec4(weight, flags, 0, 0)，与 score/stamp
+## shader 的 CollisionSampleRecord 布局一致。
+func _pack_collision_record_bytes() -> PackedByteArray:
+	var bytes := PackedByteArray()
+	bytes.resize(_staging_collision_records.size() * COLLISION_RECORD_STRIDE_BYTES)
+	for i in range(_staging_collision_records.size()):
+		var entry: Dictionary = _staging_collision_records[i]
+		var voxel := VoxelGeneral.vector3i_from_value(entry.get("voxel", Vector3i.ZERO), Vector3i.ZERO)
+		var collision_q8 := clampi(roundi(clampf(float(entry.get("collision_strength", 0.0)), 0.0, 1.0) * 255.0), 0, 255)
+		var base := i * COLLISION_RECORD_STRIDE_BYTES
+		BufferUtils.encode_vec3i4_with_w(bytes, base, voxel, collision_q8)
+		bytes.encode_float(base + 16, maxf(float(entry.get("weight", 1.0)), 0.0))
+		bytes.encode_float(base + 20, float(int(entry.get("flags", 0))))
+		bytes.encode_float(base + 24, 0.0)
+		bytes.encode_float(base + 28, 0.0)
+	return bytes
+
+
 ## 将回读的 profile table 字节流按 stride 解码回 Dictionary 数组（与打包布局对应），自动裁剪到字节数与 record_count 允许的安全条数。
 func _decode_profile_table_bytes(bytes: PackedByteArray, record_count: int) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
@@ -707,6 +827,8 @@ func _stride_for_buffer(buffer_name: String) -> int:
 			return PROBE_RECORD_STRIDE_BYTES
 		PIVOT_RECORD_BUFFER:
 			return PIVOT_RECORD_STRIDE_BYTES
+		COLLISION_RECORD_BUFFER:
+			return COLLISION_RECORD_STRIDE_BYTES
 		_:
 			return 0
 

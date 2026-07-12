@@ -80,12 +80,12 @@ func _test_scene_builds_guidance() -> bool:
 		push_error("  FAIL: guidance mesh is not a BoxMesh")
 		ok = false
 
-	# Paint a brush footprint, then confirm a tetra MultiMesh appears with a
+	# Paint a brush extent, then confirm a tetra MultiMesh appears with a
 	# matching instance count, built through the GPU direct-write path.
 	var center := Vector2i(int(instance.get("_texture_size")) / 2, int(instance.get("_texture_size")) / 2)
-	var added: bool = instance.call("paint_voxel_footprint_for_test", center)
+	var added: bool = instance.call("paint_voxel_brush_extent_for_test", center)
 	if not added:
-		push_error("  FAIL: brush footprint accumulation added no voxels")
+		push_error("  FAIL: brush extent accumulation added no voxels")
 		ok = false
 	instance.call("_rebuild_brush_voxels")
 

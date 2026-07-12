@@ -82,13 +82,14 @@ The prepared assets are `AssetDescriptor` `.tres` resources (e.g.
 `res://assets/vegetation/*.tres`). Load them, drive scoring/placement from them, and
 instance their real mesh at every accepted placement.
 
-- Do **not** hardcode abstract box footprints (`ASSET_SHAPES` + colored
+- Do **not** hardcode abstract box shapes (`ASSET_SHAPES` + colored
   `VoxelDisplay.build_from_transforms` boxes) as the placed-object visual. Those boxes
   were the old placeholder look the user rejected.
-- Scoring footprint comes from the asset: prefer the descriptor's own
-  `get_collision()` / `voxel_profile.collision`; if a descriptor has no collision
-  profile, derive the footprint from its **mesh AABB** — do not fall back to a generic
-  box asset.
+- The scoring shape comes from the asset: prefer the descriptor's own
+  `get_collision()` / `voxel_profile.collision`, registered into the runtime profile
+  container (whose resident `collision_records` the score/stamp shaders read); if a
+  descriptor has no collision profile, derive the collision samples from its
+  **mesh AABB** — do not fall back to a generic box asset.
 - If no descriptor assets are found, **push a warning and place nothing** — never
   silently fall back to proxy boxes.
 - `VoxelDisplay` box rendering is still fine for *field/voxel debug overlays*

@@ -5,8 +5,10 @@ extends "res://scripts/godot_compute_shader_base.gd"
 ## Minimal GPU prototype for 3D voxel-space object placement.
 ##
 ## This is intentionally independent from the heightfield fitting path:
-## callers provide compact scene/collision field buffers and a simplified
-## asset footprint, then receive compact placement records and stamped occupancy.
+## callers provide compact scene/collision field buffers plus a ready
+## AutoVoxelRuntimeProfileContainer (settings) whose resident collision_records
+## carry each asset's shape samples, then receive compact placement records and
+## stamped occupancy.
 
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const VoxelPlacementWritebackScript := preload("res://scripts/voxel_placement_writeback.gd")
@@ -26,10 +28,11 @@ func _ensure_placement_writeback():
 	return _placement_writeback
 
 const VoxelPlacementOutputScript := preload("res://scripts/voxel_placement_output.gd")
-const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 
 const TILE_SIZE := 8
-const FOOTPRINT_CAPACITY := 128
+# 每 profile 采样数上限：与 score shader 的 shared 预载数组等长（容器注册期截断，
+# 这里只做防御性校验）。
+const COLLISION_SAMPLE_CAPACITY := AutoVoxelRuntimeProfileContainer.COLLISION_SAMPLE_CAPACITY
 const RECORD_STRIDE := 4
 const SCORE_SUM_SHADER_PATH := "res://shaders/placement_result_score_sum.glsl"
 const DELTA_STRIDE := 2
@@ -44,6 +47,7 @@ const GPU_RUNTIME_PROVIDER_CONFIG_KEY := "gpu_autoobject_runtime"
 const GPU_PROFILE_CONTAINER_CONFIG_KEY := "auto_voxel_runtime_profile_container"
 const CandidateRouteSchemaScript := preload("res://scripts/candidate_route_schema.gd")
 const DebugBufferSetScript := preload("res://scripts/utils/debug_buffer_set.gd")
+const ScoreTimingProfilerScript := preload("res://scripts/utils/score_timing_profiler.gd")
 const CANDIDATE_ROUTE_SCHEMA_VERSION := CandidateRouteSchemaScript.SCHEMA_VERSION
 const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := CandidateRouteSchemaScript.RECORD_STRIDE_BYTES
 const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := CandidateRouteSchemaScript.RANGE_STRIDE_BYTES
@@ -62,6 +66,7 @@ const REQUIRED_GPU_PROFILE_BUFFERS := [
 	"profile_table",
 	"probe_records",
 	"pivot_records",
+	"collision_records",
 ]
 # debug_voxel 通道名/score_contract_debug 48 槽名表均已收敛进 DebugBufferSet（VOXEL_DEBUG_CHANNELS /
 # SCORE_CONTRACT_STATS）——唯一真源；输出不再回显 debug_channel_names/count（消费者查 schema）。
@@ -97,7 +102,7 @@ const SCORE_PUSH := [
 	["sample_max_y", "int"],      # 52
 	["sample_max_z", "int"],      # 56
 	["has_target", "int"],        # 60
-	["footprint_count", "int"],   # 64
+	["sample_count", "int"],      # 64
 	["asset_index", "int"],       # 68
 	["rotation_slots", "int"],    # 72
 	["scale_index", "int"],       # 76
@@ -109,12 +114,13 @@ const SCORE_PUSH := [
 	["search_radius_x", "int"],   # 100
 	["search_radius_y", "int"],   # 104
 	["search_radius_z", "int"],   # 108
-	["footprint_pivot_x", "int"], # 112
-	["footprint_pivot_y", "int"], # 116
-	["footprint_pivot_z", "int"], # 120
+	["sample_pivot_x", "int"],    # 112
+	["sample_pivot_y", "int"],    # 116
+	["sample_pivot_z", "int"],    # 120
 	["dim_count", "int"],         # 124
 ]  # 128 bytes exactly (Godot push-constant limit). score_weights / env_channel_count /
-# asset_profile moved to the ScoreConfig SSBO (set0 binding 10), packed by _pack_score_config().
+# asset_profile / sample_start moved to the ScoreConfig SSBO (set0 binding 10), packed by
+# _pack_score_config().
 const CANDIDATE_ROUTE_ADAPTER_PUSH := [
 	["asset_index", "int"],       # 0
 	["range_count", "int"],       # 4
@@ -139,7 +145,7 @@ const STAMP_PUSH := [
 	["grid_x", "int"],            # 0
 	["grid_y", "int"],            # 4
 	["grid_z", "int"],            # 8
-	["footprint_count", "int"],   # 12
+	["sample_count", "int"],      # 12
 	["write_min_x", "int"],       # 16
 	["write_min_y", "int"],       # 20
 	["write_min_z", "int"],       # 24
@@ -156,10 +162,10 @@ const STAMP_PUSH := [
 	["asset_color_g", "float"],   # 68
 	["asset_color_b", "float"],   # 72
 	["_padf0", "float"],          # 76
-	["footprint_pivot_x", "int"], # 80
-	["footprint_pivot_y", "int"], # 84
-	["footprint_pivot_z", "int"], # 88
-	["_pad1", "int"],             # 92
+	["sample_pivot_x", "int"],    # 80
+	["sample_pivot_y", "int"],    # 84
+	["sample_pivot_z", "int"],    # 88
+	["sample_start", "int"],      # 92 (this asset's start offset in collision_records)
 ]
 const STAMP_INIT_PUSH := [
 	["result_capacity", "int"],   # 0
@@ -668,11 +674,10 @@ func _run_multi_asset_session(
 			}
 			continue
 
-		var base_footprint := AssetDescriptorScript.bake_footprint(
-			cv,
-			bool(asset_def.get("add_support", true)),
-			int(asset_def.get("clearance_slices", 1)))
-		if base_footprint.is_empty():
+		# 形状数据不再逐 run 烘焙：注册期已烘焙进 profile 容器的 collision_records，
+		# 这里只按 profile_id 预检 range，空 range 与旧的"形状为空"同语义（静默跳过）。
+		var sample_range := _resolve_collision_sample_range(common_settings, int(asset_def.get("profile_id", -1)))
+		if int(sample_range.get("count", 0)) <= 0:
 			result_by_index[orig_idx] = {
 				"asset_index": orig_idx, "results": [], "world_results": [], "result_count": 0,
 			}
@@ -723,13 +728,12 @@ func _run_multi_asset_session(
 		for pivot in pivot_variants:
 			var pivot_offset := VariantUtils.vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
 			var pivot_voxels := VoxelGeneral.world_offset_to_voxels(pivot_offset, voxel_size)
-			# Footprint stays pivot-invariant (base_footprint); the pivot voxel offset is
-			# applied on the GPU (subtracted before yaw in the score/stamp shaders), so the
-			# same packed footprint bytes serve every pivot variant.
-			per_asset_settings["footprint_pivot_voxels"] = pivot_voxels
+			# collision_records 保持 pivot 无关；pivot 体素偏移在 GPU 上生效（score/stamp
+			# shader yaw 之前减去），同一份常驻记录服务所有 pivot 变体。
+			per_asset_settings["sample_pivot_voxels"] = pivot_voxels
 			if _gpu_state_chain_active and _gpu_state_chain_rd != null and get_rendering_device() != _gpu_state_chain_rd:
 				attach_rendering_device(_gpu_state_chain_rd, false)
-			var gpu_out := run_minimal(current_complexity, current_collision, base_footprint, grid_size, per_asset_settings)
+			var gpu_out := run_minimal(current_complexity, current_collision, grid_size, per_asset_settings)
 			if bool(gpu_out.get("contract_blocked", false)):
 				_release_placement_result_buffers(gpu_out)
 				_release_placement_result_buffers(best_gpu_out)
@@ -1112,28 +1116,40 @@ static func _placement_output_score(gpu_out: Dictionary) -> float:
 	return float(valid_count) + mean_penalty / (1.0 + absf(mean_penalty))
 
 
-## 单资产单 footprint 的 GPU 放置调度入口，由 run_multi_asset 针对每个 pivot 变体调用一次。
-## 校验 grid_size/footprint 等输入合法性，通过预筛选与候选路线绑定解析待测试的候选 tile 列表，
+## 单资产单 pivot 变体的 GPU 放置调度入口，由 run_multi_asset 针对每个 pivot 变体调用一次。
+## 资产形状不再作参数传入：settings 里给 profile 容器（GPU_PROFILE_CONTAINER_CONFIG_KEY）
+## 和 profile_id，score/stamp 直接读容器常驻的 collision_records（注册期烘焙）。
+## 校验 grid_size 与采样 range 合法性，通过预筛选与候选路线绑定解析待测试的候选 tile 列表，
 ## 确保 GPU 设备、着色器与管线就绪，并在需要时准备同类型物体间距排斥所需的 object ref 缓冲区。
 ## 依次派发 score/reduce/stamp 计算着色器完成打分、归约与写回，
 ## 最终解码并返回放置结果记录，以及 stamp 增量数据与包围盒等回读信息。
 func run_minimal(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
-	footprint: Array,
 	grid_size: Vector3i,
 	settings: Dictionary = {}
 ) -> Dictionary:
 	_apply_settings(settings)
+	# 分阶段计时(score→reduce→stamp 瓶颈定位)。关闭时全程零开销:mark() 空操作,
+	# 下方各 pass 后的额外 submit_and_sync 只在 _prof.enabled 时插入。见 ScoreTimingProfiler。
+	var _prof := ScoreTimingProfilerScript.new(
+		bool(settings.get("score_timing_profile", false)),
+		str(settings.get("score_timing_label", "asset_%d" % int(settings.get("asset_index", 0)))))
+	_prof.mark("run_start")
 	var voxel_count := VoxelGeneral.voxel_count(grid_size)
 	if voxel_count <= 0:
 		push_error("VoxelPlacementGenerator: grid_size must be positive")
 		return {}
-	if footprint.is_empty():
-		push_error("VoxelPlacementGenerator: footprint must not be empty")
+	var sample_range := _resolve_collision_sample_range(settings, int(settings.get("profile_id", -1)))
+	var sample_start := int(sample_range.get("start", 0))
+	var sample_count := int(sample_range.get("count", 0))
+	var collision_records_buffer: RID = VariantUtils.rid_from_value(sample_range.get("buffer_rid", RID()))
+	if sample_count <= 0 or not collision_records_buffer.is_valid():
+		push_error("VoxelPlacementGenerator: no resident collision samples for profile_id=%d (%s) — register the descriptor in the profile container and upload before placement" % [
+			int(settings.get("profile_id", -1)), str(sample_range.get("reason", "unknown"))])
 		return {}
-	if footprint.size() > FOOTPRINT_CAPACITY:
-		push_error("VoxelPlacementGenerator: footprint is limited to %d voxels" % FOOTPRINT_CAPACITY)
+	if sample_count > COLLISION_SAMPLE_CAPACITY:
+		push_error("VoxelPlacementGenerator: collision sample range exceeds capacity (%d > %d)" % [sample_count, COLLISION_SAMPLE_CAPACITY])
 		return {}
 
 	var _complexity_field_gpu_rid: RID = VariantUtils.rid_from_value(settings.get("complexity_field_buffer_rid", RID()))
@@ -1151,10 +1167,9 @@ func run_minimal(
 	var _complexity_field_gpu_source := str(settings.get("gpu_state_chain_source", "caller_provided_complexity_collision_field_rids"))
 	var _complexity_field_gpu_owner := str(settings.get("complexity_field_buffer_owner", "external"))
 	# Pivot voxel offset applied on the GPU (subtracted before yaw) instead of baked
-	# into local_pos on the CPU, so footprint bytes are pivot-invariant. Defaults to
-	# ZERO for callers that already pass a pivot-resolved footprint.
-	var footprint_pivot_voxels: Vector3i = VoxelGeneral.vector3i_from_value(settings.get("footprint_pivot_voxels", Vector3i.ZERO), Vector3i.ZERO)
-	var footprint_buffers := _pack_footprint(footprint)
+	# into the sample positions on the CPU, so the resident collision_records stay
+	# pivot-invariant. Defaults to ZERO for callers without pivot variants.
+	var sample_pivot_voxels: Vector3i = VoxelGeneral.vector3i_from_value(settings.get("sample_pivot_voxels", Vector3i.ZERO), Vector3i.ZERO)
 	var tile_counts := Vector3i(
 		ceili(float(grid_size.x) / float(TILE_SIZE)),
 		ceili(float(grid_size.y) / float(TILE_SIZE)),
@@ -1270,7 +1285,7 @@ func run_minimal(
 		return empty_output
 
 	var candidate_count := candidate_tile_count * top_k
-	var stamp_capacity := result_capacity * footprint.size()
+	var stamp_capacity := result_capacity * sample_count
 
 	if _complexity_field_gpu_borrowed_external:
 		track_borrowed_rid(_complexity_field_gpu_rid, KIND_BUFFER, SCOPE_FRAME, "%s:complexity_field" % _complexity_field_gpu_owner)
@@ -1285,8 +1300,9 @@ func run_minimal(
 		SCOPE_FRAME,
 		"placement_collision_field_r8_words"
 	)
-	var footprint_pos_buffer := storage_buffer_from_bytes(footprint_buffers.pos_bytes)
-	var footprint_weight_buffer := storage_buffer_from_bytes(footprint_buffers.weight_bytes)
+	# 资产形状缓冲：借用 profile 容器常驻的 collision_records（不归本 run 的 scope GC 管），
+	# score/stamp 以 sample_start/sample_count 寻址本资产的记录区间。
+	track_borrowed_rid(collision_records_buffer, KIND_BUFFER, SCOPE_FRAME, "auto_voxel_runtime_profile_container:collision_records")
 	var candidate_tile_buffer := storage_buffer_from_bytes(
 		PackedByteArray() if direct_all_tiles else pack_u32_array(candidate_tile_ids)
 	)
@@ -1353,6 +1369,10 @@ func run_minimal(
 	var candidate_route_adapter_count_buffer := RID()
 	var candidate_route_indirect_args_buffer := RID()
 
+	# setup 阶段结束(至此:场缓冲分配/上传、target/debug 缓冲创建全部完成;
+	# 资产采样缓冲为容器常驻 collision_records，无需创建)。
+	_prof.mark("setup")
+
 	if resident_route_sparse_gpu:
 		candidate_route_adapter_count_buffer = storage_buffer_zero(
 			CANDIDATE_ROUTE_ADAPTER_COUNT_WORDS * 4,
@@ -1371,11 +1391,13 @@ func run_minimal(
 			tile_count,
 			candidate_tile_count
 		)
+		if _prof.enabled:
+			submit_and_sync(true)
+			_prof.mark("route_adapter")
 	var score_dispatch := _dispatch_score(
 		complexity_buffer,
 		collision_buffer,
-		footprint_pos_buffer,
-		footprint_weight_buffer,
+		collision_records_buffer,
 		candidate_tile_buffer,
 		tile_topk_buffer,
 		target_field_buffer,
@@ -1388,31 +1410,41 @@ func run_minimal(
 		tile_count,
 		candidate_tile_count,
 		direct_all_tiles,
-		footprint.size(),
+		sample_start,
+		sample_count,
 		has_target,
 		gpu_contract,
 		route_settings,
-		footprint_pivot_voxels
+		sample_pivot_voxels
 	)
 	if resident_route_sparse_gpu:
 		resident_route_sparse["score_dispatch_indirect"] = bool(score_dispatch.get("score_dispatch_indirect", false))
 		resident_route_sparse["score_dispatch_indirect_block_reason"] = str(score_dispatch.get("score_dispatch_indirect_block_reason", "none"))
+	if _prof.enabled:
+		submit_and_sync(true)
+		_prof.mark("score")
 	_dispatch_reduce(tile_topk_buffer, result_buffer, result_count_buffer, candidate_count)
+	if _prof.enabled:
+		submit_and_sync(true)
+		_prof.mark("reduce")
 	_dispatch_stamp(
 		complexity_buffer,
 		collision_buffer,
 		result_buffer,
 		result_count_buffer,
-		footprint_pos_buffer,
-		footprint_weight_buffer,
+		collision_records_buffer,
 		stamp_delta_buffer,
 		stamp_delta_count_buffer,
 		stamp_bounds_buffer,
 		grid_size,
-		footprint.size(),
+		sample_start,
+		sample_count,
 		settings,
-		footprint_pivot_voxels
+		sample_pivot_voxels
 	)
+	if _prof.enabled:
+		submit_and_sync(true)
+		_prof.mark("stamp")
 
 	# GPU-direct handoff mode: keep placement result buffers resident, sum scores
 	# on GPU (8-byte control scalar for pivot selection), skip bulk readbacks.
@@ -1421,6 +1453,9 @@ func run_minimal(
 	var score_sum_buffer := RID()
 	if retain_placement_result_buffers:
 		score_sum_buffer = _dispatch_placement_score_sum(result_buffer, result_count_buffer, result_capacity)
+		if _prof.enabled:
+			submit_and_sync(true)
+			_prof.mark("score_sum")
 
 	submit_and_sync(true)
 
@@ -1463,6 +1498,8 @@ func run_minimal(
 	var debug_voxel_data := _rd.buffer_get_data(debug_voxel_buffer) if debug_read_voxel else PackedByteArray()
 	var score_contract_debug_data := _rd.buffer_get_data(score_contract_debug_buffer)
 	var score_contract_debug := _decode_score_contract_debug(score_contract_debug_data)
+	# readback 阶段结束(至此:所有 buffer_get_data 的 GPU→CPU 传输完成,含 debug_voxel 大回读)。
+	_prof.mark("readback")
 	var read_route_adapter_debug := bool(route_settings.get("read_candidate_route_sparse_adapter_debug", false))
 	var read_route_binding_debug := bool(route_settings.get(
 		"read_candidate_route_binding_debug",
@@ -1587,6 +1624,11 @@ func run_minimal(
 			"owner": "VoxelPlacementGenerator",
 			"rendering_device": _rd,
 		}
+
+	_prof.mark("done")
+	if _prof.enabled:
+		output["score_timing_profile"] = _prof.build_report()
+		print(_prof.format_report())
 
 	# During a run_multi_asset session, keep the device + resident shaders/pipelines and
 	# release only per-dispatch scratch (SCOPE_FRAME/PASS buffers + uniform sets); the
@@ -1738,6 +1780,55 @@ func _apply_settings(settings: Dictionary) -> void:
 
 
 ## 校验 GPU 自动物体运行时与体素画像容器是否就绪、渲染设备是否一致、
+## 从 settings 的 profile 容器解析指定 profile_id 的常驻 collision 采样区间与 buffer。
+## 返回 {ok, reason, start, count, buffer_rid, container}；失败时 ok=false 且 count=0。
+## 这是 score/stamp 资产形状的唯一来源（旧的每-run 形状烘焙/打包通道已删除），
+## 与 avoidance 用的完整 runtime 契约相互独立：只要求容器就绪，不要求 runtime provider。
+func _resolve_collision_sample_range(settings: Dictionary, profile_id: int) -> Dictionary:
+	var result := {"ok": false, "reason": "", "start": 0, "count": 0, "buffer_rid": RID(), "container": null}
+	var container = _config_object(settings, GPU_PROFILE_CONTAINER_CONFIG_KEY)
+	if container == null:
+		result["reason"] = "missing_auto_voxel_runtime_profile_container"
+		return result
+	result["container"] = container
+	if profile_id < 0:
+		result["reason"] = "missing_profile_id"
+		return result
+	if not _object_bool(container, "is_runtime_ready", "is_gpu_ready"):
+		result["reason"] = "auto_voxel_runtime_profile_container_not_ready"
+		return result
+	# 设备对齐：借用容器 buffer 的前提是 VPG 与容器在同一 RenderingDevice。
+	var container_rd: RenderingDevice = rendering_device_of(container)
+	if container_rd == null:
+		result["reason"] = "container_missing_rendering_device"
+		return result
+	if get_rendering_device() == null:
+		if not attach_rendering_device(container_rd, false):
+			result["reason"] = "vpg_attach_rendering_device_failed"
+			return result
+	elif get_rendering_device() != container_rd:
+		result["reason"] = "rendering_device_mismatch"
+		return result
+	var sample_range: Dictionary = {}
+	if container.has_method("get_collision_range_for_profile_id"):
+		sample_range = container.get_collision_range_for_profile_id(profile_id)
+	result["start"] = int(sample_range.get("start", 0))
+	result["count"] = int(sample_range.get("count", 0))
+	var buffer_rid := RID()
+	if container.has_method("get_collision_records_buffer"):
+		buffer_rid = container.get_collision_records_buffer()
+	result["buffer_rid"] = buffer_rid
+	if int(result["count"]) <= 0:
+		result["reason"] = "empty_collision_sample_range"
+		return result
+	if not buffer_rid.is_valid():
+		result["reason"] = "missing_collision_records_buffer"
+		return result
+	result["ok"] = true
+	result["reason"] = "ok"
+	return result
+
+
 ## 所需 GPU 缓冲区是否齐全，构建并返回 gpu_runtime_profile_contract 校验结果。
 func _validate_gpu_runtime_profile_contract(settings: Dictionary) -> Dictionary:
 	var runtime_provider = _config_object(settings, GPU_RUNTIME_PROVIDER_CONFIG_KEY)
@@ -1748,7 +1839,12 @@ func _validate_gpu_runtime_profile_contract(settings: Dictionary) -> Dictionary:
 			return _gpu_contract_result(false, "missing_gpu_runtime_profile_contract")
 		return _gpu_contract_result(true, "not_requested")
 	if runtime_provider == null:
-		return _gpu_contract_result(false, "missing_gpu_autoobject_runtime")
+		# 容器单独存在是合法的"形状来源"配置——score/stamp 的 collision_records 读取由
+		# _resolve_collision_sample_range 独立解析（B2 解耦，见 placement-score-3d.md），
+		# 不构成避让契约申请；只有显式 require（GPU 直写回写路径）才把缺 runtime 视为契约失败。
+		if require_contract:
+			return _gpu_contract_result(false, "missing_gpu_autoobject_runtime")
+		return _gpu_contract_result(true, "not_requested")
 	if profile_container == null:
 		return _gpu_contract_result(false, "missing_auto_voxel_runtime_profile_container")
 
@@ -2265,15 +2361,16 @@ func _pack_dimension_table(dims: Array) -> PackedByteArray:
 	return bytes
 
 
-## ScoreConfig SSBO bytes (std430, 64 B) for set0 binding 10. Holds what used to ride the push
+## ScoreConfig SSBO bytes (std430, 80 B) for set0 binding 10. Holds what used to ride the push
 ## constant but no longer fits under Godot's 128-byte limit:
 ##   cfg_score_weights   (vec4)  @0  : [reserved(support retired), collision_penalty, overlap_penalty, clearance_penalty]
 ##   cfg_dim_meta        (ivec4) @16 : [env_channel_count, 0, 0, 0]
 ##   cfg_asset_profile0  (vec4)  @32 : asset dimension profile channels 0..3
 ##   cfg_asset_profile1  (vec4)  @48 : asset dimension profile channels 4..7
-func _pack_score_config() -> PackedByteArray:
+##   cfg_sample_range    (ivec4) @64 : [sample_start (collision_records 起始偏移), 0, 0, 0]
+func _pack_score_config(sample_start: int) -> PackedByteArray:
 	var bytes := PackedByteArray()
-	bytes.resize(64)
+	bytes.resize(80)
 	bytes.encode_float(0, 0.0)  # cfg_score_weights.x reserved — support retired
 	bytes.encode_float(4, collision_penalty)
 	bytes.encode_float(8, overlap_penalty)
@@ -2282,14 +2379,14 @@ func _pack_score_config() -> PackedByteArray:
 	for pi in range(8):
 		var v := _asset_dimension_profile[pi] if pi < _asset_dimension_profile.size() else 0.0
 		bytes.encode_float(32 + pi * 4, v)
+	bytes.encode_s32(64, maxi(sample_start, 0))  # 68/72/76 stay 0
 	return bytes
 
 
 func _dispatch_score(
 	complexity_buffer: RID,
 	collision_buffer: RID,
-	footprint_pos_buffer: RID,
-	footprint_weight_buffer: RID,
+	collision_records_buffer: RID,
 	candidate_tile_buffer: RID,
 	tile_topk_buffer: RID,
 	target_field_buffer: RID,
@@ -2302,11 +2399,12 @@ func _dispatch_score(
 	tile_count: int,
 	candidate_tile_count: int,
 	direct_all_tiles: bool,
-	footprint_count: int,
+	sample_start: int,
+	sample_count: int,
 	has_target: int,
 	gpu_contract: Dictionary,
 	settings: Dictionary,
-	footprint_pivot: Vector3i
+	sample_pivot: Vector3i
 ) -> Dictionary:
 	# Phase-2 dimension-scoring bindings 8/9. dim_count == 0 (every legacy caller) makes the
 	# shader ignore them, but the uniform set must still bind valid buffers — use zero stubs.
@@ -2319,14 +2417,14 @@ func _dispatch_score(
 	var env_channel_buffer := storage_buffer_from_bytes(env_bytes, SCOPE_FRAME, "env_channel_field")
 	var dimension_table_buffer := storage_buffer_from_bytes(
 		_pack_dimension_table(_scoring_dimensions), SCOPE_FRAME, "scoring_dimension_table")
-	# ScoreConfig SSBO (binding 10): penalty weights + env_channel_count + per-asset profile,
-	# moved off the push constant so the push stays <= 128 bytes (Godot limit).
-	var score_config_buffer := storage_buffer_from_bytes(_pack_score_config(), SCOPE_FRAME, "score_config")
+	# ScoreConfig SSBO (binding 10): penalty weights + env_channel_count + per-asset profile
+	# + sample_start, moved off the push constant so the push stays <= 128 bytes (Godot limit).
+	var score_config_buffer := storage_buffer_from_bytes(_pack_score_config(sample_start), SCOPE_FRAME, "score_config")
+	# binding 2 = 容器常驻 collision_records（binding 3 已随双 buffer 布局退役）。
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, complexity_buffer),
 		make_storage_uniform(1, collision_buffer),
-		make_storage_uniform(2, footprint_pos_buffer),
-		make_storage_uniform(3, footprint_weight_buffer),
+		make_storage_uniform(2, collision_records_buffer),
 		make_storage_uniform(4, tile_topk_buffer),
 		make_storage_uniform(5, candidate_tile_buffer),
 		make_storage_uniform(6, target_field_buffer),
@@ -2360,7 +2458,7 @@ func _dispatch_score(
 		packed_color = packed_color,
 		sample_max_x = sample_max.x, sample_max_y = sample_max.y, sample_max_z = sample_max.z,
 		has_target = has_target,
-		footprint_count = footprint_count,
+		sample_count = sample_count,
 		asset_index = asset_index,
 		rotation_slots = rotation_slots, # rotation sweep width; shader evaluates 0..N-1 yaws, records best slot
 		scale_index = scale_index,
@@ -2369,8 +2467,8 @@ func _dispatch_score(
 		clearance_limit = clearance_limit,
 		candidate_count_signed = -candidate_tile_count if direct_all_tiles else candidate_tile_count,
 		search_radius_x = search_radius.x, search_radius_y = search_radius.y, search_radius_z = search_radius.z,
-		footprint_pivot_x = footprint_pivot.x, footprint_pivot_y = footprint_pivot.y, footprint_pivot_z = footprint_pivot.z,
-		dim_count = _dim_count,              # footprint_pivot_pad.w = dim_count (0 = penalty-only)
+		sample_pivot_x = sample_pivot.x, sample_pivot_y = sample_pivot.y, sample_pivot_z = sample_pivot.z,
+		dim_count = _dim_count,              # sample_pivot_pad.w = dim_count (0 = penalty-only)
 	}
 	# collision/overlap/clearance penalties, env_channel_count and the 8-entry asset profile
 	# live in the ScoreConfig SSBO (_pack_score_config, binding 10; slot x reserved — support
@@ -3166,7 +3264,7 @@ func _dispatch_reduce(tile_topk_buffer: RID, result_buffer: RID, result_count_bu
 
 
 ## 派发 stamp 计算着色器：先初始化 stamp_bounds 缓冲区（init pass），
-## 再根据已接受的放置结果与资产足迹（footprint）将增量写入
+## 再根据已接受的放置结果与容器常驻的资产 collision 采样记录将增量写入
 ## complexity/collision 场，同时生成紧凑的 stamp delta 数据，
 ## 供 CPU 端 / 紧凑状态链（compact state-chain）路径读取使用。
 func _dispatch_stamp(
@@ -3174,15 +3272,15 @@ func _dispatch_stamp(
 	collision_buffer: RID,
 	result_buffer: RID,
 	result_count_buffer: RID,
-	footprint_pos_buffer: RID,
-	footprint_weight_buffer: RID,
+	collision_records_buffer: RID,
 	stamp_delta_buffer: RID,
 	stamp_delta_count_buffer: RID,
 	stamp_bounds_buffer: RID,
 	grid_size: Vector3i,
-	footprint_count: int,
+	sample_start: int,
+	sample_count: int,
 	settings: Dictionary,
-	footprint_pivot: Vector3i
+	sample_pivot: Vector3i
 ) -> void:
 	var init_set0 := create_uniform_set([
 		make_storage_uniform(0, stamp_bounds_buffer),
@@ -3200,13 +3298,13 @@ func _dispatch_stamp(
 	if not commit_collision_buffer.is_valid():
 		commit_collision_buffer = collision_buffer
 
+	# binding 4 = 容器常驻 collision_records（binding 5 已随双 buffer 布局退役）。
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, complexity_buffer),
 		make_storage_uniform(1, collision_buffer),
 		make_storage_uniform(2, result_buffer),
 		make_storage_uniform(3, result_count_buffer),
-		make_storage_uniform(4, footprint_pos_buffer),
-		make_storage_uniform(5, footprint_weight_buffer),
+		make_storage_uniform(4, collision_records_buffer),
 		make_storage_uniform(6, stamp_delta_buffer),
 		make_storage_uniform(7, stamp_delta_count_buffer),
 		make_storage_uniform(8, stamp_bounds_buffer),
@@ -3218,9 +3316,9 @@ func _dispatch_stamp(
 	var write_max: Vector3i = settings.get("write_max", grid_size)
 	var push := PushConstantLayout.new(STAMP_PUSH).pack({
 		grid_x = grid_size.x, grid_y = grid_size.y, grid_z = grid_size.z,
-		footprint_count = footprint_count,
+		sample_count = sample_count,
 		write_min_x = write_min.x, write_min_y = write_min.y, write_min_z = write_min.z,
-		rotation_slots = rotation_slots, # rotation sweep width; stamp yaws footprint by record's best slot
+		rotation_slots = rotation_slots, # rotation sweep width; stamp yaws samples by record's best slot
 		write_max_x = write_max.x, write_max_y = write_max.y, write_max_z = write_max.z,
 		solid_threshold = solid_threshold,
 		scene_write_scale = scene_write_scale,
@@ -3229,7 +3327,8 @@ func _dispatch_stamp(
 		asset_color_r = asset_color.r,
 		asset_color_g = asset_color.g,
 		asset_color_b = asset_color.b,
-		footprint_pivot_x = footprint_pivot.x, footprint_pivot_y = footprint_pivot.y, footprint_pivot_z = footprint_pivot.z,
+		sample_pivot_x = sample_pivot.x, sample_pivot_y = sample_pivot.y, sample_pivot_z = sample_pivot.z,
+		sample_start = sample_start,
 	})
 
 	var init_push := PushConstantLayout.new(STAMP_INIT_PUSH).pack({
@@ -3237,39 +3336,13 @@ func _dispatch_stamp(
 		stamp_bounds_stride = STAMP_BOUNDS_STRIDE,
 	})
 
-	var total_threads := result_capacity * footprint_count
+	var total_threads := result_capacity * sample_count
 	var init_groups := ceili(float(maxi(result_capacity, 1)) / 64.0)
 	var groups := ceili(float(maxi(total_threads, 1)) / 64.0)
 	ComputePassChain.run(self, [
 		{pipeline = _pipeline_init_stamp_bounds, uniform_sets = [init_set0], push = init_push, groups = Vector3i(init_groups, 1, 1)},
 		{pipeline = _pipeline_stamp, uniform_sets = [set0], push = push, groups = Vector3i(groups, 1, 1)},
 	], false)
-
-
-## 将资产的足迹（footprint，局部体素形状）数组打包为 GPU 可读取的双缓冲字节：
-## pos(ivec4: local_pos + w=collision_q8) 与 weight(vec4: weight/flags/radius/0)。
-## 与评分/放置 compute 管线共用同一布局。
-func _pack_footprint(footprint: Array) -> Dictionary:
-	var pos_bytes := PackedByteArray()
-	var weight_bytes := PackedByteArray()
-	pos_bytes.resize(footprint.size() * BufferUtils.IVEC4_BYTES)
-	weight_bytes.resize(footprint.size() * BufferUtils.IVEC4_BYTES)
-	for i in range(footprint.size()):
-		var entry: Dictionary = footprint[i]
-		var local_pos: Vector3i = entry.get("local_pos", Vector3i.ZERO)
-		var collision_q8 := clampi(roundi(clampf(float(entry.get("collision_strength", 0.0)), 0.0, 1.0) * 255.0), 0, 255)
-		var flags := int(entry.get("flags", 0))
-		var weight := maxf(float(entry.get("weight", 1.0)), 0.0)
-		var pos_offset := i * BufferUtils.IVEC4_BYTES
-		BufferUtils.encode_vec3i4_with_w(pos_bytes, pos_offset, local_pos, collision_q8)
-		weight_bytes.encode_float(pos_offset + 0, weight)
-		weight_bytes.encode_float(pos_offset + 4, float(flags))
-		weight_bytes.encode_float(pos_offset + 8, float(entry.get("radius", 0.0)))
-		weight_bytes.encode_float(pos_offset + 12, 0.0)
-	return {
-		"pos_bytes": pos_bytes,
-		"weight_bytes": weight_bytes,
-	}
 
 
 ## 复制浮点数组并将其长度调整（补零或截断）为指定的期望大小。
@@ -3340,7 +3413,7 @@ func _decode_records(bytes: PackedByteArray, record_count: int) -> Array[Diction
 
 
 ## 将 GPU stamp 着色器输出的原始字节解码为体素增量（stamp delta）记录数组。
-## 每条记录包含体素坐标、场景复杂度、碰撞强度及结果/footprint 索引，写入标记无效的条目会被跳过。
+## 每条记录包含体素坐标、场景复杂度、碰撞强度及结果/采样索引，写入标记无效的条目会被跳过。
 func _decode_stamp_deltas(bytes: PackedByteArray, delta_count: int) -> Array[Dictionary]:
 	var deltas: Array[Dictionary] = []
 	var byte_stride := DELTA_STRIDE * 16
@@ -3368,7 +3441,7 @@ func _decode_stamp_deltas(bytes: PackedByteArray, delta_count: int) -> Array[Dic
 			"complexity": pos_scene.w,
 			"collision_strength": collision_meta.x,
 			"result_index": int(roundf(collision_meta.y)),
-			"footprint_index": int(roundf(collision_meta.z)),
+			"sample_index": int(roundf(collision_meta.z)),
 		})
 	return deltas
 

@@ -23,6 +23,7 @@ const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generator.gd")
 const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
+const ScoreTimingProfilerScript := preload("res://scripts/utils/score_timing_profiler.gd")
 
 const VOXEL_DISPLAY_ANCHOR := SPAEditorContract.VOXEL_DISPLAY_ANCHOR
 const VOLUME_SCORE_DISPLAY_OWNER := "volume_score"
@@ -34,14 +35,17 @@ const ANCHOR_RADIUS_MIN := 0.06
 @export_range(8, 64, 1) var anchor_spacing: int = 32           # 锚点体素间距（在标准地形网格上）
 @export_range(1, 8, 1) var selected_anchor_top_k: int = 4      # 选中锚点显示的 Top-K 资产数
 @export_range(1, 24, 1) var rotation_slots: int = 12           # 每候选原点扫描的 yaw 档数
-@export_range(1, 8, 1) var asset_footprint_voxels: int = 4     # 资产 footprint 最长轴的体素跨度
+@export_range(1, 8, 1) var asset_collision_span_voxels: int = 4  # 无 collision 资产按 mesh AABB 合成采样的最长轴体素跨度
 ## 要评分/放置的真实资产（AssetDescriptor `.tres`）。场景显式声明为首选来源。
 @export var placement_assets: Array[AssetDescriptor] = []
 @export_dir var asset_descriptor_dir: String = "res://assets"  # 回退扫描目录
 @export var auto_run_on_start := true
+## 开:每次 run_minimal 打印 score→reduce→stamp→readback 分阶段耗时,循环后打印合计——
+## 用于定位 GPU 打分管线性能瓶颈。见 [ScoreTimingProfiler]。默认关(零开销)。
+@export var profile_score_timing := false
 
 # ---- State -----------------------------------------------------------------
-## 每资产：{descriptor, name, mesh, color, footprint_shape, aabb, material}
+## 每资产：{descriptor, name, mesh, color, collision_span, aabb, material}
 var _assets: Array[Dictionary] = []
 var _anchors := PackedVector3Array()             # 锚点体素坐标
 var _anchor_world_positions := PackedVector3Array()
@@ -105,7 +109,7 @@ func reload_and_rescore() -> Dictionary:
 	if not Engine.is_editor_hint():
 		return {"ok": false, "reason": "not_editor_hint"}
 	_reload_placement_descriptors()
-	_assets.clear()   # 让 _ensure_assets_ready 用重载后的描述符重建 mesh/color/collision/footprint
+	_assets.clear()   # 让 _ensure_assets_ready 用重载后的描述符重建 mesh/color/collision/span
 	return calculate_voxel_scores()
 
 
@@ -136,7 +140,7 @@ func _reload_placement_descriptors() -> void:
 		if _is_asset_descriptor(fresh):
 			placement_assets[i] = fresh
 
-## 完整管线：场景场 → 资产 footprint → 锚点 → VPG 评分 → 可视化
+## 完整管线：场景场 → 资产 collision 采样注册（profile 容器）→ 锚点 → VPG 评分 → 可视化
 func run_volume_score_pipeline() -> Dictionary:
 	if not Engine.is_editor_hint():
 		return {"ok": false, "reason": "not_editor_hint"}
@@ -331,7 +335,7 @@ func _ensure_assets_ready() -> void:
 			"name": str(d.asset_id) if str(d.asset_id) != "" else "Asset%d" % _assets.size(),
 			"mesh": mesh,
 			"color": d.get_color(),
-			"footprint_shape": _footprint_shape_for(mesh),
+			"collision_span": _collision_span_for(mesh),
 			"aabb": mesh.get_aabb(),
 			"material": d.material,
 		})
@@ -346,8 +350,10 @@ func _generate_anchors() -> void:
 # ---- 细筛选 (Fine-Selection) GPU scoring -----------------------------------
 
 ## 数据驱动维度打分(design Phase 2):在 TargetSV 网格上 per asset 跑一次全网格
-## score_voxel_tile(dims-mode),footprint 3D 逐体素采样环境场,读 debug_voxel 的 per-voxel
-## 分并取每锚点体素分。维度=collision/complexity/color(全 MATCH)。见 scoring-dimensions-design.md。
+## score_voxel_tile(dims-mode),资产 collision 采样 3D 逐体素采样环境场,读 debug_voxel 的
+## per-voxel 分并取每锚点体素分。维度=collision/complexity/color(全 MATCH)。
+## 资产形状与 SPA 同源:注册进 profile 容器,score 直接读容器常驻 collision_records。
+## 见 scoring-dimensions-design.md。
 func _run_scoring() -> void:
 	_clear_scores()
 	if not _ensure_target_env_ready():
@@ -358,12 +364,34 @@ func _run_scoring() -> void:
 	var grid: Vector3i = _scene_fields.get("grid", Vector3i.ZERO)
 	var dims := _scoring_dimensions()
 	var vpg = VoxelPlacementGenerator.new()
+	var profile_container := AutoVoxelRuntimeProfileContainer.new()
+	if not profile_container.ensure_device():
+		push_warning("[VolumeScore] profile 容器拿不到 RenderingDevice —— 不打分")
+		return
+	var profile_ids: Array[int] = []
+	for a in range(_assets.size()):
+		var d = _assets[a].get("descriptor")
+		var pid := profile_container.register_descriptor(d)
+		if pid < 0 or int(profile_container.get_collision_range_for_profile_id(pid).get("count", 0)) <= 0:
+			# 无 collision 剖面:按 mesh AABB 跨度合成实心采样注册(CLAUDE.md 规则——
+			# 从 mesh AABB 派生,不回退通用盒资产)。
+			pid = profile_container.register_normalized_profile({
+				"source_kind": "volume_score_demo_span_fallback",
+				"asset_id": str(_assets[a].get("name", "asset_%d" % a)),
+				"color": _assets[a].get("color", Color.WHITE),
+				"complexity": clampf(d.get_complexity(), 0.0, 1.0) if d != null else 1.0,
+				"collision": _collision_samples_from_span(_assets[a].get("collision_span", Vector3i.ONE)),
+			})
+		profile_ids.append(pid)
+	if not profile_container.upload_profiles(true):
+		push_warning("[VolumeScore] profile 容器上传失败 —— 不打分")
+		profile_container.dispose()
+		return
+	if profile_score_timing:
+		ScoreTimingProfilerScript.reset_aggregate()
 	for a in range(_assets.size()):
 		var d = _assets[a].get("descriptor")
 		var col: Color = _assets[a].get("color", Color.WHITE)
-		var fp: Array = AssetDescriptorScript.bake_footprint(d.get_collision(), false, 1)
-		if fp.is_empty():
-			fp = _footprint_from_shape(_assets[a].get("footprint_shape", Vector3i.ONE))
 		var profile := PackedFloat32Array([
 			_mean_collision_strength(d), clampf(d.get_complexity(), 0.0, 1.0), col.r, col.g, col.b])
 		var settings := {
@@ -371,8 +399,12 @@ func _run_scoring() -> void:
 			"scoring_dimensions": dims, "asset_dimension_profile": profile,
 			"env_channel_field_floats": _env_channel_floats, "env_channel_count": 5,
 			"target_field_bytes": _target_field_bytes, "debug_read_voxel_channels": true,
+			"auto_voxel_runtime_profile_container": profile_container,
+			"profile_id": profile_ids[a],
+			"score_timing_profile": profile_score_timing,
+			"score_timing_label": str(_assets[a].get("name", "asset_%d" % a)),
 		}
-		var out: Dictionary = vpg.run_minimal(_complexity_field, _collision_field, fp, grid, settings)
+		var out: Dictionary = vpg.run_minimal(_complexity_field, _collision_field, grid, settings)
 		var dbg: PackedFloat32Array = out.get("debug_voxel", PackedFloat32Array())
 		# debug_voxel 的通道布局/索引空间来自 DebugBufferSet(VOXEL_DEBUG_CHANNELS) 单一真源，
 		# 不再硬编码 stride 8 / 通道号 4,5 / 展开公式。
@@ -394,8 +426,11 @@ func _run_scoring() -> void:
 			anchor_results.append({
 				"score": score, "valid": score > -1.0e17, "rotation_slot": rotation_slot, "voxel": av})
 		_results.append({"ok": true, "asset_index": a, "anchor_results": anchor_results})
+	if profile_score_timing:
+		print(ScoreTimingProfilerScript.format_aggregate("volume-score fine-selection"))
 	if vpg.has_method("dispose"):
 		vpg.dispose()
+	profile_container.dispose()
 	_elapsed_score_ms = float(Time.get_ticks_msec() - t0)
 	_winner_per_anchor = _compute_winners()
 	_scored = true
@@ -480,17 +515,18 @@ func _mean_collision_strength(d) -> float:
 	return clampf(s / float(samples.size()), 0.0, 1.0)
 
 
-## 无 collision 剖面时用体素跨度建一个实心 footprint(每格 strength/weight 1)。
-func _footprint_from_shape(span: Vector3i) -> Array:
+## 无 collision 剖面时用体素跨度建一组实心 canonical collision 采样(每格 strength/weight 1)，
+## 供注册进 profile 容器(容器注册期负责 clearance/去重烘焙)。
+func _collision_samples_from_span(span: Vector3i) -> Array:
 	var sx := maxi(span.x, 1); var sy := maxi(span.y, 1); var sz := maxi(span.z, 1)
-	var fp: Array = []
+	var samples: Array = []
 	for x in range(sx):
 		for y in range(sy):
 			for z in range(sz):
-				fp.append({
+				samples.append({
 					"local_pos": Vector3i(x - int(sx / 2), y, z - int(sz / 2)),
 					"collision_strength": 1.0, "flags": 0, "weight": 1.0})
-	return fp
+	return samples
 
 
 func _anchor_voxel(anchor_index: int) -> Vector3i:
@@ -621,7 +657,7 @@ func _build_anchor_point_display() -> void:
 
 ## 某锚点胜出资产的放置信息（transform/winner/yaw/aabb/fit_scale）——渲染、红框 bound、
 ## 点选三处共用同一变换，保证「红框恰好包住放置的树」且「点树身即选中该锚点」。
-## 缩放贴合 footprint box、按最优 yaw 旋转、原生 FBX 轴心贴地（cliff 半埋、植物立于地面）。无有效胜者返回空字典。
+## 按最优 yaw 旋转、原生 FBX 轴心贴地（cliff 半埋、植物立于地面）。无有效胜者返回空字典。
 func _winner_placement(anchor_index: int) -> Dictionary:
 	var winner := _winner_per_anchor[anchor_index] if anchor_index >= 0 and anchor_index < _winner_per_anchor.size() else -1
 	if winner < 0 or winner >= _assets.size():
@@ -634,13 +670,13 @@ func _winner_placement(anchor_index: int) -> Dictionary:
 		return {}
 	var aabb: AABB = _assets[winner].get("aabb", mesh.get_aabb())
 	# 真实 1:1 FBX 缩放，与 asset-descriptor-demo 一致（node.scale = Vector3.ONE）：不再按
-	# footprint box 归一化每个资产——那会把小资产（叶）放大得比大资产（崖）更多，丢失资产间
-	# 真实相对比例。资产按其 get_mesh() 原生尺寸渲染，footprint 仅用于评分。
+	# collision 采样包围盒归一化每个资产——那会把小资产（叶）放大得比大资产（崖）更多，丢失
+	# 资产间真实相对比例。资产按其 get_mesh() 原生尺寸渲染，collision 采样仅用于评分。
 	var fit_scale := 1.0
 	# 垂直对齐 mesh 的原生 FBX 轴心（local y=0）而非 AABB 底面：每个资产按作者轴心就位——
 	# cliff 轴心在几何中心 → 一半埋入地面；叶片/植物轴心在底部 → 立于地面。与
 	# asset-descriptor-demo 摆放一致（容器原点=FBX 轴心，置于地面基线）。水平仍取 AABB 中心，
-	# 使 footprint 居中于锚点体素。
+	# 使采样形状居中于锚点体素。
 	var pivot_local := Vector3(aabb.position.x + aabb.size.x * 0.5, 0.0, aabb.position.z + aabb.size.z * 0.5)
 	var yaw := deg_to_rad(float(int(ar.get("rotation_slot", 0))) * (360.0 / float(maxi(rotation_slots, 1))))
 	var basis := Basis(Vector3.UP, yaw) * Basis.IDENTITY.scaled(Vector3(fit_scale, fit_scale, fit_scale))
@@ -768,16 +804,17 @@ func _scan_descriptor_paths(root: String) -> PackedStringArray:
 	return out
 
 
-func _footprint_shape_for(mesh: Mesh) -> Vector3i:
+## 无 collision 资产的采样跨度：从 mesh AABB 按最长轴归一到 asset_collision_span_voxels。
+func _collision_span_for(mesh: Mesh) -> Vector3i:
 	if mesh == null:
 		return Vector3i.ONE
 	var size := mesh.get_aabb().size
 	var longest := maxf(maxf(size.x, size.y), maxf(size.z, 0.0001))
-	var target := float(asset_footprint_voxels)
+	var target := float(asset_collision_span_voxels)
 	return Vector3i(
-		clampi(int(round(size.x / longest * target)), 1, asset_footprint_voxels),
-		clampi(int(round(size.y / longest * target)), 1, asset_footprint_voxels),
-		clampi(int(round(size.z / longest * target)), 1, asset_footprint_voxels))
+		clampi(int(round(size.x / longest * target)), 1, asset_collision_span_voxels),
+		clampi(int(round(size.y / longest * target)), 1, asset_collision_span_voxels),
+		clampi(int(round(size.z / longest * target)), 1, asset_collision_span_voxels))
 
 
 # ---- SPA binding -----------------------------------------------------------

@@ -17,7 +17,7 @@
 
 | 项 | 当前契约 |
 | --- | --- |
-| 职责 | 保存所有资产种类的默认体素语义、footprint、anchor、probe、mesh/import 和实例化辅助配置。 |
+| 职责 | 保存所有资产种类的默认体素语义、collision 采样、anchor、probe、mesh/import 和实例化辅助配置。 |
 | 输入 | Inspector resource、脚手架 JSON、descriptor-backed asset、imported `AutoVoxelProfile` fallback、mesh/source mesh。 |
 | 输出 | descriptor-backed shared fields、pivot/probe/collision profile、`make_instance_config()` 配置、GPU profile registration payload。 |
 | 生命周期 | author/import/scaffold -> descriptor resource -> `AutoObject` getter 或 SPA asset registry -> profile container upload -> prefilter / placement / `ISWS` 构造 -> source write / commit。 |
@@ -29,7 +29,7 @@
 | 组 | 字段 / API | 归属 |
 | --- | --- | --- |
 | Shared semantic fields | `color`、`complexity`、`collision`、`get_color()`、`get_complexity()`、`get_collision()` | 写入 shared fields、`ISWS`、source voxel 和 committed `SceneVoxel` 的默认语义来源。 |
-| Placement shape | `collision`、`VoxelGeneral.normalize_collision_samples()`、`pivot_variants`、`auto_generate_vertical_pivots`、`get_pivot_variants()` | placement footprint、anchor/pivot variants 和 profile collision records。 |
+| Placement shape | `collision`、`VoxelGeneral.normalize_collision_samples()`、`pivot_variants`、`auto_generate_vertical_pivots`、`get_pivot_variants()` | placement collision 采样、anchor/pivot variants 和 profile collision records。 |
 | Semantic probes | `semantic_probe_profile`、`semantic_probe_density`、`context_sensing_radius`、`get_semantic_probes()` | prefilter 对 `anchor x asset` 打分的 descriptor-backed probes。 |
 | Asset identity / grouping | `asset_id`、`object_type`、`object_subtype` | asset/debug/profile lookup 和粗分组；不表达新的资产语义层级。 |
 | Profile fallback | `voxel_profile`、`from_profile()` | 导入或旧 preset 的 shared-field fallback；不覆盖显式 descriptor 字段。 |

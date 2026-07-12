@@ -85,7 +85,7 @@ AutoObject probe prefilter
   -> VoxelPlacementGenerator.run_multi_asset()
 ```
 
-候选区域必须偏向召回：GPU prefilter readback 会按 footprint、probe offset、context radius 和至少 1 voxel interpolation guard 扩张。footprint、collision、clearance 和 target fit 仍由 `score_voxel_tile.glsl` 精筛。
+候选区域必须偏向召回：GPU prefilter readback 会按 collision 采样范围、probe offset、context radius 和至少 1 voxel interpolation guard 扩张。collision 采样、clearance 和 target fit 仍由 `score_voxel_tile.glsl` 精筛。
 
 ## Stamp 计划
 

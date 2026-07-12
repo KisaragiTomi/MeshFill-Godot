@@ -17,15 +17,15 @@
 - `TargetSceneVoxel` / `TargetSV`、`BrushSV` 和合成后的 `TargetSV_B` 是目标效果画布：只提供 prefilter / routing / scoring / target fit / result feedback 的目标信号，不写入 asset 类型标签；源 `TargetSV` 与 `BrushSV` 需要存储，`TargetSV_B` 是默认读取输入。`TargetSceneVoxel` guidance record 只作为 guidance metadata，不进入 committed source 或 `SceneVoxel`。
 - [`AssetDescriptor`](../asset-descriptor-demo/asset-descriptor.md) 是「资产是什么」的唯一语义主来源；`AutoObject` 只持有 descriptor 入口、运行时身份、mesh、放置约束和配置入口。
 - 运行时 record / `instance_stamp_write_spec`（`ISWS`）只回答「本次实例放在哪里、写什么 payload」；提交后的 `SceneVoxel` 才是后续系统读取的结果，公开 per-voxel payload 统一写作 `complexity`、`color`、`collision` 和可选 `auto_mix`。`channel` 只属于 source/write context，不进入 committed read payload；`complexity` 是唯一强度字段。
-- `collision` 是 descriptor、runtime record、source voxel 和 committed `SceneVoxel` 之间的 canonical shared field；placement footprint record/API 也使用同名 `collision`。`occupied`、`type`、`source_type`、`source_voxel_type` 和 `commit_tick` 不作为 committed per-voxel payload。
+- `collision` 是 descriptor、runtime record、source voxel 和 committed `SceneVoxel` 之间的 canonical shared field；placement 采样 record/API 也使用同名 `collision`。`occupied`、`type`、`source_type`、`source_voxel_type` 和 `commit_tick` 不作为 committed per-voxel payload。
 - probe prefilter 只减少候选 `AutoObject` / voxel regions，不直接写最终 `SceneVoxel`；当前 score / top-K 留在本轮 GPU dispatch 内部，readback 只输出 anchors、candidate voxel regions 和 debug profile，不能作为运行时成功路径替代 GPU resident buffer contract。
-- Candidate voxel regions 必须保守扩张，覆盖 asset footprint、probe 插值采样半径、context 半径和插值 guard，宁可让更多 voxel 进入候选，也不要漏掉可能得分高的位置。
+- Candidate voxel regions 必须保守扩张，覆盖 asset collision 采样范围、probe 插值采样半径、context 半径和插值 guard，宁可让更多 voxel 进入候选，也不要漏掉可能得分高的位置。
 - 语义向量匹配只在每个 anchor 的粗筛候选资产内做 rerank / validate / prune，不遍历全资产库。
 - committed `SceneVoxel` 是**纯 auto** 状态，唯一提交路径是 stamp：VPG 的 GPU state-chain stamp 原位写入常驻 field（stamp 即提交），CPU 入口（`apply_instance_stamp_write_spec`）的盖章记录在 `commit_scene_voxels()` 时一次稀疏散射进同一常驻 field。不存在 per-voxel source-candidate 裁决/blend 提交管线。
 - `BrushSV`（场景笔刷层）常驻挂在 SPA 生命周期上，不进入 committed `SceneVoxel`。physical sampling / prefilter 的读取场是按需合成的 `BlendSV`（committed SV + `BrushSV`，brush 覆盖优先、collision 取 max）；brush 为空时读取场直通 committed SV 常驻对，零合成开销。`BlendSV` 是临时读取产物，pipeline 结束即释放。
-- 物理可放置性仍由 `score_voxel_tile.glsl` 的 footprint、collision、clearance、overlap 和候选级 target fit 决定；读取场为 `BlendSV` 时，stamp 双写 `BlendSV` 工作场与 committed SV 常驻场（同批次避让读 blend，提交落 auto）。
+- 物理可放置性仍由 `score_voxel_tile.glsl` 的 collision 采样、clearance、overlap 和候选级 target fit 决定；读取场为 `BlendSV` 时，stamp 双写 `BlendSV` 工作场与 committed SV 常驻场（同批次避让读 blend，提交落 auto）。
 - 结果级 feedback score 由 `ScenePlacementActor.score_blendsv_feedback_against_target()` 临时合成 `BlendSV` 与当前 target read buffer（通常是 `TargetSV_B`，没有 target brush 时等价于 `TargetSV`）对比 completeness / color 重合度，读回统计后立即删除临时体素，`BrushSV` 常驻保留。
-- 同类型 `AutoObject` 的 `min_spacing` 互斥收敛到 GPU object runtime / profile buffer contract；当前最终 footprint / collision 仍由 GPU score 确认。
+- 同类型 `AutoObject` 的 `min_spacing` 互斥收敛到 GPU object runtime / profile buffer contract；当前最终 collision 采样占用仍由 GPU score 确认。
 - `GPUAutoObjectRuntime` 只拥有 runtime object state、profile id、bounds / exclusion inputs 和 dirty object delta；per-voxel object refs、SV grid、`SceneVoxelTile` dirty、source range rebuild、commit 和 SV resident fields 仍由 `SceneVoxelCommitter` / SV owner 维护。
 - runtime metadata 只能提供查询、索引、debug 和候选剪枝，不成为资产默认值或 committed SceneVoxel 的第二套权威状态。
 
@@ -40,7 +40,7 @@
 | Target canvas | `TargetSceneVoxel` / `BrushSV` / `TargetSV_B` / `TargetSceneVoxelGenerator` | 源 `TargetSV` 保存中性原始目标；`BrushSV` 保存笔刷 delta / override；`TargetSV_B` 是二者合成后的实际采样目标；当前支持 GPU 生成、持久化和 dirty 更新。 |
 | Asset defaults | `AssetDescriptor` / `AutoObject.asset_descriptor` / descriptor-backed assets | descriptor 保存所有资产种类的默认语义；字段定义见 [`asset-descriptor.md`](../asset-descriptor-demo/asset-descriptor.md)。`AutoObject` 同名字段只作为 Inspector / 配置字典入口，descriptor 通过 SPA.register_asset() 注册并立即上传 GPU。 |
 | Probe prefilter | `AssetDescriptor.semantic_probe_profile` / `AutoObjectProbePrefilterGPU` | 从 BlendSV 读取场 / `TargetSV_B` 读取可放置 anchor，按 descriptor probes 在 GPU 内部打分和 top-K，并 readback voxel-region votes。SPA 创建 prefilter worker 并注入共享 RD。 |
-| Candidate routing | `candidate_voxel_regions_by_asset` / legacy `candidate_voxel_sparses_by_asset` debug view，`candidate_route_extents` debug | Host readback 后按 footprint、probe offset、context radius 和 interpolation guard 扩张为每个 asset 的 candidate voxel regions；这是 VPG candidate 输入，不是 CPU placement 替代路径。 |
+| Candidate routing | `candidate_voxel_regions_by_asset` / legacy `candidate_voxel_sparses_by_asset` debug view，`candidate_route_extents` debug | Host readback 后按 collision 采样范围、probe offset、context radius 和 interpolation guard 扩张为每个 asset 的 candidate voxel regions；这是 VPG candidate 输入，不是 CPU placement 替代路径。 |
 | Physical placement | `VoxelPlacementGenerator` / placement shaders | 只对 routed asset / candidate voxel regions 做 GPU score、reduce、stamp；可在 GPU scoring 前执行同类型 candidate voxel-region 剪枝；如果 asset 没有候选区域，本轮可跳过。SPA 创建 placer worker 并注入共享 RD + profile_container。 |
 | Instance stamp write spec | `instance_stamp_write_spec` / `ISWS` builders | 统一创建或更新本次实例 / stamp 写入 record，保存位置、像素、channel、collision、source 和 debug handle。 |
 | Auto stamp records | `SceneVoxelCommitter._instance_stamp_write_specs` | CPU 入口（demo/手动 auto 放置）的逐对象盖章记录，是脏区/全量重放（`_rebuild_scene_voxels_from_records`）的持久记录集；VPG 放置不产生 per-voxel source 记录，stamp 直接落常驻 field。 |
@@ -57,8 +57,8 @@
 | --- | --- | --- | --- |
 | Target read | `TargetSV`、`BrushSV`、target dirty bounds | `TargetSV_B` read buffers、target debug metadata | 只提供 guidance；不进入 source write 或 committed `SceneVoxel`。 |
 | Prefilter | `SV[t - 1]` resident fields、`TargetSV_B`、descriptor-backed probes、dirty tile ids | anchors、GPU-internal `anchor_autoobject_topk`、candidate voxel-region votes | 只收窄候选；不做最终 physical placement。SPA 通过 `_build_autoobject_array_for_pipeline()` 构建输入，注入 profile_container 的 borrowed GPU buffers。 |
-| Candidate routing | voxel-region votes、asset footprint、probe offsets、context radius、interpolation guard | `candidate_voxel_regions_by_asset` / legacy `candidate_voxel_sparses_by_asset`、`candidate_route_extents` debug | 输出偏召回的 candidate voxel regions；空候选 asset 本轮跳过。 |
-| Physical placement | routed asset defs、`BlendSV` 读取场（brush 为空时即 committed SV 常驻对）、`TargetSV_B` target buffers | accepted placements、`gpu_autoobject_runtime_writeback`、`instance_stamp_writeback`（mode = `gpu_state_chain_stamp`） | `score_voxel_tile.glsl` 负责 footprint、collision、clearance、overlap 和 target fit；stamp 原位提交 committed SV（读取场为 BlendSV 时双写）。SPA 注入 profile_container 和 gpu_runtime 到 placement settings。 |
+| Candidate routing | voxel-region votes、asset collision 采样范围、probe offsets、context radius、interpolation guard | `candidate_voxel_regions_by_asset` / legacy `candidate_voxel_sparses_by_asset`、`candidate_route_extents` debug | 输出偏召回的 candidate voxel regions；空候选 asset 本轮跳过。 |
+| Physical placement | routed asset defs、`BlendSV` 读取场（brush 为空时即 committed SV 常驻对）、`TargetSV_B` target buffers | accepted placements、`gpu_autoobject_runtime_writeback`、`instance_stamp_writeback`（mode = `gpu_state_chain_stamp`） | `score_voxel_tile.glsl` 负责 collision 采样、clearance、overlap 和 target fit；stamp 原位提交 committed SV（读取场为 BlendSV 时双写）。SPA 注入 profile_container 和 gpu_runtime 到 placement settings。 |
 | Commit | VPG state-chain stamp（已落）、pending CPU 入口盖章记录 | committed `SceneVoxel[tick]` 常驻 fields、tile 摘要 | `commit_scene_voxels()` 是 stamp-only 提交发布点：散射 pending 记录 + tick + tile 摘要，无裁决/blend。CPU 入口经 `sv_committer.apply_instance_stamp_write_spec()`。 |
 | Feedback | 临时合成 `BlendSV`、`TargetSV_B` / `TargetSV` | result-level target feedback score | 只评价提交结果；不替代候选评分；临时体素用完即删。 |
 
@@ -117,7 +117,7 @@ sample_value = TargetSV_B[sample_pos]
 
 - probe / context sample 越出 TargetSV_B 边界时，投射到最近的有效 TargetSV_B voxel。
 - 越界采样不直接视为空白，也不直接判失败。
-- clamp 只影响 TargetSV_B / target context 的读取位置，不改变 anchor、asset footprint 或最终 placement 坐标。
+- clamp 只影响 TargetSV_B / target context 的读取位置，不改变 anchor、asset collision 采样或最终 placement 坐标。
 - `clamped_sample_count` 可作为 debug / confidence hint；当前未进入 placement score。
 
 ## Candidate Routing Contract
@@ -130,7 +130,7 @@ upstream prefilter
 
 candidate routing
   -> read GPU voxel-region votes
-  -> expand by footprint / probes / context / guard
+  -> expand by collision samples / probes / context / guard
   -> skip empty candidate regions
   -> candidate_voxel_regions_by_asset
 
@@ -142,7 +142,7 @@ placement
 
 路由阶段的 hard gate 是每个 anchor 已筛选成功的候选资产。候选内语义 rerank / validate / prune 不能重新遍历全资产库或生成新的 asset candidate，只能在候选集内部调整排序、降低置信度或剔除 route。
 
-`candidate_voxel_regions_by_asset` 是保守 candidate voxel-region 集合，不是精确采样点集合。构建时应从 anchor voxel 出发，按 asset footprint AABB、semantic probe offset 范围、`context_sensing_radius` 和至少 1 voxel 的插值 guard 扩张到 candidate voxel regions；最终是否放置仍由 `score_voxel_tile.glsl` 精筛决定。`candidate_voxel_sparses_by_asset` 是 legacy alias。
+`candidate_voxel_regions_by_asset` 是保守 candidate voxel-region 集合，不是精确采样点集合。构建时应从 anchor voxel 出发，按 asset collision 采样 AABB、semantic probe offset 范围、`context_sensing_radius` 和至少 1 voxel 的插值 guard 扩张到 candidate voxel regions；最终是否放置仍由 `score_voxel_tile.glsl` 精筛决定。`candidate_voxel_sparses_by_asset` 是 legacy alias。
 
 `candidate_voxel_regions_by_asset` 作为当前 placement 主接口：
 

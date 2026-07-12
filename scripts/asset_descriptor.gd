@@ -12,13 +12,14 @@ const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd
 const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 const VoxelGeneralScript := preload("res://scripts/utils/voxel_general.gd")
 
-const FOOTPRINT_CAPACITY := 128     # footprint 体素上限，超出截断
-# 值 1 保留（原 FLAG_SUPPORT；支撑已在 anchor 阶段判定，不再烘焙 support 探针）
+# 值 1 保留（原 FLAG_SUPPORT；支撑已在 anchor 阶段判定，不再生成 support 探针）
+# collision sample 的 flags 位语义；clearance 探针由 AutoVoxelRuntimeProfileContainer
+# 注册期烘焙 collision records 时合成（score_voxel_tile.glsl 同值消费）。
 const FLAG_CLEARANCE := 2           # 顶部净空体素标记
 
 @export var color: Color = Color.WHITE                         # canonical 默认颜色；alpha 同步 complexity
 @export_range(0.0, 1.0) var complexity: float = 1.0             # canonical 默认强度
-@export var collision: Array[Dictionary] = []                   # canonical 局部 footprint sample 列表
+@export var collision: Array[Dictionary] = []                   # canonical 局部 collision sample 列表
 @export var pivot_variants: Array[Dictionary] = []              # 显式 pivot 列表
 @export var auto_generate_vertical_pivots: bool = false         # 从 collision 高度生成 vertical pivots
 @export_range(0.0, 16.0, 0.1) var vertical_pivot_middle_min_height: float = 1.5 # middle pivot 最小高度
@@ -71,96 +72,6 @@ func set_collision(source: Array) -> void:
 		if raw is Dictionary:
 			var entry := (raw as Dictionary).duplicate(true)
 			collision.append(entry)
-
-
-## 基于本 descriptor 的 collision 烘焙 placement/runtime footprint（get_* 派生家族的一员）。
-func get_footprint(add_support: bool = true, clearance_slices: int = 1) -> Array[Dictionary]:
-	return bake_footprint(get_collision(), add_support, clearance_slices)
-
-
-## 从 canonical collision samples 烘焙本地体素 footprint：加 clearance slices、
-## 去重、capacity 截断。仅支持 per-voxel point sample（box/cylinder primitive 已移除）。
-## voxel_size 不影响 footprint 拓扑，故不作参数。
-static func bake_footprint(collision_layers: Array, add_support: bool = true, clearance_slices: int = 1) -> Array[Dictionary]:
-	var point_samples: Array[Dictionary] = []
-	for cv in collision_layers:
-		if not cv is Dictionary:
-			continue
-		var collision_entry := cv as Dictionary
-		if not VoxelGeneralScript.is_point_collision_sample(collision_entry):
-			push_warning("AssetDescriptor.bake_footprint: ignoring non-point collision entry; box/cylinder primitives are no longer supported")
-			continue
-		point_samples.append(collision_entry)
-	var combined: Array[Dictionary] = []
-	if not point_samples.is_empty():
-		combined = _bake_point_collision(point_samples, add_support, clearance_slices)
-	var result := _deduplicate_footprint(combined)
-	if result.size() > FOOTPRINT_CAPACITY:
-		# Keep validity-critical probes: put flagged (clearance) entries first so truncation
-		# drops object-mass detail, not a clearance probe — losing a clearance probe would
-		# flip the hard clearance_overlap validity gate rather than merely trim detail.
-		result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-			return int(a.get("flags", 0)) != 0 and int(b.get("flags", 0)) == 0)
-		push_warning("AssetDescriptor.bake_footprint: footprint has %d voxels, truncating to %d" % [result.size(), FOOTPRINT_CAPACITY])
-		result.resize(FOOTPRINT_CAPACITY)
-	return result
-
-
-static func _bake_point_collision(collision_layers: Array[Dictionary], _add_support: bool, clearance_slices: int) -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
-	var top_by_xz := {}
-	for collision_entry in collision_layers:
-		if not bool(collision_entry.get("enabled", true)):
-			continue
-		var local_pos := VoxelGeneralScript.collision_local_voxel(collision_entry)
-		var collision_strength := clampf(float(collision_entry.get("collision_strength", 1.0)), 0.0, 1.0)
-		var flags := int(collision_entry.get("flags", 0))
-		var weight := maxf(float(collision_entry.get("weight", 1.0)), 0.0)
-		result.append({
-			"local_pos": local_pos,
-			"collision_strength": collision_strength,
-			"flags": flags,
-			"weight": weight,
-		})
-		if collision_strength <= 0.0:
-			continue
-		var key := "%d,%d" % [local_pos.x, local_pos.z]
-		if not top_by_xz.has(key) or local_pos.y > int(top_by_xz[key].y):
-			top_by_xz[key] = local_pos
-	# Support baking is retired: the anchor/candidate stage already guarantees the object
-	# rests on solid ground, so the scorer no longer re-tests support and NO FLAG_SUPPORT
-	# ground probes are emitted here. `_add_support` is kept in the signature as a reserved
-	# hook (the dimension design may reintroduce a support/physical mode later) but is inert.
-	if clearance_slices > 0:
-		for top in top_by_xz.values():
-			var pos := top as Vector3i
-			for cy in range(pos.y + 1, pos.y + 1 + clearance_slices):
-				result.append({
-					"local_pos": Vector3i(pos.x, cy, pos.z),
-					"collision_strength": 0.0,
-					"flags": FLAG_CLEARANCE,
-					"weight": 0.5,
-				})
-	return result
-
-
-static func _deduplicate_footprint(entries: Array[Dictionary]) -> Array[Dictionary]:
-	var by_pos := {}
-	for entry in entries:
-		var pos: Vector3i = entry.get("local_pos", Vector3i.ZERO)
-		var key := "%d,%d,%d" % [pos.x, pos.y, pos.z]
-		if by_pos.has(key):
-			var existing: Dictionary = by_pos[key]
-			existing["collision_strength"] = maxf(
-				float(existing.get("collision_strength", 0.0)), float(entry.get("collision_strength", 0.0)))
-			existing["flags"] = int(existing.flags) | int(entry.flags)
-			existing["weight"] = maxf(float(existing.weight), float(entry.weight))
-		else:
-			by_pos[key] = entry.duplicate()
-	var result: Array[Dictionary] = []
-	for entry in by_pos.values():
-		result.append(entry)
-	return result
 
 
 func set_pivot_variants(variants: Array) -> void:

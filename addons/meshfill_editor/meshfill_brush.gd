@@ -267,7 +267,7 @@ func paint_at_voxel(center: Vector2i) -> bool:
 	return _accumulate_brush_extent(center)
 
 
-func paint_voxel_footprint_for_test(center: Vector2i) -> bool:
+func paint_voxel_brush_extent_for_test(center: Vector2i) -> bool:
 	return paint_at_voxel(center)
 
 

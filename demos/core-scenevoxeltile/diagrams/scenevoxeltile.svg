@@ -108,7 +108,7 @@
     <rect class="node" x="75" y="430" width="255" height="100" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
     <text class="node-title" x="96" y="458">Placement Stamp</text>
     <text class="small" x="96" y="482">instance_stamp_write_spec</text>
-    <text class="small" x="96" y="502">footprint + guard expansion</text>
+    <text class="small" x="96" y="502">collision samples + guard expansion</text>
 
     <rect class="node" x="75" y="560" width="255" height="95" rx="8" fill="#fee2e2" stroke="#fca5a5"/>
     <text class="node-title" x="96" y="588">Profile Hot Update</text>

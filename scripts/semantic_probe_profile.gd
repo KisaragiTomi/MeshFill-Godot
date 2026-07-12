@@ -1,5 +1,10 @@
+@tool
 class_name SemanticProbeProfile
 extends Resource
+# @tool: @tool demo（placement-score-3d 等）在编辑器内经 profile 容器 register_descriptor →
+# normalize_descriptor → get_semantic_probes 调 get_probes()。无 @tool 时编辑器给 placeholder
+# 实例，方法调用报 "Attempt to call a method on a placeholder instance"（见 CLAUDE.md
+# 「Editor gotcha — descriptor methods need @tool」）。运行时行为不变。
 
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const VariantUtils := preload("res://scripts/utils/variant_utils.gd")

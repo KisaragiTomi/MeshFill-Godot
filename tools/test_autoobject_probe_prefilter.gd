@@ -13,7 +13,7 @@ const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 func _init() -> void:
 	var ok := true
 	ok = ok and _test_position_only_anchor_layers()
-	ok = ok and _test_candidate_routes_expand_for_probe_footprint_context_guard()
+	ok = ok and _test_candidate_routes_expand_for_probe_collision_context_guard()
 	ok = ok and _test_candidate_route_extent_debug_schema()
 	ok = ok and _test_prefilter_dispatch_bounds_helpers()
 	ok = ok and _test_prefilter_decode_output_contract()
@@ -133,8 +133,8 @@ func _test_position_only_anchor_layers() -> bool:
 		anchors.size(),
 	])
 	return true
-func _test_candidate_routes_expand_for_probe_footprint_context_guard() -> bool:
-	print("[AutoObjectProbePrefilter] test_candidate_routes_expand_for_probe_footprint_context_guard...")
+func _test_candidate_routes_expand_for_probe_collision_context_guard() -> bool:
+	print("[AutoObjectProbePrefilter] test_candidate_routes_expand_for_probe_collision_context_guard...")
 	var extent := Prefilter._build_route_extent_from_arrays(
 		[
 			ProbeProfile.make_probe(Vector3(9.0, 0.0, 0.0), Color.WHITE, 0.0, 1.0, 0.0, 0.0, "test"),
@@ -179,8 +179,8 @@ func _test_candidate_route_extent_debug_schema() -> bool:
 		"asset_index",
 		"probe_min",
 		"probe_max",
-		"footprint_min",
-		"footprint_max",
+		"collision_min",
+		"collision_max",
 		"context_radius_voxels",
 		"interpolation_guard_voxels",
 		"tile_radius",
@@ -194,8 +194,8 @@ func _test_candidate_route_extent_debug_schema() -> bool:
 	if not extent.get("probe_min", null) is Vector3i or not extent.get("probe_max", null) is Vector3i:
 		push_error("  FAIL: route extent probe bounds should be Vector3i")
 		return false
-	if not extent.get("footprint_min", null) is Vector3i or not extent.get("footprint_max", null) is Vector3i:
-		push_error("  FAIL: route extent footprint bounds should be Vector3i")
+	if not extent.get("collision_min", null) is Vector3i or not extent.get("collision_max", null) is Vector3i:
+		push_error("  FAIL: route extent collision-sample bounds should be Vector3i")
 		return false
 	if not extent.get("context_radius_voxels", null) is Vector3i or not extent.get("tile_radius", null) is Vector3i:
 		push_error("  FAIL: route extent context/tile radius should be Vector3i")

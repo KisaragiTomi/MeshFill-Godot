@@ -28,7 +28,7 @@
 | 输出 | descriptor-backed shared fields、runtime `ISWS` record、metadata handle、committed `SceneVoxel` accepted fields。 |
 | 生命周期 | author / scaffold -> descriptor 或 descriptor-backed asset 保存 -> `AutoObject` 读取 descriptor -> 构造 `ISWS` -> `apply_instance_stamp_write_spec()` 盖章 -> `commit_scene_voxels()` 发布 committed `SceneVoxel`（stamp-only 提交）。 |
 | Source of truth | 资产默认值在 `AssetDescriptor`；shared schema 在 `SharedPropertyType`；committed runtime read model 在 `SceneVoxelCommitter`。 |
-| Placement 边界 | placement 读取 descriptor-backed asset defs、collision footprint、candidate regions 和 `ISWS`，但不定义资产默认字段，也不把 candidate regions 当作 committed `SceneVoxel`。 |
+| Placement 边界 | placement 读取 descriptor-backed asset defs、collision 采样、candidate regions 和 `ISWS`，但不定义资产默认字段，也不把 candidate regions 当作 committed `SceneVoxel`。 |
 | Core runtime 边界 | `SceneVoxel` source / commit / resident buffers 由 `scene-voxel-field-system.md` 维护；本文只维护资产字段到 runtime record 的交接。 |
 | GPU runtime 边界 | GPU runtime 通过 descriptor-backed getters、profile staging、prefilter packing 和 VPG runtime/profile contract 消费资产语义；profile container 不能替代 descriptor/profile source assets。 |
 

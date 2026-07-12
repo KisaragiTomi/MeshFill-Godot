@@ -25,16 +25,16 @@ vec3 rotate_yaw_y(vec3 v, float ca, float sa) {
     return vec3(ca * v.x + sa * v.z, v.y, -sa * v.x + ca * v.z);
 }
 
-// Float variant for footprint offsets: rigid yaw (NO round, NO scale) so the
-// sample position stays a genuine float for trilinear sampling.
-vec3 rotate_footprint_offset_y_f(ivec3 fp, float ca, float sa) {
-    return rotate_yaw_y(vec3(fp), ca, sa);
+// Float variant for collision-sample offsets: rigid yaw (NO round, NO scale) so
+// the sample position stays a genuine float for trilinear sampling.
+vec3 rotate_sample_offset_y_f(ivec3 sample_offset, float ca, float sa) {
+    return rotate_yaw_y(vec3(sample_offset), ca, sa);
 }
 
-// Voxel-snapped variant for integer footprint offsets (round x/z, keep y).
-ivec3 rotate_footprint_offset_y(ivec3 fp, float ca, float sa) {
-    vec3 r = rotate_yaw_y(vec3(fp), ca, sa);
-    return ivec3(int(round(r.x)), fp.y, int(round(r.z)));
+// Voxel-snapped variant for integer collision-sample offsets (round x/z, keep y).
+ivec3 rotate_sample_offset_y(ivec3 sample_offset, float ca, float sa) {
+    vec3 r = rotate_yaw_y(vec3(sample_offset), ca, sa);
+    return ivec3(int(round(r.x)), sample_offset.y, int(round(r.z)));
 }
 
 // Yaw-only world transform: Basis(Vector3.UP, yaw) columns + instance origin

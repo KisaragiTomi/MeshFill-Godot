@@ -1008,7 +1008,7 @@ func _voxel_channel_color(voxel: Dictionary, channel: String) -> Color:
 # Toolbar entry point: for every asset shown in the scene (each tree / rock /
 # geo container holding a "Mesh" MeshInstance3D), voxelize the mesh on the GPU
 # and bake a full AssetDescriptor — color / complexity, per-voxel collision
-# footprint, semantic probe profile and matching voxel profile — then save one
+# samples, semantic probe profile and matching voxel profile — then save one
 # .tres per mesh under BAKED_DESCRIPTOR_DIR. Returns a summary the plugin
 # toolbar displays.
 
@@ -1075,7 +1075,7 @@ func _bake_descriptor_for_node(node: Node3D, voxelizer) -> AssetDescriptor:
 	var color := _node_color(node)
 	var complexity := _node_complexity(node)
 
-	# GPU solid voxelize -> per-voxel collision footprint + interior samples.
+	# GPU solid voxelize -> per-voxel collision samples + interior samples.
 	var collision_samples: Array[Dictionary] = []
 	var interior_samples: Array = []
 	var vres: Dictionary = voxelizer.voxelize(
@@ -1113,8 +1113,8 @@ func _bake_descriptor_for_node(node: Node3D, voxelizer) -> AssetDescriptor:
 
 
 # Coarse-core voxels (collision > 0) -> descriptor collision samples. Grid
-# coordinates are recentred so the footprint is centered in X/Z and based at
-# y=0 (the placement-footprint convention).
+# coordinates are recentred so the sample shape is centered in X/Z and based at
+# y=0 (the placement-sample convention).
 func _collision_samples_from_voxels(vres: Dictionary) -> Array[Dictionary]:
 	var samples: Array[Dictionary] = []
 	var voxels: Array = vres.get("voxels", [])

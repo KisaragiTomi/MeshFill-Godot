@@ -2,9 +2,9 @@
 #version 450
 
 // Stamps accepted placement results into complexity/collision field buffers.
-// Output VoxelStampDeltaBuffer uses 2 vec4 records per footprint sample:
+// Output VoxelStampDeltaBuffer uses 2 vec4 records per collision sample:
 //   0: vec4(voxel.xyz, complexity)
-//   1: vec4(collision_strength, result_index, footprint_index, wrote)
+//   1: vec4(collision_strength, result_index, sample_index, wrote)
 // Output VoxelStampBounds uses 2 uvec4 records per accepted placement:
 //   0: uvec4(min_xyz, written_count)
 //   1: uvec4(max_xyz_exclusive, reserved)
@@ -32,13 +32,18 @@ layout(set = 0, binding = 3, std430) restrict readonly buffer ResultCount {
     uint result_count;
 };
 
-layout(set = 0, binding = 4, std430) restrict readonly buffer FootprintPos {
-    ivec4 footprint_pos_strength[];
+// Asset shape source: the SPA runtime-profile container's resident collision_records
+// buffer (same records the scorer read; layout must match score_voxel_tile.glsl).
+// This dispatch's slice is sample_pivot_pad.w (start) + grid_size_counts.w (count).
+struct CollisionSampleRecord {
+    ivec4 pos_strength;   // xyz = local voxel offset, w = collision_strength_q8 (0..255)
+    vec4 weight_flags;    // x = weight, y = flags (FLAG_CLEARANCE bit), z/w = reserved
 };
-
-layout(set = 0, binding = 5, std430) restrict readonly buffer FootprintWeight {
-    vec4 footprint_weight_flags[];
+layout(set = 0, binding = 4, std430) restrict readonly buffer CollisionSampleRecords {
+    CollisionSampleRecord collision_records[];
 };
+// binding = 5 retired (the old per-run weight/flags half; both halves now live in
+// the single CollisionSampleRecord stream above).
 
 layout(set = 0, binding = 6, std430) restrict buffer VoxelStampDelta {
     vec4 stamp_delta[];
@@ -61,12 +66,12 @@ layout(set = 0, binding = 10, std430) restrict buffer CommitCollisionField {
 };
 
 layout(push_constant, std430) uniform Params {
-    ivec4 grid_size_counts;  // grid x, y, z, footprint_count
+    ivec4 grid_size_counts;  // grid x, y, z, sample_count
     ivec4 write_min_pad;     // write min xyz (w = rotation_count)
     ivec4 write_max_pad;     // write max xyz, exclusive
     vec4 params;             // solid_threshold, complexity_write_scale, collision_write_scale, dual_commit flag
     vec4 stamp_color;        // RGB = asset color, A = unused
-    ivec4 footprint_pivot_pad;   // xyz = footprint pivot voxels (subtracted before yaw), w = pad
+    ivec4 sample_pivot_pad;  // xyz = pivot voxels (subtracted before yaw), w = collision_records start offset
 };
 
 const uint RECORD_STRIDE = 4u;
@@ -142,7 +147,7 @@ void atomic_max_commit_collision_r8(uint index, float value) {
     }
 }
 
-// Complexity merges are monotonic max-by-alpha: overlapping footprints (e.g. a
+// Complexity merges are monotonic max-by-alpha: overlapping samples (e.g. a
 // clearance sample landing on an already-stamped solid) and same-dispatch
 // races must never downgrade a committed voxel. pack_rgba8 keeps alpha in the
 // low byte, so a plain atomicMax would order by red — CAS the whole word.
@@ -194,16 +199,16 @@ vec3 rotate_yaw_y(vec3 v, float ca, float sa) {
     return vec3(ca * v.x + sa * v.z, v.y, -sa * v.x + ca * v.z);
 }
 
-// Float variant for footprint offsets: rigid yaw (NO round, NO scale) so the
-// sample position stays a genuine float for trilinear sampling.
-vec3 rotate_footprint_offset_y_f(ivec3 fp, float ca, float sa) {
-    return rotate_yaw_y(vec3(fp), ca, sa);
+// Float variant for collision-sample offsets: rigid yaw (NO round, NO scale) so
+// the sample position stays a genuine float for trilinear sampling.
+vec3 rotate_sample_offset_y_f(ivec3 sample_offset, float ca, float sa) {
+    return rotate_yaw_y(vec3(sample_offset), ca, sa);
 }
 
-// Voxel-snapped variant for integer footprint offsets (round x/z, keep y).
-ivec3 rotate_footprint_offset_y(ivec3 fp, float ca, float sa) {
-    vec3 r = rotate_yaw_y(vec3(fp), ca, sa);
-    return ivec3(int(round(r.x)), fp.y, int(round(r.z)));
+// Voxel-snapped variant for integer collision-sample offsets (round x/z, keep y).
+ivec3 rotate_sample_offset_y(ivec3 sample_offset, float ca, float sa) {
+    vec3 r = rotate_yaw_y(vec3(sample_offset), ca, sa);
+    return ivec3(int(round(r.x)), sample_offset.y, int(round(r.z)));
 }
 
 // Yaw-only world transform: Basis(Vector3.UP, yaw) columns + instance origin
@@ -219,14 +224,14 @@ mat4 yaw_transform_y(float ca, float sa, vec3 origin) {
 // @@END yaw_rotation_y
 
 void main() {
-    uint footprint_count = uint(max(grid_size_counts.w, 0));
-    if (footprint_count == 0u) {
+    uint sample_count = uint(max(grid_size_counts.w, 0));
+    if (sample_count == 0u) {
         return;
     }
 
     uint global_index = gl_GlobalInvocationID.x;
-    uint result_index = global_index / footprint_count;
-    uint footprint_index = global_index - result_index * footprint_count;
+    uint result_index = global_index / sample_count;
+    uint sample_index = global_index - result_index * sample_count;
 
     if (result_index >= result_count) {
         return;
@@ -250,11 +255,12 @@ void main() {
     float rot_sa = sin(rot_angle);
 
     ivec3 origin = ivec3(round(origin_score.xyz));
-    ivec4 fp = footprint_pos_strength[footprint_index];
-    vec4 wf = footprint_weight_flags[footprint_index];
+    CollisionSampleRecord sample_record = collision_records[uint(max(sample_pivot_pad.w, 0)) + sample_index];
+    ivec4 fp = sample_record.pos_strength;
+    vec4 wf = sample_record.weight_flags;
     // Pivot subtracted before yaw to match the scorer (CPU shift-then-rotate order).
-    ivec3 base_fp = fp.xyz - footprint_pivot_pad.xyz;
-    ivec3 rotated_fp = rot_count > 1 ? rotate_footprint_offset_y(base_fp, rot_ca, rot_sa) : base_fp;
+    ivec3 base_fp = fp.xyz - ivec3(sample_pivot_pad.xyz);
+    ivec3 rotated_fp = rot_count > 1 ? rotate_sample_offset_y(base_fp, rot_ca, rot_sa) : base_fp;
     ivec3 p = origin + rotated_fp;
 
     if (!in_grid_bounds(p) || !in_write_bounds(p)) {
@@ -262,12 +268,12 @@ void main() {
     }
 
     float weight = max(wf.x, 0.0);
-    float footprint_collision_strength = clamp(float(fp.w) / 255.0, 0.0, 1.0);
+    float sample_collision_strength = clamp(float(fp.w) / 255.0, 0.0, 1.0);
     // Support baking is retired (no FLAG_SUPPORT ground probes are emitted), so the
     // strength-0 support-probe skip guard that used to live here is gone. Clearance
     // probes were never affected by it.
     float complexity = clamp(weight * params.y, 0.0, 1.0);
-    float collision_strength = footprint_collision_strength >= params.x ? clamp(footprint_collision_strength * params.z, 0.0, 1.0) : 0.0;
+    float collision_strength = sample_collision_strength >= params.x ? clamp(sample_collision_strength * params.z, 0.0, 1.0) : 0.0;
 
     int index = voxel_index(p);
     uint packed_complexity = pack_rgba8(vec4(stamp_color.rgb, complexity));
@@ -285,6 +291,6 @@ void main() {
     uint compact_index = atomicAdd(stamp_delta_count, 1u);
     uint delta_base = compact_index * DELTA_STRIDE;
     stamp_delta[delta_base + 0u] = vec4(vec3(p), complexity);
-    stamp_delta[delta_base + 1u] = vec4(collision_strength, float(result_index), float(footprint_index), 1.0);
+    stamp_delta[delta_base + 1u] = vec4(collision_strength, float(result_index), float(sample_index), 1.0);
     write_stamp_bounds(result_index, p);
 }

@@ -137,7 +137,7 @@
     <g id="instance_stamp_write_spec">
     <rect class="node" x="1225" y="365" width="265" height="120" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
     <text class="node-title" x="1243" y="393">ISWS</text>
-    <text class="small"><tspan x="1243" y="415">instance_stamp_write_spec</tspan><tspan x="1243" y="432">position and collision footprint</tspan><tspan x="1243" y="449">scene write handle</tspan></text>
+    <text class="small"><tspan x="1243" y="415">instance_stamp_write_spec</tspan><tspan x="1243" y="432">position and collision samples</tspan><tspan x="1243" y="449">scene write handle</tspan></text>
     </g>
     <g id="sv-owned-path">
     <rect class="node" x="1225" y="575" width="265" height="110" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
