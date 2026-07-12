@@ -4,6 +4,18 @@
 
 关联：`项目冗余与共有逻辑优化方案.md`（批次 2 的 dict 去重条目由本方案收编）、mem `refactor-stability-playbook`（codegen SSOT 与 golden-master）。
 
+> **执行进度（2026-07-12 三代理审计核实，主体落地于 `c878ae9` + `b0ff085`）**
+>
+> - **步骤 1 ✅** `debug_buffer_set.gd` 全面落地：4 个 schema SSOT（`SCORE_CONTRACT_STATS` / `CANDIDATE_ROUTE_BINDING_STATS` / `CANDIDATE_ROUTE_DEBUG` / `VOXEL_DEBUG_CHANNELS`）+ allocate/reset/make_uniforms/readback/decode_shaped（q1000、bool）/golden_snapshot/emit_glsl_block + `CONSUMERS` 注册表；desync 门禁 `tools/verify_glsl_gen_blocks.gd` headless 实测 `checked=12 failures=0`。
+> - **步骤 2 ✅** 试点 route debug 家族完成：`@@GEN` 块进 `score_voxel_tile` / `candidate_route_sparse_adapter` / `pack_candidate_route_records_from_votes`（原第 3 个消费者 expand 已并入 pack）；VPG 端分配与解码全走设施。
+> - **步骤 3 ◐** score_contract 半边 ✅（gen-block set1/b8，reset/readback 走设施，always-on 保持，**contract 与 observability 已分实例分 buffer**）；debug_voxel 半边只差 VPG 端——schema 已声明 `index_space=voxel_dense_xzy`、gen-block 已进 shader、demo 端已按 schema 解码，但 VPG 仍手写分配（本地 `NUM_DEBUG_CHANNELS := 8`，未从 schema 推导）与 `_decode_float_array` 手写解码。
+> - **步骤 4 ◐** `report_schema.gd` ✅ 落地，`fail()` 已收编 SPA ×7 失败字典；但 **`build()` 全项目零调用**——writeback 报告仍手工组装（`WRITEBACK_REPORT` 仅文档化），VPG run 输出已按六类冗余手工精简（含 blocked 变体对齐）但无 schema 强制、无 `include_diagnostics` 分级门。
+> - **步骤 5 ✗** `TARGET_STATS_*` 三处声明原样未迁（`target_scene_voxel.glsl` / `target_sv_pack_read_buffers.glsl` / `target_scene_voxel_generator.gd`）；⚠ 其 q1000000 量化与 `MIN_PACK_BASE` 反转-min 编码需先给 DebugBufferSet 加新 decode kind。
+> - **步骤 6 ◐** 生产端 ✅（`b0ff085`：`golden_snapshot` 挂 VPG 输出，settings 键 `debug_read_golden_snapshot`；桥现行 call_method 即可取，不加专用桥方法）；消费端 ✗——无 `goldens/` 目录、无存储/对比客户端，前后对照流程尚不可用。
+> - 成本约定未落的一条：**写侧门控未实现**（config SSBO `debug_enabled` + 禁用绑 dummy buffer），当前仅 readback 门控、shader 恒写观测通道。
+>
+> **剩余工作（按价值排序）**：① VPG debug_voxel 收编 ChannelField 实例（删本地通道常量与手写解码）② writeback 报告走 `ReportSchema.build`（expand/migrate/contract 三步）③ VPG run 输出定义 schema + diag 分级 ④ TARGET_STATS 迁移（先加 decode kind）⑤ golden-master 消费链（tools/ 桥客户端 + `goldens/` 存储对比）⑥ 观测实例写侧门控（顺带解决 Open Question 1 的 bitmask 粒度）。
+
 ## 现状
 
 ### GPU debug 承载：三套同构机制各写一遍
