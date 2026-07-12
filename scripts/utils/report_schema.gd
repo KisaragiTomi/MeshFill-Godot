@@ -56,6 +56,29 @@ static func fail(schema: Dictionary, reason: String, extra: Dictionary = {}) -> 
 	return out
 
 
+## merge / 发射后突变的硬门（出口复验）：build() 的未声明键刹车只作用于组装时刻，
+## 报告发射后若还被 merge 突变（如 writeback 总报告的逐资产累加），挂接前在此复验——
+##   ① 出现未声明键；② 未请求 include_diagnostics 时含 diag 键（缺席的 diag 键不得被
+##   merge 重新引入）；③ 出现 derived 键（永不输出）——均 push_error。
+## 与 build 同款 authoring-time 语义：只刹车不修剪，原样返回 report 以便就地挂接。
+static func validate_report(schema: Dictionary, report: Dictionary, include_diagnostics: bool = false) -> Dictionary:
+	var declared := _declared_key_set(schema)
+	var diag_keys := {}
+	for key in schema.get(TIER_DIAG, []):
+		diag_keys[str(key)] = true
+	var derived_keys := {}
+	for key in schema.get(TIER_DERIVED, []):
+		derived_keys[str(key)] = true
+	for key in report:
+		if not declared.has(key):
+			push_error("ReportSchema.validate_report[%s]: 发射后出现未声明键 '%s'——merge 突变须先把键登进某一 tier" % [_schema_name(schema), key])
+		elif derived_keys.has(key):
+			push_error("ReportSchema.validate_report[%s]: derived 键 '%s' 不得输出" % [_schema_name(schema), key])
+		elif not include_diagnostics and diag_keys.has(key):
+			push_error("ReportSchema.validate_report[%s]: 未请求 include_diagnostics 时 merge 重新引入了 diag 键 '%s'" % [_schema_name(schema), key])
+	return report
+
+
 ## 布局元数据查询接口（schema 回显的去处）：channel 名表等「不是本次结果、是布局元数据」的键
 ## 从结果里挪来这里，消费者按需查询，不随每次输出发送。
 static func metadata(schema: Dictionary) -> Dictionary:

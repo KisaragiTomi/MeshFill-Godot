@@ -1011,7 +1011,11 @@ func _run_multi_asset_session(
 		output["candidate_route_runtime_read_source"] = _candidate_route_runtime_read_source_from_settings(candidate_route_output_settings)
 		output["candidate_route_input_contract"] = _candidate_route_input_contract_from_settings(candidate_route_output_settings)
 	if write_accepted_placements_to_gpu_runtime:
-		output["gpu_autoobject_runtime_writeback"] = runtime_writeback_report
+		# merge 后再发射的硬门：逐资产 merge 只许触碰 WRITEBACK_REPORT 已声明键，且不得在
+		# 未请求 include_diagnostics 时重新引入缺席的 diag 键——build() 的 authoring 刹车
+		# 管不到发射后的突变，这里在挂接前补出口复验（只报错不修剪）。
+		output["gpu_autoobject_runtime_writeback"] = ReportSchema.validate_report(
+			ReportSchema.WRITEBACK_REPORT, runtime_writeback_report, include_diagnostics)
 	if not target_read_buffer_output_summary.is_empty():
 		output["target_read_buffer_summary"] = target_read_buffer_output_summary
 	if not instance_stamp_writeback.is_empty():
