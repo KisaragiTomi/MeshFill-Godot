@@ -95,7 +95,8 @@ static func _schema_name(schema: Dictionary) -> String:
 # 被 test_markdown_contracts / test_autoobject_probe_prefilter / spa_test 等逐字断言的进 contract。
 
 ## gpu_autoobject_runtime_writeback 报告（voxel_placement_writeback.gd 两个 builder 的共同 SSOT，
-## 全部经 build() 发出）。expand 轮：只做 schema 强制，输出键集/值与手工组装逐字节一致；重分级留 migrate 轮。
+## 全部经 build() 发出）。migrate 轮（2026-07-12）已落：零消费者的溯源/摘要键降入 diag，
+## 仅 placement settings 的 "include_diagnostics"（默认 false）请求时输出。
 ## 条件键（缺席时 build 跳过）：asset_index/profile_id/object_type（仅 per-asset 报告）、
 ## writeback_detail_reason（仅 runtime spawn 失败）、pending_dirty_delta_count（spawn 成功或 merge 后）、
 ## live_count/profile_summary（仅 merge 后的总报告）、runtime_summary（总报告恒有；per-asset 仅成功尾）。
@@ -107,7 +108,7 @@ static func _schema_name(schema: Dictionary) -> String:
 ##     runtime_command_flush_mode/accepted_placement_record_{schema_version,stride_bytes,shader_consumed,
 ##     shader_name,shader_path,shader_dispatch_count,shader_stats}/resident_gpu_allocator_writeback{,_mode,_blocked_reason}；
 ##   test_markdown_contracts._test_vpg_and_scene_tile_gpu_binding_contracts — 源码文本须含
-##     "writeback_reason" 与 "cpu_fallback": false（writeback 骨架字面量，勿删）。
+##     "writeback_reason" 与 "cpu_fallback": false（writeback 骨架字面量，勿删——只降输出 tier，不删源码）。
 const WRITEBACK_REPORT := {
 	"name": "gpu_autoobject_runtime_writeback",
 	"core": [
@@ -116,13 +117,8 @@ const WRITEBACK_REPORT := {
 	],
 	"contract": [
 		"writeback_reason",
-		# TODO(migrate): candidates for diag tier — gpu_first, cpu_fallback, readback_source,
-		# runtime_read_source, accepted_placement_record_source, accepted_placement_origin_record_source,
-		# cpu_batch_bridge（恒定 provenance/echo，零逐字断言读者；expand 轮为字节等价保留 contract）。
-		"gpu_first", "cpu_fallback", "readback_source", "runtime_read_source",
-		"accepted_placement_writeback_mode", "accepted_placement_record_source",
-		"accepted_placement_origin_record_source", "accepted_placement_spawn_api",
-		"cpu_batch_bridge", "runtime_command_flush_mode",
+		"accepted_placement_writeback_mode", "accepted_placement_spawn_api",
+		"runtime_command_flush_mode",
 		"accepted_placement_record_schema_version", "accepted_placement_record_stride_bytes",
 		"accepted_placement_record_count", "accepted_placement_record_byte_count",
 		"accepted_placement_record_debug_packed", "accepted_placement_record_shader_consumed",
@@ -134,11 +130,16 @@ const WRITEBACK_REPORT := {
 		"resident_gpu_allocator_writeback_blocked_reason",
 		"asset_index", "profile_id", "object_type",
 		"writeback_detail_reason", "pending_dirty_delta_count", "live_count",
-		# TODO(migrate): candidates for diag tier — runtime_summary, profile_summary（人看的对象摘要；
-		# 今日恒发故先留 contract，迁 diag 须同轮改 include_diagnostics 调用方）。
-		"runtime_summary", "profile_summary",
 	],
-	"diag": [],
+	"diag": [
+		# migrate 轮全项目 grep 复核：零运行时读者（spa_test/scene_placement_actor 均不读；
+		# test_markdown_contracts 对这些键只断言其他报告族/文档文本）。
+		# 其中 gpu_first/cpu_fallback/*_source/cpu_batch_bridge 值恒定（恒定 provenance）——
+		# 彻底删除是后续单独决策，本轮仅降级到 diag。
+		"gpu_first", "cpu_fallback", "readback_source", "runtime_read_source",
+		"accepted_placement_record_source", "accepted_placement_origin_record_source",
+		"cpu_batch_bridge", "runtime_summary", "profile_summary",
+	],
 	# derived: —（本族无纯派生键）。
 }
 

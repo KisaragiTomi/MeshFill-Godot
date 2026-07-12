@@ -859,11 +859,13 @@ func _run_multi_asset_session(
 		result_by_index[orig_idx] = asset_result
 
 	var asset_results: Array[Dictionary] = []
+	var include_writeback_diagnostics := bool(common_settings.get("include_diagnostics", false))
 	var runtime_writeback_report := _new_gpu_autoobject_runtime_writeback_report(
 		runtime_provider,
 		profile_container,
 		gpu_contract,
-		write_accepted_placements_to_gpu_runtime
+		write_accepted_placements_to_gpu_runtime,
+		include_writeback_diagnostics
 	)
 	for i in range(asset_defs.size()):
 		asset_results.append(result_by_index.get(i, {
@@ -3852,8 +3854,9 @@ func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: 
 func _new_gpu_autoobject_runtime_writeback_report(runtime_provider: Object,
 	profile_container: Object,
 	gpu_contract: Dictionary,
-	enabled: bool) -> Dictionary:
-	return _ensure_placement_writeback()._new_gpu_autoobject_runtime_writeback_report(runtime_provider, profile_container, gpu_contract, enabled)
+	enabled: bool,
+	include_diagnostics: bool = false) -> Dictionary:
+	return _ensure_placement_writeback()._new_gpu_autoobject_runtime_writeback_report(runtime_provider, profile_container, gpu_contract, enabled, include_diagnostics)
 ## 转发给 VoxelPlacementWriteback：将已接受的放置结果（GPU 常驻缓冲区）交给 GPU AutoObject 运行时。
 func _write_accepted_placements_to_gpu_runtime(runtime_provider: Object,
 	asset_index: int,

@@ -176,10 +176,10 @@ static func _merge_gpu_autoobject_runtime_flush_contract(target: Dictionary, sou
 
 
 ## 唯一发射口：writeback 报告一律经 ReportSchema.build 组装（values 里未声明的键
-## authoring-time push_error）。build 按 values.has 跳过缺席键，条件键的在场性由收集处决定，
-## 输出与手工组装同键同值。
-static func _emit_writeback_report(values: Dictionary) -> Dictionary:
-	return ReportSchema.build(ReportSchema.WRITEBACK_REPORT, values)
+## authoring-time push_error）。build 按 values.has 跳过缺席键，条件键的在场性由收集处决定；
+## diag tier 仅 include_diagnostics（placement settings 的 "include_diagnostics" 键）时输出。
+static func _emit_writeback_report(values: Dictionary, include_diagnostics: bool = false) -> Dictionary:
+	return ReportSchema.build(ReportSchema.WRITEBACK_REPORT, values, include_diagnostics)
 
 
 ## GPU AutoObject 运行时写回报告的共有骨架（两个 builder 逐字重复的 ~30 个置空/置零默认键）。
@@ -224,7 +224,8 @@ func _new_gpu_autoobject_runtime_writeback_report(
 	runtime_provider: Object,
 	profile_container: Object,
 	gpu_contract: Dictionary,
-	enabled: bool
+	enabled: bool,
+	include_diagnostics: bool = false
 ) -> Dictionary:
 	var spawn_api := _runtime_writeback_spawn_api(runtime_provider) if enabled else "none"
 	var ready := enabled and bool(gpu_contract.get("ok", false))
@@ -237,12 +238,14 @@ func _new_gpu_autoobject_runtime_writeback_report(
 	report["accepted_count"] = 0
 	report["runtime_summary"] = _generator._object_summary(runtime_provider)
 	report["profile_summary"] = _generator._object_summary(profile_container)
-	return _emit_writeback_report(report)
+	return _emit_writeback_report(report, include_diagnostics)
 
 
 
 ## 将单个资产的写回报告(source)累加合并进总报告(target)：合并成功标志/原因、各类计数、
 ## 对象 ID 与摘要数组、flush 契约字段，并据此更新 readback_source/runtime_read_source。
+## diag 键（readback/runtime_read_source、runtime/profile_summary 等）按在场性合并——
+## 报告未请求 include_diagnostics 时这些键缺席，merge 不得重新引入。
 func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: Dictionary) -> void:
 	if target.is_empty() or source.is_empty():
 		return
@@ -251,8 +254,9 @@ func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: 
 		var failure_reason := str(source.get("reason", "runtime_writeback_failed"))
 		target["reason"] = failure_reason
 		target["writeback_reason"] = failure_reason
-		target["readback_source"] = "none"
-		target["runtime_read_source"] = "none"
+		if target.has("readback_source"):
+			target["readback_source"] = "none"
+			target["runtime_read_source"] = "none"
 	elif str(target.get("writeback_reason", "")).is_empty():
 		target["writeback_reason"] = str(source.get("reason", "gpu_runtime_writeback_ready"))
 	target["accepted_count"] = int(target.get("accepted_count", 0)) + int(source.get("accepted_count", 0))
@@ -264,8 +268,10 @@ func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: 
 	var spawned_result_indices: Array = target.get("spawned_result_indices", [])
 	spawned_result_indices.append_array(source.get("spawned_result_indices", []))
 	target["spawned_result_indices"] = spawned_result_indices
-	target["runtime_summary"] = source.get("runtime_summary", target.get("runtime_summary", {}))
-	target["profile_summary"] = source.get("profile_summary", target.get("profile_summary", {}))
+	if source.has("runtime_summary") or target.has("runtime_summary"):
+		target["runtime_summary"] = source.get("runtime_summary", target.get("runtime_summary", {}))
+	if source.has("profile_summary") or target.has("profile_summary"):
+		target["profile_summary"] = source.get("profile_summary", target.get("profile_summary", {}))
 	for key in [
 		"accepted_placement_writeback_mode",
 		"accepted_placement_record_source",
@@ -277,15 +283,16 @@ func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: 
 		if source.has(key):
 			target[key] = source[key]
 	_merge_gpu_autoobject_runtime_flush_contract(target, source)
-	if not bool(target.get("ok", false)):
-		target["readback_source"] = "none"
-		target["runtime_read_source"] = "none"
-	elif object_ids.size() > 0:
-		target["readback_source"] = "gpu_storage_buffers"
-		target["runtime_read_source"] = "gpu_storage_buffers"
-	else:
-		target["readback_source"] = str(target.get("readback_source", "none"))
-		target["runtime_read_source"] = str(target.get("runtime_read_source", "none"))
+	if target.has("readback_source"):
+		if not bool(target.get("ok", false)):
+			target["readback_source"] = "none"
+			target["runtime_read_source"] = "none"
+		elif object_ids.size() > 0:
+			target["readback_source"] = "gpu_storage_buffers"
+			target["runtime_read_source"] = "gpu_storage_buffers"
+		else:
+			target["readback_source"] = str(target.get("readback_source", "none"))
+			target["runtime_read_source"] = str(target.get("runtime_read_source", "none"))
 	target["live_count"] = int(source.get("live_count", target.get("live_count", 0)))
 	target["pending_dirty_delta_count"] = int(source.get("pending_dirty_delta_count", target.get("pending_dirty_delta_count", 0)))
 
@@ -305,6 +312,7 @@ func _write_accepted_placements_to_gpu_runtime(
 	world_convert_params: Dictionary
 ) -> Dictionary:
 	var spawn_api := _runtime_writeback_spawn_api(runtime_provider)
+	var include_diagnostics := bool(common_settings.get("include_diagnostics", false))
 	var record_count := int(asset_result.get("result_count", 0))
 	var handoff: Dictionary = asset_result.get("placement_result_buffers", {})
 	# 共有骨架（~30 键）来自 SSOT；此路径 always-enabled，故 skeleton(spawn_api, true) + 差异键覆盖。
@@ -322,16 +330,16 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["reason"] = "missing_gpu_autoobject_runtime_writeback_target"
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return _emit_writeback_report(report)
+		return _emit_writeback_report(report, include_diagnostics)
 	if not _generator._object_bool(runtime_provider, "is_gpu_ready", "is_ready"):
 		report["ok"] = false
 		report["reason"] = "gpu_autoobject_runtime_not_ready"
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return _emit_writeback_report(report)
+		return _emit_writeback_report(report, include_diagnostics)
 	if record_count <= 0:
 		report["reason"] = "no_accepted_placements"
-		return _emit_writeback_report(report)
+		return _emit_writeback_report(report, include_diagnostics)
 	var placement_results_rid: RID = handoff.get("placement_results_rid", RID())
 	var stamp_bounds_rid: RID = handoff.get("stamp_bounds_rid", RID())
 	if not placement_results_rid.is_valid() or not stamp_bounds_rid.is_valid():
@@ -339,7 +347,7 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["reason"] = "missing_resident_placement_buffers"
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return _emit_writeback_report(report)
+		return _emit_writeback_report(report, include_diagnostics)
 
 	# Same-device contract: the GPU runtime-profile contract (validated inside
 	# run_minimal while the generator still held its device) already pinned the
@@ -351,7 +359,7 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["reason"] = "runtime_rendering_device_missing_for_resident_writeback"
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return _emit_writeback_report(report)
+		return _emit_writeback_report(report, include_diagnostics)
 	if _rd != runtime_rd:
 		attach_rendering_device(runtime_rd, false)
 
@@ -367,7 +375,7 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["reason"] = str(world_convert.get("reason", "world_convert_dispatch_failed"))
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return _emit_writeback_report(report)
+		return _emit_writeback_report(report, include_diagnostics)
 
 	var asset_params := {
 		"profile_id": report["profile_id"],
@@ -397,7 +405,7 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["failed_count"] = record_count
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return _emit_writeback_report(report)
+		return _emit_writeback_report(report, include_diagnostics)
 	var runtime_report := (runtime_report_raw as Dictionary).duplicate(true)
 	_copy_gpu_autoobject_runtime_flush_contract(report, runtime_report)
 	if not bool(runtime_report.get("ok", false)):
@@ -407,7 +415,7 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["failed_count"] = record_count
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return _emit_writeback_report(report)
+		return _emit_writeback_report(report, include_diagnostics)
 
 	report["spawned_count"] = int(runtime_report.get("spawned_count", 0))
 	report["object_ids"] = runtime_report.get("object_ids", [])
@@ -419,7 +427,7 @@ func _write_accepted_placements_to_gpu_runtime(
 	# Production path: no live-count/alive-buffer readback verification; the
 	# resident shader stats (debug opt-in) cover apply-count validation.
 	report["runtime_summary"] = _generator._object_summary(runtime_provider)
-	return _emit_writeback_report(report)
+	return _emit_writeback_report(report, include_diagnostics)
 
 
 ## 在 VPG 常驻 result 记录缓冲区上调度 placement_results_to_world pass，
