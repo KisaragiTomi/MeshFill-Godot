@@ -634,6 +634,7 @@ func _run_multi_asset_session(
 	var current_collision := collision_field.duplicate()
 	var total_placed := 0
 	var global_quota := int(common_settings.get("global_quota", -1))
+	var include_diagnostics := bool(common_settings.get("include_diagnostics", false))
 	var candidate_route_output_settings := common_settings.duplicate(true)
 	var target_read_buffer_output_summary := {}
 	var compact_state_chain := _compact_delta_state_chain_requested(common_settings)
@@ -662,26 +663,26 @@ func _run_multi_asset_session(
 		var asset_def: Dictionary = asset_defs[orig_idx]
 
 		if global_quota >= 0 and total_placed >= global_quota:
-			result_by_index[orig_idx] = {
+			result_by_index[orig_idx] = _emit_multi_asset_result({
 				"asset_index": orig_idx, "results": [], "world_results": [],
 				"result_count": 0, "stamp_deltas": [], "skipped_quota": true,
-			}
+			}, include_diagnostics)
 			continue
 
 		var cv: Array = asset_def.get("collision", [])
 		if cv.is_empty():
-			result_by_index[orig_idx] = {
+			result_by_index[orig_idx] = _emit_multi_asset_result({
 				"asset_index": orig_idx, "results": [], "world_results": [], "result_count": 0,
-			}
+			}, include_diagnostics)
 			continue
 
 		# 形状数据不再逐 run 烘焙：注册期已烘焙进 profile 容器的 collision_records，
 		# 这里只按 profile_id 预检 range，空 range 与旧的"形状为空"同语义（静默跳过）。
 		var sample_range := _resolve_collision_sample_range(common_settings, int(asset_def.get("profile_id", -1)))
 		if int(sample_range.get("count", 0)) <= 0:
-			result_by_index[orig_idx] = {
+			result_by_index[orig_idx] = _emit_multi_asset_result({
 				"asset_index": orig_idx, "results": [], "world_results": [], "result_count": 0,
-			}
+			}, include_diagnostics)
 			continue
 
 		var per_asset_settings := common_settings.duplicate(true)
@@ -760,9 +761,9 @@ func _run_multi_asset_session(
 				_release_placement_result_buffers(gpu_out)
 
 		if best_gpu_out.is_empty():
-			result_by_index[orig_idx] = {
+			result_by_index[orig_idx] = _emit_multi_asset_result({
 				"asset_index": orig_idx, "results": [], "world_results": [], "result_count": 0,
-			}
+			}, include_diagnostics)
 			continue
 		if best_gpu_out.has("candidate_route_input_contract"):
 			candidate_route_output_settings["candidate_route_input_contract"] = best_gpu_out.get("candidate_route_input_contract", {})
@@ -858,21 +859,20 @@ func _run_multi_asset_session(
 			asset_result["contract_blocked"] = true
 		if best_gpu_out.has("cpu_fallback"):
 			asset_result["cpu_fallback"] = false
-		result_by_index[orig_idx] = asset_result
+		result_by_index[orig_idx] = _emit_multi_asset_result(asset_result, include_diagnostics)
 
 	var asset_results: Array[Dictionary] = []
-	var include_writeback_diagnostics := bool(common_settings.get("include_diagnostics", false))
 	var runtime_writeback_report := _new_gpu_autoobject_runtime_writeback_report(
 		runtime_provider,
 		profile_container,
 		gpu_contract,
 		write_accepted_placements_to_gpu_runtime,
-		include_writeback_diagnostics
+		include_diagnostics
 	)
 	for i in range(asset_defs.size()):
-		asset_results.append(result_by_index.get(i, {
+		asset_results.append(result_by_index.get(i, _emit_multi_asset_result({
 			"asset_index": i, "results": [], "world_results": [], "result_count": 0,
-		}))
+		}, include_diagnostics)))
 
 	if write_accepted_placements_to_gpu_runtime:
 		for orig_idx in range(asset_defs.size()):
@@ -1017,7 +1017,7 @@ func _run_multi_asset_session(
 		output["instance_stamp_writeback"] = instance_stamp_writeback
 	if str(gpu_contract.get("reason", "")) != "not_requested":
 		output["cpu_fallback"] = false
-	return output
+	return _emit_multi_asset_report(output, include_diagnostics)
 
 
 ## 按 priority（降序）对 asset_defs 分组排序；同一 priority 分组内使用带种子的随机数
@@ -1684,9 +1684,10 @@ func _gpu_contract_blocked_multi_asset_output(
 	contract: Dictionary,
 	route_settings: Dictionary = {}
 ) -> Dictionary:
+	var include_diagnostics := bool(route_settings.get("include_diagnostics", false))
 	var asset_results: Array[Dictionary] = []
 	for i in range(asset_defs.size()):
-		asset_results.append({
+		asset_results.append(_emit_multi_asset_result({
 			"ok": false,
 			"asset_index": i,
 			"results": [],
@@ -1698,8 +1699,8 @@ func _gpu_contract_blocked_multi_asset_output(
 			"cpu_fallback": false,
 			"runtime_read_source": "none",
 			"readback_source": "none",
-		})
-	return {
+		}, include_diagnostics))
+	return _emit_multi_asset_report({
 		"ok": false,
 		"asset_results": asset_results,
 		"complexity_field_out": complexity_field.duplicate(),
@@ -1716,7 +1717,7 @@ func _gpu_contract_blocked_multi_asset_output(
 		"candidate_route_readback_source": _candidate_route_readback_source_from_settings(route_settings),
 		"candidate_route_runtime_read_source": _candidate_route_runtime_read_source_from_settings(route_settings),
 		"candidate_route_input_contract": _candidate_route_input_contract_from_settings(route_settings),
-	}
+	}, include_diagnostics)
 
 
 ## 唯一发射口：run_minimal 输出族（成功/blocked/empty-prefilter 三变体）一律经
@@ -1726,6 +1727,21 @@ func _gpu_contract_blocked_multi_asset_output(
 ##（键清单/分级/消费者名单见 ReportSchema.VPG_RUN_REPORT）。
 func _emit_run_report(values: Dictionary, include_diagnostics: bool = false) -> Dictionary:
 	return ReportSchema.build(ReportSchema.VPG_RUN_REPORT, values, include_diagnostics)
+
+
+## 唯一发射口：run_multi_asset 顶层输出族（成功/blocked 两变体）一律经 ReportSchema.build
+## 组装。expand 轮全部键在 core/contract，diag tier 为空——include_diagnostics 现已接线
+##（common_settings 的 "include_diagnostics" 键，与 run_minimal 同口径），今日无行为差异
+##（键清单/分级/消费者名单见 ReportSchema.VPG_MULTI_ASSET_REPORT）。
+func _emit_multi_asset_report(values: Dictionary, include_diagnostics: bool = false) -> Dictionary:
+	return ReportSchema.build(ReportSchema.VPG_MULTI_ASSET_REPORT, values, include_diagnostics)
+
+
+## 唯一发射口：run_multi_asset 的 per-asset asset_result 族（成功/配额跳过/空占位/blocked
+## 五变体）一律经 ReportSchema.build 组装。发射后仅两处声明键突变（writeback 追加 +
+## placement_result_buffers 释放清空，见 ReportSchema.VPG_MULTI_ASSET_RESULT 注释），勿再加。
+func _emit_multi_asset_result(values: Dictionary, include_diagnostics: bool = false) -> Dictionary:
+	return ReportSchema.build(ReportSchema.VPG_MULTI_ASSET_RESULT, values, include_diagnostics)
 
 
 ## 当 GPU 运行时契约校验失败或设备/管线未就绪时，为 run_minimal 构造统一的"已阻断"空结果，
