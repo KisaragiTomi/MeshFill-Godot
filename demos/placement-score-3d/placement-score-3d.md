@@ -199,6 +199,6 @@ debug buffer 每 voxel `NUM_DEBUG_CHANNELS = 8` 个 float：
 - 12 旋转是否只绕 Y，还是需少量 pitch / roll slot 支持斜面贴合。
 - 维度评分的 PENALTY / GATE `mode`（当前仅 MATCH 实现）与语义重排（route rerank）仍是 TODO。
 - 稀疏 tile 下 512 线程对非 anchor 体素的早退开销：是否值得改紧凑 anchor 派发。
-- 常驻 collision（B2）落地验证：`run_multi_asset` 在当前场景被 `score_runtime_profile_binding_missing`
-  挡在评分前，故其 B2 行为**在本场景验不到**；只能经 demo 的 `run_minimal`（注册资产 + 读常驻
-  collision + debug 回读）桥验证读路径。该 profile-binding 根因仍未查透（见 mem）。
+- ✅ ~~常驻 collision（B2）落地验证被 profile-binding 挡路~~：该失败签名已消失（回溯=`9ede930`
+  修的 >128B push 静默清零；根因取证与 check 修复见 `6c3be73`）——
+  `run_resident_placement_writeback_check` 现全绿，contract 链 + B2 常驻路径经桥端到端验证。
