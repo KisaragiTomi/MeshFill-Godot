@@ -9,12 +9,12 @@
 > - **步骤 1 ✅** `debug_buffer_set.gd` 全面落地：4 个 schema SSOT（`SCORE_CONTRACT_STATS` / `CANDIDATE_ROUTE_BINDING_STATS` / `CANDIDATE_ROUTE_DEBUG` / `VOXEL_DEBUG_CHANNELS`）+ allocate/reset/make_uniforms/readback/decode_shaped（q1000、bool）/golden_snapshot/emit_glsl_block + `CONSUMERS` 注册表；desync 门禁 `tools/verify_glsl_gen_blocks.gd` headless 实测 `checked=12 failures=0`。
 > - **步骤 2 ✅** 试点 route debug 家族完成：`@@GEN` 块进 `score_voxel_tile` / `candidate_route_sparse_adapter` / `pack_candidate_route_records_from_votes`（原第 3 个消费者 expand 已并入 pack）；VPG 端分配与解码全走设施。
 > - **步骤 3 ✅** score_contract 半边 ✅（gen-block set1/b8，reset/readback 走设施，always-on 保持，**contract 与 observability 已分实例分 buffer**）；debug_voxel 半边 ✅（`e496ac4`）——VPG 分配/解码/golden_snapshot 全走 `DebugBufferSet(VOXEL_DEBUG_CHANNELS)` 实例，通道数 schema 推导，本地 `NUM_DEBUG_CHANNELS` 与 `_decode_float_array` 已删；uniform 接线与 profiler 传输计时 readback 有意保留手工（对齐 route_debug_set 先例）。
-> - **步骤 4 ◐** `report_schema.gd` ✅ 落地，`fail()` 已收编 SPA ×7 失败字典；**writeback 报告 expand 阶段 ✅（`cb95a1b`）**——`WRITEBACK_REPORT` 重写为真实 42 键并集、10 个发射点全走 `build()`（未声明键=authoring-time push_error）、冻结契约消费者已在 schema 注释存档、输出逐键一致（唯一差异=字典插入序，无序敏感消费者）；migrate/contract 阶段待做（diag 分级候选已标 `TODO(migrate)`：runtime_summary/profile_summary + 7 个恒定 provenance 键；⚠此家族失败路径发全骨架、勿套 `fail()`；`_merge_...` 在 build 后仍有白名单内突变，硬门可改为 merge 后再发射）。VPG run 输出仍无 schema、无 `include_diagnostics` 分级门。
+> - **步骤 4 ◐** `report_schema.gd` ✅ 落地，`fail()` 已收编 SPA ×7 失败字典；**writeback 报告三步走完 ✅（expand `cb95a1b` → migrate/contract `774e1fa`）**——`WRITEBACK_REPORT` 分级定稿 core 7 / contract 26 / diag 9（gpu_first、cpu_fallback、readback_source、runtime_read_source、accepted_placement_record_source、accepted_placement_origin_record_source、cpu_batch_bridge、runtime_summary、profile_summary，逐键新鲜 grep 零消费者后降级）；**diag 请求口径已定（Open Question 2 解决）= placement settings 键 `include_diagnostics`（默认 false）**，10 个发射点 + merge 后突变全部门控，flag-on 输出与旧全集逐字节一致；恒定 provenance 键暂留 diag、整删是单独决定；⚠此家族失败路径发全骨架、勿套 `fail()`。**VPG run 输出仍无 schema、无分级门（= 步骤 4 唯一剩余）**。
 > - **步骤 5 ✗** `TARGET_STATS_*` 三处声明原样未迁（`target_scene_voxel.glsl` / `target_sv_pack_read_buffers.glsl` / `target_scene_voxel_generator.gd`）；⚠ 其 q1000000 量化与 `MIN_PACK_BASE` 反转-min 编码需先给 DebugBufferSet 加新 decode kind。
 > - **步骤 6 ◐** 生产端 ✅（`b0ff085`：`golden_snapshot` 挂 VPG 输出，settings 键 `debug_read_golden_snapshot`；桥现行 call_method 即可取，不加专用桥方法）；消费端 ✗——无 `goldens/` 目录、无存储/对比客户端，前后对照流程尚不可用。
 > - 成本约定未落的一条：**写侧门控未实现**（config SSBO `debug_enabled` + 禁用绑 dummy buffer），当前仅 readback 门控、shader 恒写观测通道。
 >
-> **剩余工作（按价值排序）**：~~① VPG debug_voxel 收编 ChannelField 实例~~（✅ `e496ac4`）② writeback 报告 ~~expand~~（✅ `cb95a1b`）→ migrate/contract（diag 分级 + 消费者同 commit 迁移）③ VPG run 输出定义 schema + diag 分级 ④ TARGET_STATS 迁移（先加 decode kind）⑤ golden-master 消费链（tools/ 桥客户端 + `goldens/` 存储对比）⑥ 观测实例写侧门控（顺带解决 Open Question 1 的 bitmask 粒度）。
+> **剩余工作（按价值排序）**：~~① VPG debug_voxel 收编 ChannelField~~（✅ `e496ac4`）~~② writeback 报告三步~~（✅ `cb95a1b`+`774e1fa`）③ VPG run 输出定义 schema + diag 分级（口径沿用 `include_diagnostics`）④ TARGET_STATS 迁移（先加 decode kind）⑤ golden-master 消费链（tools/ 桥客户端 + `goldens/` 存储对比）⑥ 观测实例写侧门控（顺带解决 Open Question 1 的 bitmask 粒度）。
 
 ## 现状
 
@@ -177,5 +177,5 @@ static func fail(schema: Dictionary, reason: String) -> Dictionary:
 ## Open Questions
 
 - observability 实例的 gate 粒度：全局单开关，还是按 shader 家族分开关（config SSBO 一个 bitmask 即可承载）。
-- `diag` 请求口径：沿用 settings key（如 `include_diagnostics`）还是桥方法参数；需与现有 `debug_read_target_read_buffer_bytes` 等散点开关归并。
+- ✅ ~~`diag` 请求口径~~：已定为 placement settings 键 `include_diagnostics`（默认 false，`774e1fa`）；与 `debug_read_*` 散点开关的归并留给各报告家族迁移时机会主义处理。
 - VPG run 输出中哪些键实际有零读者，待 migrate 阶段逐键 grep 后定级（本方案不预判名单）。
