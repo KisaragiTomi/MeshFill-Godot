@@ -175,9 +175,16 @@ static func _merge_gpu_autoobject_runtime_flush_contract(target: Dictionary, sou
 
 
 
+## 唯一发射口：writeback 报告一律经 ReportSchema.build 组装（values 里未声明的键
+## authoring-time push_error）。build 按 values.has 跳过缺席键，条件键的在场性由收集处决定，
+## 输出与手工组装同键同值。
+static func _emit_writeback_report(values: Dictionary) -> Dictionary:
+	return ReportSchema.build(ReportSchema.WRITEBACK_REPORT, values)
+
+
 ## GPU AutoObject 运行时写回报告的共有骨架（两个 builder 逐字重复的 ~30 个置空/置零默认键）。
 ## 收敛为一处 SSOT（键清单/分级见 ReportSchema.WRITEBACK_REPORT）；spawn_api/enabled 参数化少数
-## 随 enabled 变的键。各 builder 从骨架起手，再覆盖自己的 ok/reason/计数/摘要等差异键。
+## 随 enabled 变的键。各 builder 从骨架起手收集 values，最终经 _emit_writeback_report 发出。
 func _new_gpu_autoobject_runtime_writeback_skeleton(spawn_api: String, enabled: bool) -> Dictionary:
 	return {
 		"gpu_first": true,
@@ -230,7 +237,7 @@ func _new_gpu_autoobject_runtime_writeback_report(
 	report["accepted_count"] = 0
 	report["runtime_summary"] = _generator._object_summary(runtime_provider)
 	report["profile_summary"] = _generator._object_summary(profile_container)
-	return report
+	return _emit_writeback_report(report)
 
 
 
@@ -315,16 +322,16 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["reason"] = "missing_gpu_autoobject_runtime_writeback_target"
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return report
+		return _emit_writeback_report(report)
 	if not _generator._object_bool(runtime_provider, "is_gpu_ready", "is_ready"):
 		report["ok"] = false
 		report["reason"] = "gpu_autoobject_runtime_not_ready"
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return report
+		return _emit_writeback_report(report)
 	if record_count <= 0:
 		report["reason"] = "no_accepted_placements"
-		return report
+		return _emit_writeback_report(report)
 	var placement_results_rid: RID = handoff.get("placement_results_rid", RID())
 	var stamp_bounds_rid: RID = handoff.get("stamp_bounds_rid", RID())
 	if not placement_results_rid.is_valid() or not stamp_bounds_rid.is_valid():
@@ -332,7 +339,7 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["reason"] = "missing_resident_placement_buffers"
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return report
+		return _emit_writeback_report(report)
 
 	# Same-device contract: the GPU runtime-profile contract (validated inside
 	# run_minimal while the generator still held its device) already pinned the
@@ -344,7 +351,7 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["reason"] = "runtime_rendering_device_missing_for_resident_writeback"
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return report
+		return _emit_writeback_report(report)
 	if _rd != runtime_rd:
 		attach_rendering_device(runtime_rd, false)
 
@@ -360,7 +367,7 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["reason"] = str(world_convert.get("reason", "world_convert_dispatch_failed"))
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return report
+		return _emit_writeback_report(report)
 
 	var asset_params := {
 		"profile_id": report["profile_id"],
@@ -390,7 +397,7 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["failed_count"] = record_count
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return report
+		return _emit_writeback_report(report)
 	var runtime_report := (runtime_report_raw as Dictionary).duplicate(true)
 	_copy_gpu_autoobject_runtime_flush_contract(report, runtime_report)
 	if not bool(runtime_report.get("ok", false)):
@@ -400,7 +407,7 @@ func _write_accepted_placements_to_gpu_runtime(
 		report["failed_count"] = record_count
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
-		return report
+		return _emit_writeback_report(report)
 
 	report["spawned_count"] = int(runtime_report.get("spawned_count", 0))
 	report["object_ids"] = runtime_report.get("object_ids", [])
@@ -412,7 +419,7 @@ func _write_accepted_placements_to_gpu_runtime(
 	# Production path: no live-count/alive-buffer readback verification; the
 	# resident shader stats (debug opt-in) cover apply-count validation.
 	report["runtime_summary"] = _generator._object_summary(runtime_provider)
-	return report
+	return _emit_writeback_report(report)
 
 
 ## 在 VPG 常驻 result 记录缓冲区上调度 placement_results_to_world pass，
