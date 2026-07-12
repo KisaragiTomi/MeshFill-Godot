@@ -1835,10 +1835,11 @@ func run_placement_pipeline(
 
 	var placer := _get_placer()
 
-	var complexity_field := _ensure_float_array(sv.get("complexity_field", PackedFloat32Array()),
-		sv.get("grid_size", Vector3i.ZERO))
-	var collision_field := _ensure_float_array(sv.get("collision_field", PackedFloat32Array()),
-		sv.get("grid_size", Vector3i.ZERO))
+	var sv_voxel_count := VoxelGeneral.voxel_count(sv.get("grid_size", Vector3i.ZERO))
+	var complexity_field := VoxelGeneral.pad_float_array(
+		sv.get("complexity_field", PackedFloat32Array()), sv_voxel_count)
+	var collision_field := VoxelGeneral.pad_float_array(
+		sv.get("collision_field", PackedFloat32Array()), sv_voxel_count)
 	if bool(resident_field_handoff.get("ok", false)):
 		complexity_field = PackedFloat32Array()
 		collision_field = PackedFloat32Array()
@@ -2183,13 +2184,6 @@ static func _pipeline_error(reason: String) -> Dictionary:
 	}
 
 
-static func _ensure_float_array(arr: PackedFloat32Array, grid_size: Vector3i) -> PackedFloat32Array:
-	var expected := VoxelGeneral.voxel_count(grid_size)
-	if arr.size() >= expected:
-		return arr
-	var result := arr.duplicate()
-	result.resize(maxi(expected, 1))
-	return result
 
 
 static func _expected_target_byte_count(sv: Dictionary) -> int:

@@ -1165,8 +1165,8 @@ func run_minimal(
 	# the borrowed buffers, the non-resident pack branch below is skipped, success output reads
 	# complexity_field_out from the GPU buffer, and blocked/empty outputs are re-derived from
 	# originals by run_multi_asset. So skip the two full-grid duplicate+resize allocs per pivot.
-	var complexity_data := PackedFloat32Array() if _complexity_field_gpu_resident else _normalize_float_array(complexity_field, voxel_count)
-	var collision_data := PackedFloat32Array() if _complexity_field_gpu_resident else _normalize_float_array(collision_field, voxel_count)
+	var complexity_data := PackedFloat32Array() if _complexity_field_gpu_resident else VoxelGeneral.fit_float_array(complexity_field, voxel_count)
+	var collision_data := PackedFloat32Array() if _complexity_field_gpu_resident else VoxelGeneral.fit_float_array(collision_field, voxel_count)
 	var _complexity_field_gpu_borrowed_external := _complexity_field_gpu_resident \
 		and bool(settings.get("complexity_field_buffer_borrowed", true)) \
 		and bool(settings.get("collision_field_buffer_borrowed", true))
@@ -3421,13 +3421,6 @@ func _dispatch_stamp(
 		{pipeline = _pipeline_init_stamp_bounds, uniform_sets = [init_set0], push = init_push, groups = Vector3i(init_groups, 1, 1)},
 		{pipeline = _pipeline_stamp, uniform_sets = [set0], push = push, groups = Vector3i(groups, 1, 1)},
 	], false)
-
-
-## 复制浮点数组并将其长度调整（补零或截断）为指定的期望大小。
-func _normalize_float_array(values: PackedFloat32Array, expected_size: int) -> PackedFloat32Array:
-	var result := values.duplicate()
-	result.resize(expected_size)
-	return result
 
 
 ## 将 GPU 结果缓冲区中的原始字节解码为放置结果记录数组（Array[Dictionary]）。

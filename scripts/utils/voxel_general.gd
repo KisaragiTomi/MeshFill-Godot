@@ -400,6 +400,24 @@ static func normalize_collision_samples(source: Array, _default_radius: float = 
 	return result
 
 
+## 只补不裁：数组不足 expected 时零填充到 expected；已够长原样返回（不拷贝）。
+## 原 prefilter/_ensure_float_array 与 SPA._ensure_float_array（去掉死的 maxi 分支）合并。
+static func pad_float_array(arr: PackedFloat32Array, expected: int) -> PackedFloat32Array:
+	if arr.size() >= expected:
+		return arr
+	var result := arr.duplicate()
+	result.resize(expected)
+	return result
+
+
+## 精确重设：拷贝后 resize 到 expected_size（不足补零、超出截断）。
+## 原 VPG._normalize_float_array。
+static func fit_float_array(values: PackedFloat32Array, expected_size: int) -> PackedFloat32Array:
+	var result := values.duplicate()
+	result.resize(expected_size)
+	return result
+
+
 ## 将单通道标量字段扩展为 vec4(rgba) 交错格式：RGB 填白、标量作为 alpha。
 ## 原 scene_voxel_committer._expand_complexity_field_to_vec4（旧浮点复杂度场兼容路径）。
 static func expand_scalar_field_to_vec4(field: PackedFloat32Array) -> PackedFloat32Array:

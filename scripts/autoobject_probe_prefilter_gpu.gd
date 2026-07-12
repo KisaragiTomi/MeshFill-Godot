@@ -1225,12 +1225,6 @@ func _profile_container_probe_record_count(runtime_profile_container: Object) ->
 
 
 ## 确保 float 数组长度不低于 expected，不足时用零补齐后返回副本。
-func _ensure_float_array(arr: PackedFloat32Array, expected: int) -> PackedFloat32Array:
-	if arr.size() >= expected:
-		return arr
-	var result := arr.duplicate()
-	result.resize(expected)
-	return result
 
 
 ## 将 complexity 和 collision 字段逐体素交错打包为 GPU 字节流（每体素 8 字节）。
@@ -1269,14 +1263,14 @@ func _make_complexity_collision_buffer(sv: Dictionary, voxel_count: int) -> RID:
 				if _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(voxel_count, 64)):
 					return merged_buf
 		# resident RIDs were authoritative but the GPU convert failed. Do NOT fall through to the
-		# CPU pack below: under a committer, sv carries no CPU fields → _ensure_float_array returns
+		# CPU pack below: under a committer, sv carries no CPU fields → pad_float_array returns
 		# an all-zero field that scores as real and slips past the caller's is_valid() block-guard.
 		# Fail loud so run_probe_prefilter returns complexity_collision_field_buffer_not_ready.
 		push_error("[AutoObjectProbePrefilterGPU] resident field pair convert failed; blocking (no CPU zero-fill fallback)")
 		return RID()
 	var complexity_collision_bytes := _pack_complexity_collision_float_bytes(
-		_ensure_float_array(sv.get("complexity_field", PackedFloat32Array()), voxel_count),
-		_ensure_float_array(sv.get("collision_field", PackedFloat32Array()), voxel_count),
+		VoxelGeneral.pad_float_array(sv.get("complexity_field", PackedFloat32Array()), voxel_count),
+		VoxelGeneral.pad_float_array(sv.get("collision_field", PackedFloat32Array()), voxel_count),
 		voxel_count
 	)
 	return storage_buffer_from_bytes(complexity_collision_bytes, SCOPE_FRAME, "complexity_collision_merged")
