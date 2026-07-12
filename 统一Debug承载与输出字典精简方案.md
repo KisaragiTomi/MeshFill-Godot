@@ -14,7 +14,7 @@
 > - **步骤 6 ✅（生产 `b0ff085` + 消费 `89d9c4d`）** 消费链闭环：`volume_score_demo.run_golden_snapshot()`（桥 call_method 直达，确定性——score_ms 刻意排除）+ `tools/golden_snapshot_check.js`（BASELINE CREATED / GOLDEN PASS / GOLDEN DIFF+unified diff）+ `goldens/volume_score_golden.approved.txt` 首基线（179 行，3 资产 ×64 锚点）已进 git；端到端两跑验证过。⚠ 基线是机器/驱动本地的——换 GPU/驱动或评分逻辑正当变更后 re-approve。
 > - **写侧门控 ✅（`b559a2e`）**：ScoreConfig SSBO 80→96B 加 `cfg_debug_write_mask`（bit0=voxel 通道写使能，未来家族占后续位——**Open Question 1 就此解决：按 pass 的 config SSBO 承载 per-family bitmask**）；启用条件与读回门同一 `debug_read_voxel_channels` 表达式不可能脱钩；禁用时绑 1 元素 dummy、写成本归零；golden check 迁移后仍 PASS（flag-on 路径逐位不变的硬证据）。
 >
-> **🎉 方案六步 + 全部剩余工作至此执行完毕（2026-07-12）**：~~①~~（`e496ac4`）~~②~~（`cb95a1b`+`774e1fa`）~~③~~（`8a21d7e`+`6f891c4`）~~④~~（`e281670`）~~⑤~~（`89d9c4d`）~~⑥~~（`b559a2e`）。后续为机会主义项：~~run_multi_asset 输出家族迁移~~（expand `d5390c7` + migrate `c115b5d` **✅ 全家族三步收官**——16 处零读者键位降 diag，全部 4 个报告家族 schema 化+分级完毕；成功变体刻意不发 `ok` 键的契约已冻结进 schema 注释）、恒定 provenance 键整删（删除性决定，待用户拍板）、`debug_read_*` 散点开关归并、writeback merge 后再发射的硬门——低优先级，未来轮次或需要时再做。
+> **🎉 方案六步 + 全部剩余工作至此执行完毕（2026-07-12）**：~~①~~（`e496ac4`）~~②~~（`cb95a1b`+`774e1fa`）~~③~~（`8a21d7e`+`6f891c4`）~~④~~（`e281670`）~~⑤~~（`89d9c4d`）~~⑥~~（`b559a2e`）。后续为机会主义项：~~run_multi_asset 输出家族迁移~~（expand `d5390c7` + migrate `c115b5d` **✅ 全家族三步收官**——16 处零读者键位降 diag，全部 4 个报告家族 schema 化+分级完毕；成功变体刻意不发 `ok` 键的契约已冻结进 schema 注释）、~~writeback merge 后再发射的硬门~~（**✅ worker 轮 3 → 主循环收养 `a1fcb95`**——`ReportSchema.validate_report` 出口复验：未声明键 / 未请求时的 diag 键重新引入 / derived 键三类 push_error、只刹车不修剪；接线在 run_multi_asset 挂接 `gpu_autoobject_runtime_writeback` 前；writeback check 实跑即活体零误报证明）、恒定 provenance 键整删（删除性决定，待用户拍板）、`debug_read_*` 散点开关归并——低优先级，未来轮次或需要时再做。
 
 ## 现状
 
