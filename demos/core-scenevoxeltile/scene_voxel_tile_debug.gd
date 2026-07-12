@@ -2,6 +2,7 @@
 extends "res://scripts/core_demo_contract_fixture.gd"
 
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
+const DemoDebugVisuals := preload("res://scripts/utils/demo_debug_visuals.gd")
 
 # Dirty flag bit constants (mirroring SceneVoxelCommitter)
 const FLAG_SCENE := 1
@@ -147,11 +148,7 @@ func _add_bounding_grid() -> void:
 	box.mesh.size = grid_world
 	box.position = center
 
-	var mat := StandardMaterial3D.new()
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.albedo_color = Color(0.25, 0.35, 0.55, 0.12)
-	mat.flags_unshaded = true
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var mat := DemoDebugVisuals.make_unshaded_material(Color(0.25, 0.35, 0.55, 0.12), false, false, true)
 	box.material_override = mat
 	add_child(box)
 
@@ -294,10 +291,7 @@ func _build_tile_meshes() -> void:
 	# --- Wire MultiMesh (single color, unshaded) ---
 	var wire_box := BoxMesh.new()
 	wire_box.size = box_size
-	var wire_mat := StandardMaterial3D.new()
-	wire_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	wire_mat.albedo_color = CLEAN_WIRE
-	wire_mat.flags_unshaded = true
+	var wire_mat := DemoDebugVisuals.make_unshaded_material(CLEAN_WIRE)
 	wire_box.material = wire_mat
 
 	var wm := MultiMesh.new()

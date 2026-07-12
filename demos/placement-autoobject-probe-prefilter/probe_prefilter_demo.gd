@@ -7,6 +7,7 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
 const DemoUI := preload("res://scripts/utils/demo_ui.gd")
 const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
+const DemoDebugVisuals := preload("res://scripts/utils/demo_debug_visuals.gd")
 
 var _entries: Array[Dictionary] = []
 var _selected_idx := -1
@@ -42,25 +43,10 @@ func _setup_materials() -> void:
 	_probe_sphere.radial_segments = 8
 	_probe_sphere.rings = 4
 
-	_mat_color = StandardMaterial3D.new()
-	_mat_color.albedo_color = Color(0.2, 0.8, 0.3, 0.8)
-	_mat_color.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_mat_color.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-
-	_mat_collision = StandardMaterial3D.new()
-	_mat_collision.albedo_color = Color(1.0, 0.3, 0.2, 0.8)
-	_mat_collision.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_mat_collision.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-
-	_mat_support = StandardMaterial3D.new()
-	_mat_support.albedo_color = Color(0.3, 0.3, 1.0, 0.8)
-	_mat_support.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_mat_support.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-
-	_mat_exclusion = StandardMaterial3D.new()
-	_mat_exclusion.albedo_color = Color(1.0, 1.0, 0.0, 0.7)
-	_mat_exclusion.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_mat_exclusion.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_mat_color = DemoDebugVisuals.make_unshaded_material(Color(0.2, 0.8, 0.3, 0.8))
+	_mat_collision = DemoDebugVisuals.make_unshaded_material(Color(1.0, 0.3, 0.2, 0.8))
+	_mat_support = DemoDebugVisuals.make_unshaded_material(Color(0.3, 0.3, 1.0, 0.8))
+	_mat_exclusion = DemoDebugVisuals.make_unshaded_material(Color(1.0, 1.0, 0.0, 0.7))
 
 
 func _setup_hud() -> void:

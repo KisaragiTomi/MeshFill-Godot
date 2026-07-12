@@ -33,6 +33,7 @@ const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
 const AutoVoxelProfileScript := preload("res://scripts/auto_voxel_profile.gd")
 const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
 const DemoUI := preload("res://scripts/utils/demo_ui.gd")
+const DemoDebugVisuals := preload("res://scripts/utils/demo_debug_visuals.gd")
 const TargetSVLookup := preload("res://scripts/utils/target_sv_lookup.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 const SPATestScript := preload("res://demos/core-SPA-scene-placement-actor/spa_test.gd")
@@ -769,7 +770,7 @@ func _ensure_anchor_sample_bounds_marker() -> void:
 		_anchor_sample_bounds_marker = _make_selection_marker("SelectedAnchorSampleBounds")
 		parent.add_child(_anchor_sample_bounds_marker)
 	_configure_selection_marker(_anchor_sample_bounds_marker)
-	_anchor_sample_bounds_marker.material_override = _make_unshaded_material(
+	_anchor_sample_bounds_marker.material_override = DemoDebugVisuals.make_unshaded_material(
 		ANCHOR_SAMPLE_BOUNDS_COLOR,
 		false,
 		true,
@@ -1215,37 +1216,10 @@ func _configure_selection_marker(marker: MeshInstance3D) -> void:
 	if marker == null:
 		return
 	if not (marker.mesh is ImmediateMesh):
-		marker.mesh = _make_selection_wire_box_mesh()
+		marker.mesh = DemoDebugVisuals.make_unit_wire_box_mesh()
 	if marker.material_override == null:
 		marker.material_override = _make_selection_material()
 	marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-
-
-## 创建单位立方体线框 Mesh；调用方通过 MeshInstance scale 控制实际尺寸
-func _make_selection_wire_box_mesh() -> ImmediateMesh:
-	var half := 0.5
-	var corners := [
-		Vector3(-half, -half, -half),
-		Vector3(half, -half, -half),
-		Vector3(half, -half, half),
-		Vector3(-half, -half, half),
-		Vector3(-half, half, -half),
-		Vector3(half, half, -half),
-		Vector3(half, half, half),
-		Vector3(-half, half, half),
-	]
-	var edges := [
-		[0, 1], [1, 2], [2, 3], [3, 0],
-		[4, 5], [5, 6], [6, 7], [7, 4],
-		[0, 4], [1, 5], [2, 6], [3, 7],
-	]
-	var mesh := ImmediateMesh.new()
-	mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	for edge in edges:
-		mesh.surface_add_vertex(corners[int(edge[0])])
-		mesh.surface_add_vertex(corners[int(edge[1])])
-	mesh.surface_end()
-	return mesh
 
 
 ## 创建一个选中标签用的 Label3D 节点
@@ -1257,21 +1231,9 @@ func _make_selection_label(node_name: String, modulate: Color = Color.WHITE) -> 
 	return label
 
 
-## 创建无光照透明材质的统一工厂
-func _make_unshaded_material(albedo: Color, use_vertex_color: bool, no_depth_test: bool, cull_disabled: bool = true) -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = albedo
-	mat.vertex_color_use_as_albedo = use_vertex_color
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED if cull_disabled else BaseMaterial3D.CULL_BACK
-	mat.no_depth_test = no_depth_test
-	return mat
-
-
 ## 创建无光照高亮选中材质
 func _make_selection_material() -> StandardMaterial3D:
-	return _make_unshaded_material(Color(1.0, 0.9, 0.08, 0.92), false, true, true)
+	return DemoDebugVisuals.make_unshaded_material(Color(1.0, 0.9, 0.08, 0.92), false, true, true)
 
 
 ## 设置GPU AutoObject点云中单个实例的颜色。点云实例数据只存在于 GPU 缓冲

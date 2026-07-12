@@ -339,18 +339,9 @@ func _sync_brush_btn(active: bool) -> void:
 		return
 	if _brush_btn.button_pressed != active:
 		_brush_btn.set_pressed_no_signal(active)
-	var style := StyleBoxFlat.new()
-	style.set_corner_radius_all(4)
-	style.content_margin_left = 8.0
-	style.content_margin_right = 8.0
-	style.content_margin_top = 4.0
-	style.content_margin_bottom = 4.0
-	if active:
-		style.bg_color = Color(0.15, 0.55, 0.25, 0.9)
-		_brush_btn.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
-	else:
-		style.bg_color = Color(0.35, 0.15, 0.1, 0.9)
-		_brush_btn.add_theme_color_override("font_color", Color(0.85, 0.7, 0.65))
+	var bg := Color(0.15, 0.55, 0.25, 0.9) if active else Color(0.35, 0.15, 0.1, 0.9)
+	var style := _make_flat_stylebox(bg, 4, 8.0, 4.0)
+	_brush_btn.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95) if active else Color(0.85, 0.7, 0.65))
 	_brush_btn.add_theme_stylebox_override("normal", style)
 	var hover := style.duplicate() as StyleBoxFlat
 	hover.bg_color = style.bg_color.lightened(0.15)
@@ -517,10 +508,7 @@ func _sync_geo_scan_toolbar_from_scene() -> void:
 
 
 func _set_geo_scan_status(text: String) -> void:
-	if _geo_scan_status_label == null:
-		return
-	_geo_scan_status_label.text = text
-	_geo_scan_status_label.tooltip_text = text
+	_set_status_label(_geo_scan_status_label, text, text)
 
 
 func _format_geo_scan_toolbar_result(result: Dictionary) -> String:
@@ -533,10 +521,7 @@ func _format_geo_scan_toolbar_result(result: Dictionary) -> String:
 
 
 func _scene_geo_scan_host() -> Node:
-	var root := get_editor_interface().get_edited_scene_root()
-	if root != null and root.has_method(GEO_SCAN_METHOD):
-		return root
-	return null
+	return _scene_root_host(GEO_SCAN_METHOD)
 
 
 # ---- Asset descriptor debug toolbar ---------------------------------------
@@ -648,17 +633,11 @@ func _default_asset_descriptor_debug_actions() -> Array[Dictionary]:
 
 
 func _scene_asset_descriptor_debug_host() -> Node:
-	var root := get_editor_interface().get_edited_scene_root()
-	if root != null and root.has_method(ASSET_DESCRIPTOR_ACTION_METHOD):
-		return root
-	return null
+	return _scene_root_host(ASSET_DESCRIPTOR_ACTION_METHOD)
 
 
 func _set_asset_descriptor_debug_status(text: String) -> void:
-	if _asset_descriptor_debug_status_label == null:
-		return
-	_asset_descriptor_debug_status_label.text = text
-	_asset_descriptor_debug_status_label.tooltip_text = text
+	_set_status_label(_asset_descriptor_debug_status_label, text, text)
 
 
 func _format_asset_descriptor_debug_state(state: Dictionary) -> String:
@@ -757,17 +736,11 @@ func _sync_asset_descriptor_bake_toolbar_from_scene() -> void:
 
 
 func _scene_asset_descriptor_bake_host() -> Node:
-	var root := get_editor_interface().get_edited_scene_root()
-	if root != null and root.has_method(ASSET_DESCRIPTOR_BAKE_METHOD):
-		return root
-	return null
+	return _scene_root_host(ASSET_DESCRIPTOR_BAKE_METHOD)
 
 
 func _set_bake_descriptor_status(text: String) -> void:
-	if _bake_descriptor_status_label == null:
-		return
-	_bake_descriptor_status_label.text = text
-	_bake_descriptor_status_label.tooltip_text = text
+	_set_status_label(_bake_descriptor_status_label, text, text)
 
 
 func _format_asset_descriptor_bake_result(result: Dictionary) -> String:
@@ -847,6 +820,41 @@ func _free_toolbar_control(control: Control) -> void:
 	control.queue_free()
 
 
+# Shared StyleBoxFlat factory (brush toggle / voxel-visibility panel + buttons).
+# border_width 0 keeps the default border-less style, matching the brush
+# toggle's original inline construction.
+func _make_flat_stylebox(bg: Color, corner: int, margin_h: float, margin_v: float, border_color := Color(), border_width := 0) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = bg
+	if border_width > 0:
+		style.border_color = border_color
+		style.set_border_width_all(border_width)
+	style.set_corner_radius_all(corner)
+	style.content_margin_left = margin_h
+	style.content_margin_right = margin_h
+	style.content_margin_top = margin_v
+	style.content_margin_bottom = margin_v
+	return style
+
+
+# Shared null-guarded setter for the toolbar status labels.
+func _set_status_label(label: Label, text: String, tooltip: String) -> void:
+	if label == null:
+		return
+	label.text = text
+	label.tooltip_text = tooltip
+
+
+# Shared edited-scene-root host lookup: the root is the host iff it exposes the
+# toolbar's entry method. _scene_spa_host (find_child variant) is intentionally
+# different — do not fold it in.
+func _scene_root_host(method_name: StringName) -> Node:
+	var root := get_editor_interface().get_edited_scene_root()
+	if root != null and root.has_method(method_name):
+		return root
+	return null
+
+
 func _on_generate_anchor_pressed() -> void:
 	_call_spa_volume_score_method(SPA_VOLUME_SCORE_ANCHOR_METHOD, "Generate Anchors")
 	_sync_volume_score_toolbar_from_scene()
@@ -915,15 +923,7 @@ func _create_voxel_visibility_panel() -> void:
 	_voxel_visibility_panel.tooltip_text = "Voxel Display visibility"
 	_voxel_visibility_panel.custom_minimum_size = Vector2(168.0, 34.0)
 	_voxel_visibility_panel.mouse_filter = Control.MOUSE_FILTER_PASS
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.055, 0.07, 0.09, 0.58)
-	style.border_color = Color(0.28, 0.66, 0.95, 0.35)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(3)
-	style.content_margin_left = 4.0
-	style.content_margin_right = 4.0
-	style.content_margin_top = 2.0
-	style.content_margin_bottom = 2.0
+	var style := _make_flat_stylebox(Color(0.055, 0.07, 0.09, 0.58), 3, 4.0, 2.0, Color(0.28, 0.66, 0.95, 0.35), 1)
 	_voxel_visibility_panel.add_theme_stylebox_override("panel", style)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _voxel_visibility_panel)
 
@@ -1029,15 +1029,7 @@ func _apply_voxel_visibility_button_style(button: BaseButton, active: bool, disa
 	if disabled:
 		bg = Color(0.09, 0.10, 0.11, 0.45)
 		border = Color(0.20, 0.22, 0.24, 0.45)
-	var normal := StyleBoxFlat.new()
-	normal.bg_color = bg
-	normal.border_color = border
-	normal.set_border_width_all(1)
-	normal.set_corner_radius_all(2)
-	normal.content_margin_left = 3.0
-	normal.content_margin_right = 3.0
-	normal.content_margin_top = 0.0
-	normal.content_margin_bottom = 0.0
+	var normal := _make_flat_stylebox(bg, 2, 3.0, 0.0, border, 1)
 	button.add_theme_stylebox_override("normal", normal)
 	var hover := normal.duplicate() as StyleBoxFlat
 	hover.bg_color = bg.lightened(0.14)

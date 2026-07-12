@@ -2,6 +2,7 @@ class_name TargetSceneVoxelGenerator
 extends "res://scripts/godot_compute_shader_base.gd"
 
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 
 const TARGET_STATS_BYTE_SIZE := 28
 const TARGET_STATS_QUANT_SCALE := 1000000.0
@@ -135,15 +136,15 @@ static func _target_field_vec4_from_color_and_completeness(
 
 
 static func _target_rgba8_byte_count(voxel_count: int) -> int:
-	return maxi(voxel_count, 0) * TARGET_RGBA8_STRIDE_BYTES
+	return SceneVoxelTileCodecScript.rgba8_byte_count(voxel_count)
 
 
 static func _target_r8_byte_count(voxel_count: int) -> int:
-	return maxi(voxel_count, 0) * TARGET_R8_STRIDE_BYTES
+	return SceneVoxelTileCodecScript.r8_byte_count(voxel_count)
 
 
 static func _target_r8_word_byte_count(voxel_count: int) -> int:
-	return maxi(int(ceili(float(maxi(voxel_count, 0)) / 4.0)) * 4, 4)
+	return SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count)
 
 
 static func _visual_format_from_bytes(bytes: PackedByteArray, voxel_count: int, hint: String = "") -> String:
@@ -230,21 +231,11 @@ static func _r8_bytes_from_scalar_bytes(
 
 
 static func _r8_word_bytes_from_r8_bytes(r8_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
-	var out := PackedByteArray()
-	out.resize(_target_r8_word_byte_count(voxel_count))
-	var byte_count := mini(r8_bytes.size(), _target_r8_byte_count(voxel_count))
-	for i in range(byte_count):
-		out[i] = r8_bytes[i]
-	return out
+	return SceneVoxelTileCodecScript.r8_word_bytes_from_r8_bytes(r8_bytes, voxel_count)
 
 
 static func _r8_bytes_from_word_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
-	var out := PackedByteArray()
-	out.resize(_target_r8_byte_count(voxel_count))
-	var byte_count := mini(out.size(), word_bytes.size())
-	for i in range(byte_count):
-		out[i] = word_bytes[i]
-	return out
+	return SceneVoxelTileCodecScript.r8_bytes_from_word_bytes(word_bytes, voxel_count)
 
 
 static func _r8_value_at(r8_bytes: PackedByteArray, index: int) -> float:

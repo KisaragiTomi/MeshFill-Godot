@@ -296,6 +296,27 @@ struct EvalResult {
     float semantic_weight;   // Phase-2 divisor (sample weight summed per scored dimension)
 };
 
+EvalResult make_invalid_eval_result() {
+    EvalResult r;
+    r.score = INVALID_SCORE;
+    r.support_ratio = 0.0;
+    r.solid_collision = 0.0;
+    r.complexity_overlap = 0.0;
+    r.clearance_overlap = 0.0;
+    r.ignored_sample = 0.0;
+    r.support_hit = 0.0;
+    r.support_total = 0.0;
+    r.valid = false;
+    r.target_coverage = 0.0;
+    r.target_complexity_fit = 0.0;
+    r.target_color_dist = 0.0;
+    r.target_density = 0.0;
+    r.target_total_weight = 0.0;
+    r.semantic_score = 0.0;
+    r.semantic_weight = 0.0;
+    return r;
+}
+
 vec4 unpack_rgba8(uint packed) {
     return vec4(
         float((packed >> 24u) & 0xFFu) / 255.0,
@@ -750,23 +771,7 @@ EvalResult evaluate_candidate(ivec3 candidate_origin, int rot_slot, int rot_coun
     float rot_angle = rot_count > 1 ? float(rot_slot) * 6.28318530718 / float(rot_count) : 0.0;
     float rot_ca = cos(rot_angle);
     float rot_sa = sin(rot_angle);
-    EvalResult r;
-    r.score = INVALID_SCORE;
-    r.support_ratio = 0.0;
-    r.solid_collision = 0.0;
-    r.complexity_overlap = 0.0;
-    r.clearance_overlap = 0.0;
-    r.ignored_sample = 0.0;
-    r.support_hit = 0.0;
-    r.support_total = 0.0;
-    r.valid = false;
-    r.target_coverage = 0.0;
-    r.target_complexity_fit = 0.0;
-    r.target_color_dist = 0.0;
-    r.target_density = 0.0;
-    r.target_total_weight = 0.0;
-    r.semantic_score = 0.0;
-    r.semantic_weight = 0.0;
+    EvalResult r = make_invalid_eval_result();
 
     if (!in_grid_bounds(candidate_origin)) {
         return r;
@@ -924,23 +929,7 @@ EvalResult evaluate_best_at(ivec3 origin, int rot_count, out int best_slot) {
 }
 
 EvalResult evaluate_best_near(ivec3 base_candidate, int rot_count, out ivec3 best_origin, out int best_slot) {
-    EvalResult best_result;
-    best_result.score = INVALID_SCORE;
-    best_result.support_ratio = 0.0;
-    best_result.solid_collision = 0.0;
-    best_result.complexity_overlap = 0.0;
-    best_result.clearance_overlap = 0.0;
-    best_result.ignored_sample = 0.0;
-    best_result.support_hit = 0.0;
-    best_result.support_total = 0.0;
-    best_result.valid = false;
-    best_result.target_coverage = 0.0;
-    best_result.target_complexity_fit = 0.0;
-    best_result.target_color_dist = 0.0;
-    best_result.target_density = 0.0;
-    best_result.target_total_weight = 0.0;
-    best_result.semantic_score = 0.0;
-    best_result.semantic_weight = 0.0;
+    EvalResult best_result = make_invalid_eval_result();
     best_origin = base_candidate;
     best_slot = 0;
 
@@ -1091,23 +1080,7 @@ void main() {
         // so best_index staying unset means "no valid candidate". A valid-but-negative
         // (penalty-only) candidate is still a real winner and must NOT be rejected here.
         if (best_index >= LOCAL_COUNT) {
-            EvalResult empty_result;
-            empty_result.score = INVALID_SCORE;
-            empty_result.support_ratio = 0.0;
-            empty_result.solid_collision = 0.0;
-            empty_result.complexity_overlap = 0.0;
-            empty_result.clearance_overlap = 0.0;
-            empty_result.ignored_sample = 0.0;
-            empty_result.support_hit = 0.0;
-            empty_result.support_total = 0.0;
-            empty_result.valid = false;
-            empty_result.target_coverage = 0.0;
-            empty_result.target_complexity_fit = 0.0;
-            empty_result.target_color_dist = 0.0;
-            empty_result.target_density = 0.0;
-            empty_result.target_total_weight = 0.0;
-            empty_result.semantic_score = 0.0;
-            empty_result.semantic_weight = 0.0;
+            EvalResult empty_result = make_invalid_eval_result();
             write_record(base_slot + rank, ivec3(0), empty_result, tile_id, 0);
             selected[rank] = LOCAL_COUNT;
             continue;

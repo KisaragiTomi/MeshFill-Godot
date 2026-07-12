@@ -18,6 +18,8 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 const VolumeScore3D := preload("res://scripts/utils/volume_score_3d.gd")
 const DebugBufferSetScript := preload("res://scripts/utils/debug_buffer_set.gd")
 const DemoUI := preload("res://scripts/utils/demo_ui.gd")
+const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
+const DemoDebugVisuals := preload("res://scripts/utils/demo_debug_visuals.gd")
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
@@ -636,11 +638,7 @@ func _build_anchor_point_display() -> void:
 	marker_mesh.height = radius * 2.0
 	marker_mesh.radial_segments = 8
 	marker_mesh.rings = 4
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.20, 0.85, 1.0, 0.82)
-	mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.no_depth_test = true
+	var mat := DemoDebugVisuals.make_unshaded_material(Color(0.20, 0.85, 1.0, 0.82), false, true)
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh = marker_mesh
@@ -775,7 +773,7 @@ func _load_descriptors() -> Array:
 	var root := asset_descriptor_dir.strip_edges()
 	if root.is_empty():
 		root = "res://assets"
-	for path in _scan_descriptor_paths(root):
+	for path in DemoAssets.discover_geo_files(root, ["tres"]):
 		var res := load(path)
 		if _is_asset_descriptor(res) and res.get_mesh() != null:
 			result.append(res)
@@ -784,24 +782,6 @@ func _load_descriptors() -> Array:
 
 func _is_asset_descriptor(res) -> bool:
 	return res != null and res is Resource and res.has_method("get_mesh") and res.has_method("get_collision")
-
-
-func _scan_descriptor_paths(root: String) -> PackedStringArray:
-	var out := PackedStringArray()
-	var dir := DirAccess.open(root)
-	if dir == null:
-		return out
-	dir.list_dir_begin()
-	var entry := dir.get_next()
-	while entry != "":
-		if dir.current_is_dir():
-			if not entry.begins_with("."):
-				out.append_array(_scan_descriptor_paths(root.path_join(entry)))
-		elif entry.get_extension().to_lower() == "tres":
-			out.append(root.path_join(entry))
-		entry = dir.get_next()
-	dir.list_dir_end()
-	return out
 
 
 ## 无 collision 资产的采样跨度：从 mesh AABB 按最长轴归一到 asset_collision_span_voxels。

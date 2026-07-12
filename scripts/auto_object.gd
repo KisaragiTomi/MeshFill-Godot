@@ -475,15 +475,14 @@ func refresh_bound_spacing() -> void:
 
 
 func get_source_mesh() -> Mesh:
-	if not source_mesh_path.is_empty() and (source_mesh == null or source_mesh == mesh):
-		var factory_script = load("res://scripts/auto_asset_factory.gd")
-		var loaded_source_mesh = factory_script.load_source_mesh(source_mesh_path) if factory_script != null else null
-		if loaded_source_mesh != null:
-			source_mesh = loaded_source_mesh
-			return source_mesh
-	if source_mesh != null:
-		return source_mesh
-	return mesh
+	var factory_script = load("res://scripts/auto_asset_factory.gd")
+	if factory_script == null:
+		return source_mesh if source_mesh != null else mesh
+	var resolved: Dictionary = factory_script.resolve_source_mesh(source_mesh_path, source_mesh, mesh, mesh)
+	var resolved_mesh: Mesh = resolved.get("mesh", null)
+	if resolved.get("cache", false):
+		source_mesh = resolved_mesh
+	return resolved_mesh
 
 
 func get_axis_center_xz() -> Vector2:

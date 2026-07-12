@@ -6,6 +6,7 @@ const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
 const VoxelDisplay := preload("res://scripts/utils/voxel_display.gd")
 const VoxelDebugLabel := preload("res://scripts/utils/voxel_debug_label.gd")
 const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
+const DemoDebugVisuals := preload("res://scripts/utils/demo_debug_visuals.gd")
 
 const VOXEL_DEBUG_NODE := "VoxelDebugGroup"
 const GEO_ASSET_ROOT := "Assets/Geo"
@@ -1195,40 +1196,13 @@ func _clear_node(node_name: String) -> void:
 		existing.free()
 
 
-func _make_wire_box_mesh() -> ImmediateMesh:
-	var half := 0.5
-	var corners := [
-		Vector3(-half, -half, -half), Vector3( half, -half, -half),
-		Vector3( half, -half,  half), Vector3(-half, -half,  half),
-		Vector3(-half,  half, -half), Vector3( half,  half, -half),
-		Vector3( half,  half,  half), Vector3(-half,  half,  half),
-	]
-	var edges := [
-		[0, 1], [1, 2], [2, 3], [3, 0],
-		[4, 5], [5, 6], [6, 7], [7, 4],
-		[0, 4], [1, 5], [2, 6], [3, 7],
-	]
-	var mesh := ImmediateMesh.new()
-	mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	for edge in edges:
-		mesh.surface_add_vertex(corners[int(edge[0])])
-		mesh.surface_add_vertex(corners[int(edge[1])])
-	mesh.surface_end()
-	return mesh
-
-
 # Red wireframe AABB box. Centered on the mesh's actual AABB in container space, so it
 # tracks the native pivot (cliffs: geometric center) wherever the mesh sits.
 func _make_geo_bound_box(bounds: AABB) -> MeshInstance3D:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = GEO_BOUND_BOX_COLOR
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.no_depth_test = true
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var mat := DemoDebugVisuals.make_unshaded_material(GEO_BOUND_BOX_COLOR, false, true, true)
 	var box := MeshInstance3D.new()
 	box.name = "BoundBox"
-	box.mesh = _make_wire_box_mesh()
+	box.mesh = DemoDebugVisuals.make_unit_wire_box_mesh()
 	box.material_override = mat
 	box.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	box.position = bounds.position + bounds.size * 0.5
@@ -1247,11 +1221,7 @@ func _make_probe_marker(probe: Dictionary, index: int) -> MeshInstance3D:
 	elif shape_source == "voxel_interior":
 		color = Color(0.15, 0.75, 1.0, 0.9)
 
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.no_depth_test = true
+	var mat := DemoDebugVisuals.make_unshaded_material(color, false, true)
 	mat.emission_enabled = true
 	mat.emission = color
 	mat.emission_energy_multiplier = 1.5

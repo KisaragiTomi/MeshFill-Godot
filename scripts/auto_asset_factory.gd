@@ -5,40 +5,32 @@ const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
 
 
 static func load_mesh(mesh_path: String) -> Mesh:
-	if mesh_path.is_empty():
+	var mesh_info := DemoAssets.load_mesh_info(mesh_path)
+	var mesh: Mesh = mesh_info.get("mesh", null)
+	if mesh == null:
 		return null
-	var resource = load(mesh_path)
-	if resource is Mesh:
-		return resource as Mesh
-	if resource is PackedScene:
-		var instance := (resource as PackedScene).instantiate()
-		var mesh_info := _find_mesh_info_in_tree(instance)
-		if mesh_info.is_empty():
-			mesh_info = _find_mesh_info_in_tree(instance, Transform3D.IDENTITY, true)
-		var mesh: Mesh = mesh_info.get("mesh", null)
-		var mesh_transform: Transform3D = mesh_info.get("transform", Transform3D.IDENTITY)
-		instance.free()
-		if mesh == null:
-			return null
-		return _bake_mesh_transform(mesh, mesh_transform)
-	return null
+	return _bake_mesh_transform(mesh, mesh_info.get("transform", Transform3D.IDENTITY))
 
 
 static func load_source_mesh(mesh_path: String) -> Mesh:
-	if mesh_path.is_empty():
-		return null
-	var resource = load(mesh_path)
-	if resource is Mesh:
-		return resource as Mesh
-	if resource is PackedScene:
-		var instance := (resource as PackedScene).instantiate()
-		var mesh_info := _find_mesh_info_in_tree(instance)
-		if mesh_info.is_empty():
-			mesh_info = _find_mesh_info_in_tree(instance, Transform3D.IDENTITY, true)
-		var mesh: Mesh = mesh_info.get("mesh", null)
-		instance.free()
-		return mesh
-	return null
+	return DemoAssets.load_mesh(mesh_path)
+
+
+## source mesh 解析共用核心(原 AssetDescriptor/AutoObject.get_source_mesh 逐字重复)。
+## 返回 {"mesh": Mesh, "cache": bool}；cache=true 时调用方负责写回 source_mesh 缓存。
+static func resolve_source_mesh(
+	source_mesh_path: String,
+	cached_source_mesh: Mesh,
+	current_mesh: Mesh,
+	fallback_mesh: Mesh
+) -> Dictionary:
+	if not source_mesh_path.is_empty() and (cached_source_mesh == null or cached_source_mesh == current_mesh):
+		var loaded := load_source_mesh(source_mesh_path)
+		if loaded != null:
+			return {"mesh": loaded, "cache": true}
+	if cached_source_mesh != null:
+		return {"mesh": cached_source_mesh, "cache": false}
+	return {"mesh": fallback_mesh, "cache": false}
 
 
 ## 网格树查找 / UE 碰撞辅助体过滤 / 变换烘焙已与 DemoAssets 合并(原三份近逐字重复)。
