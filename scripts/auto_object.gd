@@ -66,20 +66,6 @@ func _get(property: StringName):
 	return null
 
 
-static func instance_stamp_write_spec_meta_keys() -> Array:
-	return [INSTANCE_STAMP_WRITE_SPEC_META_KEY, VOXEL_WRITE_SPEC_META_KEY]
-
-
-static func instance_stamp_write_spec_from_config(config: Dictionary) -> Dictionary:
-	for key in instance_stamp_write_spec_meta_keys():
-		var raw_record = config.get(key, {})
-		if raw_record is Dictionary:
-			var record := raw_record as Dictionary
-			if not record.is_empty():
-				return record.duplicate(true)
-	return {}
-
-
 static func create_voxel_profile(
 	entry_color: Color,
 	entry_complexity: float,
@@ -559,13 +545,6 @@ func make_voxel_profile(default_radius: float = -1.0) -> AutoVoxelProfile:
 	)
 
 
-func get_instance_stamp_write_spec_extra_fields(extra_fields: Dictionary = {}) -> Dictionary:
-	var fields := extra_fields.duplicate(true)
-	if not fields.has("mesh_index"):
-		fields["mesh_index"] = mesh_index
-	return fields
-
-
 func is_valid_asset() -> bool:
 	return mesh != null and mesh_height_texture != null and mesh_size > 0.0
 
@@ -578,6 +557,9 @@ func make_instance_stamp_write_spec(
 ) -> Dictionary:
 	var radius := get_record_radius()
 	var bounds_y := get_record_y_bounds()
+	var fields := extra_fields.duplicate(true)
+	if not fields.has("mesh_index"):
+		fields["mesh_index"] = mesh_index
 	return make_profile_instance_stamp_write_spec(
 		record_id,
 		get_record_object_type(),
@@ -591,7 +573,7 @@ func make_instance_stamp_write_spec(
 		bounds_y.x,
 		bounds_y.y,
 		[],
-		get_instance_stamp_write_spec_extra_fields(extra_fields)
+		fields
 	)
 
 
@@ -755,7 +737,7 @@ func get_instance_stamp_write_spec() -> Dictionary:
 
 
 func _get_instance_stamp_write_spec_metadata() -> Dictionary:
-	for key in instance_stamp_write_spec_meta_keys():
+	for key in [INSTANCE_STAMP_WRITE_SPEC_META_KEY, VOXEL_WRITE_SPEC_META_KEY]:
 		if not has_meta(key):
 			continue
 		var raw_record = get_meta(key)
