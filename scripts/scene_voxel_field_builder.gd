@@ -67,8 +67,6 @@ var _terrain_base_collision_field: Image
 var _sampler: RID
 
 ## --- collision compute shader 管线(本组件拥有) ---
-var _shader_stamp_r32_disc: RID
-var _pipeline_stamp_r32_disc: RID
 var _shader_stamp_rgba_channel_disc: RID
 var _pipeline_stamp_rgba_channel_disc: RID
 var _shader_merge_sv_collision_records: RID
@@ -86,7 +84,6 @@ func setup(committer, base_resolution: int) -> void:
 
 func _init_collision_gpu() -> void:
 	var specs := {
-		"stamp_r32_disc": "res://shaders/stamp_r32_disc.glsl",
 		"stamp_rgba_channel_disc": "res://shaders/stamp_rgba_channel_disc.glsl",
 		"merge_sv_collision_records": "res://shaders/merge_sv_collision_records.glsl",
 		"stamp_collect_voxel_disc": "res://shaders/stamp_collect_voxel_disc_3d.glsl",
@@ -130,11 +127,17 @@ func _stamp_scalar_image_disc(img: Image, center_px: Vector2i, radius_px: int, v
 
 	return img
 
-## GPU 执行圆形标量盖印，支持 R32 与 RGBA 通道两种格式
+## GPU 执行圆形标量盖印，仅支持 RGBA 通道格式（occupancy 图）
 
 func _stamp_scalar_image_disc_gpu(img: Image, center_px: Vector2i, radius_px: int, value: float, channel: int = 0) -> Image:
 
 	if img == null or img.is_empty():
+
+		return null
+
+	if img.get_format() == Image.FORMAT_RF:
+
+		push_error("[SceneVoxelFieldBuilder] R32 (FORMAT_RF) 场不走 disc stamp 路径，仅支持 RGBA 通道图")
 
 		return null
 
@@ -146,19 +149,17 @@ func _stamp_scalar_image_disc_gpu(img: Image, center_px: Vector2i, radius_px: in
 
 	var height := img.get_height()
 
-	var use_r32 := img.get_format() == Image.FORMAT_RF
+	var shader := _shader_stamp_rgba_channel_disc
 
-	var shader := _shader_stamp_r32_disc if use_r32 else _shader_stamp_rgba_channel_disc
-
-	var pipeline := _pipeline_stamp_r32_disc if use_r32 else _pipeline_stamp_rgba_channel_disc
+	var pipeline := _pipeline_stamp_rgba_channel_disc
 
 	if not shader.is_valid() or not pipeline.is_valid():
 
 		return null
 
-	var data_format := RenderingDevice.DATA_FORMAT_R32_SFLOAT if use_r32 else RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
+	var data_format := RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
 
-	var image_format := Image.FORMAT_RF if use_r32 else Image.FORMAT_RGBAH
+	var image_format := Image.FORMAT_RGBAH
 
 	var src_tex := upload_texture_2d(
 		img,
@@ -402,29 +403,15 @@ func _normalize_shared_field_layers(field_layers: Array, base_px: Vector2i = Vec
 
 	var canonical_layers: Array[Dictionary] = SharedPropertyTypeScript.collision_from_fields({SharedPropertyTypeScript.COLLISION_KEY: field_layers})
 
-	for raw_layer in canonical_layers:
-
-		if not raw_layer is Dictionary:
-
-			continue
-
-		var collision_entry := (raw_layer as Dictionary).duplicate(true)
+	for collision_entry in canonical_layers:
 
 		if not bool(collision_entry.get("enabled", true)):
 
 			continue
 
-		if not VoxelGeneralScript.is_point_collision_sample(collision_entry):
-
-			continue
-
-		var local := VoxelGeneralScript.collision_local_voxel(collision_entry)
-
-		collision_entry["voxel"] = local
+		var local: Vector3i = collision_entry["voxel"]
 
 		collision_entry["local_pos"] = local
-
-		collision_entry["collision_strength"] = clampf(float(collision_entry.get("collision_strength", 1.0)), 0.0, 1.0)
 
 		collision_entry["radius_px"] = maxi(int(collision_entry.get("radius_px", 0)), 0)
 
@@ -441,6 +428,26 @@ func _normalize_shared_field_layers(field_layers: Array, base_px: Vector2i = Vec
 		result.append(collision_entry)
 
 	return result
+
+## 碰撞记录共享元数据推导（_make_source_collision 与 _stamp_shared_field_layer 共用）。
+## radius_px 恒为 0：collision 是逐体素点采样，记录不携带形状半径。
+## source_voxel_type/record_id 两处回退序不同、voxel_px 在 _volume 为空时处理不同，
+## 均由调用方算好传入。
+
+func _collision_record_meta(layer: Dictionary, rec: Dictionary, collision_strength: float, layer_base_px: Vector2i, voxel_px: Vector2i, source_voxel_type: String, record_id: String) -> Dictionary:
+
+	return {
+		"collision_strength": collision_strength,
+		"base_pixel": layer_base_px,
+		"voxel_xz": voxel_px,
+		"radius_px": 0,
+		"collision_shape": str(layer.get("shape", "point")),
+		"collision_radius": layer.get("radius", 0.0),
+		"effective_radius": layer.get("effective_radius", 0.0),
+		"source_voxel_type": source_voxel_type,
+		"record_id": record_id,
+		"instance_id": int(rec.get("instance_id", rec.get("auto_instance_id", rec.get("instance_mesh_id", rec.get("mesh_instance_id", 0))))),
+	}
 
 ## 根据基础像素与碰撞层生成源碰撞层列表，跳过目标体素类型
 
@@ -460,40 +467,25 @@ func _make_source_collision(base_px: Vector2i, collision_layers: Array, rec: Dic
 
 		xz_res = int(_committer._volume.get("xz_res", _committer._base_res))
 
+	var record_id := str(rec.get("id", ""))
+
 	var layers := _normalize_shared_field_layers(collision_layers, base_px)
 
 	for layer in layers:
 
 		var collision_strength := clampf(float(layer.get("collision_strength", 1.0)), 0.0, 1.0)
 
-		# Collision is per-voxel point samples: source records carry no shape radius.
-		var radius_px := 0
-
 		var layer_base_px := VoxelGeneralScript.collision_layer_base_px(base_px, layer, _committer._base_res)
 
 		var source_layer := layer.duplicate(true)
 
-		source_layer["collision_strength"] = collision_strength
-
-		source_layer["base_pixel"] = layer_base_px
-
-		source_layer["voxel_xz"] = _committer._volume_px_from_base(layer_base_px, xz_res)
+		source_layer.merge(_collision_record_meta(
+			layer, rec, collision_strength, layer_base_px,
+			_committer._volume_px_from_base(layer_base_px, xz_res),
+			source_type, record_id
+		), true)
 
 		source_layer["volume_xz_resolution"] = xz_res
-
-		source_layer["radius_px"] = radius_px
-
-		source_layer["collision_shape"] = str(layer.get("shape", "point"))
-
-		source_layer["collision_radius"] = layer.get("radius", 0.0)
-
-		source_layer["effective_radius"] = layer.get("effective_radius", 0.0)
-
-		source_layer["source_voxel_type"] = source_type
-
-		source_layer["record_id"] = str(rec.get("id", ""))
-
-		source_layer["instance_id"] = int(rec.get("instance_id", rec.get("auto_instance_id", rec.get("instance_mesh_id", rec.get("mesh_instance_id", 0)))))
 
 		source_layer["collision_buffer_applied"] = false
 
@@ -623,19 +615,13 @@ func _stamp_shared_field_layer(base_px: Vector2i, source_layer: Dictionary, rec:
 
 		if collision_strength > previous:
 
-			var cell := {
-				"slice_index": int(layer.get("slice_index", 0)),
-				"collision_shape": str(layer.get("shape", "point")),
-				"collision_radius": layer.get("radius", 0.0),
-				"effective_radius": layer.get("effective_radius", 0.0),
-				"source_voxel_type": str(layer.get("source_voxel_type", rec.get("source_voxel_type", ""))),
-				"record_id": str(layer.get("record_id", rec.get("id", ""))),
-				"instance_id": int(rec.get("instance_id", rec.get("auto_instance_id", rec.get("instance_mesh_id", rec.get("mesh_instance_id", 0))))),
-				"collision_strength": collision_strength,
-				"base_pixel": layer_base_px,
-				"voxel_xz": voxel_px,
-				"radius_px": 0,
-			}
+			var cell := _collision_record_meta(
+				layer, rec, collision_strength, layer_base_px, voxel_px,
+				str(layer.get("source_voxel_type", rec.get("source_voxel_type", ""))),
+				str(layer.get("record_id", rec.get("id", "")))
+			)
+
+			cell["slice_index"] = int(layer.get("slice_index", 0))
 
 			cell_map[cell_key] = cell
 
@@ -659,11 +645,13 @@ func _stamp_shared_field_layers(base_px: Vector2i, field_layers: Array, rec: Dic
 
 	var updated: Array[Dictionary] = []
 
-	var layers := _normalize_shared_field_layers(field_layers, base_px)
+	for raw_layer in field_layers:
 
-	for layer in layers:
+		if not raw_layer is Dictionary:
 
-		var stamped := _stamp_shared_field_layer(base_px, layer, rec)
+			continue
+
+		var stamped := _stamp_shared_field_layer(base_px, raw_layer, rec)
 
 		if not stamped.is_empty():
 

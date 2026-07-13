@@ -6,7 +6,7 @@
 //   idx = slice * xz_res * xz_res + z * xz_res + x
 // One invocation processes one voxel of the cylinder (disc extruded along the
 // gathered slices). It applies the same max-write stamp rule as
-// stamp_r32_disc.glsl, then records changed voxels by compare_mode.
+// stamp_rgba_channel_disc.glsl, then records changed voxels by compare_mode.
 //
 // Input and output are separate buffers (both seeded with the previous volume)
 // so previous_value is always the clean pre-stamp value. This matters at image
@@ -65,7 +65,7 @@ void main() {
     int idx = slice * xz_res * xz_res + z * xz_res + x;
     float previous_value = in_voxels[idx];
 
-    // Stamp rule mirrors stamp_r32_disc.glsl: monotonic max-write inside the disc.
+    // Stamp rule mirrors stamp_rgba_channel_disc.glsl: monotonic max-write inside the disc.
     float value = clamp(params.x, 0.0, 1.0);
     out_voxels[idx] = max(previous_value, value);
 
