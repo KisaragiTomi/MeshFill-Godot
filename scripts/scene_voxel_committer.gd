@@ -228,15 +228,6 @@ func get_instance_stamp_write_specs() -> Array[Dictionary]:
 		records.append(typed_record.duplicate(true))
 	return records
 
-## Get one placed mesh instance_stamp_write_spec by id.
-## 按网格ID获取单条体素写入规格记录
-func get_instance_stamp_write_spec(mesh_id: String) -> Dictionary:
-	if not _instance_stamp_write_spec_index.has(mesh_id):
-		return {}
-	var idx: int = _instance_stamp_write_spec_index[mesh_id]
-	var record: Dictionary = _instance_stamp_write_specs[idx]
-	return record.duplicate(true)
-
 ## 从记录中读取有效通道索引，无效返回 -1
 func _record_channel(record: Dictionary) -> int:
 	var ch := int(record.get("channel", -1))
@@ -271,12 +262,12 @@ func begin_generation_tick(tick: int = -1) -> int:
 	_sv_dirty = true
 	return write_tick
 
-## 根据记录与通道返回对应的切片索引列表
-func _slice_indices_for_channel_record(entry: Dictionary, channel: int) -> Array[int]:
+## 根据记录与通道返回对应的切片索引列表；force_recompute 时忽略记录携带的 slice_indices，按 slice_meta 重算
+func _slice_indices_for_channel_record(entry: Dictionary, channel: int, force_recompute: bool = false) -> Array[int]:
 	var indices: Array[int] = []
 	if _volume.is_empty():
 		return indices
-	if entry.has("slice_indices"):
+	if not force_recompute and entry.has("slice_indices"):
 		var raw_indices: Array = entry.slice_indices
 		for idx in raw_indices:
 			var si := int(idx)
@@ -472,7 +463,6 @@ func _stamp_volume_slices(
 			scene_voxel["slice_index"] = slice_index
 			scene_voxel["voxel_xz"] = stamp_voxel_px
 			scene_voxel["complexity"] = v
-			scene_voxel = SharedPropertyTypeScript.apply_to_scene_voxel(scene_voxel, scene_voxel, v, SharedPropertyTypeScript.has_collision_fields(scene_voxel))
 			scene_voxel = SceneVoxelSourceRecordScript.prepare_source_record(scene_voxel, resolved_tick)
 			scene_voxel["commit_tick"] = resolved_tick
 			scene_voxels[SceneVoxelSourceRecordScript.scene_voxel_key(slice_index, stamp_voxel_px)] = scene_voxel
@@ -702,7 +692,6 @@ func _update_instance_stamp_write_specs_for_volume() -> void:
 	if _volume.is_empty():
 		return
 	var xz_res: int = _volume.xz_res
-	var meta: Array = _volume.slice_meta
 	for ri in range(_instance_stamp_write_specs.size()):
 		var record: Dictionary = _instance_stamp_write_specs[ri]
 		var base_px: Vector2i = record.get("base_pixel", Vector2i.ZERO)
@@ -711,12 +700,7 @@ func _update_instance_stamp_write_specs_for_volume() -> void:
 		record["volume_xz_resolution"] = xz_res
 		var ch := _record_channel(record)
 		if ch >= 0:
-			var slice_indices: Array[int] = []
-			for si in range(meta.size()):
-				var m: Dictionary = meta[si]
-				if int(m.channel) == ch:
-					slice_indices.append(si)
-			record["slice_indices"] = slice_indices
+			record["slice_indices"] = _slice_indices_for_channel_record(record, ch, true)
 		var collision_layers: Array = record.get("collision", [])
 		for ci in range(collision_layers.size()):
 			if not collision_layers[ci] is Dictionary:
@@ -806,15 +790,12 @@ func build_voxel_volume(
 		var ch := int(descriptor.channel)
 		if not _is_valid_channel(ch):
 			continue
-		var subs := maxi(int(descriptor.get("subdivisions", 1)), 1)
-		var y_min_base := float(descriptor.get("y_min", 0.0))
-		var y_max_base := float(descriptor.get("y_max", y_min_base + 1.0))
-		if y_max_base <= y_min_base:
-			y_max_base = y_min_base + 1.0
+		var subs := int(descriptor.subdivisions)
+		var y_min_base := float(descriptor.y_min)
+		var y_max_base := float(descriptor.y_max)
 		var thickness := y_max_base - y_min_base
-		var color: Color = descriptor.get("color", Color.WHITE)
-		var complexity := clampf(float(descriptor.get("complexity", color.a)), 0.0, 1.0)
-		color.a = complexity
+		var color: Color = descriptor.color
+		var complexity := float(descriptor.complexity)
 		for si in range(subs):
 			var y_min: float = y_min_base + thickness * float(si) / float(subs)
 			var y_max: float = y_min_base + thickness * float(si + 1) / float(subs)
