@@ -17,15 +17,6 @@ const SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES := 1
 ## stride/路径/键/展平契约已抽取到 utils/sv_field_scatter.gd（与 SPA BrushSV 散射共享）。
 const SvFieldScatter := preload("res://scripts/utils/sv_field_scatter.gd")
 const SV_FIELD_RECORD_FLOAT_STRIDE := SvFieldScatter.RECORD_FLOAT_STRIDE
-const SV_FIELD_SCATTER_SHADER_PATH := SvFieldScatter.SHADER_PATH
-
-## std430 push-constant 布局：_flush_pending_sv_field_records 的 field 散射（16B，4×int）
-const SV_FIELD_SCATTER_PUSH := [
-	["xz_res", "int"],
-	["total_slices", "int"],
-	["record_count", "int"],
-	["merge_mode", "int"],
-]
 
 ## std430 push-constant 布局：_make_occupancy_slice_image_gpu 的占据切片投影（32B，6×int + 2×float）
 const OCCUPANCY_SLICE_PUSH := [
@@ -503,39 +494,20 @@ func _flush_pending_sv_field_records() -> Dictionary:
 	var collision_buffer: RID = field_buffers.get("collision_field_buffer", RID())
 	if not complexity_buffer.is_valid() or not collision_buffer.is_valid():
 		return {"ok": false, "reason": "resident_field_buffers_missing", "record_count": record_count, "gpu_dispatched": false}
-	var shader := load_compute_shader(SV_FIELD_SCATTER_SHADER_PATH, SCOPE_FRAME, "scatter_sv_field_records")
-	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "scatter_sv_field_records")
-	if not shader.is_valid() or not pipeline.is_valid():
-		gc_frame()
-		return {"ok": false, "reason": "scatter_shader_not_ready", "record_count": record_count, "gpu_dispatched": false}
-	var record_floats := SvFieldScatter.flatten_record_slots(_pending_sv_field_records)
-	var record_buffer := storage_buffer_from_floats(record_floats, SCOPE_FRAME, "sv_field_scatter_records")
-	if not record_buffer.is_valid():
-		gc_frame()
-		return {"ok": false, "reason": "scatter_record_buffer_failed", "record_count": record_count, "gpu_dispatched": false}
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, complexity_buffer),
-		make_storage_uniform(1, collision_buffer),
-		make_storage_uniform(2, record_buffer),
-	], shader, 0, SCOPE_PASS, "scatter_sv_field_records")
-	if not set0.is_valid():
-		gc_frame()
-		return {"ok": false, "reason": "scatter_uniform_set_failed", "record_count": record_count, "gpu_dispatched": false}
 	# committed SV 用 max-by-complexity 合并：常驻 field 可能已含 VPG state-chain stamp 内容，
-	# CPU compare 门（基于 slices）看不到它们，单调合并防止低值覆写（merge_mode=1）。
-	var push := PushConstantLayout.new(SV_FIELD_SCATTER_PUSH).pack({
-		xz_res = int(_volume.xz_res),
-		total_slices = int(_volume.get("total_slices", grid_size.y)),
-		record_count = record_count,
-		merge_mode = 1,
-	})
-	var groups := dispatch_groups_1d(record_count, 64)
-	if not _gpu_dispatch_and_sync(pipeline, [set0], push, groups):
-		gc_frame()
-		return {"ok": false, "reason": "scatter_dispatch_failed", "record_count": record_count, "gpu_dispatched": false}
-	gc_frame()
-	_pending_sv_field_records.clear()
-	return {"ok": true, "record_count": record_count, "gpu_dispatched": true}
+	# CPU compare 门（基于 slices）看不到它们，单调合并防止低值覆写（write_mode=1）。
+	var scatter_result := SvFieldScatter.dispatch_scatter(
+		self,
+		complexity_buffer,
+		collision_buffer,
+		_pending_sv_field_records,
+		int(_volume.xz_res),
+		int(_volume.get("total_slices", grid_size.y)),
+		1
+	)
+	if bool(scatter_result.get("ok", false)):
+		_pending_sv_field_records.clear()
+	return scatter_result
 
 ## 构造盖章体素的公共投影模板（写入 _volume.scene_voxels 的调试/查询投影；stamp-only commit 无来源裁决）
 func _make_stamped_scene_voxel_template(
