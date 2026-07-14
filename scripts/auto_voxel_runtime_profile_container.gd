@@ -3,7 +3,7 @@ extends RefCounted
 
 const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
-const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const SemanticProbeGeneratorScript := preload("res://scripts/semantic_probe_generator.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const HashUtils := preload("res://scripts/utils/hash_utils.gd")
@@ -13,21 +13,18 @@ const CanonicalHash := preload("res://scripts/utils/canonical_hash.gd")
 const PROFILE_TABLE_BUFFER := "profile_table"
 const PROBE_RECORD_BUFFER := "probe_records"
 const PIVOT_RECORD_BUFFER := "pivot_records"
-const COLLISION_RECORD_BUFFER := "collision_records"
+const ASSET_VOXEL_RECORD_BUFFER := "asset_voxel_records"
 const GPU_BUFFER_NAMES := [
 	PROFILE_TABLE_BUFFER,
 	PROBE_RECORD_BUFFER,
 	PIVOT_RECORD_BUFFER,
-	COLLISION_RECORD_BUFFER,
+	ASSET_VOXEL_RECORD_BUFFER,
 ]
 
 const PROFILE_TABLE_STRIDE_BYTES := 64
 const PROBE_RECORD_STRIDE_BYTES := 32
 const PIVOT_RECORD_STRIDE_BYTES := 32
-const COLLISION_RECORD_STRIDE_BYTES := 32
-# 每 profile 的 collision 记录上限：score/stamp shader 以 shared 数组预载全部记录，
-# 数组长度 128（见 score_voxel_tile.glsl 的 s_sample_* 声明），注册期在此截断。
-const COLLISION_SAMPLE_CAPACITY := 128
+const ASSET_VOXEL_RECORD_STRIDE_BYTES := 32
 
 var descriptor_hash_to_profile_id: Dictionary = {}
 var dirty_profile_ids: Array[int] = []
@@ -41,10 +38,10 @@ var _profile_order: Array[int] = []
 var _staging_profile_table: Array[Dictionary] = []
 var _staging_probe_records: Array[Dictionary] = []
 var _staging_pivot_records: Array[Dictionary] = []
-var _staging_collision_records: Array[Dictionary] = []
+var _staging_asset_voxel_records: Array[Dictionary] = []
 var _staging_probe_ranges: Array[Dictionary] = []
 var _staging_pivot_ranges: Array[Dictionary] = []
-var _staging_collision_ranges: Array[Dictionary] = []
+var _staging_asset_voxel_ranges: Array[Dictionary] = []
 
 var _rd: RenderingDevice
 var _owns_rendering_device := false
@@ -74,10 +71,10 @@ func clear() -> void:
 	_staging_profile_table.clear()
 	_staging_probe_records.clear()
 	_staging_pivot_records.clear()
-	_staging_collision_records.clear()
+	_staging_asset_voxel_records.clear()
 	_staging_probe_ranges.clear()
 	_staging_pivot_ranges.clear()
-	_staging_collision_ranges.clear()
+	_staging_asset_voxel_ranges.clear()
 	_last_upload_error = ""
 	_mark_staging_changed()
 
@@ -157,7 +154,7 @@ func upload_profiles(force: bool = false) -> bool:
 	var packed_profile_table := _pack_profile_table_bytes()
 	var packed_probes := _pack_probe_record_bytes()
 	var packed_pivots := _pack_pivot_record_bytes()
-	var packed_collisions := _pack_collision_record_bytes()
+	var packed_asset_voxels := _pack_asset_voxel_record_bytes()
 
 	_release_gpu_buffers()
 	var ok := true
@@ -180,10 +177,10 @@ func upload_profiles(force: bool = false) -> bool:
 		PIVOT_RECORD_STRIDE_BYTES
 	)
 	ok = ok and _create_storage_buffer(
-		COLLISION_RECORD_BUFFER,
-		packed_collisions,
-		_staging_collision_records.size(),
-		COLLISION_RECORD_STRIDE_BYTES
+		ASSET_VOXEL_RECORD_BUFFER,
+		packed_asset_voxels,
+		_staging_asset_voxel_records.size(),
+		ASSET_VOXEL_RECORD_STRIDE_BYTES
 	)
 
 	if not ok:
@@ -219,6 +216,12 @@ func get_gpu_buffer(buffer_name: String) -> RID:
 	return _gpu_buffers.get(buffer_name, RID())
 
 
+## 返回指定 GPU buffer 已上传的 record 数（= shader 侧该缓冲的元素容量；未创建/空时为 0）。
+## 供 dispatch 端把容量作为显式 push/config 值传给 shader 的容量守卫使用。
+func get_gpu_record_count(buffer_name: String) -> int:
+	return int(_gpu_record_counts.get(buffer_name, 0))
+
+
 ## 返回 profile table GPU buffer 的 RID。
 func get_profile_table_buffer() -> RID:
 	return get_gpu_buffer(PROFILE_TABLE_BUFFER)
@@ -234,21 +237,20 @@ func get_pivot_buffer() -> RID:
 	return get_gpu_buffer(PIVOT_RECORD_BUFFER)
 
 
-## 返回 collision record GPU buffer 的 RID（score/stamp shader 的资产采样形状来源）。
-func get_collision_records_buffer() -> RID:
-	return get_gpu_buffer(COLLISION_RECORD_BUFFER)
+## Returns descriptor voxels used by fine scoring and stamping.
+func get_asset_voxel_records_buffer() -> RID:
+	return get_gpu_buffer(ASSET_VOXEL_RECORD_BUFFER)
 
 
-## 返回指定 profile_id 的 collision 记录 range（{start, count}，指向 collision_records
-## buffer 中该 profile 的烘焙采样区间）；未注册时返回 {start: 0, count: 0}。
-func get_collision_range_for_profile_id(profile_id: int) -> Dictionary:
+## Returns the profile slice in asset_voxel_records.
+func get_asset_voxel_range_for_profile_id(profile_id: int) -> Dictionary:
 	if not _profile_id_to_table_entry.has(profile_id):
 		return {"start": 0, "count": 0}
 	var entry: Dictionary = _profile_id_to_table_entry[profile_id]
-	var collision_range: Dictionary = entry.get("collision_range", {})
+	var asset_voxel_range: Dictionary = entry.get("asset_voxel_range", {})
 	return {
-		"start": int(collision_range.get("start", 0)),
-		"count": int(collision_range.get("count", 0)),
+		"start": int(asset_voxel_range.get("start", 0)),
+		"count": int(asset_voxel_range.get("count", 0)),
 	}
 
 
@@ -337,7 +339,7 @@ func readback_debug_snapshot() -> Dictionary:
 		"profile_table_bytes": profile_table_bytes,
 		"probe_record_bytes": buffer_bytes.get(PROBE_RECORD_BUFFER, PackedByteArray()),
 		"pivot_record_bytes": buffer_bytes.get(PIVOT_RECORD_BUFFER, PackedByteArray()),
-		"collision_record_bytes": buffer_bytes.get(COLLISION_RECORD_BUFFER, PackedByteArray()),
+		"asset_voxel_record_bytes": buffer_bytes.get(ASSET_VOXEL_RECORD_BUFFER, PackedByteArray()),
 		"decoded_profile_table": _decode_profile_table_bytes(
 			profile_table_bytes,
 			int(_gpu_record_counts.get(PROFILE_TABLE_BUFFER, 0))
@@ -370,7 +372,7 @@ func register_profile(profile: AutoVoxelProfile, default_radius: float = 0.0) ->
 	return register_normalized_profile(normalize_profile(profile, default_radius))
 
 
-## 注册已归一化的 profile 记录：按 profile_hash 去重（命中则返回已有 id），否则分配 profile_id、把 probe/pivot/collision 追加到对应 staging 数组并记录 range，构建 table_entry 后标记 staging 变更并返回新 profile_id。
+## Registers normalized profile data and appends probe, pivot and AD voxel ranges.
 func register_normalized_profile(raw_profile: Dictionary) -> int:
 	var normalized := _normalize_profile_record(raw_profile)
 	var profile_hash := str(normalized.get("profile_hash", ""))
@@ -383,23 +385,21 @@ func register_normalized_profile(raw_profile: Dictionary) -> int:
 	var profile_index := _profile_order.size()
 	var probe_range := _append_range(_staging_probe_records, normalized.get("semantic_probes", []))
 	var pivot_range := _append_range(_staging_pivot_records, normalized.get("pivot_variants", []))
-	# collision staging 存的是 GPU 记录（对齐 + clearance + 去重 + 截断后的采样），
-	# 注册期烘焙一次；canonical collision 原样留在 normalized_data / profile_hash 里。
 	var bake_label := str(normalized.get("asset_id", ""))
 	if bake_label.is_empty():
 		bake_label = str(normalized.get("source_path", ""))
 	if bake_label.is_empty():
 		bake_label = "profile:%s" % profile_hash.left(12)
-	var collision_range := _append_range(
-		_staging_collision_records,
-		_bake_collision_records(normalized.get("collision", []), bake_label))
+	var asset_voxel_range := _append_range(
+		_staging_asset_voxel_records,
+		_bake_asset_voxel_records(normalized.get("asset_voxels", []), bake_label))
 
 	var probe_range_entry := _make_range_entry(profile_id, profile_index, probe_range)
 	var pivot_range_entry := _make_range_entry(profile_id, profile_index, pivot_range)
-	var collision_range_entry := _make_range_entry(profile_id, profile_index, collision_range)
+	var asset_voxel_range_entry := _make_range_entry(profile_id, profile_index, asset_voxel_range)
 	_staging_probe_ranges.append(probe_range_entry)
 	_staging_pivot_ranges.append(pivot_range_entry)
-	_staging_collision_ranges.append(collision_range_entry)
+	_staging_asset_voxel_ranges.append(asset_voxel_range_entry)
 
 	var table_entry := {
 		"profile_id": profile_id,
@@ -411,7 +411,7 @@ func register_normalized_profile(raw_profile: Dictionary) -> int:
 		"context_sensing_radius": float(normalized.get("context_sensing_radius", 0.0)),
 		"probe_range": probe_range_entry.duplicate(true),
 		"pivot_range": pivot_range_entry.duplicate(true),
-		"collision_range": collision_range_entry.duplicate(true),
+		"asset_voxel_range": asset_voxel_range_entry.duplicate(true),
 		"source_kind": str(normalized.get("source_kind", "")),
 		"source_path": str(normalized.get("source_path", "")),
 		"asset_id": str(normalized.get("asset_id", "")),
@@ -541,6 +541,10 @@ func export_pivot_ranges() -> Array[Dictionary]:
 	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_pivot_ranges)
 
 
+func export_asset_voxel_ranges() -> Array[Dictionary]:
+	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_asset_voxel_ranges)
+
+
 ## 返回 staging probe 记录列表的深拷贝数组。
 func export_probe_records() -> Array[Dictionary]:
 	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_probe_records)
@@ -549,6 +553,10 @@ func export_probe_records() -> Array[Dictionary]:
 ## 返回 staging pivot 记录列表的深拷贝数组。
 func export_pivot_records() -> Array[Dictionary]:
 	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_pivot_records)
+
+
+func export_asset_voxel_records() -> Array[Dictionary]:
+	return SharedPropertyTypeScript.duplicate_dictionary_array(_staging_asset_voxel_records)
 
 
 ## 推进 staging_revision 并使 uploaded_revision 失效、runtime 标记为未就绪，表示 staging 数据已变更需重新上传。
@@ -647,7 +655,7 @@ func _pack_profile_table_bytes() -> PackedByteArray:
 		var base := i * PROFILE_TABLE_STRIDE_BYTES
 		var probe_range: Dictionary = entry.get("probe_range", {})
 		var pivot_range: Dictionary = entry.get("pivot_range", {})
-		var collision_range: Dictionary = entry.get("collision_range", {})
+		var asset_voxel_range: Dictionary = entry.get("asset_voxel_range", {})
 		var color := VariantUtils.color_from_value(entry.get("color", Color.WHITE), Color.WHITE)
 		var complexity := clampf(float(entry.get("complexity", color.a)), 0.0, 1.0)
 		color.a = complexity
@@ -656,8 +664,8 @@ func _pack_profile_table_bytes() -> PackedByteArray:
 		bytes.encode_u32(base + 4, int(entry.get("profile_index", i)))
 		bytes.encode_u32(base + 8, int(probe_range.get("start", 0)))
 		bytes.encode_u32(base + 12, int(probe_range.get("count", 0)))
-		bytes.encode_u32(base + 16, int(collision_range.get("start", 0)))
-		bytes.encode_u32(base + 20, int(collision_range.get("count", 0)))
+		bytes.encode_u32(base + 16, int(asset_voxel_range.get("start", 0)))
+		bytes.encode_u32(base + 20, int(asset_voxel_range.get("count", 0)))
 		bytes.encode_u32(base + 24, int(pivot_range.get("start", 0)))
 		bytes.encode_u32(base + 28, int(pivot_range.get("count", 0)))
 		bytes.encode_float(base + 32, color.r)
@@ -678,7 +686,6 @@ func _pack_probe_record_bytes() -> PackedByteArray:
 	for i in range(_staging_probe_records.size()):
 		var probe: Dictionary = _staging_probe_records[i]
 		var offset := VariantUtils.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
-		var weight := maxf(float(probe.get("weight", 1.0)), 0.0)
 		var rgba8 := _shader_rgba8_from_probe(probe)
 		var expected_collision := clampf(float(probe.get("expected_collision", 0.0)), 0.0, 1.0)
 		var wc := _probe_metric_weights(probe)
@@ -708,24 +715,26 @@ func _pack_pivot_record_bytes() -> PackedByteArray:
 	return bytes
 
 
-## 将 canonical collision samples 烘焙为 GPU collision 记录：过滤 disabled、按 xz 列顶
-## 追加 1 层 clearance 探针（strength 0 / FLAG_CLEARANCE / weight 0.5，score 的
-## clearance_overlap 硬门依赖它）、按体素去重（strength/weight 取 max、flags 取并），
-## 超出 COLLISION_SAMPLE_CAPACITY 时 clearance 优先保留并截断。
-## 取代旧的每-run 形状烘焙（2026-07-11 移入注册期）：每 profile 烘焙一次，随容器上传常驻。
-static func _bake_collision_records(collision: Array, label: String = "") -> Array[Dictionary]:
+## Normalizes AD voxels, adds clearance records, and deduplicates by local voxel.
+## The result is intentionally not capped: shaders traverse it in fixed-size batches.
+static func _bake_asset_voxel_records(asset_voxels: Array, _label: String = "") -> Array[Dictionary]:
 	var baked: Array[Dictionary] = []
 	var top_by_xz := {}
-	for raw_entry in collision:
+	for raw_entry in asset_voxels:
 		if not raw_entry is Dictionary:
 			continue
 		var entry := raw_entry as Dictionary
 		if not bool(entry.get("enabled", true)):
 			continue
-		var voxel := VoxelGeneral.collision_local_voxel(entry)
+		var voxel := VoxelGeneral.vector3i_from_value(entry.get("voxel", Vector3i.ZERO), Vector3i.ZERO)
+		var color := VariantUtils.color_from_value(entry.get("color", Color.WHITE), Color.WHITE)
+		var complexity := clampf(float(entry.get("complexity", color.a)), 0.0, 1.0)
+		color.a = complexity
 		var collision_strength := clampf(float(entry.get("collision_strength", 1.0)), 0.0, 1.0)
 		baked.append({
 			"voxel": voxel,
+			"color": color,
+			"complexity": complexity,
 			"collision_strength": collision_strength,
 			"flags": int(entry.get("flags", 0)),
 			"weight": maxf(float(entry.get("weight", 1.0)), 0.0),
@@ -739,6 +748,8 @@ static func _bake_collision_records(collision: Array, label: String = "") -> Arr
 		var top := raw_top as Vector3i
 		baked.append({
 			"voxel": Vector3i(top.x, top.y + 1, top.z),
+			"color": Color(0.0, 0.0, 0.0, 0.0),
+			"complexity": 0.0,
 			"collision_strength": 0.0,
 			"flags": AssetDescriptorScript.FLAG_CLEARANCE,
 			"weight": 0.5,
@@ -750,6 +761,9 @@ static func _bake_collision_records(collision: Array, label: String = "") -> Arr
 		var voxel_key := "%d,%d,%d" % [voxel.x, voxel.y, voxel.z]
 		if by_voxel.has(voxel_key):
 			var existing: Dictionary = by_voxel[voxel_key]
+			if float(entry.get("complexity", 0.0)) > float(existing.get("complexity", 0.0)):
+				existing["color"] = entry.get("color", Color.WHITE)
+				existing["complexity"] = float(entry.get("complexity", 0.0))
 			existing["collision_strength"] = maxf(float(existing["collision_strength"]), float(entry["collision_strength"]))
 			existing["flags"] = int(existing["flags"]) | int(entry["flags"])
 			existing["weight"] = maxf(float(existing["weight"]), float(entry["weight"]))
@@ -759,31 +773,33 @@ static func _bake_collision_records(collision: Array, label: String = "") -> Arr
 	for entry in by_voxel.values():
 		result.append(entry)
 
-	if result.size() > COLLISION_SAMPLE_CAPACITY:
-		# clearance 探针排前：截断只丢物体质量细节，不丢 clearance_overlap 硬门的探针。
-		result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-			return int(a.get("flags", 0)) != 0 and int(b.get("flags", 0)) == 0)
-		push_warning("AutoVoxelRuntimeProfileContainer: collision records for '%s' has %d voxels, truncating to %d" % [label, result.size(), COLLISION_SAMPLE_CAPACITY])
-		result.resize(COLLISION_SAMPLE_CAPACITY)
+	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var av: Vector3i = a.get("voxel", Vector3i.ZERO)
+		var bv: Vector3i = b.get("voxel", Vector3i.ZERO)
+		if av.y != bv.y:
+			return av.y < bv.y
+		if av.z != bv.z:
+			return av.z < bv.z
+		return av.x < bv.x)
 	return result
 
 
-## 将 staging collision 记录（已烘焙）按 COLLISION_RECORD_STRIDE_BYTES 打包为 GPU 字节流：
-## 每条 ivec4(voxel.xyz, collision_q8) + vec4(weight, flags, 0, 0)，与 score/stamp
-## shader 的 CollisionSampleRecord 布局一致。
-func _pack_collision_record_bytes() -> PackedByteArray:
+## Packs ivec4(local voxel, collision q8) + uvec4(rgba8, weight bits, flags, reserved).
+func _pack_asset_voxel_record_bytes() -> PackedByteArray:
 	var bytes := PackedByteArray()
-	bytes.resize(_staging_collision_records.size() * COLLISION_RECORD_STRIDE_BYTES)
-	for i in range(_staging_collision_records.size()):
-		var entry: Dictionary = _staging_collision_records[i]
+	bytes.resize(_staging_asset_voxel_records.size() * ASSET_VOXEL_RECORD_STRIDE_BYTES)
+	for i in range(_staging_asset_voxel_records.size()):
+		var entry: Dictionary = _staging_asset_voxel_records[i]
 		var voxel := VoxelGeneral.vector3i_from_value(entry.get("voxel", Vector3i.ZERO), Vector3i.ZERO)
 		var collision_q8 := clampi(roundi(clampf(float(entry.get("collision_strength", 0.0)), 0.0, 1.0) * 255.0), 0, 255)
-		var base := i * COLLISION_RECORD_STRIDE_BYTES
+		var color := VariantUtils.color_from_value(entry.get("color", Color.WHITE), Color.WHITE)
+		color.a = clampf(float(entry.get("complexity", color.a)), 0.0, 1.0)
+		var base := i * ASSET_VOXEL_RECORD_STRIDE_BYTES
 		BufferUtils.encode_vec3i4_with_w(bytes, base, voxel, collision_q8)
-		bytes.encode_float(base + 16, maxf(float(entry.get("weight", 1.0)), 0.0))
-		bytes.encode_float(base + 20, float(int(entry.get("flags", 0))))
-		bytes.encode_float(base + 24, 0.0)
-		bytes.encode_float(base + 28, 0.0)
+		bytes.encode_u32(base + 16, BufferUtils.pack_shader_rgba8_word(color))
+		bytes.encode_float(base + 20, maxf(float(entry.get("weight", 1.0)), 0.0))
+		bytes.encode_u32(base + 24, int(entry.get("flags", 0)))
+		bytes.encode_u32(base + 28, 0)
 	return bytes
 
 
@@ -801,8 +817,8 @@ func _decode_profile_table_bytes(bytes: PackedByteArray, record_count: int) -> A
 			"profile_index": int(bytes.decode_u32(base + 4)),
 			"probe_start": int(bytes.decode_u32(base + 8)),
 			"probe_count": int(bytes.decode_u32(base + 12)),
-			"collision_start": int(bytes.decode_u32(base + 16)),
-			"collision_count": int(bytes.decode_u32(base + 20)),
+			"asset_voxel_start": int(bytes.decode_u32(base + 16)),
+			"asset_voxel_count": int(bytes.decode_u32(base + 20)),
 			"pivot_start": int(bytes.decode_u32(base + 24)),
 			"pivot_count": int(bytes.decode_u32(base + 28)),
 			"color": Color(
@@ -827,29 +843,20 @@ func _stride_for_buffer(buffer_name: String) -> int:
 			return PROBE_RECORD_STRIDE_BYTES
 		PIVOT_RECORD_BUFFER:
 			return PIVOT_RECORD_STRIDE_BYTES
-		COLLISION_RECORD_BUFFER:
-			return COLLISION_RECORD_STRIDE_BYTES
+		ASSET_VOXEL_RECORD_BUFFER:
+			return ASSET_VOXEL_RECORD_STRIDE_BYTES
 		_:
 			return 0
 
 
-## 从 probe 推导 shader 用的 rgba8：优先用 expected_color/color（complexity 写入 alpha），否则回退由 expected_rgba8 解出的颜色，最终统一打包为 shader rgba8 布局。
+## 委托到探针 schema 属主 SemanticProbeGenerator.shader_rgba8_from_probe（单一权威）。
 static func _shader_rgba8_from_probe(probe: Dictionary) -> int:
-	if probe.has("expected_color") or probe.has("color"):
-		var color := VariantUtils.color_from_value(probe.get("expected_color", probe.get("color", Color.WHITE)), Color.WHITE)
-		color.a = clampf(float(probe.get("expected_complexity", probe.get("complexity", color.a))), 0.0, 1.0)
-		return BufferUtils.pack_shader_rgba8_word(color)
-	var semantic_packed := int(probe.get("expected_rgba8", BufferUtils.pack_semantic_rgba8_word(Color.WHITE)))
-	return BufferUtils.pack_shader_rgba8_word(BufferUtils.semantic_rgba8_word_to_color(semantic_packed))
+	return SemanticProbeGeneratorScript.shader_rgba8_from_probe(probe)
 
 
-## 从 probe 取出度量权重并组成 Vector3(w_color, w_complexity, w_collision)，缺省均为 1.0。
+## 委托到 SemanticProbeGenerator.probe_metric_weights（单一权威）。
 static func _probe_metric_weights(p: Dictionary) -> Vector3:
-	return Vector3(
-		float(p.get("w_color", 1.0)),
-		float(p.get("w_complexity", 1.0)),
-		float(p.get("w_collision", 1.0)),
-	)
+	return SemanticProbeGeneratorScript.probe_metric_weights(p)
 
 
 ## 将 descriptor 资源归一化为统一的 profile 记录：提取共享字段（color/complexity/collision）、按 density（受 density_override 影响并 clamp 到 0.1-8.0）采样 semantic probes（有 mesh 时传 mesh/world_scale/collision）、取 pivot variants 与 context_sensing_radius；descriptor 为 null 时返回空记录。
@@ -875,8 +882,8 @@ static func normalize_descriptor(
 			probes = descriptor.call("get_semantic_probes", mesh, semantic_probe_density, world_scale, collision)
 		else:
 			probes = descriptor.call("get_semantic_probes", semantic_probe_density)
-	elif VariantUtils.has_property(descriptor, "semantic_probe_profile"):
-		var probe_profile = descriptor.get("semantic_probe_profile")
+	elif VariantUtils.has_property(descriptor, "semantic_probe_generator"):
+		var probe_profile = descriptor.get("semantic_probe_generator")
 		if probe_profile != null and probe_profile.has_method("get_probes"):
 			probes = probe_profile.call("get_probes")
 
@@ -887,6 +894,11 @@ static func normalize_descriptor(
 		var raw_pivots = descriptor.get("pivot_variants")
 		if raw_pivots is Array:
 			pivots = raw_pivots
+	var asset_voxels: Array = []
+	if descriptor.has_method("get_asset_voxels"):
+		asset_voxels = descriptor.call("get_asset_voxels")
+	elif VariantUtils.has_property(descriptor, "asset_voxels"):
+		asset_voxels = _array_from_value(descriptor.get("asset_voxels"))
 
 	return _normalize_profile_record({
 		"source_kind": "descriptor",
@@ -896,6 +908,7 @@ static func normalize_descriptor(
 		"color": shared_fields.get("color", Color.WHITE),
 		"complexity": float(shared_fields.get("complexity", 1.0)),
 		"collision": collision,
+		"asset_voxels": asset_voxels,
 		"pivot_variants": pivots,
 		"semantic_probes": probes,
 		"semantic_probe_density": semantic_probe_density,
@@ -914,11 +927,41 @@ static func normalize_profile(profile: AutoVoxelProfile, default_radius: float =
 		"color": shared_fields.get("color", Color.WHITE),
 		"complexity": float(shared_fields.get("complexity", 1.0)),
 		"collision": shared_fields.get("collision", []),
+		"asset_voxels": [],
 		"pivot_variants": [],
 		"semantic_probes": [],
 		"semantic_probe_density": 1.0,
 		"context_sensing_radius": 0.0,
 	})
+
+
+static func _normalize_asset_voxels(
+	raw_asset_voxels: Array,
+	fallback_collision: Array,
+	fallback_color: Color,
+	fallback_complexity: float
+) -> Array[Dictionary]:
+	var source := raw_asset_voxels if not raw_asset_voxels.is_empty() else fallback_collision
+	var result: Array[Dictionary] = []
+	for raw_entry in source:
+		if not raw_entry is Dictionary:
+			continue
+		var entry := raw_entry as Dictionary
+		if not bool(entry.get("enabled", true)):
+			continue
+		var voxel := VoxelGeneral.collision_local_voxel(entry)
+		var color := VariantUtils.color_from_value(entry.get("color", fallback_color), fallback_color)
+		var complexity := clampf(float(entry.get("complexity", color.a if entry.has("color") else fallback_complexity)), 0.0, 1.0)
+		color.a = complexity
+		result.append({
+			"voxel": voxel,
+			"color": color,
+			"complexity": complexity,
+			"collision_strength": clampf(float(entry.get("collision_strength", entry.get("collision", 1.0))), 0.0, 1.0),
+			"weight": maxf(float(entry.get("weight", 1.0)), 0.0),
+			"flags": int(entry.get("flags", 0)),
+		})
+	return result
 
 
 ## 把任意 raw_profile 字典规整为标准 profile 记录：clamp complexity 并写入 color.a、归一化 collision/pivot/probes、clamp 密度与感知半径，并据规范字段计算稳定的 profile_hash。
@@ -928,8 +971,14 @@ static func _normalize_profile_record(raw_profile: Dictionary) -> Dictionary:
 	color.a = complexity
 
 	var collision := VoxelGeneral.normalize_collision_samples(_array_from_value(raw_profile.get("collision", [])), 0.0)
+	var asset_voxels := _normalize_asset_voxels(
+		_array_from_value(raw_profile.get("asset_voxels", [])),
+		collision,
+		color,
+		complexity
+	)
 	var pivots := AssetDescriptorScript.normalize_pivot_variants(_array_from_value(raw_profile.get("pivot_variants", [])))
-	var probes := SemanticProbeProfileScript.duplicate_probe_array(_array_from_value(raw_profile.get("semantic_probes", [])))
+	var probes := SemanticProbeGeneratorScript.duplicate_probe_array(_array_from_value(raw_profile.get("semantic_probes", [])))
 
 	var normalized := {
 		"source_kind": str(raw_profile.get("source_kind", "")),
@@ -939,6 +988,7 @@ static func _normalize_profile_record(raw_profile: Dictionary) -> Dictionary:
 		"color": color,
 		"complexity": complexity,
 		"collision": collision,
+		"asset_voxels": asset_voxels,
 		"pivot_variants": pivots,
 		"semantic_probes": probes,
 		"semantic_probe_density": clampf(float(raw_profile.get("semantic_probe_density", 1.0)), 0.1, 8.0),
@@ -954,6 +1004,7 @@ static func _profile_hash_source(normalized: Dictionary) -> Dictionary:
 		"color": normalized.get("color", Color.WHITE),
 		"complexity": float(normalized.get("complexity", 1.0)),
 		"collision": CanonicalHash.sorted_canonical_entries(normalized.get("collision", [])),
+		"asset_voxels": CanonicalHash.sorted_canonical_entries(normalized.get("asset_voxels", [])),
 		"pivot_variants": CanonicalHash.sorted_canonical_entries(normalized.get("pivot_variants", [])),
 		"semantic_probes": CanonicalHash.sorted_canonical_entries(normalized.get("semantic_probes", [])),
 		"semantic_probe_density": float(normalized.get("semantic_probe_density", 1.0)),

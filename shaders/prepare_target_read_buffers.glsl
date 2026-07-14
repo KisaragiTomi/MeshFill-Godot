@@ -5,11 +5,13 @@
 //
 // Layout and formats:
 //   set 0 binding 0: optional source target_visual_rgba8 words, one u32 per voxel.
-//   set 0 binding 1: optional source target_occupancy bytes reinterpreted as u32,
-//                    one R32F byte word per voxel. The shader copies the word
-//                    verbatim and never interprets it as a float.
+//   set 0 binding 1: optional source target_completeness scalar bytes reinterpreted
+//                    as u32, one R32F byte word per voxel. The shader copies the word
+//                    verbatim and never interprets it as a float. (Internal
+//                    "occupancy_*" identifiers below are legacy wiring names paired
+//                    with the CPU-side packer; renaming is a cross-side decision.)
 //   set 0 binding 2: output target_visual_rgba8 words, one u32 per voxel.
-//   set 0 binding 3: output target_occupancy bytes as u32 words, one R32F word per voxel.
+//   set 0 binding 3: output target_completeness bytes as u32 words, one R32F word per voxel.
 //
 // Valid range:
 //   voxel_count >= 1. Source buffers are valid only when their valid flag is 1;

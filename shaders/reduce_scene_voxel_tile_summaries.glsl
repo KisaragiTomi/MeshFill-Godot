@@ -8,7 +8,7 @@ layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityField {
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
-    uint collision_field_r8_words[];
+    uint collision_field_u32[];  // one uint per voxel, quantized 0..255 in the low byte
 };
 
 layout(set = 0, binding = 2, std430) restrict buffer TileSummaries {
@@ -36,9 +36,7 @@ vec4 unpack_rgba8(uint packed) {
 }
 
 float load_r8(uint index) {
-    uint word = collision_field_r8_words[index >> 2u];
-    uint shift = (index & 3u) * 8u;
-    return float((word >> shift) & 0xFFu) / 255.0;
+    return float(collision_field_u32[index] & 0xFFu) * (1.0 / 255.0);
 }
 
 void reduce_value(int tile_index, int count_offset, int min_offset, int max_offset, float value) {
@@ -79,7 +77,9 @@ void main() {
     int tile_x = clamp(x / max(tile_size.x, 1), 0, max(tile_grid.x - 1, 0));
     int tile_y = clamp(slice_index / max(tile_size.y, 1), 0, max(tile_grid.y - 1, 0));
     int tile_z = clamp(z / max(tile_size.z, 1), 0, max(tile_grid.z - 1, 0));
-    int tile_index = tile_x + tile_grid.x * (tile_y + tile_grid.y * tile_z);
+    // Canonical z-inner flat tile index — must match SceneVoxelTileCodec.tile_index_unclamped
+    // and scene_voxel_tile_object_ref_update.glsl (x + gx * (z + gz * y)).
+    int tile_index = tile_x + tile_grid.x * (tile_z + tile_grid.z * tile_y);
 
     reduce_value(tile_index, 0, 1, 2, unpack_rgba8(complexity_field_rgba8[idx]).a);
     reduce_value(tile_index, 3, 4, 5, load_r8(idx));

@@ -109,6 +109,20 @@ static func voxel_center_to_world(voxel_pos: Vector3i, grid_origin: Vector3, vox
 	)
 
 
+static func terrain_relative_voxel_center_to_world(
+	voxel_pos: Vector3i,
+	grid_size: Vector3i,
+	grid_origin: Vector3,
+	voxel_size: Vector3,
+	terrain_height: PackedFloat32Array
+) -> Vector3:
+	var world := voxel_center_to_world(voxel_pos, grid_origin, voxel_size)
+	var height_index := voxel_pos.z * grid_size.x + voxel_pos.x
+	if height_index >= 0 and height_index < terrain_height.size():
+		world.y += terrain_height[height_index]
+	return world
+
+
 static func voxel_float_center_to_world(voxel_center: Vector3, grid_origin: Vector3, voxel_size: Vector3) -> Vector3:
 	var size := safe_voxel_size(voxel_size)
 	return grid_origin + Vector3(

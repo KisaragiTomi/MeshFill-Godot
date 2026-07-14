@@ -17,7 +17,6 @@ const AutoObjectScript := preload("res://scripts/auto_object.gd")
 # Every tools/*.gd referenced from demos/**/*.md must be classified here so a
 # newly added or relabeled command cannot silently regress the driver flag.
 const DEMO_GPU_TEST_SCRIPTS := [
-	"test_stamp_collect_voxel_disc",
 	"test_autoobject_probe_prefilter",
 	"test_auto_voxel_runtime_profile_container",
 	"test_markdown_contracts",
@@ -156,6 +155,9 @@ func _test_committed_scene_voxel_accepted_fields() -> bool:
 		return true
 
 	var committer = SceneVoxelCommitterScript.new(16, 16.0, false)
+	# V1：build_voxel_volume 已退役——configure_scene_voxel_grid 是 canonical 网格配置；
+	# 记录携带显式 3D bounds（voxel_min 含端点 / voxel_max 不含端点，半开区间）。
+	committer.configure_scene_voxel_grid(Vector3i(16, 1, 16), Vector3.ONE, committer.grid_origin)
 	var record := {
 		"id": "accepted_fields_rock",
 		"type": "rock",
@@ -164,6 +166,8 @@ func _test_committed_scene_voxel_accepted_fields() -> bool:
 		"base_pixel": Vector2i(8, 8),
 		"voxel_xz": Vector2i(8, 8),
 		"volume_xz_resolution": 16,
+		"voxel_min": Vector3i(6, 0, 6),
+		"voxel_max": Vector3i(11, 1, 11),
 		"scale": Vector3.ONE,
 		"color": Color(0.2, 0.6, 0.8, 0.7),
 		"complexity": 0.7,
@@ -171,14 +175,14 @@ func _test_committed_scene_voxel_accepted_fields() -> bool:
 		"radius": 2.0,
 	}
 
-	committer.apply_instance_stamp_write_spec(record)
-	committer.build_voxel_volume(8, [
-		{"channel": 0, "color": Color(0.2, 0.6, 0.8, 0.7), "complexity": 0.7, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
-	])
+	committer.apply_instance_stamp_write_spec(record, true)
+	committer.commit_scene_voxels()
 
+	# get_scene_voxels 现为常驻复杂度 field 的 3D 回读组装（alpha>0 即已盖章体素）
 	var voxels := committer.get_scene_voxels()
+	committer.dispose()
 	if voxels.is_empty():
-		push_error("  FAIL: expected committed SceneVoxel entries")
+		push_error("  FAIL: expected committed SceneVoxel entries from resident field 3D readback")
 		return false
 	var committed: Dictionary = voxels.values()[0]
 	var ok := true
@@ -225,18 +229,20 @@ func _test_terrain_collision_survives_zero_complexity_writes() -> bool:
 		"base_pixel": Vector2i(2, 2),
 		"voxel_xz": Vector2i(2, 2),
 		"volume_xz_resolution": 8,
+		"voxel_min": Vector3i(1, 0, 1),
+		"voxel_max": Vector3i(4, 1, 4),
 		"color": Color(0.4, 0.4, 0.4, 1.0),
 		"complexity": 1.0,
 		"collision": [],
 		"channel": 0,
 		"radius": 1.0,
 	}
-	committer.apply_instance_stamp_write_spec(record)
-	committer.build_voxel_volume(8, [
-		{"channel": 0, "color": Color(0.4, 0.4, 0.4, 1.0), "complexity": 1.0, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
-	])
-	# Stamp-only commit 后 sv 不再携带 CPU field 投影；碰撞断言走显式 debug 回读。
+	committer.apply_instance_stamp_write_spec(record, true)
+	committer.commit_scene_voxels()
+	# Stamp-only commit 后 sv 不再携带 CPU field 投影；碰撞断言走显式 debug 回读
+	# （常驻 collision field = max(TerrainBase, source)，terrain 种子直接可见）。
 	var field_projection := committer.readback_sv_field_debug_snapshot()
+	committer.dispose()
 	var collision_field: PackedFloat32Array = field_projection.get("collision_field", PackedFloat32Array())
 	var collision_max := 0.0
 	for value in collision_field:
@@ -282,7 +288,9 @@ func _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() -
 	var ok := true
 	var prefilter_source := TestUtils.read_text("res://scripts/autoobject_probe_prefilter_gpu.gd")
 	var score_probe_shader := TestUtils.read_text("res://shaders/score_anchor_asset_probes.glsl")
-	var physical_score_shader := TestUtils.read_text("res://shaders/score_voxel_tile.glsl")
+	# Fine scoring is the anchor-origin residual-gain scorer; score_voxel_tile.glsl
+	# and the candidate-route shaders were deleted with the tile pipeline.
+	var fine_score_shader := TestUtils.read_text("res://shaders/score_anchor_asset_residual.glsl")
 	var candidate_docs := {
 		"docs index": TestUtils.read_text("res://demos/README.md"),
 		"graph index": TestUtils.read_text("res://demos/README.md"),
@@ -306,14 +314,30 @@ func _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() -
 		push_error("  FAIL: probe scoring shader is missing '%s'" % missing)
 		ok = false
 
-	for present in DemoContractUtils.find_present_terms(physical_score_shader, ["asset_embedding_buffer", "voxel_asset_topk_buffer", "tile_asset_topk_buffer", "semantic_score", "route_score"]):
-		push_error("  FAIL: physical score shader contains routing semantic term '%s'" % present)
+	if fine_score_shader.is_empty():
+		push_error("  FAIL: fine score shader res://shaders/score_anchor_asset_residual.glsl is missing")
+		ok = false
+	# The fine scorer now legitimately outputs a residual-gain semantic score, so
+	# the old "no semantic_score in the physical scorer" ban is obsolete. It must
+	# score residual gain against TargetSV with the shared stamp compose rule, and
+	# must not re-run the coarse routing/top-K buffers.
+	for missing in DemoContractUtils.find_missing_terms(fine_score_shader, ["loss_before", "loss_after", "buffer TargetField", "buffer AssetVoxelRecords", "ad_voxel_compose"]):
+		push_error("  FAIL: fine score shader is missing residual-gain term '%s'" % missing)
+		ok = false
+	for present in DemoContractUtils.find_present_terms(fine_score_shader, ["asset_embedding_buffer", "voxel_asset_topk_buffer", "tile_asset_topk_buffer", "route_score"]):
+		push_error("  FAIL: fine score shader contains coarse routing term '%s'" % present)
 		ok = false
 
 	for doc_label in candidate_docs.keys():
 		var doc_text := str(candidate_docs.get(doc_label, ""))
+		# candidate_voxel_regions_by_asset stays as a doc-history literal (the
+		# route it named is deleted); anchor_candidate_handoff is the live
+		# prefilter -> fine-scoring handoff every routing doc must name.
 		if doc_text.find("candidate_voxel_regions_by_asset") < 0:
 			push_error("  FAIL: %s is missing docs-facing candidate_voxel_regions_by_asset wording" % doc_label)
+			ok = false
+		if doc_text.find("anchor_candidate_handoff") < 0:
+			push_error("  FAIL: %s is missing the anchor_candidate_handoff prefilter handoff wording" % doc_label)
 			ok = false
 		ok = _candidate_sparse_alias_lines_are_qualified(doc_label, doc_text) and ok
 		for present in DemoContractUtils.find_present_terms(doc_text, [
@@ -330,11 +354,14 @@ func _test_routing_probe_sources_are_sv_resident_and_descriptor_probe_backed() -
 	if str(candidate_graphs.get("runtime architecture graph", "")).find("GPU spatial index") >= 0:
 		push_error("  FAIL: runtime architecture graph still labels per-voxel refs as GPU spatial index")
 		ok = false
+	# The candidate voxel-region route is deleted; the prefilter output is the
+	# resident anchor_candidate_handoff (anchor/count/topk buffers), so the
+	# prefilter graph must label the new handoff instead of the old region node.
+	if str(candidate_graphs.get("prefilter graph", "")).find("anchor_candidate_handoff") < 0:
+		push_error("  FAIL: prefilter graph is missing the anchor_candidate_handoff output label")
+		ok = false
 	for graph_label in ["prefilter graph", "framework graph", "routing graph"]:
 		var graph_text := str(candidate_graphs.get(graph_label, ""))
-		if graph_text.find(">candidate_voxel_regions_by_asset<") < 0:
-			push_error("  FAIL: %s is missing candidate_voxel_regions_by_asset node label" % graph_label)
-			ok = false
 		if graph_text.find(">candidate_voxel_sparses_by_asset<") >= 0:
 			push_error("  FAIL: %s still uses legacy sparse alias as a node label" % graph_label)
 			ok = false
@@ -629,7 +656,6 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 		"readback_snapshot",
 		"last_upload_mode",
 		"last_upload_tile_ids",
-		"_scene_voxel_tile_pending_resident_upload_tiles",
 		"empty_dirty_delta",
 		"missing_object_id",
 	]):
@@ -644,8 +670,10 @@ func _test_vpg_and_scene_tile_gpu_binding_contracts() -> bool:
 		TestUtils.read_text("res://shaders/collect_sv_anchors.glsl"),
 		TestUtils.read_text("res://shaders/score_anchor_asset_probes.glsl"),
 		TestUtils.read_text("res://shaders/select_anchor_topk.glsl"),
-		TestUtils.read_text("res://shaders/reduce_anchor_topk_to_voxel_regions.glsl"),
-		TestUtils.read_text("res://shaders/score_voxel_tile.glsl"),
+		TestUtils.read_text("res://shaders/fine_score_dispatch_finalize.glsl"),
+		TestUtils.read_text("res://shaders/score_anchor_asset_residual.glsl"),
+		TestUtils.read_text("res://shaders/reduce_anchor_candidates.glsl"),
+		TestUtils.read_text("res://shaders/stamp_asset_voxels.glsl"),
 	])
 	for present in DemoContractUtils.find_present_terms(active_spatial_sources, ["spatial_hash", "count_objects_per_cell", "sorted_object_id_buffer"]):
 		push_error("  FAIL: active runtime/shader source still contains retired spatial-hash term '%s'" % present)

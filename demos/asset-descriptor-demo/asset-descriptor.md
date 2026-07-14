@@ -30,7 +30,7 @@
 | --- | --- | --- |
 | Shared semantic fields | `color`、`complexity`、`collision`、`get_color()`、`get_complexity()`、`get_collision()` | 写入 shared fields、`ISWS`、source voxel 和 committed `SceneVoxel` 的默认语义来源。 |
 | Placement shape | `collision`、`VoxelGeneral.normalize_collision_samples()`、`pivot_variants`、`auto_generate_vertical_pivots`、`get_pivot_variants()` | placement collision 采样、anchor/pivot variants 和 profile collision records。 |
-| Semantic probes | `semantic_probe_profile`、`semantic_probe_density`、`context_sensing_radius`、`get_semantic_probes()` | prefilter 对 `anchor x asset` 打分的 descriptor-backed probes。 |
+| Semantic probes | `semantic_probe_generator`、`semantic_probe_density`、`context_sensing_radius`、`get_semantic_probes()` | prefilter 对 `anchor x asset` 打分的 descriptor-backed probes。 |
 | Asset identity / grouping | `asset_id`、`object_type`、`object_subtype` | asset/debug/profile lookup 和粗分组；不表达新的资产语义层级。 |
 | Profile fallback | `voxel_profile`、`from_profile()` | 导入或旧 preset 的 shared-field fallback；不覆盖显式 descriptor 字段。 |
 | Mesh / import | `mesh`、`source_mesh`、`source_mesh_path`、`mesh_create_method`、`get_mesh()`、`get_source_mesh()` | 资产显示、probe 生成、导入重建和轻量 wrapper 输入。 |

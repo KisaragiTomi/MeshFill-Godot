@@ -45,6 +45,13 @@ static func accepted_internal(source: Dictionary) -> Dictionary:
 			result[key] = source[key]
 	return result
 
+## accepted_internal + 覆写寻址字段（query 命中体素的规范化出口）
+static func accepted_at(source: Dictionary, slice_index: int, voxel_xz: Vector2i) -> Dictionary:
+	var result := accepted_internal(source)
+	result["slice_index"] = slice_index
+	result["voxel_xz"] = voxel_xz
+	return result
+
 static func accepted_map(scene_voxels: Dictionary) -> Dictionary:
 	var result := {}
 	for key in scene_voxels.keys():

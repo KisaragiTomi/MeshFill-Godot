@@ -27,20 +27,25 @@ static func results_to_world_gpu(
 	grid_origin: Vector3,
 	rotation_count: int = 24,
 	pivot_variant: Dictionary = {},
-	rendering_device: RenderingDevice = null
+	rendering_device: RenderingDevice = null,
+	pivot_records_rid: RID = RID()
 ) -> Dictionary:
 	var runner = load("res://scripts/voxel_placement_output.gd").new()
 	if rendering_device != null:
 		runner.attach_rendering_device(rendering_device, false)
-	return runner._results_to_world_gpu(results, voxel_size, grid_origin, rotation_count, pivot_variant)
+	return runner._results_to_world_gpu(results, voxel_size, grid_origin, rotation_count, pivot_variant, pivot_records_rid)
 
 
+## pivot 二选一：pivot_records_rid 有效 ⟹ per-record 模式（record 的
+## global_pivot_index 查容器常驻 pivot_records；pivot_variant 仅作报告标签）；
+## 无效 ⟹ 共享 push pivot（pivot_variant.offset，遗留调用面）。
 func _results_to_world_gpu(
 	results: Array[Dictionary],
 	voxel_size: Vector3,
 	grid_origin: Vector3,
 	rotation_count: int = 24,
-	pivot_variant: Dictionary = {}
+	pivot_variant: Dictionary = {},
+	pivot_records_rid: RID = RID()
 ) -> Dictionary:
 	var record_count := results.size()
 	if record_count <= 0:
@@ -72,10 +77,13 @@ func _results_to_world_gpu(
 
 	var safe_voxel_size := VoxelGeneral.safe_voxel_size(voxel_size)
 	var pivot_offset := VariantUtils.vector3_from_value(pivot_variant.get("offset", Vector3.ZERO), Vector3.ZERO)
+	if pivot_records_rid.is_valid():
+		track_borrowed_rid(pivot_records_rid, KIND_BUFFER, SCOPE_FRAME, "auto_voxel_runtime_profile_container:pivot_records")
 	var dispatched := PlacementResultCodec.dispatch_results_to_world(
 		self, input_buffer, record_count, rotation_count,
 		grid_origin, safe_voxel_size, pivot_offset,
-		SCOPE_PERSISTENT, "placement_world_results_out_vec4", "placement_results_to_world_set0"
+		SCOPE_PERSISTENT, "placement_world_results_out_vec4", "placement_results_to_world_set0",
+		pivot_records_rid
 	)
 	if not bool(dispatched.get("ok", false)):
 		dispose()
@@ -135,18 +143,18 @@ static func _pack_placement_result_records(results: Array[Dictionary]) -> Packed
 		bytes.encode_float(base + 4, float(origin.y))
 		bytes.encode_float(base + 8, float(origin.z))
 		bytes.encode_float(base + 12, float(r.get("score", 0.0)))
-		bytes.encode_float(base + 16, float(r.get("tile_index", 0)))
+		bytes.encode_float(base + 16, float(r.get("anchor_id", 0)))
 		bytes.encode_float(base + 20, float(r.get("asset_index", 0)))
 		bytes.encode_float(base + 24, float(r.get("rotation_index", 0)))
-		bytes.encode_float(base + 28, float(r.get("scale_index", 0)))
-		bytes.encode_float(base + 32, float(r.get("support_ratio", 0.0)))
-		bytes.encode_float(base + 36, float(r.get("solid_collision", 0.0)))
-		bytes.encode_float(base + 40, float(r.get("complexity_overlap", 0.0)))
+		bytes.encode_float(base + 28, float(r.get("global_pivot_index", -1)))
+		bytes.encode_float(base + 32, float(r.get("solid_collision", 0.0)))
+		bytes.encode_float(base + 36, float(r.get("loss_before", 0.0)))
+		bytes.encode_float(base + 40, float(r.get("loss_after", 0.0)))
 		bytes.encode_float(base + 44, float(r.get("clearance_overlap", 0.0)))
-		bytes.encode_float(base + 48, float(r.get("ignored_sample", 0.0)))
+		bytes.encode_float(base + 48, float(r.get("profile_index", -1)))
 		bytes.encode_float(base + 52, 1.0 if bool(r.get("valid", false)) else 0.0)
-		bytes.encode_float(base + 56, float(r.get("support_hit", 0.0)))
-		bytes.encode_float(base + 60, float(r.get("support_total", 0.0)))
+		bytes.encode_float(base + 56, float(r.get("coarse_score", 0.0)))
+		bytes.encode_float(base + 60, 0.0)
 	return bytes
 
 
@@ -187,12 +195,12 @@ static func _decode_world_result_bytes(
 			"score": bytes.decode_float(base + 12),
 			"voxel_origin": VoxelGeneral.vector3i_from_value(source.get("voxel_origin", Vector3i.ZERO), Vector3i.ZERO),
 			"rotation_index": int(source.get("rotation_index", 0)),
-			"scale_index": int(roundf(bytes.decode_float(base + 60))),
+			"global_pivot_index": int(roundf(bytes.decode_float(base + 60))),
 			"asset_index": int(roundf(bytes.decode_float(base + 56))),
-			"support_ratio": bytes.decode_float(base + 32),
-			"solid_collision": bytes.decode_float(base + 36),
-			"complexity_overlap": bytes.decode_float(base + 40),
+			"solid_collision": bytes.decode_float(base + 32),
+			"loss_before": bytes.decode_float(base + 36),
+			"loss_after": bytes.decode_float(base + 40),
 			"clearance_overlap": bytes.decode_float(base + 44),
-			"ignored_sample": bytes.decode_float(base + 48),
+			"profile_index": int(roundf(bytes.decode_float(base + 48))),
 		})
 	return world_results

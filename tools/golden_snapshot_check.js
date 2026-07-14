@@ -5,10 +5,13 @@
 // normalizes the returned text and compares it against the git-committed baseline
 // goldens/volume_score_golden.approved.txt.
 //
-// Usage: node tools/golden_snapshot_check.js
-//   no baseline yet -> writes it, prints "BASELINE CREATED", exit 0
+// Usage: node tools/golden_snapshot_check.js [--approve]
+//   no baseline, no --approve -> prints "NO BASELINE", exit 1 (a gate must not
+//                                self-approve; creating the baseline is explicit)
+//   no baseline, --approve    -> writes it, prints "BASELINE CREATED", exit 0
 //   identical       -> prints "GOLDEN PASS", exit 0
 //   different       -> prints a unified diff, then "GOLDEN DIFF", exit 1
+//                      (--approve does NOT overwrite an existing baseline)
 //   bridge/runner failure -> "ERROR: ...", exit 2
 // Requires a running editor (-e, vulkan) with the meshfill plugin bridge up.
 const net = require('net');
@@ -150,13 +153,20 @@ async function fetchSnapshot() {
 }
 
 async function main() {
+  const approve = process.argv.slice(2).includes('--approve');
   await sendRequest('ping', {}, 5000);
   await ensureScene();
   const normalized = normalize(await fetchSnapshot());
-  fs.mkdirSync(path.dirname(GOLDEN_FILE), { recursive: true });
   if (!fs.existsSync(GOLDEN_FILE)) {
+    const rel = path.relative(process.cwd(), GOLDEN_FILE);
+    if (!approve) {
+      console.log('NO BASELINE ' + rel + ' (rerun with --approve to create it)');
+      process.exitCode = 1;
+      return;
+    }
+    fs.mkdirSync(path.dirname(GOLDEN_FILE), { recursive: true });
     fs.writeFileSync(GOLDEN_FILE, normalized, 'utf8');
-    console.log('BASELINE CREATED ' + path.relative(process.cwd(), GOLDEN_FILE));
+    console.log('BASELINE CREATED ' + rel);
     return;
   }
   const approved = normalize(fs.readFileSync(GOLDEN_FILE, 'utf8'));

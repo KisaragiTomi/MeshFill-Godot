@@ -6,7 +6,7 @@ extends Resource
 # edit time; without @tool the editor gives a placeholder script instance whose methods
 # don't execute, so get_mesh() 等在编辑器里返回空/失败。运行时行为不变。
 
-const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const SemanticProbeGeneratorScript := preload("res://scripts/semantic_probe_generator.gd")
 const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
@@ -14,17 +14,18 @@ const VoxelGeneralScript := preload("res://scripts/utils/voxel_general.gd")
 
 # 值 1 保留（原 FLAG_SUPPORT；支撑已在 anchor 阶段判定，不再生成 support 探针）
 # collision sample 的 flags 位语义；clearance 探针由 AutoVoxelRuntimeProfileContainer
-# 注册期烘焙 collision records 时合成（score_voxel_tile.glsl 同值消费）。
+# 注册期烘焙 asset_voxel_records 时合成（score_anchor_asset_residual.glsl 同值消费）。
 const FLAG_CLEARANCE := 2           # 顶部净空体素标记
 
 @export var color: Color = Color.WHITE                         # canonical 默认颜色；alpha 同步 complexity
 @export_range(0.0, 1.0) var complexity: float = 1.0             # canonical 默认强度
 @export var collision: Array[Dictionary] = []                   # canonical 局部 collision sample 列表
+@export var asset_voxels: Array[Dictionary] = []                # local AD voxels: voxel/color/complexity/collision/weight
 @export var pivot_variants: Array[Dictionary] = []              # 显式 pivot 列表
 @export var auto_generate_vertical_pivots: bool = false         # 从 collision 高度生成 vertical pivots
 @export_range(0.0, 16.0, 0.1) var vertical_pivot_middle_min_height: float = 1.5 # middle pivot 最小高度
 @export_range(0.0, 16.0, 0.1) var vertical_pivot_upper_min_height: float = 3.0 # upper pivot 最小高度
-@export var semantic_probe_profile: Resource                    # 保存或生成 semantic_probes 的 profile
+@export var semantic_probe_generator: Resource                    # 保存或生成 semantic_probes 的 profile
 @export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0 # 自动 probe 生成密度
 @export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0 # 外围 context probes 半径；0 禁用
 @export var asset_id: String = ""                               # 植被资产 id / debug metadata
@@ -74,6 +75,17 @@ func set_collision(source: Array) -> void:
 			collision.append(entry)
 
 
+func set_asset_voxels(source: Array) -> void:
+	asset_voxels.clear()
+	for raw in source:
+		if raw is Dictionary:
+			asset_voxels.append((raw as Dictionary).duplicate(true))
+
+
+func get_asset_voxels() -> Array[Dictionary]:
+	return SharedPropertyTypeScript.duplicate_dictionary_array(asset_voxels)
+
+
 func set_pivot_variants(variants: Array) -> void:
 	pivot_variants = normalize_pivot_variants(variants)
 
@@ -86,16 +98,16 @@ func get_pivot_variants() -> Array[Dictionary]:
 	return [{"name": "bottom", "offset": Vector3.ZERO, "score_bias": 0.0}]
 
 
-func ensure_semantic_probe_profile() -> Resource:
-	if semantic_probe_profile == null:
-		semantic_probe_profile = SemanticProbeProfileScript.new()
-		semantic_probe_profile.density = semantic_probe_density
-	return semantic_probe_profile
+func ensure_semantic_probe_generator() -> Resource:
+	if semantic_probe_generator == null:
+		semantic_probe_generator = SemanticProbeGeneratorScript.new()
+		semantic_probe_generator.density = semantic_probe_density
+	return semantic_probe_generator
 
 
 func set_semantic_probes(probes: Array) -> void:
-	var profile := ensure_semantic_probe_profile()
-	profile.probes = SemanticProbeProfileScript.duplicate_probe_array(probes)
+	var profile := ensure_semantic_probe_generator()
+	profile.probes = SemanticProbeGeneratorScript.duplicate_probe_array(probes)
 
 
 func get_semantic_probes(
@@ -104,7 +116,7 @@ func get_semantic_probes(
 	world_scale: Vector3 = Vector3.ONE,
 	fallback_collision: Array = []
 ) -> Array[Dictionary]:
-	var profile := ensure_semantic_probe_profile()
+	var profile := ensure_semantic_probe_generator()
 	var resolved_mesh: Mesh = null
 	var resolved_density := density_override
 	var resolved_world_scale := world_scale
@@ -138,7 +150,7 @@ func get_semantic_probes(
 
 
 func to_record_fields(default_radius: float = 0.0) -> Dictionary:
-	var profile := ensure_semantic_probe_profile() if semantic_probe_profile != null else null
+	var profile := ensure_semantic_probe_generator() if semantic_probe_generator != null else null
 	var result := SharedPropertyTypeScript.from_descriptor(self, default_radius)
 	result.merge({
 		"pivot_variants": get_pivot_variants(),                           # runtime pivot variants
@@ -147,6 +159,7 @@ func to_record_fields(default_radius: float = 0.0) -> Dictionary:
 	}, true)
 	if profile != null:
 		result["semantic_probes"] = profile.probes.duplicate(true)        # descriptor-backed semantic probes
+	result["asset_voxels"] = get_asset_voxels()
 	return result
 
 
@@ -200,12 +213,14 @@ func make_instance_config(config: Dictionary = {}) -> Dictionary:
 		cfg["complexity"] = get_complexity()
 	if not cfg.has("collision"):
 		cfg["collision"] = get_collision()
+	if not cfg.has("asset_voxels"):
+		cfg["asset_voxels"] = get_asset_voxels()
 	if not cfg.has("pivot_variants"):
 		cfg["pivot_variants"] = get_pivot_variants()
 	if not cfg.has("semantic_probe_density"):
 		cfg["semantic_probe_density"] = semantic_probe_density
-	if not cfg.has("semantic_probe_profile") and semantic_probe_profile != null:
-		cfg["semantic_probe_profile"] = semantic_probe_profile
+	if not cfg.has("semantic_probe_generator") and semantic_probe_generator != null:
+		cfg["semantic_probe_generator"] = semantic_probe_generator
 	if not cfg.has("semantic_probes"):
 		cfg["semantic_probes"] = get_semantic_probes(semantic_probe_density)
 
@@ -237,6 +252,7 @@ static func from_profile(profile: AutoVoxelProfile, default_radius: float = 0.0)
 	descriptor.color = profile.get_color()
 	descriptor.complexity = profile.get_complexity()
 	descriptor.set_collision(profile.get_collision(default_radius))
+	descriptor.set_asset_voxels([])
 	return descriptor
 
 

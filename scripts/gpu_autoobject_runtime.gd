@@ -94,11 +94,14 @@ const RESIDENT_PLACEMENT_PUSH := [
 	["asset_index", "int"],
 	["flush_epoch", "int"],
 	["stats_u32_count", "int"],
-	["_pad0", "int"],
+	["use_asset_lookup", "int"],  # mixed-asset mode: per-record profile/object_type via asset_lookup
 	["grid_x", "int"],
 	["grid_y", "int"],
 	["grid_z", "int"],
-	["_pad1", "int"],
+	# asset_lookup element capacity (grid.w) — host-passed value for the
+	# shader's mixed-asset capacity gate (replaces GLSL .length()/OpArrayLength,
+	# unsupported by Godot's SPIR-V path).
+	["asset_lookup_capacity", "int"],
 ]
 const ACCEPTED_PLACEMENT_RECORD_PUSH := [
 	["record_count", "int"],
@@ -185,6 +188,42 @@ func get_use_resident_accepted_placement_writeback() -> bool:
 	return _use_resident_accepted_placement_writeback
 
 
+## spawn-batch 共享容量守卫（records / gpu_buffers 两入口 reason 字符串逐字同）。
+## 返回 "" 表示可分配；empty_batch 判定与失败报告组装留调用方。
+func _spawn_batch_capacity_reason(record_count: int) -> String:
+	if not _gpu_ready:
+		return "runtime_not_ready"
+	if _free_ids.size() < record_count:
+		return "capacity_full"
+	if _dirty_delta_count + record_count > dirty_delta_capacity:
+		return "dirty_delta_capacity_full"
+	return ""
+
+
+## 按块预留 object ID；任一次分配失败即回滚整块并返回空数组
+## （调用方以 is_empty 判 capacity_full_mid_alloc；仅在 record_count > 0 时调用）。
+func _allocate_id_block(record_count: int) -> Array[int]:
+	var object_ids: Array[int] = []
+	for _i in range(record_count):
+		var object_id := _allocate_id()
+		if object_id < 0:
+			for free_id in object_ids:
+				_free_ids.append(free_id)
+			return []
+		object_ids.append(object_id)
+	return object_ids
+
+
+## records 入口的同形失败报告（4 处失败出口共用；shader 失败出口另有扩展键，不走这里）。
+func _spawn_batch_records_failure(reason: String, failed_count: int) -> Dictionary:
+	return {
+		"ok": false, "reason": reason,
+		"spawned_count": 0, "failed_count": failed_count,
+		"object_ids": [],
+		"accepted_placement_record_shader_consumed": false,
+	}
+
+
 ## 通过 GPU Shader 批量生成对象（仅 GPU 路径），失败时原子回滚所有已分配 ID。
 # P0 #5: Batch-spawn accepted placements via GPU shader writeback ONLY.
 # GPU-only path — no CPU bulk write fallback.
@@ -195,13 +234,10 @@ func spawn_batch_from_accepted_placement_records(
 	spawn_records: Array[Dictionary],
 	options: Dictionary = {}
 ) -> Dictionary:
-	if not _gpu_ready:
-		return {
-			"ok": false, "reason": "runtime_not_ready",
-			"spawned_count": 0, "failed_count": spawn_records.size(),
-			"object_ids": [],
-			"accepted_placement_record_shader_consumed": false,
-		}
+	# Guard: runtime readiness, free IDs and dirty delta capacity（empty_batch 优先级在 not_ready 之后、容量之前）.
+	var capacity_reason := _spawn_batch_capacity_reason(spawn_records.size())
+	if capacity_reason == "runtime_not_ready":
+		return _spawn_batch_records_failure("runtime_not_ready", spawn_records.size())
 	if spawn_records.is_empty():
 		return {
 			"ok": true, "reason": "empty_batch",
@@ -209,38 +245,13 @@ func spawn_batch_from_accepted_placement_records(
 			"object_ids": [],
 			"accepted_placement_record_shader_consumed": false,
 		}
-
-	# Guard: ensure enough free IDs and dirty delta capacity.
-	if _free_ids.size() < spawn_records.size():
-		return {
-			"ok": false, "reason": "capacity_full",
-			"spawned_count": 0, "failed_count": spawn_records.size(),
-			"object_ids": [],
-			"accepted_placement_record_shader_consumed": false,
-		}
-	if _dirty_delta_count + spawn_records.size() > dirty_delta_capacity:
-		return {
-			"ok": false, "reason": "dirty_delta_capacity_full",
-			"spawned_count": 0, "failed_count": spawn_records.size(),
-			"object_ids": [],
-			"accepted_placement_record_shader_consumed": false,
-		}
+	if not capacity_reason.is_empty():
+		return _spawn_batch_records_failure(capacity_reason, spawn_records.size())
 
 	# Step 1: Allocate object IDs for all records atomically.
-	var object_ids: Array[int] = []
-	for _i in range(spawn_records.size()):
-		var object_id := _allocate_id()
-		if object_id < 0:
-			# Rollback: release any IDs we already allocated.
-			for free_id in object_ids:
-				_free_ids.append(free_id)
-			return {
-				"ok": false, "reason": "capacity_full_mid_alloc",
-				"spawned_count": 0, "failed_count": spawn_records.size(),
-				"object_ids": [],
-				"accepted_placement_record_shader_consumed": false,
-			}
-		object_ids.append(object_id)
+	var object_ids := _allocate_id_block(spawn_records.size())
+	if object_ids.is_empty():
+		return _spawn_batch_records_failure("capacity_full_mid_alloc", spawn_records.size())
 
 	# Step 2: Build internal record format.
 	# Read generation from GPU resident buffer to preserve recycled-ID state.
@@ -346,7 +357,9 @@ func spawn_batch_from_accepted_placement_gpu_buffers(
 		"gpu_first": true,
 		"cpu_fallback": false,
 	}
-	if not _gpu_ready:
+	# 守卫优先级与原实现逐一保持：not_ready → empty → invalid_rid → 容量。
+	var capacity_reason := _spawn_batch_capacity_reason(record_count)
+	if capacity_reason == "runtime_not_ready":
 		return report
 	if record_count <= 0:
 		report["ok"] = true
@@ -361,28 +374,25 @@ func spawn_batch_from_accepted_placement_gpu_buffers(
 		report["reason"] = "invalid_resident_input_rid"
 		report["resident_gpu_allocator_writeback_blocked_reason"] = "invalid_resident_input_rid"
 		return report
-	if _free_ids.size() < record_count:
-		report["reason"] = "capacity_full"
-		report["resident_gpu_allocator_writeback_blocked_reason"] = "capacity_full"
-		return report
-	if _dirty_delta_count + record_count > dirty_delta_capacity:
-		report["reason"] = "dirty_delta_capacity_full"
-		report["resident_gpu_allocator_writeback_blocked_reason"] = "dirty_delta_capacity_full"
+	# Mixed-asset mode: a valid asset_lookup RID makes the shader resolve
+	# profile_id/object_type per record (world_meta.z -> asset_lookup). The
+	# element capacity travels with the RID (from its allocation point) for the
+	# shader's capacity gate.
+	var asset_lookup_rid: RID = resident_inputs.get("asset_lookup_rid", RID())
+	var asset_lookup_capacity := int(resident_inputs.get("asset_lookup_capacity", 0))
+	if not capacity_reason.is_empty():
+		report["reason"] = capacity_reason
+		report["resident_gpu_allocator_writeback_blocked_reason"] = capacity_reason
 		return report
 
 	# Block-reserve object IDs for positional consumption by the shader.
 	# No per-id alive/generation readback: the shader guards already-alive
 	# slots and reads generation from the resident buffer.
-	var object_ids: Array[int] = []
-	for _i in range(record_count):
-		var object_id := _allocate_id()
-		if object_id < 0:
-			for free_id in object_ids:
-				_free_ids.append(free_id)
-			report["reason"] = "capacity_full_mid_alloc"
-			report["resident_gpu_allocator_writeback_blocked_reason"] = "capacity_full_mid_alloc"
-			return report
-		object_ids.append(object_id)
+	var object_ids := _allocate_id_block(record_count)
+	if object_ids.is_empty():
+		report["reason"] = "capacity_full_mid_alloc"
+		report["resident_gpu_allocator_writeback_blocked_reason"] = "capacity_full_mid_alloc"
+		return report
 	var reserved_bytes := PackedByteArray()
 	reserved_bytes.resize(record_count * 4)
 	for i in range(record_count):
@@ -395,7 +405,9 @@ func spawn_batch_from_accepted_placement_gpu_buffers(
 		reserved_bytes,
 		record_count,
 		asset_params,
-		options
+		options,
+		asset_lookup_rid,
+		asset_lookup_capacity
 	)
 	if not bool(dispatch_result.get("ok", false)):
 		# Rollback only when the shader never ran; after a dispatch the IDs may
@@ -438,7 +450,9 @@ func _dispatch_accepted_placement_resident_shader(
 	reserved_id_bytes: PackedByteArray,
 	record_count: int,
 	asset_params: Dictionary,
-	options: Dictionary
+	options: Dictionary,
+	asset_lookup_rid: RID = RID(),
+	asset_lookup_capacity: int = 0
 ) -> Dictionary:
 	if _rd == null or not _all_required_buffers_valid():
 		return {"ok": false, "reason": "runtime_not_ready", "applied_on_gpu": false}
@@ -450,11 +464,24 @@ func _dispatch_accepted_placement_resident_shader(
 	if not reserved_ids_buffer.is_valid() or not stats_buffer.is_valid() or not shader.is_valid() or not pipeline.is_valid():
 		gc_frame()
 		return {"ok": false, "reason": "resident_shader_setup_failed", "applied_on_gpu": false}
+	var use_asset_lookup := asset_lookup_rid.is_valid()
+	var asset_lookup_buffer := asset_lookup_rid
+	if use_asset_lookup:
+		track_borrowed_rid(asset_lookup_buffer, KIND_BUFFER, SCOPE_FRAME, "vpg:asset_lookup")
+	else:
+		asset_lookup_buffer = storage_buffer_zero(16, SCOPE_FRAME, "autoobject_resident_asset_lookup_dummy")
+		if not asset_lookup_buffer.is_valid():
+			gc_frame()
+			return {"ok": false, "reason": "resident_shader_setup_failed", "applied_on_gpu": false}
+		# Dummy is one ivec4; the gate is unreachable in legacy mode (meta.w==0)
+		# but keep the capacity value consistent with the bound buffer.
+		asset_lookup_capacity = 1
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, placement_results_rid),
 		make_storage_uniform(1, world_results_rid),
 		make_storage_uniform(2, stamp_bounds_rid),
 		make_storage_uniform(3, reserved_ids_buffer),
+		make_storage_uniform(4, asset_lookup_buffer),
 	], shader, 0, SCOPE_FRAME, "autoobject_resident_accepted_placement_set0")
 	var set1 := create_uniform_set(
 		_pack_accepted_placement_uniforms(0, stats_buffer),
@@ -482,9 +509,11 @@ func _dispatch_accepted_placement_resident_shader(
 		asset_index = int(asset_params.get("asset_index", -1)),
 		flush_epoch = _flush_epoch,
 		stats_u32_count = ACCEPTED_PLACEMENT_RECORD_SHADER_STATS_U32_COUNT,
+		use_asset_lookup = 1 if use_asset_lookup else 0,
 		grid_x = grid_size.x,
 		grid_y = grid_size.y,
 		grid_z = grid_size.z,
+		asset_lookup_capacity = maxi(asset_lookup_capacity, 0),
 	})
 
 	var group_count := ceil_div(record_count, ACCEPTED_PLACEMENT_RECORD_SHADER_LOCAL_SIZE_X)
@@ -664,6 +693,7 @@ func _spawn_with_reserved_id(
 		object_flags
 	)
 	if not ok:
+		_rollback_object_state(object_id, previous)
 		return -1
 
 	if not _append_dirty_delta(
@@ -679,6 +709,7 @@ func _spawn_with_reserved_id(
 		false,
 		true
 	):
+		_rollback_object_state(object_id, previous)
 		return -1
 
 	return object_id
@@ -738,9 +769,10 @@ func update_transform(
 		transform,
 		object_flags
 	):
+		_rollback_object_state(object_id, previous)
 		return false
 
-	return _append_dirty_delta(
+	if not _append_dirty_delta(
 		object_id,
 		object_type,
 		profile_id,
@@ -752,7 +784,10 @@ func update_transform(
 		_merge_dirty_flags(dirty_flags),
 		false,
 		true
-	)
+	):
+		_rollback_object_state(object_id, previous)
+		return false
+	return true
 
 
 ## 用新边界更新对象（保留当前变换），内部委托给 update_transform。
@@ -813,9 +848,10 @@ func update_profile(object_id: int, profile_id: int, arg3 = {}, arg4 = null, arg
 		transform,
 		object_flags
 	):
+		_rollback_object_state(object_id, previous)
 		return false
 
-	return _append_dirty_delta(
+	if not _append_dirty_delta(
 		object_id,
 		object_type,
 		profile_id,
@@ -827,7 +863,10 @@ func update_profile(object_id: int, profile_id: int, arg3 = {}, arg4 = null, arg
 		_merge_dirty_flags(dirty_flags),
 		false,
 		true
-	)
+	):
+		_rollback_object_state(object_id, previous)
+		return false
+	return true
 
 
 ## 更新对象的 object_flags 位掩码，追加 dirty delta。
@@ -864,9 +903,10 @@ func update_flags(object_id: int, object_flags, dirty_flags: Dictionary = {}) ->
 		transform,
 		packed_flags
 	):
+		_rollback_object_state(object_id, previous)
 		return false
 
-	return _append_dirty_delta(
+	if not _append_dirty_delta(
 		object_id,
 		object_type,
 		profile_id,
@@ -878,7 +918,10 @@ func update_flags(object_id: int, object_flags, dirty_flags: Dictionary = {}) ->
 		_merge_dirty_flags(dirty_flags),
 		false,
 		true
-	)
+	):
+		_rollback_object_state(object_id, previous)
+		return false
+	return true
 
 
 ## 销毁对象：写入 alive=false、generation+1，并将 ID 归还空闲池，追加 dirty delta。
@@ -915,10 +958,10 @@ func kill(object_id: int, dirty_flags: Dictionary = {}) -> bool:
 		transform,
 		object_flags
 	):
+		_rollback_object_state(object_id, previous)
 		return false
 
-	_free_ids.append(object_id)
-	return _append_dirty_delta(
+	if not _append_dirty_delta(
 		object_id,
 		object_type,
 		profile_id,
@@ -930,7 +973,11 @@ func kill(object_id: int, dirty_flags: Dictionary = {}) -> bool:
 		_merge_dirty_flags(dirty_flags),
 		true,
 		false
-	)
+	):
+		_rollback_object_state(object_id, previous)
+		return false
+	_free_ids.append(object_id)
+	return true
 
 
 ## 尝试通过 GPU 着色器批量写入接受放置记录；成功返回 ok=true，未启用则直接返回被阻塞结果。
@@ -1939,6 +1986,32 @@ func _append_dirty_delta(
 		return false
 	submit_and_sync()
 	return true
+
+
+## 失败回滚（尽力而为，仅失败路径调用）：状态写入或 dirty delta 追加失败后，
+## 将对象状态写回先前的 readback 快照，避免"状态已改但 delta 未记录"的非事务写回。
+func _rollback_object_state(object_id: int, snapshot: Dictionary) -> void:
+	if snapshot.is_empty():
+		return
+	var snapshot_min: Vector3i = snapshot.get("voxel_min", Vector3i.ZERO)
+	var snapshot_max: Vector3i = snapshot.get("voxel_max", snapshot_min + Vector3i.ONE)
+	var snapshot_previous_min: Vector3i = snapshot.get("previous_voxel_min", snapshot_min)
+	var snapshot_previous_max: Vector3i = snapshot.get("previous_voxel_max", snapshot_max)
+	var snapshot_transform: Transform3D = snapshot.get("transform", Transform3D.IDENTITY)
+	if not _write_object_state(
+		object_id,
+		bool(snapshot.get("alive", false)),
+		int(snapshot.get("generation", 0)),
+		int(snapshot.get("profile_id", -1)),
+		int(snapshot.get("object_type", 0)),
+		snapshot_min,
+		snapshot_max,
+		snapshot_previous_min,
+		snapshot_previous_max,
+		snapshot_transform,
+		int(snapshot.get("object_flags", 0))
+	):
+		push_warning("GpuAutoobjectRuntime: state rollback failed for object %d after a failed transactional write" % object_id)
 
 
 ## 从 GPU 缓冲区读回单个对象的完整状态字段，返回状态快照字典。

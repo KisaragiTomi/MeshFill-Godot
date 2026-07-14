@@ -19,7 +19,7 @@
 | `volume` | 整个 SV voxel data domain / buffer，例如 committed `complexity_field` / `collision_field`。 |
 | `voxel` | `volume` 中的一个 `(x, y, z)` cell。 |
 | `tile` | 固定大小 voxel block；在本文中优先指 `SceneVoxelTile` 的 coarse cell index。 |
-| `voxel region` | placement / routing 的候选区域；当前 `score_voxel_tile.glsl` 和 VPG 使用 `TILE_SIZE = 8` 的 region / workgroup，不能等同于默认 `4x4x4` 的 `SceneVoxelTile`。 |
+| `voxel region` | SV 维护 / dirty 限定用的粗粒度区域；prefilter anchor collection（`collect_sv_anchors.glsl`）使用 `TILE_SIZE = 8` 的 dirty region，不能等同于默认 `4x4x4` 的 `SceneVoxelTile`。旧 tile 细筛（`score_voxel_tile.glsl`）已删除，细筛按 anchor 派发。 |
 
 ## 核心契约
 
@@ -29,7 +29,7 @@
 - voxel 和 tile 两级都承载 object refs：voxel 直接索引到占据该 voxel 的对象列表；tile 是 tile 内所有 voxel object refs 的 compacted 聚合。空间查询优先走 voxel 级，tile 级用于粗过滤和 dirty 管理。
 - `SceneVoxelTile` 当前通过 `apply_gpu_autoobject_dirty_delta()` 接收 GPU AutoObject dirty delta handoff，同时更新 voxel 级和 tile 级 object refs；它不拥有完整 runtime object state。
 - `SceneVoxelTile` 不进入 committed `SceneVoxel` per-voxel accepted fields。公开 `SceneVoxel` 查询仍只返回 `complexity`、`color`、`collision`，可选 `auto_mix`。`channel` 不进入 committed read model；`object_refs` 是独立 object-ref channel，通过 GPU resident buffers / readback 访问。
-- `SceneVoxelTile` 可以包装当前 `_sv_dirty_tiles` / `_sv_dirty_rects` 的语义；这些字段只是 implementation/storage compatibility，新 contract 和新 API 优先写 `SceneVoxelTile`。
+- legacy 2D dirty storage（`_sv_dirty_tiles` / `_sv_dirty_rects`）已退役（V1）；`SceneVoxelTile` 3D dirty 是唯一 dirty 机制，contract 和 API 都写 `SceneVoxelTile`。
 - `SceneVoxelTile` runtime metadata 和 committed scene/collision resident fields 是 GPU-first：`ensure_scene_voxel_tile_buffers_uploaded()` 成功后，tile record、summary、dirty index、object ref、source ref、`complexity_field` 和 `collision_field` 都以 GPU storage buffers / readback 为验收路径。`get_scene_voxel_tile_gpu_buffer_status()` 的 valid RID、record count、resident field source 和 upload revision 才能说明 runtime resident success；CPU dictionary / PackedFloat32Array 只做 command staging、debug label 和无 RD 时的 SKIP 判定。staging revision 前进后，旧 GPU buffers 会标记 stale，不能继续作为 runtime read source。
 - `SceneVoxelTile` 的 voxel bounds 必须覆盖真实 collision 采样范围和 guard expansion，不能只用 object center 或 search radius 近似。
 - 正常 committed SV 增量更新入口只接受 `SceneVoxelTile` dirty；AutoObject、brush、profile 和 placement 都只是 dirty producer。
@@ -48,7 +48,7 @@ voxel_min      = tile_coord * tile_size
 voxel_max      = min(voxel_min + tile_size, SV.grid_size)
 ```
 
-当前源码仍保留 `SV_RESIDENT_TILE_SIZE = 8`、`_sv_dirty_tiles` 和 `_sv_dirty_rects`，并以 XZ `Rect2i` 加 `slice_index` / `layer` 表示 legacy dirty storage。`SceneVoxelCommitter` 已新增 `_scene_voxel_tiles` GDScript staging table、named dirty API、debug compact ranges、resident scene/collision GPU field buffers 和 GPU AutoObject dirty delta handoff；legacy dirty storage 继续用于兼容 dirty indexing，`SceneVoxelTile` 默认语义按固定 `4x4x4` voxel block 描述。
+`SceneVoxelCommitter` 持有 `_scene_voxel_tiles` GDScript staging table、named dirty API、debug compact ranges、resident scene/collision GPU field buffers 和 GPU AutoObject dirty delta handoff；legacy 2D dirty storage（`_sv_dirty_tiles` / `_sv_dirty_rects`，XZ `Rect2i` 加 `slice_index` / `layer`）已退役（V1）。源码中的 `SV_RESIDENT_TILE_SIZE = 8` 只是 `_rebuild_sv()` 摘要归约的 tile 粒度，`SceneVoxelTile` 默认语义仍按固定 `4x4x4` voxel block 描述。
 
 Placement / VPG 的 `TILE_SIZE = 8` 是 candidate voxel region / shader workgroup 的采样尺寸；它不读取 `meshfill/scene_voxel_tile/size_voxels`，也不改变 `SceneVoxelTile` 的默认 `4x4x4` 或项目覆盖尺寸。两者需要映射时，由 dirty producer 或 SV owner 用 voxel bounds 做转换。
 
@@ -87,10 +87,9 @@ Grid initialized / resized
 
 | 侧 | 当前职责 | 不拥有 |
 | --- | --- | --- |
-| CPU / GDScript | `_scene_voxel_tiles` command staging、named dirty API、legacy dirty sync、debug label map、upload preparation 和 readback display；只作为 SV owner control/debug plane。 | CPU runtime fallback、GPU object SoA buffers、placement shader 的 temporary output。 |
+| CPU / GDScript | `_scene_voxel_tiles` command staging、named dirty API、debug label map、upload preparation 和 readback display；只作为 SV owner control/debug plane。 | CPU runtime fallback、GPU object SoA buffers、placement shader 的 temporary output。 |
 | GPU storage buffers | `scene_voxel_tile_records`、`scene_voxel_tile_summaries`、`scene_voxel_tile_object_refs`、`scene_voxel_tile_complexity_field`、`scene_voxel_tile_collision_field`；有 RD 时作为 tile metadata 和 resident scene/collision runtime read source。 | AutoObject descriptor defaults、完整对象状态、source authoring history。 |
 | GPU compute | probe prefilter、candidate voxel-region scoring、dirty-tile-limited resident upload；dirty-tile-limited 提交发布由 `SceneVoxelCommitter.commit_scene_voxels()` 的 dirty `SceneVoxelTile` scope 驱动，不是 GPU source-of-truth。 | `SceneVoxelTile` 的 runtime 替代路径、committed `SceneVoxel` payload、AutoObject descriptor defaults。 |
-| 兼容 storage | `_sv_dirty_tiles` / `_sv_dirty_rects`、`SV_RESIDENT_TILE_SIZE = 8`。 | 新 semantic concept；它们只是 resident buffer / shader path 的 legacy storage。 |
 
 ## 数据模型
 
@@ -168,9 +167,9 @@ AutoObject / brush / profile / placement dirty producer
 
 入口规则：
 
-- `mark_scene_voxel_tile_dirty()` / `mark_scene_voxel_tile_bounds_dirty()` 是 contract-level 正常增量更新入口；当前已写入 `_scene_voxel_tiles`，并桥接到 legacy `_sv_dirty_tiles`。
+- `mark_scene_voxel_tile_dirty()` / `mark_scene_voxel_tile_bounds_dirty()` 是 contract-level 正常增量更新入口，直接写 `_scene_voxel_tiles` staging table。
 - `apply_gpu_autoobject_dirty_delta()` 是 GPU AutoObject -> `SceneVoxelTile` 的 dirty delta handoff；它消费 `object_id`、previous/current voxel bounds 和 dirty flags，标记 affected tiles 并维护 tile-local object refs。
-- 当前源码兼容入口是 `invalidate_sv_tile()` / `invalidate_sv_rect()`；内部仍进入 `_mark_sv_tile_dirty()` / `_mark_sv_rect_dirty()` 并同步填充 `SceneVoxelTile` dirty record。
+- legacy 兼容入口 `invalidate_sv_tile()` / `invalidate_sv_rect()` 已随 2D dirty storage 退役（V1）；不存在绕过 named API 的第二 dirty 入口。
 - `AutoObject` 更新必须先 dirty previous bounds 和 new bounds 覆盖的 `SceneVoxelTile`，再由 SV owner 重建 object/source ranges。
 - `SVBrush` / source stamp、object refs、summary、routing 和 resident upload 都是 dirty tile 后续处理阶段。
 - full rebuild 只能作为维护路径，语义上等价于 `mark all SceneVoxelTiles dirty`。
@@ -233,9 +232,9 @@ SceneVoxelTile
 
 ## 与 Placement 的关系
 
-Placement / routing 使用 `voxel region` 做候选裁剪和 physical scoring；当前 VPG / `score_voxel_tile.glsl` 的 `TILE_SIZE = 8` 是 placement region / workgroup 尺寸，不是 `SceneVoxelTile` 默认尺寸。
+Prefilter anchor collection（`collect_sv_anchors.glsl`）用 `TILE_SIZE = 8` 的 dirty region 限定收集范围，不是 `SceneVoxelTile` 默认尺寸；细筛已按 anchor 派发（`score_anchor_asset_residual.glsl`，一个 workgroup 一个 anchor × top-K asset 槽），不再按 tile 枚举候选原点。
 
-`SceneVoxelTile` 尺寸固定/配置后服务 SV dirty、summary 和 source/object range；placement `voxel region` 服务 candidate route 和 physical scoring。不要把 `SV_RESIDENT_TILE_SIZE = 8` 或 shader `TILE_SIZE = 8` 写成 `SceneVoxelTile` 的默认尺寸。
+`SceneVoxelTile` 尺寸固定/配置后服务 SV dirty、summary 和 source/object range；prefilter dirty region 只限定 anchor 收集。不要把 `SV_RESIDENT_TILE_SIZE = 8` 或 shader `TILE_SIZE = 8` 写成 `SceneVoxelTile` 的默认尺寸。
 
 placement/exclusion 的邻域查询走 per-voxel object refs（直接通过 voxel_coord 查找），不走独立的 spatial hash pipeline。`voxel region` 和 `SceneVoxelTile` 之间的映射仍由 dirty producer 或 SV owner 用 voxel bounds 做转换。
 

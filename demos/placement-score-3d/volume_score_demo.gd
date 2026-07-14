@@ -7,10 +7,10 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 ## registers itself with the sibling CoreSPADemo (ScenePlacementActor) so the editor toolbar
 ## "Anchors"/"Score" buttons and Anchor-mode click-select delegate here.
 ##
-## Scoring: GPU fine-selection (细筛选) — per asset, one full-grid score_voxel_tile pass
-## (data-driven per-dimension MATCH over the TargetSV env field) via
-## VoxelPlacementGenerator.run_minimal; the per-voxel score at each anchor ranks the assets
-## and the winner's REAL mesh is placed. See scoring-dimensions-design.md (Phase 2).
+## Scoring: GPU fine-selection (细筛选) — ONE anchor-origin residual-gain pass over
+## all assets (score_anchor_asset_residual via VoxelPlacementGenerator.run_multi_asset
+## with a CPU-built anchor handoff + debug_read_fine_candidates readback); the per
+## (anchor x asset) residual gain ranks the assets and the winner's REAL mesh is placed.
 ##
 ## Placed winners are the REAL descriptor mesh (never proxy boxes) — see the project
 ## CLAUDE.md rule "Placement / Score Demos: Render Real AssetDescriptor Assets".
@@ -25,7 +25,9 @@ const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generator.gd")
 const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
+const SceneVoxelTileCodec := preload("res://scripts/scene_voxel_tile_codec.gd")
 const ScoreTimingProfilerScript := preload("res://scripts/utils/score_timing_profiler.gd")
+const VolumeScoreProviderRegistry := preload("res://scripts/volume_score_provider_registry.gd")
 
 const VOXEL_DISPLAY_ANCHOR := SPAEditorContract.VOXEL_DISPLAY_ANCHOR
 const VOLUME_SCORE_DISPLAY_OWNER := "volume_score"
@@ -62,12 +64,12 @@ var _scored := false
 var _elapsed_score_ms := 0.0
 var _total_anchors := 0
 
-# ---- Fine-selection (细筛选) GPU scoring state (Phase 2) --------------------
+# ---- Fine-selection (细筛选) GPU scoring state --------------------------------
 var _env_ready := false
-var _env_channel_floats := PackedFloat32Array()   # voxel_count * 5: [collision, complexity, r, g, b]
-var _target_field_bytes := PackedFloat32Array()    # voxel_count * 4: [r, g, b, completeness]
-var _complexity_field := PackedFloat32Array()      # voxel_count(=completeness): bounds/coverage
-var _collision_field := PackedFloat32Array()       # voxel_count(=collision)
+var _target_field_bytes := PackedFloat32Array()    # voxel_count * 4: [r, g, b, target complexity]
+var _target_collision_r8_bytes := PackedByteArray() # r8-packed target collision words
+var _complexity_field := PackedFloat32Array()      # voxel_count: CurrentSV complexity (starts empty scene)
+var _collision_field := PackedFloat32Array()       # voxel_count: CurrentSV collision
 
 # ---- Golden-master capture（统一Debug承载方案 步骤6 消费链）------------------
 var _capture_golden_sections := false
@@ -77,18 +79,13 @@ var _golden_sections: Array[String] = []
 var _hud_label: Label
 var _display_root: Node3D
 
-## Editor-only registry of live VolumeScore providers. Lets the meshfill plugin refresh anchor
-## candidates after an AssetDescriptor bake even when this scene is a background tab — the plugin
-## can only reach the *edited* scene root directly. See refresh_all_after_bake().
-static var _live_providers: Array = []
-
-
+## Register this scene-owned provider with the scripts-level registry so descriptor bakes can
+## refresh background scene tabs without making the editor plugin depend on this demo script.
 func _ready() -> void:
 	super._ready()
 	if is_scene_startup_blocked():
 		return
-	if not _live_providers.has(self):
-		_live_providers.append(self)
+	VolumeScoreProviderRegistry.register(self)
 	_setup_hud()
 	_display_root = Node3D.new()
 	_display_root.name = "VolumeScoreDisplay"
@@ -101,14 +98,14 @@ func _ready() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
-		_live_providers.erase(self)
+		VolumeScoreProviderRegistry.unregister(self)
 		_unregister_spa_volume_score_provider()
 
 
 # ---- Public API — SPA provider interface -----------------------------------
 
 ## 每次 AD bake 之后刷新锚点候选：meshfill 插件的 "Bake AD" 按钮在烘焙成功后经
-## refresh_all_after_bake() 调到这里。从磁盘按 resource_path 重载 placement_assets 的 .tres
+## VolumeScoreProviderRegistry 调到这里。从磁盘按 resource_path 重载 placement_assets 的 .tres
 ## (烘焙覆盖了同名文件)、清 _assets 缓存、再 calculate_voxel_scores() 重打分。锚点(地形派生)
 ## 与 TargetSV env 不受描述符烘焙影响,故保留不重建(_env_ready 不复位)。
 func reload_and_rescore() -> Dictionary:
@@ -117,19 +114,6 @@ func reload_and_rescore() -> Dictionary:
 	_reload_placement_descriptors()
 	_assets.clear()   # 让 _ensure_assets_ready 用重载后的描述符重建 mesh/color/collision/span
 	return calculate_voxel_scores()
-
-
-## 插件在一次 AD bake 后调用:刷新所有存活的 VolumeScore provider(可能在后台标签页)。
-## 返回实际刷新的 provider 数;顺带清理失效引用。
-static func refresh_all_after_bake() -> int:
-	var refreshed := 0
-	for p in _live_providers.duplicate():
-		if is_instance_valid(p) and p.has_method("reload_and_rescore"):
-			p.reload_and_rescore()
-			refreshed += 1
-		else:
-			_live_providers.erase(p)
-	return refreshed
 
 
 ## 从磁盘按各自 resource_path 重载 placement_assets 描述符(CACHE_MODE_REPLACE 就地刷新已缓存
@@ -190,9 +174,10 @@ func calculate_voxel_scores() -> Dictionary:
 	return _status(true)
 
 
-## Golden-master 消费链入口（统一Debug承载方案 步骤6）：跑固定评分管线
-## （debug_read_golden_snapshot；voxel 通道段随既有 debug_read_voxel_channels 一起进快照），
-## 返回稳定文本快照（meta 只含固定配置/计数，刻意不含耗时等非确定值）。
+## Golden-master 消费链入口（统一Debug承载方案 步骤6）：跑固定评分管线并把
+## per (asset × anchor) residual-gain 结果（q1000 量化）作为稳定文本快照返回
+## （meta 只含固定配置/计数，刻意不含耗时等非确定值）。residual-gain 迁移后
+## 版本号升 v2——旧 v1 基线作废，需重录 goldens/。
 ## 桥调用：call_method path=VolumeScore method=run_golden_snapshot —— 见 tools/golden_snapshot_check.js。
 func run_golden_snapshot() -> String:
 	if not Engine.is_editor_hint():
@@ -208,7 +193,7 @@ func run_golden_snapshot() -> String:
 		return "ERROR golden_snapshot_empty"
 	var grid: Vector3i = _scene_fields.get("grid", Vector3i.ZERO)
 	var lines: Array[String] = [
-		"golden volume_score v1",
+		"golden volume_score v2",
 		"meta asset_count=%d anchor_count=%d grid=%dx%dx%d rotation_slots=%d anchor_spacing=%d" % [
 			_assets.size(), _total_anchors, grid.x, grid.y, grid.z, rotation_slots, anchor_spacing],
 	]
@@ -381,11 +366,12 @@ func _generate_anchors() -> void:
 
 # ---- 细筛选 (Fine-Selection) GPU scoring -----------------------------------
 
-## 数据驱动维度打分(design Phase 2):在 TargetSV 网格上 per asset 跑一次全网格
-## score_voxel_tile(dims-mode),资产 collision 采样 3D 逐体素采样环境场,读 debug_voxel 的
-## per-voxel 分并取每锚点体素分。维度=collision/complexity/color(全 MATCH)。
-## 资产形状与 SPA 同源:注册进 profile 容器,score 直接读容器常驻 collision_records。
-## 见 scoring-dimensions-design.md。
+## anchor-origin residual-gain 打分：ONE run — 全部资产进同一公共候选池。
+## 锚点经 VoxelPlacementGenerator.build_cpu_anchor_handoff 构建与 prefilter 同构的
+## resident anchor handoff（每锚点的 top-K 槽 = 全部资产，观测口径），
+## debug_read_fine_candidates 回读整个候选池：每 (anchor × asset) 一条 residual-gain
+## 记录（最佳 pivot/yaw）。资产形状与 SPA 同源:注册进 profile 容器,score/stamp 直接读
+## 容器常驻 asset_voxel_records。
 func _run_scoring() -> void:
 	_clear_scores()
 	if not _ensure_target_env_ready():
@@ -394,7 +380,6 @@ func _run_scoring() -> void:
 		return
 	var t0 := Time.get_ticks_msec()
 	var grid: Vector3i = _scene_fields.get("grid", Vector3i.ZERO)
-	var dims := _scoring_dimensions()
 	var vpg = VoxelPlacementGenerator.new()
 	var profile_container := AutoVoxelRuntimeProfileContainer.new()
 	if not profile_container.ensure_device():
@@ -404,7 +389,7 @@ func _run_scoring() -> void:
 	for a in range(_assets.size()):
 		var d = _assets[a].get("descriptor")
 		var pid := profile_container.register_descriptor(d)
-		if pid < 0 or int(profile_container.get_collision_range_for_profile_id(pid).get("count", 0)) <= 0:
+		if pid < 0 or int(profile_container.get_asset_voxel_range_for_profile_id(pid).get("count", 0)) <= 0:
 			# 无 collision 剖面:按 mesh AABB 跨度合成实心采样注册(CLAUDE.md 规则——
 			# 从 mesh AABB 派生,不回退通用盒资产)。
 			pid = profile_container.register_normalized_profile({
@@ -419,51 +404,92 @@ func _run_scoring() -> void:
 		push_warning("[VolumeScore] profile 容器上传失败 —— 不打分")
 		profile_container.dispose()
 		return
+	var container_rd: RenderingDevice = profile_container.get_rendering_device()
+	var anchor_voxels: Array = []
+	for ai in range(_anchors.size()):
+		anchor_voxels.append(_anchor_voxel(ai))
+	var handoff: Dictionary = VoxelPlacementGenerator.build_cpu_anchor_handoff(
+		container_rd, anchor_voxels, _assets.size())
+	if not bool(handoff.get("ok", false)):
+		push_warning("[VolumeScore] anchor handoff 构建失败: %s —— 不打分" % str(handoff.get("reason", "?")))
+		profile_container.dispose()
+		return
+	var asset_defs: Array = []
+	for a in range(_assets.size()):
+		asset_defs.append({
+			"descriptor": _assets[a].get("descriptor"),
+			"asset_index": a,
+			"profile_id": profile_ids[a],
+		})
 	if profile_score_timing:
 		ScoreTimingProfilerScript.reset_aggregate()
+	# TargetSV 目标场以【常驻 GPU buffer】交接给 VPG——reader 已改为 resident-GPU-only，
+	# 不再接受 CPU 字节上传（settings.target_field_bytes 那条路已删）。buffer 建在
+	# container_rd 上：VPG 会 attach 到 profile 容器的同一设备（见 VPG
+	# _resolve_profile_container_buffers），borrow 的设备一致校验才过；与 anchor handoff 同源同设备。
+	var target_field_byte_data := _target_field_bytes.to_byte_array()
+	var target_field_buf := container_rd.storage_buffer_create(target_field_byte_data.size(), target_field_byte_data)
+	var target_collision_buf := container_rd.storage_buffer_create(_target_collision_r8_bytes.size(), _target_collision_r8_bytes)
+	if not target_field_buf.is_valid() or not target_collision_buf.is_valid():
+		push_warning("[VolumeScore] 目标场常驻 buffer 创建失败 —— 不打分")
+		if target_field_buf.is_valid(): container_rd.free_rid(target_field_buf)
+		if target_collision_buf.is_valid(): container_rd.free_rid(target_collision_buf)
+		VoxelPlacementGenerator.release_cpu_anchor_handoff(container_rd, handoff)
+		profile_container.dispose()
+		return
+	var settings := {
+		"rotation_slots": rotation_slots,
+		"target_read_buffers": {
+			"target_field_buffer": target_field_buf,
+			"target_collision_buffer": target_collision_buf,
+			"rendering_device": container_rd,
+			"target_field_byte_count": target_field_byte_data.size(),
+			"target_collision_byte_count": _target_collision_r8_bytes.size(),
+			"target_field_format": "vec4",
+			"target_field_stride_bytes": 16,
+			"target_collision_format": "unorm8_u32",
+			"resident_target_read_buffer_handoff": true,
+			"resident_target_read_buffer_owner": "VolumeScoreDemo",
+			"resident_target_read_buffer_lifetime": "VolumeScoreDemo scored-run scope",
+		},
+		"anchor_candidate_handoff": handoff,
+		"auto_voxel_runtime_profile_container": profile_container,
+		"debug_read_fine_candidates": true,
+		"score_timing_profile": profile_score_timing,
+		"score_timing_label": "volume_score",
+	}
+	var out: Dictionary = vpg.run_multi_asset(
+		_complexity_field, _collision_field, asset_defs, grid,
+		_scene_fields.get("voxel_size", Vector3.ONE),
+		_scene_fields.get("grid_origin", Vector3.ZERO),
+		settings)
+	var topk := int(handoff.get("topk", _assets.size()))
+	var candidates: Array = out.get("fine_candidates", [])
+	# 候选池槽位 = anchor_id * topk + slot；本 demo 的 handoff 令 slot == asset_index。
 	for a in range(_assets.size()):
-		var d = _assets[a].get("descriptor")
-		var col: Color = _assets[a].get("color", Color.WHITE)
-		var profile := PackedFloat32Array([
-			_mean_collision_strength(d), clampf(d.get_complexity(), 0.0, 1.0), col.r, col.g, col.b])
-		var settings := {
-			"asset_index": a, "asset_color": col, "rotation_slots": rotation_slots, "top_k": 1,
-			"scoring_dimensions": dims, "asset_dimension_profile": profile,
-			"env_channel_field_floats": _env_channel_floats, "env_channel_count": 5,
-			"target_field_bytes": _target_field_bytes, "debug_read_voxel_channels": true,
-			"debug_read_golden_snapshot": _capture_golden_sections,
-			"auto_voxel_runtime_profile_container": profile_container,
-			"profile_id": profile_ids[a],
-			"score_timing_profile": profile_score_timing,
-			"score_timing_label": str(_assets[a].get("name", "asset_%d" % a)),
-		}
-		var out: Dictionary = vpg.run_minimal(_complexity_field, _collision_field, grid, settings)
-		if _capture_golden_sections:
-			_golden_sections.append("asset %d name=%s" % [a, str(_assets[a].get("name", "asset_%d" % a))])
-			_golden_sections.append(str(out.get("golden_snapshot", "")))
-		var dbg: PackedFloat32Array = out.get("debug_voxel", PackedFloat32Array())
-		# debug_voxel 的通道布局/索引空间来自 DebugBufferSet(VOXEL_DEBUG_CHANNELS) 单一真源，
-		# 不再硬编码 stride 8 / 通道号 4,5 / 展开公式。
-		var voxel_dbg := DebugBufferSetScript.new(DebugBufferSetScript.VOXEL_DEBUG_CHANNELS)
-		var channel_stride := voxel_dbg.channel_count()
-		var score_channel := voxel_dbg.channel_index("placement_score")
-		var rotation_channel := voxel_dbg.channel_index("best_rotation_slot")
 		var anchor_results: Array[Dictionary] = []
 		for ai in range(_anchors.size()):
-			var av := _anchor_voxel(ai)
-			var vidx := DebugBufferSetScript.voxel_dense_xzy_index(av, grid)
+			var slot := ai * topk + a
 			var score := -INF
 			var rotation_slot := 0
-			var score_index := vidx * channel_stride + score_channel
-			var rotation_index := vidx * channel_stride + rotation_channel
-			if score_index >= 0 and rotation_index < dbg.size():
-				score = dbg[score_index]
-				rotation_slot = int(round(dbg[rotation_index]))
+			var valid := false
+			if slot < candidates.size():
+				var record: Dictionary = candidates[slot]
+				score = float(record.get("score", -INF))
+				rotation_slot = int(record.get("rotation_index", 0))
+				valid = bool(record.get("valid", false))
 			anchor_results.append({
-				"score": score, "valid": score > -1.0e17, "rotation_slot": rotation_slot, "voxel": av})
+				"score": score, "valid": valid, "rotation_slot": rotation_slot, "voxel": _anchor_voxel(ai)})
 		_results.append({"ok": true, "asset_index": a, "anchor_results": anchor_results})
+	if _capture_golden_sections:
+		_golden_sections.append_array(_golden_sections_from_results())
 	if profile_score_timing:
 		print(ScoreTimingProfilerScript.format_aggregate("volume-score fine-selection"))
+	VoxelPlacementGenerator.release_cpu_anchor_handoff(container_rd, handoff)
+	# 常驻目标场 buffer 由本 demo 持有（VPG 只借用不释放）；须在 profile 容器 dispose
+	# （它拥有并会销毁 container_rd）之前释放。
+	container_rd.free_rid(target_field_buf)
+	container_rd.free_rid(target_collision_buf)
 	if vpg.has_method("dispose"):
 		vpg.dispose()
 	profile_container.dispose()
@@ -474,8 +500,31 @@ func _run_scoring() -> void:
 		_assets.size(), _total_anchors, _elapsed_score_ms])
 
 
-## 环境场(TargetSV)缓存:解码 TargetSV,按 voxel_index 打包 5 通道 env + 4 通道 target。
-## 网格与 TargetSV(256×16×256)一致则无需重建锚点。无 TargetSV → place nothing。
+## golden-master 素材：从 per (asset × anchor) 结果生成确定性文本快照（q1000 反量化，
+## 稳定键序）。评分模型迁移到 residual-gain 后旧基线作废——用本口径重录 goldens/。
+func _golden_sections_from_results() -> Array[String]:
+	var sections: Array[String] = []
+	for result in _results:
+		var a := int((result as Dictionary).get("asset_index", -1))
+		sections.append("asset %d name=%s" % [a, str(_assets[a].get("name", "asset_%d" % a)) if a >= 0 and a < _assets.size() else "?"])
+		var anchor_results: Array = (result as Dictionary).get("anchor_results", [])
+		for ai in range(anchor_results.size()):
+			var entry: Dictionary = anchor_results[ai]
+			sections.append("anchor %d voxel=%s valid=%d yaw=%d gain_q1000=%d" % [
+				ai,
+				str(entry.get("voxel", Vector3i.ZERO)),
+				1 if bool(entry.get("valid", false)) else 0,
+				int(entry.get("rotation_slot", 0)),
+				int(round(clampf(float(entry.get("score", 0.0)), -1000.0, 1000.0) * 1000.0)),
+			])
+	return sections
+
+
+## TargetSV 缓存:解码 TargetSV,打包 vec4 target field（rgb + complexity）与
+## r8-packed target collision（独立双缓冲输入——细筛按 before/after 残差比较）。
+## CurrentSV 起始为空场（零 complexity/collision）:residual gain = 放入资产后
+## 对 TargetSV 残差的改善。网格与 TargetSV(256×16×256)一致则无需重建锚点。
+## 无 TargetSV → place nothing。
 func _ensure_target_env_ready() -> bool:
 	if _env_ready:
 		return true
@@ -500,55 +549,24 @@ func _ensure_target_env_ready() -> bool:
 	var t_coll: PackedFloat32Array = decoded.get("target_collision", PackedFloat32Array())
 	var t_comp: PackedFloat32Array = decoded.get("target_completeness", PackedFloat32Array())
 	var t_color: PackedColorArray = decoded.get("target_color", PackedColorArray())
-	_env_channel_floats = PackedFloat32Array(); _env_channel_floats.resize(voxel_count * 5)
 	_target_field_bytes = PackedFloat32Array(); _target_field_bytes.resize(voxel_count * 4)
+	var target_collision_floats := PackedFloat32Array(); target_collision_floats.resize(voxel_count)
 	_complexity_field = PackedFloat32Array(); _complexity_field.resize(voxel_count)
 	_collision_field = PackedFloat32Array(); _collision_field.resize(voxel_count)
 	for i in range(voxel_count):
 		var coll := t_coll[i] if i < t_coll.size() else 0.0
 		var comp := t_comp[i] if i < t_comp.size() else 0.0
 		var c: Color = t_color[i] if i < t_color.size() else Color(0, 0, 0, 0)
-		var e := i * 5
-		_env_channel_floats[e + 0] = coll
-		_env_channel_floats[e + 1] = comp
-		_env_channel_floats[e + 2] = c.r
-		_env_channel_floats[e + 3] = c.g
-		_env_channel_floats[e + 4] = c.b
 		var f := i * 4
 		_target_field_bytes[f + 0] = c.r
 		_target_field_bytes[f + 1] = c.g
 		_target_field_bytes[f + 2] = c.b
-		# target.a gates dims-mode validity (target_coverage). Use presence = max(completeness,
-		# collision) so anchors over any TargetSV content are valid (completeness alone is sparse).
-		_target_field_bytes[f + 3] = maxf(comp, coll)
-		_complexity_field[i] = comp
-		_collision_field[i] = coll
+		_target_field_bytes[f + 3] = comp
+		target_collision_floats[i] = coll
+	_target_collision_r8_bytes = SceneVoxelTileCodec.pack_collision_field_u32_bytes(
+		target_collision_floats, voxel_count)
 	_env_ready = true
 	return true
-
-
-## 维度表(全 MATCH,通道 0..4 对应 env 5 通道):collision/complexity/color r/g/b。
-## 颜色 3 通道各 ~0.34(合计 ~1.0,避免颜色相对 collision/complexity 三倍加权)。
-func _scoring_dimensions() -> Array:
-	return [
-		{"channel": 0, "mode": 0, "weight": 1.0, "min": 0.0, "max": 1.0},
-		{"channel": 1, "mode": 0, "weight": 1.0, "min": 0.0, "max": 1.0},
-		{"channel": 2, "mode": 0, "weight": 0.34, "min": 0.0, "max": 1.0},
-		{"channel": 3, "mode": 0, "weight": 0.34, "min": 0.0, "max": 1.0},
-		{"channel": 4, "mode": 0, "weight": 0.34, "min": 0.0, "max": 1.0},
-	]
-
-
-## 资产 collision 画像:descriptor collision 样本 strength 均值;无剖面回退 complexity。
-func _mean_collision_strength(d) -> float:
-	var samples: Array = d.get_collision() if d != null and d.has_method("get_collision") else []
-	if samples.is_empty():
-		return clampf(d.get_complexity(), 0.0, 1.0) if d != null else 0.0
-	var s := 0.0
-	for e in samples:
-		if e is Dictionary:
-			s += clampf(float((e as Dictionary).get("collision_strength", 0.0)), 0.0, 1.0)
-	return clampf(s / float(samples.size()), 0.0, 1.0)
 
 
 ## 无 collision 剖面时用体素跨度建一组实心 canonical collision 采样(每格 strength/weight 1)，

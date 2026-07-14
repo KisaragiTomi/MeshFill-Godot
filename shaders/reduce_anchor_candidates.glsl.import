@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bd3ahdjvf7853"
+path="res://.godot/imported/reduce_anchor_candidates.glsl-2d53c49cbe4460d90a6abef4e0f7478d.res"
+
+[deps]
+
+source_file="res://shaders/reduce_anchor_candidates.glsl"
+dest_files=["res://.godot/imported/reduce_anchor_candidates.glsl-2d53c49cbe4460d90a6abef4e0f7478d.res"]
+
+[params]
+

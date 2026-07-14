@@ -7,15 +7,14 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 # VoxelDisplay.build_field_gpu for TargetSV rendering (same pipeline as
 # target-sv-point-cloud-conversion-c demo).
 
-const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
 const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const TargetSceneVoxelGeneratorScript := preload("res://scripts/target_scene_voxel_generator.gd")
 const VoxelFieldDisplayGPU := preload("res://scripts/utils/voxel_field_display_gpu.gd")
-const AutoObject := preload("res://scripts/auto_object.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
 const VoxelDisplay := preload("res://scripts/utils/voxel_display.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const DemoUI := preload("res://scripts/utils/demo_ui.gd")
+const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
 const SceneVoxelFixture := preload("res://scripts/utils/voxel_fixtures.gd")
 
 const TILE_SIZE := 8
@@ -77,7 +76,7 @@ func _ready() -> void:
 
 
 func _deferred_init() -> void:
-	if not Engine.is_editor_hint():
+	if not Engine.is_editor_hint() or not is_inside_tree():
 		return
 	_build_fields_from_terrain()
 	_build_assets()
@@ -89,8 +88,10 @@ func _deferred_init() -> void:
 
 
 func _frame_camera() -> void:
+	if not is_inside_tree():
+		return
 	var cam := DemoUI.find_camera(self, "DemoSetup/FlyCamera", "", false, false)
-	if cam == null:
+	if cam == null or not cam.is_inside_tree():
 		return
 	var cx := _grid_origin.x + float(_grid.x) * _voxel_size.x * 0.5
 	var cz := _grid_origin.z + float(_grid.z) * _voxel_size.z * 0.5
@@ -228,29 +229,7 @@ func _voxel_count() -> int:
 # --- Assets ----------------------------------------------------------------
 
 func _build_assets() -> void:
-	var a0 := AutoObject.new()
-	a0.name = "rock_small"
-	a0.set_semantic_probes([
-		ProbeProfile.make_probe(Vector3.ZERO, Color(0.5, 0.45, 0.4), 0.6, 0.0, 0.0, 0.8, "rock_small")
-	])
-	var a1 := AutoObject.new()
-	a1.name = "bush_medium"
-	a1.set_semantic_probes([
-		ProbeProfile.make_probe(Vector3.ZERO, Color(0.2, 0.6, 0.15), 0.3, 0.0, 0.4, 0.4, "bush_medium"),
-		ProbeProfile.make_probe(Vector3(0, 1, 0), Color(0.25, 0.7, 0.2), 0.2, 0.0, 0.2, 0.0, "bush_medium_top")
-	])
-	var a2 := AutoObject.new()
-	a2.name = "tree_tall"
-	a2.set_semantic_probes([
-		ProbeProfile.make_probe(Vector3.ZERO, Color(0.35, 0.25, 0.15), 0.9, 0.0, 0.0, 1.0, "tree_trunk"),
-		ProbeProfile.make_probe(Vector3(0, 2, 0), Color(0.15, 0.5, 0.1), 0.4, 0.0, 0.3, 0.0, "tree_canopy")
-	])
-	var a3 := AutoObject.new()
-	a3.name = "grass_patch"
-	a3.set_semantic_probes([
-		ProbeProfile.make_probe(Vector3.ZERO, Color(0.3, 0.7, 0.2), 0.1, 0.0, 0.1, 0.0, "grass")
-	])
-	_assets = [a0, a1, a2, a3]
+	_assets = DemoAssets.make_sv_anchor_collection_assets()
 
 
 func _sync_assets_with_spa() -> bool:
@@ -317,7 +296,6 @@ func _run_collection() -> void:
 			"resident_target_read_buffer_owner": "sv_anchor_collection_demo",
 			"debug_readback_topk": true,
 		},
-		RID(),
 		{
 			"max_complexity_field": max_complexity_field,
 			"max_collision_field": max_collision_field,
@@ -352,11 +330,8 @@ func _setup_visualization() -> void:
 
 
 func _world_center(p: Vector3i) -> Vector3:
-	var base := VoxelGeneral.voxel_center_to_world(p, _grid_origin, _voxel_size)
-	var hi := p.z * _grid.x + p.x
-	if hi >= 0 and hi < _terrain_height.size():
-		base.y += _terrain_height[hi]
-	return base
+	return VoxelGeneral.terrain_relative_voxel_center_to_world(
+		p, _grid, _grid_origin, _voxel_size, _terrain_height)
 
 
 func _show_layer(layer: String) -> void:
@@ -540,7 +515,7 @@ func _build_topk_hud_lines() -> Array[String]:
 
 func _asset_name_by_id(asset_index: int) -> String:
 	if asset_index >= 0 and asset_index < _assets.size():
-		var obj: AutoObject = _assets[asset_index]
+		var obj = _assets[asset_index]
 		if obj != null:
 			return obj.name
 	return "?"
@@ -591,6 +566,8 @@ func forward_editor_viewport_input(_viewport_camera: Camera3D, event: InputEvent
 # SPA 的相机射线直接命中它们，坐标一致。
 
 func _register_with_spa_host() -> void:
+	if not is_inside_tree():
+		return
 	_spa_host = _find_spa_host()
 	if _spa_host != null and _spa_host.has_method("register_volume_score_provider"):
 		_spa_host.call("register_volume_score_provider", self)

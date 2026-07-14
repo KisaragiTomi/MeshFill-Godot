@@ -10,6 +10,7 @@ func _init() -> void:
 		_test_encode_vec3i4_writes_at_offset,
 		_test_encode_vec3i4_with_w_and_decode,
 		_test_decode_vec4_xyz,
+		_test_decoded_record_count_non_positive_stride,
 		_test_pack_transform_mat4_layout,
 		_test_encode_transform_mat4_writes_at_offset,
 		_test_decode_transform_mat4_short_buffer_fallback,
@@ -93,6 +94,20 @@ func _test_decode_vec4_xyz() -> bool:
 		push_error("  FAIL: short vec4 payload should decode to zero")
 		return false
 	print("  OK: vec4 xyz decodes with safe fallbacks")
+	return true
+
+
+func _test_decoded_record_count_non_positive_stride() -> bool:
+	print("[BufferUtils] test_decoded_record_count_non_positive_stride...")
+	var bytes := PackedByteArray()
+	bytes.resize(BufferUtils.VEC4_BYTES * 2)
+	if BufferUtils.decoded_record_count(bytes, 2, 0) != 0:
+		push_error("  FAIL: zero stride should decode zero records")
+		return false
+	if BufferUtils.decoded_record_count(bytes, 2, -16) != 0:
+		push_error("  FAIL: negative stride should decode zero records")
+		return false
+	print("  OK: non-positive stride decodes zero records")
 	return true
 
 

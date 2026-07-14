@@ -1,6 +1,6 @@
 ﻿# Asset Semantic Probes: 资产语义采样点
 
-本文记录 `AssetDescriptor.semantic_probe_profile` 的资产侧约定。`AssetDescriptor` 整体定义见 [`asset-descriptor.md`](asset-descriptor.md)。Probe 是 descriptor-backed asset default：当前 GPU prefilter 用它对 `anchor x asset` 评分并收窄候选 `AutoObject` / voxel regions；后续候选内部 rerank / validation 也只能在这些候选内使用。Probe 不负责从全资产库发现新候选，也不写 committed `SceneVoxel`。
+本文记录 `AssetDescriptor.semantic_probe_generator` 的资产侧约定。`AssetDescriptor` 整体定义见 [`asset-descriptor.md`](asset-descriptor.md)。Probe 是 descriptor-backed asset default：当前 GPU prefilter 用它对 `anchor x asset` 评分并收窄每个 anchor 的候选 `AutoObject`（top-K 槽）；后续候选内部 rerank / validation 也只能在这些候选内使用。Probe 不负责从全资产库发现新候选，也不写 committed `SceneVoxel`。
 
 Descriptor 通过 SPA（`ScenePlacementActor`）注册到 GPU profile container，使其 probes/collision/pivots 即刻 GPU 可读；SPA 生命周期和访问接口见 [`scene-placement-actor.md`((scene-placement-actor.md)。
 
@@ -11,27 +11,27 @@ Descriptor 通过 SPA（`ScenePlacementActor`）注册到 GPU profile container�
 | 项 | 当前规则 |
 | --- | --- |
 | 职责 | 表达资产局部采样期望，供 prefilter 对 `anchor x asset` 打分。 |
-| 语义来源 | [`AssetDescriptor.semantic_probe_profile`](asset-descriptor.md)。`AutoObject` 同名字段只是 Inspector / config mirror。 |
+| 语义来源 | [`AssetDescriptor.semantic_probe_generator`](asset-descriptor.md)。`AutoObject` 同名字段只是 Inspector / config mirror。 |
 | 读取入口 | `AutoObject.get_semantic_probes()` / descriptor `get_semantic_probes()`。 |
 | 输入 | descriptor `color` / `complexity` / `collision`、mesh、density、`context_sensing_radius`、当前 `SV[t - 1(` 和 `TargetSV_B` read buffers。 |
-| 当前消费者 | `AutoObjectProbePrefilterGPU` 消费 probes 做候选收窄；VPG score contract 消费 `profile_table` / `probe_records` / `pivot_records` 做物理评分绑定验收。两个 worker 均由 SPA 懒创建并注入共享 RD + profile_container。 |
+| 当前消费者 | `AutoObjectProbePrefilterGPU` 消费 probes 做候选收窄；VPG score contract 消费 `profile_table` / `probe_records` / `pivot_records` 做细粒度语义评分与约束绑定验收。两个 worker 均由 SPA 懒创建并注入共享 RD + profile_container。 |
 | Probe 职责 | 对 position-only anchor 与当前可用 asset registry 打分，输出候选收窄信号。 |
-| 输出边界 | readback 的 docs-facing route view 是 `candidate_voxel_regions_by_asset`；`autoobject_candidate_voxel_sparses` / `candidate_voxel_sparses_by_asset` 仅为 legacy/debug alias；`anchor_autoobject_topk` 当前是 GPU 内部中间结果。 |
-| 生命周期 | SPA.register_asset(descriptor) → descriptor 编译为 profile → AutoVoxelRuntimeProfileContainer.upload_profiles() → GPU resident → prefilter/placer 通过 SPA 借用 borrowed GPU buffers → dispatch 内部评分/top-K → readback candidate voxel regions。descriptor 注册后即时 GPU 可读，无需等待 frame end。 |
-| Source of truth | Probe 默认值在 descriptor / `SemanticProbeProfile`；candidate regions 在 prefilter readback；committed `SceneVoxel` 仍由 source write / blend 发布。 |
+| 输出边界 | 输出是常驻 `anchor_candidate_handoff`（anchor / anchor_count / topk buffer）；`anchor_autoobject_topk` 当前是 GPU 内部中间结果；旧 docs-facing route view `candidate_voxel_regions_by_asset`（及 `autoobject_candidate_voxel_sparses` / `candidate_voxel_sparses_by_asset` legacy/debug alias）已随 candidate route 删除。 |
+| 生命周期 | SPA.register_asset(descriptor) → descriptor 编译为 profile → AutoVoxelRuntimeProfileContainer.upload_profiles() → GPU resident → prefilter/placer 通过 SPA 借用 borrowed GPU buffers → dispatch 内部评分/top-K → 常驻 `anchor_candidate_handoff` 交接细筛。descriptor 注册后即时 GPU 可读，无需等待 frame end。 |
+| Source of truth | Probe 默认值在 descriptor / `SemanticProbeGenerator`；候选交接在 prefilter 常驻 handoff；committed `SceneVoxel` 仍由 source write / blend 发布。 |
 | 候选边界 | prefilter 只减少候选；candidate-only rerank 不能把未进入候选集的 asset 加回。 |
-| 禁止事项 | 不遍历全资产库，不输出全局 `voxel_asset_topK`，不替代 `score_voxel_tile.glsl`。 |
-| 物理判断 | collision 采样、clearance 仍由 placement score 阶段负责。 |
+| 禁止事项 | 不遍历全资产库，不输出全局 `voxel_asset_topK`，不替代 `score_anchor_asset_residual.glsl`。 |
+| 细筛约束 | collision 采样、clearance、spacing、target coverage 由 placement score 阶段结合细粒度语义分数验收。 |
 | TargetSV_B 采样 | 越界 sample 先 clamp 到 grid 内最近有效 voxel，再读取 `TargetSV_B` read buffers。 |
 | 提交边界 | prefilter 不写 committed `SceneVoxel`；提交仍走 `AutoSceneVoxel` / `BrushSceneVoxel` source write 与 blend。 |
 
-`AutoObject.semantic_probe_profile`、`semantic_probe_density` 和 `context_sensing_radius` 只作为 Inspector / 配置字典入口；新逻辑应通过 descriptor-backed getter 读取 probes。
+`AutoObject.semantic_probe_generator`、`semantic_probe_density` 和 `context_sensing_radius` 只作为 Inspector / 配置字典入口；新逻辑应通过 descriptor-backed getter 读取 probes。
 
-本文只维护资产 probe schema 与 prefilter 交接。placement route 扩张、空候选 skip、physical score 和 result feedback 分别见 `../placement/autoobject-probe-prefilter.md` 和 `scene-voxel-field-system.md`。
+本文只维护资产 probe schema 与 prefilter 交接。anchor 候选交接、空帧穿过、fine residual-gain score/constraints 和 result feedback 分别见 `../placement/autoobject-probe-prefilter.md` 和 `scene-voxel-field-system.md`。
 
 ## Probe 数据结构
 
-每个 probe 表示相对统一 position-only asset anchor 的采样点。规范化字段以 `scripts/semantic_probe_profile.gd` 的 `normalize_probe()` / `make_probe()` 为准：
+每个 probe 表示相对统一 position-only asset anchor 的采样点。规范化字段以 `scripts/semantic_probe_generator.gd` 的 `normalize_probe()` / `make_probe()` 为准：
 
 ```gdscript
 {
@@ -52,7 +52,7 @@ Descriptor 通过 SPA（`ScenePlacementActor`）注册到 GPU profile container�
 
 GPU prefilter 默认在 `run_probe_prefilter()` 内把 descriptor-backed probes 打包为 transient flat probe buffer + per-asset range；当调用方传入已 `runtime_ready` 且同一 `RenderingDevice` 上的 `AutoVoxelRuntimeProfileContainer` 时，prefilter 会直接借用 container 的 resident `probe_records` buffer，并只为当前 asset 顺序生成 transient `probe_range_buf`。`AutoVoxelRuntimeProfileContainer` 已负责把同一套 descriptor / profile 语义归一化为 `profile_table`、`probe_records` 和 `pivot_records` GPU storage buffers；VPG runtime/profile contract 只能在这些 resident buffers ready、bound、consumed 后通过。`ISWS` 可以携带本轮实例 stamp 上下文，但 probe 默认值仍来自 descriptor / profile side 的资产数据，不从 `ISWS` 反推，也不能把 CPU staging / debug readback snapshot 当作 runtime success。
 
-Prefilter 输出会附带 `profile_probe_pack` debug summary：transient descriptor probe packing、borrowed `probe_records`、profile id 映射和 no-RD / profile-container-not-ready blocked reason 都必须显式保持 `cpu_fallback=false`。该 summary 只说明 probe score pass 的输入来源；`pivot_records` 的绑定和消费仍由 VPG physical score contract 验收。（`collision_records` 现为容器常驻的 per-voxel 点采样记录 buffer（2026-07-11 起，score/stamp 按 profile 的 `collision_range` 直读），与早年已删的固定形状碰撞 record buffer 无关。）
+Prefilter 输出会附带 `profile_probe_pack` debug summary：transient descriptor probe packing、borrowed `probe_records`、profile id 映射和 no-RD / profile-container-not-ready blocked reason 都必须显式保持 `cpu_fallback=false`。该 summary 只说明 probe score pass 的输入来源；`pivot_records` 的绑定和消费仍由 VPG fine score contract 验收。（资产体素形状现为容器常驻 `asset_voxel_records` buffer——score/stamp 按 profile table 的 `asset_voxel_range` 直读；旧 `collision_records` buffer 已随 tile 评分器删除。）
 
 ```text
 probe_data_buf[2 * i + 0( = vec4(offset.x, offset.y, offset.z, weight)
@@ -62,7 +62,7 @@ probe_range_buf[asset_id( = uvec2(start, count)
 
 ## 生成来源
 
-`SemanticProbeProfile.generate_from_mesh()` 按优先级生成候选点。`collision` 输入是通用 voxel 场的逐体素样本列表，每条目带 `local_pos` + 同级 `color` / `complexity` / `collision`。probe 的 collision 与 complexity 从同一个 voxel 读取，处于同一层级。不再支持手工固定形状（cylinder / box）采样。
+`SemanticProbeGenerator.generate_from_mesh()` 按优先级生成候选点。`collision` 输入是通用 voxel 场的逐体素样本列表，每条目带 `local_pos` + 同级 `color` / `complexity` / `collision`。probe 的 collision 与 complexity 从同一个 voxel 读取，处于同一层级。不再支持手工固定形状（cylinder / box）采样。
 
 | 优先级 | `shape_source` | `source` | 来源 | 用途 |
 | --- | --- | --- | --- | --- |
@@ -124,7 +124,7 @@ probe_score = weighted(color_fit, complexity_fit, collision_fit, empty_fit, supp
 route_score = combine(candidate_score, probe_score, support_hint)
 ```
 
-`route_score` 尚不是当前 physical placement 输入；即使后续实现，也不能把未进入 prefilter candidate regions 的 asset 加回候选集。
+`route_score` 不是细筛 residual gain 的输入；即使后续实现，也不能把未进入 prefilter top-K 候选槽的 asset 加回候选集。
 
 ## GPU Prefilter 输出
 
@@ -132,20 +132,17 @@ route_score = combine(candidate_score, probe_score, support_hint)
 
 ```gdscript
 {
-	"anchors": [(,                              # position-only anchor readback
+	"anchors": [],                              # position-only anchor readback (debug_read_anchors，默认关闭)
 	"anchor_autoobject_topk": {},               # GPU internal, not read back
-	"candidate_voxel_regions_by_asset": {},     # docs-facing per-asset candidate regions
-	"autoobject_candidate_voxel_sparses": {},   # legacy/debug per-asset candidate regions
-	"candidate_voxel_sparses_by_asset": {},     # legacy alias for same candidate-region contract
-	"candidate_route_extents": [(,              # readback expansion debug
-	"anchor_count": 0,                          # collected anchor count
+	"anchor_candidate_handoff": {},             # resident anchor / anchor_count / topk buffer 交接
+	"anchor_count": 0,                          # collected anchor count（debug readback 时才非 0）
 	"profile_probe_pack": {},                   # probe pack source / borrowed buffer debug
 	"prefilter_reason": "ok",                   # ok / no-RD / blocked reason
 	"cpu_fallback": false,                      # no CPU success path
 }
 ```
 
-`reduce_anchor_topk_to_voxel_regions.glsl` 只聚合 anchor 所在 tile 的 vote。collision 采样范围、probe offset bounds、`context_sensing_radius` 与 `interpolation_guard_voxels >= 1` 的扩张在 readback 解码阶段完成，扩张结果仍只是 candidate voxel regions。它们不会写 source stream、不会改 `SV[t - 1(`，也不会发布 committed `SceneVoxel`。
+旧的 per-asset candidate-region 输出键（`candidate_voxel_regions_by_asset`、legacy `candidate_voxel_sparses*` alias、`candidate_route_extents`）已随 candidate route 删除。prefilter 不会写 source stream、不会改 `SV[t - 1(`，也不会发布 committed `SceneVoxel`。
 
 ## Anchor 语义
 
@@ -174,22 +171,22 @@ probe 会由 descriptor-backed `collision`、mesh 和默认 probe 参数生成�
 ## 验收标准
 
 - 每个 asset 能导出稳定且数量可控的 `semantic_probes`。
-- Probe scoring 只收窄当前可用 `AutoObject` / candidate voxel regions。
+- Probe scoring 只收窄当前可用 `AutoObject`（每 anchor top-K 候选槽）。
 - `AutoVoxelRuntimeProfileContainer` 只有在 GPU upload 后 `runtime_ready == true` 且 required buffers 有效时，才能作为 runtime/profile contract 输入。
 - TargetSV / TargetSV_B 不包含 asset 类型标签。
 - TargetSV_B 越界采样使用 clamp，不把边界外直接当作空白。
-- 最终物理可行性仍由 `score_voxel_tile.glsl` 和 placement pipeline 判定。
-- Prefilter 不写 committed `SceneVoxel`，也不把空 candidate regions 回退成 full grid。
+- 最终物理可行性仍由 `score_anchor_asset_residual.glsl` / `reduce_anchor_candidates.glsl` 和 placement pipeline 判定。
+- Prefilter 不写 committed `SceneVoxel`，`anchor_count == 0` 空帧自然穿过，不回退 full grid。
 
 ## 相关入口
 
-- `scripts/semantic_probe_profile.gd`：probe 生成、规范化、字段默认值与 selection priority。
-- `scripts/asset_descriptor.gd`：descriptor-backed `semantic_probe_profile`、density、context radius 与 `get_semantic_probes()`。
+- `scripts/semantic_probe_generator.gd`：probe 生成、规范化、字段默认值与 selection priority。
+- `scripts/asset_descriptor.gd`：descriptor-backed `semantic_probe_generator`、density、context radius 与 `get_semantic_probes()`。
 - `asset-descriptor.md`：descriptor 的统一定义、字段分组和 authoring 边界。
-- `scripts/auto_voxel_runtime_profile_container.gd`：descriptor / profile 去重、`profile_id`、GPU resident profile/probe/collision/pivot buffers 与 debug readback。
-- `scripts/autoobject_probe_prefilter_gpu.gd`：GPU buffer packing、dispatch、readback decode 与 route profile expansion。
+- `scripts/auto_voxel_runtime_profile_container.gd`：descriptor / profile 去重、`profile_id`、GPU resident profile/probe/pivot/asset_voxel buffers 与 debug readback。
+- `scripts/autoobject_probe_prefilter_gpu.gd`：GPU buffer packing、dispatch 与常驻 `anchor_candidate_handoff` 交接。
 - `shaders/score_anchor_asset_probes.glsl`：clamped sampling、score terms、`min_prefilter_score` 前的 probe evaluation。
-- `shaders/select_anchor_topk.glsl` / `shaders/reduce_anchor_topk_to_voxel_regions.glsl`：per-anchor top-K 与 per-asset voxel-region votes。
+- `shaders/select_anchor_topk.glsl`：per-anchor top-K asset 槽选择（handoff 的 topk buffer 生产者）。
 - `../placement/autoobject-probe-prefilter.md`：placement 侧 prefilter / routing 边界。
 - `scene-voxel-field-system.md`：`SV[t - 1(` / `TargetSV_B` 读取边界、source write 和 committed `SceneVoxel` 发布。
 
@@ -252,22 +249,21 @@ godot --path . --rendering-driver vulkan --script tools/test_autoobject_probe_pr
 
 **3. Descriptor-backed getter 权威性**
 
-- 通过 descriptor 设置 `semantic_probe_profile`，验证 `AutoObject.get_semantic_probes()` 返回 descriptor 值而非 Inspector mirror
+- 通过 descriptor 设置 `semantic_probe_generator`，验证 `AutoObject.get_semantic_probes()` 返回 descriptor 值而非 Inspector mirror
 - 验证 `AssetDescriptor.get_semantic_probes()` 和 `AutoObject.get_semantic_probes()` 返回一致的 probes
 
 **4. GPU prefilter 端到端**
 
 - 注册 asset 到 SPA，验证 descriptor probes 进入 `AutoVoxelRuntimeProfileContainer` 的 resident `probe_records` buffer
 - 调用 `run_probe_prefilter()`，验证 `profile_probe_pack` 记录正确使用 borrowed `probe_records` 或 transient packing
-- 验证 prefilter 输出 `candidate_voxel_regions_by_asset` 只收窄候选，不输出全 grid
+- 验证 prefilter 输出常驻 `anchor_candidate_handoff` 只收窄候选（旧 `candidate_voxel_regions_by_asset` 区域输出已删除），不输出全 grid
 - 验证 `prefilter_reason` 在缺少 RD 时为 `"no-RD"` 且 `cpu_fallback = false`
 - 验证 prefilter 不写 `SceneVoxel`，不修改 `SV[t - 1(`
 
 **5. Prefilter 输出 contract**
 
 - 验证 `anchor_autoobject_topk` 是 GPU 内部中间结果，不参与 readback 断言
-- 验证 `autoobject_candidate_voxel_sparses` / `candidate_voxel_sparses_by_asset` 仅为 legacy alias
-- 验证 footnote/probe offset bounds/`interpolation_guard_voxels >= 1` 扩张只在 readback 解码阶段发生，不写 source stream
+- 验证 `anchor_candidate_handoff` 持有有效 anchor / anchor_count / topk RID 且 `origin_contract = "one_origin_per_anchor"`
 - 验证 TargetSV_B 越界采样使用 clamp，不把边界外当作空白
 
 **6. Profile container 整合**
@@ -284,7 +280,7 @@ godot --path . --rendering-driver vulkan --script tools/test_autoobject_probe_pr
 ```gdscript
 extends SceneTree
 
-const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const SemanticProbeGeneratorScript := preload("res://scripts/semantic_probe_generator.gd")
 
 func _init() -> void:
     var ok := true
@@ -301,7 +297,7 @@ func _init() -> void:
 
 func _test_probe_generation() -> bool:
     print("[SemanticProbeTest( test_probe_generation...")
-    var profile := SemanticProbeProfileScript.new()
+    var profile := SemanticProbeGeneratorScript.new()
     # setup, act, assert
     if probes.size() < expected_min:
         push_error("  FAIL: expected at least %d probes, got %d" % [expected_min, probes.size()()

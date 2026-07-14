@@ -125,8 +125,8 @@ static func _target_r8_byte_count(voxel_count: int) -> int:
 	return SceneVoxelTileCodecScript.r8_byte_count(voxel_count)
 
 
-static func _target_r8_word_byte_count(voxel_count: int) -> int:
-	return SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count)
+static func _target_u32_field_byte_count(voxel_count: int) -> int:
+	return SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count)
 
 
 static func _visual_format_from_bytes(bytes: PackedByteArray, voxel_count: int, hint: String = "") -> String:
@@ -212,12 +212,12 @@ static func _r8_bytes_from_scalar_bytes(
 	return out
 
 
-static func _r8_word_bytes_from_r8_bytes(r8_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
-	return SceneVoxelTileCodecScript.r8_word_bytes_from_r8_bytes(r8_bytes, voxel_count)
+static func _u32_bytes_from_r8_bytes(r8_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
+	return SceneVoxelTileCodecScript.u32_bytes_from_r8_bytes(r8_bytes, voxel_count)
 
 
-static func _r8_bytes_from_word_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
-	return SceneVoxelTileCodecScript.r8_bytes_from_word_bytes(word_bytes, voxel_count)
+static func _r8_bytes_from_u32_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
+	return SceneVoxelTileCodecScript.r8_bytes_from_u32_bytes(word_bytes, voxel_count)
 
 
 static func _r8_value_at(r8_bytes: PackedByteArray, index: int) -> float:
@@ -383,8 +383,8 @@ static func decode_target_read_buffers_gpu(
 ) -> Dictionary:
 	# GPU-only TargetSV_B decode for placement/readback buffers.
 	# Canonical layout is visual RGBA8 (4 bytes/voxel) plus scalar R8 fields
-	# (1 byte/voxel, packed four values per uint for compute). Legacy fp32 input
-	# is converted to the canonical 8bit layout before GPU dispatch.
+	# (1 byte/voxel on disk, expanded to one uint32 per voxel for compute).
+	# Legacy fp32 input is converted to the canonical 8bit layout before GPU dispatch.
 	var tex_size := maxi(texture_size, 1)
 	var slices := maxi(slice_count, 1)
 	var voxel_count := tex_size * tex_size * slices
@@ -553,30 +553,30 @@ func derive_target_packed_buffers(
 	var visual_rgba8 := _rgba8_bytes_from_visual_bytes(visual_bytes, voxel_count, visual_format)
 	var collision_r8 := _r8_bytes_from_scalar_bytes(collision_bytes, voxel_count, collision_format)
 	var completeness_r8 := _r8_bytes_from_scalar_bytes(completeness_bytes, voxel_count, completeness_format) if completeness_valid else PackedByteArray()
-	var collision_words := _r8_word_bytes_from_r8_bytes(collision_r8, voxel_count)
-	var completeness_input_words := _r8_word_bytes_from_r8_bytes(completeness_r8, voxel_count) if completeness_valid else PackedByteArray()
-	var r8_word_byte_count := _target_r8_word_byte_count(voxel_count)
+	var collision_words := _u32_bytes_from_r8_bytes(collision_r8, voxel_count)
+	var completeness_input_words := _u32_bytes_from_r8_bytes(completeness_r8, voxel_count) if completeness_valid else PackedByteArray()
+	var u32_field_byte_count := _target_u32_field_byte_count(voxel_count)
 	# Partial TargetSV_B decode stays GPU-only: missing visual/collision input is a full-size zero SSBO.
-	# Shader input layout is canonical RGBA8 u32 plus R8 scalar values packed four voxels per uint.
+	# Shader input layout is canonical RGBA8 u32 plus R8 scalar values expanded one voxel per uint32.
 	var visual_buffer := storage_buffer_from_bytes(
 		visual_rgba8.slice(0, expected_visual_bytes),
 		SCOPE_FRAME,
 		"target_visual_rgba8"
 	) if visual_valid else storage_buffer_zero(expected_visual_bytes, SCOPE_FRAME, "target_visual_zero_rgba8")
 	var collision_buffer := storage_buffer_from_bytes(
-		collision_words.slice(0, r8_word_byte_count),
+		collision_words.slice(0, u32_field_byte_count),
 		SCOPE_FRAME,
-		"target_collision_r8_words"
-	) if collision_valid else storage_buffer_zero(r8_word_byte_count, SCOPE_FRAME, "target_collision_zero_r8_words")
+		"target_collision_u32"
+	) if collision_valid else storage_buffer_zero(u32_field_byte_count, SCOPE_FRAME, "target_collision_zero_u32")
 	var completeness_input_buffer := storage_buffer_from_bytes(
-		completeness_input_words.slice(0, r8_word_byte_count),
+		completeness_input_words.slice(0, u32_field_byte_count),
 		SCOPE_FRAME,
-		"target_completeness_input_r8_words"
-	) if completeness_valid else storage_buffer_zero(4, SCOPE_FRAME, "target_completeness_input_r8_words")
+		"target_completeness_input_u32"
+	) if completeness_valid else storage_buffer_zero(4, SCOPE_FRAME, "target_completeness_input_u32")
 	var completeness_out_buffer := storage_buffer_zero(
-		r8_word_byte_count if readback_packed_buffers else 4,
+		u32_field_byte_count if readback_packed_buffers else 4,
 		SCOPE_FRAME,
-		"target_completeness_out_r8_words"
+		"target_completeness_out_u32"
 	)
 	var color_rgba8_out_buffer := storage_buffer_zero(
 		voxel_count * 4 if readback_packed_buffers else 4,
@@ -622,8 +622,8 @@ func derive_target_packed_buffers(
 	var packed_completeness := PackedByteArray()
 	var packed_color := PackedByteArray()
 	if readback_packed_buffers:
-		var completeness_words := _rd.buffer_get_data(completeness_out_buffer, 0, r8_word_byte_count)
-		packed_completeness = _r8_bytes_from_word_bytes(completeness_words, voxel_count)
+		var completeness_words := _rd.buffer_get_data(completeness_out_buffer, 0, u32_field_byte_count)
+		packed_completeness = _r8_bytes_from_u32_bytes(completeness_words, voxel_count)
 		packed_color = _rd.buffer_get_data(color_rgba8_out_buffer, 0, voxel_count * 4)
 	var target_field_bytes := _target_field_vec4_from_rgba8_and_r8(packed_color, packed_completeness, voxel_count) if readback_packed_buffers else PackedFloat32Array()
 	var stats_bytes := _rd.buffer_get_data(stats_out_buffer, 0, stats_set.byte_count())
@@ -707,6 +707,25 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 		push_error("[TargetSV] Missing scene_depth or target_height input")
 		return {}
 
+	# 三张输入图绑定为 sampler 后 shader 按同一坐标读取；host 又以第一张的宽度作为
+	# texture_size（并假设正方形）推导 dirty rect / voxel 索引，尺寸不一致会静默读错值。
+	var scene_size := Vector2i(scene_depth_img.get_width(), scene_depth_img.get_height())
+	var height_size := Vector2i(target_height_img.get_width(), target_height_img.get_height())
+	var mask_size := scene_size if rock_mask_img == null else Vector2i(rock_mask_img.get_width(), rock_mask_img.get_height())
+	if height_size != scene_size or mask_size != scene_size:
+		push_error("[TargetSV] Input image size mismatch: scene_depth=%dx%d target_height=%dx%d rock_mask=%s" % [
+			scene_size.x, scene_size.y,
+			height_size.x, height_size.y,
+			"none" if rock_mask_img == null else "%dx%d" % [mask_size.x, mask_size.y],
+		])
+		return {}
+	if scene_size.x != scene_size.y:
+		push_error("[TargetSV] Input images must be square (texture_size is derived from width), got %dx%d" % [scene_size.x, scene_size.y])
+		return {}
+	if slice_count <= 0:
+		push_error("[TargetSV] slice_count must be positive, got %d" % slice_count)
+		return {}
+
 	texture_size = scene_depth_img.get_width()
 	var dr := dirty_rect
 	if dr.size.x <= 0 or dr.size.y <= 0:
@@ -739,10 +758,10 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	var tex_rock := upload_texture_2d(rock_img)                 # rock mask 输入
 	var preview_tex := create_rw_texture_2d(texture_size, texture_size)  # TargetSV preview
 	var voxel_count := texture_size * texture_size * slice_count         # 3D flat buffer voxel 数
-	var r8_word_byte_count := _target_r8_word_byte_count(voxel_count)
+	var u32_field_byte_count := _target_u32_field_byte_count(voxel_count)
 	var visual_buffer := storage_buffer_zero(voxel_count * TARGET_RGBA8_STRIDE_BYTES) # RGBA8 u32 color+complexity
-	var collision_buffer := storage_buffer_zero(r8_word_byte_count)       # collision R8, 4 voxels per uint
-	var completeness_buffer := storage_buffer_zero(r8_word_byte_count)      # max(complexity, collision) R8, 4 voxels per uint
+	var collision_buffer := storage_buffer_zero(u32_field_byte_count)       # collision, 1 voxel per uint32
+	var completeness_buffer := storage_buffer_zero(u32_field_byte_count)      # max(complexity, collision), 1 voxel per uint32
 	var stats_set := DebugBufferSetScript.new(DebugBufferSetScript.TARGET_STATS)
 	var stats_buffer := stats_set.allocate(self, 0, {}, SCOPE_FRAME, "target_stats_u32")  # u32 stats（DebugBufferSet TARGET_STATS）
 
@@ -787,10 +806,10 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	submit_and_sync(true)
 
 	var visual_bytes := _rd.buffer_get_data(visual_buffer, 0, voxel_count * TARGET_RGBA8_STRIDE_BYTES)
-	var collision_word_bytes := _rd.buffer_get_data(collision_buffer, 0, r8_word_byte_count)
-	var completeness_word_bytes := _rd.buffer_get_data(completeness_buffer, 0, r8_word_byte_count)
-	var collision_bytes := _r8_bytes_from_word_bytes(collision_word_bytes, voxel_count)
-	var completeness_bytes := _r8_bytes_from_word_bytes(completeness_word_bytes, voxel_count)
+	var collision_word_bytes := _rd.buffer_get_data(collision_buffer, 0, u32_field_byte_count)
+	var completeness_word_bytes := _rd.buffer_get_data(completeness_buffer, 0, u32_field_byte_count)
+	var collision_bytes := _r8_bytes_from_u32_bytes(collision_word_bytes, voxel_count)
+	var completeness_bytes := _r8_bytes_from_u32_bytes(completeness_word_bytes, voxel_count)
 	var target_field_bytes := _target_field_vec4_from_rgba8_and_r8(visual_bytes, completeness_bytes, voxel_count)
 	var stats_bytes := _rd.buffer_get_data(stats_buffer, 0, stats_set.byte_count())
 	var preview_data := _rd.texture_get_data(preview_tex, 0)

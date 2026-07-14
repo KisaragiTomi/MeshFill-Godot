@@ -12,6 +12,12 @@
 //   1  readonly  world_result_vec4x4 records (placement_results_to_world output)
 //   2  readonly  uvec4 stamp_bounds[]; 2 rows per record: (min.xyz, written_count), (max.xyz, pad)
 //   3  readonly  int reserved_object_ids[]
+//   4  readonly  ivec4 asset_lookup[] (x=profile_id, y=profile_index, z=quota, w=object_type)
+//
+// Mixed-asset mode (meta.w != 0): records from the common candidate pool carry
+// their asset_index in world_results[record*4 + 3].z; profile_id/object_type
+// resolve per record through asset_lookup instead of the shared push values
+// (asset_params.x/.y are ignored, object_flags/dirty bits stay batch-wide).
 //
 // Binding contract, set 1 (runtime-owned state, mirrors autoobject_apply_accepted_placements.glsl):
 //   0  int alive[]
@@ -37,11 +43,13 @@
 //   asset_params.y = object_type
 //   asset_params.z = object_flags
 //   asset_params.w = dirty_flag_bits
-//   meta.x = asset_index (report bookkeeping only)
+//   meta.x = asset_index (report bookkeeping only; -1 in mixed-asset mode)
 //   meta.y = flush_epoch
 //   meta.z = stats_capacity in u32 counters
-//   meta.w = reserved
-//   grid.xyz = grid_size (voxel bounds clamp), grid.w = reserved
+//   meta.w = mixed-asset mode: resolve profile_id/object_type per record via asset_lookup
+//   grid.xyz = grid_size (voxel bounds clamp), grid.w = asset_lookup element capacity
+//              (host-passed at the buffer's allocation point; GLSL
+//              .length()/OpArrayLength is unsupported by Godot's SPIR-V path)
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
@@ -59,6 +67,10 @@ layout(set = 0, binding = 2, std430) restrict readonly buffer StampBounds {
 
 layout(set = 0, binding = 3, std430) restrict readonly buffer ReservedObjectIds {
     int reserved_object_ids[];
+};
+
+layout(set = 0, binding = 4, std430) restrict readonly buffer AssetLookup {
+    ivec4 asset_lookup[];
 };
 
 layout(set = 1, binding = 0, std430) restrict buffer Alive {
@@ -147,11 +159,11 @@ void stat_store(uint stat_index, uint value) {
     stats[stat_index] = value;
 }
 
-void write_dirty_delta(uint dirty_index, int object_id, int object_generation, ivec3 voxel_min, ivec3 voxel_max) {
+void write_dirty_delta(uint dirty_index, int object_id, int object_generation, int record_object_type, int record_profile_id, ivec3 voxel_min, ivec3 voxel_max) {
     uint base = dirty_index * DIRTY_DELTA_WORD_STRIDE;
     dirty_delta_words[base + 0u] = object_id;
-    dirty_delta_words[base + 1u] = asset_params.y;
-    dirty_delta_words[base + 2u] = asset_params.x;
+    dirty_delta_words[base + 1u] = record_object_type;
+    dirty_delta_words[base + 2u] = record_profile_id;
     dirty_delta_words[base + 3u] = object_generation;
     dirty_delta_words[base + 4u] = voxel_min.x;
     dirty_delta_words[base + 5u] = voxel_min.y;
@@ -244,6 +256,24 @@ void main() {
         return;
     }
 
+    // Per-record asset metadata: mixed-asset mode resolves through asset_lookup
+    // by the record's asset_index (world_meta.z); legacy mode keeps the shared
+    // push values.
+    int record_profile_id = asset_params.x;
+    int record_object_type = asset_params.y;
+    if (meta.w != 0) {
+        int record_asset_index = int(round(world_meta.z));
+        // asset_lookup capacity gate: host-passed element count (grid.w), so a
+        // stale or short lookup table skips the record instead of reading past it.
+        if (record_asset_index < 0 || record_asset_index >= max(grid.w, 0)) {
+            stat_add(STAT_SKIPPED, 1u);
+            return;
+        }
+        ivec4 lookup = asset_lookup[record_asset_index];
+        record_profile_id = lookup.x;
+        record_object_type = lookup.w;
+    }
+
     // Voxel bounds from the stamp pass, with the same fallback as the retired
     // CPU bridge: degenerate/empty bounds collapse to a single voxel at the
     // placement's voxel origin.
@@ -269,15 +299,15 @@ void main() {
     mat4 transform = yaw_transform_y(cos(yaw), sin(yaw), world_origin_score.xyz);
 
     int object_generation = generation[object_id];
-    object_type[object_id] = asset_params.y;
-    profile[object_id] = asset_params.x;
+    object_type[object_id] = record_object_type;
+    profile[object_id] = record_profile_id;
     object_flags[object_id] = asset_params.z;
     bounds_min[object_id] = ivec4(voxel_min, 0);
     bounds_max[object_id] = ivec4(voxel_max, 0);
     previous_bounds_min[object_id] = ivec4(voxel_min, 0);
     previous_bounds_max[object_id] = ivec4(voxel_max, 0);
     transforms[object_id] = transform;
-    write_dirty_delta(uint(dirty_index_i), object_id, object_generation, voxel_min, voxel_max);
+    write_dirty_delta(uint(dirty_index_i), object_id, object_generation, record_object_type, record_profile_id, voxel_min, voxel_max);
     alive[object_id] = 1;
     atomicAdd(dirty_count[0], 1);
     stat_add(STAT_APPLIED, 1u);

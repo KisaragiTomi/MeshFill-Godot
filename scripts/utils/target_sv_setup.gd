@@ -51,6 +51,51 @@ func rebuild() -> void:
 	rebuild_display()
 
 
+## Applies display settings without rebuilding. Editor adapters should use this
+## instead of duplicating TargetSV decode/display orchestration.
+func configure_display(options: Dictionary) -> void:
+	if options.has("display_visible"):
+		display_visible = bool(options.get("display_visible", display_visible))
+	if options.has("display_channel"):
+		display_channel = clampi(
+			int(options.get("display_channel", display_channel)),
+			DisplayChannelUtils.CHANNEL_COLOR,
+			DisplayChannelUtils.CHANNEL_COLLISION
+		)
+	if options.has("occupancy_threshold"):
+		occupancy_threshold = clampf(float(options.get("occupancy_threshold", occupancy_threshold)), 0.0, 1.0)
+	if options.has("display_scale"):
+		display_scale = maxf(float(options.get("display_scale", display_scale)), 0.0001)
+	if options.has("fresnel_enabled"):
+		fresnel_enabled = bool(options.get("fresnel_enabled", fresnel_enabled))
+
+
+## Returns the canonical decoded TargetSV fields used by the display path.
+## Callers may consume the arrays, but TargetSVSetup remains their owner.
+func get_display_snapshot() -> Dictionary:
+	_ensure_loaded()
+	if not _ready_ok:
+		return {"ready": false, "reason": "targetsv_not_ready"}
+	if not _prepare_display_fields():
+		return {"ready": false, "reason": _last_display_reason}
+	return {
+		"ready": true,
+		"reason": "ok",
+		"metadata": _metadata,
+		"texture_size": _texture_size,
+		"slice_count": _slice_count,
+		"voxel_count": _voxel_count,
+		"capture_size": _capture_size,
+		"vertical_span": _vertical_span,
+		"height_span": _height_span,
+		"occupancy": _occupancy,
+		"collision": _collision,
+		"color_rgba": _color_rgba,
+		"terrain_height": _terrain_height,
+		"active_voxel_count": _active_voxel_count,
+	}
+
+
 func _ensure_loaded() -> void:
 	if _ready_ok:
 		return

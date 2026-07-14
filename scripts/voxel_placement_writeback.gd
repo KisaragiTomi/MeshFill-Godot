@@ -297,24 +297,24 @@ func _merge_gpu_autoobject_runtime_writeback_report(target: Dictionary, source: 
 	target["pending_dirty_delta_count"] = int(source.get("pending_dirty_delta_count", target.get("pending_dirty_delta_count", 0)))
 
 
-## 将单个资产的已接受放置结果以 GPU 常驻缓冲区形式写回 GPU AutoObject 运行时：
-## 在 VPG 交接的 result 记录缓冲区上调度 placement_results_to_world pass 得到常驻
-## world 缓冲区，再调用 runtime.spawn_batch_from_accepted_placement_gpu_buffers
-## 单次 dispatch 写入全部对象状态。全程无 CPU 回读、无逐条 spawn 字典
-## （旧 CPU 字典/命令队列桥路径已删除）。
-func _write_accepted_placements_to_gpu_runtime(
+## 将整个公共候选池的已接受放置结果以 GPU 常驻缓冲区形式一次写回
+## GPU AutoObject 运行时（mixed-asset）：在 VPG 常驻 result 记录缓冲区上调度
+## placement_results_to_world pass（pivot per-record 查 pivot_records），再调用
+## runtime.spawn_batch_from_accepted_placement_gpu_buffers 单次 dispatch 写入
+## 全部对象状态；apply shader 按 record 的 asset_index 查 asset_lookup 取得
+## profile_id/object_type（不再逐资产 dispatch）。全程无 CPU 回读。
+func _write_mixed_accepted_placements_to_gpu_runtime(
 	runtime_provider: Object,
-	asset_index: int,
-	asset_def: Dictionary,
-	per_asset_settings: Dictionary,
-	asset_result: Dictionary,
+	placement_handoff: Dictionary,
+	asset_lookup_rid: RID,
+	pivot_records_rid: RID,
+	rotation_slots: int,
 	common_settings: Dictionary,
 	world_convert_params: Dictionary
 ) -> Dictionary:
 	var spawn_api := _runtime_writeback_spawn_api(runtime_provider)
 	var include_diagnostics := bool(common_settings.get("include_diagnostics", false))
-	var record_count := int(asset_result.get("result_count", 0))
-	var handoff: Dictionary = asset_result.get("placement_result_buffers", {})
+	var record_count := int(placement_handoff.get("result_count", 0))
 	# 共有骨架（~30 键）来自 SSOT；此路径 always-enabled，故 skeleton(spawn_api, true) + 差异键覆盖。
 	var report := _new_gpu_autoobject_runtime_writeback_skeleton(spawn_api, true)
 	report["ok"] = true
@@ -322,9 +322,6 @@ func _write_accepted_placements_to_gpu_runtime(
 	report["readback_source"] = "gpu_storage_buffers"
 	report["runtime_read_source"] = "gpu_storage_buffers"
 	report["accepted_count"] = record_count
-	report["asset_index"] = asset_index
-	report["profile_id"] = int(per_asset_settings.get("profile_id", -1))
-	report["object_type"] = _runtime_writeback_object_type(asset_def, per_asset_settings, common_settings)
 	if runtime_provider == null or spawn_api == "none":
 		report["ok"] = false
 		report["reason"] = "missing_gpu_autoobject_runtime_writeback_target"
@@ -340,19 +337,17 @@ func _write_accepted_placements_to_gpu_runtime(
 	if record_count <= 0:
 		report["reason"] = "no_accepted_placements"
 		return _emit_writeback_report(report, include_diagnostics)
-	var placement_results_rid: RID = handoff.get("placement_results_rid", RID())
-	var stamp_bounds_rid: RID = handoff.get("stamp_bounds_rid", RID())
-	if not placement_results_rid.is_valid() or not stamp_bounds_rid.is_valid():
+	var placement_results_rid: RID = placement_handoff.get("placement_results_rid", RID())
+	var stamp_bounds_rid: RID = placement_handoff.get("stamp_bounds_rid", RID())
+	if not placement_results_rid.is_valid() or not stamp_bounds_rid.is_valid() or not asset_lookup_rid.is_valid():
 		report["ok"] = false
 		report["reason"] = "missing_resident_placement_buffers"
 		report["readback_source"] = "none"
 		report["runtime_read_source"] = "none"
 		return _emit_writeback_report(report, include_diagnostics)
 
-	# Same-device contract: the GPU runtime-profile contract (validated inside
-	# run_minimal while the generator still held its device) already pinned the
-	# VPG placement buffers to the runtime's device. The generator disposes its
-	# _rd reference at the end of each run, so borrow the runtime device here.
+	# Same-device contract: the GPU runtime-profile contract already pinned the
+	# VPG placement buffers to the runtime's device; borrow it here.
 	var runtime_rd := rendering_device_of(runtime_provider)
 	if runtime_rd == null:
 		report["ok"] = false
@@ -366,9 +361,10 @@ func _write_accepted_placements_to_gpu_runtime(
 	var world_convert := _dispatch_world_results_resident(
 		placement_results_rid,
 		record_count,
-		maxi(int(asset_result.get("rotation_slots_used", 1)), 1),
-		asset_result.get("pivot_offset_world", Vector3.ZERO),
-		world_convert_params
+		maxi(rotation_slots, 1),
+		Vector3.ZERO,
+		world_convert_params,
+		pivot_records_rid
 	)
 	if not bool(world_convert.get("ok", false)):
 		report["ok"] = false
@@ -378,11 +374,11 @@ func _write_accepted_placements_to_gpu_runtime(
 		return _emit_writeback_report(report, include_diagnostics)
 
 	var asset_params := {
-		"profile_id": report["profile_id"],
-		"object_type": report["object_type"],
+		"profile_id": -1,
+		"object_type": 0,
 		"object_flags": 0,
-		"dirty_flags": _runtime_writeback_dirty_flags(asset_def, per_asset_settings, common_settings),
-		"asset_index": asset_index,
+		"dirty_flags": _runtime_writeback_dirty_flags({}, {}, common_settings),
+		"asset_index": -1,
 		"grid_size": world_convert_params.get("grid_size", Vector3i.ZERO),
 	}
 	var runtime_report_raw = runtime_provider.call(
@@ -391,6 +387,10 @@ func _write_accepted_placements_to_gpu_runtime(
 			"placement_results_rid": placement_results_rid,
 			"world_results_rid": world_convert.get("world_results_rid", RID()),
 			"stamp_bounds_rid": stamp_bounds_rid,
+			"asset_lookup_rid": asset_lookup_rid,
+			# Element capacity of asset_lookup_rid (from its allocation point) —
+			# the apply shader's mixed-asset capacity gate reads it from push.
+			"asset_lookup_capacity": int(placement_handoff.get("asset_lookup_capacity", 0)),
 		},
 		record_count,
 		asset_params,
@@ -432,12 +432,14 @@ func _write_accepted_placements_to_gpu_runtime(
 
 ## 在 VPG 常驻 result 记录缓冲区上调度 placement_results_to_world pass，
 ## 输出常驻 world 缓冲区（SCOPE_FRAME，由 runtime 消费后经 gc_frame 释放）。
+## pivot_records_rid 有效时走 per-record pivot（record 的 global_pivot_index）。
 func _dispatch_world_results_resident(
 	placement_results_rid: RID,
 	record_count: int,
 	rotation_count: int,
 	pivot_offset: Vector3,
-	world_convert_params: Dictionary
+	world_convert_params: Dictionary,
+	pivot_records_rid: RID = RID()
 ) -> Dictionary:
 	if _rd == null:
 		return {"ok": false, "reason": "missing_rendering_device"}
@@ -445,10 +447,13 @@ func _dispatch_world_results_resident(
 	var voxel_size: Vector3 = voxel_size_value if voxel_size_value is Vector3 else Vector3.ONE
 	var grid_origin_value = world_convert_params.get("grid_origin", Vector3.ZERO)
 	var grid_origin: Vector3 = grid_origin_value if grid_origin_value is Vector3 else Vector3.ZERO
+	if pivot_records_rid.is_valid():
+		track_borrowed_rid(pivot_records_rid, KIND_BUFFER, SCOPE_FRAME, "auto_voxel_runtime_profile_container:pivot_records")
 	var dispatched := PlacementResultCodec.dispatch_results_to_world(
 		self, placement_results_rid, record_count, rotation_count,
 		grid_origin, voxel_size, pivot_offset,
-		SCOPE_FRAME, "vpg_resident_world_results", "vpg_resident_world_results_set0"
+		SCOPE_FRAME, "vpg_resident_world_results", "vpg_resident_world_results_set0",
+		pivot_records_rid
 	)
 	if not bool(dispatched.get("ok", false)):
 		return {"ok": false, "reason": str(WORLD_CONVERT_FAIL_REASONS.get(str(dispatched.get("fail_step", "")), "world_convert_shader_not_ready"))}

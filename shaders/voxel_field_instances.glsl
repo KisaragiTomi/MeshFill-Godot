@@ -8,14 +8,14 @@
 
 layout(local_size_x = 64) in;
 
-// Per-voxel occupancy / complexity, R8 packed four voxels per uint.
+// Per-voxel occupancy / complexity, one uint per voxel, quantized 0..255 in the low byte.
 layout(set = 0, binding = 0, std430) restrict readonly buffer Occupancy {
-	uint occupancy_r8_words[];
+	uint occupancy_u32[];
 };
 
-// Per-voxel collision strength, R8 packed four voxels per uint.
+// Per-voxel collision strength, one uint per voxel, quantized 0..255 in the low byte.
 layout(set = 0, binding = 1, std430) restrict readonly buffer Collision {
-	uint collision_r8_words[];
+	uint collision_u32[];
 };
 
 // Per-voxel color, RGBA8 packed into one uint per voxel, same indexing.
@@ -65,17 +65,16 @@ vec4 unpack_rgba8(uint packed) {
 	);
 }
 
-float unpack_r8(uint packed_word, uint idx) {
-	uint shift = (idx & 3u) * 8u;
-	return float((packed_word >> shift) & 0xFFu) / 255.0;
+float unpack_r8(uint value) {
+	return float(value & 0xFFu) * (1.0 / 255.0);
 }
 
 float load_occupancy_r8(uint idx) {
-	return unpack_r8(occupancy_r8_words[idx >> 2u], idx);
+	return unpack_r8(occupancy_u32[idx]);
 }
 
 float load_collision_r8(uint idx) {
-	return unpack_r8(collision_r8_words[idx >> 2u], idx);
+	return unpack_r8(collision_u32[idx]);
 }
 
 void write_hidden(uint base) {

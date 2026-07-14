@@ -2,12 +2,17 @@
 class_name AutoObject
 extends MeshInstance3D
 
-const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const SemanticProbeGeneratorScript := preload("res://scripts/semantic_probe_generator.gd")
 const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
+const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const ANCHOR_KIND := "anchor"
+## 显式 3D 体素边界别名键表（与 SceneVoxelTileStore._scene_voxel_tile_bounds_from_record
+## 显式-bounds 分支的键表逐字一致，勿单独改动）。
+const VOXEL_BOUNDS_MIN_KEYS: Array[String] = ["voxel_min", "bounds_min", "new_voxel_min", "new_bounds_min"]
+const VOXEL_BOUNDS_MAX_KEYS: Array[String] = ["voxel_max", "bounds_max", "new_voxel_max", "new_bounds_max"]
 const INSTANCE_STAMP_WRITE_SPEC_META_KEY := "instance_stamp_write_spec"
 const VOXEL_WRITE_SPEC_META_KEY := "voxel_write_spec"  ## Deprecated read-compat alias; new writes use INSTANCE_STAMP_WRITE_SPEC_META_KEY
 const SELECTABLE_GROUP := "autoobject_selectable"
@@ -30,7 +35,7 @@ const SELECTED_META_KEY := "autoobject_selected"
 @export var auto_generate_vertical_pivots: bool = false       # 从 collision 高度生成 vertical pivots
 @export_range(0.0, 16.0, 0.1) var vertical_pivot_middle_min_height: float = 1.5 # middle pivot 最小高度
 @export_range(0.0, 16.0, 0.1) var vertical_pivot_upper_min_height: float = 3.0 # upper pivot 最小高度
-@export var semantic_probe_profile: Resource                  # semantic probes mirror
+@export var semantic_probe_generator: Resource                  # semantic probes mirror
 @export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0 # semantic probe 生成密度
 @export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0 # context probes 半径；0 禁用
 @export var allowed_anchor_kinds: PackedStringArray = PackedStringArray()
@@ -85,7 +90,7 @@ static func create_asset_descriptor(
 	default_radius: float = 0.0,
 	collision: Array = [],
 	pivot_variants: Array = [],
-	semantic_probe_profile: Resource = null,
+	semantic_probe_generator: Resource = null,
 	semantic_probe_density: float = 1.0,
 	context_sensing_radius: float = 0.0
 ) -> Resource:
@@ -93,7 +98,7 @@ static func create_asset_descriptor(
 	var descriptor = AssetDescriptorScript.from_profile(profile, default_radius)
 	if not pivot_variants.is_empty():
 		descriptor.set_pivot_variants(pivot_variants)
-	descriptor.semantic_probe_profile = semantic_probe_profile
+	descriptor.semantic_probe_generator = semantic_probe_generator
 	descriptor.semantic_probe_density = clampf(semantic_probe_density, 0.1, 8.0)
 	descriptor.context_sensing_radius = maxf(context_sensing_radius, 0.0)
 	return descriptor
@@ -140,7 +145,56 @@ static func make_profile_instance_stamp_write_spec(
 	if not record.has("y_max"):
 		record["y_max"] = y_max
 	record["source_voxel_type"] = source_type           # AutoSceneVoxel / BrushSceneVoxel / TargetSceneVoxel
+	# V1e 记录契约 3D 化（additive 双写期）：保留旧 2D 键的同时新增显式 3D 体素边界，
+	# 供 tile_store 显式-bounds 分支直接消费；调用方经 extra_fields 显式给过任一
+	# 别名边界键则整体不覆写（避免打乱别名键优先序或混拼半套边界）。
+	if not SceneVoxelTileCodecScript.has_any_key(record, VOXEL_BOUNDS_MIN_KEYS) and not SceneVoxelTileCodecScript.has_any_key(record, VOXEL_BOUNDS_MAX_KEYS):
+		var voxel_bounds := stamp_record_voxel_bounds_from_2d_keys(record)
+		record["voxel_min"] = voxel_bounds.voxel_min    # 显式 3D 体素边界（含端点）
+		record["voxel_max"] = voxel_bounds.voxel_max    # 显式 3D 体素边界（不含端点，半开区间）
 	return record
+
+
+## 由 ISWS 记录既有 2D 键（base_pixel/voxel_xz + radius_px/radius + slice_indices/slice_index）
+## 换算显式 3D 体素边界 {voxel_min, voxel_max}——voxel_min 含端点、voxel_max 不含端点（半开区间）。
+## 换算逻辑与 SceneVoxelTileStore._scene_voxel_tile_bounds_from_record 旧 2D 回退分支等价，
+## 在记录自带的 volume_xz_resolution 像素空间内求值（严格逐位等价条件：消费方 committer 的
+## grid_size.x == base_resolution == volume_xz_resolution；无 "radius_px" 键时另需
+## capture_size == base_resolution，即像素尺寸 1.0——当前仓内所有消费此类记录的 committer
+## 配置均满足）。消费端显式-bounds 分支仍会按实际 grid_size 走 normalized_bounds 裁剪，
+## 越界 slice/半径经该裁剪后与旧回退分支结果一致。
+static func stamp_record_voxel_bounds_from_2d_keys(record: Dictionary) -> Dictionary:
+	var xz_res := maxi(int(record.get("volume_xz_resolution", 1)), 1)
+	var base_px_value = record.get("base_pixel", record.get("voxel_xz", Vector2i.ZERO))
+	var base_px: Vector2i = base_px_value if base_px_value is Vector2i else Vector2i.ZERO
+	var center_px := VoxelGeneral.base_pixel_to_volume_pixel(base_px, xz_res, xz_res)
+	var radius_px := 1
+	if record.has("radius_px"):
+		radius_px = maxi(int(record.radius_px), 1)
+	else:
+		radius_px = VoxelGeneral.world_radius_to_texture_radius(float(record.get("radius", 0.0)), float(xz_res), xz_res)
+	var radius_vol := VoxelGeneral.base_radius_to_volume_radius(radius_px, xz_res, xz_res)
+	var min_y := 0
+	var max_y := 1
+	var slice_indices: Array = []
+	var raw_slices = record.get("slice_indices", [])
+	if raw_slices is Array:
+		slice_indices = raw_slices
+	if not slice_indices.is_empty():
+		min_y = 2147483647
+		max_y = 0
+		for raw_slice in slice_indices:
+			var slice_index := maxi(int(raw_slice), 0)
+			min_y = mini(min_y, slice_index)
+			max_y = maxi(max_y, slice_index + 1)
+	else:
+		var slice_index := maxi(int(record.get("slice_index", 0)), 0)
+		min_y = slice_index
+		max_y = slice_index + 1
+	return {
+		"voxel_min": Vector3i(maxi(center_px.x - radius_vol, 0), min_y, maxi(center_px.y - radius_vol, 0)),
+		"voxel_max": Vector3i(mini(center_px.x + radius_vol + 1, xz_res), max_y, mini(center_px.y + radius_vol + 1, xz_res)),
+	}
 
 
 func _ensure_asset_descriptor():
@@ -163,8 +217,8 @@ func _sync_descriptor_from_exported_fields() -> void:
 	asset_descriptor.vertical_pivot_upper_min_height = vertical_pivot_upper_min_height
 	asset_descriptor.semantic_probe_density = semantic_probe_density
 	asset_descriptor.context_sensing_radius = context_sensing_radius
-	if semantic_probe_profile != null:
-		asset_descriptor.semantic_probe_profile = semantic_probe_profile
+	if semantic_probe_generator != null:
+		asset_descriptor.semantic_probe_generator = semantic_probe_generator
 
 
 func _sync_exported_fields_from_descriptor() -> void:
@@ -180,7 +234,7 @@ func _sync_exported_fields_from_descriptor() -> void:
 	vertical_pivot_upper_min_height = asset_descriptor.vertical_pivot_upper_min_height
 	semantic_probe_density = asset_descriptor.semantic_probe_density
 	context_sensing_radius = asset_descriptor.context_sensing_radius
-	semantic_probe_profile = asset_descriptor.semantic_probe_profile
+	semantic_probe_generator = asset_descriptor.semantic_probe_generator
 
 
 func _rotation_mode_from_config(config: Dictionary) -> String:
@@ -327,10 +381,10 @@ func configure_auto_object(config: Dictionary) -> void:
 	if config.has("semantic_probe_density"):
 		semantic_probe_density = clampf(float(config.semantic_probe_density), 0.1, 8.0)
 		_ensure_asset_descriptor().semantic_probe_density = semantic_probe_density
-	if config.has("semantic_probe_profile"):
-		var configured_probe_profile = config.get("semantic_probe_profile", null)
+	if config.has("semantic_probe_generator"):
+		var configured_probe_profile = config.get("semantic_probe_generator", null)
 		if configured_probe_profile is Resource:
-			set_semantic_probe_profile(configured_probe_profile as Resource)
+			set_semantic_probe_generator(configured_probe_profile as Resource)
 	if config.has("semantic_probes"):
 		set_semantic_probes(config.semantic_probes)
 	if config.has("allowed_anchor_kinds"):
@@ -380,8 +434,8 @@ func _fill_config_shared_defaults(config: Dictionary, default_radius: float = 0.
 		config["pivot_variants"] = get_pivot_variants()
 	if not config.has("semantic_probe_density") and not has_descriptor:
 		config["semantic_probe_density"] = semantic_probe_density
-	if not config.has("semantic_probe_profile") and semantic_probe_profile != null and not has_descriptor:
-		config["semantic_probe_profile"] = semantic_probe_profile
+	if not config.has("semantic_probe_generator") and semantic_probe_generator != null and not has_descriptor:
+		config["semantic_probe_generator"] = semantic_probe_generator
 	if not config.has("semantic_probes") and not has_descriptor:
 		config["semantic_probes"] = get_semantic_probes(semantic_probe_density)
 	return config
@@ -641,23 +695,23 @@ func set_collision(voxels: Array) -> void:
 	_sync_auto_metadata()
 
 
-func set_semantic_probe_profile(profile: Resource) -> void:
-	semantic_probe_profile = profile
+func set_semantic_probe_generator(profile: Resource) -> void:
+	semantic_probe_generator = profile
 	var descriptor = _ensure_asset_descriptor()
-	descriptor.semantic_probe_profile = profile
+	descriptor.semantic_probe_generator = profile
 	_sync_auto_metadata()
 
 
 func set_semantic_probes(probes: Array) -> void:
 	var descriptor = _ensure_asset_descriptor()
 	descriptor.set_semantic_probes(probes)
-	semantic_probe_profile = descriptor.semantic_probe_profile
+	semantic_probe_generator = descriptor.semantic_probe_generator
 	_sync_auto_metadata()
 
 
 func rebuild_semantic_probes(density_override: float = -1.0) -> Array[Dictionary]:
 	var descriptor = _ensure_asset_descriptor()
-	var profile = descriptor.ensure_semantic_probe_profile()
+	var profile = descriptor.ensure_semantic_probe_generator()
 	var probes: Array[Dictionary] = profile.rebuild_from_mesh(
 		mesh,
 		descriptor.get_collision(),
@@ -667,7 +721,7 @@ func rebuild_semantic_probes(density_override: float = -1.0) -> Array[Dictionary
 		Vector3.ONE,
 		descriptor.context_sensing_radius
 	)
-	semantic_probe_profile = descriptor.semantic_probe_profile
+	semantic_probe_generator = descriptor.semantic_probe_generator
 	_sync_auto_metadata()
 	return probes
 
@@ -687,15 +741,15 @@ func get_semantic_probes(density_override: float = -1.0, anchor_kind: String = A
 		var probe = raw_probe.duplicate(true)
 		var offset := VariantUtils.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
 		probe["offset"] = offset - pivot_offset
-		remapped.append(SemanticProbeProfileScript.normalize_probe(probe))
+		remapped.append(SemanticProbeGeneratorScript.normalize_probe(probe))
 	return remapped
 
 
-func _ensure_semantic_probe_profile() -> Resource:
+func _ensure_semantic_probe_generator() -> Resource:
 	var descriptor = _ensure_asset_descriptor()
 	descriptor.semantic_probe_density = semantic_probe_density
-	semantic_probe_profile = descriptor.ensure_semantic_probe_profile()
-	return semantic_probe_profile
+	semantic_probe_generator = descriptor.ensure_semantic_probe_generator()
+	return semantic_probe_generator
 
 
 func _get_default_semantic_probe_radius() -> float:
@@ -770,7 +824,7 @@ func _clear_state_mirror_metadata() -> void:
 		"auto_collision",
 		"pivot_variant_count",
 		"allowed_anchor_kinds",
-		"semantic_probe_profile",
+		"semantic_probe_generator",
 		"semantic_probe_count",
 		"semantic_probe_density",
 		"auto_source",

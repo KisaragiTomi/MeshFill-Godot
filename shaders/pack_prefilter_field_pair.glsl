@@ -12,7 +12,7 @@ layout(set = 0, binding = 0, std430) restrict readonly buffer ComplexityField {
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionField {
-    uint collision_field_r8_words[];
+    uint collision_field_u32[];  // one uint per voxel, quantized 0..255 in the low byte
 };
 
 layout(set = 0, binding = 2, std430) restrict writeonly buffer MergedFieldPair {
@@ -32,8 +32,6 @@ void main() {
         return;
     }
     float complexity = float(complexity_field_rgba8[index] & 0xFFu) / 255.0;
-    uint word = collision_field_r8_words[index >> 2u];
-    uint shift = (index & 3u) * 8u;
-    float collision = float((word >> shift) & 0xFFu) / 255.0;
+    float collision = float(collision_field_u32[index] & 0xFFu) * (1.0 / 255.0);
     complexity_collision[index] = vec2(complexity, collision);
 }

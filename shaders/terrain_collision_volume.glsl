@@ -5,14 +5,15 @@
 // Inputs:
 //   set0/binding0: R32F terrain collision texture.
 // Outputs:
-//   set0/binding1: R8 collision volume buffer packed four voxels per uint word.
+//   set0/binding1: collision volume buffer, one uint32 per voxel (quantized
+//   unorm8 value 0..255 in the low byte).
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D t_terrain_collision;
 
 layout(set = 0, binding = 1, std430) restrict buffer CollisionVolume {
-    uint collision_field_r8_words[];
+    uint collision_field_u32[];
 };
 
 layout(push_constant, std430) uniform Params {
@@ -30,20 +31,10 @@ uint quantize_unorm8(float value) {
     return uint(round(clamp(value, 0.0, 1.0) * 255.0));
 }
 
+// One uint32 per voxel; the output buffer is zero-initialised per dispatch, so
+// atomicMax on the quantized value is equivalent to the old per-byte store.
 void store_r8(uint index, float value) {
-    uint word_index = index >> 2u;
-    uint shift = (index & 3u) * 8u;
-    uint mask = 0xFFu << shift;
-    uint q = quantize_unorm8(value);
-    uint old_word = collision_field_r8_words[word_index];
-    for (int attempt = 0; attempt < 32; attempt++) {
-        uint new_word = (old_word & ~mask) | (q << shift);
-        uint previous = atomicCompSwap(collision_field_r8_words[word_index], old_word, new_word);
-        if (previous == old_word) {
-            return;
-        }
-        old_word = previous;
-    }
+    atomicMax(collision_field_u32[index], quantize_unorm8(value));
 }
 
 void main() {

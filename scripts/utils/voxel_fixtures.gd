@@ -6,7 +6,7 @@ extends RefCounted
 
 const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const AutoVoxelProfileScript := preload("res://scripts/auto_voxel_profile.gd")
-const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const SemanticProbeGeneratorScript := preload("res://scripts/semantic_probe_generator.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 
 const DEFAULT_TILE_SIZE := VoxelGeneral.DEFAULT_TILE_SIZE
@@ -20,6 +20,14 @@ static func make_runtime_profile_descriptor() -> AssetDescriptor:
 	var descriptor: AssetDescriptor = AssetDescriptorScript.new()
 	descriptor.set_color_and_complexity(Color(0.2, 0.4, 0.6, 1.0), 0.5)
 	descriptor.set_collision([])
+	descriptor.set_asset_voxels([{
+		"voxel": Vector3i.ZERO,
+		"color": Color(0.2, 0.4, 0.6, 0.5),
+		"complexity": 0.5,
+		"collision_strength": 0.3,
+		"weight": 1.0,
+		"flags": 0,
+	}])
 	descriptor.set_pivot_variants([{
 		"name": "root",
 		"offset": Vector3(0.0, -0.25, 0.0),
@@ -27,7 +35,7 @@ static func make_runtime_profile_descriptor() -> AssetDescriptor:
 	}])
 	descriptor.semantic_probe_density = 1.0
 	descriptor.context_sensing_radius = 0.5
-	descriptor.set_semantic_probes([SemanticProbeProfileScript.make_probe(
+	descriptor.set_semantic_probes([SemanticProbeGeneratorScript.make_probe(
 		Vector3(0.25, 0.5, -0.25),
 		Color(0.2, 0.4, 0.6, 0.5),
 		0.3,
@@ -75,7 +83,7 @@ static func make_mesh_description_descriptor(
 		"offset": Vector3.ZERO,
 		"score_bias": 0.0,
 	}])
-	descriptor.set_semantic_probes([SemanticProbeProfileScript.make_probe(
+	descriptor.set_semantic_probes([SemanticProbeGeneratorScript.make_probe(
 		Vector3.ZERO,
 		Color(0.2, 0.7, 0.3, 0.6),
 		0.5,
@@ -136,6 +144,40 @@ static func make_flat_ground_sv(
 		collision_field,
 		tile_size
 	)
+
+
+## ISWS record 统一走生产组装器（AutoObject），夹具不再手拼 schema；
+## slice_index 经 extra_fields 传入，auto_mix 缺省由 prepare_source_record 补 0.0。
+## V1e：记录随组装器自动携带显式 3D 边界键 "voxel_min"/"voxel_max"（min 含端点、
+## max 不含端点），与旧 2D 键（base_pixel/voxel_xz/volume_xz_resolution/radius）双写。
+static func make_scene_voxel_stamp_record(
+	id: String,
+	voxel_xz: Vector2i,
+	slice_index: int,
+	color: Color,
+	complexity: float,
+	volume_xz_resolution: int,
+	radius: float = 2.0
+) -> Dictionary:
+	var profile := AutoObject.create_voxel_profile(color, complexity, radius, [])
+	return AutoObject.make_profile_instance_stamp_write_spec(
+		id, "rock", Vector3.ZERO, Vector3.ZERO, Vector3.ONE,
+		voxel_xz, volume_xz_resolution, profile, radius,
+		0.0, 0.0, [],
+		{"slice_index": slice_index}
+	)
+
+
+static func centered_scene_voxel_bounds(
+	voxel_xz: Vector2i,
+	slice_index: int,
+	radius_voxels: int = 2
+) -> Dictionary:
+	var radius := maxi(radius_voxels, 0)
+	return {
+		"voxel_min": Vector3i(voxel_xz.x - radius, slice_index, voxel_xz.y - radius),
+		"voxel_max": Vector3i(voxel_xz.x + radius + 1, slice_index + 1, voxel_xz.y + radius + 1),
+	}
 
 
 # ============================================================

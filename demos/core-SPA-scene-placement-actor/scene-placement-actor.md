@@ -16,7 +16,7 @@ register assets → prefilter（SV→candidates）→ placement（candidates→i
 
 - 本文回答「MeshFill 的全部数据挂在谁下面」和「运行时如何通过 SPA 随时读取」：ownership 划分、资产注册表、GPU buffer 就绪契约、流水线入口和生命周期。
 - 其它模块（prefilter、placer、SV committer、gpu runtime）通过 SPA 访问资产数据和 GPU buffer，不直接操作 `AutoVoxelRuntimeProfileContainer`。
-- 资产默认语义、probe 数据结构、physical score contract 和 SV 提交权威见各自的专题文档。
+- 资产默认语义、probe 数据结构、fine semantic score/placement constraints contract 和 SV 提交权威见各自的专题文档。
 - `GPUAutoObjectRuntime` / `AutoVoxelRuntimeProfileContainer` 的内部实现见 [`autoobject-gpu-runtime-architecture.md`](autoobject-gpu-runtime-architecture.md)。本文只说明 SPA 如何拥有和暴露它们。
 
 ## 核心契约
@@ -75,13 +75,13 @@ SPA 的完整生命周期定义 MeshFill 运行时从初始化到释放的所有
        └── 可通过 get_registered_descriptors() / get_profile_id_for_asset() 查询
 
 3. run_placement_pipeline(sv, dirty_tile_ids, prefilter_topk, placement_common)  [每帧]
-  ├── Phase 0: Prefilter     (SV to candidate voxel regions)
+  ├── Phase 0: Prefilter     (SV to resident anchor candidates)
   │     _build_autoobject_array_for_pipeline()
   │     prepare_target_read_buffers_from_common_gpu(placement_common, sv)
   │     prefilter.run_probe_prefilter(borrowed probe_records + transient probe_range_buf)
-  │     readback candidate_voxel_regions_by_asset
+  │     anchor_candidate_handoff（常驻 anchor / anchor_count / topk buffer，无 CPU readback）
   ├── Phase 1: Placement     (candidates to accepted instances)
-  │     _build_placement_asset_defs(candidate_regions)
+  │     _build_placement_asset_defs()
   │     placer.run_multi_asset(complexity_field, collision_field, asset_defs, ...)
   │     可选: GPUAutoObjectRuntime writeback
   └── Phase 2: Commit        (accepted to SceneVoxel)
@@ -163,12 +163,12 @@ _build_autoobject_array_for_pipeline()
   autoobject.get_semantic_probes() → CPU 探针数据 (仅 transient 路径)
   autoobject.has_meta("profile_id") → 匹配 profile container 范围查询
   ↓ 结果
-candidate_voxel_regions_by_asset
+anchor_candidate_handoff（常驻 anchor / anchor_count / topk buffer）
   ↓
-_build_placement_asset_defs(candidate_regions)
-  {descriptor, asset_index, profile_id, candidate_voxel_regions}
+_build_placement_asset_defs()
+  {descriptor, asset_index, profile_id}
   ↓
-传给 placer.run_multi_asset(asset_defs, ...)
+handoff 注入 placement_settings["anchor_candidate_handoff"]，传给 placer.run_multi_asset(asset_defs, ...)
 ```
 
 ## 流水线结果
@@ -279,12 +279,12 @@ spa.dispose()
 
 > **@tool 编辑器模式，禁止 F6。**
 >
-> 在 Godot 编辑器中打开 `core-scene-placement-actor.tscn`，`@tool` 脚本自动在编辑器视口中注册资产并执行 GPU SVTile AutoObject 批量放置，渲染点云热力图概览。
+> 在 Godot 编辑器中打开 `core-scene-placement-actor.tscn`，`@tool` 脚本自动注册资产并执行 GPU SVTile AutoObject 批量放置。编辑器只渲染 SVTile object-ref 热力图和统一选择 marker；AutoObject 本体不经过 MultiMesh。
 
 ## 测试方法
 
-1. 打开 `core-scene-placement-actor.tscn`，确认地形正确加载、HUD 显示 `GPU ready: YES`、SVTile 压力测试 `PASS` 且点云概览正常渲染。
-2. 交互测试：LMB 点选 GPU AutoObject / 数据记录（SVTile/SV/Anchor/TargetSV），Shift+0~5 切换选择模式，G 打印 GPU 报告，Space 重新注册并重跑 SVTile 压力测试。
+1. 打开 `core-scene-placement-actor.tscn`，确认地形正确加载、HUD 显示 `GPU ready: YES`、SVTile 压力测试 `PASS` 且 SVTile object-ref heatmap 正常渲染。
+2. 交互测试：LMB 通过地形射线与 runtime 索引点选 GPU AutoObject / 数据记录（SVTile/SV/Anchor/TargetSV），Shift+0~5 切换选择模式，G 打印 GPU 报告，Space 重新注册并重跑 SVTile 压力测试。
 3. GPU 验收测试：
 
 ```bash
@@ -298,7 +298,7 @@ spa.dispose()
 
 - SPA 初始化成功，`is_gpu_ready() == true`。
 - `register_asset()` 后 profile_id 有效且 GPU buffers resident。
-- GPU SVTile AutoObject 批量放置成功，HUD 报告 SVTile 压力测试 `PASS`，点云概览正确反映放置分布。
+- GPU SVTile AutoObject 批量放置成功，HUD 报告 SVTile 压力测试 `PASS`，SVTile heatmap 正确反映 object-ref 分布，且场景中不存在 AutoObject MultiMesh 副本。
 - GPU AutoObject 点选与数据记录（SVTile/SV/Anchor/TargetSV）选择在各模式下均正常工作。
 - `AutoVoxelRuntimeProfileContainer` 由 SPA 创建、管理和释放。
 - VPG contract validation 通过后必须使用已 bound/consumed 的 GPU buffers。

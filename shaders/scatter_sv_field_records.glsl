@@ -22,7 +22,7 @@ layout(set = 0, binding = 0, std430) restrict buffer ComplexityField {
 };
 
 layout(set = 0, binding = 1, std430) restrict buffer CollisionField {
-    uint collision_field_r8_words[];
+    uint collision_field_u32[];
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer FieldRecords {
@@ -52,24 +52,10 @@ uint pack_rgba8(vec4 value) {
     return (q.r << 24u) | (q.g << 16u) | (q.b << 8u) | q.a;
 }
 
+// Collision stores one quantized 0..255 value per uint32; unorm8 quantization
+// preserves ordering, so a plain atomicMax is the monotonic merge.
 void atomic_max_collision_r8(uint index, float value) {
-    uint word_index = index >> 2u;
-    uint shift = (index & 3u) * 8u;
-    uint mask = 0xFFu << shift;
-    uint q = quantize_unorm8(value);
-    uint old_word = collision_field_r8_words[word_index];
-    for (int attempt = 0; attempt < 32; attempt++) {
-        uint current = (old_word & mask) >> shift;
-        if (current >= q) {
-            return;
-        }
-        uint new_word = (old_word & ~mask) | (q << shift);
-        uint previous = atomicCompSwap(collision_field_r8_words[word_index], old_word, new_word);
-        if (previous == old_word) {
-            return;
-        }
-        old_word = previous;
-    }
+    atomicMax(collision_field_u32[index], quantize_unorm8(value));
 }
 
 // pack_rgba8 keeps complexity in the low byte; a plain atomicMax would order

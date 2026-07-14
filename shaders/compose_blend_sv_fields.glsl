@@ -16,7 +16,7 @@ layout(set = 0, binding = 0, std430) restrict readonly buffer AutoComplexityFiel
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer AutoCollisionField {
-    uint auto_collision_r8_words[];
+    uint auto_collision_u32[];
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer BrushComplexityField {
@@ -24,7 +24,7 @@ layout(set = 0, binding = 2, std430) restrict readonly buffer BrushComplexityFie
 };
 
 layout(set = 0, binding = 3, std430) restrict readonly buffer BrushCollisionField {
-    uint brush_collision_r8_words[];
+    uint brush_collision_u32[];
 };
 
 layout(set = 0, binding = 4, std430) restrict writeonly buffer BlendComplexityField {
@@ -32,7 +32,7 @@ layout(set = 0, binding = 4, std430) restrict writeonly buffer BlendComplexityFi
 };
 
 layout(set = 0, binding = 5, std430) restrict writeonly buffer BlendCollisionField {
-    uint blend_collision_r8_words[];
+    uint blend_collision_u32[];
 };
 
 layout(push_constant, std430) uniform Params {
@@ -52,17 +52,10 @@ void main() {
         blend_complexity_rgba8[index] = brush_alpha > 0u ? brush_packed : auto_packed;
     }
 
-    // Collision packs 4 R8 voxels per word; a per-word pass covers all lanes.
+    // Collision stores one quantized 0..255 value per uint32: per-voxel max.
     if (index < uint(max(collision_word_count, 0))) {
-        uint auto_word = auto_collision_r8_words[index];
-        uint brush_word = brush_collision_r8_words[index];
-        uint merged = 0u;
-        for (uint lane = 0u; lane < 4u; lane++) {
-            uint shift = lane * 8u;
-            uint a = (auto_word >> shift) & 0xFFu;
-            uint b = (brush_word >> shift) & 0xFFu;
-            merged |= max(a, b) << shift;
-        }
-        blend_collision_r8_words[index] = merged;
+        uint a = auto_collision_u32[index] & 0xFFu;
+        uint b = brush_collision_u32[index] & 0xFFu;
+        blend_collision_u32[index] = max(a, b);
     }
 }

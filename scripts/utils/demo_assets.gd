@@ -2,6 +2,9 @@
 class_name DemoAssets
 extends RefCounted
 
+const AutoObjectScript := preload("res://scripts/auto_object.gd")
+const SemanticProbeGeneratorScript := preload("res://scripts/semantic_probe_generator.gd")
+
 const GEO_PATHS := [
 	"res://geo/SM_TestLeaf_Test2.FBX",
 	"res://geo/cliff_01.FBX",
@@ -85,6 +88,41 @@ static func asset_entries() -> Array[Dictionary]:
 			"wire_color": wire_color(i),
 		})
 	return entries
+
+
+static func make_sv_anchor_collection_assets() -> Array:
+	var rock := AutoObjectScript.new()
+	rock.name = "rock_small"
+	rock.set_semantic_probes([
+		SemanticProbeGeneratorScript.make_probe(
+			Vector3.ZERO, Color(0.5, 0.45, 0.4), 0.6, 0.0, 0.0, 0.8, "rock_small")
+	])
+
+	var bush := AutoObjectScript.new()
+	bush.name = "bush_medium"
+	bush.set_semantic_probes([
+		SemanticProbeGeneratorScript.make_probe(
+			Vector3.ZERO, Color(0.2, 0.6, 0.15), 0.3, 0.0, 0.4, 0.4, "bush_medium"),
+		SemanticProbeGeneratorScript.make_probe(
+			Vector3(0, 1, 0), Color(0.25, 0.7, 0.2), 0.2, 0.0, 0.2, 0.0, "bush_medium_top"),
+	])
+
+	var tree := AutoObjectScript.new()
+	tree.name = "tree_tall"
+	tree.set_semantic_probes([
+		SemanticProbeGeneratorScript.make_probe(
+			Vector3.ZERO, Color(0.35, 0.25, 0.15), 0.9, 0.0, 0.0, 1.0, "tree_trunk"),
+		SemanticProbeGeneratorScript.make_probe(
+			Vector3(0, 2, 0), Color(0.15, 0.5, 0.1), 0.4, 0.0, 0.3, 0.0, "tree_canopy"),
+	])
+
+	var grass := AutoObjectScript.new()
+	grass.name = "grass_patch"
+	grass.set_semantic_probes([
+		SemanticProbeGeneratorScript.make_probe(
+			Vector3.ZERO, Color(0.3, 0.7, 0.2), 0.1, 0.0, 0.1, 0.0, "grass")
+	])
+	return [rock, bush, tree, grass]
 
 
 static func load_mesh_entries(use_asset_names: bool = false) -> Array[Dictionary]:

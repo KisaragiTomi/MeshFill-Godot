@@ -2,14 +2,19 @@
 #version 450
 
 // Converts compact voxel placement records to world-space placement records.
-// Binding order must match VoxelPlacementOutput._results_to_world_gpu:
+// Binding order must match PlacementResultCodec.dispatch_results_to_world:
 //   set 0 binding 0: readonly placement_result_vec4x4 records.
 //   set 0 binding 1: writeonly world_result_vec4x4 records.
+//   set 0 binding 2: readonly pivot_records (container-resident; dummy when
+//                    pivot_offset.w == 0 and the push pivot is used instead).
+// Pivot source (pivot_offset.w > 0.5 = per-record mode): each record carries
+// global_pivot_index in record[1].w (-1 = zero pivot); the pivot world offset
+// is read from the runtime pivot records instead of one shared push value.
 // Output layout:
 //   0: vec4(instance_position.xyz, score)
 //   1: vec4(anchor_position.xyz, yaw_degrees)
-//   2: vec4(support_ratio, solid_collision, complexity_overlap, clearance_overlap)
-//   3: vec4(ignored_sample, valid, asset_index, scale_index)
+//   2: vec4 record[2] verbatim (solid_collision, loss_before, loss_after, clearance)
+//   3: vec4(record[3].x, valid, asset_index, global_pivot_index)
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
@@ -21,11 +26,20 @@ layout(set = 0, binding = 1, std430) restrict writeonly buffer WorldResults {
 	vec4 world_results[];
 };
 
+struct RuntimePivotRecord {
+	vec4 offset_bias;             // xyz = descriptor-local WORLD offset, w = score_bias
+	uvec4 ids_pad;
+};
+
+layout(set = 0, binding = 2, std430) restrict readonly buffer RuntimePivotRecords {
+	RuntimePivotRecord runtime_pivot_records[];
+};
+
 layout(push_constant, std430) uniform Params {
 	ivec4 counts;       // record_count, rotation_count, input_stride, output_stride
 	vec4 grid_origin;   // xyz, pad
 	vec4 voxel_size;    // xyz, pad
-	vec4 pivot_offset;  // xyz, pad
+	vec4 pivot_offset;  // xyz = shared push pivot, w = use per-record pivot_records (0/1)
 } params;
 
 const float MIN_VOXEL_SIZE = 0.0001;
@@ -88,6 +102,12 @@ void main() {
 	vec3 safe_voxel_size = max(params.voxel_size.xyz, vec3(MIN_VOXEL_SIZE));
 	vec3 anchor_position = params.grid_origin.xyz + origin_score.xyz * safe_voxel_size;
 	vec3 pivot = params.pivot_offset.xyz;
+	if (params.pivot_offset.w > 0.5) {
+		int global_pivot_index = int(round(ids.w));
+		pivot = global_pivot_index >= 0
+			? runtime_pivot_records[global_pivot_index].offset_bias.xyz
+			: vec3(0.0);
+	}
 	vec3 pivot_world_offset = rotate_yaw_y(pivot, cos_y, sin_y);
 	vec3 instance_position = anchor_position - pivot_world_offset;
 	float valid = debug1.y > 0.5 ? 1.0 : 0.0;

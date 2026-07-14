@@ -17,7 +17,8 @@
 // `min_neighbors` is read from grid_size.w; 0 is treated as the legacy default 6.
 //
 // Input occupancy_buf bit0 = solid.
-// Output collision_buf: R8 unorm collision strength, four voxels packed per uint.
+// Output collision_buf: one uint32 per voxel, quantized unorm8 collision
+// strength (0..255) in the low byte.
 
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
@@ -26,7 +27,7 @@ layout(set = 0, binding = 0, std430) restrict readonly buffer Occupancy {
 };
 
 layout(set = 0, binding = 1, std430) restrict buffer CollisionField {
-    uint collision_field_r8_words[];
+    uint collision_field_u32[];
 };
 
 layout(push_constant, std430) uniform Params {
@@ -50,20 +51,10 @@ uint quantize_unorm8(float value) {
     return uint(round(clamp(value, 0.0, 1.0) * 255.0));
 }
 
+// One uint32 per voxel; the output buffer is zero-initialised per dispatch, so
+// atomicMax on the quantized value is equivalent to the old per-byte store.
 void store_collision_r8(uint index, float value) {
-    uint word_index = index >> 2u;
-    uint shift = (index & 3u) * 8u;
-    uint mask = 0xFFu << shift;
-    uint q = quantize_unorm8(value);
-    uint old_word = collision_field_r8_words[word_index];
-    for (int attempt = 0; attempt < 32; attempt++) {
-        uint new_word = (old_word & ~mask) | (q << shift);
-        uint previous = atomicCompSwap(collision_field_r8_words[word_index], old_word, new_word);
-        if (previous == old_word) {
-            return;
-        }
-        old_word = previous;
-    }
+    atomicMax(collision_field_u32[index], quantize_unorm8(value));
 }
 
 void main() {

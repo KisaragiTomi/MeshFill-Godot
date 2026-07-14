@@ -19,20 +19,24 @@
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 
 layout(set = 0, binding = 0, std430) restrict readonly buffer TargetField {
-    vec4 target_field[];  // .rgb = target color, .a = completeness = max(complexity, collision)
+    vec4 target_field[];  // .rgb = target color, .a = target complexity
 };
 
-layout(set = 0, binding = 1, std430) restrict readonly buffer DirtyTiles {
+layout(set = 0, binding = 1, std430) restrict readonly buffer TargetCollision {
+    uint target_collision_u32[];  // one uint per voxel, quantized 0..255 in the low byte
+};
+
+layout(set = 0, binding = 2, std430) restrict readonly buffer DirtyTiles {
     uint dirty_tile_ids[];
 };
 
 // Output: packed anchors (x, y, z, reserved) as uvec4
-layout(set = 0, binding = 2, std430) restrict buffer AnchorOut {
+layout(set = 0, binding = 3, std430) restrict buffer AnchorOut {
     uvec4 anchors[];
 };
 
 // Output: atomic counter for number of anchors written
-layout(set = 0, binding = 3, std430) restrict buffer AnchorCount {
+layout(set = 0, binding = 4, std430) restrict buffer AnchorCount {
     uint anchor_count;
 };
 
@@ -51,6 +55,10 @@ int voxel_index(ivec3 p) {
 
 bool in_bounds(ivec3 p) {
     return all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, grid_size_pad.xyz));
+}
+
+float load_target_collision(uint index) {
+    return float(target_collision_u32[index] & 0xFFu) * (1.0 / 255.0);
 }
 
 ivec3 tile_id_to_origin(uint tile_id) {
@@ -83,7 +91,7 @@ void main() {
     // Anchor iff the cell is inside the target-occupied volume.
     if (in_bounds(p)) {
         int idx = voxel_index(p);
-        float tv = target_field[idx].a;
+        float tv = max(target_field[idx].a, load_target_collision(uint(idx)));
         if (tv > min_target) {
             try_emit_anchor(p);
         }

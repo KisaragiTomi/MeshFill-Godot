@@ -5,12 +5,12 @@ extends RefCounted
 ## GPU↔CPU debug 承载的统一设施（《统一Debug承载与输出字典精简方案.md》方案一）。
 ##
 ## 项目里自发长出多套同构的 GPU debug 缓冲机制——命名计数槽（score_contract_debug 48 字、
-## candidate_route_binding_debug 16 字）与逐体素通道场（debug_voxel 8 通道）——每套都把
+## target_stats 9 字）与逐体素通道场（debug_voxel 8 通道）——每套都把
 ## 「GLSL 声明 + 槽位名表 + reset 打包 + readback + 名表解码」手写一遍。本类把这条链收敛成
 ## 一个由 **单一 schema** 驱动的设施：schema 在 GDScript 侧是唯一真源，GLSL 声明块由
 ## [method emit_glsl_block] 生成后以 `// @@GEN debug_set <name> … // @@END debug_set <name>`
 ## 标记粘进 `.glsl`（本项目走 shader_compile_spirv_from_source 直读原始串、绕过预处理器，
-## 因此 `#include` 不参与编译——共享一律走 codegen 生成块，见 [RouteTileSharedGLSL]）。
+## 因此 `#include` 不参与编译——共享一律走 codegen 生成块，见 [PlacementSharedGLSL]）。
 ## tools/verify_glsl_gen_blocks.gd 是对应的 desync guard。
 ##
 ## 与 [PushConstantLayout]（push 打包器）同款「有序字段表→机器强制布局」思路，只是这里管的是
@@ -44,7 +44,7 @@ const DECODE_INVERTED_MIN := "inverted_min"   # atomicMax(BASE - q) 反转 min �
 
 # ── schema 单一真源（SSOT）：每个 buffer 一份，GLSL 声明与 GDScript 解码都从这里派生 ──
 
-## score_contract_debug（score_voxel_tile.glsl set1 binding8，48 字，magic "MFPR"）。
+## score_contract_debug（score_anchor_asset_residual.glsl set1 binding8，48 字，magic "MFPR"）。
 ## 契约守卫，always-on。48 个 decode 名与 GLSL 常量名部分不同（如 ENABLED vs contract_enabled），
 ## 故每槽同时携带 name（decode 键，= 原 SCORE_CONTRACT_DEBUG_NAMES）与 glsl（GLSL 常量名，仅有
 ## 常量的槽携带；debug_max 通道用单个 DEBUG_MAX_BASE 基址寻址，故 24–30 无独立常量）。
@@ -113,69 +113,11 @@ const SCORE_CONTRACT_STATS := {
 	],
 }
 
-## candidate_route_binding_debug（16 字，无 magic；word0=enabled、word1=range_count 由 CPU 播种）。
-## 由 score_voxel_tile.glsl（set2 binding2，低字 0–7）与 candidate_route_sparse_adapter.glsl
-## （set0 binding3，高字 8–14）共同写入，VPG 回读解码。原本 16 个槽名只以内联字典键存在于解码器
-## 里（无名表、无常量）——这里收敛为 schema：GLSL 声明 + 常量块 + GDScript 解码名一处定义。
-const CANDIDATE_ROUTE_BINDING_STATS := {
-	"name": "candidate_route_binding_stats",
-	"kind": KIND_STAT_SLOTS,
-	"glsl_struct": "CandidateRouteBindingDebug",
-	"glsl_array": "candidate_route_binding_debug",
-	# set/binding 因 shader 而异（score set2/b2、adapter set0/b3），emit 时按 consumer 覆盖。
-	"set": 2,
-	"binding": 2,
-	"word_count": 16,
-	"const_prefix": "CANDIDATE_ROUTE_BINDING_",
-	"slots": [
-		{"index": 0, "name": "enabled", "glsl": "CANDIDATE_ROUTE_BINDING_ENABLED"},
-		{"index": 1, "name": "range_count", "glsl": "CANDIDATE_ROUTE_BINDING_RANGE_COUNT"},
-		{"index": 2, "name": "range_reads", "glsl": "CANDIDATE_ROUTE_BINDING_RANGE_READS", "op": "add"},
-		{"index": 3, "name": "record_reads", "glsl": "CANDIDATE_ROUTE_BINDING_RECORD_READS", "op": "add"},
-		{"index": 4, "name": "first_range_start", "glsl": "CANDIDATE_ROUTE_BINDING_FIRST_RANGE_START"},
-		{"index": 5, "name": "first_range_count", "glsl": "CANDIDATE_ROUTE_BINDING_FIRST_RANGE_COUNT"},
-		{"index": 6, "name": "first_record_x", "glsl": "CANDIDATE_ROUTE_BINDING_FIRST_RECORD_X"},
-		{"index": 7, "name": "first_record_y", "glsl": "CANDIDATE_ROUTE_BINDING_FIRST_RECORD_Y"},
-		{"index": 8, "name": "sparse_adapter_candidate_count", "glsl": "CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_CANDIDATE_COUNT", "op": "add"},
-		{"index": 9, "name": "sparse_adapter_record_reads", "glsl": "CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RECORD_READS", "op": "add"},
-		{"index": 10, "name": "sparse_adapter_range_index", "glsl": "CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_INDEX"},
-		{"index": 11, "name": "sparse_adapter_output_capacity", "glsl": "CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_OUTPUT_CAPACITY"},
-		{"index": 12, "name": "sparse_adapter_range_start", "glsl": "CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_START"},
-		{"index": 13, "name": "sparse_adapter_range_count", "glsl": "CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RANGE_COUNT"},
-		{"index": 14, "name": "sparse_adapter_record_capacity", "glsl": "CANDIDATE_ROUTE_BINDING_SPARSE_ADAPTER_RECORD_CAPACITY"},
-		{"index": 15, "name": "reserved15"},
-	],
-}
+# candidate_route_binding_stats / candidate_route_debug schemas retired with the
+# Candidate route bridge (2026-07-13): the anchor fine pipeline consumes anchors
+# directly and the route pack/adapter shaders were deleted.
 
-## candidate_route_debug（pack_candidate_route_records_from_votes.glsl set0 binding5，
-## 16 字，magic "GPRP" 在 word4）。此 buffer [b]只写不回读[/b]（CPU 从不解码），故仅把
-## [b]声明[/b]收敛为 codegen；magic 与逐槽写入留在 shader 手写（不生成常量、不进 magic）。
-## slots 仅作布局文档。（原 expand_scene_voxel_tile_routes.glsl 消费者已并入 pack——
-## summary 空 tile 过滤成为同一 shader 的 use_summary_filter 开关。）
-const CANDIDATE_ROUTE_DEBUG := {
-	"name": "candidate_route_debug",
-	"kind": KIND_STAT_SLOTS,
-	"glsl_struct": "CandidateRouteDebug",
-	"glsl_array": "candidate_route_debug",
-	"set": 0,
-	"binding": 5,
-	"word_count": 16,
-	# 写侧布局文档（不生成 GLSL 常量；magic@4 因 shader 而异，不入 schema）：
-	"slots": [
-		{"index": 0, "name": "written_records", "op": "store"},
-		{"index": 1, "name": "positive_votes", "op": "store"},
-		{"index": 2, "name": "duplicate_marks", "op": "store"},
-		{"index": 3, "name": "overflow_records", "op": "store"},
-		{"index": 4, "name": "magic"},
-		{"index": 5, "name": "asset_count"},
-		{"index": 6, "name": "tile_count"},
-		{"index": 7, "name": "record_capacity"},
-		{"index": 8, "name": "written_records_echo"},
-		{"index": 9, "name": "skipped_empty_tiles"},
-	],
-}
-
-## debug_voxel（score_voxel_tile.glsl set0 binding7，8 通道 float 场）。
+## debug_voxel（score_anchor_asset_residual.glsl set0 binding7，8 通道 float 场）。
 ## index_space = voxel_dense_xzy（稠密体素空间，x 最快 → z → y 最外；voxel_index() 计算
 ## p.x + gx*(p.z + gz*p.y)）。读侧默认关闭（settings debug_read_voxel_channels），是可 gate
 ## 的观测数据（非契约守卫）。
@@ -242,17 +184,12 @@ const TARGET_STATS := {
 ## 每个生成块被哪些 shader 承载（供 verify_glsl_gen_blocks.gd 扫描；set/binding 按 shader 覆盖）。
 ## 每项：{schema, overrides:{set,binding}}。marker 名统一 debug_set <schema.name>。
 const CONSUMERS := [
-	# candidate_route_binding_debug —— pilot：decl+consts 一体块（binding 处无既有独立常量段）。
-	{"schema": CANDIDATE_ROUTE_BINDING_STATS, "shader": "res://shaders/score_voxel_tile.glsl", "set": 2, "binding": 2},
-	{"schema": CANDIDATE_ROUTE_BINDING_STATS, "shader": "res://shaders/candidate_route_sparse_adapter.glsl", "set": 0, "binding": 3},
-	# candidate_route_debug —— 只写不回读，仅声明入 codegen。
-	{"schema": CANDIDATE_ROUTE_DEBUG, "shader": "res://shaders/pack_candidate_route_records_from_votes.glsl", "set": 0, "binding": 5},
 	# score_contract_debug —— decl 与 consts 分处两段（binding 扎堆区 / 常量扎堆区），故分 section。
-	{"schema": SCORE_CONTRACT_STATS, "shader": "res://shaders/score_voxel_tile.glsl", "section": SECTION_DECL},
-	{"schema": SCORE_CONTRACT_STATS, "shader": "res://shaders/score_voxel_tile.glsl", "section": SECTION_CONSTS},
+	{"schema": SCORE_CONTRACT_STATS, "shader": "res://shaders/score_anchor_asset_residual.glsl", "section": SECTION_DECL},
+	{"schema": SCORE_CONTRACT_STATS, "shader": "res://shaders/score_anchor_asset_residual.glsl", "section": SECTION_CONSTS},
 	# debug_voxel —— 同样 decl / consts 分处两段。
-	{"schema": VOXEL_DEBUG_CHANNELS, "shader": "res://shaders/score_voxel_tile.glsl", "section": SECTION_DECL},
-	{"schema": VOXEL_DEBUG_CHANNELS, "shader": "res://shaders/score_voxel_tile.glsl", "section": SECTION_CONSTS},
+	{"schema": VOXEL_DEBUG_CHANNELS, "shader": "res://shaders/score_anchor_asset_residual.glsl", "section": SECTION_DECL},
+	{"schema": VOXEL_DEBUG_CHANNELS, "shader": "res://shaders/score_anchor_asset_residual.glsl", "section": SECTION_CONSTS},
 	# target_stats —— 双 shader 承载，decl+consts 一体块（binding 处紧跟既有常量段）。
 	{"schema": TARGET_STATS, "shader": "res://shaders/target_scene_voxel.glsl", "set": 1, "binding": 4},
 	{"schema": TARGET_STATS, "shader": "res://shaders/target_sv_pack_read_buffers.glsl", "set": 0, "binding": 5},

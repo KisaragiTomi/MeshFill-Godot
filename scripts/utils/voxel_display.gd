@@ -74,12 +74,40 @@ static func _build_gpu_instances(
 	if count <= 0:
 		return null
 	_apply_voxel_material(mesh, true, Color.WHITE, options)
+	var writer = VoxelInstanceDisplayGPUScript.new()
+	return _build_writer_node(
+		mesh,
+		count,
+		world_aabb,
+		options,
+		writer,
+		writer.write_instances.bind(transform_floats, color_floats),
+		"VoxelDisplay GPU instance build skipped: %s",
+		"VoxelDisplay GPU instance build failed: %s",
+		"voxel_instance_writer"
+	)
+
+
+# Shared orchestration for GPU-backed voxel display nodes. write_call must be
+# bound to the same writer passed here so writing and disposal share ownership.
+static func _build_writer_node(
+	mesh: Mesh,
+	instance_count: int,
+	world_aabb: AABB,
+	options: Dictionary,
+	writer,
+	write_call: Callable,
+	warn_fmt: String,
+	fail_fmt: String,
+	meta_key: String,
+	extra_meta: Dictionary = {}
+) -> MultiMeshInstance3D:
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
 	mm.mesh = mesh
-	mm.instance_count = count
+	mm.instance_count = instance_count
 	mm.custom_aabb = world_aabb
 
 	var node := MultiMeshInstance3D.new()
@@ -87,41 +115,31 @@ static func _build_gpu_instances(
 	node.multimesh = mm
 	node.custom_aabb = world_aabb
 
-	var writer = VoxelInstanceDisplayGPUScript.new()
 	if not writer.is_ready():
-		push_warning("VoxelDisplay GPU instance build skipped: %s" % writer.last_reason())
+		push_warning(warn_fmt % writer.last_reason())
 		writer.dispose()
 		node.free()
 		return null
-	if not writer.bind_multimesh(mm.get_rid(), count):
-		push_warning("VoxelDisplay GPU instance build skipped: %s" % writer.last_reason())
+	if not writer.bind_multimesh(mm.get_rid(), instance_count):
+		push_warning(warn_fmt % writer.last_reason())
 		writer.dispose()
 		node.free()
 		return null
-	if not writer.write_instances(transform_floats, color_floats):
-		push_error("VoxelDisplay GPU instance build failed: %s" % writer.last_reason())
+	if not write_call.call():
+		push_error(fail_fmt % writer.last_reason())
 		writer.dispose()
 		node.free()
 		return null
 
+	# Release GPU resources while the writer is still fully alive. PREDELETE
+	# cannot safely bind a half-destructed object for render-thread cleanup.
 	node.tree_exiting.connect(writer.dispose)
-	node.set_meta("voxel_instance_writer", writer)
+
+	# Retain the writer and its GPU resources for the display node's lifetime.
+	node.set_meta(meta_key, writer)
+	for key in extra_meta:
+		node.set_meta(key, extra_meta[key])
 	return node
-
-
-# Per-instance recolor for a display built by _build_gpu_instances. Callers
-# must go through this instead of MultiMesh.set_instance_color: the instance
-# data lives only in the GPU buffer, and the CPU setter's zero-seeded data
-# cache would wipe the transforms of the whole dirty region around the index.
-static func write_instance_color(node: MultiMeshInstance3D, index: int, color: Color) -> bool:
-	if node == null or not is_instance_valid(node):
-		return false
-	if not node.has_meta("voxel_instance_writer"):
-		return false
-	var writer = node.get_meta("voxel_instance_writer")
-	if writer == null or not writer.has_method("write_instance_color"):
-		return false
-	return writer.write_instance_color(index, color)
 
 
 static func _pack_center_transforms(centers: PackedVector3Array) -> PackedFloat32Array:
@@ -225,46 +243,19 @@ static func build_field_gpu(
 	var cell := BoxMesh.new()
 	cell.size = cell_size * fill
 	_apply_voxel_material(cell, true, Color.WHITE, options)
-
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.use_colors = true
-	mm.mesh = cell
-	mm.instance_count = voxel_count
-	mm.custom_aabb = world_aabb
-
-	var node := MultiMeshInstance3D.new()
-	node.name = str(options.get("name", "VoxelDisplay"))
-	node.multimesh = mm
-	node.custom_aabb = world_aabb
-
 	var writer = VoxelFieldDisplayGPUScript.new()
-	if not writer.is_ready():
-		push_warning("VoxelDisplay.build_field_gpu skipped: %s" % writer.last_reason())
-		writer.dispose()
-		node.free()
-		return null
-	if not writer.bind_multimesh(mm.get_rid(), voxel_count):
-		push_warning("VoxelDisplay.build_field_gpu skipped: %s" % writer.last_reason())
-		writer.dispose()
-		node.free()
-		return null
-	if not writer.write_field(fields, params):
-		push_error("VoxelDisplay.build_field_gpu: %s" % writer.last_reason())
-		writer.dispose()
-		node.free()
-		return null
-
-	# Free the writer's GPU resources while the node (and writer) are still alive,
-	# on the render thread during a normal frame. Deferring this to the writer's
-	# PREDELETE would bind a half-destructed object and leak.
-	node.tree_exiting.connect(writer.dispose)
-
-	# Keep the writer (and its GPU resources) alive for the node's lifetime.
-	node.set_meta("voxel_field_writer", writer)
-	node.set_meta("voxel_display_backend", "gpu")
-	node.set_meta("voxel_display_reason", "ok")
-	return node
+	return _build_writer_node(
+		cell,
+		voxel_count,
+		world_aabb,
+		options,
+		writer,
+		writer.write_field.bind(fields, params),
+		"VoxelDisplay.build_field_gpu skipped: %s",
+		"VoxelDisplay.build_field_gpu: %s",
+		"voxel_field_writer",
+		{"voxel_display_backend": "gpu", "voxel_display_reason": "ok"}
+	)
 
 
 # --- All-GPU brush tetra renderer ------------------------------------------
@@ -292,39 +283,18 @@ static func build_brush_tetra_gpu(
 	var fill := float(options.get("fill", DEFAULT_FILL))
 	var mesh := _make_tetra_mesh(cell_size, fill)
 	_apply_voxel_material(mesh, true, Color.WHITE, options)
-
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.use_colors = true
-	mm.mesh = mesh
-	mm.instance_count = instance_count
-	mm.custom_aabb = world_aabb
-
-	var node := MultiMeshInstance3D.new()
-	node.name = str(options.get("name", "VoxelDisplay"))
-	node.multimesh = mm
-	node.custom_aabb = world_aabb
-
 	var writer = BrushVoxelDisplayGPUScript.new()
-	if not writer.is_ready():
-		push_warning("VoxelDisplay.build_brush_tetra_gpu skipped: %s" % writer.last_reason())
-		writer.dispose()
-		node.free()
-		return null
-	if not writer.bind_multimesh(mm.get_rid(), instance_count):
-		push_warning("VoxelDisplay.build_brush_tetra_gpu skipped: %s" % writer.last_reason())
-		writer.dispose()
-		node.free()
-		return null
-	if not writer.write_brush(brush_voxels, params):
-		push_error("VoxelDisplay.build_brush_tetra_gpu: %s" % writer.last_reason())
-		writer.dispose()
-		node.free()
-		return null
-
-	node.tree_exiting.connect(writer.dispose)
-	node.set_meta("voxel_brush_writer", writer)
-	return node
+	return _build_writer_node(
+		mesh,
+		instance_count,
+		world_aabb,
+		options,
+		writer,
+		writer.write_brush.bind(brush_voxels, params),
+		"VoxelDisplay.build_brush_tetra_gpu skipped: %s",
+		"VoxelDisplay.build_brush_tetra_gpu: %s",
+		"voxel_brush_writer"
+	)
 
 
 # Shared material setup for box and tetra voxel meshes.

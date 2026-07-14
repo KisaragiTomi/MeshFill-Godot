@@ -6,6 +6,8 @@ const AutoObjectScript := preload("res://scripts/auto_object.gd")
 const DescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const AutoVoxelFixture := preload("res://scripts/utils/voxel_fixtures.gd")
+const VPGScript := preload("res://scripts/voxel_placement_generator.gd")
+const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 
 var _result_label: Label3D
 var _test_results: Array[Dictionary] = []
@@ -598,47 +600,84 @@ static func check_resident_placement_writeback() -> Dictionary:
 		return {"ok": false, "detail": "setup failed: profile_id=%d runtime_reason=%s" % [profile_id, runtime_reason]}
 	var live_before: int = runtime.get_live_count()
 
-	# Ground slab at y=0: seeds collision/complexity field content the penalty-only scorer reads
-	# (overlap/clearance/target-fit). Support is no longer scored, so this is field content, not a support prop.
+	# Empty CurrentSV (all-zero fields): residual gain = how much placing the
+	# asset moves the SV toward the target. The scorer composes(Current, AD) and
+	# compares against TargetSV, so the target must carry what the asset writes:
+	# its color/complexity in the target field and full target collision.
 	var complexity := PackedFloat32Array()
 	complexity.resize(voxel_count)
 	var collision := PackedFloat32Array()
 	collision.resize(voxel_count)
-	for z in range(grid.z):
-		for x in range(grid.x):
-			var idx := VoxelGeneral.voxel_index(Vector3i(x, 0, z), grid)
-			complexity[idx] = 1.0
-			collision[idx] = 1.0
-	# Uniform target coverage (alpha=1) so the coverage gate always passes.
+	var asset_color := Color(0.3, 0.8, 0.4, 1.0)
 	var target_field := PackedFloat32Array()
 	target_field.resize(voxel_count * 4)
 	for ti in range(voxel_count):
+		target_field[ti * 4 + 0] = asset_color.r
+		target_field[ti * 4 + 1] = asset_color.g
+		target_field[ti * 4 + 2] = asset_color.b
 		target_field[ti * 4 + 3] = 1.0
+	var target_collision_floats := PackedFloat32Array()
+	target_collision_floats.resize(voxel_count)
+	target_collision_floats.fill(1.0)
+	var target_collision_r8 := SceneVoxelTileCodecScript.pack_collision_field_u32_bytes(
+		target_collision_floats, voxel_count)
+
+	# Anchor handoff (origin_count == anchor_count contract): a spaced grid of
+	# anchors at y=1, structurally identical to the prefilter's resident handoff.
+	var anchor_voxels: Array = []
+	for az in range(2, grid.z - 2, 8):
+		for ax in range(2, grid.x - 2, 8):
+			anchor_voxels.append(Vector3i(ax, 1, az))
+	var handoff: Dictionary = VPGScript.build_cpu_anchor_handoff(committer_rd, anchor_voxels, 1)
+	if not bool(handoff.get("ok", false)):
+		spa.dispose()
+		committer.dispose(false)
+		return {"ok": false, "detail": "anchor handoff build failed: %s" % str(handoff.get("reason", "?"))}
 
 	var asset_defs: Array = spa._build_placement_asset_defs()
+	# TargetSV 目标场以【常驻 GPU buffer】交接（reader 已 resident-GPU-only，不再收 CPU 字节）。
+	# buffer 建在 committer_rd 上——SPA/profile 容器/placer/committer 共用同一设备，borrow 设备校验才过。
+	var target_field_byte_data := target_field.to_byte_array()
+	var target_field_buf := committer_rd.storage_buffer_create(target_field_byte_data.size(), target_field_byte_data)
+	var target_collision_buf := committer_rd.storage_buffer_create(target_collision_r8.size(), target_collision_r8)
+	if not target_field_buf.is_valid() or not target_collision_buf.is_valid():
+		if target_field_buf.is_valid(): committer_rd.free_rid(target_field_buf)
+		if target_collision_buf.is_valid(): committer_rd.free_rid(target_collision_buf)
+		VPGScript.release_cpu_anchor_handoff(committer_rd, handoff)
+		spa.dispose()
+		committer.dispose(false)
+		return {"ok": false, "detail": "target read buffer create failed"}
 	var settings := {
 		"rotation_slots": 4,
 		"result_capacity": 8,
 		"min_distance_voxels": 2.0,
 		"collision_limit": 0.5,
 		"clearance_limit": 2.0,
-		"collision_penalty": 1.0,
-		"target_field_bytes": target_field,
-		"seed": 20260702,
+		"target_read_buffers": {
+			"target_field_buffer": target_field_buf,
+			"target_collision_buffer": target_collision_buf,
+			"rendering_device": committer_rd,
+			"target_field_byte_count": target_field_byte_data.size(),
+			"target_collision_byte_count": target_collision_r8.size(),
+			"target_field_format": "vec4",
+			"target_field_stride_bytes": 16,
+			"target_collision_format": "unorm8_u32",
+			"resident_target_read_buffer_handoff": true,
+			"resident_target_read_buffer_owner": "SPATest",
+		},
+		"anchor_candidate_handoff": handoff,
 		"gpu_autoobject_runtime": runtime,
 		"write_accepted_placements_to_gpu_runtime": true,
 		"auto_voxel_runtime_profile_container": spa.get_runtime_profile_container(),
 		"scene_voxel_committer": committer,
 		"mesh_description_buffer": spa.get_mesh_description_buffer(),
 		"runtime_writeback_options": {"debug_read_stats": true},
-		# Fresh-world bootstrap: SVTile numeric object refs are only confirmed
-		# after the first object-ref update pass; allow the documented debug
-		# fallback so the same-type-exclusion contract does not block this
-		# writeback-focused check (orthogonal to what it verifies).
-		"allow_runtime_spacing_full_scan_debug": true,
 	}
 	var placer = spa._get_placer()
 	var out: Dictionary = placer.run_multi_asset(complexity, collision, asset_defs, grid, voxel_size, grid_origin, settings)
+	VPGScript.release_cpu_anchor_handoff(committer_rd, handoff)
+	committer_rd.free_rid(target_field_buf)
+	committer_rd.free_rid(target_collision_buf)
 
 	var failures := PackedStringArray()
 	var contract: Dictionary = out.get("gpu_runtime_profile_contract", {})
@@ -668,19 +707,22 @@ static func check_resident_placement_writeback() -> Dictionary:
 		failures.append("asset_results empty")
 	else:
 		var ar: Dictionary = asset_results[0]
+		# GPU-direct writeback: world conversion runs on the resident buffers
+		# inside the writeback dispatch — no CPU world dictionaries.
 		if not (ar.get("world_results", []) as Array).is_empty():
-			failures.append("world_results not empty (CPU dict readback still active)")
-		if not (ar.get("results", []) as Array).is_empty():
-			failures.append("raw results not empty (CPU dict readback still active)")
-		if not (ar.get("placement_result_buffers", {}) as Dictionary).is_empty():
-			failures.append("placement_result_buffers not released (RID leak)")
-		# Penalty-only scoring: valid placements score <= 0 (clean run == 0.0), so the sum
-		# cannot distinguish "pass ran, all clean" from "pass never ran" — assert on the
-		# valid count instead, and keep a positive-sum corruption guard.
-		if total_placed > 0 and int(ar.get("placement_valid_count", -1)) != total_placed:
-			failures.append("placement_valid_count=%s != total_placed=%d (score-sum pass not effective)" % [str(ar.get("placement_valid_count", "missing")), total_placed])
-		if float(ar.get("placement_score_sum", 0.0)) > 0.0:
-			failures.append("placement_score_sum=%s > 0 (impossible under penalty-only scoring)" % str(ar.get("placement_score_sum", 0.0)))
+			failures.append("world_results not empty (CPU world conversion ran in GPU-direct mode)")
+		# The 64 B result records ARE always decoded (report grouping input) —
+		# per-asset result_count must match the common-pool total for one asset.
+		if int(ar.get("result_count", -1)) != total_placed:
+			failures.append("asset result_count=%s != total_placed=%d" % [str(ar.get("result_count", "missing")), total_placed])
+	# Residual-gain scoring: every valid placement has gain > gain_threshold (0),
+	# so the GPU score-sum scalar must be positive and count every placement.
+	if total_placed > 0 and int(out.get("placement_valid_count", -1)) != total_placed:
+		failures.append("placement_valid_count=%s != total_placed=%d (score-sum pass not effective)" % [str(out.get("placement_valid_count", "missing")), total_placed])
+	if total_placed > 0 and float(out.get("placement_score_sum", 0.0)) <= 0.0:
+		failures.append("placement_score_sum=%s <= 0 (residual gain must be positive for valid placements)" % str(out.get("placement_score_sum", 0.0)))
+	if not (out.get("placement_result_buffers", {}) as Dictionary).is_empty():
+		failures.append("placement_result_buffers retained without request (RID leak)")
 
 	var detail := "spawned=%d live=%d->%d api=%s shader_consumed=%s stats_applied=%s" % [
 		spawned, live_before, live_after,
@@ -696,13 +738,14 @@ static func check_resident_placement_writeback() -> Dictionary:
 
 
 ## 编辑器桥静态检查：stamp-only 提交链 + BrushSV/BlendSV/feedback 端到端。
-## A：CPU 入口盖章 → commit_scene_voxels → 常驻 field debug 回读验证内容落场且提交摘要为 stamp_only_commit。
+## A：configure_scene_voxel_grid 设 3D 网格 → CPU 入口盖章（记录带显式 voxel_min/voxel_max
+##    3D bounds）→ commit_scene_voxels → 常驻 field debug 回读验证内容落场且提交摘要为
+##    stamp_only_commit。
 ## B：BrushSV 常驻层写入 → BlendSV 按需合成（brush 覆盖优先、committed SV 保持纯 auto）→
 ##    score_blendsv_feedback_against_target 与 target 对比后临时体素释放。
 static func check_stamp_only_commit_and_blend_sv() -> Dictionary:
 	var failures := PackedStringArray()
 	var base_res := 16
-	var volume_res := 8
 
 	# --- A. stamp-only commit ---
 	var committer = SceneVoxelCommitterScript.new(base_res, 16.0, true)
@@ -710,24 +753,17 @@ static func check_stamp_only_commit_and_blend_sv() -> Dictionary:
 	if committer_rd == null:
 		committer.dispose(false)
 		return {"ok": false, "detail": "committer has no RenderingDevice (run in editor with Vulkan)"}
-	var record := {
-		"id": "stamp_only_check",
-		"type": "rock",
-		"source_voxel_type": "AutoSceneVoxel",
-		"position": Vector3.ZERO,
-		"base_pixel": Vector2i(8, 8),
-		"voxel_xz": Vector2i(8, 8),
-		"volume_xz_resolution": base_res,
-		"scale": Vector3.ONE,
-		"color": Color(0.2, 0.6, 0.8, 0.7),
-		"complexity": 0.7,
-		"channel": 0,
-		"radius": 2.0,
-	}
-	committer.apply_instance_stamp_write_spec(record)
-	committer.build_voxel_volume(volume_res, [
-		{"channel": 0, "color": Color(0.2, 0.6, 0.8, 0.7), "complexity": 0.7, "y_min": 0.0, "y_max": 1.0, "subdivisions": 1},
-	])
+	# V1：build_voxel_volume 已退役——canonical 网格配置走 configure_scene_voxel_grid
+	# （这里配成多 slice 3D 网格）；盖章记录由生产组装器 fixture 产出，自带显式
+	# voxel_min/voxel_max 3D bounds（min 含端点、max 不含端点），deferred stamp 后由
+	# commit_scene_voxels 一次散射发布。
+	committer.configure_scene_voxel_grid(Vector3i(base_res, 4, base_res), Vector3.ONE, committer.grid_origin)
+	var record: Dictionary = AutoVoxelFixture.make_scene_voxel_stamp_record(
+		"stamp_only_check", Vector2i(8, 8), 0, Color(0.2, 0.6, 0.8, 0.7), 0.7, base_res)
+	if not (record.get("voxel_min") is Vector3i and record.get("voxel_max") is Vector3i):
+		failures.append("fixture stamp record lacks explicit voxel_min/voxel_max 3D bounds")
+	committer.apply_instance_stamp_write_spec(record, true)
+	committer.commit_scene_voxels()
 	var commit_summary: Dictionary = committer.get_last_scene_voxel_commit_summary()
 	if not bool(commit_summary.get("ok", false)):
 		failures.append("commit summary not ok: %s" % str(commit_summary.get("field_scatter_reason", "?")))
@@ -742,8 +778,9 @@ static func check_stamp_only_commit_and_blend_sv() -> Dictionary:
 		committed_max = maxf(committed_max, value)
 	if committed_max < 0.5:
 		failures.append("stamped complexity missing from resident field (max=%.3f)" % committed_max)
+	# get_scene_voxels 现为常驻复杂度 field 的 3D 回读组装（alpha>0 即已盖章体素）
 	if committer.get_scene_voxels().is_empty():
-		failures.append("public scene_voxels projection empty")
+		failures.append("scene voxel 3D readback assembly empty")
 
 	# --- B. BrushSV / BlendSV / feedback ---
 	var spa := SPAScript.new()

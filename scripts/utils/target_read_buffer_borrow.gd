@@ -16,7 +16,9 @@ static func resolve(
 	target_read_buffers: Dictionary,
 	expected_field_bytes: int,
 	rd: RenderingDevice,
-	field_buffer_keys: Array = ["target_field_buffer"]
+	field_buffer_keys: Array = ["target_field_buffer"],
+	expected_collision_bytes: int = 0,
+	collision_buffer_keys: Array = ["target_collision_buffer"]
 ) -> Dictionary:
 	if target_read_buffers.is_empty():
 		return {"ok": false, "reason": "resident_handoff_absent"}
@@ -46,10 +48,31 @@ static func resolve(
 	if field_byte_count != expected_field_bytes:
 		return {"ok": false, "reason": "resident_target_read_buffer_byte_count_mismatch"}
 
+	var collision_buffer := RID()
+	var collision_byte_count := 0
+	if expected_collision_bytes > 0:
+		var raw_collision = summary.get("target_collision_buffer", RID())
+		for key in collision_buffer_keys:
+			if target_read_buffers.has(key):
+				raw_collision = target_read_buffers.get(key)
+				break
+		collision_buffer = raw_collision if raw_collision is RID else RID()
+		if not collision_buffer.is_valid():
+			return {"ok": false, "reason": "resident_target_collision_buffer_rid_invalid"}
+		collision_byte_count = int(target_read_buffers.get(
+			"target_collision_byte_count",
+			summary.get("target_collision_byte_count", 0)
+		))
+		if collision_byte_count != expected_collision_bytes:
+			return {"ok": false, "reason": "resident_target_collision_buffer_byte_count_mismatch"}
+
 	return {
 		"ok": true,
 		"field_buffer": field_buffer,
 		"field_byte_count": field_byte_count,
+		"collision_buffer": collision_buffer,
+		"collision_byte_count": collision_byte_count,
+		"collision_format": str(target_read_buffers.get("target_collision_format", summary.get("target_collision_format", "unorm8_u32"))),
 		"lifetime": str(target_read_buffers.get("resident_target_read_buffer_lifetime", summary.get("target_read_buffer_lifetime", "ScenePlacementActor owned"))),
 		"field_format": str(target_read_buffers.get("target_field_format", summary.get("target_field_format", "vec4"))),
 		"field_stride_bytes": int(target_read_buffers.get("target_field_stride_bytes", summary.get("target_field_stride_bytes", 16))),

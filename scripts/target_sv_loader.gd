@@ -152,13 +152,13 @@ static func upload_to_gpu(compute_base, scope: String = ComputeShaderBaseScript.
 		vc,
 		collision_format
 	)
-	var collision_words: PackedByteArray = TargetSceneVoxelGeneratorScript._r8_word_bytes_from_r8_bytes(
+	var collision_words: PackedByteArray = TargetSceneVoxelGeneratorScript._u32_bytes_from_r8_bytes(
 		collision_canonical,
 		vc
 	)
 	var expected_visual: int = vc * TargetSceneVoxelGeneratorScript.TARGET_RGBA8_STRIDE_BYTES
 	var expected_collision: int = vc * TargetSceneVoxelGeneratorScript.TARGET_R8_STRIDE_BYTES
-	var expected_collision_upload: int = TargetSceneVoxelGeneratorScript._target_r8_word_byte_count(vc)
+	var expected_collision_upload: int = TargetSceneVoxelGeneratorScript._target_u32_field_byte_count(vc)
 	if visual_format.is_empty() or collision_format.is_empty() \
 			or visual_canonical.size() < expected_visual \
 			or collision_canonical.size() < expected_collision \
@@ -174,7 +174,7 @@ static func upload_to_gpu(compute_base, scope: String = ComputeShaderBaseScript.
 	var visual_rid: RID = compute_base.storage_buffer_from_bytes(
 		visual_canonical.slice(0, expected_visual), scope, "target_sv_visual_rgba8")
 	var collision_rid: RID = compute_base.storage_buffer_from_bytes(
-		collision_words.slice(0, expected_collision_upload), scope, "target_sv_collision_r8_words")
+		collision_words.slice(0, expected_collision_upload), scope, "target_sv_collision_u32")
 	if not visual_rid.is_valid() or not collision_rid.is_valid():
 		return {"ok": false, "reason": "gpu_buffer_create_failed"}
 

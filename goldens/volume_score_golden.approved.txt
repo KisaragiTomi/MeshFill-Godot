@@ -1,179 +1,197 @@
-golden volume_score v1
+golden volume_score v2
 meta asset_count=3 anchor_count=64 grid=256x16x256 rotation_slots=12 anchor_spacing=32
 asset 0 name=geo_sm_testleaf_test2
-score_contract_stats stat_slots magic_ok=true word_count=48
-  magic=1296453714
-  contract_enabled=false
-  runtime_object_capacity=0
-  profile_count=0
-  alive_object_reads=0
-  profile_records_matched=0
-  runtime_overlap_tests=0
-  runtime_overlap_hits=0
-  profile_table_reads=0
-  asset_profile_id=0
-  candidate_invocations=0
-  profile_complexity_q1000=0.0
-  runtime_profile_reads=0
-  runtime_profile_matches=0
-  probe_record_reads=0
-  reserved_profile_side_read=0
-  pivot_record_reads=0
-  probe_weight_q1000=0.0
-  reserved_profile_side_metric=0
-  pivot_bias_q1000=0.0
-  profile_probe_count=0
-  reserved_profile_side_count=0
-  profile_pivot_count=0
-  debug_max_target_coverage_q1000=1.0
-  debug_max_target_complexity_fit_q1000=0.902
-  debug_max_target_color_fit_q1000=0.928
-  debug_max_target_density_q1000=0.941
-  debug_max_placement_score_q1000=0.439
-  debug_max_best_rotation_slot=0.011
-  debug_max_solid_collision_q1000=1.0
-  debug_max_clearance_overlap_q1000=1.0
-  runtime_spacing_tests=0
-  runtime_spacing_profile_matches=0
-  runtime_spacing_rejections=0
-  runtime_spacing_min_distance_q1000=0.0
-  scene_voxel_tile_object_ref_enabled=false
-  scene_voxel_tile_object_ref_tile_reads=0
-  scene_voxel_tile_object_ref_slot_reads=0
-  scene_voxel_tile_object_ref_object_reads=0
-  scene_voxel_tile_object_ref_duplicate_reads=0
-  reserved40=0
-  reserved41=0
-  reserved42=0
-  reserved43=0
-  reserved44=0
-  reserved45=0
-  reserved46=0
-  reserved47=0
-voxel_debug_channels channel_field index_space=voxel_dense_xzy channels=8 element_count=1048576
-  channel target_coverage
-  channel target_complexity_fit
-  channel target_color_fit
-  channel target_density
-  channel placement_score
-  channel best_rotation_slot
-  channel solid_collision
-  channel clearance_overlap
+anchor 0 voxel=(0, 9, 0) valid=0 yaw=0 gain_q1000=-242
+anchor 1 voxel=(32, 9, 0) valid=0 yaw=0 gain_q1000=-242
+anchor 2 voxel=(64, 9, 0) valid=0 yaw=0 gain_q1000=-242
+anchor 3 voxel=(96, 9, 0) valid=0 yaw=0 gain_q1000=-242
+anchor 4 voxel=(128, 8, 0) valid=0 yaw=0 gain_q1000=-242
+anchor 5 voxel=(160, 9, 0) valid=0 yaw=0 gain_q1000=-242
+anchor 6 voxel=(192, 9, 0) valid=0 yaw=0 gain_q1000=-242
+anchor 7 voxel=(224, 8, 0) valid=0 yaw=0 gain_q1000=-242
+anchor 8 voxel=(0, 8, 32) valid=0 yaw=0 gain_q1000=-242
+anchor 9 voxel=(32, 11, 32) valid=0 yaw=0 gain_q1000=-242
+anchor 10 voxel=(64, 13, 32) valid=0 yaw=0 gain_q1000=-242
+anchor 11 voxel=(96, 13, 32) valid=0 yaw=0 gain_q1000=-242
+anchor 12 voxel=(128, 12, 32) valid=0 yaw=0 gain_q1000=-242
+anchor 13 voxel=(160, 12, 32) valid=0 yaw=0 gain_q1000=-242
+anchor 14 voxel=(192, 12, 32) valid=0 yaw=0 gain_q1000=-242
+anchor 15 voxel=(224, 8, 32) valid=0 yaw=0 gain_q1000=-242
+anchor 16 voxel=(0, 9, 64) valid=0 yaw=0 gain_q1000=-242
+anchor 17 voxel=(32, 13, 64) valid=0 yaw=0 gain_q1000=-242
+anchor 18 voxel=(64, 13, 64) valid=0 yaw=0 gain_q1000=-242
+anchor 19 voxel=(96, 13, 64) valid=0 yaw=0 gain_q1000=-242
+anchor 20 voxel=(128, 12, 64) valid=0 yaw=0 gain_q1000=-242
+anchor 21 voxel=(160, 13, 64) valid=0 yaw=0 gain_q1000=-242
+anchor 22 voxel=(192, 13, 64) valid=0 yaw=0 gain_q1000=-242
+anchor 23 voxel=(224, 12, 64) valid=0 yaw=0 gain_q1000=-242
+anchor 24 voxel=(0, 8, 96) valid=0 yaw=0 gain_q1000=-242
+anchor 25 voxel=(32, 12, 96) valid=0 yaw=0 gain_q1000=-242
+anchor 26 voxel=(64, 12, 96) valid=0 yaw=0 gain_q1000=-242
+anchor 27 voxel=(96, 9, 96) valid=0 yaw=0 gain_q1000=-242
+anchor 28 voxel=(128, 11, 96) valid=0 yaw=0 gain_q1000=-242
+anchor 29 voxel=(160, 13, 96) valid=0 yaw=0 gain_q1000=-242
+anchor 30 voxel=(192, 15, 96) valid=0 yaw=0 gain_q1000=-242
+anchor 31 voxel=(224, 13, 96) valid=0 yaw=0 gain_q1000=-242
+anchor 32 voxel=(0, 6, 128) valid=0 yaw=0 gain_q1000=-242
+anchor 33 voxel=(32, 8, 128) valid=0 yaw=0 gain_q1000=-242
+anchor 34 voxel=(64, 8, 128) valid=0 yaw=0 gain_q1000=-242
+anchor 35 voxel=(96, 5, 128) valid=0 yaw=0 gain_q1000=-242
+anchor 36 voxel=(128, 8, 128) valid=0 yaw=0 gain_q1000=-242
+anchor 37 voxel=(160, 13, 128) valid=0 yaw=0 gain_q1000=-242
+anchor 38 voxel=(192, 15, 128) valid=0 yaw=0 gain_q1000=-242
+anchor 39 voxel=(224, 15, 128) valid=0 yaw=0 gain_q1000=-242
+anchor 40 voxel=(0, 4, 160) valid=0 yaw=4 gain_q1000=-242
+anchor 41 voxel=(32, 4, 160) valid=0 yaw=0 gain_q1000=-242
+anchor 42 voxel=(64, 1, 160) valid=1 yaw=8 gain_q1000=268
+anchor 43 voxel=(96, 3, 160) valid=1 yaw=0 gain_q1000=244
+anchor 44 voxel=(128, 8, 160) valid=0 yaw=0 gain_q1000=-242
+anchor 45 voxel=(160, 12, 160) valid=0 yaw=0 gain_q1000=-242
+anchor 46 voxel=(192, 13, 160) valid=0 yaw=0 gain_q1000=-242
+anchor 47 voxel=(224, 14, 160) valid=0 yaw=0 gain_q1000=-242
+anchor 48 voxel=(0, 8, 192) valid=0 yaw=0 gain_q1000=-242
+anchor 49 voxel=(32, 4, 192) valid=0 yaw=0 gain_q1000=-242
+anchor 50 voxel=(64, 1, 192) valid=0 yaw=0 gain_q1000=-207
+anchor 51 voxel=(96, 1, 192) valid=1 yaw=4 gain_q1000=43
+anchor 52 voxel=(128, 4, 192) valid=0 yaw=0 gain_q1000=-242
+anchor 53 voxel=(160, 8, 192) valid=0 yaw=0 gain_q1000=-242
+anchor 54 voxel=(192, 9, 192) valid=0 yaw=0 gain_q1000=-242
+anchor 55 voxel=(224, 9, 192) valid=0 yaw=0 gain_q1000=-242
+anchor 56 voxel=(0, 12, 224) valid=0 yaw=0 gain_q1000=-242
+anchor 57 voxel=(32, 9, 224) valid=0 yaw=0 gain_q1000=-242
+anchor 58 voxel=(64, 4, 224) valid=0 yaw=0 gain_q1000=-242
+anchor 59 voxel=(96, 4, 224) valid=1 yaw=2 gain_q1000=196
+anchor 60 voxel=(128, 4, 224) valid=0 yaw=0 gain_q1000=-242
+anchor 61 voxel=(160, 5, 224) valid=0 yaw=0 gain_q1000=-242
+anchor 62 voxel=(192, 8, 224) valid=0 yaw=0 gain_q1000=-242
+anchor 63 voxel=(224, 5, 224) valid=0 yaw=0 gain_q1000=-242
 asset 1 name=geo_cliff_01
-score_contract_stats stat_slots magic_ok=true word_count=48
-  magic=1296453714
-  contract_enabled=false
-  runtime_object_capacity=0
-  profile_count=0
-  alive_object_reads=0
-  profile_records_matched=0
-  runtime_overlap_tests=0
-  runtime_overlap_hits=0
-  profile_table_reads=0
-  asset_profile_id=0
-  candidate_invocations=0
-  profile_complexity_q1000=0.0
-  runtime_profile_reads=0
-  runtime_profile_matches=0
-  probe_record_reads=0
-  reserved_profile_side_read=0
-  pivot_record_reads=0
-  probe_weight_q1000=0.0
-  reserved_profile_side_metric=0
-  pivot_bias_q1000=0.0
-  profile_probe_count=0
-  reserved_profile_side_count=0
-  profile_pivot_count=0
-  debug_max_target_coverage_q1000=1.0
-  debug_max_target_complexity_fit_q1000=0.698
-  debug_max_target_color_fit_q1000=0.781
-  debug_max_target_density_q1000=0.6
-  debug_max_placement_score_q1000=0.298
-  debug_max_best_rotation_slot=0.011
-  debug_max_solid_collision_q1000=0.0
-  debug_max_clearance_overlap_q1000=1.0
-  runtime_spacing_tests=0
-  runtime_spacing_profile_matches=0
-  runtime_spacing_rejections=0
-  runtime_spacing_min_distance_q1000=0.0
-  scene_voxel_tile_object_ref_enabled=false
-  scene_voxel_tile_object_ref_tile_reads=0
-  scene_voxel_tile_object_ref_slot_reads=0
-  scene_voxel_tile_object_ref_object_reads=0
-  scene_voxel_tile_object_ref_duplicate_reads=0
-  reserved40=0
-  reserved41=0
-  reserved42=0
-  reserved43=0
-  reserved44=0
-  reserved45=0
-  reserved46=0
-  reserved47=0
-voxel_debug_channels channel_field index_space=voxel_dense_xzy channels=8 element_count=1048576
-  channel target_coverage
-  channel target_complexity_fit
-  channel target_color_fit
-  channel target_density
-  channel placement_score
-  channel best_rotation_slot
-  channel solid_collision
-  channel clearance_overlap
+anchor 0 voxel=(0, 9, 0) valid=0 yaw=5 gain_q1000=-349
+anchor 1 voxel=(32, 9, 0) valid=0 yaw=5 gain_q1000=-349
+anchor 2 voxel=(64, 9, 0) valid=0 yaw=5 gain_q1000=-349
+anchor 3 voxel=(96, 9, 0) valid=0 yaw=5 gain_q1000=-349
+anchor 4 voxel=(128, 8, 0) valid=0 yaw=1 gain_q1000=-349
+anchor 5 voxel=(160, 9, 0) valid=0 yaw=5 gain_q1000=-349
+anchor 6 voxel=(192, 9, 0) valid=0 yaw=5 gain_q1000=-349
+anchor 7 voxel=(224, 8, 0) valid=0 yaw=1 gain_q1000=-349
+anchor 8 voxel=(0, 8, 32) valid=0 yaw=4 gain_q1000=-349
+anchor 9 voxel=(32, 11, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 10 voxel=(64, 13, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 11 voxel=(96, 13, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 12 voxel=(128, 12, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 13 voxel=(160, 12, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 14 voxel=(192, 12, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 15 voxel=(224, 8, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 16 voxel=(0, 9, 64) valid=0 yaw=7 gain_q1000=-349
+anchor 17 voxel=(32, 13, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 18 voxel=(64, 13, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 19 voxel=(96, 13, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 20 voxel=(128, 12, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 21 voxel=(160, 13, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 22 voxel=(192, 13, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 23 voxel=(224, 12, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 24 voxel=(0, 8, 96) valid=0 yaw=4 gain_q1000=-349
+anchor 25 voxel=(32, 12, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 26 voxel=(64, 12, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 27 voxel=(96, 9, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 28 voxel=(128, 11, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 29 voxel=(160, 13, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 30 voxel=(192, 15, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 31 voxel=(224, 13, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 32 voxel=(0, 6, 128) valid=0 yaw=3 gain_q1000=-349
+anchor 33 voxel=(32, 8, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 34 voxel=(64, 8, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 35 voxel=(96, 5, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 36 voxel=(128, 8, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 37 voxel=(160, 13, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 38 voxel=(192, 15, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 39 voxel=(224, 15, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 40 voxel=(0, 4, 160) valid=0 yaw=7 gain_q1000=-349
+anchor 41 voxel=(32, 4, 160) valid=0 yaw=0 gain_q1000=-349
+anchor 42 voxel=(64, 1, 160) valid=0 yaw=11 gain_q1000=-259
+anchor 43 voxel=(96, 3, 160) valid=0 yaw=1 gain_q1000=-315
+anchor 44 voxel=(128, 8, 160) valid=0 yaw=0 gain_q1000=-349
+anchor 45 voxel=(160, 12, 160) valid=0 yaw=0 gain_q1000=-349
+anchor 46 voxel=(192, 13, 160) valid=0 yaw=0 gain_q1000=-349
+anchor 47 voxel=(224, 14, 160) valid=0 yaw=0 gain_q1000=-349
+anchor 48 voxel=(0, 8, 192) valid=0 yaw=4 gain_q1000=-349
+anchor 49 voxel=(32, 4, 192) valid=0 yaw=0 gain_q1000=-349
+anchor 50 voxel=(64, 1, 192) valid=0 yaw=1 gain_q1000=-292
+anchor 51 voxel=(96, 1, 192) valid=0 yaw=4 gain_q1000=-224
+anchor 52 voxel=(128, 4, 192) valid=0 yaw=0 gain_q1000=-322
+anchor 53 voxel=(160, 8, 192) valid=0 yaw=0 gain_q1000=-349
+anchor 54 voxel=(192, 9, 192) valid=0 yaw=0 gain_q1000=-349
+anchor 55 voxel=(224, 9, 192) valid=0 yaw=0 gain_q1000=-349
+anchor 56 voxel=(0, 12, 224) valid=0 yaw=0 gain_q1000=-349
+anchor 57 voxel=(32, 9, 224) valid=0 yaw=0 gain_q1000=-349
+anchor 58 voxel=(64, 4, 224) valid=0 yaw=8 gain_q1000=-317
+anchor 59 voxel=(96, 4, 224) valid=0 yaw=4 gain_q1000=-322
+anchor 60 voxel=(128, 4, 224) valid=0 yaw=2 gain_q1000=-348
+anchor 61 voxel=(160, 5, 224) valid=0 yaw=0 gain_q1000=-349
+anchor 62 voxel=(192, 8, 224) valid=0 yaw=0 gain_q1000=-349
+anchor 63 voxel=(224, 5, 224) valid=0 yaw=0 gain_q1000=-349
 asset 2 name=geo_cliff_02
-score_contract_stats stat_slots magic_ok=true word_count=48
-  magic=1296453714
-  contract_enabled=false
-  runtime_object_capacity=0
-  profile_count=0
-  alive_object_reads=0
-  profile_records_matched=0
-  runtime_overlap_tests=0
-  runtime_overlap_hits=0
-  profile_table_reads=0
-  asset_profile_id=0
-  candidate_invocations=0
-  profile_complexity_q1000=0.0
-  runtime_profile_reads=0
-  runtime_profile_matches=0
-  probe_record_reads=0
-  reserved_profile_side_read=0
-  pivot_record_reads=0
-  probe_weight_q1000=0.0
-  reserved_profile_side_metric=0
-  pivot_bias_q1000=0.0
-  profile_probe_count=0
-  reserved_profile_side_count=0
-  profile_pivot_count=0
-  debug_max_target_coverage_q1000=1.0
-  debug_max_target_complexity_fit_q1000=0.4
-  debug_max_target_color_fit_q1000=0.781
-  debug_max_target_density_q1000=0.733
-  debug_max_placement_score_q1000=0.354
-  debug_max_best_rotation_slot=0.011
-  debug_max_solid_collision_q1000=0.0
-  debug_max_clearance_overlap_q1000=1.0
-  runtime_spacing_tests=0
-  runtime_spacing_profile_matches=0
-  runtime_spacing_rejections=0
-  runtime_spacing_min_distance_q1000=0.0
-  scene_voxel_tile_object_ref_enabled=false
-  scene_voxel_tile_object_ref_tile_reads=0
-  scene_voxel_tile_object_ref_slot_reads=0
-  scene_voxel_tile_object_ref_object_reads=0
-  scene_voxel_tile_object_ref_duplicate_reads=0
-  reserved40=0
-  reserved41=0
-  reserved42=0
-  reserved43=0
-  reserved44=0
-  reserved45=0
-  reserved46=0
-  reserved47=0
-voxel_debug_channels channel_field index_space=voxel_dense_xzy channels=8 element_count=1048576
-  channel target_coverage
-  channel target_complexity_fit
-  channel target_color_fit
-  channel target_density
-  channel placement_score
-  channel best_rotation_slot
-  channel solid_collision
-  channel clearance_overlap
+anchor 0 voxel=(0, 9, 0) valid=0 yaw=10 gain_q1000=-349
+anchor 1 voxel=(32, 9, 0) valid=0 yaw=11 gain_q1000=-349
+anchor 2 voxel=(64, 9, 0) valid=0 yaw=11 gain_q1000=-349
+anchor 3 voxel=(96, 9, 0) valid=0 yaw=11 gain_q1000=-349
+anchor 4 voxel=(128, 8, 0) valid=0 yaw=1 gain_q1000=-349
+anchor 5 voxel=(160, 9, 0) valid=0 yaw=11 gain_q1000=-349
+anchor 6 voxel=(192, 9, 0) valid=0 yaw=11 gain_q1000=-349
+anchor 7 voxel=(224, 8, 0) valid=0 yaw=1 gain_q1000=-349
+anchor 8 voxel=(0, 8, 32) valid=0 yaw=4 gain_q1000=-349
+anchor 9 voxel=(32, 11, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 10 voxel=(64, 13, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 11 voxel=(96, 13, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 12 voxel=(128, 12, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 13 voxel=(160, 12, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 14 voxel=(192, 12, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 15 voxel=(224, 8, 32) valid=0 yaw=0 gain_q1000=-349
+anchor 16 voxel=(0, 9, 64) valid=0 yaw=2 gain_q1000=-349
+anchor 17 voxel=(32, 13, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 18 voxel=(64, 13, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 19 voxel=(96, 13, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 20 voxel=(128, 12, 64) valid=0 yaw=0 gain_q1000=-347
+anchor 21 voxel=(160, 13, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 22 voxel=(192, 13, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 23 voxel=(224, 12, 64) valid=0 yaw=0 gain_q1000=-349
+anchor 24 voxel=(0, 8, 96) valid=0 yaw=4 gain_q1000=-349
+anchor 25 voxel=(32, 12, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 26 voxel=(64, 12, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 27 voxel=(96, 9, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 28 voxel=(128, 11, 96) valid=0 yaw=2 gain_q1000=-347
+anchor 29 voxel=(160, 13, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 30 voxel=(192, 15, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 31 voxel=(224, 13, 96) valid=0 yaw=0 gain_q1000=-349
+anchor 32 voxel=(0, 6, 128) valid=0 yaw=3 gain_q1000=-349
+anchor 33 voxel=(32, 8, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 34 voxel=(64, 8, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 35 voxel=(96, 5, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 36 voxel=(128, 8, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 37 voxel=(160, 13, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 38 voxel=(192, 15, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 39 voxel=(224, 15, 128) valid=0 yaw=0 gain_q1000=-349
+anchor 40 voxel=(0, 4, 160) valid=0 yaw=3 gain_q1000=-349
+anchor 41 voxel=(32, 4, 160) valid=0 yaw=0 gain_q1000=-349
+anchor 42 voxel=(64, 1, 160) valid=0 yaw=5 gain_q1000=-244
+anchor 43 voxel=(96, 3, 160) valid=0 yaw=5 gain_q1000=-302
+anchor 44 voxel=(128, 8, 160) valid=0 yaw=0 gain_q1000=-349
+anchor 45 voxel=(160, 12, 160) valid=0 yaw=0 gain_q1000=-349
+anchor 46 voxel=(192, 13, 160) valid=0 yaw=0 gain_q1000=-349
+anchor 47 voxel=(224, 14, 160) valid=0 yaw=0 gain_q1000=-349
+anchor 48 voxel=(0, 8, 192) valid=0 yaw=4 gain_q1000=-349
+anchor 49 voxel=(32, 4, 192) valid=0 yaw=0 gain_q1000=-349
+anchor 50 voxel=(64, 1, 192) valid=0 yaw=5 gain_q1000=-295
+anchor 51 voxel=(96, 1, 192) valid=0 yaw=9 gain_q1000=-268
+anchor 52 voxel=(128, 4, 192) valid=0 yaw=3 gain_q1000=-323
+anchor 53 voxel=(160, 8, 192) valid=0 yaw=0 gain_q1000=-349
+anchor 54 voxel=(192, 9, 192) valid=0 yaw=0 gain_q1000=-349
+anchor 55 voxel=(224, 9, 192) valid=0 yaw=0 gain_q1000=-349
+anchor 56 voxel=(0, 12, 224) valid=0 yaw=8 gain_q1000=-349
+anchor 57 voxel=(32, 9, 224) valid=0 yaw=0 gain_q1000=-349
+anchor 58 voxel=(64, 4, 224) valid=0 yaw=0 gain_q1000=-331
+anchor 59 voxel=(96, 4, 224) valid=0 yaw=11 gain_q1000=-324
+anchor 60 voxel=(128, 4, 224) valid=0 yaw=7 gain_q1000=-339
+anchor 61 voxel=(160, 5, 224) valid=0 yaw=0 gain_q1000=-349
+anchor 62 voxel=(192, 8, 224) valid=0 yaw=0 gain_q1000=-349
+anchor 63 voxel=(224, 5, 224) valid=0 yaw=0 gain_q1000=-349

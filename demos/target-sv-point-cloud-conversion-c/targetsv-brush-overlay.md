@@ -45,7 +45,7 @@ GPU 路径走 Vulkan RenderingDevice。无主 RenderingDevice 时直写路径只
 
 ## 验收标准
 
-- TargetSV 引导场以 box 体素显示，笔刷体素以四面体显示，两者节点分离（`GuidanceVoxels` 与 `BrushTetraVoxels`），无数值混合。
+- TargetSV 引导场以 box 体素显示，笔刷体素以四面体显示，两者节点分离（`DemoSetup/TargetSVSetup/TargetSVVoxels` 与 `BrushTetraVoxels`），无数值混合；引导场的加载、解码和显示以 `scripts/utils/target_sv_setup.gd` 为权威。
 - 笔刷实例缓冲由 compute（Vulkan 主 RD）在渲染线程**直写** MultiMesh 缓冲，无回读、无 `multimesh_set_buffer`；生成的实例数等于累积的笔刷体素数。
 - 无主 RenderingDevice 时直写路径 SKIP，不做 CPU 替代路径。
 

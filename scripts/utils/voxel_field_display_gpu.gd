@@ -77,8 +77,8 @@ func _render_thread_write(
 	if not _ensure_pipeline():
 		return
 
-	var occ_buf := _make_buffer(SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(occupancy, _instance_count))
-	var coll_buf := _make_buffer(SceneVoxelTileCodecScript.pack_collision_field_r8_word_bytes(collision, _instance_count))
+	var occ_buf := _make_buffer(SceneVoxelTileCodecScript.pack_collision_field_u32_bytes(occupancy, _instance_count))
+	var coll_buf := _make_buffer(SceneVoxelTileCodecScript.pack_collision_field_u32_bytes(collision, _instance_count))
 	var color_buf := _make_buffer(SceneVoxelTileCodecScript.pack_complexity_field_rgba8_bytes(color_rgba, _instance_count))
 	var height_buf := _make_buffer(terrain_height.to_byte_array())
 	if not occ_buf.is_valid() or not coll_buf.is_valid() or not color_buf.is_valid() or not height_buf.is_valid():

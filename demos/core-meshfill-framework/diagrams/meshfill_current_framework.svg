@@ -109,7 +109,7 @@
     <g id="targetsv_b-read-buffers">
     <rect class="node" x="85" y="505" width="280" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
     <text class="node-title" x="103" y="533">TargetSV_B read buffers</text>
-    <text class="small"><tspan x="103" y="555">target_occupancy</tspan><tspan x="103" y="572">target_color RGBA8</tspan><tspan x="103" y="589">guidance only</tspan></text>
+    <text class="small"><tspan x="103" y="555">target_completeness / collision</tspan><tspan x="103" y="572">target_color RGBA8</tspan><tspan x="103" y="589">guidance only</tspan></text>
     </g>
     <g id="autoobject-registry">
     <rect class="node" x="485" y="180" width="280" height="115" rx="8" fill="url(#autoobject-dot-bg)" stroke="#0891b2"/>

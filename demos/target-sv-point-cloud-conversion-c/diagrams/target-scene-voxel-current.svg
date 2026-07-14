@@ -121,9 +121,9 @@
     <text class="node-title" x="488" y="563">TargetSV_B</text>
     <text class="small"><tspan x="488" y="585">brush-composited read target</tspan><tspan x="488" y="602">target_scene_voxel_b_* files</tspan><tspan x="488" y="619">default runtime guidance</tspan></text>
     </g>
-    <g id="target_occupancy">
+    <g id="target_completeness">
     <rect class="node" x="855" y="170" width="265" height="115" rx="8" fill="url(#sv-stripe-blue)" stroke="#0284c7"/>
-    <text class="node-title" x="873" y="198">target_occupancy</text>
+    <text class="node-title" x="873" y="198">target_completeness</text>
     <text class="small"><tspan x="873" y="220">complexity / collision intent</tspan><tspan x="873" y="237">mapped from TargetSV_B</tspan><tspan x="873" y="254">input to scoring</tspan></text>
     </g>
     <g id="target_color">

@@ -1,8 +1,9 @@
 @tool
 extends "res://scripts/core_demo_contract_fixture.gd"
 
-const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const SemanticProbeGeneratorScript := preload("res://scripts/semantic_probe_generator.gd")
 const MeshVoxelizerGpuScript := preload("res://scripts/mesh_voxelizer_gpu.gd")
+const AssetDescriptorBaker := preload("res://scripts/asset_descriptor_baker.gd")
 const VoxelDisplay := preload("res://scripts/utils/voxel_display.gd")
 const VoxelDebugLabel := preload("res://scripts/utils/voxel_debug_label.gd")
 const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
@@ -853,7 +854,7 @@ func _build_probes_for_node(node: Node3D) -> void:
 	debug_root.add_child(group)
 
 	var voxel_samples := _voxel_field_samples(node)
-	_probes = SemanticProbeProfileScript.generate_from_mesh(
+	_probes = SemanticProbeGeneratorScript.generate_from_mesh(
 		mi.mesh, voxel_samples, _node_color(node), _node_complexity(node), probe_density, max_probe_markers
 	)
 
@@ -1076,84 +1077,22 @@ func _bake_descriptor_for_node(node: Node3D, voxelizer) -> AssetDescriptor:
 	var color := _node_color(node)
 	var complexity := _node_complexity(node)
 
-	# GPU solid voxelize -> per-voxel collision samples + interior samples.
-	var collision_samples: Array[Dictionary] = []
-	var interior_samples: Array = []
+	# GPU solid voxelize; the production baker owns voxel-result normalization and
+	# AssetDescriptor/profile construction.
 	var vres: Dictionary = voxelizer.voxelize(
 		mesh, voxel_grid_count, color, voxel_collision_strength, _node_min_neighbors(node))
-	if bool(vres.get("ok", false)):
-		collision_samples = _collision_samples_from_voxels(vres)
-		interior_samples = _interior_samples_from_voxels(vres)
-	else:
+	if not bool(vres.get("ok", false)):
 		push_warning("[AssetDescriptorDemo] voxelize failed for %s: %s" % [
 			node.name, str(vres.get("reason", "unknown"))])
-
-	var descriptor := AssetDescriptor.new()
-	descriptor.mesh = mesh
-	descriptor.set_color_and_complexity(color, complexity)  # keeps color.a == complexity
-	descriptor.set_collision(collision_samples)
-	descriptor.asset_id = str(node.name).to_lower()
-	descriptor.object_type = "vegetation" if _node_is_tree(node) else "rock"
 	var src_path := str(node.get_meta(GEO_SOURCE_META, ""))
-	if not src_path.is_empty():
-		descriptor.source_mesh_path = src_path
-
-	# Voxel profile mirrors the canonical color / complexity / collision.
-	var profile: AutoVoxelProfile = AutoVoxelProfile.create_profile(color, complexity)
-	profile.collision = collision_samples.duplicate(true)
-	descriptor.voxel_profile = profile
-
-	# Semantic probe profile generated from the mesh + voxel interior samples.
-	var probe_profile := SemanticProbeProfileScript.new()
-	probe_profile.density = probe_density
-	probe_profile.probes = SemanticProbeProfileScript.generate_from_mesh(
-		mesh, interior_samples, color, complexity, probe_density, probe_profile.max_probe_count)
-	descriptor.semantic_probe_profile = probe_profile
-	descriptor.semantic_probe_density = probe_density
-	return descriptor
-
-
-# Coarse-core voxels (collision > 0) -> descriptor collision samples. Grid
-# coordinates are recentred so the sample shape is centered in X/Z and based at
-# y=0 (the placement-sample convention).
-func _collision_samples_from_voxels(vres: Dictionary) -> Array[Dictionary]:
-	var samples: Array[Dictionary] = []
-	var voxels: Array = vres.get("voxels", [])
-	var grid: Vector3i = vres.get("grid", Vector3i.ZERO)
-	var min_y := 0x7FFFFFFF
-	for v in voxels:
-		if float(v["collision"]) <= 0.0:
-			continue
-		min_y = mini(min_y, int((v["voxel"] as Vector3i).y))
-	if min_y == 0x7FFFFFFF:
-		return samples
-	var half_x := grid.x / 2
-	var half_z := grid.z / 2
-	for v in voxels:
-		var strength := float(v["collision"])
-		if strength <= 0.0:
-			continue
-		var g: Vector3i = v["voxel"]
-		var local := Vector3i(g.x - half_x, g.y - min_y, g.z - half_z)
-		samples.append(AutoVoxelProfile.make_collision_sample(local, strength, 1.0))
-	return samples
-
-
-# Solid voxels -> semantic-probe interior samples (mesh-local position plus the
-# same-level color / complexity / collision channels), matching the shape the
-# probe generator's voxel-interior layer consumes.
-func _interior_samples_from_voxels(vres: Dictionary) -> Array:
-	var samples := []
-	for v in vres.get("voxels", []):
-		if float(v["collision"]) <= 0.0:
-			continue
-		samples.append({
-			"local_pos": v["local_center"],
-			"color": v["color"],
-			"complexity": v["complexity"],
-			"collision": v["collision"],
-		})
-	return samples
+	return AssetDescriptorBaker.descriptor_from_voxel_result(mesh, vres, {
+		"color": color,
+		"complexity": complexity,
+		"asset_id": str(node.name).to_lower(),
+		"object_type": "vegetation" if _node_is_tree(node) else "rock",
+		"source_mesh_path": src_path,
+		"probe_density": probe_density,
+	})
 
 
 # ─── Clear ────────────────────────────────────────────────────

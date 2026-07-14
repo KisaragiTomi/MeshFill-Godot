@@ -166,93 +166,25 @@ const WRITEBACK_REPORT := {
 	# derived: —（本族无纯派生键）。
 }
 
-## VoxelPlacementGenerator run_minimal 输出族（成功 / contract-blocked / empty-prefilter 三变体
-## 的共同 SSOT，全部经 build() 发出）。migrate 轮（2026-07-12）已落：15 个零消费者的
-## provenance/诊断键降入 diag，仅 placement settings 的 "include_diagnostics"（默认 false）
-## 请求时输出。
+## VoxelPlacementGenerator run_multi_asset 顶层输出族（成功 / contract-blocked / 空帧三变体
+## 的共同 SSOT，全部经 build() 发出）。anchor-fine 单管线（2026-07-13）：旧 run_minimal 族
+## 已删除，其顶层承载键（placement_result_buffers/stamp_*/debug_voxel 等）并入本族 core。
 ## 条件键（缺席时 build 跳过，在场性由收集处决定）：
 ##   仅 blocked 变体：ok/contract_blocked/skipped_gpu_runtime_profile_contract/gpu_first/
-##     runtime_read_source/readback_source；target_read_buffer_source/_blocked_reason 仅两个
-##     target-read blocked 点；gpu_runtime_profile_binding_debug 成功恒有 + score-contract blocked 点。
-##   仅 empty-prefilter 变体：skipped_prefilter；candidate_route_{readback_source,runtime_read_source,
-##     input_contract} 成功恒有 + route 解析后的 empty 点（其余 blocked/empty 不带）。
-##   成功变体门控键：cpu_fallback（gpu_contract.reason != "not_requested"）、
-##     debug_voxel/debug_voxel_readback_source（settings.debug_read_voxel_channels）、
-##     golden_snapshot（settings.debug_read_golden_snapshot——自带门，迁移时勿再叠 diag 门）、
-##     cpu_state_chain / gpu_state_chain（state-chain contract 的 chaining 标志，互斥）、
-##     placement_score_sum/placement_valid_count/placement_results_readback_skipped/
-##     placement_result_buffers（settings.retain_placement_result_buffers）、
-##     score_timing_profile（settings.score_timing_profile——自带门）；
-##     stamp_delta_count/stamp_delta_count_source/candidate_voxel_dispatch_mode/
-##     candidate_route_binding_debug/target_read_buffer_summary 仅成功变体。
-## 冻结 contract 消费者（改名须同 commit 改读者）：
-##   run_multi_asset（VPG 内 per-pivot 消费）— contract_blocked 门 + gpu_runtime_profile_contract/
-##     candidate_route_{readback_source,runtime_read_source,input_contract,binding_debug}/
-##     target_read_buffer_summary/full_field_readback/cpu_state_chain/stamp_delta_readback_source/
-##     cpu_fallback(has) 转发进 asset_result；
-##   scene_placement_actor（经 run_multi_asset 输出链）— target_read_buffer_summary/candidate_route_*/
-##     cpu_state_chain/full_field_readback/stamp_delta_readback_source；
-##   volume_score_demo — debug_voxel（core）；
-##   test_markdown_contracts._test_vpg_and_scene_tile_gpu_binding_contracts — VPG 源码文本须含
-##     "contract_blocked" 与 "cpu_fallback": false（blocked builder 字面量，勿删源码，只动输出 tier）。
-## 发射后突变（备案，勿再加）：_release_placement_result_buffers 置
-##   gpu_out["placement_result_buffers"] = {}——键已声明，authoring 刹车不受影响。
-const VPG_RUN_REPORT := {
-	"name": "vpg_run_minimal",
-	"core": [
-		"ok", "result_count", "results",
-		"complexity_field_out", "collision_field_out",
-		"stamp_deltas", "stamp_delta_count", "stamp_bounds",
-		"placement_score_sum", "placement_valid_count", "placement_result_buffers",
-		"debug_voxel", "golden_snapshot", "score_timing_profile",
-		"skipped_prefilter",
-	],
-	"contract": [
-		"contract_blocked", "cpu_fallback",
-		"gpu_runtime_profile_contract",
-		"full_field_readback", "cpu_state_chain", "gpu_state_chain",
-		"stamp_delta_readback_source",
-		"candidate_route_readback_source", "candidate_route_runtime_read_source",
-		"candidate_route_input_contract", "candidate_route_binding_debug",
-		"target_read_buffer_summary",
-	],
-	"diag": [
-		# migrate 轮全项目 grep 复核：零运行时读者（run_multi_asset per-pivot 消费/volume_score_demo/
-		# SPA 链均不读；同名读点全在其他报告族——writeback merge、tile store/prefilter/容器摘要、
-		# _target_read_buffer_pack 内部 pack dict；test_markdown_contracts/test_core_demo_contracts
-		# 的 runtime_read_source 为文档措辞断言，非本族输出读取）。
-		# 其中 gpu_first/readback_source/runtime_read_source/skipped_gpu_runtime_profile_contract/
-		# stamp_delta_count_source/debug_voxel_readback_source 值恒定或近恒定（恒定 provenance）——
-		# 彻底删除是后续单独决策，本轮仅降级到 diag。
-		"tile_count", "tile_counts", "candidate_tile_count", "candidate_tile_ids",
-		"candidate_voxel_dispatch_mode",
-		"stamp_delta_count_source", "debug_voxel_readback_source",
-		"gpu_runtime_profile_binding_debug", "placement_results_readback_skipped",
-		"gpu_first", "readback_source", "runtime_read_source",
-		"skipped_gpu_runtime_profile_contract",
-		"target_read_buffer_source", "target_read_buffer_blocked_reason",
-	],
-	# derived: —（六类冗余清扫已删派生键，见 run_minimal 输出组装处注释）。
-}
-
-## VoxelPlacementGenerator run_multi_asset 顶层输出族（成功 / contract-blocked 两变体的
-## 共同 SSOT，全部经 build() 发出）。migrate 轮（2026-07-12）已落：6 个零消费者键降入 diag，
-## 仅 common_settings 的 "include_diagnostics"（默认 false）请求时输出。
-## 条件键（缺席时 build 跳过，在场性由收集处决定）：
-##   仅 blocked 变体：ok/contract_blocked/skipped_gpu_runtime_profile_contract/gpu_first/
-##     runtime_read_source/readback_source（成功变体故意不发 ok——SPA 1598/1925 的 ok 门
-##     现状即靠缺席走 false 分支，勿补发）；
-##   成功变体门控键：gpu_state_chain（_gpu_state_chain_active，或 compact 链且请求过 gpu 链时的
-##     inactive 报告）、cpu_state_chain（compact 链且非 gpu 链）、gpu_autoobject_runtime_writeback
-##     （write_accepted_placements_to_gpu_runtime）、target_read_buffer_summary（任一资产带回非空
-##     摘要）、instance_stamp_writeback（gpu 链 stamp 提交）、cpu_fallback（contract.reason !=
-##     "not_requested"）；candidate_route_* 三键两变体恒有。
+##     runtime_read_source/readback_source（成功变体故意不发 ok——SPA 的 ok 门现状即靠缺席
+##     走 false 分支，勿补发）；
+##   成功变体门控键：gpu_state_chain（GPU 状态链激活，diag）、cpu_state_chain（compact 链）、
+##     gpu_autoobject_runtime_writeback（write_accepted_placements_to_gpu_runtime）、
+##     instance_stamp_writeback（gpu 链 stamp 提交）、placement_result_buffers/
+##     placement_score_sum/placement_valid_count（retain_placement_result_buffers）、
+##     stamp_delta_count（read_stamp_deltas/compact 链）、debug_voxel
+##     （debug_read_voxel_channels）、score_timing_profile（score_timing_profile 自带门）、
+##     cpu_fallback（contract.reason != "not_requested"）；anchor_fine_contract 恒有。
 ## 冻结 contract 消费者（改名须同 commit 改读者）：
 ##   spa_test.check_resident_placement_writeback — gpu_runtime_profile_contract/total_placed/
 ##     gpu_autoobject_runtime_writeback/asset_results；
 ##   scene_placement_actor.run_placement_pipeline — ok/total_placed/instance_stamp_writeback/
-##     gpu_autoobject_runtime_writeback/cpu_state_chain/target_read_buffer_summary/
-##     candidate_route_{readback_source,runtime_read_source,input_contract}；
+##     gpu_autoobject_runtime_writeback/cpu_state_chain/target_read_buffer_summary；
 ##   test_markdown_contracts._test_vpg_and_scene_tile_gpu_binding_contracts — VPG 源码文本须含
 ##     "contract_blocked" 与 "cpu_fallback": false（blocked builder 字面量，勿删源码，只动输出 tier）。
 ## 发射后突变：无——writeback merge（live_count/pending_dirty_delta_count 追加）发生在嵌套的
@@ -262,25 +194,23 @@ const VPG_MULTI_ASSET_REPORT := {
 	"core": [
 		"ok", "asset_results", "total_placed",
 		"complexity_field_out", "collision_field_out",
+		# anchor-fine 单管线的顶层承载（旧 run_minimal 族的对应键上移至此）：
+		"placement_result_buffers", "placement_score_sum", "placement_valid_count",
+		"stamp_delta_count", "stamp_bounds",
+		"debug_voxel", "fine_candidates", "score_timing_profile",
 	],
 	"contract": [
 		"contract_blocked", "cpu_fallback",
 		"gpu_runtime_profile_contract",
+		"anchor_fine_contract",
 		"cpu_state_chain",
 		"instance_stamp_writeback",
 		"gpu_autoobject_runtime_writeback",
-		"candidate_route_readback_source", "candidate_route_runtime_read_source",
-		"candidate_route_input_contract",
 		"target_read_buffer_summary",
 	],
 	"diag": [
-		# migrate 轮全项目 grep 复核：零运行时读者（SPA 链只读 cpu_state_chain/instance_stamp_writeback，
-		# 不读顶层 gpu_state_chain；processing_order 仅文档提及；同名读点全在其他报告族——
-		# run_minimal 族的 gpu_state_chain contract、mesh_description/prefilter/profile 容器/
-		# tile store/committer 摘要、writeback 族报告；test_markdown_contracts/test_core_demo_contracts
-		# 的 runtime_read_source 等为文档措辞/源码文本断言，非本族输出读取）。
-		# 其中 skipped_gpu_runtime_profile_contract/gpu_first/runtime_read_source/readback_source
-		# 仅 blocked 变体、值恒定（恒定 provenance）——彻底删除是后续单独决策，本轮仅降级到 diag。
+		# 零运行时读者的 provenance/诊断键（SPA 链只读 contract tier；processing_order
+		# 仅文档提及；gpu_state_chain 仅诊断观测）。
 		"processing_order", "gpu_state_chain",
 		"skipped_gpu_runtime_profile_contract", "gpu_first",
 		"runtime_read_source", "readback_source",
@@ -288,59 +218,29 @@ const VPG_MULTI_ASSET_REPORT := {
 	# derived: —（本族无纯派生键）。
 }
 
-## run_multi_asset 的 per-asset asset_result 族（成功 / 配额跳过 skipped_quota / 空 collision·
-## 空 sample-range·空结果占位 / blocked per-asset 五变体的共同 SSOT，全部经 build() 发出）。
-## migrate 轮（2026-07-12）已落：10 个零消费者键降入 diag，仅 common_settings 的
-## "include_diagnostics"（默认 false）请求时输出。
+## run_multi_asset 的 per-asset asset_result 族（成功 / 空占位 / blocked per-asset 变体的
+## 共同 SSOT，全部经 build() 发出）。anchor-fine 单管线（2026-07-13）：per-asset 结果由
+## 公共候选池按 record 的 asset_index 分组产生——不再有逐资产 GPU run，旧的配额跳过
+## （skipped_quota）与 per-asset state-chain/route 键随之退役（quota 现为 reduce 的
+## per-asset 上限，见 asset_lookup）。
 ## 条件键（缺席时 build 跳过）：
-##   仅 blocked 变体：ok/contract_blocked/gpu_first/runtime_read_source/readback_source
-##     （成功路径的 contract_blocked 写点是死分支——blocked 的 run_minimal 输出令会话整体早退）；
-##   仅配额跳过变体：skipped_quota；
-##   成功变体门控键：full_field_readback/cpu_state_chain/gpu_runtime_profile_contract/
-##     target_read_buffer_summary（各随 best_gpu_out.has 转发）、compact_state_chain
-##     （compact 链请求时）、candidate_route_* 四键（best_gpu_out 带 route contract 时）、
-##     cpu_fallback（best_gpu_out.has 时置 false）。
+##   仅 blocked 变体：ok/contract_blocked/gpu_first/runtime_read_source/readback_source；
+##   成功变体门控键：cpu_fallback（contract.reason != "not_requested" 时置 false）。
 ## 冻结 contract 消费者（改名须同 commit 改读者）：
 ##   spa_test.check_resident_placement_writeback（asset_results[0]）— world_results/results/
-##     placement_result_buffers/placement_score_sum/placement_valid_count；
-##   voxel_placement_writeback._write_accepted_placements_to_gpu_runtime — result_count/
-##     placement_result_buffers/rotation_slots_used/pivot_offset_world。
-## 发射后突变（备案，勿再加）：writeback 循环对成功结果追加声明键
-## gpu_autoobject_runtime_writeback（无法前置——merge 以 asset_result 本身为输入）；
-## _release_placement_result_buffers 释放后把 placement_result_buffers 重写为 {}
-## （键在场才写）。两处均为声明键，authoring 刹车不受影响。
+##     result_count。
 const VPG_MULTI_ASSET_RESULT := {
 	"name": "vpg_run_multi_asset_result",
 	"core": [
 		"ok", "asset_index", "results", "world_results", "result_count",
-		"stamp_delta_count",
-		"placement_score_sum", "placement_valid_count", "placement_result_buffers",
-		# pivot_offset_world/rotation_slots_used 留 core：voxel_placement_writeback
-		# _write_accepted_placements_to_gpu_runtime 逐资产读取（世界变换重建输入）。
-		"pivot_offset_world", "rotation_slots_used",
+		"rotation_slots_used",
 	],
 	"contract": [
 		"contract_blocked", "cpu_fallback",
 		"gpu_runtime_profile_contract",
-		"full_field_readback", "cpu_state_chain", "compact_state_chain",
-		"stamp_delta_readback_source",
-		"candidate_route_readback_source", "candidate_route_runtime_read_source",
-		"candidate_route_input_contract", "candidate_route_binding_debug",
-		"target_read_buffer_summary",
-		"gpu_autoobject_runtime_writeback",
 	],
 	"diag": [
-		# migrate 轮全项目 grep 复核：零运行时读者（writeback 循环/spa_test/SPA 链均不读；
-		# per-asset stamp_deltas/stamp_bounds 的内部读点全在发射之前的 best_gpu_out——
-		# 那是 run_minimal 族输出（其 stamp_deltas/stamp_bounds 在该族为 core，勿混）；
-		# stamp_bounds_rid 读点走 placement_result_buffers 内嵌 handoff，非本键；
-		# auto_object 的 "pivot_variant_count" 是 Node meta 清理名单、voxel_placement_output
-		# 的 "pivot_variant" 写在 world_results 逐条目 dict——均非本族键）。
-		# 其中 gpu_first/runtime_read_source/readback_source 仅 blocked 变体、值恒定
-		#（恒定 provenance）——彻底删除是后续单独决策，本轮仅降级到 diag。
-		"pivot_variant", "pivot_variant_count",
 		"placement_output_gpu", "placement_output_readback_source",
-		"skipped_quota", "stamp_deltas", "stamp_bounds",
 		"gpu_first", "runtime_read_source", "readback_source",
 	],
 	# derived: —（本族无纯派生键）。

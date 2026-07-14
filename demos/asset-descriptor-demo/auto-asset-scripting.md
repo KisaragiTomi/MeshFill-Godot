@@ -28,7 +28,7 @@
 | 输出 | `AutoObject` scene 或 `AssetDescriptor` resource。 |
 | 生命周期 | JSON -> factory normalize -> resource write -> runtime load descriptor-backed asset -> GPU placement / source write 构造 `ISWS`。 |
 | Source of truth | 脚手架只写入 source assets；运行时默认语义仍以 `AssetDescriptor` / descriptor-backed getter 为准。 |
-| Placement 边界 | 脚手架产物可被 object placement、vegetation placement 和 voxel placement 使用；prefilter candidate regions、physical score 和 commit 不在本文维护。 |
+| Placement 边界 | 脚手架产物可被 object placement、vegetation placement 和 voxel placement 使用；prefilter candidate regions、fine semantic score/constraints 和 commit 不在本文维护。 |
 | Core runtime 边界 | `ISWS` 进入 source voxel / committed `SceneVoxel` 的规则见 `scene-voxel-field-system.md`；metadata 只作为查询 handle。 |
 | GPU runtime 边界 | `GPUAutoObjectRuntime` / profile container 只消费脚手架产物编译出的 profile；本文不新增 runtime object schema，也不提供 CPU runtime fallback。 |
 

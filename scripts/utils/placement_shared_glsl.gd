@@ -3,8 +3,9 @@ class_name PlacementSharedGLSL
 extends RefCounted
 
 ## SSOT (single source of truth) for placement-pipeline GLSL blocks shared
-## VERBATIM across shaders (same mechanism as RouteTileSharedGLSL — see that
-## file for why `#include` is not an option in this project).
+## VERBATIM across shaders. This project compiles shaders from raw source via
+## shader_compile_spirv_from_source() (no preprocessor), so `#include` is NOT
+## honoured — shared code is copied into each consumer between @@GEN markers.
 ##
 ## Shared code is COPIED into each consumer .glsl between
 ##   // @@GEN <name>
@@ -12,12 +13,36 @@ extends RefCounted
 ##   // @@END <name>
 ## markers; tools/verify_glsl_gen_blocks.gd asserts each copy equals block(<name>).
 ##
-## Currently shared: the canonical Y-yaw rotation family. The 2026-07-10 audit
-## flagged this as the last cross-shader consistency hazard: four shaders each
-## hand-rolled the same "rx = ca*x + sa*z ; rz = -sa*x + ca*z" convention with
-## "must match" comments pointing at each other.
+## Currently shared:
+##   yaw_rotation_y   — the canonical Y-yaw rotation family (2026-07-10 audit:
+##     four shaders each hand-rolled the same "rx = ca*x + sa*z" convention).
+##   ad_voxel_compose — the AD-voxel write values + monotonic-max compose rule.
+##     The fine scorer predicts compose(CurrentSV, AD) with the EXACT rule the
+##     stamp later applies; any drift between the two breaks the residual-gain
+##     model (score-time prediction != stamped outcome).
 
 const BLOCKS := {
+	"ad_voxel_compose":
+"""// Stamp-equivalent AD voxel write values + monotonic-max compose.
+// Ties keep the current value, matching the stamp CAS loops which return
+// without writing when current >= new (both complexity-alpha and collision).
+float ad_complexity_write_value(float ad_complexity, float complexity_write_scale) {
+    return clamp(ad_complexity * complexity_write_scale, 0.0, 1.0);
+}
+
+float ad_collision_write_value(float ad_collision, float solid_threshold, float collision_write_scale) {
+    return ad_collision >= solid_threshold ? clamp(ad_collision * collision_write_scale, 0.0, 1.0) : 0.0;
+}
+
+// Complexity/color merge is max-by-alpha over the WHOLE rgba value: the higher
+// complexity wins and brings its color along; equal alpha keeps the current rgba.
+vec4 ad_compose_rgba(vec4 current_rgba, vec3 ad_rgb, float ad_complexity_value) {
+    return ad_complexity_value > current_rgba.a ? vec4(ad_rgb, ad_complexity_value) : current_rgba;
+}
+
+float ad_compose_collision(float current_collision, float ad_collision_value) {
+    return max(current_collision, ad_collision_value);
+}""",
 	"yaw_rotation_y":
 """// Canonical Y-yaw rotation, matching Basis(Vector3.UP, yaw):
 //   rx =  ca*x + sa*z ;  rz = -sa*x + ca*z ;  y unchanged.
@@ -52,10 +77,14 @@ mat4 yaw_transform_y(float ca, float sa, vec3 origin) {
 ## Shaders that carry each block, for the verify tool to scan.
 const CONSUMERS := {
 	"yaw_rotation_y": [
-		"res://shaders/score_voxel_tile.glsl",
-		"res://shaders/stamp_voxel_field.glsl",
+		"res://shaders/score_anchor_asset_residual.glsl",
+		"res://shaders/stamp_asset_voxels.glsl",
 		"res://shaders/placement_results_to_world.glsl",
 		"res://shaders/autoobject_apply_accepted_placements_resident.glsl",
+	],
+	"ad_voxel_compose": [
+		"res://shaders/score_anchor_asset_residual.glsl",
+		"res://shaders/stamp_asset_voxels.glsl",
 	],
 }
 

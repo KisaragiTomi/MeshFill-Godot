@@ -3,9 +3,8 @@ extends SceneTree
 
 ## Desync guard for codegen-shared GLSL blocks.
 ##
-## Three SSOTs feed generated `// @@GEN <name> ... // @@END <name>` regions:
-##   - RouteTileSharedGLSL / PlacementSharedGLSL: verbatim shared blocks
-##     (block name = the SSOT key).
+## Two SSOTs feed generated `// @@GEN <name> ... // @@END <name>` regions:
+##   - PlacementSharedGLSL: verbatim shared blocks (block name = the SSOT key).
 ##   - DebugBufferSet: GPU debug carrier declarations generated per-schema, with
 ##     block name `debug_set <schema.name>` and per-consumer set/binding overrides.
 ## For every declared block, verifies each consumer shader's marked region matches
@@ -14,7 +13,6 @@ extends SceneTree
 ## Run:
 ##   godot --headless --script tools/verify_glsl_gen_blocks.gd
 
-const RouteTileSharedGLSL := preload("res://scripts/utils/route_tile_shared_glsl.gd")
 const PlacementSharedGLSL := preload("res://scripts/utils/placement_shared_glsl.gd")
 const DebugBufferSet := preload("res://scripts/utils/debug_buffer_set.gd")
 
@@ -22,7 +20,7 @@ const DebugBufferSet := preload("res://scripts/utils/debug_buffer_set.gd")
 func _init() -> void:
 	var checked := 0
 	var failures := 0
-	for ssot in [RouteTileSharedGLSL, PlacementSharedGLSL]:
+	for ssot in [PlacementSharedGLSL]:
 		for block_name in ssot.block_names():
 			var expected: String = ssot.block(block_name)
 			var consumers: Array = ssot.CONSUMERS.get(block_name, [])

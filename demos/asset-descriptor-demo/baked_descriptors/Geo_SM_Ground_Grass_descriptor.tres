@@ -1,7 +1,7 @@
 [gd_resource type="Resource" script_class="AssetDescriptor" format=4 uid="uid://ct3h811fw08xi"]
 
 [ext_resource type="Script" uid="uid://ks1fdbq365av" path="res://scripts/asset_descriptor.gd" id="1_mljmf"]
-[ext_resource type="Script" uid="uid://co61te0ngrwlh" path="res://scripts/semantic_probe_profile.gd" id="2_yvvm4"]
+[ext_resource type="Script" uid="uid://co61te0ngrwlh" path="res://scripts/semantic_probe_generator.gd" id="2_yvvm4"]
 [ext_resource type="Script" uid="uid://bj6xalx4tcx0j" path="res://scripts/auto_voxel_profile.gd" id="3_ulnky"]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_47u51"]
@@ -147,7 +147,7 @@ complexity = 0.75
 script = ExtResource("1_mljmf")
 color = Color(0.48, 0.42, 0.35, 0.75)
 complexity = 0.75
-semantic_probe_profile = SubResource("Resource_mljmf")
+semantic_probe_generator = SubResource("Resource_mljmf")
 asset_id = "geo_sm_ground_grass"
 object_type = "rock"
 voxel_profile = SubResource("Resource_yvvm4")

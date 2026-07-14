@@ -1,7 +1,7 @@
 extends SceneTree
 
 const Prefilter := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
-const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
+const ProbeGenerator := preload("res://scripts/semantic_probe_generator.gd")
 const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
 const TestUtils := preload("res://scripts/utils/test_utils.gd")
@@ -13,8 +13,6 @@ const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 func _init() -> void:
 	var ok := true
 	ok = ok and _test_position_only_anchor_layers()
-	ok = ok and _test_candidate_routes_expand_for_probe_collision_context_guard()
-	ok = ok and _test_candidate_route_extent_debug_schema()
 	ok = ok and _test_prefilter_dispatch_bounds_helpers()
 	ok = ok and _test_prefilter_decode_output_contract()
 	ok = ok and _test_scene_voxel_tile_dirty_bounds_feed_shader_tile_ids()
@@ -58,14 +56,14 @@ func _test_position_only_anchor_layers() -> bool:
 	var supported_asset := AutoObjectScript.new()
 	supported_asset.name = "supported_asset"
 	supported_asset.set_semantic_probes([
-		ProbeProfile.make_probe(Vector3.ZERO, Color.WHITE, 1.0, 0.0, 0.0, 1.0, "test")
+		ProbeGenerator.make_probe(Vector3.ZERO, Color.WHITE, 1.0, 0.0, 0.0, 1.0, "test")
 	])
 
 	var upper_asset := AutoObjectScript.new()
 	upper_asset.name = "upper_asset"
 	upper_asset.set_pivot_variants([{"name": "middle", "offset": Vector3(0.0, 3.0, 0.0), "score_bias": 0.0}])
 	upper_asset.set_semantic_probes([
-		ProbeProfile.make_probe(Vector3(0.0, 3.0, 0.0), Color.WHITE, 1.0, 0.0, 0.0, 1.0, "test")
+		ProbeGenerator.make_probe(Vector3(0.0, 3.0, 0.0), Color.WHITE, 1.0, 0.0, 0.0, 1.0, "test")
 	])
 
 	var prefilter := Prefilter.new()
@@ -92,7 +90,6 @@ func _test_position_only_anchor_layers() -> bool:
 			"target_field_byte_count": target_field_bytes.size(),
 			"resident_target_read_buffer_handoff": true,
 			"resident_target_read_buffer_owner": "test_fixture",
-			"debug_read_candidate_route_cpu_expansion": true,
 		}
 	)
 	rd.free_rid(target_field_buf)
@@ -124,86 +121,14 @@ func _test_position_only_anchor_layers() -> bool:
 		push_error("  FAIL: expected supported position-only anchor candidates")
 		return false
 
-	# Candidate voxel regions now live in resident GPU route buffers (no CPU
-	# readback), so this test only validates the position-only anchor readback.
+	# Anchor top-K stays resident on the GPU (anchor_candidate_handoff), so this
+	# test only validates the opt-in position-only anchor readback.
 	prefilter.dispose()
 	supported_asset.free()
 	upper_asset.free()
 	print("  OK: anchors=%d position-only supported_y=true" % [
 		anchors.size(),
 	])
-	return true
-func _test_candidate_routes_expand_for_probe_collision_context_guard() -> bool:
-	print("[AutoObjectProbePrefilter] test_candidate_routes_expand_for_probe_collision_context_guard...")
-	var extent := Prefilter._build_route_extent_from_arrays(
-		[
-			ProbeProfile.make_probe(Vector3(9.0, 0.0, 0.0), Color.WHITE, 0.0, 1.0, 0.0, 0.0, "test"),
-		],
-		[
-			{"voxel": Vector3i(0, 0, 0), "collision_strength": 1.0},
-		],
-		Vector3.ONE,
-		2.0,
-		0
-	)
-	var tile_radius: Vector3i = extent.get("tile_radius", Vector3i.ZERO)
-	if tile_radius.x < 2:
-		push_error("  FAIL: expected probe/context route expansion on X, got %s" % str(tile_radius))
-		return false
-	if tile_radius.y < 1 or tile_radius.z < 1:
-		push_error("  FAIL: interpolation guard should expand neighboring voxel regions, got %s" % str(tile_radius))
-		return false
-	if int(extent.get("interpolation_guard_voxels", 0)) < 1:
-		push_error("  FAIL: interpolation guard must be at least 1 voxel")
-		return false
-
-	print("  OK: tile_radius=%s interpolation_guard=%d" % [str(tile_radius), int(extent.get("interpolation_guard_voxels", 0))])
-	return true
-
-
-func _test_candidate_route_extent_debug_schema() -> bool:
-	print("[AutoObjectProbePrefilter] test_candidate_route_extent_debug_schema...")
-	var extent := Prefilter._build_route_extent_from_arrays(
-		[
-			ProbeProfile.make_probe(Vector3(0.0, 2.0, -3.0), Color.WHITE, 0.0, 1.0, 0.0, 0.0, "schema"),
-		],
-		[
-			{"voxel": Vector3i(-1, 0, -1), "collision_strength": 1.0},
-			{"voxel": Vector3i(1, 0, 1), "collision_strength": 1.0},
-		],
-		Vector3.ONE,
-		1.5,
-		7
-	)
-	for key in [
-		"asset_index",
-		"probe_min",
-		"probe_max",
-		"collision_min",
-		"collision_max",
-		"context_radius_voxels",
-		"interpolation_guard_voxels",
-		"tile_radius",
-	]:
-		if not extent.has(key):
-			push_error("  FAIL: route extent missing key %s" % key)
-			return false
-	if int(extent.get("asset_index", -1)) != 7:
-		push_error("  FAIL: route extent should preserve asset_index")
-		return false
-	if not extent.get("probe_min", null) is Vector3i or not extent.get("probe_max", null) is Vector3i:
-		push_error("  FAIL: route extent probe bounds should be Vector3i")
-		return false
-	if not extent.get("collision_min", null) is Vector3i or not extent.get("collision_max", null) is Vector3i:
-		push_error("  FAIL: route extent collision-sample bounds should be Vector3i")
-		return false
-	if not extent.get("context_radius_voxels", null) is Vector3i or not extent.get("tile_radius", null) is Vector3i:
-		push_error("  FAIL: route extent context/tile radius should be Vector3i")
-		return false
-	if int(extent.get("interpolation_guard_voxels", 0)) < 1:
-		push_error("  FAIL: route extent interpolation guard should be at least 1")
-		return false
-	print("  OK: route extent schema keys=%d" % extent.keys().size())
 	return true
 
 
@@ -241,12 +166,6 @@ func _test_prefilter_dispatch_bounds_helpers() -> bool:
 	])
 	return true
 
-# _test_candidate_route_handoff_payload_schema was removed: the CPU-side
-# build_candidate_route_handoff_payload packer no longer exists — candidate route
-# records/ranges are now packed into resident GPU route buffers, so there is no
-# CPU byte layout left to assert here.
-
-
 func _test_prefilter_decode_output_contract() -> bool:
 	print("[AutoObjectProbePrefilter] test_prefilter_decode_output_contract...")
 	var prefilter := Prefilter.new()
@@ -265,43 +184,49 @@ func _test_prefilter_decode_output_contract() -> bool:
 		asset_count,
 		tile_count,
 		{},
-		Vector3i(2, 1, 2),
-		[
-			Prefilter._empty_route_extent(0),
-			Prefilter._empty_route_extent(1),
-		]
+		Vector3i(2, 1, 2)
 	)
 
-	# Candidate voxel regions now live in resident GPU route buffers, so the CPU
-	# decode exposes only empty debug aliases plus the resident route sources.
+	# Candidate routes are gone: the decode output hands off resident anchor/top-K
+	# buffers via anchor_candidate_handoff instead of any candidate_route_* keys.
 	for key in [
 		"autoobject_candidate_voxel_sparses",
 		"candidate_voxel_regions_by_asset",
 		"candidate_voxel_sparses_by_asset",
+		"candidate_route_extents",
+		"candidate_route_readback_source",
+		"candidate_route_runtime_read_source",
 	]:
-		var alias = result.get(key, null)
-		if not alias is Dictionary or not (alias as Dictionary).is_empty():
-			push_error("  FAIL: %s should be an empty resident-route alias, got %s" % [key, str(alias)])
+		if result.has(key):
+			push_error("  FAIL: decode output should not expose removed route key %s" % key)
 			return false
-	if str(result.get("candidate_route_readback_source", "")) != "resident_route_snapshot":
-		push_error("  FAIL: decode output should name the resident route snapshot readback source")
-		return false
-	if str(result.get("candidate_route_runtime_read_source", "")) != "resident":
-		push_error("  FAIL: decode output route runtime source should be resident")
-		return false
 	if bool(result.get("cpu_fallback", true)) or not bool(result.get("gpu_first", false)):
 		push_error("  FAIL: decode output must stay GPU-first with no CPU fallback")
 		return false
 
-	var extents: Array = result.get("candidate_route_extents", [])
-	if extents.size() != asset_count:
-		push_error("  FAIL: expected one candidate_route_extents entry per asset")
+	var raw_handoff = result.get("anchor_candidate_handoff", null)
+	if not raw_handoff is Dictionary:
+		push_error("  FAIL: decode output should expose anchor_candidate_handoff as a Dictionary")
 		return false
-	for asset_index in range(asset_count):
-		if not extents[asset_index] is Dictionary \
-		   or int((extents[asset_index] as Dictionary).get("asset_index", -1)) != asset_index:
-			push_error("  FAIL: candidate_route_extents[%d] should carry asset_index=%d" % [asset_index, asset_index])
+	var handoff := raw_handoff as Dictionary
+	# This CPU-only decode passes no real buffers, so RIDs stay invalid; assert
+	# key presence and the fixed contract values instead of RID validity.
+	for key in ["anchor_buffer_rid", "anchor_count_buffer_rid", "topk_buffer_rid"]:
+		if not handoff.has(key):
+			push_error("  FAIL: anchor_candidate_handoff missing key %s" % key)
 			return false
+	if str(handoff.get("origin_contract", "")) != "one_origin_per_anchor":
+		push_error("  FAIL: anchor_candidate_handoff origin_contract should be one_origin_per_anchor")
+		return false
+	if int(handoff.get("topk", -1)) != 4 \
+	   or int(handoff.get("anchor_stride_bytes", -1)) != 16 \
+	   or int(handoff.get("topk_stride_bytes", -1)) != 8:
+		push_error("  FAIL: anchor_candidate_handoff topk/stride contract mismatch: %s" % str(handoff))
+		return false
+	if int(handoff.get("anchor_capacity", -1)) != Prefilter.ANCHOR_CAPACITY \
+	   or int(handoff.get("asset_count", -1)) != asset_count:
+		push_error("  FAIL: anchor_candidate_handoff capacity/asset_count mismatch: %s" % str(handoff))
+		return false
 
 	var anchors: Array = result.get("anchors", [])
 	if anchors.size() != 1 or (anchors[0] as Dictionary).get("voxel_pos", Vector3i.ZERO) != Vector3i(1, 0, 1):
@@ -311,7 +236,7 @@ func _test_prefilter_decode_output_contract() -> bool:
 		push_error("  FAIL: anchor debug readback should not expose anchor_kind")
 		return false
 
-	print("  OK: empty resident aliases extents=%d anchors=%d" % [extents.size(), anchors.size()])
+	print("  OK: anchor_candidate_handoff contract keys present anchors=%d" % anchors.size())
 	prefilter.dispose()
 	return true
 
@@ -473,7 +398,6 @@ func _test_prefilter_output_reports_gpu_profile_probe_contract() -> bool:
 		1,
 		{},
 		Vector3i.ONE,
-		[Prefilter._empty_route_extent(0)],
 		{
 			"ready": true,
 			"probe_data_borrowed": true,
@@ -522,8 +446,6 @@ func _test_prefilter_output_reports_gpu_profile_probe_contract() -> bool:
 	if not bool(blocked.get("gpu_first", false)):
 		push_error("  FAIL: blocked prefilter output must keep gpu_first=true")
 		return false
-	if not _assert_blocked_candidate_aliases_empty(blocked, "missing_rendering_device"):
-		return false
 	var blocked_summary: Dictionary = blocked.get("profile_probe_pack", {})
 	if str(blocked.get("prefilter_reason", "")) != "missing_rendering_device" \
 	   or str(blocked_summary.get("reason", "")) != "missing_rendering_device":
@@ -563,8 +485,6 @@ func _test_profile_pack_block_reasons_fail_contract() -> bool:
 	if not bool(result.get("gpu_first", false)):
 		push_error("  FAIL: missing profile_id block must keep gpu_first=true")
 		return false
-	if not _assert_blocked_candidate_aliases_empty(result, "missing_profile_id_for_asset"):
-		return false
 	if str(result.get("prefilter_reason", "")) != "missing_profile_id_for_asset:0":
 		push_error("  FAIL: missing profile_id block should preserve the exact reason")
 		return false
@@ -593,7 +513,7 @@ func _test_pipeline_readiness_contract() -> bool:
 	print("[AutoObjectProbePrefilter] test_pipeline_readiness_contract...")
 	var prefilter := Prefilter.new()
 	var readiness: Dictionary = prefilter._pipeline_readiness()
-	for pass_name in ["collect", "score", "topk", "reduce"]:
+	for pass_name in ["collect", "anchor_finalize", "score", "topk"]:
 		if not readiness.has(pass_name):
 			push_error("  FAIL: pipeline readiness missing pass %s" % pass_name)
 			return false
@@ -622,72 +542,12 @@ func _test_pipeline_readiness_contract() -> bool:
 	if not bool(blocked.get("gpu_first", false)):
 		push_error("  FAIL: pipeline blocked output must keep gpu_first=true")
 		return false
-	if not _assert_blocked_candidate_aliases_empty(blocked, "prefilter_shader_pipeline_not_ready"):
-		return false
 	var blocked_readiness: Dictionary = blocked.get("pipeline_readiness", {})
 	if not blocked_readiness.has("collect") or bool(blocked_readiness.get("all_ready", true)):
-		push_error("  FAIL: blocked result should expose collect/score/topk/reduce readiness")
+		push_error("  FAIL: blocked result should expose collect/anchor_finalize/score/topk readiness")
 		return false
-	print("  OK: pipeline readiness exposes collect/score/topk/reduce RID validity")
+	print("  OK: pipeline readiness exposes collect/anchor_finalize/score/topk RID validity")
 	prefilter.dispose()
-	return true
-
-
-func _assert_blocked_candidate_aliases_empty(result: Dictionary, label: String) -> bool:
-	for key in [
-		"autoobject_candidate_voxel_sparses",
-		"candidate_voxel_regions_by_asset",
-		"candidate_voxel_sparses_by_asset",
-	]:
-		var value = result.get(key, null)
-		if not value is Dictionary:
-			push_error("  FAIL: %s blocked output missing dictionary alias %s" % [label, key])
-			return false
-		if not (value as Dictionary).is_empty():
-			push_error("  FAIL: %s blocked output alias %s should be empty" % [label, key])
-			return false
-	if str(result.get("candidate_route_readback_source", "")) != "none":
-		push_error("  FAIL: %s blocked output should not expose candidate route readback source" % label)
-		return false
-	if str(result.get("candidate_route_runtime_read_source", "")) != "none":
-		push_error("  FAIL: %s blocked output should not expose candidate route runtime source" % label)
-		return false
-	if not _assert_route_input_contract(result, label, "none", "none", "none"):
-		return false
-	return true
-
-
-func _assert_route_input_contract(
-	result: Dictionary,
-	label: String,
-	expected_route_input: String,
-	expected_readback_source: String,
-	expected_runtime_source: String
-) -> bool:
-	var contract: Dictionary = result.get("candidate_route_input_contract", {})
-	if contract.is_empty():
-		push_error("  FAIL: %s should expose candidate_route_input_contract diagnostics" % label)
-		return false
-	if str(contract.get("route_input", "")) != expected_route_input:
-		push_error("  FAIL: %s route_input should be %s, got %s" % [label, expected_route_input, str(contract.get("route_input", ""))])
-		return false
-	if bool(contract.get("resident_route_input_ready", true)):
-		push_error("  FAIL: %s should not claim resident route input readiness" % label)
-		return false
-	if str(contract.get("resident_route_owner", "")) != "none" \
-	   or str(contract.get("resident_route_buffer_rid", "")) != "none" \
-	   or str(contract.get("resident_route_buffer_lifetime", "")) != "none" \
-	   or str(contract.get("debug_snapshot_api", "")) != "none":
-		push_error("  FAIL: %s resident owner/RID/lifetime/debug snapshot API should remain unset" % label)
-		return false
-	if int(contract.get("resident_route_record_stride", -1)) != 0 \
-	   or int(contract.get("resident_route_range_count", -1)) != 0:
-		push_error("  FAIL: %s resident stride/ranges should remain unset" % label)
-		return false
-	if str(contract.get("normalized_readback_source", "")) != expected_readback_source \
-	   or str(contract.get("normalized_runtime_read_source", "")) != expected_runtime_source:
-		push_error("  FAIL: %s normalized route sources should be %s/%s" % [label, expected_readback_source, expected_runtime_source])
-		return false
 	return true
 
 
@@ -700,7 +560,7 @@ func _test_prefilter_borrows_profile_container_probe_records_or_skip() -> bool:
 	asset.name = "borrowed_profile_probe_asset"
 	asset.semantic_probe_density = 1.0
 	asset.set_semantic_probes([
-		ProbeProfile.make_probe(Vector3(1.0, 0.0, 0.0), Color(0.2, 0.3, 0.4, 0.5), 0.25, 2.0, 0.0, 0.0, "borrow"),
+		ProbeGenerator.make_probe(Vector3(1.0, 0.0, 0.0), Color(0.2, 0.3, 0.4, 0.5), 0.25, 2.0, 0.0, 0.0, "borrow"),
 	])
 
 	var container = RuntimeProfileContainerScript.new()

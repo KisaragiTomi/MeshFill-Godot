@@ -32,11 +32,11 @@
 | --- | --- | --- |
 | `TargetSV` | 源目标画布 | 重建、持久化、debug / import 回查。 |
 | `BrushSV` | 目标画布笔刷 delta / override | 与源 `TargetSV` 重新合成 `TargetSV_B`。 |
-| `TargetSV_B` | brush-composited target read buffer | prefilter、routing、physical target fit、result feedback、debug。 |
-| `target_completeness` | 从 `TargetSV_B` 读取的 target complexity / collision intent | `score_anchor_asset_probes.glsl`、`score_voxel_tile.glsl`。 |
-| `target_color` | 从 `TargetSV_B` 读取的 packed RGBA8 color / complexity | `score_anchor_asset_probes.glsl`、`score_voxel_tile.glsl`。 |
+| `TargetSV_B` | brush-composited target read buffer | prefilter、routing、fine semantic target fit、result feedback、debug。 |
+| `target_completeness` | 从 `TargetSV_B` 读取的 target complexity / collision intent | `score_anchor_asset_probes.glsl`、`score_anchor_asset_residual.glsl`（shader 侧为 `target_field` + `target_collision` 独立输入对）。 |
+| `target_color` | 从 `TargetSV_B` 读取的 packed RGBA8 color / complexity | `score_anchor_asset_probes.glsl`、`score_anchor_asset_residual.glsl`。 |
 
-当前源码提供 `TargetSceneVoxelGenerator.decode_target_read_buffers()`，用于把 `target_scene_voxel_b_visual.rgba8` / `target_scene_voxel_b_collision.r8` 解码为 `target_completeness` 和 `target_color`。`target_completeness` 默认取 `max(visual.a, collision)`，使 prefilter、physical target fit 和 result feedback 能同时看到 complexity 与 collision intent；`target_color.a` 保留 visual complexity。
+当前源码提供 `TargetSceneVoxelGenerator.decode_target_read_buffers()`，用于把 `target_scene_voxel_b_visual.rgba8` / `target_scene_voxel_b_collision.r8` 解码为 `target_completeness` 和 `target_color`。`target_completeness` 默认取 `max(visual.a, collision)`，使 prefilter、细筛 semantic target fit 和 result feedback 能同时看到 complexity 与 collision intent；`target_color.a` 保留 visual complexity。
 
 硬边界：
 
@@ -55,12 +55,12 @@ TargetSV + BrushSV
   -> TargetSV_B
   -> target_completeness + target_color
   -> AutoObject probe prefilter
-  -> candidate_voxel_regions_by_asset
-  -> score_voxel_tile.glsl
+  -> anchor_candidate_handoff（常驻 anchor / anchor_count / topk buffer）
+  -> score_anchor_asset_residual.glsl（residual-gain 细筛）
   -> BlendSV[tick] result feedback comparison
 ```
 
-当前 prefilter 和 physical score 只读取 `target_completeness` 与 `target_color`。`score_voxel_tile.glsl` 不读取 projection cache，也不做 semantic rerank / MLP。结果级 feedback 是 placement / commit 之后的独立阶段：`ScenePlacementActor.score_blendsv_feedback_against_target()` 临时合成 `BlendSV` 并与 `TargetSV_B` / `TargetSV` 对比，不能写成 `score_voxel_tile.glsl` 的现行能力。
+当前 prefilter 从 `TargetSV_B` 读取 `target_completeness` 与 `target_color` 做低粒度语义路由；`score_anchor_asset_residual.glsl` 以 anchor 为 origin 读取 TargetSV 独立输入对（`target_field` + `target_collision`），对 CurrentSV 与 TargetSV 计算五维 residual gain。它不读取 projection cache，也不执行 MLP。结果级 feedback 是 placement / commit 之后的独立阶段：`ScenePlacementActor.score_blendsv_feedback_against_target()` 临时合成 `BlendSV` 并与 `TargetSV_B` / `TargetSV` 对比，不能写成细筛评分器的现行能力。
 
 ## Anchor 语义
 
@@ -68,24 +68,22 @@ GPU prefilter 从多个位置来源提取 anchors，但写入同一个 position-
 
 | 位置来源 | 当前定义 |
 | --- | --- |
-| Supported candidate position | 当前 voxel 满足 target 阈值、scene/collision 阈值，并且下方 support 足够。 |
+| Target-inside candidate position | 当前 voxel 在 target 体积内部（`target_field.a > min_target_interest`）；旧 scene/collision/support 门控已删除。 |
 
 `ground` / `target_top` 配置名会归一到单一 `anchor`。
 
-## Candidate Voxel Region 边界
+## Anchor 候选交接边界
 
-高层使用 `voxel region` 术语；当前 docs-facing route key 是 `candidate_voxel_regions*`，代码中的 `candidate_voxel_sparses*` / `voxel_sparse` 仅作为 legacy/debug 名称。
+粗筛与细筛之间的交接是常驻 `anchor_candidate_handoff`；旧 docs-facing route key `candidate_voxel_regions_by_asset`（及代码中的 `candidate_voxel_sparses*` / `voxel_sparse` legacy/debug 名称）已随 candidate route 删除。
 
 ```text
 AutoObject probe prefilter
-  -> GPU voxel-region votes
-  -> readback expansion
-  -> candidate_voxel_regions_by_asset debug view
-     (legacy candidate_voxel_sparses_by_asset alias)
+  -> GPU score / top-K internal pass
+  -> anchor_candidate_handoff（anchor / anchor_count / topk buffer，SCOPE_PERSISTENT）
   -> VoxelPlacementGenerator.run_multi_asset()
 ```
 
-候选区域必须偏向召回：GPU prefilter readback 会按 collision 采样范围、probe offset、context radius 和至少 1 voxel interpolation guard 扩张。collision 采样、clearance 和 target fit 仍由 `score_voxel_tile.glsl` 精筛。
+交接不做区域扩张：每个 anchor 就是一个候选 origin（`one_origin_per_anchor`）。collision 采样、clearance 和 target fit 仍由 `score_anchor_asset_residual.glsl` 精筛，胜者由 `reduce_anchor_candidates.glsl` 按 residual gain 裁决。
 
 ## Stamp 计划
 

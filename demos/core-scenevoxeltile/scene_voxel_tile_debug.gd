@@ -2,18 +2,20 @@
 extends "res://scripts/core_demo_contract_fixture.gd"
 
 const SVC := preload("res://scripts/scene_voxel_committer.gd")
+const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const DemoDebugVisuals := preload("res://scripts/utils/demo_debug_visuals.gd")
+const SceneVoxelFixture := preload("res://scripts/utils/voxel_fixtures.gd")
 
-# Dirty flag bit constants (mirroring SceneVoxelCommitter)
-const FLAG_SCENE := 1
-const FLAG_COLLISION := 2
-const FLAG_AUTO := 4
-const FLAG_BRUSH := 8
-const FLAG_TARGET := 16
-const FLAG_ROUTING := 32
-const FLAG_SCORING := 64
-const FLAG_FEEDBACK := 128
-const FLAG_OBJECT_REFS := 256
+# Dirty flag bits are owned by the SceneVoxelTile codec contract.
+const FLAG_SCENE := SceneVoxelTileCodecScript.FLAG_SCENE
+const FLAG_COLLISION := SceneVoxelTileCodecScript.FLAG_COLLISION
+const FLAG_AUTO := SceneVoxelTileCodecScript.FLAG_AUTO
+const FLAG_BRUSH := SceneVoxelTileCodecScript.FLAG_BRUSH
+const FLAG_TARGET := SceneVoxelTileCodecScript.FLAG_TARGET
+const FLAG_ROUTING := SceneVoxelTileCodecScript.FLAG_ROUTING
+const FLAG_SCORING := SceneVoxelTileCodecScript.FLAG_SCORING
+const FLAG_FEEDBACK := SceneVoxelTileCodecScript.FLAG_FEEDBACK
+const FLAG_OBJECT_REFS := SceneVoxelTileCodecScript.FLAG_OBJECT_REFS
 
 # Color mapping for dirty flags
 const FLAG_COLORS := {
@@ -85,11 +87,15 @@ func _populate_test_data() -> void:
 	]
 
 	for rec in test_records:
-		var record := _make_voxel_record(rec[0], rec[1], rec[2], rec[3], rec[4], rec[5])
-		_committer.apply_instance_stamp_write_spec(record)
+		var record := SceneVoxelFixture.make_scene_voxel_stamp_record(
+			rec[0], rec[1], rec[2], rec[3], rec[4], GRID_SIZE_VOXELS)
+		# V1：2D volume 门退役后 grid 自 _init 即有效，apply 默认会逐条即时 commit
+		# （每次 commit 的 _rebuild_sv 快照后清脏）。这里 defer，让 8 条记录的脏标记
+		# 累计到末尾那次 commit_scene_voxels 的 dirty 快照里供可视化。
+		_committer.apply_instance_stamp_write_spec(record, true)
 
 		# Mark dirty tiles after each write, with specific flags
-		var bounds := _compute_record_voxel_bounds(rec[1], rec[2], rec[5])
+		var bounds := SceneVoxelFixture.centered_scene_voxel_bounds(rec[1], rec[2])
 		var extra_flags: Dictionary = rec[6]
 		_committer.mark_scene_voxel_tile_bounds_dirty(
 			bounds.voxel_min, bounds.voxel_max,
@@ -98,34 +104,6 @@ func _populate_test_data() -> void:
 		)
 
 	_committer.commit_scene_voxels()
-
-
-func _compute_record_voxel_bounds(voxel_xz: Vector2i, slice_index: int, _shape: String) -> Dictionary:
-	var radius_voxels := 2
-	return {
-		"voxel_min": Vector3i(voxel_xz.x - radius_voxels, slice_index, voxel_xz.y - radius_voxels),
-		"voxel_max": Vector3i(voxel_xz.x + radius_voxels + 1, slice_index + 1, voxel_xz.y + radius_voxels + 1),
-	}
-
-
-func _make_voxel_record(id: String, voxel_xz: Vector2i, slice_index: int, c: Color, complexity: float, shape: String) -> Dictionary:
-	return {
-		"id": id,
-		"type": "rock",
-		"source_voxel_type": "AutoSceneVoxel",
-		"position": Vector3.ZERO,
-		"base_pixel": voxel_xz,
-		"voxel_xz": voxel_xz,
-		"volume_xz_resolution": GRID_SIZE_VOXELS,
-		"slice_index": slice_index,
-		"scale": Vector3.ONE,
-		"color": c,
-		"complexity": complexity,
-		"collision": [],
-		"channel": 0,
-		"radius": 2.0,
-		"auto_mix": 0,
-	}
 
 
 func _setup_visualization() -> void:
@@ -400,17 +378,7 @@ func _update_tile_colors() -> void:
 
 
 func _flag_name_to_bit(flag_name: String) -> int:
-	match flag_name:
-		"scene": return FLAG_SCENE
-		"collision": return FLAG_COLLISION
-		"auto": return FLAG_AUTO
-		"brush": return FLAG_BRUSH
-		"target": return FLAG_TARGET
-		"routing": return FLAG_ROUTING
-		"scoring": return FLAG_SCORING
-		"feedback": return FLAG_FEEDBACK
-		"object_refs": return FLAG_OBJECT_REFS
-	return -1
+	return SceneVoxelTileCodecScript.flags_to_bits({flag_name: true})
 
 
 ## MeshFill 插件通过 _forward_3d_gui_input 把编辑器视口事件转发到这里。

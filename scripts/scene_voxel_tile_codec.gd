@@ -5,14 +5,24 @@ const HashUtils := preload("res://scripts/utils/hash_utils.gd")
 
 const RECORD_STRIDE_BYTES := 128
 const SUMMARY_STRIDE_BYTES := 32
-const REF_STRIDE_BYTES := 4
+## 碰撞场双口径显式化：R8 紧凑（1B/体素）只作磁盘/回读边界格式；常驻/上传口径是
+## unorm8-in-u32（每体素 1 个 uint32，量化值存低字节，见 u32_bytes_from_r8_bytes）。
 const COMPLEXITY_FIELD_FORMAT_RGBA8 := "rgba8_unorm"
 const COLLISION_FIELD_FORMAT_R8 := "r8_unorm"
+const COLLISION_FIELD_FORMAT_UNORM8_U32 := "unorm8_u32"
 const COMPLEXITY_FIELD_STRIDE_BYTES := 4
 const COLLISION_FIELD_STRIDE_BYTES := 1
-const LEGACY_FLOAT4_FIELD_STRIDE_BYTES := 16
-const LEGACY_FLOAT_FIELD_STRIDE_BYTES := 4
+const COLLISION_FIELD_U32_STRIDE_BYTES := 4
 const FIELD_STRIDE_BYTES := COMPLEXITY_FIELD_STRIDE_BYTES
+
+# --- scene voxel tile GPU buffer schema（SSOT；committer/tile_store 以同名单层 re-export 引用） ---
+const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER := "scene_voxel_tile_complexity_field"
+const SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER := "scene_voxel_tile_collision_field"
+const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_FORMAT := COMPLEXITY_FIELD_FORMAT_RGBA8
+const SCENE_VOXEL_TILE_COLLISION_FIELD_FORMAT := COLLISION_FIELD_FORMAT_UNORM8_U32
+const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES := COMPLEXITY_FIELD_STRIDE_BYTES
+const SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES := COLLISION_FIELD_U32_STRIDE_BYTES
+const SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT := 8
 
 const FLAG_SCENE := 1
 const FLAG_COLLISION := 2
@@ -25,6 +35,7 @@ const FLAG_FEEDBACK := 128
 const FLAG_OBJECT_REFS := 256
 const FLAG_MASK := 512
 
+## 若项目设置中尚无该项，则以 default_size 注册一个 Vector3i 类型的项目设置并登记其属性信息。
 static func register_project_settings(setting_name: String, default_size: Vector3i) -> void:
 	if not ProjectSettings.has_setting(setting_name):
 		ProjectSettings.set_setting(setting_name, default_size)
@@ -35,11 +46,13 @@ static func register_project_settings(setting_name: String, default_size: Vector
 		"hint": PROPERTY_HINT_NONE,
 	})
 
+## 读取项目设置中的尺寸值（缺省用 default_size），并把每个分量下限钳到 1，返回合法的 Vector3i。
 static func configured_size(setting_name: String, default_size: Vector3i) -> Vector3i:
 	var value = ProjectSettings.get_setting(setting_name, default_size)
 	var size := vector3i_from_value(value, default_size)
 	return Vector3i(maxi(size.x, 1), maxi(size.y, 1), maxi(size.z, 1))
 
+## 由体素网格尺寸和瓦片尺寸计算瓦片网格尺寸（每维向上取整、下限 1），即各维度上瓦片的数量。
 static func tile_grid_size(grid_size: Vector3i, tile_size: Vector3i) -> Vector3i:
 	return Vector3i(
 		maxi(ceili(float(maxi(grid_size.x, 1)) / float(tile_size.x)), 1),
@@ -47,6 +60,7 @@ static func tile_grid_size(grid_size: Vector3i, tile_size: Vector3i) -> Vector3i
 		maxi(ceili(float(maxi(grid_size.z, 1)) / float(tile_size.z)), 1)
 	)
 
+## 把某个体素坐标映射到它所属的瓦片坐标（整除 tile_size 后钳到瓦片网格范围内）。
 static func tile_coord_from_voxel(voxel_coord: Vector3i, grid_size: Vector3i, tile_size: Vector3i) -> Vector3i:
 	var tile_grid := tile_grid_size(grid_size, tile_size)
 	return Vector3i(
@@ -55,6 +69,7 @@ static func tile_coord_from_voxel(voxel_coord: Vector3i, grid_size: Vector3i, ti
 		clampi(int(voxel_coord.z / tile_size.z), 0, tile_grid.z - 1)
 	)
 
+## 将瓦片坐标（先钳到网格范围内）转换为一维线性索引；越界坐标会被夹到边界。
 static func tile_index(tile_coord: Vector3i, tile_grid: Vector3i) -> int:
 	var grid := Vector3i(maxi(tile_grid.x, 1), maxi(tile_grid.y, 1), maxi(tile_grid.z, 1))
 	var coord := Vector3i(
@@ -64,13 +79,16 @@ static func tile_index(tile_coord: Vector3i, tile_grid: Vector3i) -> int:
 	)
 	return tile_index_unclamped(coord, grid)
 
+## 不做范围钳制、直接按 x + gx*(z + gz*y) 的布局把瓦片坐标线性化为索引（供已知坐标合法时使用）。
 static func tile_index_unclamped(tile_coord: Vector3i, tile_grid: Vector3i) -> int:
 	var grid := Vector3i(maxi(tile_grid.x, 1), maxi(tile_grid.y, 1), maxi(tile_grid.z, 1))
 	return tile_coord.x + grid.x * (tile_coord.z + grid.z * tile_coord.y)
 
+## 返回瓦片网格的瓦片总数（三个维度相乘，负数按 0 处理）。
 static func tile_count(tile_grid: Vector3i) -> int:
 	return maxi(tile_grid.x, 0) * maxi(tile_grid.y, 0) * maxi(tile_grid.z, 0)
 
+## tile_index 的逆运算：把一维线性索引（先钳到合法范围）还原为瓦片坐标 (tx, ty, tz)。
 static func tile_coord_from_index(tile_index: int, tile_grid: Vector3i) -> Vector3i:
 	var grid := Vector3i(maxi(tile_grid.x, 1), maxi(tile_grid.y, 1), maxi(tile_grid.z, 1))
 	var safe_index := clampi(tile_index, 0, maxi(tile_count(grid) - 1, 0))
@@ -81,10 +99,12 @@ static func tile_coord_from_index(tile_index: int, tile_grid: Vector3i) -> Vecto
 	var tx := rem % grid.x
 	return Vector3i(tx, ty, tz)
 
+## 便捷组合：由体素坐标一步得到其所属瓦片的线性索引（= tile_coord_from_voxel 再 tile_index）。
 static func tile_index_from_voxel(voxel_coord: Vector3i, grid_size: Vector3i, tile_size: Vector3i) -> int:
 	var grid := tile_grid_size(grid_size, tile_size)
 	return tile_index(tile_coord_from_voxel(voxel_coord, grid_size, tile_size), grid)
 
+## 汇总某体素坐标对应瓦片的完整信息，返回 {size, grid, index, coord} 字典，便于一次取全。
 static func tile_info_for_voxel(voxel_coord: Vector3i, grid_size: Vector3i, tile_size: Vector3i) -> Dictionary:
 	var grid := tile_grid_size(grid_size, tile_size)
 	var coord := tile_coord_from_voxel(voxel_coord, grid_size, tile_size)
@@ -95,9 +115,11 @@ static func tile_info_for_voxel(voxel_coord: Vector3i, grid_size: Vector3i, tile
 		"coord": coord,
 	}
 
+## 由瓦片坐标生成字符串键 "x:y:z"，用作 scene_voxel_tiles 字典的键。
 static func tile_key(tile_coord: Vector3i) -> String:
 	return "%d:%d:%d" % [tile_coord.x, tile_coord.y, tile_coord.z]
 
+## 统计一条瓦片记录里关联的对象引用数量：优先用 debug id 数组长度，否则取 debug/正式 range_count 的较大值。
 static func object_ref_count(tile_record: Dictionary) -> int:
 	if tile_record.is_empty():
 		return 0
@@ -106,6 +128,7 @@ static func object_ref_count(tile_record: Dictionary) -> int:
 		return (ids as Array).size()
 	return maxi(int(tile_record.get("object_debug_range_count", 0)), int(tile_record.get("object_range_count", 0)))
 
+## 计算某瓦片在体素空间的边界范围（min/max 均钳到网格内），并附带 XZ 平面的 base_rect，返回边界字典。
 static func tile_bounds(tile_coord: Vector3i, grid_size: Vector3i, tile_size: Vector3i) -> Dictionary:
 	var voxel_min := Vector3i(
 		clampi(tile_coord.x * tile_size.x, 0, maxi(grid_size.x - 1, 0)),
@@ -128,6 +151,8 @@ static func tile_bounds(tile_coord: Vector3i, grid_size: Vector3i, tile_size: Ve
 		),
 	}
 
+## 把多种形态的输入（字典/数组/字符串/整数掩码）归一化为标志字典；纯 guidance 标志(target/routing/scoring/feedback)
+## 不补默认层，否则在既无 scene 又无 collision 时补上 default_layer。
 static func flags_from_value(value, default_layer: String = "scene") -> Dictionary:
 	var flags := {}
 
@@ -164,12 +189,14 @@ static func flags_from_value(value, default_layer: String = "scene") -> Dictiona
 static func vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
 	return VoxelGeneral.vector3i_from_value(value, fallback)
 
+## 按 keys 顺序在记录中查找第一个存在的键并解析为 Vector3i；全部缺失则返回 fallback。
 static func first_vector3i(record: Dictionary, keys: Array[String], fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
 	for key in keys:
 		if record.has(key):
 			return vector3i_from_value(record.get(key), fallback)
 	return fallback
 
+## 判断记录中是否至少存在 keys 里的任意一个键。
 static func has_any_key(record: Dictionary, keys: Array[String]) -> bool:
 	for key in keys:
 		if record.has(key):
@@ -209,6 +236,7 @@ static func delta_bounds(delta: Dictionary) -> Dictionary:
 		"old_max": old_max,
 	}
 
+## 规整体素边界：保证 min<max、每维至少 1 体素厚，且整体钳到网格范围内，返回 {voxel_min, voxel_max}。
 static func normalized_bounds(voxel_min: Vector3i, voxel_max: Vector3i, grid_size: Vector3i) -> Dictionary:
 	var min_v := Vector3i(
 		clampi(mini(voxel_min.x, voxel_max.x - 1), 0, maxi(grid_size.x - 1, 0)),
@@ -225,51 +253,25 @@ static func normalized_bounds(voxel_min: Vector3i, voxel_max: Vector3i, grid_siz
 		"voxel_max": max_v,
 	}
 
-static func sv_tile_key(slice_index: int, voxel_px: Vector2i, layer: String = "scene", tile_size: int = 8) -> String:
-	var tile_x := int(voxel_px.x / tile_size)
-	var tile_y := int(voxel_px.y / tile_size)
-	if layer == "collision":
-		return "%d:collision:%d:%d" % [slice_index, tile_x, tile_y]
-	return "%d:%d:%d" % [slice_index, tile_x, tile_y]
-
-static func sv_tile_bounds(voxel_px: Vector2i, tile_size: int = 8) -> Rect2i:
-	return Rect2i(
-		Vector2i(int(voxel_px.x / tile_size) * tile_size, int(voxel_px.y / tile_size) * tile_size),
-		Vector2i(tile_size, tile_size)
-	)
-
-static func packed_float_field(value) -> PackedFloat32Array:
-	if value is PackedFloat32Array:
-		return (value as PackedFloat32Array).duplicate()
-
-	var result := PackedFloat32Array()
-	if value is Array:
-		for raw_value in value:
-			result.append(float(raw_value))
-	return result
-
-static func pack_float_field_bytes(values: PackedFloat32Array) -> PackedByteArray:
-	return values.to_byte_array()
-
-static func decode_float_field_bytes(bytes: PackedByteArray) -> PackedFloat32Array:
-	var available_bytes := bytes.size()
-	available_bytes -= available_bytes % LEGACY_FLOAT_FIELD_STRIDE_BYTES
-	return bytes.slice(0, available_bytes).to_float32_array()
-
+## 计算存放 voxel_count 个 RGBA8 复杂度体素所需的字节数（每体素 4 字节）。
 static func rgba8_byte_count(voxel_count: int) -> int:
 	return maxi(voxel_count, 0) * COMPLEXITY_FIELD_STRIDE_BYTES
 
+## 计算存放 voxel_count 个 R8 碰撞体素所需的字节数（每体素 1 字节）。
 static func r8_byte_count(voxel_count: int) -> int:
 	return maxi(voxel_count, 0) * COLLISION_FIELD_STRIDE_BYTES
 
-static func r8_word_byte_count(voxel_count: int) -> int:
-	return maxi(int(ceili(float(maxi(voxel_count, 0)) / 4.0)) * 4, 4)
+## 计算 R8 场展开为 GPU u32 布局（每体素 1 个 uint32，即每体素恰 4 字节）后的字节数。
+static func u32_field_byte_count(voxel_count: int) -> int:
+	return maxi(voxel_count, 0) * 4
 
+## 推断标量场（每体素 1 值）的体素数：给了期望值就用期望值，否则等于数组长度。
 static func infer_scalar_voxel_count(values: PackedFloat32Array, expected_voxel_count: int = -1) -> int:
 	if expected_voxel_count > 0:
 		return expected_voxel_count
 	return values.size()
 
+## 推断复杂度场的体素数：优先用期望值；否则若长度是 4 的倍数按 vec4/体素折算，再不然按标量长度。
 static func infer_complexity_voxel_count(values: PackedFloat32Array, expected_voxel_count: int = -1) -> int:
 	if expected_voxel_count > 0:
 		return expected_voxel_count
@@ -277,6 +279,7 @@ static func infer_complexity_voxel_count(values: PackedFloat32Array, expected_vo
 		return int(values.size() / 4)
 	return values.size()
 
+## 把复杂度场打包为 RGBA8 字节：源是 vec4 则逐通道编码，源是标量则存为 (1,1,1,value)，每体素输出一个 u32。
 static func pack_complexity_field_rgba8_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
 	var safe_count := infer_complexity_voxel_count(values, voxel_count)
 	var out := PackedByteArray()
@@ -293,6 +296,7 @@ static func pack_complexity_field_rgba8_bytes(values: PackedFloat32Array, voxel_
 		out.encode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES, BufferUtils.pack_shader_rgba8_word(color))
 	return out
 
+## 把 RGBA8 复杂度场字节解码为每体素 4 个 float（r,g,b,a 依次展开），越界部分保持 0。
 static func decode_complexity_field_rgba8_vec4_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
 	var safe_count := maxi(voxel_count, 0)
 	var out := PackedFloat32Array()
@@ -307,6 +311,7 @@ static func decode_complexity_field_rgba8_vec4_bytes(bytes: PackedByteArray, vox
 		out[base + 3] = color.a
 	return out
 
+## 只取 RGBA8 复杂度场每体素的 alpha 通道，解为标量 float 数组（与标量打包路径对应）。
 static func decode_complexity_field_rgba8_alpha_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
 	var safe_count := maxi(voxel_count, 0)
 	var out := PackedFloat32Array()
@@ -316,6 +321,7 @@ static func decode_complexity_field_rgba8_alpha_bytes(bytes: PackedByteArray, vo
 		out[i] = BufferUtils.shader_rgba8_word_to_color(bytes.decode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES)).a
 	return out
 
+## 把碰撞标量场量化打包为 R8 字节（每体素 1 字节，unorm8 量化），未紧凑到 4 字节对齐。
 static func pack_collision_field_r8_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
 	var safe_count := infer_scalar_voxel_count(values, voxel_count)
 	var out := PackedByteArray()
@@ -324,26 +330,30 @@ static func pack_collision_field_r8_bytes(values: PackedFloat32Array, voxel_coun
 		out[i] = BufferUtils.quantize_unorm8(values[i])
 	return out
 
-static func pack_collision_field_r8_word_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
+## 打包碰撞场为 R8 后展开成 GPU u32 上传格式（每体素 1 个 uint32，量化值存低字节）。
+static func pack_collision_field_u32_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
 	var safe_count := infer_scalar_voxel_count(values, voxel_count)
-	return r8_word_bytes_from_r8_bytes(pack_collision_field_r8_bytes(values, safe_count), safe_count)
+	return u32_bytes_from_r8_bytes(pack_collision_field_r8_bytes(values, safe_count), safe_count)
 
-static func r8_word_bytes_from_r8_bytes(r8_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
+## 把紧凑的 R8 字节展开为 u32 布局缓冲：源第 i 字节写入 out[i*4]（小端低字节），其余 3 字节留 0。
+static func u32_bytes_from_r8_bytes(r8_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
 	var out := PackedByteArray()
-	out.resize(r8_word_byte_count(voxel_count))
+	out.resize(u32_field_byte_count(voxel_count))
 	var byte_count := mini(r8_bytes.size(), r8_byte_count(voxel_count))
 	for i in range(byte_count):
-		out[i] = r8_bytes[i]
+		out[i * 4] = r8_bytes[i]
 	return out
 
-static func r8_bytes_from_word_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
+## 逆操作：从 u32 布局缓冲取回紧凑的 R8 字节（每体素取 word 的低字节 word_bytes[i*4]）。
+static func r8_bytes_from_u32_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
 	var out := PackedByteArray()
 	out.resize(r8_byte_count(voxel_count))
-	var byte_count := mini(out.size(), word_bytes.size())
+	var byte_count := mini(out.size(), int(word_bytes.size() / 4))
 	for i in range(byte_count):
-		out[i] = word_bytes[i]
+		out[i] = word_bytes[i * 4]
 	return out
 
+## 把 R8 碰撞场字节解码为 [0,1] 归一化 float 数组（每字节 /255）。
 static func decode_collision_field_r8_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
 	var safe_count := maxi(voxel_count, 0)
 	var out := PackedFloat32Array()
@@ -353,9 +363,11 @@ static func decode_collision_field_r8_bytes(bytes: PackedByteArray, voxel_count:
 		out[i] = float(bytes[i] & 0xFF) / 255.0
 	return out
 
-static func decode_collision_field_r8_word_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
-	return decode_collision_field_r8_bytes(r8_bytes_from_word_bytes(word_bytes, voxel_count), voxel_count)
+## 从 u32 布局缓冲直接解码碰撞场为归一化 float（= 先压缩回紧凑 R8 再按 R8 解码）。
+static func decode_collision_field_u32_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
+	return decode_collision_field_r8_bytes(r8_bytes_from_u32_bytes(word_bytes, voxel_count), voxel_count)
 
+## 取瓦片字典的所有键转为字符串并排序，得到确定性的瓦片 id 列表（保证打包/解包顺序一致）。
 static func sorted_tile_ids(scene_voxel_tiles: Dictionary) -> Array[String]:
 	var ids: Array[String] = []
 	for raw_id in scene_voxel_tiles.keys():
@@ -363,6 +375,7 @@ static func sorted_tile_ids(scene_voxel_tiles: Dictionary) -> Array[String]:
 	ids.sort()
 	return ids
 
+## 把每个瓦片记录序列化为 128 字节定长结构（坐标/尺寸/边界/脏标志/各类 tick/计数/哈希等），供 GPU SSBO 读取。
 static func pack_record_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictionary, default_tile_size: Vector3i) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(tile_ids.size() * RECORD_STRIDE_BYTES)
@@ -401,6 +414,7 @@ static func pack_record_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictio
 
 	return bytes
 
+## 把每个瓦片的摘要序列化为 32 字节定长结构（复杂度/碰撞的 min-max 与场景/碰撞体素计数）。
 static func pack_summary_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictionary) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(tile_ids.size() * SUMMARY_STRIDE_BYTES)
@@ -422,6 +436,7 @@ static func pack_summary_bytes(tile_ids: Array[String], scene_voxel_tiles: Dicti
 
 	return bytes
 
+## 从瓦片 id 列表中筛出被标记为 dirty（需重新提交）的瓦片 id 子集。
 static func dirty_tile_ids(tile_ids: Array[String], scene_voxel_tiles: Dictionary) -> Array[String]:
 	var result: Array[String] = []
 	for i in range(tile_ids.size()):
@@ -430,13 +445,7 @@ static func dirty_tile_ids(tile_ids: Array[String], scene_voxel_tiles: Dictionar
 			result.append(tile_ids[i])
 	return result
 
-static func pack_ref_hash_bytes(values: Array[String]) -> PackedByteArray:
-	var bytes := PackedByteArray()
-	bytes.resize(values.size() * REF_STRIDE_BYTES)
-	for i in range(values.size()):
-		bytes.encode_u32(i * REF_STRIDE_BYTES, HashUtils.stable_u32_from_string(str(values[i])))
-	return bytes
-
+## pack_record_bytes 的逆操作：把 128 字节定长记录缓冲解回瓦片字典数组，与 tile_ids 按序配对。
 static func decode_records(bytes: PackedByteArray, tile_ids: Array[String]) -> Array[Dictionary]:
 	var records: Array[Dictionary] = []
 	var available_bytes := mini(bytes.size(), tile_ids.size() * RECORD_STRIDE_BYTES)
@@ -470,6 +479,7 @@ static func decode_records(bytes: PackedByteArray, tile_ids: Array[String]) -> A
 
 	return records
 
+## pack_summary_bytes 的逆操作：把 32 字节定长摘要缓冲解回摘要字典数组，与 tile_ids 按序配对。
 static func decode_summaries(bytes: PackedByteArray, tile_ids: Array[String]) -> Array[Dictionary]:
 	var summaries: Array[Dictionary] = []
 	var available_bytes := mini(bytes.size(), tile_ids.size() * SUMMARY_STRIDE_BYTES)
@@ -488,6 +498,7 @@ static func decode_summaries(bytes: PackedByteArray, tile_ids: Array[String]) ->
 
 	return summaries
 
+## 把脏标志字典编码为整数位掩码（scene/collision/auto/brush/target/routing/scoring/feedback/object_refs/mask 各占一位）。
 static func flags_to_bits(dirty_flags: Dictionary) -> int:
 	var bits := 0
 	if bool(dirty_flags.get("scene", false)):
@@ -512,6 +523,7 @@ static func flags_to_bits(dirty_flags: Dictionary) -> int:
 		bits |= FLAG_MASK
 	return bits
 
+## flags_to_bits 的逆操作：把整数位掩码解回脏标志字典（每个置位对应一个标志键为 true）。
 static func flags_from_bits(bits: int) -> Dictionary:
 	var flags := {}
 	if (bits & FLAG_SCENE) != 0:
@@ -536,5 +548,6 @@ static func flags_from_bits(bits: int) -> Dictionary:
 		flags["mask"] = true
 	return flags
 
+## 把有符号整数按位重解释为无符号 32 位数值（负数加 2^32），用于以 u32 语义处理 word。
 static func _u32_word(value: int) -> int:
 	return value if value >= 0 else value + 4294967296

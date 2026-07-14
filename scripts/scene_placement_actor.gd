@@ -38,21 +38,11 @@ const MESH_DESCRIPTION_FLAG_HAS_MESH := 1
 const MESH_DESCRIPTION_FLAG_HAS_SOURCE_MESH := 2
 const MESH_DESCRIPTION_FLAG_SOURCE_DIFFERS := 4
 const MESH_DESCRIPTION_FLAG_HAS_SOURCE_PATH := 8
-const TARGET_READ_BUFFER_PREP_SHADER := "res://shaders/prepare_target_read_buffers.glsl"
-const TARGET_READ_BUFFER_PREP_LOCAL_SIZE := 64
-const TARGET_FIELD_STRIDE_BYTES := 16  # vec4 = 16 bytes per voxel
 const RESIDENT_TARGET_READ_BUFFERS_OPT_IN_KEY := "use_resident_target_read_buffer_handoff"
 const TARGET_READ_BUFFERS_DEBUG_READBACK_KEY := "debug_read_target_read_buffer_bytes"
-const RESIDENT_CANDIDATE_ROUTE_OPT_IN_KEY := "use_resident_candidate_route_handoff"
-const CandidateRouteSchemaScript := preload("res://scripts/candidate_route_schema.gd")
-const CANDIDATE_ROUTE_SCHEMA_VERSION := CandidateRouteSchemaScript.SCHEMA_VERSION
-const CANDIDATE_ROUTE_RECORD_STRIDE_BYTES := CandidateRouteSchemaScript.RECORD_STRIDE_BYTES
-const CANDIDATE_ROUTE_RANGE_STRIDE_BYTES := CandidateRouteSchemaScript.RANGE_STRIDE_BYTES
-const CANDIDATE_ROUTE_CPU_PACK_SOURCE_LABEL := "gpu_vote_buffer_readback_cpu_pack"
 ## BrushSV 常驻旁路层 + BlendSV 按需合成（方案A：committed SV 纯 auto，brush 不进提交）
-## 散射 stride/路径/键/展平契约已抽取到 utils/sv_field_scatter.gd（与 committer stamp-only 提交共享）。
+## 散射 stride/路径/键/展平/dispatch 半边已抽取到 utils/sv_field_scatter.gd（与 committer stamp-only 提交共享）。
 const SvFieldScatter := preload("res://scripts/utils/sv_field_scatter.gd")
-const SV_FIELD_SCATTER_SHADER := SvFieldScatter.SHADER_PATH
 const COMPOSE_BLEND_SV_SHADER := "res://shaders/compose_blend_sv_fields.glsl"
 const BLENDSV_FEEDBACK_SHADER := "res://shaders/score_blendsv_feedback.glsl"
 const SV_FIELD_RECORD_FLOAT_STRIDE := SvFieldScatter.RECORD_FLOAT_STRIDE
@@ -60,9 +50,6 @@ const BLENDSV_FEEDBACK_QUANT_SCALE := 1000.0
 const BLENDSV_FEEDBACK_OCCUPIED_EPSILON := 0.001
 
 # std430 push-constant 布局（迁移自手写 push.encode_* 序列；字节布局逐字保持）。
-const BRUSH_SV_SCATTER_PUSH := [
-	["grid_x", "int"], ["grid_y", "int"], ["record_count", "int"], ["write_mode", "int"],
-]
 const COMPOSE_BLEND_SV_PUSH := [
 	["voxel_count", "int"], ["collision_word_count", "int"], ["_pad0", "int"], ["_pad1", "int"],
 ]
@@ -101,18 +88,9 @@ var _mesh_description_gpu_byte_size := 0
 var _mesh_description_revision := 0
 var _mesh_description_uploaded_revision := -1
 var _last_mesh_description_upload_error := ""
-var _resident_candidate_route_record_buffer: RID
-var _resident_candidate_route_range_buffer: RID
-var _resident_candidate_route_record_count := 0
-var _resident_candidate_route_range_count := 0
-var _resident_candidate_route_revision := 0
-var _resident_candidate_route_buffers_borrowed := false
-var _last_resident_candidate_route_handoff: Dictionary = {}
 var _resident_target_field_buffer: RID
-var _resident_target_read_buffer_voxel_count := 0
-var _resident_target_read_buffer_byte_count := 0
-var _resident_target_read_buffer_revision := 0
-var _last_resident_target_read_buffer_handoff: Dictionary = {}
+var _resident_target_collision_buffer: RID
+var _resident_target_collision_byte_count := 0
 
 ## Pipeline workers (created lazily, share the same RenderingDevice).
 var _prefilter: AutoObjectProbePrefilterGPU
@@ -139,11 +117,6 @@ var _brush_sv_has_content := false
 var _blend_sv_complexity_buffer: RID
 var _blend_sv_collision_buffer: RID
 var _blend_sv_voxel_count := 0
-
-# ---------------------------------------------------------------------------
-# Lifecycle
-# ---------------------------------------------------------------------------
-
 
 # --------------------------------------------------------------------------
 # 初始化与生命周期
@@ -190,7 +163,6 @@ func dispose(sync_before_free: bool = true) -> void:
 func _dispose_internal(sync_before_free: bool = true) -> void:
 	_free_cached_wrappers()
 	_release_resident_target_read_buffer_handoff()
-	_release_resident_candidate_route_handoff()
 	_release_mesh_description_buffer()
 	clear_brush_sv(true)
 	release_blend_sv_fields()
@@ -227,11 +199,6 @@ func _dispose_internal(sync_before_free: bool = true) -> void:
 ## 返回 SPA 是否已成功初始化（RD 与 profile 容器均有效）；由 run_placement_pipeline 等各 API 入口前置检查调用
 func is_initialized() -> bool:
 	return _initialized and _rd != null and _runtime_profile_container != null
-
-
-# ---------------------------------------------------------------------------
-# External reference attachment
-# ---------------------------------------------------------------------------
 
 
 # --------------------------------------------------------------------------
@@ -391,7 +358,6 @@ func register_asset(descriptor: AssetDescriptor, mesh_ref: Mesh = null, autoobje
 		return -1
 
 	_free_cached_wrappers()
-	_release_resident_candidate_route_handoff()
 
 	_registered_descriptors.append(descriptor)
 	_registered_profile_ids.append(profile_id)
@@ -479,7 +445,6 @@ func replace_all_autoobject_assets(autoobjects: Array) -> bool:
 ## Clear the asset registry and re-upload an empty profile set.
 func clear_assets() -> void:
 	_free_cached_wrappers()
-	_release_resident_candidate_route_handoff()
 	if _runtime_profile_container != null:
 		_runtime_profile_container.clear()
 		_runtime_profile_container.upload_profiles(true)
@@ -669,7 +634,7 @@ func _descriptor_from_autoobject_asset(autoobject_ref: AutoObject) -> AssetDescr
 			autoobject_ref.mesh_size * 0.5,
 			autoobject_ref.collision,
 			autoobject_ref.pivot_variants,
-			autoobject_ref.semantic_probe_profile,
+			autoobject_ref.semantic_probe_generator,
 			autoobject_ref.semantic_probe_density,
 			autoobject_ref.context_sensing_radius
 		) as AssetDescriptor
@@ -858,12 +823,12 @@ func ensure_brush_sv_fields() -> Dictionary:
 	if voxel_count <= 0:
 		return {}
 	var complexity_byte_count := voxel_count * 4
-	var collision_byte_count := SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count)
+	var collision_byte_count := SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count)
 	if _brush_sv_complexity_buffer.is_valid() and _brush_sv_collision_buffer.is_valid() and _brush_sv_voxel_count == voxel_count:
 		return _brush_sv_field_summary(voxel_count, false)
 	clear_brush_sv(true)
 	_brush_sv_complexity_buffer = storage_buffer_zero(complexity_byte_count, SCOPE_PERSISTENT, "spa_brush_sv_complexity_rgba8")
-	_brush_sv_collision_buffer = storage_buffer_zero(collision_byte_count, SCOPE_PERSISTENT, "spa_brush_sv_collision_r8_words")
+	_brush_sv_collision_buffer = storage_buffer_zero(collision_byte_count, SCOPE_PERSISTENT, "spa_brush_sv_collision_u32")
 	if not _brush_sv_complexity_buffer.is_valid() or not _brush_sv_collision_buffer.is_valid():
 		clear_brush_sv(true)
 		return {}
@@ -907,34 +872,21 @@ func write_brush_sv_records(records: Array) -> Dictionary:
 	var record_count := deduped.size()
 	if record_count <= 0:
 		return {"ok": true, "record_count": 0, "gpu_dispatched": false}
-	var floats := SvFieldScatter.flatten_record_slots(deduped)
-
-	var shader := load_compute_shader(SV_FIELD_SCATTER_SHADER, SCOPE_FRAME, "spa_brush_sv_scatter")
-	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "spa_brush_sv_scatter")
-	var record_buffer := storage_buffer_from_floats(floats, SCOPE_FRAME, "spa_brush_sv_scatter_records")
-	if not shader.is_valid() or not pipeline.is_valid() or not record_buffer.is_valid():
-		gc_frame()
-		return {"ok": false, "reason": "brush_sv_scatter_resources_not_ready", "record_count": record_count, "gpu_dispatched": false}
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, _brush_sv_complexity_buffer),
-		make_storage_uniform(1, _brush_sv_collision_buffer),
-		make_storage_uniform(2, record_buffer),
-	], shader, 0, SCOPE_PASS, "spa_brush_sv_scatter")
-	if not set0.is_valid():
-		gc_frame()
-		return {"ok": false, "reason": "brush_sv_scatter_uniform_set_failed", "record_count": record_count, "gpu_dispatched": false}
-
+	# write_mode 0：brush 层 overwrite（后笔胜，允许降低/擦除）；grid.x→xz_res、grid.y→total_slices
 	var grid := _sv_field_grid_size()
-	var push := PushConstantLayout.new(BRUSH_SV_SCATTER_PUSH).pack({
-		grid_x = grid.x,
-		grid_y = grid.y,
-		record_count = record_count,
-		write_mode = 0,  # write_mode 0：brush 层 overwrite（后笔胜，允许降低/擦除）
-	})
-	if not _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(record_count, 64)):
-		gc_frame()
-		return {"ok": false, "reason": "brush_sv_scatter_dispatch_failed", "record_count": record_count, "gpu_dispatched": false}
-	gc_frame()
+	var scatter_result := SvFieldScatter.dispatch_scatter(
+		self,
+		_brush_sv_complexity_buffer,
+		_brush_sv_collision_buffer,
+		deduped,
+		grid.x,
+		grid.y,
+		0,
+		"brush_sv_scatter",
+		"spa_brush_sv_scatter"
+	)
+	if not bool(scatter_result.get("ok", false)):
+		return scatter_result
 	_brush_sv_has_content = true
 	if _sv_committer != null:
 		for raw_record in records:
@@ -944,7 +896,7 @@ func write_brush_sv_records(records: Array) -> Dictionary:
 				if voxel_xz_value is Vector2i:
 					var voxel_min := Vector3i((voxel_xz_value as Vector2i).x, int(record.get("slice_index", 0)), (voxel_xz_value as Vector2i).y)
 					_sv_committer.mark_scene_voxel_tile_bounds_dirty(voxel_min, voxel_min + Vector3i.ONE, {"brush": true, "scoring": true}, {"id": "brush_sv_stamp"})
-	return {"ok": true, "record_count": record_count, "gpu_dispatched": true}
+	return scatter_result
 
 
 ## 清空 BrushSV 常驻层；release_buffers=true 时连同缓冲一起释放
@@ -961,7 +913,7 @@ func clear_brush_sv(release_buffers: bool = false) -> void:
 		if _brush_sv_complexity_buffer.is_valid():
 			buffer_zero(_brush_sv_complexity_buffer, _brush_sv_voxel_count * 4)
 		if _brush_sv_collision_buffer.is_valid():
-			buffer_zero(_brush_sv_collision_buffer, SceneVoxelTileCodecScript.r8_word_byte_count(_brush_sv_voxel_count))
+			buffer_zero(_brush_sv_collision_buffer, SceneVoxelTileCodecScript.u32_field_byte_count(_brush_sv_voxel_count))
 	_brush_sv_has_content = false
 
 
@@ -1008,14 +960,14 @@ func compose_blend_sv_fields(sv_complexity_rid: RID, sv_collision_rid: RID) -> D
 	if fields.is_empty():
 		return {}
 	var voxel_count := _brush_sv_voxel_count
-	var collision_word_count := int(SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count) / 4)
+	var collision_word_count := int(SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count) / 4)
 	var complexity_byte_count := voxel_count * 4
 	var collision_byte_count := collision_word_count * 4
 
 	if not _blend_sv_complexity_buffer.is_valid() or _blend_sv_voxel_count != voxel_count:
 		release_blend_sv_fields()
 		_blend_sv_complexity_buffer = storage_buffer_zero(complexity_byte_count, SCOPE_PERSISTENT, "spa_blend_sv_complexity_rgba8")
-		_blend_sv_collision_buffer = storage_buffer_zero(collision_byte_count, SCOPE_PERSISTENT, "spa_blend_sv_collision_r8_words")
+		_blend_sv_collision_buffer = storage_buffer_zero(collision_byte_count, SCOPE_PERSISTENT, "spa_blend_sv_collision_u32")
 		if not _blend_sv_complexity_buffer.is_valid() or not _blend_sv_collision_buffer.is_valid():
 			release_blend_sv_fields()
 			return {}
@@ -1101,7 +1053,7 @@ func score_blendsv_feedback_against_target(
 	var shader := load_compute_shader(BLENDSV_FEEDBACK_SHADER, SCOPE_FRAME, "spa_blendsv_feedback")
 	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "spa_blendsv_feedback")
 	var target_visual_buffer := storage_buffer_from_bytes(target_visual_rgba8_bytes, SCOPE_FRAME, "spa_blendsv_feedback_target_visual")
-	var has_target_collision := target_collision_r8_bytes.size() >= SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count)
+	var has_target_collision := target_collision_r8_bytes.size() >= SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count)
 	var target_collision_buffer := storage_buffer_from_bytes(
 		target_collision_r8_bytes if has_target_collision else PackedByteArray([0, 0, 0, 0]),
 		SCOPE_FRAME,
@@ -1165,7 +1117,7 @@ func score_blendsv_feedback_against_target(
 
 
 # ---------------------------------------------------------------------------
-# BrushSV persistence metadata — control plane only
+# Mesh Description GPU 缓冲 — 打包 / 上传 / 回读内部实现
 # ---------------------------------------------------------------------------
 
 ## 递增 mesh description revision 标记，使下次 pipeline 触发重新上传；由 clear_assets 和 register_asset 调用
@@ -1392,11 +1344,6 @@ static func _is_brush_sv_content_value(value) -> bool:
 		or value is PackedVector3Array \
 		or value is PackedColorArray \
 		or value is Image
-
-
-# ---------------------------------------------------------------------------
-# GPU buffer readiness — "always GPU-readable" contract
-# ---------------------------------------------------------------------------
 
 
 # --------------------------------------------------------------------------
@@ -1642,12 +1589,11 @@ func _flush_gpu_runtime_dirty_delta_to_scene_voxel_committer(placement_result: D
 # Placement Pipeline
 # --------------------------------------------------------------------------
 
-## 单独执行 prefilter 阶段（SV→candidate anchors）并返回结果；由外部拆分 pipeline 阶段时调用
+## 单独执行 prefilter 阶段（SV→resident anchor handoff）并返回结果；由外部拆分 pipeline 阶段时调用
 func run_autoobject_prefilter(
 	sv: Dictionary,
 	dirty_tile_ids: Array[int] = [],
 	target_read_buffers: Dictionary = {},
-	tile_summaries_rid: RID = RID(),
 	prefilter_settings: Dictionary = {}
 ) -> Dictionary:
 	if not is_initialized():
@@ -1662,8 +1608,7 @@ func run_autoobject_prefilter(
 		autoobjects,
 		dirty_tile_ids,
 		_runtime_profile_container,
-		target_read_buffers.duplicate(true),
-		tile_summaries_rid
+		target_read_buffers.duplicate(true)
 	)
 	result["control_plane"] = "ScenePlacementActor"
 	result["asset_registry_owner"] = "ScenePlacementActor"
@@ -1672,12 +1617,11 @@ func run_autoobject_prefilter(
 	return result
 
 
-## 将 settings 字典的参数写入 prefilter 实例（anchor_topk 等）；由 run_autoobject_prefilter 与 run_placement_pipeline 调用
+## 将 settings 字典的参数写入 prefilter 实例；由 run_autoobject_prefilter 调用。
+## anchor top-K 是固定 GPU 契约（prefilter TOPK=4，端到端 stride 绑定），不在此配置。
 func _apply_prefilter_settings(prefilter: AutoObjectProbePrefilterGPU, settings: Dictionary) -> void:
 	if prefilter == null:
 		return
-	if settings.has("anchor_topk"):
-		prefilter.anchor_topk = maxi(int(settings.get("anchor_topk", prefilter.anchor_topk)), 1)
 	if settings.has("min_target_interest"):
 		prefilter.min_target_interest = clampf(float(settings.get("min_target_interest", prefilter.min_target_interest)), 0.0, 1.0)
 	if settings.has("min_prefilter_score"):
@@ -1696,8 +1640,11 @@ func _apply_prefilter_settings(prefilter: AutoObjectProbePrefilterGPU, settings:
 ##   sv: Dictionary       — SceneVoxel metadata (grid_size, voxel_size,
 ##                           complexity_field, collision_field, tile_grid_size, ...)
 ##   dirty_tile_ids: Array[int]            — dirty tile indices for this frame
-##   prefilter_topk: int = 4               — per-anchor top-K
 ##   placement_common: Dictionary = {}     — must include packed TargetSV_B bytes
+##
+## Per-anchor asset top-K is a fixed GPU contract (AutoObjectProbePrefilterGPU.TOPK
+## = 4): buffer strides, the select shader and the fine-score dispatch are sized
+## by it end-to-end, so it is intentionally not configurable.
 ##
 ## Returns a Dictionary with:
 ##   prefilter_result, placement_result, commit_result, profile_probe_pack_summary
@@ -1705,7 +1652,6 @@ func _apply_prefilter_settings(prefilter: AutoObjectProbePrefilterGPU, settings:
 func run_placement_pipeline(
 	sv: Dictionary,
 	dirty_tile_ids: Array[int] = [],
-	prefilter_topk: int = 4,
 	placement_common: Dictionary = {}
 ) -> Dictionary:
 	if not is_initialized():
@@ -1756,7 +1702,7 @@ func run_placement_pipeline(
 		sv["resident_complexity_field_read_rid"] = field_read_complexity_rid
 		sv["resident_collision_field_read_rid"] = field_read_collision_rid
 
-	# ---- Prefilter (SV → candidate voxel regions) ----
+	# ---- Prefilter (SV → resident anchor handoff: anchors + per-anchor top-K) ----
 
 	var autoobjects := _build_autoobject_array_for_pipeline()
 	var target_buffers := prepare_target_read_buffers_from_common_gpu(placement_common, sv)
@@ -1776,15 +1722,13 @@ func run_placement_pipeline(
 	var mesh_description_summary := get_mesh_description_gpu_buffer_summary()
 
 	var prefilter := _get_prefilter()
-	prefilter.anchor_topk = prefilter_topk
 
 	var prefilter_result := prefilter.run_probe_prefilter(
 		sv,
 		autoobjects,
 		dirty_tile_ids,
 		_runtime_profile_container,  # ← borrowed GPU probes
-		target_buffers,
-		sv.get("scene_voxel_tile_summary_gpu_rid", RID())  # ← GPU-first: resident tile summaries RID
+		target_buffers
 	)
 
 	if not bool(prefilter_result.get("ok", false)):
@@ -1800,36 +1744,20 @@ func run_placement_pipeline(
 			release_blend_sv_fields()
 		return _last_pipeline_result
 
-	var resident_candidate_route_opt_in_requested := _resident_candidate_route_handoff_opt_in_requested(placement_common)
-	var use_resident_candidate_route_handoff := _should_use_resident_candidate_route_handoff(
-		placement_common,
-		prefilter_result
-	)
-	var resident_candidate_route_handoff := {}
-	if use_resident_candidate_route_handoff:
-		resident_candidate_route_handoff = _build_resident_candidate_route_handoff(
-			prefilter_result,
-			prefilter,
-			resident_candidate_route_opt_in_requested
-		)
-		if not bool(resident_candidate_route_handoff.get("ok", false)):
-			_last_pipeline_result = {
-				"ok": false,
-				"phase": "resident_candidate_route_handoff",
-				"prefilter_result": prefilter_result,
-				"resident_candidate_route_handoff": resident_candidate_route_handoff.get("summary", {}),
-				"profile_probe_pack": prefilter_result.get("profile_probe_pack", {}),
-				"mesh_description": mesh_description_summary,
-				"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
-				"candidate_route_readback_source": "none",
-				"candidate_route_runtime_read_source": "none",
-				"candidate_route_input_contract": VPGScript._candidate_route_input_contract_from_settings({}),
-			}
-			if blend_sv_active:
-				release_blend_sv_fields()
-			return _last_pipeline_result
-	else:
-		_release_resident_candidate_route_handoff()
+	var anchor_candidate_handoff: Dictionary = prefilter_result.get("anchor_candidate_handoff", {})
+	if not _anchor_candidate_handoff_ready(anchor_candidate_handoff, prefilter):
+		_last_pipeline_result = {
+			"ok": false,
+			"phase": "anchor_candidate_handoff",
+			"prefilter_result": prefilter_result,
+			"anchor_candidate_handoff": _anchor_candidate_handoff_summary(anchor_candidate_handoff, false),
+			"profile_probe_pack": prefilter_result.get("profile_probe_pack", {}),
+			"mesh_description": mesh_description_summary,
+			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
+		}
+		if blend_sv_active:
+			release_blend_sv_fields()
+		return _last_pipeline_result
 
 	# ---- Phase 1: Placement (candidate regions → placed instances) ----
 
@@ -1848,25 +1776,7 @@ func run_placement_pipeline(
 
 	var placement_settings := placement_common.duplicate(true)
 	placement_settings.erase("target_color")
-	for route_key in [
-		"candidate_voxel_regions_by_asset",
-		"candidate_voxel_sparses_by_asset",
-		"candidate_voxel_regions",
-		"candidate_voxel_sparses",
-	]:
-		placement_settings.erase(route_key)
-	if use_resident_candidate_route_handoff:
-		var resident_contract: Dictionary = resident_candidate_route_handoff.get("contract", {})
-		placement_settings["candidate_route_readback_source"] = "resident_route_snapshot"
-		placement_settings["candidate_route_runtime_read_source"] = "resident"
-		placement_settings["candidate_route_input_contract"] = resident_contract
-		placement_settings["resident_candidate_route_contract"] = resident_contract
-	else:
-		# CPU 候选区域回退已移除：无 resident handoff 时不再注入 candidate_voxel_regions_by_asset，
-		# 只透传 prefilter 的（none）路由标签，由 VPG 走 all-tiles。
-		placement_settings["candidate_route_readback_source"] = str(prefilter_result.get("candidate_route_readback_source", "none"))
-		placement_settings["candidate_route_runtime_read_source"] = str(prefilter_result.get("candidate_route_runtime_read_source", "none"))
-		placement_settings["candidate_route_input_contract"] = prefilter_result.get("candidate_route_input_contract", {})
+	placement_settings["anchor_candidate_handoff"] = anchor_candidate_handoff
 	placement_settings["target_visual_rgba8_bytes"] = placement_common.get("target_visual_rgba8_bytes", PackedByteArray())
 	placement_settings["target_field_bytes"] = target_field_bytes
 	placement_settings["target_read_buffers"] = target_buffers
@@ -1934,25 +1844,6 @@ func run_placement_pipeline(
 		placement_result,
 		resident_runtime_dirty_delta_ready
 	)
-	var resident_candidate_route_handoff_summary := _last_resident_candidate_route_handoff.duplicate(true)
-	if use_resident_candidate_route_handoff:
-		resident_candidate_route_handoff_summary = resident_candidate_route_handoff.get("summary", {}).duplicate(true)
-		var placement_route_contract: Dictionary = placement_result.get("candidate_route_input_contract", {})
-		var resident_route_ready := bool(placement_route_contract.get("resident_route_input_ready", false))
-		resident_candidate_route_handoff_summary["upload_ok"] = bool(resident_candidate_route_handoff_summary.get("ok", false))
-		resident_candidate_route_handoff_summary["ok"] = resident_route_ready
-		resident_candidate_route_handoff_summary["resident_candidate_route_success"] = resident_route_ready
-		resident_candidate_route_handoff_summary["vpg_resident_route_input_ready"] = resident_route_ready
-		resident_candidate_route_handoff_summary["vpg_binds_route_buffers"] = bool(placement_route_contract.get("vpg_binds_route_buffers", false))
-		resident_candidate_route_handoff_summary["vpg_resident_route_sparse_adapter"] = bool(placement_route_contract.get("resident_route_sparse_adapter", false))
-		resident_candidate_route_handoff_summary["vpg_rejection_reason"] = str(placement_route_contract.get("rejection_reason", "none"))
-		resident_candidate_route_handoff_summary["vpg_normalized_readback_source"] = str(placement_result.get("candidate_route_readback_source", "none"))
-		resident_candidate_route_handoff_summary["vpg_normalized_runtime_read_source"] = str(placement_result.get("candidate_route_runtime_read_source", "none"))
-		resident_candidate_route_handoff_summary["vpg_route_buffer_binding_source"] = str(placement_route_contract.get("vpg_route_buffer_binding_source", "none"))
-		resident_candidate_route_handoff_summary["vpg_route_buffer_binding_record_reads"] = int(placement_route_contract.get("vpg_route_buffer_binding_record_reads", 0))
-		resident_candidate_route_handoff_summary["vpg_route_buffer_binding_range_reads"] = int(placement_route_contract.get("vpg_route_buffer_binding_range_reads", 0))
-		resident_candidate_route_handoff_summary["reason"] = "none" if resident_route_ready else str(placement_route_contract.get("rejection_reason", "vpg_route_not_consumed"))
-
 	# ---- Assemble result ----
 
 	_last_pipeline_result = {
@@ -1963,18 +1854,14 @@ func run_placement_pipeline(
 		"runtime_dirty_delta_flush_result": runtime_dirty_delta_flush_result,
 		"accepted_placement_writeback_summary": accepted_writeback_summary,
 		"compact_state_chain_summary": compact_state_chain_summary,
-		"resident_candidate_route_handoff": resident_candidate_route_handoff_summary,
+		"anchor_candidate_handoff": _anchor_candidate_handoff_summary(anchor_candidate_handoff, true),
 		"resident_complexity_field_handoff": resident_field_handoff,
 		"scene_voxel_tile_resident_field_handoff": resident_field_handoff,
 		"gpu_runtime_scene_voxel_setup": _gpu_runtime_scene_voxel_setup_result.duplicate(true),
 		"profile_probe_pack": prefilter_result.get("profile_probe_pack", {}),
 		"mesh_description": mesh_description_summary,
-		"candidate_regions": {},
 		"target_read_buffers": target_buffers,
 		"target_read_buffer_summary": placement_result.get("target_read_buffer_summary", prefilter_result.get("target_read_buffer_summary", {})),
-		"candidate_route_readback_source": placement_result.get("candidate_route_readback_source", "none"),
-		"candidate_route_runtime_read_source": placement_result.get("candidate_route_runtime_read_source", "none"),
-		"candidate_route_input_contract": placement_result.get("candidate_route_input_contract", {}),
 		"asset_count": _registered_descriptors.size(),
 		"blend_sv_active": blend_sv_active,
 		"brush_sv_has_content": has_brush_sv_content(),
@@ -1987,6 +1874,31 @@ func run_placement_pipeline(
 ## 返回最近一次 run_placement_pipeline 结果的深度副本；供外部在 pipeline 结束后查询详情
 func get_last_pipeline_result() -> Dictionary:
 	return _last_pipeline_result.duplicate(true)
+
+
+func _anchor_candidate_handoff_ready(handoff: Dictionary, prefilter: AutoObjectProbePrefilterGPU) -> bool:
+	if not bool(handoff.get("ok", false)) or prefilter == null or prefilter.get_rendering_device() != _rd:
+		return false
+	var anchor_rid: RID = handoff.get("anchor_buffer_rid", RID())
+	var count_rid: RID = handoff.get("anchor_count_buffer_rid", RID())
+	var topk_rid: RID = handoff.get("topk_buffer_rid", RID())
+	return anchor_rid.is_valid() and count_rid.is_valid() and topk_rid.is_valid()
+
+
+func _anchor_candidate_handoff_summary(handoff: Dictionary, consumed: bool) -> Dictionary:
+	return {
+		"ok": bool(handoff.get("ok", false)),
+		"consumed_by_vpg": consumed,
+		"anchor_buffer_rid": "valid" if (handoff.get("anchor_buffer_rid", RID()) as RID).is_valid() else "none",
+		"anchor_count_buffer_rid": "valid" if (handoff.get("anchor_count_buffer_rid", RID()) as RID).is_valid() else "none",
+		"topk_buffer_rid": "valid" if (handoff.get("topk_buffer_rid", RID()) as RID).is_valid() else "none",
+		"anchor_capacity": int(handoff.get("anchor_capacity", 0)),
+		"topk": int(handoff.get("topk", 0)),
+		"asset_count": int(handoff.get("asset_count", 0)),
+		"origin_contract": str(handoff.get("origin_contract", "one_origin_per_anchor")),
+		"gpu_first": true,
+		"cpu_fallback": false,
+	}
 
 
 static func _compact_state_chain_summary_from_placement(
@@ -2103,7 +2015,10 @@ func _build_autoobject_array_for_pipeline() -> Array:
 	return result.duplicate()
 
 
-## 构建每个已注册资产的 placement 定义字典（profile_id、descriptor、mesh）；由 run_placement_pipeline 传入 placer 时调用
+## 构建每个已注册资产的 placement 定义字典（descriptor + profile_id + asset_index）；
+## 由 run_placement_pipeline 传入 placer 时调用。形状不随 def 传递——descriptor 是唯一
+## 权威，其 collision 已在注册期烘焙进 profile 容器常驻 collision_records，VPG 按
+## profile_id 直读。
 func _build_placement_asset_defs() -> Array:
 	var asset_defs: Array = []
 	for asset_index in range(_registered_descriptors.size()):
@@ -2112,7 +2027,6 @@ func _build_placement_asset_defs() -> Array:
 			"descriptor": d,
 			"asset_index": asset_index,
 			"profile_id": _registered_profile_ids[asset_index],
-			"collision": d.get_collision() if d != null else [],
 		}
 		asset_defs.append(entry)
 	return asset_defs
@@ -2179,7 +2093,6 @@ static func _pipeline_error(reason: String) -> Dictionary:
 		"commit_result": {},
 		"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
 		"profile_probe_pack": {},
-		"candidate_regions": {},
 		"asset_count": 0,
 	}
 
@@ -2235,7 +2148,7 @@ func _build_resident_complexity_field_handoff(sv: Dictionary) -> Dictionary:
 	var collision_stride_bytes := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES
 	var complexity_expected_byte_count := maxi(expected_voxel_count, 0) * complexity_stride_bytes
 	var collision_expected_byte_count := maxi(expected_voxel_count, 0) * collision_stride_bytes
-	var collision_expected_upload_byte_count := SceneVoxelTileCodecScript.r8_word_byte_count(expected_voxel_count)
+	var collision_expected_upload_byte_count := SceneVoxelTileCodecScript.u32_field_byte_count(expected_voxel_count)
 	var summary := {}
 	var complexity_rid := RID()
 	var collision_rid := RID()
@@ -2355,303 +2268,18 @@ func _resident_complexity_field_handoff_summary(
 
 
 # --------------------------------------------------------------------------
-# Candidate Route Handoff
-# --------------------------------------------------------------------------
-
-## 检查 placement_common 字典中是否请求使用 resident candidate route handoff；由 pipeline 决策路径调用
-func _resident_candidate_route_handoff_opt_in_requested(placement_common: Dictionary) -> bool:
-	return placement_common.has(RESIDENT_CANDIDATE_ROUTE_OPT_IN_KEY) \
-		and bool(placement_common.get(RESIDENT_CANDIDATE_ROUTE_OPT_IN_KEY, false))
-
-
-## 综合判断当前条件下是否应启用 resident candidate route GPU handoff；由 pipeline 调用
-func _should_use_resident_candidate_route_handoff(
-	placement_common: Dictionary,
-	prefilter_result: Dictionary
-) -> bool:
-	if placement_common.has(RESIDENT_CANDIDATE_ROUTE_OPT_IN_KEY):
-		return bool(placement_common.get(RESIDENT_CANDIDATE_ROUTE_OPT_IN_KEY, false))
-	return _prefilter_result_has_candidate_route_records(prefilter_result)
-
-
-## 检查 prefilter 结果中是否包含有效的 candidate route records 与 ranges；由 handoff 决策路径调用
-func _prefilter_result_has_candidate_route_records(prefilter_result: Dictionary) -> bool:
-	var raw_payload = prefilter_result.get("candidate_route_handoff_payload", {})
-	if raw_payload is Dictionary:
-		var payload := raw_payload as Dictionary
-		if not payload.is_empty():
-			if bool(payload.get("ok", false)) \
-				and (bool(payload.get("has_records", false)) or int(payload.get("record_count", 0)) > 0):
-				return true
-	for route_key in [
-		"candidate_voxel_regions_by_asset",
-		"candidate_voxel_sparses_by_asset",
-	]:
-		if _candidate_route_regions_have_entries(prefilter_result.get(route_key, {})):
-			return true
-	return false
-
-
-## 检查 regions_by_asset 中是否存在至少一条非空 region 条目；由 _prefilter_result_has_candidate_route_records 调用
-func _candidate_route_regions_have_entries(raw_regions_by_asset: Variant) -> bool:
-	if not raw_regions_by_asset is Dictionary:
-		return false
-	var regions_by_asset := raw_regions_by_asset as Dictionary
-	for asset_key in regions_by_asset.keys():
-		var regions = regions_by_asset.get(asset_key)
-		if regions is Array and not (regions as Array).is_empty():
-			return true
-		if regions is PackedInt32Array and (regions as PackedInt32Array).size() > 0:
-			return true
-		if regions is PackedVector3Array and (regions as PackedVector3Array).size() > 0:
-			return true
-	return false
-
-
-## 释放 resident candidate route GPU 缓冲（records/ranges）并重置计数与摘要；由 dispose、pipeline 开始和公开 release 入口调用
-func _release_resident_candidate_route_handoff() -> void:
-	if _resident_candidate_route_record_buffer.is_valid():
-		if _resident_candidate_route_buffers_borrowed:
-			untrack_rid(_resident_candidate_route_record_buffer)
-		else:
-			release_rid(_resident_candidate_route_record_buffer)
-	if _resident_candidate_route_range_buffer.is_valid():
-		if _resident_candidate_route_buffers_borrowed:
-			untrack_rid(_resident_candidate_route_range_buffer)
-		else:
-			release_rid(_resident_candidate_route_range_buffer)
-	_resident_candidate_route_record_buffer = RID()
-	_resident_candidate_route_range_buffer = RID()
-	_resident_candidate_route_record_count = 0
-	_resident_candidate_route_range_count = 0
-	_resident_candidate_route_buffers_borrowed = false
-	_resident_candidate_route_revision += 1
-	_last_resident_candidate_route_handoff = {
-		"ok": false,
-		"resident_candidate_route_handoff": false,
-		"resident_candidate_route_handoff_opt_in": false,
-		"resident_candidate_route_handoff_defaulted": false,
-		"reason": "released",
-		"record_count": 0,
-		"range_count": 0,
-		"source_label": "none",
-	}
-
-
-## 将 prefilter 结果的 candidate route 打包上传为 GPU storage buffer 并保存 RID；由 run_placement_pipeline 在 placement 阶段前调用
-func _build_resident_candidate_route_handoff(
-	prefilter_result: Dictionary,
-	prefilter: AutoObjectProbePrefilterGPU,
-	opt_in_requested: bool = false
-) -> Dictionary:
-	_release_resident_candidate_route_handoff()
-	if _rd == null:
-		return _resident_candidate_route_handoff_blocked("no_rendering_device", {}, opt_in_requested)
-
-	# GPU-first：路由 payload 只来自 prefilter 的 GPU pack pass。
-	# CPU 区域回退已随重构移除（candidate_voxel_regions_by_asset 恒为空），
-	# payload 为空时下面的 ok 校验会直接走 blocked 分支。
-	var payload: Dictionary = prefilter_result.get("candidate_route_handoff_payload", {})
-	if not bool(payload.get("ok", false)):
-		return _resident_candidate_route_handoff_blocked(str(payload.get("reason", "payload_not_ready")), payload, opt_in_requested)
-
-	if _payload_has_borrowable_resident_candidate_route(payload, prefilter):
-		_resident_candidate_route_record_buffer = track_borrowed_rid(
-			payload.get("resident_route_record_rid", RID()),
-			KIND_BUFFER,
-			SCOPE_PERSISTENT,
-			"prefilter_resident_candidate_route_records"
-		)
-		_resident_candidate_route_range_buffer = track_borrowed_rid(
-			payload.get("resident_route_range_rid", RID()),
-			KIND_BUFFER,
-			SCOPE_PERSISTENT,
-			"prefilter_resident_candidate_route_ranges"
-		)
-		_resident_candidate_route_buffers_borrowed = true
-	else:
-		var record_bytes: PackedByteArray = payload.get("record_bytes", PackedByteArray())
-		var range_bytes: PackedByteArray = payload.get("range_bytes", PackedByteArray())
-		if record_bytes.is_empty() and int(payload.get("record_count", 0)) > 0:
-			return _resident_candidate_route_handoff_blocked("record_bytes_missing_for_upload", payload, opt_in_requested)
-		if range_bytes.is_empty() and int(payload.get("range_count", 0)) > 0:
-			return _resident_candidate_route_handoff_blocked("range_bytes_missing_for_upload", payload, opt_in_requested)
-		var record_upload_bytes := record_bytes
-		if record_upload_bytes.is_empty():
-			record_upload_bytes.resize(4)
-		var range_upload_bytes := range_bytes
-		if range_upload_bytes.is_empty():
-			range_upload_bytes.resize(4)
-
-		var record_rid := track_rid(
-			_rd.storage_buffer_create(record_upload_bytes.size(), record_upload_bytes),
-			KIND_BUFFER,
-			SCOPE_PERSISTENT,
-			"spa_resident_candidate_route_records"
-		)
-		if not record_rid.is_valid():
-			return _resident_candidate_route_handoff_blocked("record_buffer_create_failed", payload, opt_in_requested)
-
-		var range_rid := track_rid(
-			_rd.storage_buffer_create(range_upload_bytes.size(), range_upload_bytes),
-			KIND_BUFFER,
-			SCOPE_PERSISTENT,
-			"spa_resident_candidate_route_ranges"
-		)
-		if not range_rid.is_valid():
-			release_rid(record_rid)
-			return _resident_candidate_route_handoff_blocked("range_buffer_create_failed", payload, opt_in_requested)
-
-		_resident_candidate_route_record_buffer = record_rid
-		_resident_candidate_route_range_buffer = range_rid
-		_resident_candidate_route_buffers_borrowed = false
-	_resident_candidate_route_record_count = int(payload.get("record_count", 0))
-	_resident_candidate_route_range_count = int(payload.get("range_count", 0))
-	_resident_candidate_route_revision += 1
-
-	var contract := _resident_candidate_route_contract_from_payload(payload)
-	var summary := _resident_candidate_route_handoff_summary_from_payload(payload, true, "ok", opt_in_requested)
-	summary["contract"] = _resident_candidate_route_contract_summary(contract)
-	_last_resident_candidate_route_handoff = summary
-	return {
-		"ok": true,
-		"resident_candidate_route_handoff": true,
-		"resident_candidate_route_handoff_opt_in": opt_in_requested,
-		"resident_candidate_route_handoff_defaulted": not opt_in_requested,
-		"reason": "ok",
-		"payload": payload,
-		"contract": contract,
-		"summary": summary,
-	}
-
-
-## 判断 payload 中是否携带可复用的 resident candidate route GPU 缓冲；由 placement 阶段跳过重上传时调用
-func _payload_has_borrowable_resident_candidate_route(payload: Dictionary, prefilter: AutoObjectProbePrefilterGPU) -> bool:
-	if int(payload.get("schema_version", CANDIDATE_ROUTE_SCHEMA_VERSION)) != CANDIDATE_ROUTE_SCHEMA_VERSION:
-		return false
-	if int(payload.get("resident_route_record_stride", CANDIDATE_ROUTE_RECORD_STRIDE_BYTES)) != CANDIDATE_ROUTE_RECORD_STRIDE_BYTES:
-		return false
-	if int(payload.get("resident_route_range_stride", CANDIDATE_ROUTE_RANGE_STRIDE_BYTES)) != CANDIDATE_ROUTE_RANGE_STRIDE_BYTES:
-		return false
-	var record_rid: RID = payload.get("resident_route_record_rid", RID())
-	var range_rid: RID = payload.get("resident_route_range_rid", RID())
-	if not record_rid.is_valid() or not range_rid.is_valid():
-		return false
-	if not bool(payload.get("resident_route_record_rid_valid", true)) \
-	   or not bool(payload.get("resident_route_range_rid_valid", true)):
-		return false
-	if not bool(payload.get("same_rendering_device_as_vpg", false)):
-		return false
-	return prefilter != null and prefilter.get_rendering_device() == _rd
-
-
-## 检查 candidate route handoff 是否因缺少必要缓冲而被阻断；返回阻断原因字典或空字典；由 placement pass 前调用
-func _resident_candidate_route_handoff_blocked(
-	reason: String,
-	payload: Dictionary,
-	opt_in_requested: bool = false
-) -> Dictionary:
-	_release_resident_candidate_route_handoff()
-	var summary := _resident_candidate_route_handoff_summary_from_payload(payload, false, reason, opt_in_requested)
-	_last_resident_candidate_route_handoff = summary
-	return {
-		"ok": false,
-		"resident_candidate_route_handoff": false,
-		"resident_candidate_route_handoff_opt_in": opt_in_requested,
-		"resident_candidate_route_handoff_defaulted": not opt_in_requested,
-		"reason": reason,
-		"payload": payload,
-		"contract": {},
-		"summary": summary,
-	}
-
-
-## 从 payload 字典提取 resident candidate route 合约（RID/count/schema）；由 pipeline 组装 placer 输入时调用
-func _resident_candidate_route_contract_from_payload(payload: Dictionary) -> Dictionary:
-	var payload_owner := str(payload.get("resident_route_buffer_owner", "AutoObjectProbePrefilterGPU"))
-	var route_owner := payload_owner if _resident_candidate_route_buffers_borrowed else "ScenePlacementActor"
-	var route_lifetime := "ScenePlacementActor owned until next route build, asset registry mutation, dispose, or explicit release"
-	if _resident_candidate_route_buffers_borrowed:
-		route_lifetime = str(payload.get(
-			"resident_route_buffer_lifetime",
-			"AutoObjectProbePrefilterGPU owned until next route pack, dispose, or explicit release"
-		))
-	# 仅保留 VPG 实际读取的键（_candidate_route_input_contract_from_settings +
-	# _prepare_candidate_route_binding）。重复的 *_bytes / *_count fallback 与纯 provenance
-	# 镜像字段已删——VPG 都按主键优先读取。
-	return {
-		"resident_route_record_rid": _resident_candidate_route_record_buffer,
-		"resident_route_range_rid": _resident_candidate_route_range_buffer,
-		"resident_route_record_stride": CANDIDATE_ROUTE_RECORD_STRIDE_BYTES,
-		"resident_route_range_stride": CANDIDATE_ROUTE_RANGE_STRIDE_BYTES,
-		"resident_route_record_capacity": _resident_candidate_route_record_count,
-		"resident_route_range_count": _resident_candidate_route_range_count,
-		"schema_version": CANDIDATE_ROUTE_SCHEMA_VERSION,
-		"same_rendering_device_as_vpg": true,
-		"cpu_expanded_route_input": bool(payload.get("cpu_expanded_route_input", false)),
-		"direct_all_tiles": false,
-		"owner": route_owner,
-		"resident_route_buffer_lifetime": route_lifetime,
-		"asset_count": _registered_descriptors.size(),
-		"profile_count": _registered_profile_ids.size(),
-	}
-
-
-## 将 candidate route 合约转换为可序列化摘要字典；由 pipeline result 组装时调用
-func _resident_candidate_route_contract_summary(contract: Dictionary) -> Dictionary:
-	var summary := contract.duplicate(true)
-	if summary.has("resident_route_record_rid"):
-		summary["resident_route_record_rid"] = "valid" if _resident_candidate_route_record_buffer.is_valid() else "none"
-	if summary.has("resident_route_range_rid"):
-		summary["resident_route_range_rid"] = "valid" if _resident_candidate_route_range_buffer.is_valid() else "none"
-	return summary
-
-
-## 从 payload 提取完整 candidate route handoff 摘要（含 resident buffer 状态）；由 pipeline result 组装时调用
-func _resident_candidate_route_handoff_summary_from_payload(
-	payload: Dictionary,
-	ok: bool,
-	reason: String,
-	opt_in_requested: bool = false
-) -> Dictionary:
-	# 诊断摘要：下游仅读取 ok（run_placement_pipeline 的 upload_ok），其余为透出到
-	# pipeline 结果的可观测字段。常量(schema/stride)、重复(owner/producer)、占位计数已删。
-	return {
-		"ok": ok,
-		"resident_candidate_route_handoff": ok,
-		"resident_candidate_route_handoff_opt_in": opt_in_requested,
-		"resident_candidate_route_handoff_defaulted": not opt_in_requested,
-		"reason": reason,
-		"record_count": int(payload.get("record_count", 0)),
-		"range_count": int(payload.get("range_count", 0)),
-		"asset_count": int(payload.get("asset_count", _registered_descriptors.size())),
-		"source_label": str(payload.get("source_label", CANDIDATE_ROUTE_CPU_PACK_SOURCE_LABEL)),
-		"record_rid": "valid" if ok and _resident_candidate_route_record_buffer.is_valid() else "none",
-		"range_rid": "valid" if ok and _resident_candidate_route_range_buffer.is_valid() else "none",
-		"resident_route_buffer_borrowed": ok and _resident_candidate_route_buffers_borrowed,
-		"resident_route_buffer_owner": str(payload.get("resident_route_buffer_owner", "ScenePlacementActor")) if ok and _resident_candidate_route_buffers_borrowed else "ScenePlacementActor" if ok else "none",
-		"status": str(payload.get("status", "")),
-	}
-
-
-
-# --------------------------------------------------------------------------
 # Target Read Buffer Handoff
 # --------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Asset registration — descriptors go GPU-resident immediately
-# ---------------------------------------------------------------------------
 
 ## 释放 resident target read GPU 缓冲并重置摘要；由 _dispose_internal 和 pipeline 开始时调用
 func _release_resident_target_read_buffer_handoff() -> void:
 	if _resident_target_field_buffer.is_valid():
 		release_rid(_resident_target_field_buffer)
+	if _resident_target_collision_buffer.is_valid():
+		release_rid(_resident_target_collision_buffer)
 	_resident_target_field_buffer = RID()
-	_resident_target_read_buffer_voxel_count = 0
-	_resident_target_read_buffer_byte_count = 0
-	_resident_target_read_buffer_revision += 1
-	_last_resident_target_read_buffer_handoff = _resident_target_read_buffer_handoff_summary(false, "released", 0, 0, "", Vector3i.ZERO)
+	_resident_target_collision_buffer = RID()
+	_resident_target_collision_byte_count = 0
 
 
 ## 将 target read buffer handoff 合约转换为可序列化摘要字典；由 pipeline result 组装时调用
@@ -2679,6 +2307,10 @@ func _resident_target_read_buffer_handoff_summary(
 		"target_field_byte_count": safe_target_field_byte_count if ok else 0,
 		"target_field_stride_bytes": 16 if ok else 0,
 		"target_field_format": "vec4" if ok else "none",
+		"target_collision_buffer": _resident_target_collision_buffer if ok else RID(),
+		"target_collision_buffer_rid": "valid" if ok and _resident_target_collision_buffer.is_valid() else "none",
+		"target_collision_byte_count": _resident_target_collision_byte_count if ok else 0,
+		"target_collision_format": "unorm8_u32" if ok else "none",
 		"voxel_count": voxel_count if ok else 0,
 		"expected_byte_count": expected_bytes,
 		"target_color_source": color_source,
@@ -2690,20 +2322,23 @@ func _resident_target_read_buffer_handoff_summary(
 	}
 
 
-## 从 SV complexity/collision field 构建 GPU-resident target read buffer 合约（用于 prefilter 目标评分）；由 run_placement_pipeline 与外部拆分 pipeline 时调用
+## 从独立 TargetSV visual/collision 输入构建 GPU-resident target read buffer 合约；由 run_placement_pipeline 与外部拆分 pipeline 时调用
 func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dictionary) -> Dictionary:
-	# GPU-specialized: combines target color + completeness (max(complexity_field, collision_field)) into a single vec4 target_field buffer.
-	# completeness == 0 means the voxel is empty (nothing there).
 	log_name = "ScenePlacementActorTargetReadBuffers"
 	_release_resident_target_read_buffer_handoff()
 	var expected_bytes := _expected_target_byte_count(sv)
 	var voxel_count := maxi(int(expected_bytes / 4), 1)
-	var target_field_byte_count := voxel_count * 16  # vec4 = 16 bytes per voxel
+	var target_field_byte_count := voxel_count * 16
+	var target_collision_byte_count := SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count)
 	var resident_handoff_enabled := bool(settings.get(RESIDENT_TARGET_READ_BUFFERS_OPT_IN_KEY, true))
 	var debug_readback_requested := _target_read_buffer_debug_readback_requested(settings)
 	var source_color := _prepacked_target_bytes(settings, "target_visual_rgba8_bytes", expected_bytes)
 	var color_valid := not source_color.is_empty()
 	var color_source := "target_visual_rgba8_bytes" if color_valid else "zero_filled"
+	var source_collision := _prepacked_target_bytes(
+		settings, "target_collision_r8_bytes", target_collision_byte_count)
+	var collision_valid := not source_collision.is_empty()
+	var collision_source := "target_collision_r8_bytes" if collision_valid else "zero_filled"
 
 	# 同族失败 dict（×6，仅 reason 不同）收敛为本地工厂：ReportSchema.fail 产出规范
 	# {ok:false, reason, gpu_first, cpu_fallback} + 运行时 extra；reason 逐字透传（含喂给 summary）。
@@ -2711,6 +2346,8 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		return ReportSchema.fail(ReportSchema.TARGET_READ_BUFFER_FAILURE, fail_reason, {
 			"expected_byte_count": expected_bytes,
 			"voxel_count": voxel_count,
+			"target_collision_byte_count": target_collision_byte_count,
+			"target_collision_source": collision_source,
 			"resident_target_read_buffer_handoff": false,
 			"resident_target_read_buffer_handoff_summary": _resident_target_read_buffer_handoff_summary(
 				false, fail_reason, expected_bytes, voxel_count, color_source, Vector3i.ZERO),
@@ -2727,47 +2364,39 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 
 	var zero_bytes := PackedByteArray()
 	zero_bytes.resize(expected_bytes)
+	var zero_collision_bytes := PackedByteArray()
+	zero_collision_bytes.resize(target_collision_byte_count)
 	var color_input_buffer := storage_buffer_from_bytes(
 		source_color if color_valid else zero_bytes,
 		SCOPE_FRAME,
 		"target_read_color_input_rgba8_u32"
 	)
-
-	# 场景 completeness 输入：绑定 sv 携带的常驻 8-bit field 读取对（BlendSV 或 committed SV，
-	# 格式与本 shader 输入契约一致，零拷贝）。CPU 投影打包回退已移除——无常驻 RID 直接报错。
-	var raw_resident_complexity = sv.get("resident_complexity_field_read_rid", RID())
-	var raw_resident_collision = sv.get("resident_collision_field_read_rid", RID())
-	var resident_complexity_input: RID = raw_resident_complexity if raw_resident_complexity is RID else RID()
-	var resident_collision_input: RID = raw_resident_collision if raw_resident_collision is RID else RID()
-	if not resident_complexity_input.is_valid() or not resident_collision_input.is_valid():
-		push_error("ScenePlacementActorTargetReadBuffers: missing resident SV field read RIDs (resident_complexity_field_read_rid / resident_collision_field_read_rid); CPU field-pack fallback removed.")
-		gc_frame()
-		return _fail.call("target_read_buffer_prep_resident_field_inputs_missing")
-	var complexity_input_buffer := resident_complexity_input
-	var collision_input_buffer := resident_collision_input
-
 	var output_scope := SCOPE_PERSISTENT if resident_handoff_enabled else SCOPE_FRAME
 	var target_field_output_buffer := storage_buffer_zero(target_field_byte_count, output_scope, "target_field_out_vec4")
+	var target_collision_output_buffer := storage_buffer_from_bytes(
+		source_collision if collision_valid else zero_collision_bytes,
+		output_scope,
+		"target_collision_out_unorm8_u32"
+	)
 	if (
 		not color_input_buffer.is_valid()
-		or not complexity_input_buffer.is_valid()
-		or not collision_input_buffer.is_valid()
 		or not target_field_output_buffer.is_valid()
+		or not target_collision_output_buffer.is_valid()
 	):
 		if resident_handoff_enabled:
 			release_rid(target_field_output_buffer)
+			release_rid(target_collision_output_buffer)
 		gc_frame()
 		return _fail.call("target_read_buffer_prep_storage_buffer_failed")
 
 	var set0 := create_uniform_set([
 		make_storage_uniform(0, color_input_buffer),
-		make_storage_uniform(1, complexity_input_buffer),
-		make_storage_uniform(2, collision_input_buffer),
-		make_storage_uniform(3, target_field_output_buffer),
+		make_storage_uniform(1, target_field_output_buffer),
 	], shader, 0, SCOPE_PASS, "prepare_target_read_buffers")
 	if not set0.is_valid():
 		if resident_handoff_enabled:
 			release_rid(target_field_output_buffer)
+			release_rid(target_collision_output_buffer)
 		gc_frame()
 		return _fail.call("target_read_buffer_prep_uniform_set_failed")
 
@@ -2780,6 +2409,7 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 	if cl < 0:
 		if resident_handoff_enabled:
 			release_rid(target_field_output_buffer)
+			release_rid(target_collision_output_buffer)
 		gc_frame()
 		return _fail.call("target_read_buffer_prep_compute_list_begin_failed")
 	_gpu_dispatch_pipeline_sets(cl, pipeline, [set0], push, groups)
@@ -2787,12 +2417,13 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 	submit_and_sync()
 
 	if resident_handoff_enabled:
-		var rid_ok := target_field_output_buffer.is_valid()
+		var rid_ok := target_field_output_buffer.is_valid() and target_collision_output_buffer.is_valid()
 		var target_field_bytes := PackedFloat32Array()
 		if rid_ok and debug_readback_requested:
 			target_field_bytes = _rd.buffer_get_data(target_field_output_buffer, 0, target_field_byte_count).to_float32_array()
 			if target_field_bytes.size() != voxel_count * 4:
 				release_rid(target_field_output_buffer)
+				release_rid(target_collision_output_buffer)
 				gc_frame()
 				return {
 					"ok": false,
@@ -2814,20 +2445,18 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 				}
 
 		_resident_target_field_buffer = target_field_output_buffer
-		_resident_target_read_buffer_voxel_count = voxel_count
-		_resident_target_read_buffer_byte_count = target_field_byte_count
-		_resident_target_read_buffer_revision += 1
+		_resident_target_collision_buffer = target_collision_output_buffer
+		_resident_target_collision_byte_count = target_collision_byte_count
 		var resident_summary := _resident_target_read_buffer_handoff_summary(
-			_resident_target_field_buffer.is_valid(),
-			"ok" if _resident_target_field_buffer.is_valid() else "resident_target_read_buffer_rid_invalid",
+			_resident_target_field_buffer.is_valid() and _resident_target_collision_buffer.is_valid(),
+			"ok" if _resident_target_field_buffer.is_valid() and _resident_target_collision_buffer.is_valid() else "resident_target_read_buffer_rid_invalid",
 			expected_bytes,
 			voxel_count,
 			color_source,
 			groups,
 			target_field_byte_count
 		)
-		_last_resident_target_read_buffer_handoff = resident_summary
-		rid_ok = _resident_target_field_buffer.is_valid()
+		rid_ok = _resident_target_field_buffer.is_valid() and _resident_target_collision_buffer.is_valid()
 		gc_frame()
 		return {
 			"ok": rid_ok,
@@ -2837,15 +2466,19 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 			"target_field_bytes": target_field_bytes,
 			"expected_byte_count": expected_bytes,
 			"target_field_byte_count": target_field_byte_count,
+			"target_collision_byte_count": target_collision_byte_count,
 			"voxel_count": voxel_count,
 			"target_color_source": color_source,
+			"target_collision_source": collision_source,
 			"target_field_format": "vec4",
 			"target_field_stride_bytes": 16,
+			"target_collision_format": "unorm8_u32",
 			"dispatch_groups": groups,
 			"resident_target_read_buffer_handoff": rid_ok,
 			"resident_target_read_buffer_handoff_summary": resident_summary,
 			"rendering_device": _rd if rid_ok else null,
 			"target_field_buffer": _resident_target_field_buffer,
+			"target_collision_buffer": _resident_target_collision_buffer,
 			"resident_target_read_buffer_owner": "ScenePlacementActor" if rid_ok else "none",
 			"resident_target_read_buffer_lifetime": str(resident_summary.get("target_read_buffer_lifetime", "ScenePlacementActor owned until next target read-buffer prep, dispose, or explicit release")),
 		}
@@ -2882,7 +2515,6 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		color_source,
 		groups
 	)
-	_last_resident_target_read_buffer_handoff = resident_summary
 
 	return {
 		"ok": true,
@@ -2892,19 +2524,20 @@ func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dicti
 		"target_field_bytes": target_field_bytes,
 		"expected_byte_count": expected_bytes,
 		"target_field_byte_count": target_field_byte_count,
+		"target_collision_r8_bytes": source_collision if collision_valid else zero_collision_bytes,
+		"target_collision_byte_count": target_collision_byte_count,
 		"voxel_count": voxel_count,
 		"target_color_source": color_source,
+		"target_collision_source": collision_source,
 		"target_field_format": "vec4",
 		"target_field_stride_bytes": 16,
+		"target_collision_format": "unorm8_u32",
 		"dispatch_groups": groups,
 		"resident_target_read_buffer_handoff": false,
 		"resident_target_read_buffer_handoff_summary": resident_summary,
 		"rendering_device": null,
 		"target_field_buffer": RID(),
+		"target_collision_buffer": RID(),
 		"resident_target_read_buffer_owner": "none",
 		"resident_target_read_buffer_lifetime": "none",
 	}
-
-
-## Use prepare_target_read_buffers_from_common_gpu() for all target read paths.
-## The deprecated static helper target_read_buffers_from_common() has been removed.

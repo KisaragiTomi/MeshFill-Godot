@@ -125,7 +125,7 @@ func pick_targetsv(
 			"actual_collision": collision_bytes.size(),
 		}
 
-	var collision_word_bytes := SceneVoxelTileCodecScript.r8_word_bytes_from_r8_bytes(collision_bytes.slice(0, expected_collision), voxel_count)
+	var collision_word_bytes := SceneVoxelTileCodecScript.u32_bytes_from_r8_bytes(collision_bytes.slice(0, expected_collision), voxel_count)
 	if not _ensure_target_buffers(visual_bytes.slice(0, expected_visual), collision_word_bytes):
 		return {"ok": false, "reason": "targetsv_gpu_buffer_create_failed"}
 
@@ -240,13 +240,18 @@ func _decode_output(bytes: PackedByteArray) -> Dictionary:
 	}
 
 
-# 根据当前 TargetSV 数据尺寸维护持久化 GPU 缓冲，必要时释放旧缓冲并重建。
+# 根据当前 TargetSV 数据尺寸维护持久化 GPU 缓冲：同尺寸时用 buffer_update 覆写既有缓冲
+# （RID 稳定、零重分配，内容始终跟随本次输入）；尺寸变化或覆写失败时释放旧缓冲并重建。
 func _ensure_target_buffers(visual_bytes: PackedByteArray, collision_bytes: PackedByteArray) -> bool:
 	if _target_visual_buffer.is_valid() \
 			and _target_collision_buffer.is_valid() \
 			and _target_visual_bytes == visual_bytes.size() \
 			and _target_collision_bytes == collision_bytes.size():
-		return true
+		if _rd != null \
+				and _rd.buffer_update(_target_visual_buffer, 0, visual_bytes.size(), visual_bytes) == OK \
+				and _rd.buffer_update(_target_collision_buffer, 0, collision_bytes.size(), collision_bytes) == OK:
+			return true
+		# buffer_update 失败时退回释放重建路径，绝不沿用陈旧内容。
 
 	if _target_visual_buffer.is_valid():
 		release_rid(_target_visual_buffer, false)

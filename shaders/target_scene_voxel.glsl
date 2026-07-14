@@ -12,11 +12,11 @@ layout(set = 1, binding = 0, std430) restrict buffer TargetVisual {
 };
 
 layout(set = 1, binding = 1, std430) restrict buffer TargetCollision {
-    uint target_collision_r8_words[];
+    uint target_collision_u32[];
 };
 
 layout(set = 1, binding = 2, std430) restrict buffer TargetCompleteness {
-    uint target_completeness_r8_words[];
+    uint target_completeness_u32[];
 };
 
 // @@GEN debug_set target_stats
@@ -146,16 +146,14 @@ uint pack_r8(float value) {
     return uint(clamp(round(value * 255.0), 0.0, 255.0));
 }
 
+// One uint32 per voxel; the quantized value stays <= 255 so a whole-word
+// atomicOr matches the old byte-lane set exactly.
 void store_collision_r8(uint idx, float value) {
-    uint word_index = idx >> 2u;
-    uint shift = (idx & 3u) * 8u;
-    atomicOr(target_collision_r8_words[word_index], pack_r8(value) << shift);
+    atomicOr(target_collision_u32[idx], pack_r8(value));
 }
 
 void store_completeness_r8(uint idx, float value) {
-    uint word_index = idx >> 2u;
-    uint shift = (idx & 3u) * 8u;
-    atomicOr(target_completeness_r8_words[word_index], pack_r8(value) << shift);
+    atomicOr(target_completeness_u32[idx], pack_r8(value));
 }
 
 uint quantize_unit(float value) {

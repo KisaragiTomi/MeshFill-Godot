@@ -1,7 +1,7 @@
 #[compute]
 #version 450
 
-// Initializes VoxelStampBounds before stamp_voxel_field.glsl writes accepted placements.
+// Initializes VoxelStampBounds before stamp_asset_voxels.glsl writes accepted placements.
 // One logical bound record is two uvec4 values:
 //   0: uvec4(min_xyz, written_count)
 //   1: uvec4(max_xyz_exclusive, reserved)

@@ -46,9 +46,18 @@ fresh one. Never start a second editor alongside the first to "pick up" changes.
 
 ## Testing / Validation: `-e` Editor Launch Is the Gate
 
-**Standard validation for any change is `-e` (editor) validation. Runtime test-suite
-runs are NOT required** — do not run `tools/test_*.gd` suites (headless or Vulkan) as
-routine validation; only run them when explicitly asked.
+**Runtime Godot launches are BANNED (user rule, 2026-07-14, hook-enforced).** Never
+launch Godot with `--headless`, `--script`, `-s`, `--import`, or a scene path to run
+tools/tests/demos — not even "just once to verify". The only sanctioned launch forms:
+
+1. `-e` editor launch (the validation gate below), and
+2. `--check-only --script <file>` (parse gate — parses only, runs nothing).
+
+All behavior verification goes through the **running editor's bridge**
+(`127.0.0.1:6800`, `tools/editor_bridge_probe.js` / `tools/golden_snapshot_check.js`).
+If a runtime run is genuinely required (e.g. the user names a specific
+`tools/test_*.gd`), ask the user for explicit permission first — a
+`.claude/block-godot-runtime.ps1` PreToolUse hook denies such commands otherwise.
 
 `-e` validation = launch the editor and let it load the project. The editor parses
 every script on load, and the meshfill plugin TCP bridge (`127.0.0.1:6800`) coming up

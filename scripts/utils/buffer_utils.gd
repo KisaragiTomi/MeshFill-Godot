@@ -33,6 +33,15 @@ static func decode_u32_count(bytes: PackedByteArray) -> int:
 	return int(bytes.decode_u32(0))
 
 
+static func decoded_record_count(bytes: PackedByteArray, expected_count: int, byte_stride: int) -> int:
+	# Guard against modulo/division by zero below; a non-positive stride can never yield a complete record.
+	if byte_stride <= 0:
+		return 0
+	var available_bytes := mini(bytes.size(), expected_count * byte_stride)
+	available_bytes -= available_bytes % byte_stride
+	return mini(expected_count, int(available_bytes / byte_stride))
+
+
 static func pack_s32(value: int) -> PackedByteArray:
 	var bytes := PackedByteArray()
 	bytes.resize(SCALAR32_BYTES)
@@ -82,6 +91,17 @@ static func decode_vec4_xyz(bytes: PackedByteArray, offset: int = 0) -> Vector3:
 		bytes.decode_float(offset + 0),
 		bytes.decode_float(offset + 4),
 		bytes.decode_float(offset + 8)
+	)
+
+
+static func decode_vec4(bytes: PackedByteArray, offset: int = 0) -> Vector4:
+	if offset < 0 or bytes.size() < offset + VEC4_BYTES:
+		return Vector4.ZERO
+	return Vector4(
+		bytes.decode_float(offset + 0),
+		bytes.decode_float(offset + 4),
+		bytes.decode_float(offset + 8),
+		bytes.decode_float(offset + 12)
 	)
 
 

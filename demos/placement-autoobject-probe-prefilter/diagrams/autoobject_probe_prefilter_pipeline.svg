@@ -186,8 +186,8 @@
   <g>
     <g>
       <rect class="node" x="1040" y="200" width="430" height="112" rx="8" fill="url(#sv-stripe-amber)" stroke="#d97706"/>
-      <text class="node-title" x="1058" y="228">resident candidate route</text>
-      <text class="small"><tspan x="1058" y="250">candidate_route_record_rid</tspan><tspan x="1058" y="267">candidate_route_range_rid</tspan><tspan x="1058" y="284">schema-v1 · stride 16B</tspan><tspan x="1058" y="301">SCOPE_PERSISTENT（跨 gc_frame 存活）</tspan></text>
+      <text class="node-title" x="1058" y="228">anchor_candidate_handoff</text>
+      <text class="small"><tspan x="1058" y="250">anchor_buffer_rid / anchor_count_buffer_rid</tspan><tspan x="1058" y="267">topk_buffer_rid（topk = 4）</tspan><tspan x="1058" y="284">anchor_capacity 65536 · one_origin_per_anchor</tspan><tspan x="1058" y="301">SCOPE_PERSISTENT（跨 gc_frame 存活）</tspan></text>
     </g>
     <g>
       <rect class="node" x="1040" y="344" width="430" height="92" rx="8" fill="#ffffff" stroke="#94a3b8"/>

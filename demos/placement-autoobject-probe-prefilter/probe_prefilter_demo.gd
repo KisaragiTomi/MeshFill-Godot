@@ -4,7 +4,7 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 # Probe prefilter demo: loads all geo meshes, generates semantic probes,
 # and displays them with visual markers for inspection.
 
-const ProbeProfile := preload("res://scripts/semantic_probe_profile.gd")
+const ProbeGenerator := preload("res://scripts/semantic_probe_generator.gd")
 const DemoUI := preload("res://scripts/utils/demo_ui.gd")
 const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
 const DemoDebugVisuals := preload("res://scripts/utils/demo_debug_visuals.gd")
@@ -63,7 +63,7 @@ func _load_and_display() -> void:
 		var entry: Dictionary = _entries[i]
 		var m: Mesh = entry.mesh
 		var aabb: AABB = m.get_aabb()
-		var probes := ProbeProfile.generate_from_mesh(m, [], Color(0.5, 0.5, 0.5), 0.5, 1.0, 32)
+		var probes := ProbeGenerator.generate_from_mesh(m, [], Color(0.5, 0.5, 0.5), 0.5, 1.0, 32)
 		entry["probes"] = probes
 		entry["x_offset"] = x_offset
 

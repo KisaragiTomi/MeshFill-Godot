@@ -1,7 +1,10 @@
 extends "res://scripts/utils/scene_tree_test.gd"
 
 const VoxelPlacementGeneratorScript := preload("res://scripts/voxel_placement_generator.gd")
+const VoxelPlacementTargetReaderScript := preload("res://scripts/voxel_placement_target_reader.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
+const SPAInteractiveDemoScript := preload("res://demos/core-SPA-scene-placement-actor/spa_interactive_demo.gd")
+const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const AutoVoxelFixture := preload("res://scripts/utils/voxel_fixtures.gd")
 const TargetSVBufferFixture := preload("res://scripts/utils/voxel_fixtures.gd")
 const TestUtils := preload("res://scripts/utils/test_utils.gd")
@@ -17,8 +20,8 @@ func _init() -> void:
 		_test_decode_rejects_missing_buffers,
 		_test_vpg_accepts_prepacked_target_field,
 		_test_vpg_accepts_prepacked_target_visual_rgba8,
-		_test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads,
-		_test_scene_placement_actor_prefers_prepacked_target_bytes,
+		_test_vpg_borrows_scene_placement_actor_target_read_buffers_or_blocks,
+		_test_spa_demo_targetsv_direct_voxel_decode,
 		_test_scene_placement_actor_keeps_brush_sv_control_metadata_only,
 		_test_scene_placement_actor_exposes_mesh_descriptions,
 		_test_gpu_derive_target_packed_buffers_or_skip,
@@ -36,8 +39,62 @@ func _close_q8(actual: float, expected: float) -> bool:
 	return absf(actual - _quantize_unorm8_value(expected)) <= Q8_EPSILON
 
 
-func _test_scene_placement_actor_prefers_prepacked_target_bytes() -> bool:
-	print("[TargetSVBufferDecode] test_scene_placement_actor_prefers_prepacked_target_bytes... SKIP (stub)")
+## SPA demo TargetSV 直选（CPU 回退路径）逐体素解码回归：
+## visual = canonical RGBA8（每体素 1 个 u32，alpha=complexity）、collision = 磁盘 .r8（每体素 1 字节 unorm8）。
+## 旧实现按 RGBA32F(idx*16+12)/R32F(idx*4) stride 误读——本测试用已知字节钉死 canonical 布局语义。
+func _test_spa_demo_targetsv_direct_voxel_decode() -> bool:
+	print("[TargetSVBufferDecode] test_spa_demo_targetsv_direct_voxel_decode...")
+	var texture_size := 2
+	var slice_count := 2
+	var voxel_count := texture_size * texture_size * slice_count
+	var complexities := PackedFloat32Array([0.0, 0.25, 0.5, 0.75, 1.0, 0.1, 0.9, 0.4])
+	var collisions := PackedFloat32Array([1.0, 0.8, 0.6, 0.4, 0.2, 0.0, 0.3, 0.7])
+	var visual := PackedByteArray()
+	visual.resize(voxel_count * 4)
+	var collision := PackedByteArray()
+	collision.resize(voxel_count)
+	for i in range(voxel_count):
+		visual.encode_u32(i * 4, BufferUtils.pack_shader_rgba8_word(Color(0.5, 0.6, 0.7, complexities[i])))
+		collision[i] = BufferUtils.quantize_unorm8(collisions[i])
+
+	# 与唯一 codec 的整场解码交叉验证（SSOT 一致性门）
+	var codec_complexity: PackedFloat32Array = SceneVoxelTileCodecScript.decode_complexity_field_rgba8_alpha_bytes(visual, voxel_count)
+	var codec_collision: PackedFloat32Array = SceneVoxelTileCodecScript.decode_collision_field_r8_bytes(collision, voxel_count)
+	for slice_index in range(slice_count):
+		for z in range(texture_size):
+			for x in range(texture_size):
+				# 与 demo _targetsv_record_for_voxel 相同的线性索引公式
+				var idx := (slice_index * texture_size + z) * texture_size + x
+				var got_complexity: float = SPAInteractiveDemoScript.targetsv_complexity_at(visual, idx)
+				var got_collision: float = SPAInteractiveDemoScript.targetsv_collision_at(collision, idx)
+				if not _close_q8(got_complexity, complexities[idx]):
+					push_error("  FAIL: SPA targetsv complexity mismatch at %d: got %.4f expected %.4f" % [idx, got_complexity, complexities[idx]])
+					return false
+				if not _close_q8(got_collision, collisions[idx]):
+					push_error("  FAIL: SPA targetsv collision mismatch at %d: got %.4f expected %.4f" % [idx, got_collision, collisions[idx]])
+					return false
+				if absf(got_complexity - codec_complexity[idx]) > 0.0001:
+					push_error("  FAIL: SPA targetsv complexity diverges from SceneVoxelTileCodec at %d" % idx)
+					return false
+				if absf(got_collision - codec_collision[idx]) > 0.0001:
+					push_error("  FAIL: SPA targetsv collision diverges from SceneVoxelTileCodec at %d" % idx)
+					return false
+
+	# 越界/坏输入 → 0.0（不 crash、不读越界垃圾）
+	if SPAInteractiveDemoScript.targetsv_complexity_at(visual, voxel_count) != 0.0 \
+			or SPAInteractiveDemoScript.targetsv_complexity_at(visual, -1) != 0.0:
+		push_error("  FAIL: out-of-range SPA targetsv complexity should decode to 0.0")
+		return false
+	if SPAInteractiveDemoScript.targetsv_collision_at(collision, voxel_count) != 0.0 \
+			or SPAInteractiveDemoScript.targetsv_collision_at(collision, -1) != 0.0:
+		push_error("  FAIL: out-of-range SPA targetsv collision should decode to 0.0")
+		return false
+	if SPAInteractiveDemoScript.targetsv_complexity_at(PackedByteArray(), 0) != 0.0 \
+			or SPAInteractiveDemoScript.targetsv_collision_at(PackedByteArray(), 0) != 0.0:
+		push_error("  FAIL: empty SPA targetsv buffers should decode to 0.0")
+		return false
+
+	print("  OK: SPA demo direct TargetSV voxel decode matches canonical RGBA8/R8 codec semantics")
 	return true
 
 
@@ -397,8 +454,7 @@ func _test_vpg_accepts_prepacked_target_visual_rgba8() -> bool:
 		prepacked.encode_u32(i * 4, BufferUtils.pack_shader_rgba8_word(colors[i]))
 	prepacked.encode_u32(voxel_count * 4, 0x12345678)
 
-	var generator := VoxelPlacementGeneratorScript.new()
-	var from_prepacked := generator._target_visual_rgba8_bytes_from_settings({
+	var from_prepacked := VoxelPlacementTargetReaderScript.target_visual_rgba8_bytes_from_settings({
 		"target_visual_rgba8_bytes": prepacked,
 	}, voxel_count)
 	if from_prepacked.size() != voxel_count * 4:
@@ -408,7 +464,7 @@ func _test_vpg_accepts_prepacked_target_visual_rgba8() -> bool:
 		push_error("  FAIL: prepacked target color bytes mismatch")
 		return false
 
-	var fallback := generator._target_visual_rgba8_bytes_from_settings({}, voxel_count)
+	var fallback := VoxelPlacementTargetReaderScript.target_visual_rgba8_bytes_from_settings({}, voxel_count)
 	if fallback.size() != voxel_count * 4:
 		push_error("  FAIL: missing prepacked target color should allocate a zero buffer")
 		return false
@@ -435,8 +491,7 @@ func _test_vpg_accepts_prepacked_target_field() -> bool:
 		prepacked[i * 4 + 3] = occupancy[i]
 	prepacked[prepacked.size() - 1] = 7.0
 
-	var generator := VoxelPlacementGeneratorScript.new()
-	var from_prepacked: Dictionary = generator._target_field_bytes_from_settings({
+	var from_prepacked: Dictionary = VoxelPlacementTargetReaderScript.target_field_bytes_from_settings({
 		"target_field_bytes": prepacked,
 	}, voxel_count)
 	var prepacked_field_bytes: PackedFloat32Array = from_prepacked.get("bytes", PackedFloat32Array())
@@ -451,7 +506,7 @@ func _test_vpg_accepts_prepacked_target_field() -> bool:
 			push_error("  FAIL: prepacked target field mismatch at %d" % i)
 			return false
 
-	var fallback: Dictionary = generator._target_field_bytes_from_settings({}, voxel_count)
+	var fallback: Dictionary = VoxelPlacementTargetReaderScript.target_field_bytes_from_settings({}, voxel_count)
 	var fallback_field_bytes: PackedFloat32Array = fallback.get("bytes", PackedFloat32Array())
 	if bool(fallback.get("has_target", true)) or str(fallback.get("source", "")) != "none":
 		push_error("  FAIL: missing prepacked target field should not enable target scoring")
@@ -461,7 +516,7 @@ func _test_vpg_accepts_prepacked_target_field() -> bool:
 			push_error("  FAIL: missing prepacked target field should stay zero at %d" % i)
 			return false
 
-	var empty: Dictionary = generator._target_field_bytes_from_settings({}, voxel_count)
+	var empty: Dictionary = VoxelPlacementTargetReaderScript.target_field_bytes_from_settings({}, voxel_count)
 	if bool(empty.get("has_target", true)):
 		push_error("  FAIL: missing target field should not enable target scoring")
 		return false
@@ -470,8 +525,8 @@ func _test_vpg_accepts_prepacked_target_field() -> bool:
 	return true
 
 
-func _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads() -> bool:
-	print("[TargetSVBufferDecode] test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads...")
+func _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_blocks() -> bool:
+	print("[TargetSVBufferDecode] test_vpg_borrows_scene_placement_actor_target_read_buffers_or_blocks...")
 	if not TestUtils.has_rendering_device():
 		print("  SKIP: no RenderingDevice available for VPG TargetSV read-buffer borrowing")
 		return true
@@ -530,38 +585,41 @@ func _test_vpg_borrows_scene_placement_actor_target_read_buffers_or_uploads() ->
 	if not mismatch_generator.ensure_device(true, false):
 		mismatch_generator.dispose()
 		actor.dispose(true)
-		print("  SKIP: no second local RenderingDevice available for mismatch upload branch")
+		print("  SKIP: no second local RenderingDevice available for mismatch block branch")
 		return true
-	var uploaded: Dictionary = mismatch_generator._target_read_buffer_pack({
+	# resident-GPU-only：RD 不一致（target_read_buffers 在 actor 设备、生成器在另一本地设备）时
+	# 借用失败 → 阻断，且【无 CPU 上传回退】——即便同时给了 target_field_bytes 也被忽略、照样阻断。
+	var blocked_with_bytes: Dictionary = mismatch_generator._target_read_buffer_pack({
 		"target_read_buffers": target_buffers,
 		"target_field_bytes": upload_field,
 	}, voxel_count)
-	if bool(uploaded.get("target_read_buffers_borrowed", true)) \
-			or not bool(uploaded.get("target_read_buffers_uploaded", false)) \
-			or not bool(uploaded.get("target_field_bytes_uploaded", false)) \
-			or str(uploaded.get("target_read_buffer_source", "")) != "uploaded_target_field_bytes" \
-			or str(uploaded.get("source_reason", "")) != "resident_target_read_buffer_rendering_device_mismatch" \
-			or bool(uploaded.get("cpu_fallback", true)):
+	if bool(blocked_with_bytes.get("ready", true)) \
+			or not bool(blocked_with_bytes.get("contract_blocked", false)) \
+			or bool(blocked_with_bytes.get("target_read_buffers_uploaded", false)) \
+			or bool(blocked_with_bytes.get("target_field_bytes_uploaded", false)) \
+			or str(blocked_with_bytes.get("target_read_buffer_source", "")) != "none" \
+			or str(blocked_with_bytes.get("reason", "")) != "resident_target_read_buffer_rendering_device_mismatch_gpu_resident_required" \
+			or bool(blocked_with_bytes.get("cpu_fallback", true)):
 		mismatch_generator.dispose()
 		actor.dispose(true)
-		push_error("  FAIL: RD mismatch should upload explicit vec4 target_field bytes: %s" % str(uploaded))
+		push_error("  FAIL: RD mismatch must block (resident-GPU-only, no CPU upload) even with target_field_bytes: %s" % str(blocked_with_bytes))
 		return false
 	var blocked: Dictionary = mismatch_generator._target_read_buffer_pack({
 		"target_read_buffers": target_buffers,
 	}, voxel_count)
 	if bool(blocked.get("ready", true)) \
 			or not bool(blocked.get("contract_blocked", false)) \
-			or str(blocked.get("reason", "")) != "resident_target_read_buffer_rendering_device_mismatch_no_target_bytes_input" \
+			or str(blocked.get("reason", "")) != "resident_target_read_buffer_rendering_device_mismatch_gpu_resident_required" \
 			or bool(blocked.get("target_read_buffers_uploaded", true)) \
 			or bool(blocked.get("cpu_fallback", true)):
 		mismatch_generator.dispose()
 		actor.dispose(true)
-		push_error("  FAIL: RD mismatch without explicit field/color bytes should block: %s" % str(blocked))
+		push_error("  FAIL: RD mismatch without a valid resident handoff should block: %s" % str(blocked))
 		return false
 	mismatch_generator.dispose()
 	actor.dispose(true)
 
-	print("  OK: VPG borrows SPA resident target_field and only uploads explicit field bytes on RD mismatch")
+	print("  OK: VPG borrows SPA resident target_field; RD mismatch blocks (resident-GPU-only, no CPU upload)")
 	return true
 
 

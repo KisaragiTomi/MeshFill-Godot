@@ -8,7 +8,7 @@
 script = ExtResource("1_anchor")
 metadata/source_doc = "res://demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md"
 metadata/test_doc = "res://demos/core-sv-anchor-collection/core-sv-anchor-collection.md"
-metadata/focus = "collect_sv_anchors GPU dispatch: position-only anchor rules (self complexity/collision gates, target demand, support below) validated via real RenderingDevice storage buffers and readback; missing RD skips GPU anchor collection"
+metadata/focus = "collect_sv_anchors GPU dispatch: position-only anchor rule (single inside-target gate: max(target_field.a, target_collision) > min_target_interest, Houdini Pipeline.hip parity; former scene/collision/support-below gates dropped, score stage owns them) validated via real RenderingDevice storage buffers and readback; missing RD skips GPU anchor collection"
 metadata/gpu_required = true
 
 [node name="CoreSPADemo" type="Node3D" parent="."]

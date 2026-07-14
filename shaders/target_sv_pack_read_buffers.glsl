@@ -4,10 +4,10 @@
 // Derive TargetSV packed placement buffers from canonical 8bit read buffers.
 // Inputs:
 //   binding 0: rgba8 visual buffer packed as uint, high-to-low bytes RGBA
-//   binding 1: r8 collision buffer packed four voxels per uint
-//   binding 2: optional r8 completeness input buffer packed four voxels per uint
+//   binding 1: collision buffer, one uint32 per voxel (quantized 0..255)
+//   binding 2: optional completeness input buffer, one uint32 per voxel (quantized 0..255)
 // Outputs:
-//   binding 3: r8 completeness buffer packed four voxels per uint
+//   binding 3: completeness buffer, one uint32 per voxel (quantized 0..255)
 //   binding 4: rgba8 packed as uint, high-to-low bytes RGBA
 //   binding 5: u32 stats buffer (DebugBufferSet TARGET_STATS: magic + schema_version header, then named stat slots)
 
@@ -18,15 +18,15 @@ layout(set = 0, binding = 0, std430) restrict readonly buffer TargetVisual {
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer TargetCollision {
-    uint target_collision_r8_words[];
+    uint target_collision_u32[];
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer TargetCompletenessInput {
-    uint target_completeness_input_r8_words[];
+    uint target_completeness_input_u32[];
 };
 
 layout(set = 0, binding = 3, std430) restrict buffer TargetCompletenessOut {
-    uint target_completeness_out_r8_words[];
+    uint target_completeness_out_u32[];
 };
 
 layout(set = 0, binding = 4, std430) restrict writeonly buffer TargetVisualRgba8Out {
@@ -65,27 +65,22 @@ vec4 unpack_rgba8(uint packed) {
     );
 }
 
-float unpack_r8(uint packed_word, uint idx) {
-    uint shift = (idx & 3u) * 8u;
-    return float((packed_word >> shift) & 0xFFu) / 255.0;
-}
-
 float load_collision_r8(uint idx) {
-    return unpack_r8(target_collision_r8_words[idx >> 2u], idx);
+    return float(target_collision_u32[idx] & 0xFFu) * (1.0 / 255.0);
 }
 
 float load_completeness_input_r8(uint idx) {
-    return unpack_r8(target_completeness_input_r8_words[idx >> 2u], idx);
+    return float(target_completeness_input_u32[idx] & 0xFFu) * (1.0 / 255.0);
 }
 
 uint pack_r8(float value) {
     return uint(clamp(round(value * 255.0), 0.0, 255.0));
 }
 
+// One uint32 per voxel; the quantized value stays <= 255 so a whole-word
+// atomicOr matches the old byte-lane set exactly.
 void store_completeness_r8(uint idx, float value) {
-    uint word_index = idx >> 2u;
-    uint shift = (idx & 3u) * 8u;
-    atomicOr(target_completeness_out_r8_words[word_index], pack_r8(value) << shift);
+    atomicOr(target_completeness_out_u32[idx], pack_r8(value));
 }
 
 uint quantize_unit(float value) {

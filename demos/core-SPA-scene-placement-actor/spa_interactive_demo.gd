@@ -9,7 +9,7 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 ## no CPU per-node manual placement.
 ##
 ## Selection is read-only inspection over GPU/data views:
-##   GPU AutoObject points, SVTile, SceneVoxel, Anchor, TargetSV.
+##   GPU AutoObject runtime records, SVTile, SceneVoxel, Anchor, TargetSV.
 ##
 ## Controls:
 ##   LMB click       — select under current mode (GPU AutoObject / data voxel)
@@ -24,6 +24,7 @@ const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const ScenePlacementActorScript := preload("res://scripts/scene_placement_actor.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
+const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const GPUAutoObjectRuntimeScript := preload("res://scripts/gpu_autoobject_runtime.gd")
 const VoxelPickGPUScript := preload("res://scripts/voxel_pick_gpu.gd")
 const VoxelDisplay := preload("res://scripts/utils/voxel_display.gd")
@@ -40,9 +41,9 @@ const SPATestScript := preload("res://demos/core-SPA-scene-placement-actor/spa_t
 const SELECT_COLOR := Color(1.0, 0.85, 0.0, 1.0)
 
 ## Selection mode contract:
-## - MIXED: editor-friendly priority pick. It first tries GPU AutoObject points,
+## - MIXED: editor-friendly priority pick. It first tries GPU AutoObject records,
 ##   then volume-score anchors, then data voxels (TargetSV first, SVTile second).
-## - AUTOOBJECT: only GPUAutoObjectRuntime point markers; returns object_id,
+## - AUTOOBJECT: GPUAutoObjectRuntime inspection; returns object_id,
 ##   asset/profile, voxel range, and owning SVTile coordinates.
 ## - SVTILE: SceneVoxelTile aggregate/debug record for the clicked voxel's tile;
 ##   useful for object-ref counts and tile payload inspection.
@@ -62,15 +63,15 @@ const SELECTION_DOMAIN_SV := SPAEditorContract.SELECTION_DOMAIN_SV
 const SELECTION_DOMAIN_TARGETSV := SPAEditorContract.SELECTION_DOMAIN_TARGETSV
 const SELECTION_GEOMETRY_TRIANGLE := SPAEditorContract.SELECTION_GEOMETRY_TRIANGLE
 const SELECTION_GEOMETRY_VOXEL := SPAEditorContract.SELECTION_GEOMETRY_VOXEL
-const SELECTION_GEOMETRY_GPU_POINT := SPAEditorContract.SELECTION_GEOMETRY_GPU_POINT
+const SELECTION_GEOMETRY_AUTOOBJECT := SPAEditorContract.SELECTION_GEOMETRY_AUTOOBJECT
 const SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR := SPAEditorContract.SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR
 const SELECTION_FADED_TRANSPARENCY := 0.76
 const ANCHOR_SAMPLE_BOUNDS_COLOR := Color(1.0, 0.08, 0.04, 0.95)
-const SVTILE_AUTOOBJECT_OVERLAY_ROOT_NAME := "SVTileAutoObjectOverlay"
+const SVTILE_OVERLAY_ROOT_NAME := "SVTileOverlay"
+const LEGACY_SVTILE_AUTOOBJECT_OVERLAY_ROOT_NAME := "SVTileAutoObjectOverlay"
 const LEGACY_SVTILE_OBJECT_REF_OVERLAY_ROOT_NAME := "SVTileObjectRefOverlay"
 const HUD_ROOT_NAME := "HUD"
 const EXTERNAL_VOXEL_DISPLAY_ROOT_NAME := SPAEditorContract.EXTERNAL_VOXEL_DISPLAY_ROOT_NAME
-const VOXEL_DISPLAY_GPU_OBJECTS := SPAEditorContract.VOXEL_DISPLAY_GPU_OBJECTS
 const VOXEL_DISPLAY_SVTILE := SPAEditorContract.VOXEL_DISPLAY_SVTILE
 const VOXEL_DISPLAY_ANCHOR := SPAEditorContract.VOXEL_DISPLAY_ANCHOR
 const VOXEL_DISPLAY_SV := SPAEditorContract.VOXEL_DISPLAY_SV
@@ -83,7 +84,8 @@ const GENERATED_EDITOR_NODE_NAMES := [
 	LEGACY_AUTOOBJECT_ROOT_NAME,
 	LEGACY_EDITOR_WIREFRAME_ROOT_NAME,
 	LEGACY_EDITOR_LABEL_ROOT_NAME,
-	SVTILE_AUTOOBJECT_OVERLAY_ROOT_NAME,
+	SVTILE_OVERLAY_ROOT_NAME,
+	LEGACY_SVTILE_AUTOOBJECT_OVERLAY_ROOT_NAME,
 	LEGACY_SVTILE_OBJECT_REF_OVERLAY_ROOT_NAME,
 	EXTERNAL_VOXEL_DISPLAY_ROOT_NAME,
 	HUD_ROOT_NAME,
@@ -96,7 +98,7 @@ const GENERATED_EDITOR_NODE_NAMES := [
 ## placement-score-3d）关掉它，避免默认铺满 autoobject；Space 手动重跑仍可触发。
 @export var spawn_autoobjects_on_start := true
 @export var voxel_display_host_only := false
-@export var show_svtile_autoobject_overlay := true
+@export var show_svtile_overlay := true
 @export var show_anchor_sample_bounds := true
 @export var select_gpu_autoobjects := true
 @export var gpu_autoobject_pick_radius_px := 28.0
@@ -123,10 +125,9 @@ var _meshes: Array[Mesh] = []
 
 # ---- visuals ----
 var _hud_label: Label
-var _autoobject_overlay_root: Node3D
+var _svtile_overlay_root: Node3D
 var _svtile_heatmap: MultiMeshInstance3D
-var _autoobject_points: MultiMeshInstance3D
-var _autoobject_overlay_label: Label3D
+var _svtile_overlay_label: Label3D
 ## 统一选中可视：单个线框 box marker + 单个 Label3D，所有点选域共用
 var _selection_marker: MeshInstance3D
 var _selection_label: Label3D
@@ -143,7 +144,7 @@ var _autoobject_flush_result: Dictionary = {}
 var _svtile_summary: Dictionary = {}
 var _autoobject_spawn_time_ms := 0.0
 var _autoobject_flush_time_ms := 0.0
-var _autoobject_visual_time_ms := 0.0
+var _svtile_visual_time_ms := 0.0
 var _svtile_total_tile_count := 0
 var _svtile_occupied_tile_count := 0
 var _svtile_max_refs_per_tile := 0
@@ -180,9 +181,9 @@ func _ready() -> void:
 ## 编辑器模式初始化入口：创建节点、加载资源、初始化SPA
 func _editor_init() -> void:
 	_cleanup_editor_nodes()
-	_autoobject_overlay_root = Node3D.new()
-	_autoobject_overlay_root.name = SVTILE_AUTOOBJECT_OVERLAY_ROOT_NAME
-	add_child(_autoobject_overlay_root, true)
+	_svtile_overlay_root = Node3D.new()
+	_svtile_overlay_root.name = SVTILE_OVERLAY_ROOT_NAME
+	add_child(_svtile_overlay_root, true)
 	_load_meshes()
 	ensure_test_terrain_initialized()
 	_cache_terrain_field()
@@ -300,7 +301,7 @@ func get_current_selection_record() -> Dictionary:
 
 ## Register a demo/provider that owns volume-score anchor generation and top-k state.
 func register_volume_score_provider(provider: Node) -> void:
-	if provider == null:
+	if provider == null or not is_instance_valid(provider) or not provider.is_inside_tree():
 		return
 	_volume_score_provider = provider
 	print("[SPA VolumeScore] Provider registered: %s" % str(provider.get_path()))
@@ -522,7 +523,7 @@ func _select_volume_score_anchor_at_position(cam: Camera3D, screen_pos: Vector2)
 	var anchor_index := _pick_volume_score_anchor(provider, cam, screen_pos)
 	if anchor_index < 0:
 		return {}
-	# 清掉非 anchor 域的旧选中（点云染色 / box marker），保留 provider。
+	# 清掉非 anchor 域的旧选中 marker，保留 provider。
 	clear_active_selection(false, false)
 	var result = provider.call("select_anchor", anchor_index)
 	if not (result is Dictionary) or not bool(result.get("ok", false)):
@@ -541,49 +542,7 @@ func _select_volume_score_anchor_at_position(cam: Camera3D, screen_pos: Vector2)
 ## 射线点选 volume-score 锚点：胜出物体世界 AABB 命中优先，取最近；无命中回退锚点小球半径。
 ## 数据来自 provider（get_selectable_anchor_bounds / get_anchor_world_positions / get_anchor_marker_radius）。
 func _pick_volume_score_anchor(provider: Node, cam: Camera3D, screen_pos: Vector2) -> int:
-	if cam == null:
-		return -1
-	var ray_origin := cam.project_ray_origin(screen_pos)
-	var ray_dir := cam.project_ray_normal(screen_pos).normalized()
-	var best_idx := -1
-	var best_t := INF
-	if provider.has_method("get_selectable_anchor_bounds"):
-		for b in provider.call("get_selectable_anchor_bounds"):
-			if not (b is Dictionary):
-				continue
-			var raw_aabb = (b as Dictionary).get("aabb", null)
-			if not (raw_aabb is AABB):
-				continue
-			var hit = (raw_aabb as AABB).intersects_ray(ray_origin, ray_dir)
-			if hit is Vector3:
-				var hp: Vector3 = hit
-				var t := (hp - ray_origin).dot(ray_dir)
-				if t >= 0.0 and t < best_t:
-					best_t = t
-					best_idx = int((b as Dictionary).get("anchor_index", -1))
-	if best_idx >= 0:
-		return best_idx
-	if not provider.has_method("get_anchor_world_positions"):
-		return -1
-	var positions: PackedVector3Array = provider.call("get_anchor_world_positions")
-	var radius := 4.0
-	if provider.has_method("get_anchor_marker_radius"):
-		radius = maxf(float(provider.call("get_anchor_marker_radius")) * 2.5, 0.1)
-	var radius_sq := radius * radius
-	var best_dist := INF
-	for i in range(positions.size()):
-		var world_pos := positions[i]
-		if cam.is_position_behind(world_pos):
-			continue
-		var ray_t := (world_pos - ray_origin).dot(ray_dir)
-		if ray_t < 0.0:
-			continue
-		var closest := ray_origin + ray_dir * ray_t
-		var d := closest.distance_squared_to(world_pos)
-		if d <= radius_sq and d < best_dist:
-			best_dist = d
-			best_idx = i
-	return best_idx
+	return SPAEditorContract.pick_volume_score_anchor(provider, cam, screen_pos)
 
 
 func _cycle_volume_score_anchor_topk(delta: int) -> bool:
@@ -681,13 +640,6 @@ func _active_selection_is_volume_score_anchor() -> bool:
 	return str(_active_selection.get("geometry", "")) == SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR
 
 
-## 当前活动选中的 GPU AutoObject 点云索引；非 autoobject 域返回 -1
-func _active_selection_autoobject_index() -> int:
-	if str(_active_selection.get("geometry", "")) == SELECTION_GEOMETRY_GPU_POINT:
-		return int(_active_selection.get("object_index", -1))
-	return -1
-
-
 ## 当前活动选中的 box marker / label 是否应显示。SPA 统一出 box（含 volume-score anchor）。
 func _active_selection_box_visible() -> bool:
 	if _active_selection.is_empty():
@@ -765,7 +717,7 @@ func _sample_bounds_aabb(raw_bounds) -> AABB:
 
 ## Reuse the existing selection marker mesh with a red transparent wire material.
 func _ensure_anchor_sample_bounds_marker() -> void:
-	var parent := _autoobject_overlay_root if _autoobject_overlay_root != null else self
+	var parent := _svtile_overlay_root if _svtile_overlay_root != null else self
 	if _anchor_sample_bounds_marker == null or not is_instance_valid(_anchor_sample_bounds_marker):
 		_anchor_sample_bounds_marker = _make_selection_marker("SelectedAnchorSampleBounds")
 		parent.add_child(_anchor_sample_bounds_marker)
@@ -814,7 +766,7 @@ func _ensure_selection_callables() -> void:
 	}
 
 
-## 按模式将体素坐标转为对应数据记录；AutoObject 没有体素直选记录，需走点云拾取
+## 按模式将体素坐标转为对应数据记录；AutoObject 通过 runtime 索引拾取，不走体素直选记录
 func _data_record_for_voxel(mode: int, raw_voxel: Vector3i) -> Dictionary:
 	var mode_id := int(mode)
 	_ensure_selection_callables()
@@ -1008,10 +960,10 @@ func _run_gpu_autoobject_batch() -> void:
 	_autoobject_flush_time_ms = float(Time.get_ticks_msec() - flush_t0)
 	_svtile_summary = _sv_committer.get_scene_voxel_tile_gpu_buffer_status()
 
-	if show_svtile_autoobject_overlay:
+	if show_svtile_overlay:
 		var visual_t0 := Time.get_ticks_msec()
-		_build_svtile_autoobject_overlay(tile_counts, _autoobject_positions, _autoobject_asset_indices, tile_grid, tile_size)
-		_autoobject_visual_time_ms = float(Time.get_ticks_msec() - visual_t0)
+		_build_svtile_overlay(tile_counts, tile_grid, tile_size)
+		_svtile_visual_time_ms = float(Time.get_ticks_msec() - visual_t0)
 
 	var spawned := int(_autoobject_spawn_result.get("spawned_count", 0))
 	var inserted := int(_autoobject_flush_result.get("object_ref_inserted_slot_count", 0))
@@ -1035,13 +987,12 @@ func _run_gpu_autoobject_batch() -> void:
 		int(_autoobject_flush_result.get("dirty_scene_voxel_tile_count", _svtile_summary.get("dirty_tile_count", 0))),
 		_autoobject_flush_time_ms,
 	])
-	print("[SPA SVTile] Visualization: tiles=%d occupied=%d refs_per_tile avg=%.2f max=%d object_points=%d time=%.0f ms" % [
+	print("[SPA SVTile] Visualization: tiles=%d occupied=%d refs_per_tile avg=%.2f max=%d time=%.0f ms" % [
 		_svtile_total_tile_count,
 		_svtile_occupied_tile_count,
 		(float(_svtile_total_refs) / float(maxi(_svtile_occupied_tile_count, 1))),
 		_svtile_max_refs_per_tile,
-		_autoobject_positions.size(),
-		_autoobject_visual_time_ms,
+		_svtile_visual_time_ms,
 	])
 
 
@@ -1091,34 +1042,28 @@ func _build_autoobject_spawn_records(
 	return records
 
 
-## 构建SVTile热力图和GPU AutoObject点云叠加层
-func _build_svtile_autoobject_overlay(
+## 构建SVTile object-ref密度热力图；AutoObject本体只存在于GPU runtime buffers。
+func _build_svtile_overlay(
 	tile_counts: PackedInt32Array,
-	object_positions: Array[Vector3],
-	object_asset_indices: Array[int],
 	tile_grid: Vector3i,
 	tile_size: Vector3i
 ) -> void:
-	if _autoobject_overlay_root == null:
-		_autoobject_overlay_root = Node3D.new()
-		_autoobject_overlay_root.name = SVTILE_AUTOOBJECT_OVERLAY_ROOT_NAME
-		add_child(_autoobject_overlay_root, true)
-	for child in _autoobject_overlay_root.get_children():
+	if _svtile_overlay_root == null:
+		_svtile_overlay_root = Node3D.new()
+		_svtile_overlay_root.name = SVTILE_OVERLAY_ROOT_NAME
+		add_child(_svtile_overlay_root, true)
+	for child in _svtile_overlay_root.get_children():
 		child.queue_free()
-	_clear_autoobject_overlay_refs()
+	_clear_svtile_overlay_refs()
 
 	_svtile_heatmap = _make_tile_heatmap_multimesh(tile_counts, tile_grid, tile_size)
 	_svtile_heatmap.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_autoobject_overlay_root.add_child(_svtile_heatmap)
-
-	_autoobject_points = _make_object_points_multimesh(object_positions, object_asset_indices)
-	_autoobject_points.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_autoobject_overlay_root.add_child(_autoobject_points)
+	_svtile_overlay_root.add_child(_svtile_heatmap)
 
 	# 总览标题：非 billboard、放大字号；样式统一走 VoxelDebugLabel（保留原有 28 / 0.45 / 8 观感）
-	_autoobject_overlay_label = VoxelDebugLabel.make(
+	_svtile_overlay_label = VoxelDebugLabel.make(
 		"SPA -> GPU AutoObject -> SVTile refs\n%d autoobjects / %d occupied tiles / max %d refs per tile" % [
-			object_positions.size(),
+			_autoobject_positions.size(),
 			_svtile_occupied_tile_count,
 			_svtile_max_refs_per_tile,
 		],
@@ -1129,9 +1074,9 @@ func _build_svtile_autoobject_overlay(
 		8,      # outline_size
 		false,  # billboard（总览标题不面朝相机）
 	)
-	_autoobject_overlay_label.name = "SVTileAutoObjectLegend"
-	_autoobject_overlay_label.position = _position_on_terrain_from_voxel_center(Vector3(12.0, 0.0, 12.0), 10.0)
-	_autoobject_overlay_root.add_child(_autoobject_overlay_label)
+	_svtile_overlay_label.name = "SVTileObjectRefLegend"
+	_svtile_overlay_label.position = _position_on_terrain_from_voxel_center(Vector3(12.0, 0.0, 12.0), 10.0)
+	_svtile_overlay_root.add_child(_svtile_overlay_label)
 	_ensure_selection_visual()
 	_apply_selection_mode_visuals()
 
@@ -1165,20 +1110,6 @@ func _make_tile_heatmap_multimesh(tile_counts: PackedInt32Array, tile_grid: Vect
 		"name": "SVTileHeatmap", "unshaded": true, "no_depth_test": true})
 
 
-## 创建GPU AutoObject点云可视化的MultiMeshInstance3D（通过 VoxelDisplay）
-func _make_object_points_multimesh(object_positions: Array[Vector3], object_asset_indices: Array[int]) -> MultiMeshInstance3D:
-	var transforms: Array[Transform3D] = []
-	var colors := PackedColorArray()
-	var point_size := _autoobject_point_size()
-	var scale := Vector3(point_size, point_size * 1.8, point_size)
-	for i in range(object_positions.size()):
-		transforms.append(Transform3D(Basis().scaled(scale), object_positions[i]))
-		var asset_idx := int(object_asset_indices[i]) if i < object_asset_indices.size() else 0
-		colors.append(_autoobject_color(asset_idx))
-	return VoxelDisplay.build_from_transforms(transforms, colors, {
-		"name": "GPUAutoObjectPoints", "unshaded": true, "no_depth_test": true})
-
-
 ## 缓存GPU批量生成的object_id列表
 func _cache_autoobject_ids(raw_ids) -> void:
 	_autoobject_ids.clear()
@@ -1192,7 +1123,7 @@ func _cache_autoobject_ids(raw_ids) -> void:
 
 ## 确保统一选中 marker/label 节点存在（所有点选域共用一套）
 func _ensure_selection_visual() -> void:
-	var parent := _autoobject_overlay_root if _autoobject_overlay_root != null else self
+	var parent := _svtile_overlay_root if _svtile_overlay_root != null else self
 	if _selection_marker == null or not is_instance_valid(_selection_marker):
 		_selection_marker = _make_selection_marker("SelectedVoxelMarker")
 		parent.add_child(_selection_marker)
@@ -1236,27 +1167,15 @@ func _make_selection_material() -> StandardMaterial3D:
 	return DemoDebugVisuals.make_unshaded_material(Color(1.0, 0.9, 0.08, 0.92), false, true, true)
 
 
-## 设置GPU AutoObject点云中单个实例的颜色。点云实例数据只存在于 GPU 缓冲
-## （VoxelDisplay GPU 直写），必须经 writer 改色；MultiMesh.set_instance_color
-## 会以全零 CPU cache 整块回传，抹掉同一脏区内所有实例的 transform。
-func _set_autoobject_instance_color(object_index: int, color: Color) -> void:
-	if _autoobject_points == null or not is_instance_valid(_autoobject_points):
-		return
-	VoxelDisplay.write_instance_color(_autoobject_points, object_index, color)
-
-
 ## 若节点有效则隐藏它
 func _hide_node_if_valid(node: Node) -> void:
 	if node != null and is_instance_valid(node):
 		node.visible = false
 
 
-## 清除当前活动选中：恢复点云染色、隐藏 marker/label、（可选）清 provider anchor。
+## 清除当前活动选中：隐藏 marker/label，并可选清理 provider anchor。
 ## clear_provider=false 用于"在 provider 上选中 anchor 之前"——保留 provider 待随即选中。
 func clear_active_selection(update_hud: bool = true, clear_provider: bool = true) -> void:
-	var prev_index := _active_selection_autoobject_index()
-	if prev_index >= 0:
-		_set_autoobject_instance_color(prev_index, _autoobject_color(_safe_asset_index(prev_index)))
 	_active_selection.clear()
 	_hide_node_if_valid(_selection_marker)
 	_hide_node_if_valid(_selection_label)
@@ -1277,10 +1196,6 @@ func set_active_selection(record: Dictionary) -> void:
 		return
 	clear_active_selection(false)
 	_active_selection = record.duplicate(true)
-	# 域特有副作用：GPU AutoObject 给点云实例染高亮色
-	var object_index := _active_selection_autoobject_index()
-	if object_index >= 0:
-		_set_autoobject_instance_color(object_index, SELECT_COLOR)
 	_apply_selection_visual(_active_selection)
 	_sync_editor_selection()
 	_print_active_selection(_active_selection)
@@ -1289,7 +1204,7 @@ func set_active_selection(record: Dictionary) -> void:
 
 
 ## 按统一 record 刷新选中可视：线框 box marker + Label3D + （anchor）sample-bounds。
-## 几何形状决定摆位：gpu_point 顶在点云上方，voxel 直接落在 world_position。
+## 几何形状决定摆位：AutoObject marker 位于对象上方，voxel 直接落在 world_position。
 func _apply_selection_visual(record: Dictionary) -> void:
 	var geometry := str(record.get("geometry", ""))
 	_ensure_selection_visual()
@@ -1297,9 +1212,9 @@ func _apply_selection_visual(record: Dictionary) -> void:
 	var marker_pos: Vector3
 	var marker_scale: Vector3
 	var label_pos: Vector3
-	if geometry == SELECTION_GEOMETRY_GPU_POINT:
+	if geometry == SELECTION_GEOMETRY_AUTOOBJECT:
 		var base: Vector3 = record.get("position", Vector3.ZERO)
-		var s := _autoobject_point_size() * 2.4
+		var s := _autoobject_marker_size() * 2.4
 		marker_pos = base + Vector3(0.0, s * 0.45, 0.0)
 		marker_scale = Vector3(s, s * 1.8, s)
 	else:
@@ -1346,7 +1261,7 @@ func _sync_editor_selection() -> void:
 
 ## 打印活动选中（保留各域原有日志前缀）
 func _print_active_selection(record: Dictionary) -> void:
-	if str(record.get("geometry", "")) == SELECTION_GEOMETRY_GPU_POINT:
+	if str(record.get("geometry", "")) == SELECTION_GEOMETRY_AUTOOBJECT:
 		print("[SPA SVTile] Selected GPU AutoObject: index=%d object_id=%d tile=%s profile_id=%d pos=%s" % [
 			int(record.get("object_index", -1)),
 			int(record.get("object_id", -1)),
@@ -1401,7 +1316,7 @@ func _format_selection_label(record: Dictionary) -> String:
 	var domain := str(record.get("domain", "data"))
 	var voxel: Vector3i = record.get("voxel_coord", Vector3i.ZERO)
 	var tile: Vector3i = record.get("tile_coord", Vector3i.ZERO)
-	if str(record.get("geometry", "")) == SELECTION_GEOMETRY_GPU_POINT:
+	if str(record.get("geometry", "")) == SELECTION_GEOMETRY_AUTOOBJECT:
 		return "GPU AutoObject %d\nobject_id=%d  tile=%s" % [
 			int(record.get("object_index", -1)),
 			int(record.get("object_id", -1)),
@@ -1459,7 +1374,7 @@ func _selection_record_visual_node(record: Dictionary) -> Node:
 			var display := targetsv.get_node_or_null("TargetSVVoxels")
 			return display if display != null else targetsv
 	if domain == SELECTION_DOMAIN_SVTILE or domain == SELECTION_DOMAIN_SV or domain == SELECTION_DOMAIN_ANCHOR:
-		return _svtile_heatmap if _svtile_heatmap != null else _autoobject_overlay_root
+		return _svtile_heatmap if _svtile_heatmap != null else _svtile_overlay_root
 	return null
 
 
@@ -1499,7 +1414,7 @@ func select_autoobject_by_index(object_index: int = -1) -> Dictionary:
 func _apply_selection_mode_visuals() -> void:
 	for binding in _selection_mode_visual_bindings():
 		_apply_selection_mode_visual_binding(binding)
-	_apply_autoobject_overlay_label_visual()
+	_apply_svtile_overlay_label_visual()
 	_apply_targetsv_visuals(
 		_selection_mode_focuses(SelectionMode.TARGETSV),
 		SPAEditorContract.voxel_display_key_for_mode(SelectionMode.TARGETSV)
@@ -1516,11 +1431,6 @@ func _apply_selection_mode_visuals() -> void:
 
 func _selection_mode_visual_bindings() -> Array[Dictionary]:
 	return [
-		{
-			"node": _autoobject_points,
-			"display_key": SPAEditorContract.voxel_display_key_for_mode(SelectionMode.AUTOOBJECT),
-			"mode": SelectionMode.AUTOOBJECT,
-		},
 		{
 			"node": _svtile_heatmap,
 			"display_key": SPAEditorContract.voxel_display_key_for_mode(SelectionMode.SVTILE),
@@ -1552,15 +1462,15 @@ func _selection_mode_focuses_any(mode_ids: Array) -> bool:
 	return SPAEditorContract.mode_in_list(_selection_mode, mode_ids)
 
 
-func _apply_autoobject_overlay_label_visual() -> void:
-	if _autoobject_overlay_label == null:
+func _apply_svtile_overlay_label_visual() -> void:
+	if _svtile_overlay_label == null:
 		return
 	var gpu_objects_visible := _voxel_display_effective_visible(SPAEditorContract.voxel_display_key_for_mode(SelectionMode.AUTOOBJECT))
 	var svtile_visible := _voxel_display_effective_visible(SPAEditorContract.voxel_display_key_for_mode(SelectionMode.SVTILE))
-	var label_color := _autoobject_overlay_label.modulate
-	_autoobject_overlay_label.visible = gpu_objects_visible or svtile_visible
+	var label_color := _svtile_overlay_label.modulate
+	_svtile_overlay_label.visible = gpu_objects_visible or svtile_visible
 	label_color.a = 1.0 if _selection_mode_focuses_any(SPAEditorContract.SVTILE_OVERLAY_FOCUS_MODES) else 0.25
-	_autoobject_overlay_label.modulate = label_color
+	_svtile_overlay_label.modulate = label_color
 
 
 ## 设置TargetSV体素显示状态和透明度
@@ -1589,13 +1499,6 @@ func _svtile_ref_color(ref_count: int) -> Color:
 ## 越界安全地取得对象的资产索引
 func _safe_asset_index(object_index: int) -> int:
 	return _autoobject_asset_indices[object_index] if object_index >= 0 and object_index < _autoobject_asset_indices.size() else 0
-
-
-## 根据资产索引获取GPU点云颜色
-func _autoobject_color(asset_idx: int) -> Color:
-	var color := DemoAssets.wire_color(asset_idx % maxi(DemoAssets.count(), 1))
-	color.a = 0.96
-	return color
 
 
 ## 统计SVTile占用数、最大引用数等指标
@@ -1680,7 +1583,7 @@ func _pick_autoobject_with_camera(cam: Camera3D, screen_pos: Vector2) -> Diction
 
 ## 按当前模式分派到对应数据域拾取器。
 ## AutoObject 不在这里处理；它在 _select_current_mode_at_screen_position() 中
-## 先走 GPU 点云拾取。Mixed 的数据域 fallback 只尝试 TargetSV -> SVTile，
+## 先走 runtime 索引拾取。Mixed 的数据域 fallback 只尝试 TargetSV -> SVTile，
 ## 避免一次点击在所有体素域之间产生含糊选择。
 func _pick_data_selection_record_with_camera(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
 	for mode_id in SPAEditorContract.data_pick_modes_for_selection_mode(_selection_mode):
@@ -1780,7 +1683,7 @@ func _pick_voxel_hit_gpu(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
 		voxel_size,
 		capture,
 		TerrainConfigScript.MAX_HEIGHT,
-		_autoobject_point_size() * 0.4
+		_autoobject_marker_size() * 0.4
 	)
 	if not bool(result.get("ok", false)):
 		return {}
@@ -2036,6 +1939,27 @@ func _pick_targetsv_voxel_gpu(
 	return record
 
 
+## TargetSV canonical 逐体素解码（纯函数，供 CPU 直选路径与回归测试共用）。
+## visual = RGBA8：每体素 1 个 u32（BufferUtils.pack_shader_rgba8_word 编码，alpha=complexity），
+## 与 SceneVoxelTileCodec.decode_complexity_field_rgba8_alpha_bytes 的逐体素语义一致。
+## 越界/坏输入返回 0.0。单点查询热路径：按 offset 直解，不解整场。
+static func targetsv_complexity_at(visual_rgba8_bytes: PackedByteArray, idx: int) -> float:
+	var offset := idx * 4
+	if idx < 0 or offset + 4 > visual_rgba8_bytes.size():
+		return 0.0
+	return clampf(BufferUtils.shader_rgba8_word_to_color(visual_rgba8_bytes.decode_u32(offset)).a, 0.0, 1.0)
+
+
+## TargetSV canonical 逐体素碰撞解码（纯函数）。
+## collision = 磁盘 .r8 布局：每体素 1 字节 unorm8，
+## 与 SceneVoxelTileCodec.decode_collision_field_r8_bytes 的逐体素语义一致。
+## 越界/坏输入返回 0.0。
+static func targetsv_collision_at(collision_r8_bytes: PackedByteArray, idx: int) -> float:
+	if idx < 0 or idx >= collision_r8_bytes.size():
+		return 0.0
+	return clampf(float(collision_r8_bytes[idx] & 0xFF) / 255.0, 0.0, 1.0)
+
+
 ## 为指定体素构建TargetSV选中记录
 func _targetsv_record_for_voxel(
 	targetsv: Node,
@@ -2050,14 +1974,8 @@ func _targetsv_record_for_voxel(
 	collision: PackedByteArray
 ) -> Dictionary:
 	var idx := (slice_index * texture_size + z) * texture_size + x
-	var complexity := 0.0
-	var visual_offset := idx * 16 + 12
-	if visual_offset + 4 <= visual.size():
-		complexity = clampf(visual.decode_float(visual_offset), 0.0, 1.0)
-	var collision_value := 0.0
-	var collision_offset := idx * 4
-	if collision_offset + 4 <= collision.size():
-		collision_value = clampf(collision.decode_float(collision_offset), 0.0, 1.0)
+	var complexity := targetsv_complexity_at(visual, idx)
+	var collision_value := targetsv_collision_at(collision, idx)
 	var occupancy := maxf(complexity, collision_value)
 	var local_pos: Vector3 = targetsv.voxel_to_world(x, slice_index, z) if targetsv.has_method("voxel_to_world") else Vector3.ZERO
 	var world_pos: Vector3 = (targetsv as Node3D).to_global(local_pos) if targetsv is Node3D else local_pos
@@ -2135,7 +2053,7 @@ func _ray_to_terrain(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
 		return {}
 
 	var steps := 48
-	var surface_offset := _autoobject_point_size() * 0.4
+	var surface_offset := _autoobject_marker_size() * 0.4
 	var prev_t := t0
 	var prev_pos := origin + dir * prev_t
 	var prev_delta := prev_pos.y - (_sample_height(prev_pos.x, prev_pos.z) + surface_offset)
@@ -2213,7 +2131,7 @@ func _make_autoobject_selection_record(object_index: int, screen_score: float) -
 	var tile := _tile_info_for_voxel(voxel_min)
 	return {
 		"domain": SELECTION_DOMAIN_AUTOOBJECT,
-		"geometry": SELECTION_GEOMETRY_GPU_POINT,
+		"geometry": SELECTION_GEOMETRY_AUTOOBJECT,
 		"id": "gpu_autoobject:%d" % _autoobject_id_for_index(object_index),
 		"object_index": object_index,
 		"object_id": _autoobject_id_for_index(object_index),
@@ -2266,7 +2184,7 @@ func _nearest_autoobject_at_world(world_pos: Vector3, cam: Camera3D, screen_pos:
 	if best_index < 0:
 		return {}
 	var pick_radius := maxf(
-		_autoobject_point_size() * 3.5,
+		_autoobject_marker_size() * 3.5,
 		float(_autoobject_spacing_voxels) * maxf(_sv_committer.voxel_size.x, _sv_committer.voxel_size.z) * 1.25
 	)
 	if best_xz_dist2 > pick_radius * pick_radius and best_score > 42.0 * 42.0:
@@ -2328,11 +2246,11 @@ func _position_on_terrain_from_voxel_center(voxel_center: Vector3, y_offset: flo
 ## GPU AutoObject对象→地形表面世界坐标
 func _autoobject_position_on_terrain(voxel: Vector3i) -> Vector3:
 	var center := Vector3(float(voxel.x) + 0.5, float(voxel.y) + 0.5, float(voxel.z) + 0.5)
-	return _position_on_terrain_from_voxel_center(center, _autoobject_point_size() * 0.9)
+	return _position_on_terrain_from_voxel_center(center, _autoobject_marker_size() * 0.9)
 
 
-## GPU AutoObject点云的点尺寸
-func _autoobject_point_size() -> float:
+## GPU AutoObject统一选择marker的基础尺寸
+func _autoobject_marker_size() -> float:
 	if _sv_committer == null:
 		return 1.0
 	return maxf(minf(_sv_committer.voxel_size.x, _sv_committer.voxel_size.z) * 0.52, 0.35)
@@ -2346,7 +2264,7 @@ func _reset_autoobject_runtime_state() -> void:
 	_svtile_summary.clear()
 	_autoobject_spawn_time_ms = 0.0
 	_autoobject_flush_time_ms = 0.0
-	_autoobject_visual_time_ms = 0.0
+	_svtile_visual_time_ms = 0.0
 	_svtile_total_tile_count = 0
 	_svtile_occupied_tile_count = 0
 	_svtile_max_refs_per_tile = 0
@@ -2356,20 +2274,19 @@ func _reset_autoobject_runtime_state() -> void:
 	_autoobject_ids.clear()
 	_autoobject_side_count = 0
 	_autoobject_spacing_voxels = 1
-	# 重建点云使 autoobject/数据选中失效；volume-score anchor 权威态在 provider，保留镜像
+	# 重建 runtime/tile 状态会使 autoobject/数据选中失效；volume-score anchor 保留镜像
 	if not _active_selection_is_volume_score_anchor():
 		_active_selection.clear()
-	if _autoobject_overlay_root != null:
-		for child in _autoobject_overlay_root.get_children():
+	if _svtile_overlay_root != null:
+		for child in _svtile_overlay_root.get_children():
 			child.queue_free()
-	_clear_autoobject_overlay_refs()
+	_clear_svtile_overlay_refs()
 
 
-## 清除GPU AutoObject/SVTile叠加层及选择标记节点引用
-func _clear_autoobject_overlay_refs() -> void:
+## 清除SVTile叠加层及选择标记节点引用
+func _clear_svtile_overlay_refs() -> void:
 	_svtile_heatmap = null
-	_autoobject_points = null
-	_autoobject_overlay_label = null
+	_svtile_overlay_label = null
 	_selection_marker = null
 	_selection_label = null
 	_anchor_sample_bounds_marker = null
@@ -2418,7 +2335,7 @@ var _editor_camera: Camera3D
 var _consume_editor_mouse_release := false
 
 
-## 检查当前模式是否允许选择GPU AutoObject点云
+## 检查当前模式是否允许选择GPU AutoObject runtime记录
 func _selection_allows_gpu_autoobjects() -> bool:
 	var gpu_display_key := SPAEditorContract.voxel_display_key_for_mode(SelectionMode.AUTOOBJECT)
 	return select_gpu_autoobjects \
@@ -2433,7 +2350,7 @@ func _has_active_selection() -> bool:
 
 ## 鼠标点击的统一选择入口。
 ## 顺序很重要：
-## 1. Mixed/AutoObject 先尝试 GPU AutoObject 点云。
+## 1. Mixed/AutoObject 先尝试 GPU AutoObject runtime索引。
 ## 2. Mixed/Anchor 再尝试外部 volume-score anchor provider。
 ## 3. 最后按当前数据模式构建 SVTile/SV/Anchor/TargetSV 记录。
 func _select_current_mode_at_screen_position(cam: Camera3D, screen_pos: Vector2) -> Dictionary:
@@ -2444,7 +2361,7 @@ func _select_current_mode_at_screen_position(cam: Camera3D, screen_pos: Vector2)
 			return {
 				"ok": true,
 				"domain": str(gpu_hit.get("domain", SELECTION_DOMAIN_AUTOOBJECT)),
-				"geometry": str(gpu_hit.get("geometry", SELECTION_GEOMETRY_GPU_POINT)),
+				"geometry": str(gpu_hit.get("geometry", SELECTION_GEOMETRY_AUTOOBJECT)),
 				"record": gpu_hit,
 			}
 	var volume_score_hit := _select_volume_score_anchor_at_position(cam, screen_pos)
@@ -2613,7 +2530,7 @@ func _update_hud() -> void:
 		touched,
 		_autoobject_spawn_time_ms,
 		_autoobject_flush_time_ms,
-		_autoobject_visual_time_ms,
+		_svtile_visual_time_ms,
 	])
 	lines.append("")
 	lines.append("LMB: select under current mode (GPU AutoObject / data voxel)")
@@ -2629,7 +2546,7 @@ func _append_active_selection_hud_lines(lines: Array[String]) -> void:
 	var record := _active_selection
 	var domain := str(record.get("domain", "data"))
 	lines.append("")
-	if str(record.get("geometry", "")) == SELECTION_GEOMETRY_GPU_POINT:
+	if str(record.get("geometry", "")) == SELECTION_GEOMETRY_AUTOOBJECT:
 		var pos: Vector3 = record.get("position", Vector3.ZERO)
 		var voxel_min: Vector3i = record.get("voxel_min", Vector3i.ZERO)
 		var voxel_max: Vector3i = record.get("voxel_max", Vector3i.ZERO)

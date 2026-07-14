@@ -2,11 +2,11 @@ class_name ScoreTimingProfiler
 extends RefCounted
 
 ## GPU 打分管线(score→reduce→stamp)分阶段计时器 —— 用来定位 [VoxelPlacementGenerator]
-## run_minimal 的性能瓶颈:到底是 CPU 端 setup(缓冲分配/上传)、各 GPU pass
+## run_multi_asset 的性能瓶颈:到底是 CPU 端 setup(缓冲分配/上传)、各 GPU pass
 ## (score / reduce / stamp / score_sum),还是回读(buffer_get_data)阶段吃掉了时间。
 ##
 ## 为什么不能简单地在各 _dispatch_* 外面套墙钟:VPG 平时把 score/reduce/stamp 全部录进
-## 各自的 compute list、只在收尾做一次 submit_and_sync(见 run_minimal 的收尾同步),GPU 是异步执行的,
+## 各自的 compute list、只在收尾做一次 submit_and_sync(见 run_multi_asset 的收尾同步),GPU 是异步执行的,
 ## 故 dispatch 调用返回时 GPU 还没跑 —— 在 dispatch 外套墙钟只量到“录命令”的 CPU 开销,量不到
 ## 任一 pass 的真实 GPU 耗时。
 ##
@@ -14,9 +14,9 @@ extends RefCounted
 ## sync 会阻塞到该 pass 的 GPU 执行完成,于是相邻两个 [method mark] 之间的墙钟差,就是该 pass 的
 ## GPU 耗时(外加一次 submit 开销;对个位数微秒的极小 pass 该开销会占主导,正好说明其真实成本低于
 ## 提交噪声)。这是可靠、无需依赖 GPU timestamp query 帧延迟语义的标准分段计时法。
-## 额外插入的 submit_and_sync 仅在 profile 开启时发生,关闭时 run_minimal 逐字节等价、零开销。
+## 额外插入的 submit_and_sync 仅在 profile 开启时发生,关闭时 run_multi_asset 逐字节等价、零开销。
 ##
-## 用法(调用方 = run_minimal):
+## 用法(调用方 = run_multi_asset):
 ##   var prof := ScoreTimingProfiler.new(bool(settings.get("score_timing_profile", false)), "leaf")
 ##   prof.mark("run_start")
 ##   ... setup ...
@@ -134,7 +134,7 @@ static func format_aggregate(title := "aggregate") -> String:
 	for name in _agg_order:
 		phases.append({"name": name, "usec": int(_agg[name])})
 	var block := _format_block(
-		"[score-timing] %s — %d 次 run_minimal 合计:" % [title, _agg_calls],
+		"[score-timing] %s — %d 次 run_multi_asset 合计:" % [title, _agg_calls],
 		phases, _agg_total_usec)
 	return block + "\n  (平均每次 %.3f ms)" % [float(_agg_total_usec) / 1000.0 / float(_agg_calls)]
 

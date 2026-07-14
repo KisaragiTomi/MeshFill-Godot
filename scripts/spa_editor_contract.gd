@@ -18,7 +18,7 @@ const SELECTION_DOMAIN_TARGETSV := "targetsv"
 
 const SELECTION_GEOMETRY_TRIANGLE := "triangle"
 const SELECTION_GEOMETRY_VOXEL := "voxel"
-const SELECTION_GEOMETRY_GPU_POINT := "gpu_point"
+const SELECTION_GEOMETRY_AUTOOBJECT := "autoobject"
 const SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR := "volume_score_anchor"
 
 const EXTERNAL_VOXEL_DISPLAY_ROOT_NAME := "ExternalVoxelDisplays"
@@ -43,7 +43,7 @@ const VOXEL_DOMAIN_BINDINGS := [
 		"display_key": VOXEL_DISPLAY_GPU_OBJECTS,
 		"label": "GO",
 		"mode_label": "AutoObject",
-		"tooltip": "GPU Objects: show GPU-generated AutoObject point markers",
+		"tooltip": "GPU Objects: enable AutoObject inspection and selection markers",
 		"pick_method": "_pick_autoobject_with_camera",
 		"record_method": "",
 		"requires_sv_committer": false,
@@ -242,3 +242,50 @@ static func external_voxel_display_owner_name(owner_key: String) -> String:
 
 static func voxel_display_group(display_key: String) -> String:
 	return "%s%s" % [EXTERNAL_VOXEL_DISPLAY_GROUP_PREFIX, display_key]
+
+
+static func pick_volume_score_anchor(provider: Node, camera: Camera3D, screen_pos: Vector2) -> int:
+	if provider == null or camera == null:
+		return -1
+	var ray_origin := camera.project_ray_origin(screen_pos)
+	var ray_dir := camera.project_ray_normal(screen_pos).normalized()
+	var best_index := -1
+	var best_t := INF
+	if provider.has_method("get_selectable_anchor_bounds"):
+		for value in provider.call("get_selectable_anchor_bounds"):
+			if not (value is Dictionary):
+				continue
+			var bound := value as Dictionary
+			var raw_aabb = bound.get("aabb", null)
+			if not (raw_aabb is AABB):
+				continue
+			var hit = (raw_aabb as AABB).intersects_ray(ray_origin, ray_dir)
+			if hit is Vector3:
+				var hit_position: Vector3 = hit
+				var ray_t := (hit_position - ray_origin).dot(ray_dir)
+				if ray_t >= 0.0 and ray_t < best_t:
+					best_t = ray_t
+					best_index = int(bound.get("anchor_index", -1))
+	if best_index >= 0:
+		return best_index
+	if not provider.has_method("get_anchor_world_positions"):
+		return -1
+	var positions: PackedVector3Array = provider.call("get_anchor_world_positions")
+	var radius := 4.0
+	if provider.has_method("get_anchor_marker_radius"):
+		radius = maxf(float(provider.call("get_anchor_marker_radius")) * 2.5, 0.1)
+	var radius_squared := radius * radius
+	var best_distance := INF
+	for index in range(positions.size()):
+		var world_position := positions[index]
+		if camera.is_position_behind(world_position):
+			continue
+		var ray_t := (world_position - ray_origin).dot(ray_dir)
+		if ray_t < 0.0:
+			continue
+		var closest := ray_origin + ray_dir * ray_t
+		var distance := closest.distance_squared_to(world_position)
+		if distance <= radius_squared and distance < best_distance:
+			best_distance = distance
+			best_index = index
+	return best_index

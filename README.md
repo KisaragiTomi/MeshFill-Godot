@@ -93,7 +93,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 
 - **目标生成**：`target_scene_voxel.glsl` 生成 TargetSV visual/collision buffers
 - **探针评分**：`score_anchor_asset_probes.glsl` 对标 anchor 和资产探针
-- **物理放置**：`score_voxel_tile.glsl` collision 采样/clearance 精筛
+- **细粒度放置评分**：`score_voxel_tile.glsl` 在真实 origin/yaw/collision samples 上执行 per-dimension semantic fit，并结合 collision/clearance/coverage 约束精筛
 - **Stamp-only 提交**：committed `SceneVoxel` 纯 auto，stamp 即提交（`stamp_voxel_field.glsl` / `scatter_sv_field_records.glsl`）；`BrushSV` 常驻挂 SPA，`BlendSV` = SV + BrushSV 按需合成（`compose_blend_sv_fields.glsl`），供 3D score 与 TargetSV 对比，用完即删
 - **瓦片管理**：`scene_voxel_tile_object_ref_update.glsl` dirty 追踪与对象引用更新
 

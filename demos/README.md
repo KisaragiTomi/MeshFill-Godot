@@ -35,11 +35,11 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, and
 
 | File | Purpose |
 | --- | --- |
-| [`placement-score-3d/placement-score-3d.md`](placement-score-3d/placement-score-3d.md) | 3D volume score contract: landed in-shader 12-rotation scoring in `score_voxel_tile.glsl`; two-pass prototype sections kept as historical reference |
+| [`placement-score-3d/placement-score-3d.md`](placement-score-3d/placement-score-3d.md) | 3D volume score contract: anchor-origin five-dimension residual-gain scoring in `score_anchor_asset_residual.glsl` (in-shader 12-rotation); retired tile/two-pass prototypes kept as historical reference |
 | [`target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md`](target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md) | `TargetSceneVoxel` canvas, stamp model, planned VDB import, projection cache, and current GPU persistence |
 | [`target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.md`](target-sv-point-cloud-conversion-c/target-sv-point-cloud-conversion.md) | Houdini point-cloud to TargetSV guidance buffer conversion acceptance |
 | [`target-sv-point-cloud-conversion-c/targetsv-brush-overlay.md`](target-sv-point-cloud-conversion-c/targetsv-brush-overlay.md) | BrushSV overlay display and brush write acceptance |
-| [`placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md`](placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md) | AutoObject semantic probe prefilter, CPU/GPU responsibilities, anchor collection, and candidate voxel-region output |
+| [`placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md`](placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md) | AutoObject semantic probe prefilter, CPU/GPU responsibilities, anchor collection, and the resident `anchor_candidate_handoff` output |
 | [`core-sv-anchor-collection/core-sv-anchor-collection.md`](core-sv-anchor-collection/core-sv-anchor-collection.md) | Position-only anchor collection rules validated on a controlled SV field |
 
 ## Diagrams
@@ -52,7 +52,7 @@ This folder keeps MeshFill architecture notes, data schemas, pipeline plans, and
 | [`asset-descriptor-demo/diagrams/autoassetfactory_relationships.svg`](asset-descriptor-demo/diagrams/autoassetfactory_relationships.svg) | Scaffold JSON, `AutoAssetFactory` normalization, saved object/vegetation assets, and runtime write path |
 | [`core-meshfill-framework/diagrams/meshfill_current_framework.svg`](core-meshfill-framework/diagrams/meshfill_current_framework.svg) | Current tick-level framework flow from target guidance and previous SV through routing, placement, commit, feedback, and next SV |
 | [`core-SPA-scene-placement-actor/diagrams/scene-placement-actor.svg`](core-SPA-scene-placement-actor/diagrams/scene-placement-actor.svg) | SPA-owned asset registry and runtime profile container with borrowed SV/runtime owners and the placement pipeline |
-| [`placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg`](placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter, dirty-region anchor collection, voxel-region votes, and readback route expansion |
+| [`placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg`](placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter, dirty-region anchor collection, per-anchor top-K, and the resident anchor_candidate_handoff |
 | [`placement-autoobject-probe-prefilter/diagrams/autoobject_probe_scoring_logic.svg`](placement-autoobject-probe-prefilter/diagrams/autoobject_probe_scoring_logic.svg) | Descriptor probe generation, GPU SoA packing, clamped SV/TargetSV_B sampling, weighted fit, and candidate-only top-K boundary |
 | [`core-scene-voxel-field-system/diagrams/scene-voxel-flow.svg`](core-scene-voxel-field-system/diagrams/scene-voxel-flow.svg) | `instance_stamp_write_spec` / `ISWS`, stamp-only commit (`commit_scene_voxels()`), BrushSV overlay / BlendSV compose, accepted `SceneVoxel` fields, feedback, and SV resident fields |
 | [`core-scenevoxeltile/diagrams/scenevoxeltile.svg`](core-scenevoxeltile/diagrams/scenevoxeltile.svg) | `SceneVoxelTile` coarse SV cell index, dirty triggers, SV owner boundary, object id ranges, summaries, and consumers |
@@ -79,8 +79,8 @@ Use these terms consistently in voxel, placement, and compute-shader docs:
 | `voxel` | One element/cell inside a `volume`, addressed by `(x, y, z)` or a flattened index. |
 | `tile` | A fixed-size 2D/3D block used for sparse storage, compaction, dirty rebuilds, or workgroup remapping. It is an implementation/storage term. |
 | `SceneVoxelTile` | An SV-owned coarse cell index/dirty record that stores dirty flags, voxel bounds, object id ranges, and summaries. Default tile size is fixed `4x4x4` voxels and can be overridden by `meshfill/scene_voxel_tile/size_voxels`; it is not committed `SceneVoxel` payload. |
-| `Stamp-only commit` | Committed `SceneVoxel` is pure-auto resident field state; the stamp IS the commit (`stamp_voxel_field.glsl` in-place state-chain stamp, `scatter_sv_field_records.glsl` for CPU-entry records, published by `commit_scene_voxels()`). `BrushSV` is an SPA-resident overlay that never commits; `BlendSV` = on-demand compose of SV + BrushSV (`compose_blend_sv_fields.glsl`) used for 3D score sampling and TargetSV comparison, released after use. |
-| `voxel region` | A high-level candidate or dirty region used by placement/routing. Prefer this term in prose; runtime APIs expose current `candidate_voxel_regions_by_asset` / `candidate_voxel_regions` fields plus legacy/debug `candidate_voxel_sparses*`, `dirty_tiles`, or `tile_id` storage names. |
+| `Stamp-only commit` | Committed `SceneVoxel` is pure-auto resident field state; the stamp IS the commit (`stamp_asset_voxels.glsl` mixed-asset in-place state-chain stamp, `scatter_sv_field_records.glsl` for CPU-entry records, published by `commit_scene_voxels()`). `BrushSV` is an SPA-resident overlay that never commits; `BlendSV` = on-demand compose of SV + BrushSV (`compose_blend_sv_fields.glsl`) used for 3D score sampling and TargetSV comparison, released after use. |
+| `voxel region` | A high-level dirty region used by SV maintenance (`dirty_tiles` / `tile_id` storage names). The old placement-routing region APIs (`candidate_voxel_regions_by_asset` / `candidate_voxel_regions`, legacy/debug `candidate_voxel_sparses*`) were deleted with the candidate route; the prefilter now hands fine scoring the resident `anchor_candidate_handoff` (one origin per anchor). |
 
 ## 测试场景
 

@@ -1,7 +1,7 @@
 """
 SPA UI 点击测试 — 按照 demos/ui-click-test-plan.md 的可自动化入口执行
 """
-import socket, json, time, sys
+import socket, json, re, time, sys
 
 HOST, PORT = "127.0.0.1", 6800
 NODE = "CoreSPADemo"
@@ -94,6 +94,14 @@ for mode_id, mode_name in [(0,"Mixed"),(1,"AutoObject"),(2,"SVTile"),(3,"Anchor"
 
 section("VD 显示开关 set_voxel_display_visible / get_voxel_display_state")
 
+def vd_state_is(raw, key, expected):
+    """True iff the get_voxel_display_state string maps `key` to the expected bool.
+
+    The bridge returns str(Dictionary), e.g. '{ "svtile": false, ... }'; match the
+    specific key -> value pair instead of substring-scanning the whole blob."""
+    want = "true" if expected else "false"
+    return re.search(r'["\']%s["\']\s*[:=]\s*%s\b' % (re.escape(key), want), str(raw)) is not None
+
 VD_KEYS = ["gpu_objects", "svtile", "anchor", "sv", "targetsv"]
 for key in VD_KEYS:
     # 关闭
@@ -101,13 +109,19 @@ for key in VD_KEYS:
     time.sleep(0.05)
     r_state = call("get_voxel_display_state")
     raw = r_state.get("return", "")
-    off_ok = f'"{key}": false' in raw or f"'{key}': false" in raw or f"{key}=false" in raw or "false" in raw.lower()
-    check(f"VD-OFF-{key}", f"关闭 {key} → state 显示 false", {"ok":r_off.get("ok"), "state":raw}, lambda v: v.get("ok") or True)
+    off_ok = vd_state_is(raw, key, False)
+    check(f"VD-OFF-{key}", f"关闭 {key} → state 显示 false",
+          {"ok": r_off.get("ok"), "off_ok": off_ok, "state": raw},
+          lambda v: bool(v.get("ok")) and bool(v.get("off_ok")))
 
     # 恢复
     r_on = call("set_voxel_display_visible", [key, True])
     time.sleep(0.05)
-    check(f"VD-ON-{key}", f"恢复 {key} → ok", r_on, lambda v: v.get("ok") or True)
+    r_state_on = call("get_voxel_display_state")
+    on_ok = vd_state_is(r_state_on.get("return", ""), key, True)
+    check(f"VD-ON-{key}", f"恢复 {key} → ok 且 state 显示 true",
+          {"ok": r_on.get("ok"), "on_ok": on_ok},
+          lambda v: bool(v.get("ok")) and bool(v.get("on_ok")))
 
 # ── 数据域直接选择 select_data_voxel ──────────────────────────
 

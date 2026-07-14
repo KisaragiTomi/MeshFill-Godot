@@ -41,23 +41,33 @@ layout(set = 0, binding = 4, std430) restrict readonly buffer TargetField {
     vec4 target_field[];  // .rgb = target color, .a = completeness = max(complexity, collision)，表示体素完全度
 };
 
-layout(set = 0, binding = 5, std430) restrict writeonly buffer ScoresOut {
+layout(set = 0, binding = 5, std430) restrict readonly buffer TargetCollision {
+    uint target_collision_u32[];  // one uint per voxel, quantized 0..255 in the low byte
+};
+
+layout(set = 0, binding = 6, std430) restrict writeonly buffer ScoresOut {
     float asset_scores[];
 };
 
 // GPU-resident anchor count (written by collect_sv_anchors, no CPU readback).
 // Replaces the former push-constant anchor_count so dispatch can be indirect.
-layout(set = 0, binding = 6, std430) restrict readonly buffer AnchorCountBuf {
+layout(set = 0, binding = 7, std430) restrict readonly buffer AnchorCountBuf {
     uint anchor_count_dyn[];
 };
 
 layout(push_constant, std430) uniform Params {
     ivec4 grid_size_asset_count;  // xyz = grid dims, w = asset_count
     vec4  voxel_size_inv;         // xyz = 1.0 / voxel_size, w = unused
-    uint  _unused_anchor_count;   // anchor count now read from AnchorCountBuf
+    // Host-passed element capacities for the capacity gates below (the host
+    // packs each bound buffer's element count at its allocation point; GLSL
+    // .length()/OpArrayLength is unsupported by Godot's SPIR-V path). The
+    // anchor COUNT is still read from AnchorCountBuf; this is the anchors
+    // buffer CAPACITY. Pass A writes raw signed probe sums unthresholded;
+    // min_prefilter_score gates only in Pass B (select_anchor_topk).
+    uint  anchor_buf_capacity;      // anchors[] element capacity
     uint  anchor_grid_x;
-    float min_prefilter_score;
-    float _pad0;
+    uint  probe_range_capacity;     // asset_probe_range[] element capacity
+    uint  probe_data_capacity_vec4; // probe_data[] vec4 element capacity (2 per probe)
 };
 
 // --- Constants ---
@@ -106,7 +116,7 @@ vec4 unpack_rgba8(uint packed) {
 // than snapping to the nearest cell.
 
 // Compute a single-voxel score contribution from pre-sampled field values.
-float eval_probe(vec4 tf, vec2 sv, vec4 e_col, float e_coll,
+float eval_probe(vec4 tf, float target_collision, vec2 sv, vec4 e_col, float e_coll,
                  float w_color, float w_complexity, float w_collision) {
     // Bipolar fit for color/complexity: match quality [0,1] is remapped to [-1,1].
     // A mismatch now casts a negative vote instead of merely contributing 0, so a
@@ -121,7 +131,7 @@ float eval_probe(vec4 tf, vec2 sv, vec4 e_col, float e_coll,
     // Collision stays unipolar [0,1] so exclusion-zone negative weights keep their
     // meaning: empty space -> fit 0 -> negative weight contributes 0 (no spurious
     // reward), occupied space -> fit 1 -> negative weight penalizes as intended.
-    float collision_fit    = 1.0 - abs(max(tf.a, sv.y) - e_coll);        // [0,1]
+    float collision_fit    = 1.0 - abs(max(target_collision, sv.y) - e_coll); // [0,1]
 
     return w_color * color_fit + w_complexity * complexity_fit + w_collision * collision_fit;
 }
@@ -136,6 +146,7 @@ float eval_probe_trilinear(vec3 fsp, vec4 e_col, float e_coll,
 
     vec4 tf_acc = vec4(0.0);
     vec2 sv_acc = vec2(0.0);
+    float target_collision_acc = 0.0;
 
     for (int dz = 0; dz <= 1; dz++) {
         for (int dy = 0; dy <= 1; dy++) {
@@ -147,11 +158,12 @@ float eval_probe_trilinear(vec3 fsp, vec4 e_col, float e_coll,
                           * (dz == 0 ? (1.0 - t.z) : t.z);
                 tf_acc += target_field[idx]    * w;
                 sv_acc += complexity_coll[idx] * w;
+                target_collision_acc += float(target_collision_u32[uint(idx)] & 0xFFu) * (1.0 / 255.0) * w;
             }
         }
     }
 
-    return eval_probe(tf_acc, sv_acc, e_col, e_coll, w_color, w_complexity, w_collision);
+    return eval_probe(tf_acc, target_collision_acc, sv_acc, e_col, e_coll, w_color, w_complexity, w_collision);
 }
 
 // --- Main ---
@@ -163,17 +175,28 @@ void main() {
     uint probe_lane  = gl_LocalInvocationID.y;  // 0..15
     uint asset_count = min(uint(grid_size_asset_count.w), MAX_ASSETS);
     uint asset_id    = asset_block * ASSET_LANES + asset_lane;
-    uint anchor_count = anchor_count_dyn[0];
+    // collect_sv_anchors bumps the count with an unbounded atomicAdd and only
+    // caps the writes, so the dynamic count can exceed the anchor buffer
+    // capacity — clamp to the host-passed buffer capacity before indexing.
+    uint anchor_count = min(anchor_count_dyn[0], anchor_buf_capacity);
 
     float lane_score  = 0.0;
 
-    if (anchor_id < anchor_count && asset_id < asset_count) {
+    if (anchor_id < anchor_count && asset_id < asset_count
+            && asset_id < probe_range_capacity) {
         uvec4 anchor = anchors[anchor_id];
         ivec3 anchor_pos = ivec3(anchor.xyz);
 
         uvec2 range = asset_probe_range[asset_id];
         uint probe_start = range.x;
         uint probe_count = range.y;
+        // Capacity gate: a corrupt range contributes nothing instead of reading
+        // past probe_data (2 vec4 per probe; capacity is the host-passed vec4
+        // element count).
+        uint probe_capacity = probe_data_capacity_vec4 / 2u;
+        if (probe_start > probe_capacity || probe_count > probe_capacity - probe_start) {
+            probe_count = 0u;
+        }
 
         for (uint i = probe_lane; i < probe_count; i += PROBE_LANES) {
             uint pi = (probe_start + i) * 2u;

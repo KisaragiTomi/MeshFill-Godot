@@ -11,16 +11,16 @@ MCP 测试脚本：`res://demos/core-SPA-scene-placement-actor/spa_test.gd`（SP
 
 > **@tool 编辑器模式，禁止 F6 / F5 / `--script`。**
 >
-> 在 Godot 编辑器中打开 `core-scene-placement-actor.tscn`，`@tool` 脚本自动在编辑器视口中注册资产并执行 GPU SVTile AutoObject 批量放置，渲染点云热力图概览，无需运行游戏。
+> 在 Godot 编辑器中打开 `core-scene-placement-actor.tscn`，`@tool` 脚本自动注册资产并执行 GPU SVTile AutoObject 批量放置。编辑器只渲染 SVTile object-ref 热力图和统一选择 marker；AutoObject 本体始终保存在 `GPUAutoObjectRuntime` buffers，不经过 MultiMesh。
 > F6（Run Current Scene）、F5（Run Project）和 `--script` 均被 `core_demo_contract_fixture.gd` 守卫禁止，触发 `assert(false)` 强制崩溃。GPU 测试依赖 RenderingDevice，`--headless` 同样不可用。
 
 ## 测试方法
 
-1. 在编辑器中打开 `core-scene-placement-actor.tscn`，`@tool` 脚本会自动在编辑器视口中注册资产并执行 GPU SVTile AutoObject 批量放置，渲染点云概览（无需 F6 运行游戏）。
+1. 在编辑器中打开 `core-scene-placement-actor.tscn`，`@tool` 脚本会自动注册资产并执行 GPU SVTile AutoObject 批量放置，渲染 SVTile object-ref 热力图（无需 F6 运行游戏）。
 2. 验证地形正确加载（双面渲染，正确高度）。
-3. 确认 HUD 显示 `GPU ready: YES`、SVTile 压力测试 `PASS`，点云概览正确反映放置分布。
+3. 确认 HUD 显示 `GPU ready: YES`、SVTile 压力测试 `PASS`，SVTile heatmap 正确反映 object-ref 分布。
 4. 交互测试：
-   - LMB 点选 GPU AutoObject（黄色高亮标记）
+   - LMB 通过地形射线与 runtime 索引点选 GPU AutoObject（黄色统一 marker）
    - LMB 点选数据记录（SVTile / SV / Anchor / TargetSV）
    - Shift+0~5 切换选择模式（Mixed / AutoObject / SVTile / Anchor / SV / TargetSV）
    - G 打印 GPU readiness report
@@ -62,7 +62,7 @@ MCP 测试脚本：`res://demos/core-SPA-scene-placement-actor/spa_test.gd`（SP
 
 - SPA 初始化成功，`is_gpu_ready() == true`。
 - `register_asset()` 后 profile_id 有效且 GPU buffers resident。
-- GPU SVTile AutoObject 批量放置成功，HUD 报告 SVTile 压力测试 `PASS`，点云概览正确反映放置分布。
+- GPU SVTile AutoObject 批量放置成功，HUD 报告 SVTile 压力测试 `PASS`，SVTile heatmap 正确反映 object-ref 分布，且场景中不存在 AutoObject MultiMesh 副本。
 - GPU AutoObject 点选与数据记录（SVTile / SV / Anchor / TargetSV）选择在各模式下均正常工作。
 - 地形双面渲染正常（使用 `utils_terrain_material.tres`）。
 - `AutoVoxelRuntimeProfileContainer` 由 SPA 创建、管理和释放。

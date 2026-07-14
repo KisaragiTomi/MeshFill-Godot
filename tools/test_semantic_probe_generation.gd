@@ -1,6 +1,6 @@
 extends "res://scripts/utils/scene_tree_test.gd"
 
-const SemanticProbeProfileScript := preload("res://scripts/semantic_probe_profile.gd")
+const SemanticProbeGeneratorScript := preload("res://scripts/semantic_probe_generator.gd")
 const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
@@ -69,7 +69,7 @@ func _test_convex_probe_generation() -> bool:
 	var mesh := BoxMesh.new()
 	mesh.size = Vector3(2.0, 4.0, 1.0)
 
-	var probes := SemanticProbeProfileScript.generate_from_mesh(
+	var probes := SemanticProbeGeneratorScript.generate_from_mesh(
 		mesh,
 		[],
 		TEST_LEAF_COLOR,
@@ -79,7 +79,7 @@ func _test_convex_probe_generation() -> bool:
 	)
 	var convex_count := 0
 	var convex_keys := {}
-	for convex_point in SemanticProbeProfileScript.collect_mesh_convex_points(mesh):
+	for convex_point in SemanticProbeGeneratorScript.collect_mesh_convex_points(mesh):
 		convex_keys[_point_key(convex_point)] = true
 	var aabb := mesh.get_aabb()
 	for i in range(probes.size()):
@@ -107,7 +107,7 @@ func _test_collision_sample_probe_generation() -> bool:
 	print("[SemanticProbeGeneration] test_collision_sample_probe_generation...")
 	var mesh := BoxMesh.new()
 	mesh.size = Vector3(2.0, 2.0, 2.0)
-	var probes := SemanticProbeProfileScript.generate_from_mesh(
+	var probes := SemanticProbeGeneratorScript.generate_from_mesh(
 		mesh,
 		[
 			{
@@ -149,8 +149,8 @@ func _test_collision_sample_probe_generation() -> bool:
 
 func _test_world_min_distance_constant() -> bool:
 	print("[SemanticProbeGeneration] test_world_min_distance_constant...")
-	var small := SemanticProbeProfileScript.probe_min_distance([], 1.0, SemanticProbeProfileScript.PROBE_WORLD_MIN_DISTANCE)
-	var dense := SemanticProbeProfileScript.probe_min_distance([], 4.0, SemanticProbeProfileScript.PROBE_WORLD_MIN_DISTANCE)
+	var small := SemanticProbeGeneratorScript.probe_min_distance([], 1.0, SemanticProbeGeneratorScript.PROBE_WORLD_MIN_DISTANCE)
+	var dense := SemanticProbeGeneratorScript.probe_min_distance([], 4.0, SemanticProbeGeneratorScript.PROBE_WORLD_MIN_DISTANCE)
 	if not _approx(small, 0.35, 0.001):
 		push_error("  FAIL: world min distance at density 1.0 should be 0.35, got %.3f" % small)
 		return false

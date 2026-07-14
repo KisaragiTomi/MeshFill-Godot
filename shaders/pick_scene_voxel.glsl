@@ -12,7 +12,7 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer TargetVisual {
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer TargetCollision {
-    uint target_collision_r8_words[];
+    uint target_collision_u32[];  // one uint per voxel, quantized 0..255 in the low byte
 };
 
 layout(set = 0, binding = 3, std430) restrict writeonly buffer PickOutput {
@@ -68,9 +68,7 @@ vec4 unpack_rgba8(uint packed) {
 }
 
 float load_target_collision_r8(uint index) {
-    uint word = target_collision_r8_words[index >> 2u];
-    uint shift = (index & 3u) * 8u;
-    return float((word >> shift) & 0xFFu) / 255.0;
+    return float(target_collision_u32[index] & 0xFFu) * (1.0 / 255.0);
 }
 
 vec3 ray_origin() {

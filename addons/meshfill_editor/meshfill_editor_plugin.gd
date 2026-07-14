@@ -4,6 +4,7 @@ extends EditorPlugin
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
 const MeshFillBrushScript := preload("res://addons/meshfill_editor/meshfill_brush.gd")
 const TargetSVLookup := preload("res://scripts/utils/target_sv_lookup.gd")
+const VolumeScoreProviderRegistry := preload("res://scripts/volume_score_provider_registry.gd")
 
 var _last_viewport_camera: Camera3D
 
@@ -706,10 +707,7 @@ func _on_bake_descriptor_pressed() -> void:
 func _refresh_volume_score_after_bake(result) -> void:
 	if result is Dictionary and not bool(result.get("ok", false)):
 		return
-	var volume_score_script = load("res://demos/placement-score-3d/volume_score_demo.gd")
-	if volume_score_script == null:
-		return
-	var refreshed := int(volume_score_script.call("refresh_all_after_bake"))
+	var refreshed := VolumeScoreProviderRegistry.refresh_all_after_descriptor_bake()
 	if refreshed > 0:
 		print("[MeshFill Editor] Bake AD -> refreshed %d volume-score provider(s)" % refreshed)
 

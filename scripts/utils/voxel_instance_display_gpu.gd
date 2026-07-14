@@ -9,7 +9,6 @@ extends "res://scripts/utils/voxel_multimesh_writer_gpu.gd"
 const SHADER_PATH := "res://shaders/voxel_instance_copy.glsl"
 const TRANSFORM_FLOATS := 12
 const COLOR_FLOATS := 4
-const INSTANCE_FLOATS := TRANSFORM_FLOATS + COLOR_FLOATS
 
 
 func _shader_path() -> String:
@@ -37,33 +36,6 @@ func write_instances(transform_floats: PackedFloat32Array, color_floats: PackedF
 	)
 	_last_reason = "dispatched"
 	return true
-
-
-# Recolor a single instance by patching its color floats in the MultiMesh
-# buffer on the render thread. MultiMesh.set_instance_color must never be used
-# on a display written by this class: the instance data exists only on the GPU,
-# so Godot seeds its CPU data cache with zeros and the dirty-region upload then
-# wipes the transforms of every instance in the same 512-instance region.
-func write_instance_color(index: int, color: Color) -> bool:
-	if not _ready or not _buffer_rid.is_valid():
-		_last_reason = "writer_not_bound"
-		return false
-	if index < 0 or index >= _instance_count:
-		_last_reason = "instance_index_out_of_range"
-		return false
-	var color_floats := PackedFloat32Array([color.r, color.g, color.b, color.a])
-	RenderingServer.call_on_render_thread(
-		_render_thread_write_instance_color.bind(index, color_floats.to_byte_array())
-	)
-	_last_reason = "dispatched"
-	return true
-
-
-func _render_thread_write_instance_color(index: int, color_bytes: PackedByteArray) -> void:
-	if _rd == null or not _buffer_rid.is_valid():
-		return
-	var byte_offset := (index * INSTANCE_FLOATS + TRANSFORM_FLOATS) * 4
-	_rd.buffer_update(_buffer_rid, byte_offset, color_bytes.size(), color_bytes)
 
 
 func _render_thread_write(

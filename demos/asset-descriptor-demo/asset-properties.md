@@ -142,7 +142,7 @@ convex 和 surface 类 probe 默认 `FLAG_COLOR | FLAG_COMPLEXITY`；voxel_inter
 
 ### 评分汇总流程
 
-GPU 以 workgroup (16,16,1) 并行处理：`local_x` 为 asset lane（16 个资产并行），`local_y` 为 probe lane（每个资产 16 个 probe 跨步）。各 lane 独立计算出 `lane_score = Σ(probe_score × weight)`，然后通过 shared memory 归约得到该 anchor×asset 的最终得分，写入 `asset_scores` 输出缓冲区。后续 `select_anchor_topk.glsl` 对每个 anchor 选 top-K asset，再由 `reduce_anchor_topk_to_voxel_regions.glsl` 聚合为 per-asset candidate voxel regions。
+GPU 以 workgroup (16,16,1) 并行处理：`local_x` 为 asset lane（16 个资产并行），`local_y` 为 probe lane（每个资产 16 个 probe 跨步）。各 lane 独立计算出 `lane_score = Σ(probe_score × weight)`，然后通过 shared memory 归约得到该 anchor×asset 的最终得分，写入 `asset_scores` 输出缓冲区。后续 `select_anchor_topk.glsl` 对每个 anchor 选 top-K asset，结果经常驻 `anchor_candidate_handoff` 直接交接细筛（旧 `reduce_anchor_topk_to_voxel_regions.glsl` 区域聚合已随 candidate route 删除）。
 
 ---
 

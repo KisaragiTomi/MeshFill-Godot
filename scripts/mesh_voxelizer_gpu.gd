@@ -113,7 +113,7 @@ func _run_gpu(
 	var tri_buf := storage_buffer_from_floats(triangles, SCOPE_FRAME, "triangles")
 	var occupancy_buf := storage_buffer_zero(voxel_count * 4, SCOPE_FRAME, "occupancy")
 	var color_buf := storage_buffer_zero(voxel_count * 4, SCOPE_FRAME, "color_field")
-	var collision_buf := storage_buffer_zero(SceneVoxelTileCodecScript.r8_word_byte_count(voxel_count), SCOPE_FRAME, "collision_field_r8_words")
+	var collision_buf := storage_buffer_zero(SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count), SCOPE_FRAME, "collision_field_u32")
 
 	var groups := dispatch_groups_3d(grid.x, grid.y, grid.z, 4, 4, 4)
 	var chain_ok := ComputePassChain.run(self, [
@@ -160,7 +160,7 @@ func _decode_voxels(
 	var occupancy := occupancy_bytes.to_int32_array()
 	var color := color_bytes.to_int32_array()
 	var voxel_count := VoxelGeneral.voxel_count(grid)
-	var collision := SceneVoxelTileCodecScript.decode_collision_field_r8_word_bytes(collision_bytes, voxel_count)
+	var collision := SceneVoxelTileCodecScript.decode_collision_field_u32_bytes(collision_bytes, voxel_count)
 	if occupancy.size() < voxel_count:
 		return voxels
 

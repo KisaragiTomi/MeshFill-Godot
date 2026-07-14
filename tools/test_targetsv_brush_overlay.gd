@@ -72,7 +72,8 @@ func _test_scene_builds_guidance() -> bool:
 	instance.call("rebuild", true)
 
 	var ok := true
-	var guidance := instance.get_node_or_null("GuidanceVoxels") as MultiMeshInstance3D
+	var target_setup := instance.get_node_or_null("DemoSetup/TargetSVSetup")
+	var guidance := target_setup.get_node_or_null("TargetSVVoxels") as MultiMeshInstance3D if target_setup != null else null
 	if guidance == null or guidance.multimesh == null or guidance.multimesh.instance_count <= 0:
 		push_error("  FAIL: guidance box voxels were not built")
 		ok = false
@@ -82,7 +83,9 @@ func _test_scene_builds_guidance() -> bool:
 
 	# Paint a brush extent, then confirm a tetra MultiMesh appears with a
 	# matching instance count, built through the GPU direct-write path.
-	var center := Vector2i(int(instance.get("_texture_size")) / 2, int(instance.get("_texture_size")) / 2)
+	var initial_state: Dictionary = instance.call("get_brush_state")
+	var texture_size := int(initial_state.get("texture_size", 0))
+	var center := Vector2i(texture_size / 2, texture_size / 2)
 	var added: bool = instance.call("paint_voxel_brush_extent_for_test", center)
 	if not added:
 		push_error("  FAIL: brush extent accumulation added no voxels")
@@ -121,7 +124,8 @@ func _test_scene_builds_guidance() -> bool:
 			push_error("  FAIL: brush node does not retain its GPU writer")
 			ok = false
 
-	_track(instance, "voxel_brush_writer")
+	if brush != null:
+		_track(brush, "voxel_brush_writer")
 	if ok:
 		print("  OK: guidance box + brush tetra (GPU direct-write) overlays build with matching counts")
 	return ok

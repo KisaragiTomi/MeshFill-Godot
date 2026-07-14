@@ -20,7 +20,7 @@ layout(set = 0, binding = 0, std430) restrict readonly buffer BlendComplexityFie
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer BlendCollisionField {
-    uint blend_collision_r8_words[];
+    uint blend_collision_u32[];  // one uint per voxel, quantized 0..255 in the low byte
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer TargetVisualField {
@@ -28,7 +28,7 @@ layout(set = 0, binding = 2, std430) restrict readonly buffer TargetVisualField 
 };
 
 layout(set = 0, binding = 3, std430) restrict readonly buffer TargetCollisionField {
-    uint target_collision_r8_words[];
+    uint target_collision_u32[];  // one uint per voxel, quantized 0..255 in the low byte
 };
 
 layout(set = 0, binding = 4, std430) restrict buffer FeedbackStats {
@@ -52,10 +52,8 @@ vec4 unpack_rgba8(uint packed_value) {
 }
 
 float read_collision_r8(uint index, bool from_target) {
-    uint word_index = index >> 2u;
-    uint shift = (index & 3u) * 8u;
-    uint word = from_target ? target_collision_r8_words[word_index] : blend_collision_r8_words[word_index];
-    return float((word >> shift) & 0xFFu) / 255.0;
+    uint value = from_target ? target_collision_u32[index] : blend_collision_u32[index];
+    return float(value & 0xFFu) * (1.0 / 255.0);
 }
 
 void main() {

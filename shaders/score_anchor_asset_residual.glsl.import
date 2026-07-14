@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://c7pys78bj80fr"
+path="res://.godot/imported/score_anchor_asset_residual.glsl-dbca42d4438f1f146633aeaf5727ba57.res"
+
+[deps]
+
+source_file="res://shaders/score_anchor_asset_residual.glsl"
+dest_files=["res://.godot/imported/score_anchor_asset_residual.glsl-dbca42d4438f1f146633aeaf5727ba57.res"]
+
+[params]
+
