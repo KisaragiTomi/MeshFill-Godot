@@ -44,3 +44,8 @@ tools/godot-mcp-bridge/
 # Claude Code 本地/运行时文件（机器相关，不入库）
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+
+# 原生 VDB 读取器二进制（体积大 + 含 SideFX DLL）——用 tools/vdb_native/build.ps1 重建
+# （构建需 Houdini SDK + VS2022；运行不需 Houdini）
+tools/vdb_native/*.exe
+tools/vdb_native/*.dll
