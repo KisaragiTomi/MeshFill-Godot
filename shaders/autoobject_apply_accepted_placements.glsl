@@ -18,6 +18,7 @@
 //   11 int dirty_delta_words[]; 20 s32 words per row, 80-byte stride
 //   12 int dirty_count[1]
 //   13 uint stats[]
+//   14 int asset_index[]                # 渲染批次的分批键；profile_id 一对多，顶替不了
 //
 // Push constants:
 //   counts.x = record_count
@@ -99,6 +100,10 @@ layout(set = 0, binding = 12, std430) restrict buffer DirtyCount {
 
 layout(set = 0, binding = 13, std430) restrict buffer Stats {
     uint stats[];
+};
+
+layout(set = 0, binding = 14, std430) restrict buffer AssetIndexBuffer {
+    int object_asset_index[];
 };
 
 layout(push_constant, std430) uniform Params {
@@ -193,6 +198,7 @@ void main() {
     object_type[object_id] = record.object_type;
     profile[object_id] = record.profile_id;
     object_flags[object_id] = record.object_flags;
+    object_asset_index[object_id] = record.asset_index;
     bounds_min[object_id] = record.voxel_min;
     bounds_max[object_id] = record.voxel_max;
     previous_bounds_min[object_id] = record.voxel_min;

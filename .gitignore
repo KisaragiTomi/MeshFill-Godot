@@ -8,6 +8,14 @@ docs/*-暂时丢弃.md
 __pycache__/
 *.pyc
 
+# 离线 shader 编译产物（glslangValidator 默认输出名）
+*.spv
+
+# Houdini hython / pycparser(PLY) 在仓库根写下的解析表缓存
+lextab.py
+yacctab.py
+parser.out
+
 # Local editor state
 .vscode/
 .windsurf/workflows/huggingface-key.md
@@ -32,7 +40,6 @@ godot-mcp/
 .codex-run/
 .cursor/
 tools/editor_bridge_client.py
-tools/editor_bridge_probe.js
 tools/ping_editor_bridge.py
 tools/probe_ports.py
 tools/drive_editor_demo.py
@@ -44,8 +51,3 @@ tools/godot-mcp-bridge/
 # Claude Code 本地/运行时文件（机器相关，不入库）
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
-
-# 原生 VDB 读取器二进制（体积大 + 含 SideFX DLL）——用 tools/vdb_native/build.ps1 重建
-# （构建需 Houdini SDK + VS2022；运行不需 Houdini）
-tools/vdb_native/*.exe
-tools/vdb_native/*.dll

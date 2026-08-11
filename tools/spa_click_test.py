@@ -1,10 +1,14 @@
 """
-SPA UI 点击测试 — 按照 demos/ui-click-test-plan.md 的可自动化入口执行
+SPA UI 点击测试 — 按照 doc/ui-click-test-plan.md 的可自动化入口执行
 """
 import socket, json, re, time, sys
 
+# ⚠ 结果图标用的是 ✅/❌/⚠️/🔍，而 Windows 控制台默认 GBK 编不出它们：不加这一句，
+# 第一次 print 就是 UnicodeEncodeError，整套在**第一个用例**上崩掉（不是失败，是崩）。
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 HOST, PORT = "127.0.0.1", 6800
-NODE = "CoreSPADemo"
+NODE = "SPA"
 
 def send(method, params, timeout=15):
     with socket.create_connection((HOST, PORT), timeout=timeout) as s:
@@ -64,31 +68,32 @@ def section(title):
 
 section("UI-BOOT — 基础启动")
 
-# BOOT-01: 场景已打开
+# BOOT-01: 有场景打开，且场景里有 SPA 节点。
+# ⚠ 旧判据写死场景名 "core-SPA-scene-placement-actor"，而那个场景已从工作区删除
+#   ⇒ 本项恒红、整套随之无意义。改判**真正的前置条件**：后面每一项用例只要求 `SPA`
+#   这个节点能解析并且挂着 ScenePlacementActor，与场景文件叫什么、放在哪无关。
+#   这样换场景/改路径不会再让整套静默腐烂。
 r = send("get_open_scene", {})
 res = r.get("result", r)
-check("BOOT-01", "场景已打开 core-scene-placement-actor.tscn",
-      res.get("scene", ""),
-      lambda v: "core-SPA-scene-placement-actor" in v)
+r_node = send("get_node_info", {"path": NODE})
+node_info = r_node.get("result", r_node)
+check("BOOT-01", "有场景打开，且含挂 ScenePlacementActor 的 SPA 节点",
+      {"scene": res.get("scene", ""), "spa_script": node_info.get("script", "")},
+      lambda v: bool(v.get("scene")) and
+                "scene_placement_actor.gd" in str(v.get("spa_script", "")))
 
-# BOOT-02: CoreSPADemo 节点存在，能响应 get_spa_selection_mode
-r = call("get_spa_selection_mode")
-check("BOOT-02", "CoreSPADemo 节点存在，get_spa_selection_mode 返回有效值",
+# BOOT-02: SPA 节点存在，能响应查询。
+# ⚠ 旧判据是 get_selection_mode 返回 "0".."5"；选择模式退役后该方法已不存在，
+# 改用显示开关表——它现在是"哪些域可被点中"的唯一事实源。
+r = call("get_voxel_display_state")
+check("BOOT-02", "SPA 节点存在，get_voxel_display_state 返回显示开关表",
       r,
-      lambda v: v.get("ok") and v.get("return") in ["0","1","2","3","4","5"])
+      lambda v: v.get("ok") and "anchor" in str(v.get("return", "")))
 
-# ── 选择模式切换 ──────────────────────────────────────────────
-
-section("选择模式切换 set_spa_selection_mode / get_spa_selection_mode")
-
-for mode_id, mode_name in [(0,"Mixed"),(1,"AutoObject"),(2,"SVTile"),(3,"Anchor"),(4,"SV"),(5,"TargetSV")]:
-    r_set = call("set_spa_selection_mode", [mode_id])
-    time.sleep(0.1)
-    r_get = call("get_spa_selection_mode")
-    actual = gdparse(r_get.get("return"))
-    check(f"MODE-{mode_id}", f"切换到模式 {mode_id} ({mode_name}) 并读回",
-          {"set":r_set.get("ok"), "mode":actual},
-          lambda v, m=mode_id: v.get("set") and v.get("mode") == m)
+# ⚠ 这里曾有一段「选择模式切换 set_selection_mode / get_selection_mode」用例（Shift+0..5
+# 六个模式各切一次再读回）。选择模式在 2026-08-07 整体退役，那两个方法早已不存在，本段
+# 自那以后一直是**空跑的红**；2026-08-10 模式号（MODE_*）也一并退役后彻底没有对应物。
+# 现在准入只看显示开关，对应的正向用例就是下面的 VD 开关段。
 
 # ── VD 显示开关 ──────────────────────────────────────────────
 
@@ -127,22 +132,32 @@ for key in VD_KEYS:
 
 section("数据域直接选择 select_data_voxel")
 
-# SVTile 模式 (2)
-call("set_spa_selection_mode", [2])
-time.sleep(0.1)
-r = call("select_data_voxel", [2, 32, 0, 32])
-check("DATA-SVTile", "select_data_voxel(SVTile, 32,0,32) → domain=svtile",
-      r,
-      lambda v: (v.get("ok") or "ok" in str(v)) and
-                ("svtile" in str(v.get("return","")).lower() or "svtile" in str(v).lower()))
+# ⚠ 首参已从模式号（2 / 4）改为域名字符串（模式号 2026-08-10 整体退役）。
+def returned_domain_is(raw, expected):
+    """True iff 返回记录的 `domain` **恰好**是 expected。
 
-# SV 模式 (4)
-call("set_spa_selection_mode", [4])
-time.sleep(0.1)
-r = call("select_data_voxel", [4, 32, 0, 32])
-check("DATA-SV", "select_data_voxel(SV, 32,0,32) → domain=sv",
+    ⚠ 旧判据是 `"sv" in str(...)`——"sv" 是 "svtile" 的子串，所以 sv 域即使返回了
+    svtile 记录也照样通过，这是一条永远不会红的假门。改为整体匹配 domain 键。"""
+    return re.search(r'["\']domain["\']\s*:\s*["\']%s["\']' % re.escape(expected), str(raw)) is not None
+
+r = call("select_data_voxel", ["svtile", 32, 0, 32])
+check("DATA-SVTile", "select_data_voxel(svtile, 32,0,32) → domain=svtile",
       r,
-      lambda v: "sv" in str(v.get("return","")).lower() or "sv" in str(v).lower())
+      lambda v: bool(v.get("ok")) and returned_domain_is(v.get("return", ""), "svtile"))
+
+r = call("select_data_voxel", ["sv", 32, 0, 32])
+check("DATA-SV", "select_data_voxel(sv, 32,0,32) → domain=sv（不是 svtile）",
+      r,
+      lambda v: bool(v.get("ok")) and returned_domain_is(v.get("return", ""), "sv"))
+
+# 负向：不存在的域名必须被拒，而不是静默落到某个域。
+# 模式号时代这条测不了（任何 int 都是"合法"的域号，越界只会拿不到 Callable 而静默返回空）；
+# 域名字符串在合同表里查不到就是 push_error + 明确失败，这里正是那条收益的门。
+r = call("select_data_voxel", ["not_a_domain", 32, 0, 32])
+check("DATA-BADDOMAIN", "select_data_voxel(不存在的域名) → 不构建记录",
+      r,
+      lambda v: not returned_domain_is(v.get("return", ""), "svtile") and
+                "no_data_record" in str(v.get("return", "")))
 
 # ── VD 关闭后的数据域选择（负向） ──────────────────────────────
 
@@ -150,9 +165,7 @@ section("负向: VD 关闭后 select_data_voxel 仍可构建记录（数据入�
 
 call("set_voxel_display_visible", ["svtile", False])
 time.sleep(0.05)
-call("set_spa_selection_mode", [2])
-time.sleep(0.1)
-r = call("select_data_voxel", [2, 32, 0, 32])
+r = call("select_data_voxel", ["svtile", 32, 0, 32])
 check("NEG-VD-DATA", "svtile 关闭时 select_data_voxel 仍能构建记录 (数据入口不受显示开关影响)",
       r,
       lambda v: True,  # 文档明确: 直接数据入口仍可构建记录
@@ -164,16 +177,14 @@ call("set_voxel_display_visible", ["svtile", True])
 
 section("防御: 无选中时 refresh_volume_score_anchor_selection 不崩溃")
 
-call("set_spa_selection_mode", [0])
-time.sleep(0.1)
 r = call("refresh_volume_score_anchor_selection")
 check("NEG-SCROLL", "无 anchor 选中时 refresh_volume_score_anchor_selection 不报 ok=false 崩溃",
       r,
       lambda v: v.get("error") is None,
       probe=True)
 
-# ── 恢复默认模式 ──────────────────────────────────────────────
-call("set_spa_selection_mode", [0])
+# ⚠ 这里曾有「恢复默认模式 set_selection_mode(0)」收尾。没有模式可恢复了；
+# 需要恢复的只有显示开关，上面的负向段自己已经改回去。
 
 # ── 汇总 ─────────────────────────────────────────────────────
 

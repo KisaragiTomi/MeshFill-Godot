@@ -11,7 +11,7 @@ extends RefCounted
 ##   // @@GEN <name>
 ##   ...
 ##   // @@END <name>
-## markers; tools/verify_glsl_gen_blocks.gd asserts each copy equals block(<name>).
+## markers; scripts/checks/glsl_gen_block_checks.gd asserts each copy equals block(<name>).
 ##
 ## Currently shared:
 ##   yaw_rotation_y   — the canonical Y-yaw rotation family (2026-07-10 audit:
@@ -22,6 +22,143 @@ extends RefCounted
 ##     model (score-time prediction != stamped outcome).
 
 const BLOCKS := {
+	"profile_sample_runtime":
+"""// Canonical 32-byte ProfileSample GPU record and decoded runtime values.
+struct ProfileSampleRecord {
+    vec4 offset_weight;
+    uvec4 payload;
+};
+
+struct ProfileSample {
+    vec3 local_offset_world;
+    float sample_weight;
+    vec4 color;
+    float collision;
+    vec3 semantic_weights;
+    uint flags;
+};
+
+struct ProfileSampleFields {
+    vec4 current_rgba;
+    vec4 target_rgba;
+    vec4 predicted_rgba;
+    float current_collision;
+    float target_collision;
+    float predicted_collision;
+};
+
+struct ProfileSampleEvaluation {
+    vec4 loss_before;
+    vec4 loss_after;
+    vec4 fits;
+    float contribution;
+};
+
+const uint PROFILE_SAMPLE_FLAG_COARSE = 1u;
+const uint PROFILE_SAMPLE_FLAG_FINE = 2u;
+const uint PROFILE_SAMPLE_FLAG_CLEARANCE = 4u;
+const uint PROFILE_SAMPLE_FLAG_STAMP_WRITE = 8u;
+const uint PROFILE_SAMPLE_FLAG_SCORE_ONLY = 16u;
+const uint PROFILE_SAMPLE_POLICY_COARSE_MATCH = 0u;
+const uint PROFILE_SAMPLE_POLICY_FINE_RESIDUAL = 1u;
+const float PROFILE_SAMPLE_SQRT3 = 1.73205080757;
+
+float unpack_profile_sample_snorm8(uint bits) {
+    int value = int(bits & 0xFFu);
+    if (value >= 128) value -= 256;
+    return clamp(float(value) / 127.0, -1.0, 1.0);
+}
+
+vec4 unpack_profile_sample_rgba8(uint packed) {
+    return vec4(
+        float((packed >> 24u) & 0xFFu),
+        float((packed >> 16u) & 0xFFu),
+        float((packed >> 8u) & 0xFFu),
+        float(packed & 0xFFu)
+    ) * (1.0 / 255.0);
+}
+
+vec4 unpack_profile_sample_metrics(uint packed) {
+    return vec4(
+        float(packed & 0xFFu) * (1.0 / 255.0),
+        unpack_profile_sample_snorm8(packed >> 8u),
+        unpack_profile_sample_snorm8(packed >> 16u),
+        unpack_profile_sample_snorm8(packed >> 24u)
+    );
+}
+
+ProfileSample decode_profile_sample(ProfileSampleRecord record) {
+    vec4 metrics = unpack_profile_sample_metrics(record.payload.y);
+    ProfileSample decoded;
+    decoded.local_offset_world = record.offset_weight.xyz;
+    decoded.sample_weight = max(record.offset_weight.w, 0.0);
+    decoded.color = unpack_profile_sample_rgba8(record.payload.x);
+    decoded.collision = metrics.x;
+    decoded.semantic_weights = metrics.yzw;
+    decoded.flags = record.payload.z;
+    return decoded;
+}
+
+ivec3 resolve_profile_sample_voxel(ProfileSample profile_sample, ivec3 anchor_voxel,
+        vec3 pivot_world, float yaw_cos, float yaw_sin, vec3 voxel_size) {
+    vec3 local_world = profile_sample.local_offset_world - pivot_world;
+    vec3 rotated_world = vec3(
+        yaw_cos * local_world.x + yaw_sin * local_world.z,
+        local_world.y,
+        -yaw_sin * local_world.x + yaw_cos * local_world.z
+    );
+    vec3 safe_voxel_size = max(abs(voxel_size), vec3(1.0e-6));
+    return anchor_voxel + ivec3(round(rotated_world / safe_voxel_size));
+}
+
+bool profile_sample_in_bounds(ivec3 voxel, ivec3 grid_size) {
+    return all(greaterThanEqual(voxel, ivec3(0))) && all(lessThan(voxel, grid_size));
+}
+
+ProfileSampleFields load_profile_sample_fields(vec4 current_rgba, float current_collision,
+        vec4 target_rgba, float target_collision, vec4 predicted_rgba, float predicted_collision) {
+    ProfileSampleFields fields;
+    fields.current_rgba = current_rgba;
+    fields.target_rgba = target_rgba;
+    fields.predicted_rgba = predicted_rgba;
+    fields.current_collision = current_collision;
+    fields.target_collision = target_collision;
+    fields.predicted_collision = predicted_collision;
+    return fields;
+}
+
+ProfileSampleEvaluation evaluate_profile_sample(ProfileSample profile_sample,
+        ProfileSampleFields fields, uint policy) {
+    ProfileSampleEvaluation result;
+    result.loss_before = vec4(
+        abs(fields.current_collision - fields.target_collision),
+        abs(fields.current_rgba.a - fields.target_rgba.a),
+        dot(abs(fields.current_rgba.rgb - fields.target_rgba.rgb), vec3(1.0)),
+        0.0
+    );
+    result.loss_after = vec4(
+        abs(fields.predicted_collision - fields.target_collision),
+        abs(fields.predicted_rgba.a - fields.target_rgba.a),
+        dot(abs(fields.predicted_rgba.rgb - fields.target_rgba.rgb), vec3(1.0)),
+        0.0
+    );
+    float color_fit = 2.0 * (1.0 - distance(fields.target_rgba.rgb, profile_sample.color.rgb)
+        / PROFILE_SAMPLE_SQRT3) - 1.0;
+    float complexity_fit = 2.0 * (1.0 - abs(fields.target_rgba.a - profile_sample.color.a)) - 1.0;
+    float collision_fit = 1.0 - abs(
+        max(fields.target_collision, fields.current_collision) - profile_sample.collision);
+    result.fits = vec4(color_fit, complexity_fit, collision_fit, 0.0);
+    result.contribution = policy == PROFILE_SAMPLE_POLICY_COARSE_MATCH
+        ? profile_sample.sample_weight * dot(profile_sample.semantic_weights, result.fits.xyz)
+        : 0.0;
+    return result;
+}
+
+float profile_sample_weighted_loss(vec4 loss, ProfileSample profile_sample, vec3 dimension_weights) {
+    return dimension_weights.x * profile_sample.semantic_weights.z * loss.x
+        + dimension_weights.y * profile_sample.semantic_weights.y * loss.y
+        + dimension_weights.z * profile_sample.semantic_weights.x * loss.z;
+}""",
 	"ad_voxel_compose":
 """// Stamp-equivalent AD voxel write values + monotonic-max compose.
 // Ties keep the current value, matching the stamp CAS loops which return
@@ -76,6 +213,11 @@ mat4 yaw_transform_y(float ca, float sa, vec3 origin) {
 
 ## Shaders that carry each block, for the verify tool to scan.
 const CONSUMERS := {
+	"profile_sample_runtime": [
+		"res://shaders/score_anchor_asset_probes.glsl",
+		"res://shaders/score_anchor_asset_residual.glsl",
+		"res://shaders/stamp_asset_voxels.glsl",
+	],
 	"yaw_rotation_y": [
 		"res://shaders/score_anchor_asset_residual.glsl",
 		"res://shaders/stamp_asset_voxels.glsl",

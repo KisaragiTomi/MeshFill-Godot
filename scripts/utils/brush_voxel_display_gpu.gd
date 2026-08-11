@@ -21,8 +21,10 @@ func _shader_path() -> String:
 
 
 # brush_voxels: PackedInt32Array laid out as (voxel_x, slice, voxel_z, 0) per
-# voxel. params: { xz_res, slice_count, capture_size, display_scale,
-# vertical_span, height_span, brush_color, terrain_height }.
+# voxel. params: { grid_size (Vector3i), grid_origin (Vector3), voxel_size
+# (Vector3), display_scale, brush_color, brush_colors, terrain_height }.
+# 与 VoxelFieldDisplayGPU 同一套坐标词汇：位置 = grid_origin + (voxel + 0.5) * voxel_size，
+# Y 再加 terrain * display_scale（笔刷画在 TargetSV 的地形相对带上）。
 # Dispatches the brush->instance compute write on the render thread. Zero readback.
 func write_brush(brush_voxels: PackedInt32Array, params: Dictionary) -> bool:
 	if not _ready:
@@ -101,18 +103,25 @@ func _render_thread_write(
 
 func _pack_push(height_count: int, params: Dictionary) -> PackedByteArray:
 	var brush_color: Color = params.get("brush_color", Color.WHITE)
+	var grid: Vector3i = params.get("grid_size", Vector3i.ONE)
+	var grid_origin: Vector3 = params.get("grid_origin", Vector3.ZERO)
+	var voxel_size: Vector3 = params.get("voxel_size", Vector3.ONE)
 	var push := PackedByteArray()
-	push.resize(48)
+	push.resize(64)
 	push.encode_s32(0, _instance_count)
-	push.encode_s32(4, int(params.get("xz_res", 1)))
-	push.encode_s32(8, int(params.get("slice_count", 1)))
-	push.encode_s32(12, height_count)
-	push.encode_float(16, float(params.get("capture_size", 1.0)))
+	push.encode_s32(4, maxi(grid.x, 1))
+	push.encode_s32(8, maxi(grid.y, 1))
+	push.encode_s32(12, maxi(grid.z, 1))
+	push.encode_s32(16, height_count)
 	push.encode_float(20, float(params.get("display_scale", 1.0)))
-	push.encode_float(24, float(params.get("vertical_span", 1.0)))
-	push.encode_float(28, float(params.get("height_span", 1.0)))
-	push.encode_float(32, brush_color.r)
-	push.encode_float(36, brush_color.g)
-	push.encode_float(40, brush_color.b)
-	push.encode_float(44, brush_color.a)
+	push.encode_float(24, grid_origin.x)
+	push.encode_float(28, grid_origin.y)
+	push.encode_float(32, grid_origin.z)
+	push.encode_float(36, voxel_size.x)
+	push.encode_float(40, voxel_size.y)
+	push.encode_float(44, voxel_size.z)
+	push.encode_float(48, brush_color.r)
+	push.encode_float(52, brush_color.g)
+	push.encode_float(56, brush_color.b)
+	push.encode_float(60, brush_color.a)
 	return push

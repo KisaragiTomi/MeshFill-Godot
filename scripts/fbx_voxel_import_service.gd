@@ -64,19 +64,6 @@ static func inspect_fbx(fbx_path: String, opts := {}) -> Dictionary:
 	return {"ok": false, "reason": "not_scene_or_mesh", "resource_type": res.get_class()}
 
 
-static func inspect_mesh(mesh: Mesh, opts := {}) -> Dictionary:
-	if mesh == null:
-		return {"ok": false, "reason": "null_mesh"}
-	var report := {
-		"ok": true,
-		"resource_type": mesh.get_class(),
-		"payload_schema": "profile_sample_v1",
-		"meshes": [_inspect_mesh("(root Mesh)", mesh, Transform3D.IDENTITY, opts)],
-	}
-	_add_channel_summary(report)
-	return report
-
-
 static func _walk_inspection_meshes(
 	node: Node,
 	parent_transform: Transform3D,
@@ -384,6 +371,186 @@ static func embedded_channels_from_node(scene_root: Node, opts := {}) -> Diction
 static func fine_score_records_from_fbx(fbx_path: String, opts := {}) -> Array:
 	var result := embedded_channels_from_fbx(fbx_path, _channel_read_opts(opts, true, false))
 	return _channel_records_or_fail(result, "fine_score_records", fbx_path)
+
+
+## fine 通道的**列式**读取：每个三角形只往三个 Packed 列里各写一个值 —— 不建角记录、
+## 不建 provenance、不建 ProfileSample。
+##
+## 存在的理由是规模。逐三角形那条路（fine_score_records_from_fbx）每个三角形要建 4 个三元
+## Packed 切片、1 个 provenance 字典、1 个 12 键角记录，外加 make_profile_sample 的样本字典
+## （其中 provenance 还要深拷贝一份）；三十万面的场景级 FBX 上那是数百万次堆分配与几百 MB
+## 常驻，正是 TargetSV 导入耗时的主要来源。角记录本身只有 asset overview 的诊断在看，
+## TargetSV 导入一个字段都不读。
+##
+## ⚠ **通道值只读三角形的第一个角**（2026-08-11，按导出方的约定）。本链路的体素三角形由
+## Houdini 逐三角形赋值，三个角在 Cd / uv0.x / uv1.x / uv8.x 上按构造同值，逐角比对是纯
+## 开销。代价是这条路**不再守"三角同值"**：某版 FBX 真烘错了会被静默按第一个角取值，而不是
+## 判废报出来。要那道守卫就走 fine_score_records_from_fbx —— 那条路仍由
+## EmbeddedProfileSampleCodec.fine_corner_disagreement 逐角判定，asset overview 的诊断用的
+## 就是它。位置仍取三角形重心（三个角的位置本来就不同值，不在"同值"这条约定之内）。
+##
+## 缺 Cd 的 surface 与逐三角形那条路一样整面记进 missing_payload_count 并跳过；退化面判据
+## 同源。返回的三列下标彼此对齐：第 i 项属于同一个通过的三角形。color.a 已按
+## decode_fine_triangle 的口径写成 complexity（uv1.x），collision 单独成列（uv0.x）——两者
+## 都是 clamp 前的原值，与逐三角形那条路一样由消费方 clamp。
+static func fine_columns_from_fbx(fbx_path: String, opts := {}) -> Dictionary:
+	var res: Variant = ResourceLoader.load(fbx_path)
+	if res == null:
+		push_error("[FbxVoxelImportService] fine_columns_from_fbx(): 无法加载 %s" % fbx_path)
+		return {"ok": false, "reason": "load_failed", "path": fbx_path}
+	var columns := _empty_fine_columns()
+	if res is Mesh:
+		_append_mesh_fine_columns(res as Mesh, Transform3D.IDENTITY, columns, opts)
+	elif res is PackedScene:
+		var root := (res as PackedScene).instantiate()
+		if root == null:
+			push_error("[FbxVoxelImportService] fine_columns_from_fbx(): %s 的 PackedScene 实例化失败" % fbx_path)
+			return {"ok": false, "reason": "instantiate_failed", "path": fbx_path}
+		_walk_fine_columns(root, Transform3D.IDENTITY, columns, opts, true)
+		root.free()
+	else:
+		push_error("[FbxVoxelImportService] fine_columns_from_fbx(): %s 既不是 PackedScene 也不是 Mesh（%s）" % [
+			fbx_path, res.get_class()])
+		return {"ok": false, "reason": "not_scene_or_mesh", "resource_type": res.get_class()}
+	columns["path"] = fbx_path
+	return columns
+
+
+static func _empty_fine_columns() -> Dictionary:
+	return {
+		"ok": true,
+		"reason": "ok",
+		"positions": PackedVector3Array(),
+		"colors": PackedColorArray(),
+		"collision": PackedFloat32Array(),
+		# gated = 过了 fine 门且 surface 带 Cd 的三角形数，即逐三角形那条路会产出的角记录数。
+		"gated_triangle_count": 0,
+		"rejected_triangle_count": 0,
+		"degenerate_triangle_count": 0,
+		"missing_payload_count": 0,
+		"triangle_count": 0,
+	}
+
+
+static func _walk_fine_columns(
+	node: Node,
+	parent_transform: Transform3D,
+	columns: Dictionary,
+	opts: Dictionary,
+	is_scene_root: bool = false
+) -> void:
+	var node_transform := parent_transform
+	if node is Node3D and not is_scene_root:
+		node_transform = parent_transform * (node as Node3D).transform
+	if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
+		_append_mesh_fine_columns((node as MeshInstance3D).mesh, node_transform, columns, opts)
+	for child in node.get_children():
+		_walk_fine_columns(child, node_transform, columns, opts)
+
+
+static func _append_mesh_fine_columns(
+	mesh: Mesh, mesh_transform: Transform3D, columns: Dictionary, opts: Dictionary
+) -> void:
+	for surface in range(mesh.get_surface_count()):
+		_append_surface_fine_columns(
+			mesh.surface_get_primitive_type(surface),
+			mesh.surface_get_arrays(surface),
+			mesh_transform,
+			columns,
+			opts
+		)
+
+
+static func _append_surface_fine_columns(
+	primitive: int,
+	arrays: Array,
+	mesh_transform: Transform3D,
+	columns: Dictionary,
+	opts: Dictionary
+) -> void:
+	if primitive != Mesh.PRIMITIVE_TRIANGLES or arrays.size() <= Mesh.ARRAY_INDEX:
+		return
+	var vertices: PackedVector3Array = (
+		arrays[Mesh.ARRAY_VERTEX] if arrays[Mesh.ARRAY_VERTEX] != null else PackedVector3Array())
+	if vertices.is_empty():
+		return
+	var vertex_count := vertices.size()
+	var uv_info := logical_uv_sets_from_surface_arrays(arrays, vertex_count)
+	var uv0: PackedVector2Array = uv_info["uv0"]
+	var uv1: PackedVector2Array = uv_info["uv1"]
+	var uv8: PackedVector2Array = uv_info["uv8"]
+	var uv0_source_count := int(uv_info["uv0_source_count"])
+	var uv1_source_count := int(uv_info["uv1_source_count"])
+	var colors := PackedColorArray()
+	if arrays[Mesh.ARRAY_COLOR] != null:
+		colors = arrays[Mesh.ARRAY_COLOR]
+	var indices: PackedInt32Array = (
+		arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array())
+	var indexed := not indices.is_empty()
+	var element_count := indices.size() if indexed else vertex_count
+	var surface_triangles := element_count / 3
+	columns["triangle_count"] = int(columns["triangle_count"]) + surface_triangles
+
+	var fine_marker_value := float(opts.get(
+		"fine_score_uv_x", opts.get("marker_uv_x", FINE_SCORE_UV_X)))
+	var epsilon := maxf(float(opts.get(
+		"channel_epsilon", opts.get("marker_uv_epsilon", CHANNEL_EPSILON))), 0.0)
+	var degenerate_epsilon_squared := maxf(float(opts.get(
+		"degenerate_cross_epsilon_squared", DEGENERATE_CROSS_EPSILON_SQUARED)), 0.0)
+	# Cd 整面缺失：逐三角形那条路是逐个三角形记一次 missing_payload，这里照同一口径记满整面。
+	var has_color := colors.size() >= vertex_count
+
+	var positions: PackedVector3Array = columns["positions"]
+	var out_colors: PackedColorArray = columns["colors"]
+	var out_collision: PackedFloat32Array = columns["collision"]
+	var gated := 0
+	var rejected := 0
+	var degenerate := 0
+	var missing_payload := 0
+
+	# ⚠ 这条路**不过滤任何三角形**：每个三角形都出一条样本（"有三角形就要转成 TargetSV"）。
+	# 原来的四道门（fine 门 / 退化面 / 缺 Cd / uv 覆盖）改成**只计数不丢弃**——它们仍是
+	# "这份 FBX 烘对没有"的第一现场，但不再决定谁进不进网格。缺通道的那几条按中性缺省补：
+	# 没 Cd 给白色，没 uv0/uv1 给 0（既不占碰撞也不占复杂度，等价于"只有位置"）。
+	for base in range(0, element_count - 2, 3):
+		var i0 := indices[base] if indexed else base
+		var i1 := indices[base + 1] if indexed else base + 1
+		var i2 := indices[base + 2] if indexed else base + 2
+		# 下标越界不是门禁，是读不出顶点——只有这一种情况仍然跳过。
+		if i0 < 0 or i1 < 0 or i2 < 0:
+			continue
+		if i0 >= vertex_count or i1 >= vertex_count or i2 >= vertex_count:
+			continue
+		if absf(uv8[i0].x - fine_marker_value) <= epsilon:
+			gated += 1
+		var p0 := vertices[i0]
+		var p1 := vertices[i1]
+		var p2 := vertices[i2]
+		if (p1 - p0).cross(p2 - p0).length_squared() <= degenerate_epsilon_squared:
+			degenerate += 1
+		var color := Color.WHITE
+		if has_color:
+			color = colors[i0]
+		else:
+			missing_payload += 1
+		var collision_value := 0.0
+		if i0 < uv0_source_count and i0 < uv1_source_count:
+			color.a = uv1[i0].x
+			collision_value = uv0[i0].x
+		else:
+			color.a = 0.0
+			rejected += 1
+		positions.append(mesh_transform * ((p0 + p1 + p2) / 3.0))
+		out_colors.append(color)
+		out_collision.append(collision_value)
+
+	columns["positions"] = positions
+	columns["colors"] = out_colors
+	columns["collision"] = out_collision
+	columns["gated_triangle_count"] = int(columns["gated_triangle_count"]) + gated
+	columns["rejected_triangle_count"] = int(columns["rejected_triangle_count"]) + rejected
+	columns["degenerate_triangle_count"] = int(columns["degenerate_triangle_count"]) + degenerate
+	columns["missing_payload_count"] = int(columns["missing_payload_count"]) + missing_payload
 
 
 static func probe_records_from_fbx(fbx_path: String, opts := {}) -> Array:

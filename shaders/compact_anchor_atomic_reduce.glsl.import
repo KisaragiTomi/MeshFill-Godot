@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dp7duqlgljcc"
+path="res://.godot/imported/compact_anchor_atomic_reduce.glsl-f0ff5bde3172b31111ce7614352ef840.res"
+
+[deps]
+
+source_file="res://shaders/compact_anchor_atomic_reduce.glsl"
+dest_files=["res://.godot/imported/compact_anchor_atomic_reduce.glsl-f0ff5bde3172b31111ce7614352ef840.res"]
+
+[params]
+

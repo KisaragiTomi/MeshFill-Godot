@@ -3,145 +3,114 @@ class_name AssetDescriptorBaker
 extends RefCounted
 
 const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
-const AutoVoxelProfileScript := preload("res://scripts/auto_voxel_profile.gd")
-const SemanticProbeGeneratorScript := preload("res://scripts/semantic_probe_generator.gd")
-
-
-## Converts a MeshVoxelizerGPU result into the canonical collision sample shape.
-## Grid X/Z are centered and the lowest occupied Y slice becomes placement Y=0.
-static func collision_samples_from_voxel_result(voxel_result: Dictionary) -> Array[Dictionary]:
-	var samples: Array[Dictionary] = []
-	var voxels: Array = voxel_result.get("voxels", [])
-	var grid: Vector3i = voxel_result.get("grid", Vector3i.ZERO)
-	var min_y := 0x7FFFFFFF
-	for raw_voxel in voxels:
-		if not raw_voxel is Dictionary:
-			continue
-		var voxel := raw_voxel as Dictionary
-		if float(voxel.get("collision", 0.0)) <= 0.0:
-			continue
-		var grid_position: Vector3i = voxel.get("voxel", Vector3i.ZERO)
-		min_y = mini(min_y, grid_position.y)
-	if min_y == 0x7FFFFFFF:
-		return samples
-
-	var half_x := grid.x / 2
-	var half_z := grid.z / 2
-	for raw_voxel in voxels:
-		if not raw_voxel is Dictionary:
-			continue
-		var voxel := raw_voxel as Dictionary
-		var strength := float(voxel.get("collision", 0.0))
-		if strength <= 0.0:
-			continue
-		var grid_position: Vector3i = voxel.get("voxel", Vector3i.ZERO)
-		var local := Vector3i(grid_position.x - half_x, grid_position.y - min_y, grid_position.z - half_z)
-		samples.append(AutoVoxelProfileScript.make_collision_sample(local, strength, 1.0))
-	return samples
-
-
-## Converts occupied voxels to the mesh-local sample shape consumed by semantic probes.
-static func interior_samples_from_voxel_result(voxel_result: Dictionary) -> Array[Dictionary]:
-	var samples: Array[Dictionary] = []
-	for raw_voxel in voxel_result.get("voxels", []):
-		if not raw_voxel is Dictionary:
-			continue
-		var voxel := raw_voxel as Dictionary
-		if float(voxel.get("collision", 0.0)) <= 0.0:
-			continue
-		samples.append({
-			"local_pos": voxel.get("local_center", Vector3.ZERO),
-			"color": voxel.get("color", Color.WHITE),
-			"complexity": float(voxel.get("complexity", 1.0)),
-			"collision": float(voxel.get("collision", 0.0)),
-		})
-	return samples
-
-
-## Converts occupied mesh voxels into the descriptor-local records consumed by
-## fine scoring and stamping. Coordinates use the same bottom-centred convention
-## as collision_samples_from_voxel_result().
-static func asset_voxels_from_voxel_result(voxel_result: Dictionary) -> Array[Dictionary]:
-	var records: Array[Dictionary] = []
-	var voxels: Array = voxel_result.get("voxels", [])
-	var grid: Vector3i = voxel_result.get("grid", Vector3i.ZERO)
-	var min_y := 0x7FFFFFFF
-	for raw_voxel in voxels:
-		if not raw_voxel is Dictionary:
-			continue
-		var voxel := raw_voxel as Dictionary
-		if float(voxel.get("collision", 0.0)) <= 0.0:
-			continue
-		var grid_position: Vector3i = voxel.get("voxel", Vector3i.ZERO)
-		min_y = mini(min_y, grid_position.y)
-	if min_y == 0x7FFFFFFF:
-		return records
-
-	var half_x := grid.x / 2
-	var half_z := grid.z / 2
-	for raw_voxel in voxels:
-		if not raw_voxel is Dictionary:
-			continue
-		var voxel := raw_voxel as Dictionary
-		var collision_strength := clampf(float(voxel.get("collision", 0.0)), 0.0, 1.0)
-		if collision_strength <= 0.0:
-			continue
-		var grid_position: Vector3i = voxel.get("voxel", Vector3i.ZERO)
-		var local_voxel := Vector3i(grid_position.x - half_x, grid_position.y - min_y, grid_position.z - half_z)
-		var voxel_color: Color = voxel.get("color", Color.WHITE)
-		var voxel_complexity := clampf(float(voxel.get("complexity", voxel_color.a)), 0.0, 1.0)
-		voxel_color.a = voxel_complexity
-		records.append({
-			"voxel": local_voxel,
-			"color": voxel_color,
-			"complexity": voxel_complexity,
-			"collision_strength": collision_strength,
-			"weight": maxf(float(voxel.get("weight", 1.0)), 0.0),
-			"flags": int(voxel.get("flags", 0)),
-		})
-	return records
-
-
-## Builds a complete descriptor from an already-voxelized mesh. The scene/importer owns
-## voxelization and persistence; this method owns the descriptor data contract.
-static func descriptor_from_voxel_result(
+## Builds a descriptor from the canonical ProfileSamples decoded by Asset Overview.
+## Coarse probes, fine-score samples, and stamp records already share this format, so
+## Bake AD does not regenerate or merge any legacy probe/voxel representation.
+static func descriptor_from_profile_samples(
 	mesh: Mesh,
-	voxel_result: Dictionary,
 	config: Dictionary = {}
 ) -> AssetDescriptor:
 	if mesh == null:
+		push_error("[AssetDescriptorBaker] descriptor_from_profile_samples(): mesh 为 null（asset_id=%s）—— 无法烘焙 descriptor" % str(config.get("asset_id", "")))
+		assert(false, "AssetDescriptorBaker: null mesh")
+		return null
+	var profile_samples: Array = config.get("profile_samples", [])
+	if profile_samples.is_empty():
+		push_error("[AssetDescriptorBaker] descriptor_from_profile_samples(): config.profile_samples 为空（asset_id=%s, source_mesh_path=%s）—— FBX 内嵌通道没解出任何 canonical ProfileSample" % [
+			str(config.get("asset_id", "")), str(config.get("source_mesh_path", ""))])
+		assert(false, "AssetDescriptorBaker: empty profile_samples")
 		return null
 
 	var color: Color = config.get("color", Color.WHITE)
 	var complexity := clampf(float(config.get("complexity", color.a)), 0.0, 1.0)
-	var probe_density := clampf(float(config.get("probe_density", 1.0)), 0.1, 8.0)
-	var collision_samples := collision_samples_from_voxel_result(voxel_result)
-	var interior_samples := interior_samples_from_voxel_result(voxel_result)
-	var asset_voxels := asset_voxels_from_voxel_result(voxel_result)
 
 	var descriptor: AssetDescriptor = AssetDescriptorScript.new()
 	descriptor.mesh = mesh
 	descriptor.set_color_and_complexity(color, complexity)
-	descriptor.set_collision(collision_samples)
-	descriptor.set_asset_voxels(asset_voxels)
 	descriptor.asset_id = str(config.get("asset_id", ""))
 	descriptor.object_type = str(config.get("object_type", ""))
 	descriptor.source_mesh_path = str(config.get("source_mesh_path", ""))
-
-	var voxel_profile: AutoVoxelProfile = AutoVoxelProfileScript.create_profile(color, complexity)
-	voxel_profile.collision = collision_samples.duplicate(true)
-	descriptor.voxel_profile = voxel_profile
-
-	var probe_profile := SemanticProbeGeneratorScript.new()
-	probe_profile.density = probe_density
-	probe_profile.probes = SemanticProbeGeneratorScript.generate_from_mesh(
-		mesh,
-		interior_samples,
-		color,
-		complexity,
-		probe_density,
-		probe_profile.max_probe_count
-	)
-	descriptor.semantic_probe_generator = probe_profile
-	descriptor.semantic_probe_density = probe_density
+	descriptor.set_profile_samples(profile_samples)
+	if descriptor.profile_samples.is_empty():
+		push_error("[AssetDescriptorBaker] descriptor_from_profile_samples(): 传入 %d 条 ProfileSample 但校验后一条不剩（asset_id=%s）—— 采样数据非法" % [
+			profile_samples.size(), str(config.get("asset_id", ""))])
+		assert(false, "AssetDescriptorBaker: all ProfileSamples rejected")
+		return null
+	if config.has("pivot_variants"):
+		descriptor.set_pivot_variants(config.get("pivot_variants", []))
 	return descriptor
+
+
+## 批量烘焙落盘入口（全仓唯一的 descriptor ResourceSaver.save 点）。
+## 场景侧负责 canonical ProfileSample 请求组装，本方法负责 descriptor 构建 + 持久化。
+## requests 每项: {"name": String, "mesh": Mesh, "config": Dictionary}
+##   —— mesh 或有效 ProfileSample 缺失时计 failed。
+## 返回 {"ok","baked","failed","total","dir","paths"}（插件 Bake AD toolbar 契约键，勿改名）。
+static func bake_and_save_batch(requests: Array, output_dir: String) -> Dictionary:
+	var output_dir_abs := ProjectSettings.globalize_path(output_dir)
+	var dir_err := DirAccess.make_dir_recursive_absolute(output_dir_abs)
+	if dir_err != OK and dir_err != ERR_ALREADY_EXISTS:
+		push_error("[AssetDescriptorBaker] bake_and_save_batch(): 无法创建输出目录 %s（err %d）—— 拒绝烘焙" % [output_dir_abs, dir_err])
+		assert(false, "AssetDescriptorBaker: output dir creation failed")
+		return {
+			"ok": false,
+			"baked": 0,
+			"failed": requests.size(),
+			"total": requests.size(),
+			"dir": output_dir,
+			"paths": ([] as Array[String]),
+		}
+	var baked := 0
+	var failed := 0
+	var saved_paths: Array[String] = []
+	for request_index in range(requests.size()):
+		var raw_request = requests[request_index]
+		if not raw_request is Dictionary:
+			failed += 1
+			push_error("[AssetDescriptorBaker] bake_and_save_batch(): requests[%d] 不是 Dictionary（typeof=%d）—— 请求列表损坏" % [request_index, typeof(raw_request)])
+			assert(false, "AssetDescriptorBaker: non-Dictionary bake request")
+			continue
+		var request := raw_request as Dictionary
+		var request_name := str(request.get("name", ""))
+		var descriptor := descriptor_from_profile_samples(
+			request.get("mesh", null), request.get("config", {}))
+		if descriptor == null or request_name.is_empty():
+			failed += 1
+			push_error("[AssetDescriptorBaker] bake_and_save_batch(): requests[%d] 烘焙失败（name=\"%s\", descriptor=%s）—— 缺 mesh / 有效 ProfileSample，或 name 为空" % [
+				request_index, request_name, "null" if descriptor == null else "ok"])
+			assert(false, "AssetDescriptorBaker: bake request produced no descriptor")
+			continue
+		var path := "%s/%s_descriptor.tres" % [output_dir, request_name]
+		# Preserve per-asset score-param overrides across re-bakes: a fresh bake rebuilds
+		# the descriptor from canonical samples/config and would reset these to -1 (inherit).
+		if ResourceLoader.exists(path):
+			var old_descriptor: Resource = load(path)
+			if old_descriptor == null:
+				failed += 1
+				push_error("[AssetDescriptorBaker] bake_and_save_batch(): 既有 descriptor %s 存在但加载失败 —— 无法继承 per-asset score 覆盖，拒绝用一份丢失覆盖的新 descriptor 覆写它" % path)
+				assert(false, "AssetDescriptorBaker: existing descriptor load failed")
+				continue
+			# 旧 .tres 无 score 覆盖字段时 get() 返回 null → 跳过 → 留 -1（继承全局）。
+			# 这是 legacy 迁移契约（见 asset_descriptor.gd 的 Score Params 注释），不是兜底。
+			for prop in ["score_min_match_fraction", "score_dim_weight_collision",
+					"score_dim_weight_complexity", "score_dim_weight_color",
+					"score_color_match_max_l1", "score_collision_match_max",
+					"score_complexity_overfill_percent"]:
+				var carried = old_descriptor.get(prop)
+				if carried != null:
+					descriptor.set(prop, carried)
+		var save_err := ResourceSaver.save(descriptor, path)
+		if save_err != OK:
+			failed += 1
+			push_error("[AssetDescriptorBaker] Failed to save descriptor for %s (err %d)" % [request_name, save_err])
+			continue
+		baked += 1
+		saved_paths.append(path)
+	return {
+		"ok": failed == 0 and baked > 0,
+		"baked": baked,
+		"failed": failed,
+		"total": requests.size(),
+		"dir": output_dir,
+		"paths": saved_paths,
+	}

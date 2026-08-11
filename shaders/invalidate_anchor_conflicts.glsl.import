@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bsyekedvlhsx1"
+path="res://.godot/imported/invalidate_anchor_conflicts.glsl-e4ebe35cfd52e6ae87227a457b91db27.res"
+
+[deps]
+
+source_file="res://shaders/invalidate_anchor_conflicts.glsl"
+dest_files=["res://.godot/imported/invalidate_anchor_conflicts.glsl-e4ebe35cfd52e6ae87227a457b91db27.res"]
+
+[params]
+

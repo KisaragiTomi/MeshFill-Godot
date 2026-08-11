@@ -1,2543 +1,2592 @@
+@tool
 class_name ScenePlacementActor
-extends "res://scripts/godot_compute_shader_base.gd"
+extends Node3D
 
-## Central orchestrator for the MeshFill placement pipeline.
-##
-## Owns the descriptor → GPU profile buffer lifecycle so that AssetDescriptor
-## data (probes, collision, pivots) is always GPU-readable.  SV (SceneVoxel)
-## and AutoObject data flow through a single orchestrated pipeline:
-##
-##   register assets → prefilter (SV→candidates) → placement (candidates→instances) → commit
-##
-## Lifecycle contract:
-##   1. initialize()         — acquire RenderingDevice, share with profile container
-##   2. register_asset()     — descriptor → profile_id, immediately GPU-resident
-##   3. run_pipeline()       — prefilter + placement + optional commit
-##   4. dispose()            — release GPU buffers
+## Scene-resident placement facade. This node is the only lifecycle authority for
+## the placement runtime, RenderingDevice, SceneSV components, and Volume nodes.
 
-const PrefilterScript := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
-const VPGScript := preload("res://scripts/voxel_placement_generator.gd")
-const RuntimeProfileContainerScript := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
+const BakedAssetLoaderScript := preload("res://scripts/baked_asset_loader.gd")
+const ScenePlacementRuntimeScript := preload("res://scripts/scene_placement_runtime.gd")
 const SceneVoxelCommitterScript := preload("res://scripts/scene_voxel_committer.gd")
+const SceneVoxelTileStoreScript := preload("res://scripts/scene_voxel_tile_store.gd")
+const SceneVoxelFieldBuilderScript := preload("res://scripts/scene_voxel_field_builder.gd")
+const TargetSVSetupScript := preload("res://scripts/utils/target_sv_setup.gd")
+const TargetSVFbxImportServiceScript := preload("res://scripts/target_sv_fbx_import_service.gd")
+const SPASelectionHostScript := preload("res://scripts/spa_selection_host.gd")
+const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
+const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
-const GPUAutoObjectRuntimeScript := preload("res://scripts/gpu_autoobject_runtime.gd")
-const AssetDescriptor := preload("res://scripts/asset_descriptor.gd")
-const AutoObject := preload("res://scripts/auto_object.gd")
-const AutoObjectProbePrefilterGPU := preload("res://scripts/autoobject_probe_prefilter_gpu.gd")
-const AutoVoxelRuntimeProfileContainer := preload("res://scripts/auto_voxel_runtime_profile_container.gd")
-const GPUAutoObjectRuntime := preload("res://scripts/gpu_autoobject_runtime.gd")
-const SceneVoxelCommitter := preload("res://scripts/scene_voxel_committer.gd")
-const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generator.gd")
-const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
-const HashUtils := preload("res://scripts/utils/hash_utils.gd")
-const ReportSchema := preload("res://scripts/utils/report_schema.gd")
 
-const MESH_DESCRIPTION_BUFFER := "mesh_description"
-const MESH_DESCRIPTION_STRIDE_BYTES := 128
-const MESH_DESCRIPTION_FLAG_HAS_MESH := 1
-const MESH_DESCRIPTION_FLAG_HAS_SOURCE_MESH := 2
-const MESH_DESCRIPTION_FLAG_SOURCE_DIFFERS := 4
-const MESH_DESCRIPTION_FLAG_HAS_SOURCE_PATH := 8
-const RESIDENT_TARGET_READ_BUFFERS_OPT_IN_KEY := "use_resident_target_read_buffer_handoff"
-const TARGET_READ_BUFFERS_DEBUG_READBACK_KEY := "debug_read_target_read_buffer_bytes"
-## BrushSV 常驻旁路层 + BlendSV 按需合成（方案A：committed SV 纯 auto，brush 不进提交）
-## 散射 stride/路径/键/展平/dispatch 半边已抽取到 utils/sv_field_scatter.gd（与 committer stamp-only 提交共享）。
-const SvFieldScatter := preload("res://scripts/utils/sv_field_scatter.gd")
-const COMPOSE_BLEND_SV_SHADER := "res://shaders/compose_blend_sv_fields.glsl"
-const BLENDSV_FEEDBACK_SHADER := "res://shaders/score_blendsv_feedback.glsl"
-const SV_FIELD_RECORD_FLOAT_STRIDE := SvFieldScatter.RECORD_FLOAT_STRIDE
-const BLENDSV_FEEDBACK_QUANT_SCALE := 1000.0
-const BLENDSV_FEEDBACK_OCCUPIED_EPSILON := 0.001
+const MESH_DESCRIPTION_BUFFER := ScenePlacementRuntimeScript.MESH_DESCRIPTION_BUFFER
+const MESH_DESCRIPTION_STRIDE_BYTES := ScenePlacementRuntimeScript.MESH_DESCRIPTION_STRIDE_BYTES
+const MESH_DESCRIPTION_FLAG_HAS_MESH := ScenePlacementRuntimeScript.MESH_DESCRIPTION_FLAG_HAS_MESH
+const MESH_DESCRIPTION_FLAG_HAS_SOURCE_MESH := ScenePlacementRuntimeScript.MESH_DESCRIPTION_FLAG_HAS_SOURCE_MESH
+const MESH_DESCRIPTION_FLAG_SOURCE_DIFFERS := ScenePlacementRuntimeScript.MESH_DESCRIPTION_FLAG_SOURCE_DIFFERS
+const MESH_DESCRIPTION_FLAG_HAS_SOURCE_PATH := ScenePlacementRuntimeScript.MESH_DESCRIPTION_FLAG_HAS_SOURCE_PATH
 
-# std430 push-constant 布局（迁移自手写 push.encode_* 序列；字节布局逐字保持）。
-const COMPOSE_BLEND_SV_PUSH := [
-	["voxel_count", "int"], ["collision_word_count", "int"], ["_pad0", "int"], ["_pad1", "int"],
-]
-const BLENDSV_FEEDBACK_PUSH := [
-	["voxel_count", "int"], ["has_target_collision", "int"],
-	["occupied_epsilon", "float"], ["quant_scale", "float"],
-]
-const TARGET_READ_BUFFER_PREP_PUSH := [
-	["voxel_count", "int"], ["_pad0", "int"], ["_pad1", "int"], ["_pad2", "int"],
-]
+const PlacementStageEnvScript := preload("res://scripts/checks/placement_stage_env.gd")
+const VolumeScoreFineSelectionScript := preload("res://scripts/volume_score_fine_selection.gd")
+## SPA/Volumes 下三个逻辑卷的节点脚本（《AutoVolume 公用体积基类计划》V1）。
+const SceneSVVolumeScript := preload("res://scripts/scene_sv_volume.gd")
+const BrushSVVolumeScript := preload("res://scripts/brush_sv_volume.gd")
+const BlendSVVolumeScript := preload("res://scripts/blend_sv_volume.gd")
+const SVTileVolumeScript := preload("res://scripts/svtile_volume.gd")
+const AnchorVolumeScript := preload("res://scripts/anchor_volume.gd")
+## 实例域（非体积域）的节点脚本，《AutoVolume 公用体积基类计划》V5。
+## ⚠ class_name 是 `AutoObjectDomain` 不是 `AutoObject` —— 后者已被
+## `scripts/auto_object.gd`（`extends MeshInstance3D`，单个放置实例）占用。
+const AutoObjectDomainScript := preload("res://scripts/auto_object_domain.gd")
 
-# ---------------------------------------------------------------------------
-# Fields
-# ---------------------------------------------------------------------------
+# ⚠ 这里曾有 `VOLUME_KEYS` 键表（TargetSV/SceneSV/BrushSV/BlendSV 四项）与配套的
+# `_volume_revisions` 修订号字典。所有权报告改为「SPA/Volumes 下每个 PickableDomain 自报」
+# （PickableDomain.ownership_report_entry()，2026-08-10）后两者一并删除：
+# 键表的排除名单（SVTile/Anchor/AutoObject"行形状不同"）随统一行形状消失，
+# 字典则是纯写死状态——报告读数一律被 node.revision() 覆盖，写进去的没人读。
 
-## Owned profile container — all registered descriptors live here, GPU-resident.
-var _runtime_profile_container: AutoVoxelRuntimeProfileContainer
+## Place 的物理可行性门限。Score 与 Place 必须同门限：否则 Score 显示的胜者会在 Place
+## 被门拒，预览失真。collision_limit 也是批间自然互斥的关键——上一批盖章的 collision
+## 使下一批候选在已放置足迹上 invalid。
+const PLACE_PIPELINE_COMMON := {
+	"collision_limit": 0.5,
+	"clearance_limit": 2.0,
+}
 
-## SPA-owned AutoObject GPU state component; lifecycle is always owned by SPA.
-var _gpu_runtime: GPUAutoObjectRuntime
-var _autoobject_runtime_capacity := 1024
+enum LifecycleState {
+	NEW,
+	INITIALIZING,
+	READY,
+	UNAVAILABLE_NO_RD,
+	FAILED,
+	SHUTTING_DOWN,
+	DISPOSED,
+}
 
-## External references (borrowed, not owned).
-var _sv_committer: SceneVoxelCommitter
+@export_group("Grid")
+@export var grid_size := Vector3i(256, 16, 256)
+@export var voxel_size := Vector3(4.0, 2.0, 4.0)
+@export var grid_origin := Vector3(-512.0, 0.0, -512.0)
+@export var base_resolution := 256
+@export var capture_size := TerrainConfigScript.CAPTURE_SIZE
 
-## Asset registry — parallel arrays mapping asset_index → descriptor + profile_id.
-var _registered_descriptors: Array[AssetDescriptor] = []
-var _registered_profile_ids: Array[int] = []
-var _registered_mesh: Array[Mesh] = []
-var _registered_autoobject_refs: Array[AutoObject] = []
-var _owned_autoobjects: Array[AutoObject] = []
-var _mesh_description_buffer: RID
-var _mesh_description_record_count := 0
-var _mesh_description_logical_byte_size := 0
-var _mesh_description_gpu_byte_size := 0
-var _mesh_description_revision := 0
-var _mesh_description_uploaded_revision := -1
-var _last_mesh_description_upload_error := ""
-var _resident_target_field_buffer: RID
-var _resident_target_collision_buffer: RID
-var _resident_target_collision_byte_count := 0
+@export_group("Runtime")
+@export var autoobject_capacity := 65536
+@export var initialize_in_editor := true
+@export var placement_assets: Array[AssetDescriptor] = []
+@export_group("")
 
-## Pipeline workers (created lazily, share the same RenderingDevice).
-var _prefilter: AutoObjectProbePrefilterGPU
-var _placer: VoxelPlacementGenerator
+## 生产计算参数（Anchors / Score / Place 三条命令共用同一份门限）。
+## ⚠ 这些值直接决定评分与放置结果，SSOT 在 SPA——不要在 demo/host 上再放一份同名导出，
+## 两份默认值一致时的漂移只会在结果对不上时才暴露。
+@export_group("Placement Tuning")
+## 每候选原点扫描的 yaw 档数。
+@export_range(1, 24, 1) var rotation_slots: int = 12
+## ⚠ 曾经这里有 `use_original_pivot_only` 开关与 `_production_descriptors()` 副本层，
+## 用来在注册进评分链时关掉 descriptor 的垂直 pivot 自动生成。三变体本身已删除
+## （见 `AssetDescriptor.get_pivot_variants`），开关与副本层随之退役。
+##
+## 顺带记下它当年为什么没起作用（同类结构不要再造）：`_register_exported_assets()` 在
+## SPA init 直接把**原件** `placement_assets` 交给 `register_asset_batch()`，而做 pivot
+## 剥离的 `_production_descriptors()` 只喂给 `ensure_placement_env()`；stage env 的注册
+## 循环发现该资产已有 profile_id 就复用，`register_asset(剥离副本)` 从未执行。
+## 于是开关显示 `true`、评分链用的却是带三变体的原件——**一个看得见却不生效的开关**。
+## 教训：注册身份的去重键（identity / resource_path）不包含被改写的字段时，
+## "只改副本"这种做法必然被去重悄悄吃掉。
+## 真实 prefilter 门限（原样转发 _apply_prefilter_settings 支持的两键）。
+@export_range(0.0, 1.0, 0.001) var min_target_interest := 0.01
+## ⚠ **当前无效**：粗筛暂停淘汰（2026-08-10 裁决），`select_anchor_topk.glsl` 忽略这个门，
+## 全部资产一律进候选池，由细筛独自决定。导出保留是为了恢复时不用改接线；
+## 恢复方法见该 shader 文件头。
+@export_range(0.0, 1.0, 0.001) var min_prefilter_score := 0.35
+## Place 每批 Reduce 的输出上限。达到上限时只截断输出，不触发补放。
+@export_range(64, 1024, 64) var place_result_capacity := 1024
+## Place 单次命令最多自动跑的批数（每批整链 S5→S9）。上一批盖章 collision 使下一批
+## 自然避开已放置足迹；某批 spawned < 每批容量即判定"放满"提前停。
+@export_range(1, 64, 1) var place_max_batches := 24
+## 放置最小间距（体素；reduce min-distance 冲突门）。
+@export_range(0.0, 16.0, 0.5) var place_min_distance_voxels := 2.0
+## 评分观察 tile 子区域（XZ tile 坐标，tile=8³；全 Y 层）。
+## 空 rect（默认）= 单次全图；非空 rect = 只跑该单区域。
+@export var prefilter_tile_rect := Rect2i()
+@export_group("")
 
-## Cached lightweight AutoObject wrappers (invalidated on registry change).
-## Maps asset_index → lightweight AutoObject.  Only stores wrappers we created,
-## never live scene nodes.
-var _cached_lightweight_wrappers: Dictionary = {}
+@export_group("Placement")
+## 一键加载 Asset Overview 的全部 Bake 产物到固定槽位 Arena（事务式：失败保留旧 Arena）。
+@export_tool_button("Load Baked Assets", "Load") var _load_baked_assets_action: Callable = _load_baked_assets_from_inspector
+## Bake 产物变化后重建 Arena。与 Load 同一条事务路径，只是强制重扫、不吃"已加载"短路。
+@export_tool_button("Reload", "Reload") var _reload_baked_assets_action: Callable = _reload_baked_assets_from_inspector
+@export_tool_button("Anchors", "Add") var _generate_anchors_action: Callable = _generate_anchors_from_inspector
+@export_tool_button("Score", "Play") var _score_action: Callable = _score_from_inspector
+@export_tool_button("Place", "MeshInstance3D") var _place_action: Callable = _place_from_inspector
+## 只读的已加载资产列表（§11.2）：不再需要手工维护 placement_assets 数组。
+@export_multiline var placement_assets_summary: String:
+	get:
+		return _placement_assets_summary_text()
+@export_multiline var placement_status: String:
+	get:
+		return _placement_status_text()
+@export_group("")
 
-## State.
-var _initialized := false
-var _last_pipeline_result: Dictionary = {}
+@export_group("Voxel Display")
+@export var gpu_objects_visible: bool = true:
+	set(value):
+		_set_voxel_display_proxy("gpu_objects", value)
+	get:
+		return _voxel_display_proxy("gpu_objects")
+@export var sv_tiles_visible: bool = true:
+	set(value):
+		_set_voxel_display_proxy("svtile", value)
+	get:
+		return _voxel_display_proxy("svtile")
+@export var anchors_visible: bool = true:
+	set(value):
+		_set_voxel_display_proxy("anchor", value)
+	get:
+		return _voxel_display_proxy("anchor")
+@export var scene_voxels_visible: bool = true:
+	set(value):
+		_set_voxel_display_proxy("sv", value)
+	get:
+		return _voxel_display_proxy("sv")
+@export var target_sv_visible: bool = true:
+	set(value):
+		set_volume_display(&"TargetSV", value)
+	get:
+		return _target_sv.is_display_visible() if _target_sv != null else true
+@export_group("")
+
+var _lifecycle_state := LifecycleState.NEW
+var _failure_reason := ""
+
+# ── 固定槽位 Arena 的加载状态（Inspector 面板与按钮门控，计划 §11.3）─────────────
+# 纯控制面：Arena 的内容真值仍在容器里，这里只记"最近一次加载做到哪一步、结果如何"。
+var _arena_load_state := "Not Loaded"
+var _arena_load_error := ""
+var _arena_load_entries: Array = []       # BakedAssetLoader 的逐资产摘要（只读列表用）
+var _arena_load_report: Dictionary = {}
+var _arena_loaded_signature := ""         # 加载成功时的 Bake 目录指纹，用于 Stale 判定
+var _runtime: ScenePlacementRuntime = null
+var _sv_committer: SceneVoxelCommitter = null
+var _tile_store: SceneVoxelTileStore = null
+var _field_builder: SceneVoxelFieldBuilder = null
+var _owns_committer := false
+var _volumes: Node = null
+var _interaction: Node3D = null
+var _displays: Node3D = null
+var _selection_host: SPASelectionHost = null
+var _target_sv: TargetSVSetup = null
+var _brush_input: MeshFillBrush = null
+## `SPA/Volumes/BrushSV` 的类型化缓存（2026-08-10 起笔刷内容/显示/落笔定位都在卷节点）。
+## 落笔是热路径（每个 mouse-motion 事件一次），不能每笔都走 get_volume() 的
+## _ensure_owned_tree 链。由 _ensure_owned_tree 解析并自愈。
+var _brush_volume: BrushSVVolume = null
+var _providers: Dictionary = {}
+var _target_read_buffers: Dictionary = {}
 var _brush_sv_control_metadata: Dictionary = {}
-var _gpu_runtime_scene_voxel_setup_result: Dictionary = {}
-
-## BrushSV 常驻旁路层（SPA 生命周期内持有；不进 committed SV）
-var _brush_sv_complexity_buffer: RID
-var _brush_sv_collision_buffer: RID
-var _brush_sv_voxel_count := 0
-var _brush_sv_has_content := false
-
-## BlendSV 临时合成对（SV + BrushSV；对比 TargetSV / 3D score 用，用完即删）
-var _blend_sv_complexity_buffer: RID
-var _blend_sv_collision_buffer: RID
-var _blend_sv_voxel_count := 0
-
-# --------------------------------------------------------------------------
-# 初始化与生命周期
-# --------------------------------------------------------------------------
-
-## 获取 RenderingDevice、初始化 profile 容器与 GPU runtime，可选挂载 sv_committer；SPA 使用前必须调用，失败返回 false
-func initialize(
-	prefer_local_device: bool = true,
-	allow_global_fallback: bool = true,
-	sv_committer: SceneVoxelCommitter = null
-) -> bool:
-	if _initialized:
-		push_warning("ScenePlacementActor: already initialized; call dispose() first.")
-		return true
-
-	log_name = "ScenePlacementActor"
-
-	if not ensure_device(prefer_local_device, allow_global_fallback):
-		push_error("ScenePlacementActor: no RenderingDevice available.")
-		return false
-
-	_runtime_profile_container = RuntimeProfileContainerScript.new()
-	if not _runtime_profile_container.attach_rendering_device(_rd, false):
-		push_error("ScenePlacementActor: failed to attach RD to profile container.")
-		_dispose_internal()
-		return false
-
-	_ensure_owned_gpu_runtime()
-	if sv_committer != null:
-		attach_sv_committer(sv_committer)
-
-	_ensure_gpu_runtime_for_scene_voxel_committer()
-	_initialized = true
-	return true
-
-
-## 释放所有 GPU 资源并调用父类 dispose；由外部生命周期管理者（插件/测试）调用
-func dispose(sync_before_free: bool = true) -> void:
-	_dispose_internal(sync_before_free)
-	super.dispose()
-
-
-## 内部清理：释放 cached wrappers、handoff 缓冲、mesh description、profile 容器、prefilter、placer 及自有 gpu_runtime；由 dispose 和初始化失败路径调用
-func _dispose_internal(sync_before_free: bool = true) -> void:
-	_free_cached_wrappers()
-	_release_resident_target_read_buffer_handoff()
-	_release_mesh_description_buffer()
-	clear_brush_sv(true)
-	release_blend_sv_fields()
-
-	if _runtime_profile_container != null:
-		_runtime_profile_container.dispose(sync_before_free)
-		_runtime_profile_container = null
-
-	if _prefilter != null:
-		_prefilter.dispose()
-		_prefilter = null
-
-	if _placer != null:
-		_placer.dispose()
-		_placer = null
-
-	if _gpu_runtime != null:
-		_gpu_runtime.dispose(sync_before_free)
-
-	_registered_descriptors.clear()
-	_registered_profile_ids.clear()
-	_registered_mesh.clear()
-	_registered_autoobject_refs.clear()
-	_clear_owned_autoobjects()
-	_last_pipeline_result.clear()
-	_brush_sv_control_metadata.clear()
-	_gpu_runtime_scene_voxel_setup_result.clear()
-
-	_initialized = false
-	_sv_committer = null
-	_gpu_runtime = null
-
-
-## 返回 SPA 是否已成功初始化（RD 与 profile 容器均有效）；由 run_placement_pipeline 等各 API 入口前置检查调用
-func is_initialized() -> bool:
-	return _initialized and _rd != null and _runtime_profile_container != null
-
-
-# --------------------------------------------------------------------------
-# 外部引用挂载
-# --------------------------------------------------------------------------
-
-## 注入外部 SceneVoxelCommitter 引用，并同步到 gpu_runtime；由外部在 SV 就绪后调用
-func attach_sv_committer(sv_committer: SceneVoxelCommitter) -> void:
-	_sv_committer = sv_committer
-	_ensure_gpu_runtime_for_scene_voxel_committer()
-
-
-## 返回当前挂载的 SceneVoxelCommitter（可能为 null）；由外部查询使用
-func get_sv_committer() -> SceneVoxelCommitter:
-	return _sv_committer
-
-
-## 返回 GPU autoobject runtime（不存在时自动创建自有 runtime）；由外部及 pipeline 路径调用
-func get_gpu_runtime() -> GPUAutoObjectRuntime:
-	_ensure_owned_gpu_runtime()
-	return _gpu_runtime
-
-
-## 返回 SPA 是否拥有 gpu_runtime 的生命周期所有权（恒为 true，SPA 始终自持）；由 dispose 路径判断是否负责释放
-func owns_gpu_runtime() -> bool:
-	return true
-
-
-## 设置 autoobject runtime 最大对象数量，可选重建自有 runtime；由外部在 initialize 前后均可调用
-func set_autoobject_runtime_capacity(max_objects: int, recreate_owned_runtime: bool = false) -> void:
-	_autoobject_runtime_capacity = maxi(max_objects, 1)
-	if recreate_owned_runtime and _gpu_runtime != null:
-		_gpu_runtime.dispose(false)
-		_gpu_runtime = null
-		_ensure_owned_gpu_runtime()
-		_ensure_gpu_runtime_for_scene_voxel_committer()
-
-
-## 返回当前设定的 autoobject runtime 最大对象容量
-func get_autoobject_runtime_capacity() -> int:
-	return _autoobject_runtime_capacity
-
-
-## 若尚无 gpu_runtime 则创建自有实例（容量 = _autoobject_runtime_capacity）；由 get_gpu_runtime 与 pipeline 入口懒初始化调用
-func _ensure_owned_gpu_runtime() -> GPUAutoObjectRuntime:
-	if _gpu_runtime != null:
-		return _gpu_runtime
-	_gpu_runtime = GPUAutoObjectRuntimeScript.new(_autoobject_runtime_capacity, false)
-	return _gpu_runtime
-
-
-## 返回 GPU-resident 的 profile 容器；由外部直接访问 profile 缓冲时调用
-func get_runtime_profile_container() -> AutoVoxelRuntimeProfileContainer:
-	return _runtime_profile_container
-
-
-
-# --------------------------------------------------------------------------
-# GPU 就绪与缓冲查询
-# --------------------------------------------------------------------------
-
-## 返回 SPA 的 GPU 综合就绪状态（RD、profile container、prefilter shader 均有效）；由 pipeline 前置检查调用
-func is_gpu_ready() -> bool:
-	if not is_initialized():
-		return false
-	if _runtime_profile_container == null:
-		return false
-	return _runtime_profile_container.is_runtime_ready() and is_mesh_description_gpu_ready()
-
-
-## 返回各 GPU 子系统就绪状态的详细诊断字典；供调试工具检查哪个组件未就绪
-func get_gpu_readiness_report() -> Dictionary:
-	if not is_initialized():
-		return {"ok": false, "reason": "not_initialized"}
-	if _runtime_profile_container == null:
-		return {"ok": false, "reason": "no_profile_container"}
-
-	var summary := _runtime_profile_container.get_gpu_buffer_summary()
-	summary["ok"] = _runtime_profile_container.is_runtime_ready() and is_mesh_description_gpu_ready()
-	summary["asset_count"] = _registered_descriptors.size()
-	summary["profile_ids"] = _registered_profile_ids.duplicate()
-	summary["mesh_description"] = get_mesh_description_gpu_buffer_summary()
-	return summary
-
-
-## Direct access to GPU buffers for external consumers (e.g. prefilter borrowing).
-## 返回 probe records GPU buffer RID；由 prefilter GPU pass 绑定 uniform 时调用
-func get_probe_records_buffer() -> RID:
-	if not is_gpu_ready():
-		return RID()
-	return _runtime_profile_container.get_probe_buffer()
-
-
-## 返回 profile table GPU buffer RID；由 prefilter GPU pass 绑定 uniform 时调用
-func get_profile_table_buffer() -> RID:
-	if not is_gpu_ready():
-		return RID()
-	return _runtime_profile_container.get_profile_table_buffer()
-
-
-## 返回 pivot records GPU buffer RID；由 prefilter GPU pass 绑定 uniform 时调用
-func get_pivot_records_buffer() -> RID:
-	if not is_gpu_ready():
-		return RID()
-	return _runtime_profile_container.get_pivot_buffer()
-
-
-## 合并 profile container 与 mesh description 的 GPU buffer 状态摘要；供外部整体诊断
-func get_merged_gpu_buffer_summary() -> Dictionary:
-	var report := get_gpu_readiness_report()
-	if _gpu_runtime != null:
-		report["gpu_runtime"] = {
-			"ready": _gpu_runtime.is_ready(),
-			"max_objects": _gpu_runtime.max_objects,
-			"lifecycle_owner": "ScenePlacementActor",
-		}
-		report["gpu_runtime_scene_voxel_setup"] = _gpu_runtime_scene_voxel_setup_result.duplicate(true)
-	if _sv_committer != null:
-		report["sv_committer_attached"] = true
-	if not _brush_sv_control_metadata.is_empty():
-		report["brush_sv"] = get_brush_sv_persistence_metadata()
-	return report
-
-
-## 返回 gpu_runtime 是否就绪；由 pipeline 判断能否执行 spawn/flush 时调用
-func is_autoobject_runtime_ready() -> bool:
-	return _gpu_runtime != null and _gpu_runtime.is_ready()
-
-
-
-# --------------------------------------------------------------------------
-# 资产注册
-# --------------------------------------------------------------------------
-
-## Register a single AssetDescriptor.  Returns its profile_id (>=0) or -1
-## on failure.  The owned profile container immediately uploads profile table,
-## probe records, pivot records and collision records to GPU. Descriptor
-## collision is normalized, baked once at registration (snap + clearance +
-## dedup) into the resident collision_records buffer, and score/stamp shaders
-## read that slice directly via the profile table's collision_range — there is
-## no per-run shape packing step anymore.
-func register_asset(descriptor: AssetDescriptor, mesh_ref: Mesh = null, autoobject_ref: AutoObject = null) -> int:
-	if not is_initialized():
-		push_error("ScenePlacementActor: not initialized.")
-		return -1
-	if descriptor == null:
-		push_error("ScenePlacementActor: null descriptor.")
-		return -1
-
-	var profile_id := _runtime_profile_container.register_descriptor(descriptor)
-	if profile_id < 0:
-		push_error("ScenePlacementActor: failed to register descriptor.")
-		return -1
-
-	if not _runtime_profile_container.upload_profiles(false):
-		push_error("ScenePlacementActor: failed to upload profiles to GPU.")
-		return -1
-
-	_free_cached_wrappers()
-
-	_registered_descriptors.append(descriptor)
-	_registered_profile_ids.append(profile_id)
-	_registered_mesh.append(mesh_ref)
-	_registered_autoobject_refs.append(autoobject_ref)
-	if autoobject_ref != null:
-		own_autoobject(autoobject_ref, _registered_autoobject_refs.size() - 1)
-	_mark_mesh_description_changed()
-
-	if not _upload_mesh_description_buffer():
-		push_error("ScenePlacementActor: failed to upload mesh descriptions to GPU.")
-		return -1
-
-	return profile_id
-
-
-## Canonical AutoObject asset entry point.  The actor owns registry/profile
-## upload; callers may keep local arrays only as UI or authoring caches.
-## 从 AutoObject 提取 descriptor 并注册为资产，返回 profile_id；由外部批量注册 autoobject 时调用
-func register_autoobject_asset(autoobject_ref: AutoObject, mesh_ref: Mesh = null) -> int:
-	if autoobject_ref == null:
-		push_error("ScenePlacementActor: null AutoObject asset.")
-		return -1
-	var descriptor := _descriptor_from_autoobject_asset(autoobject_ref)
-	if descriptor == null:
-		push_error("ScenePlacementActor: AutoObject asset has no descriptor.")
-		return -1
-	var resolved_mesh := mesh_ref
-	if resolved_mesh == null:
-		resolved_mesh = autoobject_ref.mesh
-	if resolved_mesh == null:
-		resolved_mesh = descriptor.get_mesh()
-	return register_asset(descriptor, resolved_mesh, autoobject_ref)
-
-
-## 批量注册 AutoObject 数组，返回各自 profile_id 列表；由外部一次性注册多个 autoobject 时调用
-func register_autoobject_assets(autoobjects: Array) -> Array[int]:
-	var result: Array[int] = []
-	for raw in autoobjects:
-		var autoobject_ref := raw as AutoObject
-		result.append(register_autoobject_asset(autoobject_ref))
-	return result
-
-
-## 批量注册 AssetDescriptor 数组，返回各自 profile_id 列表；由外部传入 descriptor 列表时调用
-## Register multiple descriptors at once.  Returns an Array of profile_ids
-## (parallel to the input array).  -1 means registration failed for that entry.
-func register_assets(descriptors: Array[AssetDescriptor]) -> Array[int]:
-	var result: Array[int] = []
-	for d in descriptors:
-		result.append(register_asset(d))
-	return result
-
-
-## 清空已有资产并批量注册新 descriptor 数组（可选带 mesh/autoobject），返回是否全部成功；由场景重置或换组时调用
-## Replace the entire asset registry with a new list.  Old GPU data is
-## invalidated and re-uploaded.
-func replace_all_assets(
-	descriptors: Array[AssetDescriptor],
-	meshes: Array = [],
-	autoobjects: Array = []
-) -> bool:
-	clear_assets()
-
-	for i in range(descriptors.size()):
-		var d := descriptors[i] as AssetDescriptor
-		var m: Mesh = meshes[i] as Mesh if i < meshes.size() else null
-		var ao: AutoObject = autoobjects[i] as AutoObject if i < autoobjects.size() else null
-		if register_asset(d, m, ao) < 0:
-			return false
-	return true
-
-
-## 清空资产后批量注册 AutoObject 数组，返回是否全部成功；由 autoobject 集合更换时调用
-func replace_all_autoobject_assets(autoobjects: Array) -> bool:
-	clear_assets()
-	for raw in autoobjects:
-		var autoobject_ref := raw as AutoObject
-		if register_autoobject_asset(autoobject_ref) < 0:
-			return false
-	return true
-
-
-## 清空所有已注册资产、profile、mesh 及 autoobject 引用并重置 mesh description 缓冲；由 replace 路径或外部重置调用
-## Clear the asset registry and re-upload an empty profile set.
-func clear_assets() -> void:
-	_free_cached_wrappers()
-	if _runtime_profile_container != null:
-		_runtime_profile_container.clear()
-		_runtime_profile_container.upload_profiles(true)
-	_registered_descriptors.clear()
-	_registered_profile_ids.clear()
-	_registered_mesh.clear()
-	_registered_autoobject_refs.clear()
-	_clear_owned_autoobjects()
-	_mark_mesh_description_changed()
-	_release_mesh_description_buffer()
-
-
-## 返回已注册资产数量
-func get_asset_count() -> int:
-	return _registered_descriptors.size()
-
-
-## 返回资产注册表是否为空；由 pipeline 入口前置检查调用
-func is_asset_registry_empty() -> bool:
-	return _registered_descriptors.is_empty()
-
-
-## 返回已注册 AssetDescriptor 数组的引用；供外部查询与调试
-func get_registered_descriptors() -> Array[AssetDescriptor]:
-	return _registered_descriptors.duplicate()
-
-
-## 返回已注册 profile_id 数组；供外部查询与调试
-func get_registered_profile_ids() -> Array[int]:
-	return _registered_profile_ids.duplicate()
-
-
-## 根据 asset_index 返回对应 profile_id；越界或无效时返回 -1
-func get_profile_id_for_asset(asset_index: int) -> int:
-	if asset_index < 0 or asset_index >= _registered_profile_ids.size():
-		return -1
-	return _registered_profile_ids[asset_index]
-
-
-## 返回已注册 Mesh 数组；供 mesh description 上传与外部查询
-func get_registered_meshes() -> Array[Mesh]:
-	return _registered_mesh.duplicate()
-
-
-
-# --------------------------------------------------------------------------
-# AutoObject 管理
-# --------------------------------------------------------------------------
-
-## 返回已注册 AutoObject 引用数组；供 pipeline 构建 autoobject 数组
-func get_registered_autoobject_refs() -> Array[AutoObject]:
-	_prune_owned_autoobjects()
-	return _registered_autoobject_refs.duplicate()
-
-
-## 更新指定 asset_index 的 AutoObject 引用；由 own_autoobject 或外部在创建实例后调用
-func set_registered_autoobject_ref(asset_index: int, autoobject_ref: AutoObject) -> bool:
-	if asset_index < 0 or asset_index >= _registered_autoobject_refs.size():
-		return false
-	_registered_autoobject_refs[asset_index] = autoobject_ref
-	_free_cached_wrappers()
-	_mark_mesh_description_changed()
-	if is_initialized():
-		return _upload_mesh_description_buffer()
-	return true
-
-
-## 接管 AutoObject 的生命周期所有权，可选绑定 asset_index；同时注册到 autoobject_ref 表；由 SPA 负责创建 autoobject 场景时调用
-func own_autoobject(autoobject_ref: AutoObject, asset_index: int = -1) -> bool:
-	if autoobject_ref == null:
-		return false
-	_prune_owned_autoobjects()
-	if not _owned_autoobjects.has(autoobject_ref):
-		_owned_autoobjects.append(autoobject_ref)
-	autoobject_ref.set_meta("spa_owned", true)
-	autoobject_ref.set_meta("spa_owner", "ScenePlacementActor")
-	if asset_index >= 0:
-		autoobject_ref.set_meta("spa_asset_id", asset_index)
-		if asset_index < _registered_autoobject_refs.size():
-			var registered_ref: AutoObject = _registered_autoobject_refs[asset_index]
-			if registered_ref == null or registered_ref.is_queued_for_deletion():
-				set_registered_autoobject_ref(asset_index, autoobject_ref)
-	return true
-
-
-## 取消对 AutoObject 的所有权并清理元数据；由外部移除单个 autoobject 时调用
-func release_autoobject(autoobject_ref: AutoObject) -> bool:
-	if autoobject_ref == null:
-		return false
-	var removed := _owned_autoobjects.has(autoobject_ref)
-	if removed:
-		_owned_autoobjects.erase(autoobject_ref)
-	var released_asset_index := int(autoobject_ref.get_meta("spa_asset_id", -1))
-	_clear_autoobject_owner_metadata(autoobject_ref)
-	if released_asset_index >= 0 and released_asset_index < _registered_autoobject_refs.size():
-		if _registered_autoobject_refs[released_asset_index] == autoobject_ref:
-			set_registered_autoobject_ref(released_asset_index, _find_owned_autoobject_for_asset(released_asset_index))
-	_prune_owned_autoobjects()
-	return removed
-
-
-## 返回 SPA 拥有的全部 AutoObject 数组（已过期条目自动剪除）
-func get_owned_autoobjects() -> Array[AutoObject]:
-	_prune_owned_autoobjects()
-	return _owned_autoobjects.duplicate()
-
-
-## 返回 SPA 当前持有的有效 AutoObject 数量
-func get_owned_autoobject_count() -> int:
-	_prune_owned_autoobjects()
-	return _owned_autoobjects.size()
-
-
-## 按索引返回指定自有 AutoObject；越界返回 null
-func get_owned_autoobject(index: int) -> AutoObject:
-	_prune_owned_autoobjects()
-	if index < 0 or index >= _owned_autoobjects.size():
-		return null
-	return _owned_autoobjects[index]
-
-
-## 判断指定 AutoObject 是否属于 SPA 自有；由归属检查路径调用
-func has_owned_autoobject(autoobject_ref: AutoObject) -> bool:
-	_prune_owned_autoobjects()
-	return autoobject_ref != null and _owned_autoobjects.has(autoobject_ref)
-
-
-## 查找 AutoObject 在注册表中的 asset_index；未找到返回 -1
-func get_asset_id_for_autoobject(autoobject_ref: AutoObject) -> int:
-	if autoobject_ref == null:
-		return -1
-	for i in range(_registered_autoobject_refs.size()):
-		if _registered_autoobject_refs[i] == autoobject_ref:
-			return i
-	var meta_asset_index := int(autoobject_ref.get_meta("spa_asset_id", -1))
-	if meta_asset_index >= 0 and meta_asset_index < _registered_descriptors.size():
-		return meta_asset_index
-	return -1
-
-
-## 在自有 AutoObject 中查找绑定了指定 asset_index 的实例；由 pipeline 分配 autoobject 时调用
-func _find_owned_autoobject_for_asset(asset_index: int) -> AutoObject:
-	_prune_owned_autoobjects()
-	for obj in _owned_autoobjects:
-		if obj != null and int(obj.get_meta("spa_asset_id", -1)) == asset_index:
-			return obj
-	return null
-
-
-## 移除 _owned_autoobjects 中已失效（WeakRef 为 null）的条目；由 get_owned_autoobjects 等调用
-func _prune_owned_autoobjects() -> void:
-	for i in range(_owned_autoobjects.size() - 1, -1, -1):
-		var obj := _owned_autoobjects[i]
-		if obj == null or obj.is_queued_for_deletion():
-			_owned_autoobjects.remove_at(i)
-
-
-## 清空自有 AutoObject 列表，可选清除各实例的元数据标记；由 clear_assets 和 _dispose_internal 调用
-func _clear_owned_autoobjects(clear_metadata: bool = true) -> void:
-	if clear_metadata:
-		for obj in _owned_autoobjects:
-			_clear_autoobject_owner_metadata(obj)
-	_owned_autoobjects.clear()
-
-
-## 清除单个 AutoObject 上 SPA 写入的 owner 元数据；由 release_autoobject 与 _clear_owned_autoobjects 调用
-func _clear_autoobject_owner_metadata(autoobject_ref: AutoObject) -> void:
-	if autoobject_ref == null:
+var _last_anchor_result: Dictionary = {}
+var _last_score_result: Dictionary = {}
+var _last_place_result: Dictionary = {}
+# 只读点选交接的换代号（契约见 get_placement_selection_handoff）。
+# 借方（SelectionHost / 统一 GPU 点选）读取前后各核对一次：不一致 = 期间 RID 被换过，
+# 结果必须丢弃。⚠ 释放或替换 Anchor/Fine RID 之前**必须**先递增对应 revision，
+# 否则借方拿着已死 RID 却以为自己的快照还新鲜。
+var _anchor_revision := 0
+var _score_revision := 0
+# ⚠ 交接与「上一次命令结果」是两份状态，别再合成一份。
+# 真正产出交接的是内层（run_autoobject_prefilter / Fine runner），而外层命令
+# （run_anchors / run_score）返回的往往只是一份薄状态字典；两者共用一个槽位时，
+# 外层返回会把内层刚发布的交接原地抹掉——实测就是 Anchors 报 45598 个锚点、
+# 交接却仍是 anchor_handoff_not_resident。
+var _anchor_handoff: Dictionary = {}
+var _fine_score_handoff: Dictionary = {}
+# 生产流水线的阶段底座与细筛 runner，由 SPA 自己持有（不再向 provider 借）。
+# env 只是"阶段缓存 + 顺序"层：每个阶段最终都回调 SPA 自己的方法
+# （ensure_svtile_gpu_ready / prepare_target_read_buffers_from_common_gpu /
+# run_autoobject_prefilter / run_placement_pipeline），所以 SPA 借用自己不构成所有权环。
+# ⚠ 惰性构建：PlacementStageEnv.make() 要求 SPA 已 READY，不能在 initialize_runtime 里建。
+var _placement_env: RefCounted = null
+var _placement_env_error := ""
+var _score_runner: RefCounted = null
+## 最近一次 Score 的细筛结果模型（锚点/胜者/Top-K 的 CPU 视图）。
+## demo/HUD/golden 从这里取数，而不是各自再跑一遍评分。
+var _score_model: Dictionary = {}
+var _score_cache_key: Dictionary = {}
+## Place 跨批累积：已放置对象 id（渲染面）与 reduce 种子（批间间距约束）。
+var _placed_object_ids: Array[int] = []
+var _placed_seed_floats := PackedFloat32Array()
+var _make_count := 0
+var _dispose_count := 0
+var _ready_initialization_ms := 0.0
+var _is_painting := false
+var _brush_dirty := false
+# 笔刷增量提交水位（详见 _flush_owned_brush 的失效条件注释）：
+# _brush_flushed_count = 已散射进 BrushSV 的笔刷体素条数（MeshFillBrush._brush_voxels 前缀长度）
+# _brush_flushed_tail  = 水位末条体素的 (x, slice, z)，用于识别笔刷状态被重置/重建
+# _brush_flushed_paint_* = 取水位时的笔刷绘制参数，变化时保守整批重放
+# _brush_flushed_sv_revision = 取水位时的 BrushSV 内容修订号，识别缓冲被清零/重建
+var _brush_flushed_count := 0
+var _brush_flushed_tail := Vector3i(-1, -1, -1)
+var _brush_flushed_paint_color := Color(-1.0, -1.0, -1.0, -1.0)
+var _brush_flushed_paint_levels := Vector2(-1.0, -1.0)
+var _brush_flushed_sv_revision := -1
+
+
+func _enter_tree() -> void:
+	_ensure_owned_tree()
+
+
+func _ready() -> void:
+	if Engine.is_editor_hint() and not initialize_in_editor:
 		return
-	for key in ["spa_owned", "spa_owner", "spa_asset_id"]:
-		if autoobject_ref.has_meta(key):
-			autoobject_ref.remove_meta(key)
+	initialize_runtime()
 
 
-## 从 AutoObject 的 voxel_profile 属性提取 AssetDescriptor；由 register_autoobject_asset 调用
-func _descriptor_from_autoobject_asset(autoobject_ref: AutoObject) -> AssetDescriptor:
-	if autoobject_ref == null:
-		return null
-	var descriptor := autoobject_ref.asset_descriptor as AssetDescriptor
-	if descriptor == null:
-		autoobject_ref.get_voxel_color()
-		descriptor = autoobject_ref.asset_descriptor as AssetDescriptor
-	if descriptor == null:
-		descriptor = AutoObject.create_asset_descriptor(
-			autoobject_ref.voxel_color,
-			autoobject_ref.voxel_complexity,
-			autoobject_ref.mesh_size * 0.5,
-			autoobject_ref.collision,
-			autoobject_ref.pivot_variants,
-			autoobject_ref.semantic_probe_generator,
-			autoobject_ref.semantic_probe_density,
-			autoobject_ref.context_sensing_radius
-		) as AssetDescriptor
-		autoobject_ref.asset_descriptor = descriptor
-	if descriptor == null:
-		return null
-	if descriptor.asset_id.is_empty() and not autoobject_ref.asset_id.is_empty():
-		descriptor.asset_id = autoobject_ref.asset_id
-	if descriptor.object_type.is_empty():
-		descriptor.object_type = autoobject_ref.get_record_object_type()
-	if descriptor.mesh == null and autoobject_ref.mesh != null:
-		descriptor.mesh = autoobject_ref.mesh
-	var resolved_source_mesh := autoobject_ref.get_source_mesh()
-	if descriptor.source_mesh == null and resolved_source_mesh != null:
-		descriptor.source_mesh = resolved_source_mesh
-	if descriptor.source_mesh_path.is_empty() and not autoobject_ref.source_mesh_path.is_empty():
-		descriptor.source_mesh_path = autoobject_ref.source_mesh_path
-	return descriptor
+## ⚠ 编辑器打开场景时这里会被调用一次「假」拆卸：Godot 的 EditorNode 在 scene 打开流程里
+## 会把 edited scene root 从 scene_root 摘下再挂回（editor_node.cpp 的 set_edited_scene_root /
+## _set_current_scene），整棵子树因此收到一轮 exit_tree + enter_tree，而 SPA 自身既没被
+## reparent（无 UNPARENTED、parent 不变）也没被销毁。当前策略是照常 _shutdown()：RenderingDevice
+## 与全部 GPU owner 被释放，随后插件的 scene_changed → _validate_scene() 看到 SPA 非 ready
+## 会重新 initialize_runtime()，于是每次打开场景都多付一整轮 GPU bootstrap（实测 ~214 ms，
+## make_count=2 / dispose_count=1）。行为正确、只是浪费；改成延迟拆卸前要先确认场景真关闭时
+## 设备仍能被回收。
+func _exit_tree() -> void:
+	_shutdown(false)
 
 
-
-# --------------------------------------------------------------------------
-# Mesh Description GPU 缓冲
-# --------------------------------------------------------------------------
-
-## 返回指定 asset_index 的 mesh description 字典（含 mesh 路径、source 路径、标志位等）；由调试与 mesh description buffer 上传路径调用
-func get_mesh_description_for_asset(asset_index: int) -> Dictionary:
-	if asset_index < 0 or asset_index >= _registered_descriptors.size():
-		return {}
-	var descriptor := _registered_descriptors[asset_index] as AssetDescriptor
-	var mesh_ref: Mesh = _registered_mesh[asset_index] if asset_index < _registered_mesh.size() else null
-	var autoobject_ref: AutoObject = _registered_autoobject_refs[asset_index] if asset_index < _registered_autoobject_refs.size() else null
-	if mesh_ref == null and descriptor != null:
-		mesh_ref = descriptor.get_mesh()
-
-	var source_mesh_ref: Mesh = null
-	if descriptor != null:
-		source_mesh_ref = descriptor.get_source_mesh()
-	if source_mesh_ref == null and autoobject_ref != null:
-		source_mesh_ref = autoobject_ref.get_source_mesh()
-	if source_mesh_ref == null:
-		source_mesh_ref = mesh_ref
-
-	var mesh_aabb := AABB()
-	var mesh_surface_count := 0
-	if mesh_ref != null:
-		mesh_aabb = mesh_ref.get_aabb()
-		mesh_surface_count = mesh_ref.get_surface_count()
-
-	var source_mesh_aabb := AABB()
-	var source_mesh_surface_count := 0
-	if source_mesh_ref != null:
-		source_mesh_aabb = source_mesh_ref.get_aabb()
-		source_mesh_surface_count = source_mesh_ref.get_surface_count()
-
-	return {
-		"asset_index": asset_index,
-		"profile_id": _registered_profile_ids[asset_index],
-		"descriptor": descriptor,
-		"autoobject_ref": autoobject_ref,
-		"asset_name": descriptor.asset_id if descriptor != null else "",
-		"object_type": descriptor.object_type if descriptor != null else "",
-		"object_subtype": "",
-		"mesh": mesh_ref,
-		"mesh_aabb": mesh_aabb,
-		"mesh_surface_count": mesh_surface_count,
-		"source_mesh": source_mesh_ref,
-		"source_mesh_path": descriptor.source_mesh_path if descriptor != null else "",
-		"source_mesh_aabb": source_mesh_aabb,
-		"source_mesh_surface_count": source_mesh_surface_count,
-	}
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		_shutdown(false)
 
 
-## 返回所有已注册资产的 mesh description 字典列表；由调试与外部查询调用
-func get_registered_mesh_descriptions() -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
-	for asset_index in range(_registered_descriptors.size()):
-		result.append(get_mesh_description_for_asset(asset_index))
-	return result
+func _validate_property(property: Dictionary) -> void:
+	var property_name := StringName(str(property.get("name", "")))
+	if property_name == &"placement_status":
+		property["usage"] = (int(property.get("usage", PROPERTY_USAGE_EDITOR)) | PROPERTY_USAGE_READ_ONLY) \
+			& ~PROPERTY_USAGE_STORAGE
+	elif property_name in [
+		&"gpu_objects_visible",
+		&"sv_tiles_visible",
+		&"anchors_visible",
+		&"scene_voxels_visible",
+		&"target_sv_visible",
+	]:
+		property["usage"] = int(property.get("usage", PROPERTY_USAGE_EDITOR)) & ~PROPERTY_USAGE_STORAGE
 
 
-## 返回 mesh description GPU storage buffer RID；由 GPU shader pass 需要 mesh 信息时调用
-func get_mesh_description_buffer() -> RID:
-	if not is_mesh_description_gpu_ready():
-		return RID()
-	return _mesh_description_buffer
+# ── 固定槽位 Arena 的 Bake 产物加载（计划 §7 / §11）─────────────────────────────
+# 状态机（§11.3）：Not Loaded → Loading → Ready / Failed；Ready 之后 Bake 产物变化即 Stale。
+const ARENA_STATE_NOT_LOADED := "Not Loaded"
+const ARENA_STATE_LOADING := "Loading"
+const ARENA_STATE_READY := "Ready"
+const ARENA_STATE_STALE := "Stale"
+const ARENA_STATE_FAILED := "Failed"
 
 
-## 返回 mesh description buffer 是否已上传且版本一致；由 pipeline 前置检查与外部调用
-func is_mesh_description_gpu_ready() -> bool:
-	return _rd != null \
-		and _mesh_description_buffer.is_valid() \
-		and _mesh_description_uploaded_revision == _mesh_description_revision \
-		and _mesh_description_record_count == _registered_descriptors.size()
+func _load_baked_assets_from_inspector() -> void:
+	_finish_inspector_action("Load Baked Assets", load_baked_assets())
 
 
-## 强制重新打包并上传 mesh description buffer；由外部在 mesh 变更后主动调用
-func refresh_mesh_description_gpu_buffer() -> bool:
+func _reload_baked_assets_from_inspector() -> void:
+	_finish_inspector_action("Reload", load_baked_assets(true))
+
+
+## 扫描 Bake 输出目录 → 校验 → 事务式替换 Arena（计划 §7 的完整流程）。
+##
+##     Scanning → Validating → Packing → Uploading → Ready
+##
+## 全程事务式：任一 Descriptor 不合法就在替换**之前**整批拒绝，旧 Arena（RID / 内容 /
+## Registry / Revision）一字不动，界面显示 `Previous Arena Still Active`。
+## force=true 时即使目录未变也重跑（Reload 按钮）。
+func load_baked_assets(force: bool = false) -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	if not is_initialized():
-		_last_mesh_description_upload_error = "not_initialized"
-		return false
-	_mark_mesh_description_changed()
-	return _upload_mesh_description_buffer()
+		_arena_load_state = ARENA_STATE_FAILED
+		_arena_load_error = "SPA 未初始化"
+		return {"ok": false, "reason": "not_initialized", "phase": "Scanning"}
 
+	var previous_state := _arena_load_state
+	var had_previous_arena := get_asset_count() > 0
+	_arena_load_state = ARENA_STATE_LOADING
+	_arena_load_error = ""
 
-## 返回 mesh description buffer 状态摘要（RID、字节大小、版本、最近错误等）；供调试与外部诊断
-func get_mesh_description_gpu_buffer_summary() -> Dictionary:
-	return {
-		"read_source": "gpu_buffers",
-		"runtime_read_source": "gpu_buffers" if is_mesh_description_gpu_ready() else "none",
-		"readback_source": "gpu_buffers" if is_mesh_description_gpu_ready() else "none",
-		"staging_source": "spa_asset_registry",
-		"control_plane": "ScenePlacementActor",
-		"runtime_payload": "gpu_mesh_description_buffer",
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"runtime_ready": is_mesh_description_gpu_ready(),
-		"rid_valid": _mesh_description_buffer.is_valid(),
-		"buffer_name": MESH_DESCRIPTION_BUFFER,
-		"record_count": _mesh_description_record_count,
-		"asset_count": _registered_descriptors.size(),
-		"stride_bytes": MESH_DESCRIPTION_STRIDE_BYTES,
-		"logical_byte_count": _mesh_description_logical_byte_size,
-		"gpu_byte_count": _mesh_description_gpu_byte_size,
-		"gpu_revision": _mesh_description_uploaded_revision,
-		"staging_revision": _mesh_description_revision,
-		"last_upload_error": _last_mesh_description_upload_error,
-	}
-
-
-## CPU 回读 mesh description GPU buffer 并解码为可读字典列表；供调试工具验证 GPU 数据
-func readback_mesh_description_debug_snapshot() -> Dictionary:
-	var summary := get_mesh_description_gpu_buffer_summary()
-	if not is_mesh_description_gpu_ready():
+	# ── Scanning + Validating ──
+	var report: Dictionary = BakedAssetLoaderScript.load_baked_descriptors()
+	_arena_load_entries = report.get("entries", [])
+	_arena_load_report = report
+	var errors: PackedStringArray = report.get("errors", PackedStringArray())
+	if not bool(report.get("ok", false)):
+		_arena_load_state = ARENA_STATE_FAILED
+		_arena_load_error = errors[0] if errors.size() > 0 else "unknown"
+		# 每条失败都单独打印，用户能直接定位到 descriptor 与超限字段（§11.4）。
+		for error_text in errors:
+			push_error("[ScenePlacementActor] Load Baked Assets: %s" % error_text)
 		return {
-			"read_source": "gpu_buffers",
-			"runtime_read_source": "none",
-			"readback_source": "none",
-			"staging_source": "spa_asset_registry",
-			"control_plane": "ScenePlacementActor",
-			"runtime_payload": "gpu_mesh_description_buffer",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"readback_snapshot": false,
-			"runtime_ready": false,
-			"gpu_buffer_summary": summary,
-		}
-	var bytes := _rd.buffer_get_data(_mesh_description_buffer, 0, _mesh_description_logical_byte_size)
-	var expected_byte_count := _mesh_description_record_count * MESH_DESCRIPTION_STRIDE_BYTES
-	var readback_ok := bytes.size() == expected_byte_count
-	return {
-		"read_source": "gpu_buffers",
-		"runtime_read_source": "gpu_buffers",
-		"readback_source": "gpu_buffers" if readback_ok else "none",
-		"failed_readback_source": "none" if readback_ok else "gpu_buffers",
-		"staging_source": "spa_asset_registry",
-		"control_plane": "ScenePlacementActor",
-		"runtime_payload": "gpu_mesh_description_buffer",
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"readback_snapshot": readback_ok,
-		"runtime_ready": true,
-		"readback_validation": {
-			"ok": readback_ok,
-			"reason": "ok" if readback_ok else "readback_byte_count_mismatch",
-			"expected_byte_count": expected_byte_count,
-			"actual_byte_count": bytes.size(),
-			"gpu_first": true,
-			"cpu_fallback": false,
-		},
-		"gpu_buffer_summary": summary,
-		"mesh_description_bytes": bytes,
-		"decoded_mesh_descriptions": _decode_mesh_description_bytes(bytes, _mesh_description_record_count),
-	}
-
-
-# ---------------------------------------------------------------------------
-# BrushSV 常驻旁路层（内容面）+ BlendSV 按需合成
-# ---------------------------------------------------------------------------
-
-## 确保 BrushSV 常驻 field 对存在（体素数取 committer SV 网格；变化时重建并清空内容）
-func ensure_brush_sv_fields() -> Dictionary:
-	if _rd == null:
-		return {}
-	var voxel_count := _sv_field_voxel_count()
-	if voxel_count <= 0:
-		return {}
-	var complexity_byte_count := voxel_count * 4
-	var collision_byte_count := SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count)
-	if _brush_sv_complexity_buffer.is_valid() and _brush_sv_collision_buffer.is_valid() and _brush_sv_voxel_count == voxel_count:
-		return _brush_sv_field_summary(voxel_count, false)
-	clear_brush_sv(true)
-	_brush_sv_complexity_buffer = storage_buffer_zero(complexity_byte_count, SCOPE_PERSISTENT, "spa_brush_sv_complexity_rgba8")
-	_brush_sv_collision_buffer = storage_buffer_zero(collision_byte_count, SCOPE_PERSISTENT, "spa_brush_sv_collision_u32")
-	if not _brush_sv_complexity_buffer.is_valid() or not _brush_sv_collision_buffer.is_valid():
-		clear_brush_sv(true)
-		return {}
-	_brush_sv_voxel_count = voxel_count
-	_brush_sv_has_content = false
-	return _brush_sv_field_summary(voxel_count, true)
-
-
-## 将笔刷体素记录散射进 BrushSV 常驻层（复用 stamp-only 散射 shader；不触碰 committed SV）。
-## 记录字段：voxel_xz: Vector2i、slice_index: int、complexity: float、color: Color、collision_strength: float
-func write_brush_sv_records(records: Array) -> Dictionary:
-	if records.is_empty():
-		return {"ok": true, "record_count": 0, "gpu_dispatched": false}
-	var fields := ensure_brush_sv_fields()
-	if fields.is_empty():
-		return {"ok": false, "reason": "brush_sv_fields_not_ready", "record_count": records.size(), "gpu_dispatched": false}
-
-	# 按体素去重（后笔胜），保证单次散射 dispatch 内无同体素写竞态
-	var deduped: Dictionary = {}
-	for raw_record in records:
-		if not raw_record is Dictionary:
-			continue
-		var record := raw_record as Dictionary
-		var voxel_xz_value = record.get("voxel_xz", Vector2i(-1, -1))
-		if not voxel_xz_value is Vector2i:
-			continue
-		var voxel_xz: Vector2i = voxel_xz_value
-		var slice_index := int(record.get("slice_index", 0))
-		var color: Color = record.get("color", Color.WHITE) if record.get("color", Color.WHITE) is Color else Color.WHITE
-		var slot := PackedFloat32Array()
-		slot.resize(SV_FIELD_RECORD_FLOAT_STRIDE)
-		slot[0] = float(voxel_xz.x)
-		slot[1] = float(voxel_xz.y)
-		slot[2] = float(slice_index)
-		slot[3] = clampf(float(record.get("complexity", 1.0)), 0.0, 1.0)
-		slot[4] = color.r
-		slot[5] = color.g
-		slot[6] = color.b
-		slot[7] = clampf(float(record.get("collision_strength", 0.0)), 0.0, 1.0)
-		deduped[SvFieldScatter.record_key(voxel_xz, slice_index)] = slot
-	var record_count := deduped.size()
-	if record_count <= 0:
-		return {"ok": true, "record_count": 0, "gpu_dispatched": false}
-	# write_mode 0：brush 层 overwrite（后笔胜，允许降低/擦除）；grid.x→xz_res、grid.y→total_slices
-	var grid := _sv_field_grid_size()
-	var scatter_result := SvFieldScatter.dispatch_scatter(
-		self,
-		_brush_sv_complexity_buffer,
-		_brush_sv_collision_buffer,
-		deduped,
-		grid.x,
-		grid.y,
-		0,
-		"brush_sv_scatter",
-		"spa_brush_sv_scatter"
-	)
-	if not bool(scatter_result.get("ok", false)):
-		return scatter_result
-	_brush_sv_has_content = true
-	if _sv_committer != null:
-		for raw_record in records:
-			if raw_record is Dictionary:
-				var record := raw_record as Dictionary
-				var voxel_xz_value = record.get("voxel_xz", Vector2i(-1, -1))
-				if voxel_xz_value is Vector2i:
-					var voxel_min := Vector3i((voxel_xz_value as Vector2i).x, int(record.get("slice_index", 0)), (voxel_xz_value as Vector2i).y)
-					_sv_committer.mark_scene_voxel_tile_bounds_dirty(voxel_min, voxel_min + Vector3i.ONE, {"brush": true, "scoring": true}, {"id": "brush_sv_stamp"})
-	return scatter_result
-
-
-## 清空 BrushSV 常驻层；release_buffers=true 时连同缓冲一起释放
-func clear_brush_sv(release_buffers: bool = false) -> void:
-	if release_buffers:
-		if _brush_sv_complexity_buffer.is_valid():
-			release_rid(_brush_sv_complexity_buffer, false)
-		if _brush_sv_collision_buffer.is_valid():
-			release_rid(_brush_sv_collision_buffer, false)
-		_brush_sv_complexity_buffer = RID()
-		_brush_sv_collision_buffer = RID()
-		_brush_sv_voxel_count = 0
-	else:
-		if _brush_sv_complexity_buffer.is_valid():
-			buffer_zero(_brush_sv_complexity_buffer, _brush_sv_voxel_count * 4)
-		if _brush_sv_collision_buffer.is_valid():
-			buffer_zero(_brush_sv_collision_buffer, SceneVoxelTileCodecScript.u32_field_byte_count(_brush_sv_voxel_count))
-	_brush_sv_has_content = false
-
-
-## BrushSV 是否有已写入内容
-func has_brush_sv_content() -> bool:
-	return _brush_sv_has_content and _brush_sv_complexity_buffer.is_valid()
-
-
-## BrushSV 常驻层摘要（RID/体素数/内容标志）
-func get_brush_sv_field_summary() -> Dictionary:
-	return _brush_sv_field_summary(_brush_sv_voxel_count, false)
-
-
-func _brush_sv_field_summary(voxel_count: int, created: bool) -> Dictionary:
-	return {
-		"complexity_field_buffer": _brush_sv_complexity_buffer,
-		"collision_field_buffer": _brush_sv_collision_buffer,
-		"voxel_count": voxel_count,
-		"has_content": _brush_sv_has_content,
-		"created": created,
-	}
-
-
-## SV field 网格（xz_res, total_slices）：从 committer 网格元数据推导
-func _sv_field_grid_size() -> Vector2i:
-	if _sv_committer == null:
-		return Vector2i.ZERO
-	var grid: Vector3i = _sv_committer.grid_size
-	return Vector2i(maxi(grid.x, 0), maxi(grid.y, 0))
-
-
-func _sv_field_voxel_count() -> int:
-	if _sv_committer == null:
-		return 0
-	return VoxelGeneral.voxel_count(_sv_committer.grid_size)
-
-
-## 按需合成 BlendSV 临时对（committed SV + BrushSV）；对比 TargetSV / 3D score 读取用。
-## 返回空字典表示合成失败；无 brush 内容时调用方应直接使用 SV RID（零开销直通）。
-func compose_blend_sv_fields(sv_complexity_rid: RID, sv_collision_rid: RID) -> Dictionary:
-	if _rd == null or not sv_complexity_rid.is_valid() or not sv_collision_rid.is_valid():
-		return {}
-	var fields := ensure_brush_sv_fields()
-	if fields.is_empty():
-		return {}
-	var voxel_count := _brush_sv_voxel_count
-	var collision_word_count := int(SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count) / 4)
-	var complexity_byte_count := voxel_count * 4
-	var collision_byte_count := collision_word_count * 4
-
-	if not _blend_sv_complexity_buffer.is_valid() or _blend_sv_voxel_count != voxel_count:
-		release_blend_sv_fields()
-		_blend_sv_complexity_buffer = storage_buffer_zero(complexity_byte_count, SCOPE_PERSISTENT, "spa_blend_sv_complexity_rgba8")
-		_blend_sv_collision_buffer = storage_buffer_zero(collision_byte_count, SCOPE_PERSISTENT, "spa_blend_sv_collision_u32")
-		if not _blend_sv_complexity_buffer.is_valid() or not _blend_sv_collision_buffer.is_valid():
-			release_blend_sv_fields()
-			return {}
-		_blend_sv_voxel_count = voxel_count
-
-	var shader := load_compute_shader(COMPOSE_BLEND_SV_SHADER, SCOPE_FRAME, "spa_compose_blend_sv")
-	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "spa_compose_blend_sv")
-	if not shader.is_valid() or not pipeline.is_valid():
-		gc_frame()
-		release_blend_sv_fields()
-		return {}
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, sv_complexity_rid),
-		make_storage_uniform(1, sv_collision_rid),
-		make_storage_uniform(2, _brush_sv_complexity_buffer),
-		make_storage_uniform(3, _brush_sv_collision_buffer),
-		make_storage_uniform(4, _blend_sv_complexity_buffer),
-		make_storage_uniform(5, _blend_sv_collision_buffer),
-	], shader, 0, SCOPE_PASS, "spa_compose_blend_sv")
-	if not set0.is_valid():
-		gc_frame()
-		release_blend_sv_fields()
-		return {}
-	var push := PushConstantLayout.new(COMPOSE_BLEND_SV_PUSH).pack({
-		voxel_count = voxel_count,
-		collision_word_count = collision_word_count,
-	})
-	var thread_count := maxi(voxel_count, collision_word_count)
-	if not _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(thread_count, 64)):
-		gc_frame()
-		release_blend_sv_fields()
-		return {}
-	gc_frame()
-	return {
-		"complexity_field_buffer": _blend_sv_complexity_buffer,
-		"collision_field_buffer": _blend_sv_collision_buffer,
-		"voxel_count": voxel_count,
-	}
-
-
-## 释放 BlendSV 临时合成对（用完即删）
-func release_blend_sv_fields() -> void:
-	if _blend_sv_complexity_buffer.is_valid():
-		release_rid(_blend_sv_complexity_buffer, false)
-	if _blend_sv_collision_buffer.is_valid():
-		release_rid(_blend_sv_collision_buffer, false)
-	_blend_sv_complexity_buffer = RID()
-	_blend_sv_collision_buffer = RID()
-	_blend_sv_voxel_count = 0
-
-
-## 结果级 feedback：临时合成 BlendSV，与 TargetSV_B 读取缓冲对比 completeness/color 重合度，
-## 读回统计后立即删除临时体素。target_visual_rgba8_bytes 的 alpha 即 target completeness。
-func score_blendsv_feedback_against_target(
-	target_visual_rgba8_bytes: PackedByteArray,
-	target_collision_r8_bytes: PackedByteArray = PackedByteArray()
-) -> Dictionary:
-	if not is_initialized() or _sv_committer == null:
-		return {"ok": false, "reason": "actor_or_committer_not_ready"}
-	var committed_sv := _sv_committer.get_sv()
-	_sv_committer.ensure_scene_voxel_tile_buffers_uploaded(false)
-	var handoff := _build_resident_complexity_field_handoff(committed_sv)
-	if not bool(handoff.get("ok", false)):
-		return {"ok": false, "reason": str(handoff.get("reason", "resident_field_handoff_failed"))}
-	var sv_complexity: RID = handoff.get("complexity_field_buffer_rid", RID())
-	var sv_collision: RID = handoff.get("collision_field_buffer_rid", RID())
-	var voxel_count := _sv_field_voxel_count()
-	if voxel_count <= 0 or target_visual_rgba8_bytes.size() < voxel_count * 4:
-		return {"ok": false, "reason": "target_visual_bytes_size_mismatch", "expected_bytes": voxel_count * 4}
-
-	# BlendSV：有 brush 内容才临时合成，否则直接对比 committed SV
-	var blend_complexity := sv_complexity
-	var blend_collision := sv_collision
-	var blend_composed := false
-	if has_brush_sv_content():
-		var blend := compose_blend_sv_fields(sv_complexity, sv_collision)
-		if blend.is_empty():
-			return {"ok": false, "reason": "blend_sv_compose_failed"}
-		blend_complexity = blend.get("complexity_field_buffer", RID())
-		blend_collision = blend.get("collision_field_buffer", RID())
-		blend_composed = true
-
-	var shader := load_compute_shader(BLENDSV_FEEDBACK_SHADER, SCOPE_FRAME, "spa_blendsv_feedback")
-	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "spa_blendsv_feedback")
-	var target_visual_buffer := storage_buffer_from_bytes(target_visual_rgba8_bytes, SCOPE_FRAME, "spa_blendsv_feedback_target_visual")
-	var has_target_collision := target_collision_r8_bytes.size() >= SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count)
-	var target_collision_buffer := storage_buffer_from_bytes(
-		target_collision_r8_bytes if has_target_collision else PackedByteArray([0, 0, 0, 0]),
-		SCOPE_FRAME,
-		"spa_blendsv_feedback_target_collision"
-	)
-	var stats_buffer := storage_buffer_zero(6 * 4, SCOPE_FRAME, "spa_blendsv_feedback_stats")
-	if not shader.is_valid() or not pipeline.is_valid() or not target_visual_buffer.is_valid() \
-			or not target_collision_buffer.is_valid() or not stats_buffer.is_valid():
-		gc_frame()
-		if blend_composed:
-			release_blend_sv_fields()
-		return {"ok": false, "reason": "feedback_gpu_resources_not_ready"}
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, blend_complexity),
-		make_storage_uniform(1, blend_collision),
-		make_storage_uniform(2, target_visual_buffer),
-		make_storage_uniform(3, target_collision_buffer),
-		make_storage_uniform(4, stats_buffer),
-	], shader, 0, SCOPE_PASS, "spa_blendsv_feedback")
-	if not set0.is_valid():
-		gc_frame()
-		if blend_composed:
-			release_blend_sv_fields()
-		return {"ok": false, "reason": "feedback_uniform_set_failed"}
-	var push := PushConstantLayout.new(BLENDSV_FEEDBACK_PUSH).pack({
-		voxel_count = voxel_count,
-		has_target_collision = 1 if has_target_collision else 0,
-		occupied_epsilon = BLENDSV_FEEDBACK_OCCUPIED_EPSILON,
-		quant_scale = BLENDSV_FEEDBACK_QUANT_SCALE,
-	})
-	if not _gpu_dispatch_and_sync(pipeline, [set0], push, dispatch_groups_1d(voxel_count, 64)):
-		gc_frame()
-		if blend_composed:
-			release_blend_sv_fields()
-		return {"ok": false, "reason": "feedback_dispatch_failed"}
-	var stats_bytes := _rd.buffer_get_data(stats_buffer, 0, 6 * 4)
-	gc_frame()
-	if blend_composed:
-		release_blend_sv_fields()  # 用完立马删除临时体素，BrushSV 常驻保留
-
-	var blend_occupied := stats_bytes.decode_u32(0)
-	var target_occupied := stats_bytes.decode_u32(4)
-	var overlap := stats_bytes.decode_u32(8)
-	var completeness_diff_sum := float(stats_bytes.decode_u32(12)) / BLENDSV_FEEDBACK_QUANT_SCALE
-	var color_distance_sum := float(stats_bytes.decode_u32(16)) / BLENDSV_FEEDBACK_QUANT_SCALE
-	var processed := stats_bytes.decode_u32(20)
-	var union_count := blend_occupied + target_occupied - overlap
-	return {
-		"ok": true,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"blend_source": "blend_sv_composed" if blend_composed else "committed_sv_direct",
-		"voxel_count": int(processed),
-		"blend_occupied_count": int(blend_occupied),
-		"target_occupied_count": int(target_occupied),
-		"overlap_count": int(overlap),
-		"overlap_score": float(overlap) / float(maxi(union_count, 1)),
-		"completeness_diff_mean": completeness_diff_sum / float(maxi(int(processed), 1)),
-		"color_distance_mean": color_distance_sum / float(maxi(int(overlap), 1)),
-	}
-
-
-# ---------------------------------------------------------------------------
-# Mesh Description GPU 缓冲 — 打包 / 上传 / 回读内部实现
-# ---------------------------------------------------------------------------
-
-## 递增 mesh description revision 标记，使下次 pipeline 触发重新上传；由 clear_assets 和 register_asset 调用
-func _mark_mesh_description_changed() -> void:
-	_mesh_description_revision += 1
-	_mesh_description_uploaded_revision = -1
-
-
-## 释放 mesh description GPU buffer RID；由 _dispose_internal 和 clear_assets 调用
-func _release_mesh_description_buffer() -> void:
-	if _mesh_description_buffer.is_valid():
-		release_rid(_mesh_description_buffer)
-	_mesh_description_buffer = RID()
-	_mesh_description_record_count = 0
-	_mesh_description_logical_byte_size = 0
-	_mesh_description_gpu_byte_size = 0
-	_mesh_description_uploaded_revision = -1
-
-
-## 打包所有已注册 mesh 的 description 并上传为 GPU storage buffer；由 run_placement_pipeline 在 mesh description 版本不一致时调用
-func _upload_mesh_description_buffer() -> bool:
-	if _rd == null:
-		_last_mesh_description_upload_error = "no_rendering_device"
-		return false
-	var bytes := _pack_mesh_description_bytes()
-	var logical_size := bytes.size()
-	var upload_bytes := bytes
-	if upload_bytes.is_empty():
-		upload_bytes.resize(4)
-	var rid := track_rid(
-		_rd.storage_buffer_create(upload_bytes.size(), upload_bytes),
-		KIND_BUFFER,
-		SCOPE_PERSISTENT,
-		"spa_mesh_description"
-	)
-	if not rid.is_valid():
-		_last_mesh_description_upload_error = "storage_buffer_create_failed:%s" % MESH_DESCRIPTION_BUFFER
-		return false
-	if _mesh_description_buffer.is_valid():
-		release_rid(_mesh_description_buffer)
-	_mesh_description_buffer = rid
-	_mesh_description_record_count = _registered_descriptors.size()
-	_mesh_description_logical_byte_size = logical_size
-	_mesh_description_gpu_byte_size = upload_bytes.size()
-	_mesh_description_uploaded_revision = _mesh_description_revision
-	_last_mesh_description_upload_error = ""
-	return true
-
-
-## 将所有已注册 mesh 的元数据（路径 hash、标志位、source 信息）序列化为 PackedByteArray；由 _upload_mesh_description_buffer 调用
-func _pack_mesh_description_bytes() -> PackedByteArray:
-	var bytes := PackedByteArray()
-	bytes.resize(_registered_descriptors.size() * MESH_DESCRIPTION_STRIDE_BYTES)
-	for asset_index in range(_registered_descriptors.size()):
-		var description := get_mesh_description_for_asset(asset_index)
-		var mesh_ref: Mesh = description.get("mesh", null)
-		var source_mesh_ref: Mesh = description.get("source_mesh", null)
-		var mesh_aabb: AABB = description.get("mesh_aabb", AABB())
-		var source_mesh_aabb: AABB = description.get("source_mesh_aabb", AABB())
-		var source_path := str(description.get("source_mesh_path", ""))
-		var flags := 0
-		if mesh_ref != null:
-			flags |= MESH_DESCRIPTION_FLAG_HAS_MESH
-		if source_mesh_ref != null:
-			flags |= MESH_DESCRIPTION_FLAG_HAS_SOURCE_MESH
-		if mesh_ref != null and source_mesh_ref != null and source_mesh_ref != mesh_ref:
-			flags |= MESH_DESCRIPTION_FLAG_SOURCE_DIFFERS
-		if not source_path.is_empty():
-			flags |= MESH_DESCRIPTION_FLAG_HAS_SOURCE_PATH
-
-		var base := asset_index * MESH_DESCRIPTION_STRIDE_BYTES
-		bytes.encode_s32(base + 0, asset_index)
-		bytes.encode_s32(base + 4, int(description.get("profile_id", -1)))
-		bytes.encode_s32(base + 8, flags)
-		bytes.encode_s32(base + 12, int(description.get("mesh_surface_count", 0)))
-		bytes.encode_s32(base + 16, int(description.get("source_mesh_surface_count", 0)))
-		bytes.encode_s32(base + 20, 0)
-		bytes.encode_s32(base + 24, 0)
-		bytes.encode_s32(base + 28, 0)
-		_encode_aabb(bytes, base + 32, mesh_aabb)
-		_encode_aabb(bytes, base + 64, source_mesh_aabb)
-		bytes.encode_u32(base + 96, HashUtils.stable_u32_from_string(str(description.get("asset_name", ""))))
-		bytes.encode_u32(base + 100, HashUtils.stable_u32_from_string(str(description.get("object_type", ""))))
-		bytes.encode_u32(base + 104, HashUtils.stable_u32_from_string(str(description.get("object_subtype", ""))))
-		bytes.encode_u32(base + 108, HashUtils.stable_u32_from_string(source_path))
-		bytes.encode_float(base + 112, mesh_aabb.size.length())
-		bytes.encode_float(base + 116, maxf(mesh_aabb.size.x, maxf(mesh_aabb.size.y, mesh_aabb.size.z)))
-		bytes.encode_float(base + 120, source_mesh_aabb.size.length())
-		bytes.encode_float(base + 124, maxf(source_mesh_aabb.size.x, maxf(source_mesh_aabb.size.y, source_mesh_aabb.size.z)))
-	return bytes
-
-
-static func _encode_aabb(bytes: PackedByteArray, base: int, aabb: AABB) -> void:
-	BufferUtils.encode_vec4(bytes, base + 0, aabb.position, 0.0)
-	BufferUtils.encode_vec4(bytes, base + 16, aabb.size, 0.0)
-
-
-static func _decode_mesh_description_bytes(bytes: PackedByteArray, record_count: int) -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
-	var available_bytes := mini(bytes.size(), record_count * MESH_DESCRIPTION_STRIDE_BYTES)
-	available_bytes -= available_bytes % MESH_DESCRIPTION_STRIDE_BYTES
-	var available := mini(record_count, int(available_bytes / MESH_DESCRIPTION_STRIDE_BYTES))
-	for i in range(available):
-		var base := i * MESH_DESCRIPTION_STRIDE_BYTES
-		var mesh_aabb := AABB(
-			BufferUtils.decode_vec4_xyz(bytes, base + 32),
-			BufferUtils.decode_vec4_xyz(bytes, base + 48)
-		)
-		var source_mesh_aabb := AABB(
-			BufferUtils.decode_vec4_xyz(bytes, base + 64),
-			BufferUtils.decode_vec4_xyz(bytes, base + 80)
-		)
-		result.append({
-			"asset_index": bytes.decode_s32(base + 0),
-			"profile_id": bytes.decode_s32(base + 4),
-			"flags": bytes.decode_s32(base + 8),
-			"mesh_surface_count": bytes.decode_s32(base + 12),
-			"source_mesh_surface_count": bytes.decode_s32(base + 16),
-			"mesh_aabb": mesh_aabb,
-			"source_mesh_aabb": source_mesh_aabb,
-			"asset_name_hash": int(bytes.decode_u32(base + 96)),
-			"object_type_hash": int(bytes.decode_u32(base + 100)),
-			"object_subtype_hash": int(bytes.decode_u32(base + 104)),
-			"source_mesh_path_hash": int(bytes.decode_u32(base + 108)),
-			"mesh_diagonal": bytes.decode_float(base + 112),
-			"mesh_max_axis": bytes.decode_float(base + 116),
-			"source_mesh_diagonal": bytes.decode_float(base + 120),
-			"source_mesh_max_axis": bytes.decode_float(base + 124),
-		})
-	return result
-
-
-# --------------------------------------------------------------------------
-# 笔刷 SV 持久化元数据
-# --------------------------------------------------------------------------
-
-## 写入笔刷 SV 持久化控制元数据（commit_mode/auto_commit 等）；由笔刷工具在开始 paint 前调用
-func set_brush_sv_persistence_metadata(metadata: Dictionary) -> Dictionary:
-	var clean := _brush_sv_control_metadata_from(metadata)
-	clean["owner"] = "ScenePlacementActor"
-	clean["control_plane_only"] = true
-	clean["content_mirror"] = false
-	_brush_sv_control_metadata = clean
-	return get_brush_sv_persistence_metadata()
-
-
-## 更新笔刷 SV 生命周期状态字段（active/committed/idle 等）及可选脏键；由笔刷 paint/commit 流程各阶段调用
-func update_brush_sv_lifecycle_state(state: String, dirty: bool = false, dirty_keys: Array = []) -> Dictionary:
-	if _brush_sv_control_metadata.is_empty():
-		_brush_sv_control_metadata = {
-			"owner": "ScenePlacementActor",
-			"control_plane_only": true,
-			"content_mirror": false,
-		}
-	_brush_sv_control_metadata["lifecycle_state"] = state
-	_brush_sv_control_metadata["dirty"] = dirty
-	if not dirty_keys.is_empty():
-		_brush_sv_control_metadata["dirty_keys"] = dirty_keys.duplicate()
-	return get_brush_sv_persistence_metadata()
-
-
-## 返回当前笔刷 SV 持久化控制元数据副本；由 run_placement_pipeline 读取 commit_mode 时调用
-func get_brush_sv_persistence_metadata() -> Dictionary:
-	return _brush_sv_control_metadata.duplicate(true)
-
-
-## 清除笔刷 SV 元数据并重置生命周期状态；由笔刷工具结束或重置时调用
-func clear_brush_sv_persistence_metadata() -> void:
-	_brush_sv_control_metadata.clear()
-
-
-static func _brush_sv_control_metadata_from(metadata: Dictionary) -> Dictionary:
-	var result := {}
-	for raw_key in metadata.keys():
-		var key := str(raw_key)
-		if _is_brush_sv_content_key(key):
-			continue
-		var value = metadata[raw_key]
-		if _is_brush_sv_content_value(value):
-			continue
-		result[key] = _sanitize_brush_sv_control_value(value)
-	return result
-
-
-static func _sanitize_brush_sv_control_value(value):
-	if value is Dictionary:
-		return _brush_sv_control_metadata_from(value as Dictionary)
-	if value is Array:
-		return _sanitize_brush_sv_control_array(value as Array)
-	return value
-
-
-static func _sanitize_brush_sv_control_array(values: Array) -> Array:
-	var result := []
-	for value in values:
-		if _is_brush_sv_content_value(value):
-			continue
-		result.append(_sanitize_brush_sv_control_value(value))
-	return result
-
-
-static func _is_brush_sv_content_key(key: String) -> bool:
-	var lowered := key.to_lower()
-	return lowered == "content" \
-		or lowered == "payload" \
-		or lowered == "image" \
-		or lowered == "preview_image" \
-		or lowered == "complexity_field" \
-		or lowered == "collision_field" \
-		or lowered == "target_color" \
-		or lowered == "scene_voxels" \
-		or lowered == "auto_scene_voxel_sources" \
-		or lowered == "brush_scene_voxel_sources" \
-		or lowered == "auto_sv" \
-		or lowered == "brush_sv" \
-		or lowered.ends_with("_bytes")
-
-
-static func _is_brush_sv_content_value(value) -> bool:
-	return value is PackedByteArray \
-		or value is PackedFloat32Array \
-		or value is PackedInt32Array \
-		or value is PackedVector2Array \
-		or value is PackedVector3Array \
-		or value is PackedColorArray \
-		or value is Image
-
-
-# --------------------------------------------------------------------------
-# AutoObject Runtime 动作
-# --------------------------------------------------------------------------
-
-## 将已接受放置记录批量生成 AutoObject GPU 状态（spawn pass）；由外部在 pipeline 外手动 spawn 时调用
-func spawn_autoobject_batch_from_accepted_placement_records(
-	spawn_records: Array[Dictionary],
-	options: Dictionary = {}
-) -> Dictionary:
-	if not is_initialized():
-		return _autoobject_runtime_action_error("actor_not_initialized", "spawn_batch_from_accepted_placement_records")
-	if _gpu_runtime == null:
-		_ensure_owned_gpu_runtime()
-	if _sv_committer != null:
-		_ensure_gpu_runtime_for_scene_voxel_committer()
-	if _gpu_runtime == null or not _gpu_runtime.is_ready():
-		return _autoobject_runtime_action_error("gpu_autoobject_runtime_not_ready", "spawn_batch_from_accepted_placement_records")
-	var result: Dictionary = _gpu_runtime.spawn_batch_from_accepted_placement_records(
-		spawn_records,
-		options.duplicate(true)
-	)
-	_annotate_autoobject_runtime_action_result(result, "spawn_batch_from_accepted_placement_records")
-	result["record_count"] = spawn_records.size()
-	return result
-
-
-## 将 gpu_runtime 当前对象状态 flush 写入 SceneVoxelCommitter；由外部或 pipeline 完成放置后同步 SV 时调用
-func flush_autoobject_runtime_to_scene_voxel_committer(options: Dictionary = {}) -> Dictionary:
-	if not is_initialized():
-		return _autoobject_runtime_action_error("actor_not_initialized", "flush_to_scene_voxel_committer")
-	if _gpu_runtime == null:
-		_ensure_owned_gpu_runtime()
-	if _sv_committer == null:
-		return _autoobject_runtime_action_error("missing_scene_voxel_committer", "flush_to_scene_voxel_committer")
-	var setup_result := _ensure_gpu_runtime_for_scene_voxel_committer()
-	if _gpu_runtime == null or not _gpu_runtime.is_ready():
-		return _autoobject_runtime_action_error("gpu_autoobject_runtime_not_ready", "flush_to_scene_voxel_committer")
-	if bool(setup_result.get("blocked", false)):
-		return _autoobject_runtime_action_error(
-			str(setup_result.get("blocked_reason", setup_result.get("reason", "runtime_scene_voxel_setup_blocked"))),
-			"flush_to_scene_voxel_committer"
-		)
-	var result: Dictionary = _gpu_runtime.flush_to_scene_voxel_committer(_sv_committer, options.duplicate(true))
-	_annotate_autoobject_runtime_action_result(result, "flush_to_scene_voxel_committer")
-	result["runtime_setup"] = setup_result.duplicate(true)
-	return result
-
-
-## 构造标准化的 autoobject runtime 动作失败报告字典（含 reason/action/gpu_first 等）；由各 spawn/flush 入口的错误路径调用
-func _autoobject_runtime_action_error(reason: String, action: String) -> Dictionary:
-	return {
-		"ok": false,
-		"reason": reason,
-		"blocked": true,
-		"blocked_reason": reason,
-		"source": "ScenePlacementActor",
-		"owner": "ScenePlacementActor",
-		"control_plane": "ScenePlacementActor",
-		"runtime_action": action,
-		"lifecycle_owner": "ScenePlacementActor",
-		"runtime_ready": _gpu_runtime != null and _gpu_runtime.is_ready(),
-		"runtime_setup": _gpu_runtime_scene_voxel_setup_result.duplicate(true),
-		"gpu_first": true,
-		"cpu_fallback": false,
-	}
-
-
-## 向 runtime 动作结果字典追加 SPA 元数据标注（action 名称、RD 状态、profile 状态等）；由 spawn/flush 成功路径调用
-func _annotate_autoobject_runtime_action_result(result: Dictionary, action: String) -> Dictionary:
-	result["source"] = "ScenePlacementActor"
-	result["owner"] = "ScenePlacementActor"
-	result["control_plane"] = "ScenePlacementActor"
-	result["runtime_action"] = action
-	result["lifecycle_owner"] = "ScenePlacementActor"
-	result["runtime_ready"] = _gpu_runtime != null and _gpu_runtime.is_ready()
-	if not result.has("runtime_setup"):
-		result["runtime_setup"] = _gpu_runtime_scene_voxel_setup_result.duplicate(true)
-	if not result.has("gpu_first"):
-		result["gpu_first"] = true
-	if not result.has("cpu_fallback"):
-		result["cpu_fallback"] = false
-	return result
-
-
-## 向 gpu_runtime 传递 SV committer 的 GPU buffer RID（tile records/summaries/dirty_indices 等）；由 attach_sv_committer 和 pipeline 前调用
-func _ensure_gpu_runtime_for_scene_voxel_committer() -> Dictionary:
-	if _gpu_runtime == null:
-		_ensure_owned_gpu_runtime()
-	if _gpu_runtime == null:
-		_gpu_runtime_scene_voxel_setup_result = _gpu_runtime_scene_voxel_setup_blocked("missing_autoobject_gpu_state")
-		return _gpu_runtime_scene_voxel_setup_result
-	if _sv_committer == null:
-		_gpu_runtime_scene_voxel_setup_result = _gpu_runtime_scene_voxel_setup_blocked("missing_scene_voxel_committer")
-		return _gpu_runtime_scene_voxel_setup_result
-	if not _gpu_runtime.has_method("setup_for_scene_voxel_committer"):
-		_gpu_runtime_scene_voxel_setup_result = _gpu_runtime_scene_voxel_setup_blocked("missing_runtime_scene_voxel_setup_helper")
-		return _gpu_runtime_scene_voxel_setup_result
-
-	var runtime_rd := GodotComputeShaderBase.rendering_device_of(_gpu_runtime)
-	var committer_rd := GodotComputeShaderBase.rendering_device_of(_sv_committer)
-	if runtime_rd != null \
-			and committer_rd != null \
-			and runtime_rd == committer_rd \
-			and _gpu_runtime.is_ready() \
-			and bool(_gpu_runtime_scene_voxel_setup_result.get("resident_gpu_dirty_delta_update_pass_opt_in_ready", false)):
-		_gpu_runtime_scene_voxel_setup_result["ok"] = true
-		_gpu_runtime_scene_voxel_setup_result["reason"] = "ok"
-		_gpu_runtime_scene_voxel_setup_result["runtime_ready"] = true
-		_gpu_runtime_scene_voxel_setup_result["same_rendering_device"] = true
-		_gpu_runtime_scene_voxel_setup_result["blocked"] = false
-		_gpu_runtime_scene_voxel_setup_result["blocked_reason"] = "none"
-		_gpu_runtime_scene_voxel_setup_result["source"] = "ScenePlacementActor"
-		_gpu_runtime_scene_voxel_setup_result["owner"] = "ScenePlacementActor"
-		_gpu_runtime_scene_voxel_setup_result["lifecycle_owner"] = "ScenePlacementActor"
-		_gpu_runtime_scene_voxel_setup_result["runtime_setup_api"] = "GPUAutoObjectRuntime.setup_for_scene_voxel_committer"
-		return _gpu_runtime_scene_voxel_setup_result
-
-	var setup_result: Dictionary = _gpu_runtime.setup_for_scene_voxel_committer(
-		_sv_committer,
-		_gpu_runtime.max_objects,
-		true
-	)
-	setup_result["source"] = "ScenePlacementActor"
-	setup_result["owner"] = "ScenePlacementActor"
-	setup_result["lifecycle_owner"] = "ScenePlacementActor"
-	setup_result["runtime_setup_api"] = "GPUAutoObjectRuntime.setup_for_scene_voxel_committer"
-	setup_result["resident_gpu_dirty_delta_update_pass_opt_in_ready"] = bool(setup_result.get("ok", false)) \
-		and bool(setup_result.get("same_rendering_device", false)) \
-		and bool(setup_result.get("runtime_ready", false))
-	if not bool(setup_result.get("ok", false)):
-		setup_result["blocked"] = true
-		setup_result["blocked_reason"] = str(setup_result.get("reason", "runtime_scene_voxel_setup_failed"))
-	else:
-		setup_result["blocked"] = false
-		setup_result["blocked_reason"] = "none"
-	_gpu_runtime_scene_voxel_setup_result = setup_result
-	return _gpu_runtime_scene_voxel_setup_result
-
-
-## 构造 gpu_runtime SV 配置被阻断的错误报告字典；由 _ensure_gpu_runtime_for_scene_voxel_committer 发现缺失 buffer 时调用
-func _gpu_runtime_scene_voxel_setup_blocked(reason: String) -> Dictionary:
-	return {
-		"ok": false,
-		"reason": reason,
-		"blocked": true,
-		"blocked_reason": reason,
-		"source": "ScenePlacementActor",
-		"owner": "ScenePlacementActor",
-		"lifecycle_owner": "ScenePlacementActor",
-		"runtime_setup_api": "GPUAutoObjectRuntime.setup_for_scene_voxel_committer",
-		"runtime_ready": false,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"readback_source": "none",
-		"rendering_device_source": "none",
-		"same_rendering_device": false,
-		"resident_gpu_dirty_delta_update_pass_opt_in_ready": false,
-	}
-
-
-## 从 placement 结果读取 dirty delta 并调用 SV committer 更新 tile object_ref 缓冲；由 _commit_accepted_placements 调用
-func _flush_gpu_runtime_dirty_delta_to_scene_voxel_committer(placement_result: Dictionary) -> Dictionary:
-	var result := {
-		"ok": false,
-		"reason": "not_attempted",
-		"blocked": true,
-		"blocked_reason": "not_attempted",
-		"source": "ScenePlacementActor",
-		"owner": "ScenePlacementActor",
-		"runtime_flush_api": "GPUAutoObjectRuntime.flush_to_scene_voxel_committer",
-		"runtime_setup": _gpu_runtime_scene_voxel_setup_result.duplicate(true),
-		"runtime_ready": false,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"readback_source": "none",
-		"failed_readback_source": "none",
-		"dirty_delta_count": 0,
-		"pending_dirty_delta_count": 0,
-		"dirty_delta_bridge_mode": "none",
-		"dirty_delta_apply_api": "none",
-		"resident_gpu_dirty_delta_update_pass": false,
-		"resident_gpu_dirty_delta_update_pass_owner": "none",
-		"resident_gpu_dirty_delta_update_pass_shader": "none",
-		"resident_gpu_dirty_delta_update_pass_dispatch_count": 0,
-		"resident_gpu_dirty_delta_update_pass_blocked_reason": "not_attempted",
-	}
-	if _gpu_runtime == null:
-		result["reason"] = "missing_autoobject_gpu_state"
-		result["blocked_reason"] = "missing_autoobject_gpu_state"
-		result["resident_gpu_dirty_delta_update_pass_blocked_reason"] = "missing_autoobject_gpu_state"
-		return result
-	if _sv_committer == null:
-		result["reason"] = "missing_scene_voxel_committer"
-		result["blocked_reason"] = "missing_scene_voxel_committer"
-		result["resident_gpu_dirty_delta_update_pass_blocked_reason"] = "missing_scene_voxel_committer"
-		return result
-	if not bool(placement_result.get("ok", false)):
-		result["reason"] = "placement_not_ok"
-		result["blocked_reason"] = "placement_not_ok"
-		result["resident_gpu_dirty_delta_update_pass_blocked_reason"] = "placement_not_ok"
-		result["runtime_ready"] = _gpu_runtime.is_ready()
-		return result
-
-	var setup_result := _ensure_gpu_runtime_for_scene_voxel_committer()
-	result["runtime_setup"] = setup_result.duplicate(true)
-	result["runtime_ready"] = _gpu_runtime.is_ready()
-	if not bool(setup_result.get("resident_gpu_dirty_delta_update_pass_opt_in_ready", false)):
-		var setup_reason := str(setup_result.get("blocked_reason", setup_result.get("reason", "runtime_scene_voxel_setup_blocked")))
-		result["reason"] = setup_reason
-		result["blocked_reason"] = setup_reason
-		result["resident_gpu_dirty_delta_update_pass_blocked_reason"] = setup_reason
-		if _gpu_runtime.has_method("get_pending_dirty_delta_count"):
-			result["pending_dirty_delta_count"] = int(_gpu_runtime.get_pending_dirty_delta_count())
-		return result
-
-	# resident GPU dirty delta update pass 是唯一路径，无需显式 opt-in。
-	var flush_result: Dictionary = _gpu_runtime.flush_to_scene_voxel_committer(_sv_committer, {})
-	flush_result["source"] = "ScenePlacementActor"
-	flush_result["owner"] = "ScenePlacementActor"
-	flush_result["runtime_flush_api"] = "GPUAutoObjectRuntime.flush_to_scene_voxel_committer"
-	flush_result["runtime_setup"] = setup_result.duplicate(true)
-	if bool(flush_result.get("resident_gpu_dirty_delta_update_pass", false)) \
-			and bool(flush_result.get("ok", false)) \
-			and int(flush_result.get("resident_gpu_dirty_delta_update_pass_dispatch_count", 0)) > 0:
-		flush_result["blocked"] = false
-		flush_result["blocked_reason"] = "none"
-		flush_result["resident_gpu_dirty_delta_update_pass_blocked_reason"] = "none"
-	else:
-		var blocked_reason := str(flush_result.get(
-			"resident_gpu_dirty_delta_update_pass_blocked_reason",
-			flush_result.get("reason", "resident_dirty_delta_update_pass_not_dispatched")
-		))
-		flush_result["blocked"] = true
-		flush_result["blocked_reason"] = blocked_reason
-		flush_result["resident_gpu_dirty_delta_update_pass_blocked_reason"] = blocked_reason
-	return flush_result
-
-
-
-# --------------------------------------------------------------------------
-# Placement Pipeline
-# --------------------------------------------------------------------------
-
-## 单独执行 prefilter 阶段（SV→resident anchor handoff）并返回结果；由外部拆分 pipeline 阶段时调用
-func run_autoobject_prefilter(
-	sv: Dictionary,
-	dirty_tile_ids: Array[int] = [],
-	target_read_buffers: Dictionary = {},
-	prefilter_settings: Dictionary = {}
-) -> Dictionary:
-	if not is_initialized():
-		return _pipeline_error("actor_not_initialized")
-	if _registered_descriptors.is_empty():
-		return _pipeline_error("no_registered_assets")
-	var prefilter := _get_prefilter()
-	_apply_prefilter_settings(prefilter, prefilter_settings)
-	var autoobjects := _build_autoobject_array_for_pipeline()
-	var result := prefilter.run_probe_prefilter(
-		sv,
-		autoobjects,
-		dirty_tile_ids,
-		_runtime_profile_container,
-		target_read_buffers.duplicate(true)
-	)
-	result["control_plane"] = "ScenePlacementActor"
-	result["asset_registry_owner"] = "ScenePlacementActor"
-	result["runtime_profile_container_owner"] = "ScenePlacementActor"
-	result["asset_count"] = _registered_descriptors.size()
-	return result
-
-
-## 将 settings 字典的参数写入 prefilter 实例；由 run_autoobject_prefilter 调用。
-## anchor top-K 是固定 GPU 契约（prefilter TOPK=4，端到端 stride 绑定），不在此配置。
-func _apply_prefilter_settings(prefilter: AutoObjectProbePrefilterGPU, settings: Dictionary) -> void:
-	if prefilter == null:
-		return
-	if settings.has("min_target_interest"):
-		prefilter.min_target_interest = clampf(float(settings.get("min_target_interest", prefilter.min_target_interest)), 0.0, 1.0)
-	if settings.has("min_prefilter_score"):
-		prefilter.min_prefilter_score = clampf(float(settings.get("min_prefilter_score", prefilter.min_prefilter_score)), 0.0, 1.0)
-	if settings.has("debug_read_anchors"):
-		prefilter.debug_read_anchors = bool(settings.get("debug_read_anchors", prefilter.debug_read_anchors))
-
-
-# ---------------------------------------------------------------------------
-# Pipeline — the main orchestration entry point
-# ---------------------------------------------------------------------------
-
-## Run the full placement pipeline for one frame.
-##
-## Parameters:
-##   sv: Dictionary       — SceneVoxel metadata (grid_size, voxel_size,
-##                           complexity_field, collision_field, tile_grid_size, ...)
-##   dirty_tile_ids: Array[int]            — dirty tile indices for this frame
-##   placement_common: Dictionary = {}     — must include packed TargetSV_B bytes
-##
-## Per-anchor asset top-K is a fixed GPU contract (AutoObjectProbePrefilterGPU.TOPK
-## = 4): buffer strides, the select shader and the fine-score dispatch are sized
-## by it end-to-end, so it is intentionally not configurable.
-##
-## Returns a Dictionary with:
-##   prefilter_result, placement_result, commit_result, profile_probe_pack_summary
-## 执行完整 placement pipeline（prefilter→placement→可选 commit）并返回详细结果；SPA 的核心入口，由外部 cook 路径调用
-func run_placement_pipeline(
-	sv: Dictionary,
-	dirty_tile_ids: Array[int] = [],
-	placement_common: Dictionary = {}
-) -> Dictionary:
-	if not is_initialized():
-		return _pipeline_error("actor_not_initialized")
-	if _registered_descriptors.is_empty():
-		return _pipeline_error("no_registered_assets")
-
-	# ---- Phase 0: resident field handoff + BlendSV 合成（SV 纯 auto；读取场按需叠加 brush） ----
-
-	# _rebuild_sv 收尾的 clear_all_dirty 会把 tile staging 重新标脏；handoff 前幂等确保上传就绪
-	if _sv_committer != null:
-		_sv_committer.ensure_scene_voxel_tile_buffers_uploaded(false)
-	var resident_field_handoff := _build_resident_complexity_field_handoff(sv)
-	var resident_complexity_field_rid: RID = resident_field_handoff.get("complexity_field_buffer_rid", RID())
-	var resident_collision_field_rid: RID = resident_field_handoff.get("collision_field_buffer_rid", RID())
-
-	# resident-or-error：有 committer 时常驻 complexity/collision 场就是权威来源，拿不到它
-	# （未就绪 / stride/format/device 失配 / 过期）是真·错误。旧行为静默退回 CPU 数组，而 committer
-	# 路径下调用方并不往 sv 里喂 CPU 场 → 那实际是在“零场”上跑放置（静默垃圾）。这里改为硬失败。
-	# 无 committer 时保留 CPU 数组接口（调用方自带 SV 场，见 scene-placement-actor.md）。
-	if _sv_committer != null and not bool(resident_field_handoff.get("ok", false)):
-		push_error("ScenePlacementActor: committer present but resident complexity/collision field handoff unavailable: %s" % str(resident_field_handoff.get("reason", "unknown")))
-		_last_pipeline_result = {
 			"ok": false,
-			"phase": "resident_complexity_field_handoff",
-			"resident_complexity_field_handoff": resident_field_handoff,
-			"scene_voxel_tile_resident_field_handoff": resident_field_handoff,
-			"profile_probe_pack": {},
-			"mesh_description": get_mesh_description_gpu_buffer_summary(),
-			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
+			"reason": "validation_failed",
+			"phase": "Validating",
+			"dir": report.get("dir", ""),
+			"errors": errors,
+			"failed_count": errors.size(),
+			"previous_arena_still_active": had_previous_arena,
 		}
-		return _last_pipeline_result
 
-	# 读取场（prefilter / target prep / 3D score 采样）：有 brush 内容时为 BlendSV 临时对，
-	# 否则直通 committed SV 常驻对；commit 目标恒为 SV 对（stamp 双写由 VPG flag 控制）。
-	var field_read_complexity_rid := resident_complexity_field_rid
-	var field_read_collision_rid := resident_collision_field_rid
-	var blend_sv_active := false
-	if bool(resident_field_handoff.get("ok", false)) and has_brush_sv_content():
-		var blend := compose_blend_sv_fields(resident_complexity_field_rid, resident_collision_field_rid)
-		if not blend.is_empty():
-			field_read_complexity_rid = blend.get("complexity_field_buffer", RID())
-			field_read_collision_rid = blend.get("collision_field_buffer", RID())
-			blend_sv_active = true
-
-	sv = sv.duplicate()
-	if field_read_complexity_rid.is_valid() and field_read_collision_rid.is_valid():
-		sv["resident_complexity_field_read_rid"] = field_read_complexity_rid
-		sv["resident_collision_field_read_rid"] = field_read_collision_rid
-
-	# ---- Prefilter (SV → resident anchor handoff: anchors + per-anchor top-K) ----
-
-	var autoobjects := _build_autoobject_array_for_pipeline()
-	var target_buffers := prepare_target_read_buffers_from_common_gpu(placement_common, sv)
-	if not bool(target_buffers.get("ok", false)):
-		_last_pipeline_result = {
-			"ok": false,
-			"phase": "target_read_buffers",
-			"target_read_buffers": target_buffers,
-			"profile_probe_pack": {},
-			"mesh_description": get_mesh_description_gpu_buffer_summary(),
-			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
-		}
-		if blend_sv_active:
-			release_blend_sv_fields()
-		return _last_pipeline_result
-	var target_field_bytes: PackedFloat32Array = target_buffers.get("target_field_bytes", PackedFloat32Array())
-	var mesh_description_summary := get_mesh_description_gpu_buffer_summary()
-
-	var prefilter := _get_prefilter()
-
-	var prefilter_result := prefilter.run_probe_prefilter(
-		sv,
-		autoobjects,
-		dirty_tile_ids,
-		_runtime_profile_container,  # ← borrowed GPU probes
-		target_buffers
-	)
-
-	if not bool(prefilter_result.get("ok", false)):
-		_last_pipeline_result = {
-			"ok": false,
-			"phase": "prefilter",
-			"prefilter_result": prefilter_result,
-			"profile_probe_pack": prefilter_result.get("profile_probe_pack", {}),
-			"mesh_description": mesh_description_summary,
-			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
-		}
-		if blend_sv_active:
-			release_blend_sv_fields()
-		return _last_pipeline_result
-
-	var anchor_candidate_handoff: Dictionary = prefilter_result.get("anchor_candidate_handoff", {})
-	if not _anchor_candidate_handoff_ready(anchor_candidate_handoff, prefilter):
-		_last_pipeline_result = {
-			"ok": false,
-			"phase": "anchor_candidate_handoff",
-			"prefilter_result": prefilter_result,
-			"anchor_candidate_handoff": _anchor_candidate_handoff_summary(anchor_candidate_handoff, false),
-			"profile_probe_pack": prefilter_result.get("profile_probe_pack", {}),
-			"mesh_description": mesh_description_summary,
-			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
-		}
-		if blend_sv_active:
-			release_blend_sv_fields()
-		return _last_pipeline_result
-
-	# ---- Phase 1: Placement (candidate regions → placed instances) ----
-
-	var placer := _get_placer()
-
-	var sv_voxel_count := VoxelGeneral.voxel_count(sv.get("grid_size", Vector3i.ZERO))
-	var complexity_field := VoxelGeneral.pad_float_array(
-		sv.get("complexity_field", PackedFloat32Array()), sv_voxel_count)
-	var collision_field := VoxelGeneral.pad_float_array(
-		sv.get("collision_field", PackedFloat32Array()), sv_voxel_count)
-	if bool(resident_field_handoff.get("ok", false)):
-		complexity_field = PackedFloat32Array()
-		collision_field = PackedFloat32Array()
-
-	var asset_defs := _build_placement_asset_defs()
-
-	var placement_settings := placement_common.duplicate(true)
-	placement_settings.erase("target_color")
-	placement_settings["anchor_candidate_handoff"] = anchor_candidate_handoff
-	placement_settings["target_visual_rgba8_bytes"] = placement_common.get("target_visual_rgba8_bytes", PackedByteArray())
-	placement_settings["target_field_bytes"] = target_field_bytes
-	placement_settings["target_read_buffers"] = target_buffers
-	placement_settings["auto_voxel_runtime_profile_container"] = _runtime_profile_container
-	if _sv_committer != null:
-		placement_settings["scene_voxel_committer"] = _sv_committer
-	placement_settings["mesh_description_buffer"] = get_mesh_description_buffer()
-	placement_settings["mesh_description_buffer_summary"] = mesh_description_summary.duplicate(true)
-	placement_settings["scene_voxel_tile_resident_field_handoff"] = resident_field_handoff.duplicate(true)
-	placement_settings["resident_complexity_field_handoff"] = resident_field_handoff.duplicate(true)
-	if bool(resident_field_handoff.get("ok", false)):
-		# 读取场 = BlendSV（含 brush）或 committed SV 直通；stamp 双写目标恒为 committed SV 对
-		placement_settings["complexity_field_buffer_rid"] = field_read_complexity_rid
-		placement_settings["collision_field_buffer_rid"] = field_read_collision_rid
-		placement_settings["commit_complexity_field_buffer_rid"] = resident_complexity_field_rid
-		placement_settings["commit_collision_field_buffer_rid"] = resident_collision_field_rid
-		placement_settings["complexity_field_buffer_borrowed"] = true
-		placement_settings["collision_field_buffer_borrowed"] = true
-		placement_settings["complexity_field_buffer_owner"] = "ScenePlacementActor" if blend_sv_active else "SceneVoxelCommitter"
-		placement_settings["collision_field_buffer_owner"] = "ScenePlacementActor" if blend_sv_active else "SceneVoxelCommitter"
-		placement_settings["complexity_field_read_source"] = "spa_blend_sv_composed_field" if blend_sv_active else "scene_voxel_committer_scene_voxel_tile_resident_complexity_field"
-		placement_settings["collision_field_read_source"] = "spa_blend_sv_composed_field" if blend_sv_active else "scene_voxel_committer_scene_voxel_tile_resident_collision_field"
-		placement_settings["gpu_state_chain_source"] = str(resident_field_handoff.get("gpu_state_chain_source", "scene_voxel_committer_scene_voxel_tile_resident_fields"))
-		placement_settings["resident_complexity_field_rendering_device"] = _rd
-	# 紧凑 stamp-delta 状态链是 VPG 的 CPU 输入默认路径，无需 opt-in 设置；
-	# resident_runtime_dirty_delta_ready 仅供下方 compact_state_chain_summary 报告。
-	var resident_runtime_dirty_delta_ready := _gpu_runtime != null \
-		and _gpu_runtime.is_ready() \
-		and bool(_gpu_runtime_scene_voxel_setup_result.get("resident_gpu_dirty_delta_update_pass_opt_in_ready", false))
-	if _gpu_runtime != null and _gpu_runtime.is_ready():
-		placement_settings["gpu_autoobject_runtime"] = _gpu_runtime
-		placement_settings["write_accepted_placements_to_gpu_runtime"] = true
-
-	var previous_resident_accepted_placement_writeback := false
-	var scoped_resident_accepted_placement_writeback := _gpu_runtime != null \
-		and _gpu_runtime.is_ready() \
-		and _gpu_runtime.has_method("set_use_resident_accepted_placement_writeback") \
-		and _gpu_runtime.has_method("get_use_resident_accepted_placement_writeback")
-	if scoped_resident_accepted_placement_writeback:
-		previous_resident_accepted_placement_writeback = bool(_gpu_runtime.call("get_use_resident_accepted_placement_writeback"))
-		_gpu_runtime.call("set_use_resident_accepted_placement_writeback", true)
-	var placement_result := placer.run_multi_asset(
-		complexity_field,
-		collision_field,
-		asset_defs,
-		sv.get("grid_size", Vector3i.ZERO),
-		sv.get("voxel_size", Vector3.ONE),
-		sv.get("grid_origin", Vector3.ZERO),
-		placement_settings
-	)
-	if scoped_resident_accepted_placement_writeback:
-		_gpu_runtime.call("set_use_resident_accepted_placement_writeback", previous_resident_accepted_placement_writeback)
-
-	# ---- Phase 2: Commit (write accepted placements to SceneVoxel) ----
-
-	var commit_result := {}
-	if _sv_committer != null and bool(placement_result.get("ok", false)):
-		commit_result = _commit_accepted_placements(placement_result, sv)
-	var runtime_dirty_delta_flush_result := _flush_gpu_runtime_dirty_delta_to_scene_voxel_committer(placement_result)
-	var accepted_writeback_summary := _accepted_placement_writeback_summary_from_placement(
-		placement_result,
-		scoped_resident_accepted_placement_writeback
-	)
-	var compact_state_chain_summary := _compact_state_chain_summary_from_placement(
-		placement_result,
-		resident_runtime_dirty_delta_ready
-	)
-	# ---- Assemble result ----
-
-	_last_pipeline_result = {
-		"ok": true,
-		"prefilter_result": prefilter_result,
-		"placement_result": placement_result,
-		"commit_result": commit_result,
-		"runtime_dirty_delta_flush_result": runtime_dirty_delta_flush_result,
-		"accepted_placement_writeback_summary": accepted_writeback_summary,
-		"compact_state_chain_summary": compact_state_chain_summary,
-		"anchor_candidate_handoff": _anchor_candidate_handoff_summary(anchor_candidate_handoff, true),
-		"resident_complexity_field_handoff": resident_field_handoff,
-		"scene_voxel_tile_resident_field_handoff": resident_field_handoff,
-		"gpu_runtime_scene_voxel_setup": _gpu_runtime_scene_voxel_setup_result.duplicate(true),
-		"profile_probe_pack": prefilter_result.get("profile_probe_pack", {}),
-		"mesh_description": mesh_description_summary,
-		"target_read_buffers": target_buffers,
-		"target_read_buffer_summary": placement_result.get("target_read_buffer_summary", prefilter_result.get("target_read_buffer_summary", {})),
-		"asset_count": _registered_descriptors.size(),
-		"blend_sv_active": blend_sv_active,
-		"brush_sv_has_content": has_brush_sv_content(),
-	}
-	if blend_sv_active:
-		release_blend_sv_fields()  # BlendSV 临时体素用完即删；BrushSV 常驻保留
-	return _last_pipeline_result
-
-
-## 返回最近一次 run_placement_pipeline 结果的深度副本；供外部在 pipeline 结束后查询详情
-func get_last_pipeline_result() -> Dictionary:
-	return _last_pipeline_result.duplicate(true)
-
-
-func _anchor_candidate_handoff_ready(handoff: Dictionary, prefilter: AutoObjectProbePrefilterGPU) -> bool:
-	if not bool(handoff.get("ok", false)) or prefilter == null or prefilter.get_rendering_device() != _rd:
-		return false
-	var anchor_rid: RID = handoff.get("anchor_buffer_rid", RID())
-	var count_rid: RID = handoff.get("anchor_count_buffer_rid", RID())
-	var topk_rid: RID = handoff.get("topk_buffer_rid", RID())
-	return anchor_rid.is_valid() and count_rid.is_valid() and topk_rid.is_valid()
-
-
-func _anchor_candidate_handoff_summary(handoff: Dictionary, consumed: bool) -> Dictionary:
-	return {
-		"ok": bool(handoff.get("ok", false)),
-		"consumed_by_vpg": consumed,
-		"anchor_buffer_rid": "valid" if (handoff.get("anchor_buffer_rid", RID()) as RID).is_valid() else "none",
-		"anchor_count_buffer_rid": "valid" if (handoff.get("anchor_count_buffer_rid", RID()) as RID).is_valid() else "none",
-		"topk_buffer_rid": "valid" if (handoff.get("topk_buffer_rid", RID()) as RID).is_valid() else "none",
-		"anchor_capacity": int(handoff.get("anchor_capacity", 0)),
-		"topk": int(handoff.get("topk", 0)),
-		"asset_count": int(handoff.get("asset_count", 0)),
-		"origin_contract": str(handoff.get("origin_contract", "one_origin_per_anchor")),
-		"gpu_first": true,
-		"cpu_fallback": false,
-	}
-
-
-static func _compact_state_chain_summary_from_placement(
-	placement_result: Dictionary,
-	resident_runtime_dirty_delta_ready: bool
-) -> Dictionary:
-	var chain: Dictionary = placement_result.get("cpu_state_chain", {})
-	var full_field: Dictionary = placement_result.get("full_field_readback", {})
-	if full_field.is_empty() and chain.has("full_field_readback"):
-		full_field = chain.get("full_field_readback", {})
-	var mode := str(chain.get("mode", full_field.get("cpu_state_chain_mode", "none")))
-	var using_compact := resident_runtime_dirty_delta_ready \
-		and mode == "compact_stamp_deltas" \
-		and bool(chain.get("stamp_delta_cpu_state_chaining", full_field.get("stamp_delta_cpu_state_chaining", false)))
-	var avoids_full_field_readback := using_compact \
-		and not bool(chain.get("full_field_readback_required", full_field.get("full_field_readback_required", true))) \
-		and not bool(full_field.get("complexity_field_out_gpu_storage_buffer_readback", false)) \
-		and not bool(full_field.get("collision_field_out_gpu_storage_buffer_readback", false))
-	return {
-		"source": "placement_result.cpu_state_chain" if not chain.is_empty() else "placement_result.full_field_readback" if not full_field.is_empty() else "none",
-		"ok": using_compact and avoids_full_field_readback,
-		"resident_runtime_dirty_delta_ready": resident_runtime_dirty_delta_ready,
-		"cpu_state_chain_mode": mode,
-		"stamp_delta_cpu_state_chaining": using_compact,
-		"full_field_readback_required": not avoids_full_field_readback,
-		"complexity_field_out_gpu_storage_buffer_readback": bool(full_field.get("complexity_field_out_gpu_storage_buffer_readback", false)),
-		"collision_field_out_gpu_storage_buffer_readback": bool(full_field.get("collision_field_out_gpu_storage_buffer_readback", false)),
-		"stamp_delta_readback_source": str(placement_result.get("stamp_delta_readback_source", chain.get("source", "none"))),
-		"cpu_fallback": false,
-	}
-
-
-static func _accepted_placement_writeback_summary_from_placement(
-	placement_result: Dictionary,
-	production_opt_in_enabled: bool
-) -> Dictionary:
-	var writeback: Dictionary = placement_result.get("gpu_autoobject_runtime_writeback", {})
-	var shader_consumed := bool(writeback.get("accepted_placement_record_shader_consumed", false))
-	var flush_mode := str(writeback.get("runtime_command_flush_mode", "none"))
-	var writeback_mode := str(writeback.get("resident_gpu_allocator_writeback_mode", "none"))
-	var shader_stats: Dictionary = writeback.get("accepted_placement_record_shader_stats", {})
-	var blocked_reason := str(writeback.get(
-		"resident_gpu_allocator_writeback_blocked_reason",
-		"none" if shader_consumed else "no_resident_allocator_shader_dispatch"
-	))
-	if writeback.is_empty():
-		blocked_reason = "missing_gpu_autoobject_runtime_writeback"
-	elif not shader_consumed and blocked_reason == "none":
-		blocked_reason = str(writeback.get("reason", "accepted_placement_record_shader_not_consumed"))
-
-	return {
-		"source": "placement_result.gpu_autoobject_runtime_writeback" if not writeback.is_empty() else "none",
-		"ok": bool(writeback.get("ok", false)),
-		"reason": str(writeback.get("reason", "missing_gpu_autoobject_runtime_writeback")),
-		"production_opt_in_enabled": production_opt_in_enabled,
-		"runtime_command_flush_mode": flush_mode,
-		"accepted_placement_record_schema_version": int(writeback.get(
-			"accepted_placement_record_schema_version",
-			GPUAutoObjectRuntimeScript.ACCEPTED_PLACEMENT_RECORD_SCHEMA_VERSION
-		)),
-		"accepted_placement_record_stride_bytes": int(writeback.get(
-			"accepted_placement_record_stride_bytes",
-			GPUAutoObjectRuntimeScript.ACCEPTED_PLACEMENT_RECORD_STRIDE_BYTES
-		)),
-		"accepted_placement_record_shader_consumed": shader_consumed,
-		"accepted_placement_record_shader_name": str(writeback.get("accepted_placement_record_shader_name", "none")),
-		"accepted_placement_record_shader_path": str(writeback.get("accepted_placement_record_shader_path", "none")),
-		"accepted_placement_record_shader_dispatch_count": int(writeback.get("accepted_placement_record_shader_dispatch_count", 0)),
-		"accepted_placement_record_shader_stats": shader_stats.duplicate(true),
-		"resident_gpu_allocator_writeback": bool(writeback.get("resident_gpu_allocator_writeback", false)),
-		"resident_gpu_allocator_writeback_mode": writeback_mode,
-		"resident_gpu_allocator_writeback_blocked_reason": blocked_reason,
-	}
-
-
-# ---------------------------------------------------------------------------
-# Internal: pipeline helpers
-# ---------------------------------------------------------------------------
-
-## 懒加载并返回 AutoObjectProbePrefilterGPU 实例（首次调用时创建）；由 run_autoobject_prefilter 与 run_placement_pipeline 调用
-func _get_prefilter() -> AutoObjectProbePrefilterGPU:
-	if _prefilter == null:
-		_prefilter = PrefilterScript.new()
-		_prefilter.attach_rendering_device(_rd, false)
-	return _prefilter
-
-
-## 懒加载并返回 VoxelPlacementGenerator 实例（首次调用时创建）；由 run_placement_pipeline 调用
-func _get_placer() -> VoxelPlacementGenerator:
-	if _placer == null:
-		_placer = VPGScript.new()
-		_placer.attach_rendering_device(_rd, false)
-	return _placer
-
-
-## 构建供 prefilter 使用的 AutoObject 数组（优先自有、否则从注册表取）；由 run_autoobject_prefilter 与 run_placement_pipeline 调用
-func _build_autoobject_array_for_pipeline() -> Array:
-	var result: Array = []
-	for i in range(_registered_descriptors.size()):
-		var ao: AutoObject = _registered_autoobject_refs[i]
-		if ao != null:
-			result.append(ao)
-			continue
-		# Use or create a lightweight wrapper.
-		var wrapper: AutoObject = _cached_lightweight_wrappers.get(i, null)
-		if wrapper == null:
-			var d: AssetDescriptor = _registered_descriptors[i]
-			if d != null:
-				var mesh_ref: Mesh = _registered_mesh[i]
-				var profile_id := _registered_profile_ids[i]
-				wrapper = _make_lightweight_autoobject(d, mesh_ref, i, profile_id)
-				_cached_lightweight_wrappers[i] = wrapper
-		result.append(wrapper if wrapper != null else null)
-	return result.duplicate()
-
-
-## 构建每个已注册资产的 placement 定义字典（descriptor + profile_id + asset_index）；
-## 由 run_placement_pipeline 传入 placer 时调用。形状不随 def 传递——descriptor 是唯一
-## 权威，其 collision 已在注册期烘焙进 profile 容器常驻 collision_records，VPG 按
-## profile_id 直读。
-func _build_placement_asset_defs() -> Array:
-	var asset_defs: Array = []
-	for asset_index in range(_registered_descriptors.size()):
-		var d := _registered_descriptors[asset_index] as AssetDescriptor
-		var entry: Dictionary = {
-			"descriptor": d,
-			"asset_index": asset_index,
-			"profile_id": _registered_profile_ids[asset_index],
-		}
-		asset_defs.append(entry)
-	return asset_defs
-
-
-## Stamp-only 提交定稿：GPU state-chain stamp 已原位写入 committed SV 常驻 field（stamp 即提交），
-## 这里推进 committer 的提交发布（散射 CPU 入口记录 + tick + tile 摘要）；由 run_placement_pipeline 在放置成功后调用
-func _commit_accepted_placements(placement_result: Dictionary, _sv: Dictionary) -> Dictionary:
-	var instance_writeback: Dictionary = placement_result.get("instance_stamp_writeback", {})
-	var writeback_mode := str(instance_writeback.get("accepted_placement_writeback_mode", ""))
-	var total_accepted := int(placement_result.get("total_placed", 0))
-
-	if writeback_mode == "gpu_state_chain_stamp":
-		var commit_summary := {}
-		if _sv_committer != null:
-			_sv_committer.commit_scene_voxels()
-			commit_summary = _sv_committer.get_last_scene_voxel_commit_summary()
+	var descriptors: Array[AssetDescriptor] = report.get("descriptors", [] as Array[AssetDescriptor])
+	# 目录没变且已经是 Ready 就不重复上传（Reload 用 force 跳过这条短路）。
+	var signature := _baked_dir_signature()
+	if not force and previous_state == ARENA_STATE_READY and signature == _arena_loaded_signature:
+		_arena_load_state = ARENA_STATE_READY
+		# 报 Arena 的 profile 数而不是 get_asset_count()：后者是**注册表条目数**，
+		# PlacementStageEnv 会在同一注册表上把同一批 descriptor 再注册一遍（profile 按
+		# hash 去重后仍是同样几个 slot），拿它当"已加载资产数"会翻倍。
 		return {
 			"ok": true,
-			"committed": int(instance_writeback.get("applied_count", total_accepted)),
-			"total_accepted": total_accepted,
-			"commit_mode": "gpu_state_chain_stamp_commit",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"gpu_commit_source": "vpg_state_chain_stamp",
-			"committer_commit_summary": commit_summary,
+			"reason": "already_loaded",
+			"phase": "Ready",
+			"dir": report.get("dir", ""),
+			"loaded_count": int(get_profile_arena_summary().get("loaded_profile_count", 0)),
 		}
 
-	return {
-		"ok": false,
-		"reason": "no_gpu_state_chain_stamp_commit",
-		"committed": 0,
-		"total_accepted": total_accepted,
-		"commit_mode": "blocked_no_gpu_state_chain_stamp",
-		"gpu_first": true,
-		"cpu_fallback": false,
-	}
-
-
-static func _make_lightweight_autoobject(descriptor: AssetDescriptor, mesh_ref: Mesh, asset_index: int, profile_id: int) -> AutoObject:
-	## Minimal AutoObject wrapper for pipeline consumption.
-	## Only exposes get_semantic_probes() and get_collision() — enough for prefilter.
-	## profile_id is the actual GPU profile ID from the actor's registry.
-	var obj := AutoObject.new()
-	obj.asset_descriptor = descriptor
-	obj.mesh = mesh_ref if mesh_ref != null else descriptor.mesh
-	obj.voxel_color = descriptor.get_color()
-	obj.voxel_complexity = descriptor.get_complexity()
-	obj.semantic_probe_density = descriptor.semantic_probe_density
-	obj.context_sensing_radius = descriptor.context_sensing_radius
-	obj.collision = descriptor.collision.duplicate(true)
-	obj.set_meta("profile_id", profile_id)
-	obj.set_meta("asset_index", asset_index)
-	return obj
-
-
-static func _pipeline_error(reason: String) -> Dictionary:
-	return {
-		"ok": false,
-		"phase": "init",
-		"reason": reason,
-		"prefilter_result": {},
-		"placement_result": {},
-		"commit_result": {},
-		"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}, false),
-		"profile_probe_pack": {},
-		"asset_count": 0,
-	}
-
-
-
-
-static func _expected_target_byte_count(sv: Dictionary) -> int:
-	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
-	return maxi(VoxelGeneral.voxel_count(grid_size), 1) * 4
-
-
-static func _prepacked_target_bytes(settings: Dictionary, key: String, expected_bytes: int) -> PackedByteArray:
-	var raw = settings.get(key, PackedByteArray())
-	if not raw is PackedByteArray:
-		return PackedByteArray()
-	var bytes := raw as PackedByteArray
-	if bytes.size() < expected_bytes:
-		return PackedByteArray()
-	return bytes if bytes.size() == expected_bytes else bytes.slice(0, expected_bytes)
-
-
-static func _target_read_buffer_debug_readback_requested(settings: Dictionary) -> bool:
-	return bool(settings.get(
-		TARGET_READ_BUFFERS_DEBUG_READBACK_KEY,
-		settings.get("read_target_read_buffer_bytes", settings.get("debug_target_read_buffer_readback", false))
-	))
-
-
-## 释放并置空缓存的 prefilter 与 placer 实例；由 _dispose_internal 调用
-func _free_cached_wrappers() -> void:
-	for asset_index in _cached_lightweight_wrappers:
-		var wrapper: AutoObject = _cached_lightweight_wrappers[asset_index]
-		if wrapper != null and not wrapper.is_queued_for_deletion():
-			if wrapper.is_inside_tree():
-				wrapper.queue_free()
-			else:
-				wrapper.free()
-	_cached_lightweight_wrappers.clear()
-
-
-
-# --------------------------------------------------------------------------
-# Complexity Field Handoff
-# --------------------------------------------------------------------------
-
-## 从 SV 字典构建 GPU-resident complexity field handoff 合约（含 RID 与元数据）；由 run_placement_pipeline 在 prefilter 前调用
-func _build_resident_complexity_field_handoff(sv: Dictionary) -> Dictionary:
-	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
-	var expected_voxel_count := VoxelGeneral.voxel_count(grid_size)
-	var complexity_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER
-	var collision_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER
-	var complexity_stride_bytes := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES
-	var collision_stride_bytes := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES
-	var complexity_expected_byte_count := maxi(expected_voxel_count, 0) * complexity_stride_bytes
-	var collision_expected_byte_count := maxi(expected_voxel_count, 0) * collision_stride_bytes
-	var collision_expected_upload_byte_count := SceneVoxelTileCodecScript.u32_field_byte_count(expected_voxel_count)
-	var summary := {}
-	var complexity_rid := RID()
-	var collision_rid := RID()
-
-	if expected_voxel_count <= 0:
-		return _resident_complexity_field_handoff_summary(false, "invalid_grid_size", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if _rd == null:
-		return _resident_complexity_field_handoff_summary(false, "no_rendering_device", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if _sv_committer == null:
-		return _resident_complexity_field_handoff_summary(false, "no_scene_voxel_committer", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if not _sv_committer.has_method("get_scene_voxel_tile_gpu_buffer"):
-		return _resident_complexity_field_handoff_summary(false, "committer_buffer_api_missing", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if not _sv_committer.has_method("get_scene_voxel_tile_gpu_buffer_status"):
-		return _resident_complexity_field_handoff_summary(false, "committer_buffer_summary_api_missing", expected_voxel_count, summary, complexity_rid, collision_rid)
-
-	var committer_rd := GodotComputeShaderBase.rendering_device_of(_sv_committer)
-	if committer_rd == null:
-		return _resident_complexity_field_handoff_summary(false, "committer_rendering_device_missing", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if committer_rd != _rd:
-		return _resident_complexity_field_handoff_summary(false, "committer_rendering_device_mismatch", expected_voxel_count, summary, complexity_rid, collision_rid)
-
-	var raw_summary = _sv_committer.call("get_scene_voxel_tile_gpu_buffer_status")
-	if not raw_summary is Dictionary:
-		return _resident_complexity_field_handoff_summary(false, "committer_buffer_summary_invalid", expected_voxel_count, summary, complexity_rid, collision_rid)
-	summary = raw_summary as Dictionary
-	complexity_rid = _sv_committer.call("get_scene_voxel_tile_gpu_buffer", complexity_buffer_name)
-	collision_rid = _sv_committer.call("get_scene_voxel_tile_gpu_buffer", collision_buffer_name)
-
-	var buffers: Dictionary = summary.get("buffers", {})
-	var complexity_buffer_summary: Dictionary = buffers.get(complexity_buffer_name, {})
-	var collision_buffer_summary: Dictionary = buffers.get(collision_buffer_name, {})
-	var complexity_count := int(complexity_buffer_summary.get("record_count", summary.get("complexity_field_voxel_count", 0)))
-	var collision_count := int(collision_buffer_summary.get("record_count", summary.get("collision_field_voxel_count", 0)))
-	var complexity_stride := int(complexity_buffer_summary.get("stride_bytes", 0))
-	var collision_stride := int(collision_buffer_summary.get("stride_bytes", 0))
-	var complexity_format := str(complexity_buffer_summary.get("format", summary.get("complexity_field_format", "")))
-	var collision_format := str(collision_buffer_summary.get("format", summary.get("collision_field_format", "")))
-
-	if not bool(summary.get("runtime_ready", false)):
-		var reason := str(summary.get("reason", "committer_resident_fields_not_runtime_ready"))
-		if reason.is_empty():
-			reason = "committer_resident_fields_not_runtime_ready"
-		return _resident_complexity_field_handoff_summary(false, reason, expected_voxel_count, summary, complexity_rid, collision_rid)
-	if bool(summary.get("cpu_fallback", false)):
-		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_summary_reports_cpu_fallback", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if str(summary.get("resident_field_read_source", "none")) != "gpu_storage_buffers":
-		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_source_not_gpu_storage_buffers", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if bool(summary.get("buffers_stale", false)):
-		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_buffers_stale", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if not complexity_rid.is_valid() or not collision_rid.is_valid():
-		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_rid_invalid", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if not bool(complexity_buffer_summary.get("rid_valid", false)) or not bool(collision_buffer_summary.get("rid_valid", false)):
-		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_summary_rid_invalid", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if complexity_stride != complexity_stride_bytes or collision_stride != collision_stride_bytes:
-		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_stride_mismatch", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if complexity_format != SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_FORMAT or collision_format != SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COLLISION_FIELD_FORMAT:
-		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_format_mismatch", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if complexity_count != expected_voxel_count or collision_count != expected_voxel_count:
-		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_record_count_mismatch", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if int(complexity_buffer_summary.get("logical_byte_size", complexity_expected_byte_count)) != complexity_expected_byte_count \
-			or int(collision_buffer_summary.get("logical_byte_size", collision_expected_byte_count)) != collision_expected_byte_count:
-		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_byte_count_mismatch", expected_voxel_count, summary, complexity_rid, collision_rid)
-	if int(complexity_buffer_summary.get("upload_byte_size", complexity_expected_byte_count)) < complexity_expected_byte_count \
-			or int(collision_buffer_summary.get("upload_byte_size", collision_expected_upload_byte_count)) < collision_expected_upload_byte_count:
-		return _resident_complexity_field_handoff_summary(false, "committer_resident_field_upload_byte_count_mismatch", expected_voxel_count, summary, complexity_rid, collision_rid)
-
-	return _resident_complexity_field_handoff_summary(true, "ok", expected_voxel_count, summary, complexity_rid, collision_rid)
-
-
-## 将 complexity field handoff 合约转换为可序列化摘要字典；由 pipeline result 组装时调用
-func _resident_complexity_field_handoff_summary(
-	ok: bool,
-	reason: String,
-	expected_voxel_count: int,
-	summary: Dictionary,
-	complexity_rid: RID,
-	collision_rid: RID
-) -> Dictionary:
-	var complexity_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER
-	var collision_buffer_name := SceneVoxelCommitterScript.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER
-	var buffers: Dictionary = summary.get("buffers", {})
-	var complexity_buffer_summary: Dictionary = buffers.get(complexity_buffer_name, {})
-	var collision_buffer_summary: Dictionary = buffers.get(collision_buffer_name, {})
-	var complexity_count := int(complexity_buffer_summary.get("record_count", summary.get("complexity_field_voxel_count", 0)))
-	var collision_count := int(collision_buffer_summary.get("record_count", summary.get("collision_field_voxel_count", 0)))
-	return {
-		"ok": ok,
-		"resident_complexity_field_handoff": ok,
-		"reason": reason,
-		"source": "SceneVoxelCommitter.get_scene_voxel_tile_gpu_buffer_status" if not summary.is_empty() else "none",
-		"producer": "SceneVoxelCommitter",
-		"owner": "SceneVoxelCommitter" if ok else "none",
-		"borrowed_from": "SceneVoxelCommitter" if ok else "none",
-		"complexity_field_buffer_rid": complexity_rid if ok else RID(),
-		"collision_field_buffer_rid": collision_rid if ok else RID(),
-		"runtime_ready": bool(summary.get("runtime_ready", false)),
-		"resident_field_read_source": str(summary.get("resident_field_read_source", "none")),
-		"runtime_read_source": str(summary.get("runtime_read_source", "none")),
-		"buffers_stale": bool(summary.get("buffers_stale", false)),
-		"uploaded_revision_matches_staging": bool(summary.get("uploaded_revision_matches_staging", false)),
-		"rendering_device": _rd if ok else null,
-		"complexity_field_stride_bytes": int(complexity_buffer_summary.get("stride_bytes", 0)),
-		"collision_field_stride_bytes": int(collision_buffer_summary.get("stride_bytes", 0)),
-		"complexity_field_format": str(complexity_buffer_summary.get("format", summary.get("complexity_field_format", ""))),
-		"collision_field_format": str(collision_buffer_summary.get("format", summary.get("collision_field_format", ""))),
-		"complexity_field_record_count": complexity_count,
-		"collision_field_record_count": collision_count,
-		"expected_voxel_count": expected_voxel_count,
-		"resident_field_voxel_count": int(summary.get("resident_field_voxel_count", complexity_count)),
-		"complexity_field_logical_byte_size": int(complexity_buffer_summary.get("logical_byte_size", 0)),
-		"collision_field_logical_byte_size": int(collision_buffer_summary.get("logical_byte_size", 0)),
-		"gpu_state_chain_source": "scene_voxel_committer_scene_voxel_tile_resident_fields" if ok else "none",
-		"gpu_first": true,
-		"cpu_fallback": false,
-	}
-
-
-
-# --------------------------------------------------------------------------
-# Target Read Buffer Handoff
-# --------------------------------------------------------------------------
-
-## 释放 resident target read GPU 缓冲并重置摘要；由 _dispose_internal 和 pipeline 开始时调用
-func _release_resident_target_read_buffer_handoff() -> void:
-	if _resident_target_field_buffer.is_valid():
-		release_rid(_resident_target_field_buffer)
-	if _resident_target_collision_buffer.is_valid():
-		release_rid(_resident_target_collision_buffer)
-	_resident_target_field_buffer = RID()
-	_resident_target_collision_buffer = RID()
-	_resident_target_collision_byte_count = 0
-
-
-## 将 target read buffer handoff 合约转换为可序列化摘要字典；由 pipeline result 组装时调用
-func _resident_target_read_buffer_handoff_summary(
-	ok: bool,
-	reason: String,
-	expected_bytes: int,
-	voxel_count: int,
-	color_source: String,
-	dispatch_groups: Vector3i,
-	target_field_byte_count: int = -1
-) -> Dictionary:
-	var safe_target_field_byte_count := target_field_byte_count
-	if safe_target_field_byte_count < 0:
-		safe_target_field_byte_count = maxi(voxel_count, 0) * 16
-	return {
-		"ok": ok,
-		"resident_target_read_buffer_handoff": ok,
-		"reason": reason,
-		"owner": "ScenePlacementActor" if ok else "none",
-		"producer": "ScenePlacementActorTargetReadBuffers",
-		"rendering_device": _rd if ok else null,
-		"target_field_buffer": _resident_target_field_buffer if ok else RID(),
-		"target_field_buffer_rid": "valid" if ok and _resident_target_field_buffer.is_valid() else "none",
-		"target_field_byte_count": safe_target_field_byte_count if ok else 0,
-		"target_field_stride_bytes": 16 if ok else 0,
-		"target_field_format": "vec4" if ok else "none",
-		"target_collision_buffer": _resident_target_collision_buffer if ok else RID(),
-		"target_collision_buffer_rid": "valid" if ok and _resident_target_collision_buffer.is_valid() else "none",
-		"target_collision_byte_count": _resident_target_collision_byte_count if ok else 0,
-		"target_collision_format": "unorm8_u32" if ok else "none",
-		"voxel_count": voxel_count if ok else 0,
-		"expected_byte_count": expected_bytes,
-		"target_color_source": color_source,
-		"target_color_format": "rgba8_u32" if ok else "none",
-		"target_read_buffer_lifetime": "ScenePlacementActor owned until next target read-buffer prep, dispose, or explicit release" if ok else "none",
-		"dispatch_groups": dispatch_groups if ok else Vector3i.ZERO,
-		"cpu_fallback": false,
-		"gpu_first": true,
-	}
-
-
-## 从独立 TargetSV visual/collision 输入构建 GPU-resident target read buffer 合约；由 run_placement_pipeline 与外部拆分 pipeline 时调用
-func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dictionary) -> Dictionary:
-	log_name = "ScenePlacementActorTargetReadBuffers"
-	_release_resident_target_read_buffer_handoff()
-	var expected_bytes := _expected_target_byte_count(sv)
-	var voxel_count := maxi(int(expected_bytes / 4), 1)
-	var target_field_byte_count := voxel_count * 16
-	var target_collision_byte_count := SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count)
-	var resident_handoff_enabled := bool(settings.get(RESIDENT_TARGET_READ_BUFFERS_OPT_IN_KEY, true))
-	var debug_readback_requested := _target_read_buffer_debug_readback_requested(settings)
-	var source_color := _prepacked_target_bytes(settings, "target_visual_rgba8_bytes", expected_bytes)
-	var color_valid := not source_color.is_empty()
-	var color_source := "target_visual_rgba8_bytes" if color_valid else "zero_filled"
-	var source_collision := _prepacked_target_bytes(
-		settings, "target_collision_r8_bytes", target_collision_byte_count)
-	var collision_valid := not source_collision.is_empty()
-	var collision_source := "target_collision_r8_bytes" if collision_valid else "zero_filled"
-
-	# 同族失败 dict（×6，仅 reason 不同）收敛为本地工厂：ReportSchema.fail 产出规范
-	# {ok:false, reason, gpu_first, cpu_fallback} + 运行时 extra；reason 逐字透传（含喂给 summary）。
-	var _fail := func(fail_reason: String) -> Dictionary:
-		return ReportSchema.fail(ReportSchema.TARGET_READ_BUFFER_FAILURE, fail_reason, {
-			"expected_byte_count": expected_bytes,
-			"voxel_count": voxel_count,
-			"target_collision_byte_count": target_collision_byte_count,
-			"target_collision_source": collision_source,
-			"resident_target_read_buffer_handoff": false,
-			"resident_target_read_buffer_handoff_summary": _resident_target_read_buffer_handoff_summary(
-				false, fail_reason, expected_bytes, voxel_count, color_source, Vector3i.ZERO),
-		})
-
-	if not ensure_device(true, false):
-		return _fail.call("missing_rendering_device")
-
-	var shader := load_compute_shader("res://shaders/pack_target_field.glsl", SCOPE_FRAME, "prepare_target_read_buffers")
-	var pipeline := create_compute_pipeline(shader, SCOPE_FRAME, "prepare_target_read_buffers")
-	if not shader.is_valid() or not pipeline.is_valid():
-		gc_frame()
-		return _fail.call("target_read_buffer_prep_shader_not_ready")
-
-	var zero_bytes := PackedByteArray()
-	zero_bytes.resize(expected_bytes)
-	var zero_collision_bytes := PackedByteArray()
-	zero_collision_bytes.resize(target_collision_byte_count)
-	var color_input_buffer := storage_buffer_from_bytes(
-		source_color if color_valid else zero_bytes,
-		SCOPE_FRAME,
-		"target_read_color_input_rgba8_u32"
-	)
-	var output_scope := SCOPE_PERSISTENT if resident_handoff_enabled else SCOPE_FRAME
-	var target_field_output_buffer := storage_buffer_zero(target_field_byte_count, output_scope, "target_field_out_vec4")
-	var target_collision_output_buffer := storage_buffer_from_bytes(
-		source_collision if collision_valid else zero_collision_bytes,
-		output_scope,
-		"target_collision_out_unorm8_u32"
-	)
-	if (
-		not color_input_buffer.is_valid()
-		or not target_field_output_buffer.is_valid()
-		or not target_collision_output_buffer.is_valid()
-	):
-		if resident_handoff_enabled:
-			release_rid(target_field_output_buffer)
-			release_rid(target_collision_output_buffer)
-		gc_frame()
-		return _fail.call("target_read_buffer_prep_storage_buffer_failed")
-
-	var set0 := create_uniform_set([
-		make_storage_uniform(0, color_input_buffer),
-		make_storage_uniform(1, target_field_output_buffer),
-	], shader, 0, SCOPE_PASS, "prepare_target_read_buffers")
-	if not set0.is_valid():
-		if resident_handoff_enabled:
-			release_rid(target_field_output_buffer)
-			release_rid(target_collision_output_buffer)
-		gc_frame()
-		return _fail.call("target_read_buffer_prep_uniform_set_failed")
-
-	var push := PushConstantLayout.new(TARGET_READ_BUFFER_PREP_PUSH).pack({
-		voxel_count = voxel_count,
-	})
-
-	var groups := dispatch_groups_1d(voxel_count, 64)
-	var cl := begin_compute_list()
-	if cl < 0:
-		if resident_handoff_enabled:
-			release_rid(target_field_output_buffer)
-			release_rid(target_collision_output_buffer)
-		gc_frame()
-		return _fail.call("target_read_buffer_prep_compute_list_begin_failed")
-	_gpu_dispatch_pipeline_sets(cl, pipeline, [set0], push, groups)
-	end_compute_list()
-	submit_and_sync()
-
-	if resident_handoff_enabled:
-		var rid_ok := target_field_output_buffer.is_valid() and target_collision_output_buffer.is_valid()
-		var target_field_bytes := PackedFloat32Array()
-		if rid_ok and debug_readback_requested:
-			target_field_bytes = _rd.buffer_get_data(target_field_output_buffer, 0, target_field_byte_count).to_float32_array()
-			if target_field_bytes.size() != voxel_count * 4:
-				release_rid(target_field_output_buffer)
-				release_rid(target_collision_output_buffer)
-				gc_frame()
-				return {
-					"ok": false,
-					"reason": "target_read_buffer_prep_debug_readback_size_mismatch",
-					"gpu_first": true,
-					"cpu_fallback": false,
-					"expected_target_field_floats": voxel_count * 4,
-					"actual_target_field_floats": target_field_bytes.size(),
-					"voxel_count": voxel_count,
-					"resident_target_read_buffer_handoff": false,
-					"resident_target_read_buffer_handoff_summary": _resident_target_read_buffer_handoff_summary(
-						false,
-						"target_read_buffer_prep_debug_readback_size_mismatch",
-						expected_bytes,
-						voxel_count,
-						color_source,
-						groups
-					),
-				}
-
-		_resident_target_field_buffer = target_field_output_buffer
-		_resident_target_collision_buffer = target_collision_output_buffer
-		_resident_target_collision_byte_count = target_collision_byte_count
-		var resident_summary := _resident_target_read_buffer_handoff_summary(
-			_resident_target_field_buffer.is_valid() and _resident_target_collision_buffer.is_valid(),
-			"ok" if _resident_target_field_buffer.is_valid() and _resident_target_collision_buffer.is_valid() else "resident_target_read_buffer_rid_invalid",
-			expected_bytes,
-			voxel_count,
-			color_source,
-			groups,
-			target_field_byte_count
-		)
-		rid_ok = _resident_target_field_buffer.is_valid() and _resident_target_collision_buffer.is_valid()
-		gc_frame()
-		return {
-			"ok": rid_ok,
-			"reason": "ok" if rid_ok else "resident_target_read_buffer_rid_invalid",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"target_field_bytes": target_field_bytes,
-			"expected_byte_count": expected_bytes,
-			"target_field_byte_count": target_field_byte_count,
-			"target_collision_byte_count": target_collision_byte_count,
-			"voxel_count": voxel_count,
-			"target_color_source": color_source,
-			"target_collision_source": collision_source,
-			"target_field_format": "vec4",
-			"target_field_stride_bytes": 16,
-			"target_collision_format": "unorm8_u32",
-			"dispatch_groups": groups,
-			"resident_target_read_buffer_handoff": rid_ok,
-			"resident_target_read_buffer_handoff_summary": resident_summary,
-			"rendering_device": _rd if rid_ok else null,
-			"target_field_buffer": _resident_target_field_buffer,
-			"target_collision_buffer": _resident_target_collision_buffer,
-			"resident_target_read_buffer_owner": "ScenePlacementActor" if rid_ok else "none",
-			"resident_target_read_buffer_lifetime": str(resident_summary.get("target_read_buffer_lifetime", "ScenePlacementActor owned until next target read-buffer prep, dispose, or explicit release")),
-		}
-
-	# Non-resident path: read back bytes for debug/legacy consumers.
-	var target_field_buf := _rd.buffer_get_data(target_field_output_buffer, 0, target_field_byte_count)
-	var target_field_bytes := target_field_buf.to_float32_array()
-	gc_frame()
-	if target_field_bytes.size() != voxel_count * 4:
+	# ── Packing + Uploading（replace_all_assets 内部就是事务式单次 Arena 上传）──
+	var upload_t0_usec := Time.get_ticks_usec()
+	if not replace_all_assets(descriptors):
+		_arena_load_state = ARENA_STATE_FAILED
+		_arena_load_error = "Arena 替换失败（见编辑器输出）"
 		return {
 			"ok": false,
-			"reason": "target_read_buffer_prep_readback_size_mismatch",
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"expected_target_field_floats": voxel_count * 4,
-			"actual_target_field_floats": target_field_bytes.size(),
-			"voxel_count": voxel_count,
-			"resident_target_read_buffer_handoff": false,
-			"resident_target_read_buffer_handoff_summary": _resident_target_read_buffer_handoff_summary(
-				false,
-				"target_read_buffer_prep_readback_size_mismatch",
-				expected_bytes,
-				voxel_count,
-				color_source,
-				groups
-			),
+			"reason": "arena_replace_failed",
+			"phase": "Uploading",
+			"dir": report.get("dir", ""),
+			"previous_arena_still_active": had_previous_arena,
 		}
 
-	var resident_summary := _resident_target_read_buffer_handoff_summary(
-		false,
-		"not_enabled",
-		expected_bytes,
-		voxel_count,
-		color_source,
-		groups
-	)
+	# ⚠ 资产表整体换代后，缓存的 stage env / 评分模型里存的全是**上一代** profile_id。
+	# 下一次 Anchors/Score 会拿它们去查新容器：`_build_asset_lookup` →
+	# `get_fine_sample_range_for_profile_id()` 查不到就硬失败（实测触发，报
+	# "profile_id=… 未注册（已注册 5 条）"）。所以换代必须连带把这些缓存清掉，
+	# 让下一次运行按新注册表重建 asset defs。
+	if _placement_env != null:
+		_placement_env.dispose()
+		_placement_env = null
+	_placement_env_error = ""
+	_score_model = {}
+	invalidate_score_cache(&"baked_assets_reloaded")
+	# ⚠ 不动 _score_runner：它缓存着 VoxelPlacementGenerator 实例，在这里置 null 会丢掉
+	# 最后一个引用、触发 GodotComputeShaderBase._notification(PREDELETE) → dispose()，
+	# 而那条 GC 期路径本身有顺序依赖缺陷（实测报 "call 'dispose' on a null instance"）。
+	# 换代要清的是 asset defs 的来源（stage env）与评分缓存，runner 本身每次 run 都会
+	# 按当时的注册表重建输入，留着无害。
 
+	_arena_loaded_signature = signature
+	_arena_load_state = ARENA_STATE_READY
+	var arena := get_profile_arena_summary()
 	return {
 		"ok": true,
 		"reason": "ok",
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"target_field_bytes": target_field_bytes,
-		"expected_byte_count": expected_bytes,
-		"target_field_byte_count": target_field_byte_count,
-		"target_collision_r8_bytes": source_collision if collision_valid else zero_collision_bytes,
-		"target_collision_byte_count": target_collision_byte_count,
-		"voxel_count": voxel_count,
-		"target_color_source": color_source,
-		"target_collision_source": collision_source,
-		"target_field_format": "vec4",
-		"target_field_stride_bytes": 16,
-		"target_collision_format": "unorm8_u32",
-		"dispatch_groups": groups,
-		"resident_target_read_buffer_handoff": false,
-		"resident_target_read_buffer_handoff_summary": resident_summary,
-		"rendering_device": null,
-		"target_field_buffer": RID(),
-		"target_collision_buffer": RID(),
-		"resident_target_read_buffer_owner": "none",
-		"resident_target_read_buffer_lifetime": "none",
+		"phase": "Ready",
+		"dir": report.get("dir", ""),
+		"loaded_count": descriptors.size(),
+		"scanned_count": int(report.get("scanned_count", 0)),
+		"upload_ms": float(Time.get_ticks_usec() - upload_t0_usec) / 1000.0,
+		"arena": arena,
 	}
+
+
+## Bake 目录指纹（路径 + 修改时间）：用于 §11.3 的 Stale 判定——产物变了但还没 Reload。
+func _baked_dir_signature() -> String:
+	var parts := PackedStringArray()
+	for path in BakedAssetLoaderScript.scan_descriptor_paths():
+		parts.append("%s:%d" % [path, FileAccess.get_modified_time(path)])
+	return "|".join(parts)
+
+
+## 当前 Arena 状态（含 Stale 判定；Ready 态下每次读都比对目录指纹）。
+func get_arena_load_state() -> String:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if _arena_load_state == ARENA_STATE_READY:
+		if not is_gpu_ready():
+			return ARENA_STATE_NOT_LOADED
+		if _baked_dir_signature() != _arena_loaded_signature:
+			return ARENA_STATE_STALE
+	return _arena_load_state
+
+
+## 按钮禁用时的 Tooltip 原因（§11.1 要求说明原因；Inspector 的按钮禁用判定也读它——空串即可用）。
+func get_placement_blocked_reason() -> String:
+	if not is_initialized():
+		return "SPA 未初始化"
+	if get_asset_count() <= 0:
+		return "Arena 未就绪：还没有已加载的资产 —— 先点 Load Baked Assets"
+	if not is_gpu_ready():
+		return "Arena 未就绪：GPU profile/Arena 缓冲未上传"
+	return ""
+
+
+func _generate_anchors_from_inspector() -> void:
+	_finish_inspector_action("Anchors", _run_placement_action(&"generate_anchors", run_anchors))
+
+
+func _score_from_inspector() -> void:
+	_finish_inspector_action("Score", _run_placement_action(&"calculate_voxel_scores", run_score))
+
+
+func _place_from_inspector() -> void:
+	_finish_inspector_action("Place", _run_placement_action(&"place_final_autoobjects", run_place))
+
+
+## Inspector 动作的统一派发：**有 VolumeScore provider 就走 provider 的入口**，没有才直接
+## 跑 SPA 的 `run_*`。流水线只跑一遍——provider 那三个入口内部调的正是本 SPA 的 `run_*`
+## （`generate_anchors` → `run_anchors`、`run_volume_score_pipeline` → `run_score`、
+## `place_final_autoobjects` → `run_place`），它们只是在后面接上了 demo 侧的显示重建。
+##
+## ⚠ 三个按钮此前直接调 `run_*()`，把 provider 那一跳整个跳过了：流水线跑完、模型换代、
+## `run_anchors` 老老实实返回 `ok=true, anchors=10386`，但 `AnchorPoints` / 胜者 mesh /
+## 放置实例**一个都不重建**。表现是「点了按钮什么都没发生」且控制台零提示，而且因为
+## 「可视化即拾取几何」，没画出来的域连点都点不中（见 SPASelectionHost.collect_pick_drawables）。
+## 三个按钮是同一个洞，所以修在这条公共派发上，而不是各修各的。
+##
+## ⚠ 不能把这一跳挪进 `run_*()` 里：provider 的入口自己就调 `run_*()`，那会变成无限递归。
+func _run_placement_action(provider_method: StringName, fallback: Callable) -> Dictionary:
+	var provider := get_volume_provider(&"VolumeScore")
+	if provider != null and provider.has_method(provider_method):
+		var result = provider.call(provider_method)
+		return result if result is Dictionary else {"ok": false, "reason": "provider_action_returned_non_dictionary"}
+	return fallback.call()
+
+
+func _finish_inspector_action(action_name: String, result: Dictionary) -> void:
+	if not bool(result.get("ok", false)):
+		push_warning("[ScenePlacementActor] %s: %s" % [action_name, str(result.get("reason", "not ok"))])
+	notify_property_list_changed()
+
+
+func _placement_status_text() -> String:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	var lines: Array[String] = [_arena_status_text()]
+	# 选中下标归 SelectionHost，摘要文案归 SPA——所以问 host（它再回头按下标问我），
+	# 而不是问 provider。provider 上那份已随选中态一起退役。
+	if _selection_host != null and is_instance_valid(_selection_host):
+		var text := _selection_host.get_selected_anchor_summary_text()
+		if not text.is_empty():
+			lines.append("")
+			lines.append(text)
+			return "\n".join(lines)
+	lines.append("")
+	lines.append("SPA %s — %s" % [
+		lifecycle_state_name(),
+		_failure_reason if not _failure_reason.is_empty() else "ready for placement"])
+	return "\n".join(lines)
+
+
+## Arena 只读状态面板（计划 §11.3）。
+func _arena_status_text() -> String:
+	var state := get_arena_load_state()
+	var arena := get_profile_arena_summary()
+	if arena.is_empty():
+		return "Profile Arena: %s (no runtime container)" % state
+
+	var capacity := int(arena.get("profile_capacity", 0))
+	var loaded := int(arena.get("loaded_profile_count", 0))
+	var arena_bytes := int(arena.get("arena_byte_count", 0))
+	var lines: Array[String] = [
+		"Profile Arena: %s%s" % [state, _arena_state_suffix(state)],
+		"Loaded profiles: %d / %d" % [loaded, capacity],
+		"Arena: %s, %s" % [
+			"ready" if bool(arena.get("runtime_ready", false)) else "not ready",
+			_format_mib(arena_bytes)],
+		"Slot stride: %d bytes" % int(arena.get("slot_stride_bytes", 0)),
+		"Samples: %d valid / %d capacity (max %d per profile)" % [
+			int(arena.get("valid_sample_count", 0)),
+			int(arena.get("sample_capacity", 0)),
+			int(arena.get("max_samples_per_profile", 0))],
+		"Pivots: %d valid / %d capacity (max %d per profile)" % [
+			int(arena.get("valid_pivot_count", 0)),
+			int(arena.get("pivot_capacity", 0)),
+			int(arena.get("max_pivots_per_profile", 0))],
+		"Unused arena space: %.1f%% (%s free)" % [
+			float(arena.get("wasted_ratio", 0.0)) * 100.0,
+			_format_mib(int(arena.get("wasted_bytes", 0)))],
+		"Revision: %d" % int(arena.get("revision", 0)),
+	]
+
+	var layout_errors: PackedStringArray = arena.get("layout_errors", PackedStringArray())
+	var capacity_errors: PackedStringArray = arena.get("capacity_errors", PackedStringArray())
+	for error_text in layout_errors:
+		lines.append("! layout: %s" % error_text)
+	for error_text in capacity_errors:
+		lines.append("! capacity: %s" % error_text)
+	var upload_error := str(arena.get("last_upload_error", ""))
+	if not upload_error.is_empty():
+		lines.append("! upload: %s" % upload_error)
+	if state == ARENA_STATE_FAILED and not _arena_load_error.is_empty():
+		lines.append("! %s" % _arena_load_error)
+		# 失败时必须明确交代旧 Arena 还能不能用（§11.4 末条）。
+		lines.append("Previous Arena Still Active" if loaded > 0 else "No Arena Loaded")
+	return "\n".join(lines)
+
+
+static func _arena_state_suffix(state: String) -> String:
+	match state:
+		ARENA_STATE_NOT_LOADED:
+			return " — 点 Load Baked Assets 加载 Bake 产物"
+		ARENA_STATE_STALE:
+			return " — Bake 产物已变化，当前仍在用上一版 Arena（点 Reload 提交新版本）"
+		ARENA_STATE_FAILED:
+			return " — 最近一次加载失败"
+		_:
+			return ""
+
+
+static func _format_mib(byte_count: int) -> String:
+	return "%.2f MiB" % (float(byte_count) / 1048576.0)
+
+
+## 只读已加载资产列表（计划 §11.2）。优先显示最近一次扫描的逐资产摘要；
+## 没扫描过就退回当前注册表，至少让人看见 Arena 里现在装着什么。
+func _placement_assets_summary_text() -> String:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if not _arena_load_entries.is_empty():
+		return BakedAssetLoaderScript.format_asset_list(
+			_arena_load_entries, "Loaded Assets — %s" % str(_arena_load_report.get("dir", "")))
+	var descriptors := get_registered_descriptors()
+	if descriptors.is_empty():
+		return "Loaded Assets (0)\n  <点 Load Baked Assets 从 Bake 目录一键加载>"
+	var lines: Array[String] = ["Registered Assets (%d) — 未经 Load Baked Assets 扫描" % descriptors.size()]
+	for i in range(descriptors.size()):
+		var descriptor := descriptors[i]
+		var branch := "└─" if i == descriptors.size() - 1 else "├─"
+		lines.append("%s %-24s Profile %-6d %s" % [
+			branch,
+			str(descriptor.asset_id) if not str(descriptor.asset_id).is_empty() else "<no asset_id>",
+			get_profile_id_for_asset(i),
+			descriptor.resource_path,
+		])
+	return "\n".join(lines)
+
+
+func _set_voxel_display_proxy(display_key: String, visible: bool) -> void:
+	if _selection_host != null:
+		_selection_host.set_voxel_display_visible(display_key, visible)
+
+
+func _voxel_display_proxy(display_key: String) -> bool:
+	return _selection_host.is_voxel_display_visible(display_key) if _selection_host != null else true
+
+
+# ⚠ 编辑器软重载（@tool 脚本重新解析）后的成员修复，别当成冗余判空删掉。
+#
+# 事实依据（gdscript.cpp GDScriptInstance::reload_members）：软重载只把**重载前已存在**
+# 的成员按名字搬进新槽位（值原样保留，不回初始值）；本次重载**新增**的成员槽是默认构造
+# 的 Variant = nil，声明里的初始化器**不会**重跑。带静态类型也拦不住——实例槽本身是
+# Variant，nil 就这么躺在一个声明为 int/String/Dictionary 的成员里。SPA 是常驻编辑器
+# 场景里的 @tool 节点，是本项目里最容易吃到这一下的类：重载后第一次调用就会炸在
+# `LifecycleState.keys()[nil]`（用 nil 下标数组）、`_failure_reason.is_empty()` 与
+# `_providers.has(...)`（在 Nil 上找方法）这些位置。
+#
+# ⚠ 必须用 `is` 而不是 `== null`：对静态类型已知的操作数 GDScript 会挑验证求值器
+# （gdscript_byte_codegen.cpp write_binary_operator），而 Variant 给 (INT, NIL)、
+# (DICTIONARY, NIL) 这类组合注册的是 OperatorEvaluatorAlwaysFalse（variant_op.cpp），
+# `_lifecycle_state == null` 会被编成恒 false，判空形同虚设。
+# `is` 编成 OPCODE_TYPE_TEST_BUILTIN，查的是运行时真实类型，nil 一定为假。
+#
+# 语义：只在"槽里是 nil"时回填声明初始值，正常路径一个值都不动。
+# _lifecycle_state 回到 NEW = 允许 initialize_runtime() 重新构建（DISPOSED 分支本就这么
+# 走）；三个 _last_*_result 与 _target_read_buffers 回到空字典 = 报告里如实显示"还没跑过"；
+# _providers 回到空 = 由 provider 注册重填。
+func _repair_soft_reloaded_members() -> void:
+	if not (_lifecycle_state is int): _lifecycle_state = LifecycleState.NEW
+	if not (_failure_reason is String): _failure_reason = ""
+	if not (_arena_load_state is String): _arena_load_state = ARENA_STATE_NOT_LOADED
+	if not (_arena_load_error is String): _arena_load_error = ""
+	if not (_arena_load_entries is Array): _arena_load_entries = []
+	if not (_arena_load_report is Dictionary): _arena_load_report = {}
+	if not (_arena_loaded_signature is String): _arena_loaded_signature = ""
+	if not (_owns_committer is bool): _owns_committer = false
+	if not (_providers is Dictionary): _providers = {}
+	if not (_target_read_buffers is Dictionary): _target_read_buffers = {}
+	if not (_brush_sv_control_metadata is Dictionary): _brush_sv_control_metadata = {}
+	if not (_last_anchor_result is Dictionary): _last_anchor_result = {}
+	if not (_last_score_result is Dictionary): _last_score_result = {}
+	if not (_last_place_result is Dictionary): _last_place_result = {}
+	# revision 回到 0 与三个 _last_*_result 回到空是同一次失效：软重载后既没有结果也
+	# 没有交接，借方核对时看到的 0 与空 handoff 一致，不会误认旧快照还新鲜。
+	if not (_anchor_revision is int): _anchor_revision = 0
+	if not (_score_revision is int): _score_revision = 0
+	if not (_anchor_handoff is Dictionary): _anchor_handoff = {}
+	if not (_fine_score_handoff is Dictionary): _fine_score_handoff = {}
+	if not (_score_model is Dictionary): _score_model = {}
+	if not (_score_cache_key is Dictionary): _score_cache_key = {}
+	if not (_placed_object_ids is Array): _placed_object_ids = []
+	if not (_placed_seed_floats is PackedFloat32Array): _placed_seed_floats = PackedFloat32Array()
+	if not (_placement_env_error is String): _placement_env_error = ""
+	if not (_make_count is int): _make_count = 0
+	if not (_dispose_count is int): _dispose_count = 0
+	if not (_ready_initialization_ms is float): _ready_initialization_ms = 0.0
+	if not (_is_painting is bool): _is_painting = false
+	if not (_brush_dirty is bool): _brush_dirty = false
+	_repair_soft_reloaded_brush_watermark()
+
+
+func lifecycle_state() -> int:
+	_repair_soft_reloaded_members()
+	return _lifecycle_state
+
+
+func lifecycle_state_name() -> String:
+	_repair_soft_reloaded_members()
+	return LifecycleState.keys()[_lifecycle_state]
+
+
+func is_ready() -> bool:
+	_repair_soft_reloaded_members()
+	return _lifecycle_state == LifecycleState.READY
+
+
+func initialize_runtime() -> bool:
+	_repair_soft_reloaded_members()
+	if _lifecycle_state == LifecycleState.READY:
+		return true
+	if _lifecycle_state == LifecycleState.INITIALIZING:
+		return false
+	if _lifecycle_state == LifecycleState.SHUTTING_DOWN:
+		return false
+	if _lifecycle_state == LifecycleState.DISPOSED:
+		_lifecycle_state = LifecycleState.NEW
+	var started_usec := Time.get_ticks_usec()
+	_lifecycle_state = LifecycleState.INITIALIZING
+	_failure_reason = ""
+	_ensure_owned_tree()
+
+	_tile_store = SceneVoxelTileStoreScript.new()
+	_field_builder = SceneVoxelFieldBuilderScript.new()
+	_sv_committer = SceneVoxelCommitterScript.new(
+		base_resolution,
+		capture_size,
+		_tile_store,
+		_field_builder,
+		self
+	)
+	_owns_committer = true
+	var rd := _sv_committer.get_rendering_device() as RenderingDevice
+	if rd == null:
+		_release_gpu_owners(false)
+		_lifecycle_state = LifecycleState.UNAVAILABLE_NO_RD
+		_failure_reason = "rendering_device_unavailable"
+		return false
+
+	_sv_committer.configure_scene_voxel_grid(grid_size, voxel_size, grid_origin)
+	_seed_terrain_collision_field()
+
+	_runtime = ScenePlacementRuntimeScript.new()
+	_runtime.set_autoobject_runtime_capacity(maxi(autoobject_capacity, 1))
+	if not _runtime.attach_rendering_device(rd, false):
+		return _fail_initialization("runtime_rendering_device_attach_failed")
+	if not _runtime.initialize(false, false, _sv_committer, _tile_store, self):
+		return _fail_initialization("runtime_initialize_failed")
+	if not _brush_sv_control_metadata.is_empty():
+		_runtime.set_brush_sv_persistence_metadata(_brush_sv_control_metadata)
+	_make_count += 1
+
+	if not _register_exported_assets():
+		return _fail_initialization("exported_asset_registration_failed")
+	var commit_result := _sv_committer.commit_scene_voxels()
+	if not bool(commit_result.get("ok", false)):
+		return _fail_initialization("initial_scene_sv_commit_failed")
+	if _tile_store == null or not _tile_store.ensure_scene_voxel_tile_buffers_uploaded(true):
+		return _fail_initialization("initial_svtile_gpu_bootstrap_failed")
+	_runtime.ensure_brush_sv_fields()
+	_prepare_target_read_buffers()
+	if _target_read_buffers.is_empty() or not bool(_target_read_buffers.get("ok", false)):
+		return _fail_initialization("target_read_buffers_not_ready")
+
+	if _selection_host != null:
+		_selection_host.attach_runtime_context(_sv_committer)
+	_ready_initialization_ms = float(Time.get_ticks_usec() - started_usec) / 1000.0
+	_lifecycle_state = LifecycleState.READY
+	return true
+
+
+func _shutdown(sync_before_free := true) -> void:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if _lifecycle_state in [LifecycleState.SHUTTING_DOWN, LifecycleState.DISPOSED]:
+		return
+	_lifecycle_state = LifecycleState.SHUTTING_DOWN
+	_is_painting = false
+	_brush_dirty = false
+	for provider in _providers.values():
+		if is_instance_valid(provider) and _selection_host != null:
+			_selection_host.unregister_volume_score_provider(provider)
+	_providers.clear()
+	# 交接必须先于 GPU owner 释放作废：借方核对 revision 时不能看到「还在发布中」的
+	# 记录指向一批马上要被 free 的 RID。两侧 revision 都递增，旧快照一律判旧。
+	_anchor_revision += 1
+	_anchor_handoff = {}
+	_last_anchor_result = {}
+	_invalidate_score_handoff()
+	_last_score_result = {}
+	_last_place_result = {}
+	# 阶段底座只缓存阶段产物、不拥有任何 GPU owner，dispose 后紧跟着的 _release_gpu_owners
+	# 才是真正释放显存的一步；这里先断掉它，免得后续路径又经它借到已死 RID。
+	if _placement_env != null:
+		_placement_env.dispose()
+		_placement_env = null
+	_placement_env_error = ""
+	_score_runner = null
+	_score_model = {}
+	_score_cache_key = {}
+	_placed_object_ids.clear()
+	_placed_seed_floats = PackedFloat32Array()
+	if _selection_host != null:
+		_selection_host.release_gpu_resources(sync_before_free)
+	_target_read_buffers.clear()
+	_release_gpu_owners(sync_before_free)
+	_dispose_count += 1
+	_lifecycle_state = LifecycleState.DISPOSED
+
+
+func _release_gpu_owners(sync_before_free: bool) -> void:
+	if _runtime != null:
+		_runtime.dispose(sync_before_free)
+		_runtime = null
+	if _field_builder != null:
+		_field_builder.teardown()
+		_field_builder = null
+	if _tile_store != null:
+		_tile_store.teardown()
+		_tile_store = null
+	if _sv_committer != null and _owns_committer:
+		_sv_committer.dispose(sync_before_free)
+	_sv_committer = null
+	_owns_committer = false
+
+
+func _fail_initialization(reason: String) -> bool:
+	_failure_reason = reason
+	push_error("[ScenePlacementActor] initialization failed: %s" % reason)
+	_release_gpu_owners(false)
+	_lifecycle_state = LifecycleState.FAILED
+	return false
+
+
+func _ensure_owned_tree() -> void:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	_volumes = get_node_or_null("Volumes") as Node
+	if _volumes == null:
+		_volumes = Node.new()
+		_volumes.name = "Volumes"
+		add_child(_volumes)
+	_target_sv = _volumes.get_node_or_null("TargetSV") as TargetSVSetup
+	if _target_sv == null:
+		_target_sv = TargetSVSetupScript.new()
+		_target_sv.name = "TargetSV"
+		_volumes.add_child(_target_sv)
+	# 三个逻辑卷的节点。**V1 之前它们是裸 `Node`**：只为让当时的 `spa_checks.test_owned_tree`
+	# （该套件已于 2026-08-07 删除）的 direct_component_instance_id != 0 通过而存在，
+	# 全仓没有任何地方读它们。
+	# 现在换成 AutoVolumeField 子类，它们才第一次真的代表各自的域——域身份、元素空间、
+	# 场对读口、内容修订号都由节点自己回答（《AutoVolume 公用体积基类计划》V1）。
+	#
+	# ⚠ 场对 Buffer 的**所有权没有变**：SceneSV 仍归 SceneVoxelTileStore（V3 劈开前），
+	# BrushSV / BlendSV 仍归 ScenePlacementRuntime（它才是 RenderingDevice 持有者）。
+	# 三个节点都是转发口，不是新的所有者——搬所有权会让 GPU 管线反过来依赖场景树节点。
+	#
+	# ⚠ 已存场景里这三个节点是无脚本的 `Node`，类型对不上，必须**换掉**而不是复用：
+	# 直接 set_script 到 Node 上会得到一个 Node3D 脚本挂在 Node 实例上（缺 transform，
+	# 基类的 is Node3D 判型与 to_global 全废）。换的时候按名字先删旧的。
+	#
+	# 所有权报告按「每个 PickableDomain 自报」生成（2026-08-10）——本表只负责建节点，
+	# 报告行的形状与内容由各域自己回答（含 SVTile 的 buffers 明细，见其 _extend 钩子）。
+	for volume_spec in [
+		[&"SceneSV", SceneSVVolumeScript],
+		[&"BrushSV", BrushSVVolumeScript],
+		[&"BlendSV", BlendSVVolumeScript],
+		[&"SVTile", SVTileVolumeScript],
+		[&"Anchor", AnchorVolumeScript],
+		# 实例域（SoA + alive[]），**不是体积卷**——但同样是 PickableDomain，自报同形状的一行。
+		[&"AutoObject", AutoObjectDomainScript],
+	]:
+		var volume_key: StringName = volume_spec[0]
+		var volume_script: Script = volume_spec[1]
+		var existing := _volumes.get_node_or_null(NodePath(String(volume_key)))
+		if existing != null and existing.get_script() != volume_script:
+			_volumes.remove_child(existing)
+			existing.free()
+			existing = null
+		if existing == null:
+			var volume_node: Node3D = volume_script.new()
+			volume_node.name = String(volume_key)
+			_volumes.add_child(volume_node)
+
+	_brush_volume = _volumes.get_node_or_null("BrushSV") as BrushSVVolume
+
+	_interaction = get_node_or_null("Interaction") as Node3D
+	if _interaction == null:
+		_interaction = Node3D.new()
+		_interaction.name = "Interaction"
+		add_child(_interaction)
+	_selection_host = _interaction.get_node_or_null("SelectionHost") as SPASelectionHost
+	if _selection_host == null:
+		_selection_host = SPASelectionHostScript.new()
+		_selection_host.name = "SelectionHost"
+		_interaction.add_child(_selection_host)
+		_selection_host.configure({})
+	# ⚠ 这里不注入 SPA：SelectionHost 与 SPA 是结构性强绑定（host 按构造就长在本子树里），
+	# 宿主由它自己的父链解析得到，父链上找不到即报错。别再加 attach_spa 之类的注入口——
+	# 那会变成"两套绑定机制、不清楚谁赢"。
+	_selection_host.attach_target_sv(_target_sv)
+	_brush_input = _interaction.get_node_or_null("MeshFillBrush") as MeshFillBrush
+	if _brush_input != null:
+		# attach_target_sv 只在 TargetSV 真的**换了**时返回 true（addon 只做身份跟踪，
+		# 2026-08-10 起不再持有任何笔刷数据）。换靶时笔迹画在旧靶网格上，必须两半一起清：
+		# clear_brush_sv() 现在同时清 GPU 场与卷节点的 CPU 列表/显示，
+		# 并包含 _invalidate_brush_flush_watermark()。
+		if _brush_input.attach_target_sv(_target_sv):
+			clear_brush_sv()
+
+	_displays = get_node_or_null("Displays") as Node3D
+	if _displays == null:
+		_displays = Node3D.new()
+		_displays.name = "Displays"
+		add_child(_displays)
+
+
+## 规范坐标框架的**权威读口**：网格 = grid_size、格距 = voxel_size、原点 = grid_origin。
+##
+## 事实源仍是上面那三个 @export，本方法只是把「这三项合起来才叫一个框架」这件事变成一个
+## 有名字的东西。设立它的直接原因：卷侧（TargetSVSetup / MeshFillBrush / SPASelectionHost /
+## PlacementStageEnv）此前各自拼同一个三键字典，《AutoVolume 公用体积基类计划》§2.3 要求
+## 基类「通过 _spa 引用转发，不复制」——转发得有个转发目标。
+##
+## ⚠ 本方法**不取代**四个 GPU 组件的直读：SceneVoxelCommitter / SceneVoxelTileStore /
+## SceneVoxelFieldBuilder / ScenePlacementRuntime 经注入的 `_grid_owner`（= 本节点）鸭子类型
+## 直读 `_grid_owner.grid_size`（field builder 还读 base_resolution）。那四处 grep
+## `spa.grid_size` 抓不到，且改名只会在跑管线时炸、parse gate 与 -e 门禁都放过。
+## 三个 @export 因此必须保持原名可读，本方法是**增设**而非替换。
+##
+## ⚠ 别把返回值按字典顺序展开喂给 `VoxelGeneral.scaled_grid_frame()`：那个函数的形参序是
+## (grid_size, **grid_origin**, **voxel_size**, display_scale)，与这里的键序正好把后两项对调。
+## 两者都是 Vector3，传反了不报错、不崩，只是整套坐标静默错位。要按键名取。
+func get_grid_frame() -> Dictionary:
+	return {
+		"grid_size": grid_size,
+		"voxel_size": voxel_size,
+		"grid_origin": grid_origin,
+	}
+
+
+func _seed_terrain_collision_field() -> void:
+	if _field_builder == null:
+		push_error("[ScenePlacementActor] _seed_terrain_collision_field: _field_builder 为 null —— 调用点在 initialize_runtime 中紧跟 field builder 构造，出现即生命周期已断。")
+		assert(false, "[ScenePlacementActor] _seed_terrain_collision_field: _field_builder == null")
+		return
+	var terrain_result: Dictionary = TerrainInitializerScript.reuse_shared_terrain(self)
+	if not bool(terrain_result.get("ok", false)):
+		return
+	var terrain := terrain_result.get("terrain") as MeshInstance3D
+	var heights := TerrainInitializerScript.terrain_height_field_from_mesh(
+		terrain, grid_size.x, TerrainConfigScript.MAX_HEIGHT)
+	if heights.is_empty():
+		# 地形节点存在却解不出高度场（成因已由 TerrainInitializer 报出）。旧行为直接
+		# return —— SceneSV 的地形碰撞底噪整块缺失，放置会当成“地面平在 y=0”。
+		push_error("[ScenePlacementActor] _seed_terrain_collision_field: 地形 '%s' 高度场解算失败（texture_size=%d）——地形碰撞底噪无法播种。" % [
+			terrain.name if terrain != null else "<null>", grid_size.x])
+		assert(false, "[ScenePlacementActor] _seed_terrain_collision_field: empty height field")
+		return
+	var values := PackedFloat32Array()
+	values.resize(grid_size.x * grid_size.z)
+	if heights.size() != values.size():
+		# 旧行为按 mini() 截断/部分填充：多出来的体素列保持 0，得到一块“半张地形”。
+		push_error("[ScenePlacementActor] _seed_terrain_collision_field: 高度场尺寸与网格 XZ 不符（heights=%d, expected=%d, grid_size=%s）——截断填充会留下半张地形。" % [
+			heights.size(), values.size(), str(grid_size)])
+		assert(false, "[ScenePlacementActor] _seed_terrain_collision_field: height field size mismatch")
+		return
+	for i in range(values.size()):
+		values[i] = clampf(heights[i] / 100000.0, 0.0, 1.0)
+	var image := Image.create_from_data(grid_size.x, grid_size.z, false, Image.FORMAT_RF, values.to_byte_array())
+	_field_builder.set_terrain_base_collision_field(image)
+
+
+func _register_exported_assets() -> bool:
+	if _runtime == null:
+		push_error("[ScenePlacementActor] _register_exported_assets: _runtime 为 null —— 调用点在 runtime.initialize 成功之后，出现即生命周期已断。")
+		assert(false, "[ScenePlacementActor] _register_exported_assets: _runtime == null")
+		return false
+	if placement_assets.is_empty():
+		return true
+	var descriptors: Array = []
+	var meshes: Array = []
+	for asset_index in range(placement_assets.size()):
+		var descriptor: AssetDescriptor = placement_assets[asset_index]
+		if descriptor == null:
+			# 旧行为 continue：导出数组里的空槽被静默跳过，场景里少了一个资产而注册
+			# 结果一切正常，事后只能靠数数发现。
+			push_error("[ScenePlacementActor] placement_assets[%d] 为 null（导出数组长度=%d）——跳过它等于静默少注册一个资产。" % [
+				asset_index, placement_assets.size()])
+			assert(false, "[ScenePlacementActor] _register_exported_assets: null entry in placement_assets")
+			return false
+		descriptors.append(descriptor)
+		meshes.append(descriptor.get_mesh())
+	var profile_ids: Array[int] = _runtime.register_asset_batch(descriptors, meshes)
+	if profile_ids.has(-1):
+		# 旧行为丢弃返回值：注册失败的资产没有 GPU profile，评分/放置会当它不存在。
+		push_error("[ScenePlacementActor] 导出资产注册失败（asset_count=%d, profile_ids=%s）——缺 profile 的资产在 GPU 上没有形状与探针数据。" % [
+			descriptors.size(), str(profile_ids)])
+		assert(false, "[ScenePlacementActor] _register_exported_assets: register_asset_batch returned -1")
+		return false
+	return true
+
+
+func _prepare_target_read_buffers() -> void:
+	_target_read_buffers.clear()
+	if _runtime == null or _target_sv == null or _sv_committer == null or _tile_store == null:
+		push_error("[ScenePlacementActor] _prepare_target_read_buffers: 组件缺失（runtime=%s, target_sv=%s, committer=%s, tile_store=%s）——调用点在 initialize_runtime 中它们均已构造。" % [
+			str(_runtime != null), str(_target_sv != null), str(_sv_committer != null), str(_tile_store != null)])
+		assert(false, "[ScenePlacementActor] _prepare_target_read_buffers: missing owned component")
+		return
+	var visual_bytes := _target_sv.get_visual_bytes()
+	var collision_r8 := _target_sv.get_collision_bytes()
+	var voxel_count := grid_size.x * grid_size.y * grid_size.z
+	if visual_bytes.size() != voxel_count * 4 or collision_r8.size() != voxel_count:
+		# 旧行为静默 return，只在上层留下一个笼统的 target_read_buffers_not_ready。
+		push_error("[ScenePlacementActor] _prepare_target_read_buffers: TargetSV 字节数与网格不符（visual=%d 期望=%d, collision=%d 期望=%d, grid_size=%s）——TargetSV 烘焙数据与 grid_size 必须同源。" % [
+			visual_bytes.size(), voxel_count * 4, collision_r8.size(), voxel_count, str(grid_size)])
+		assert(false, "[ScenePlacementActor] _prepare_target_read_buffers: target sv byte count mismatch")
+		return
+	var settings := {
+		"target_visual_rgba8_bytes": visual_bytes,
+		"target_collision_r8_bytes": SceneVoxelTileCodecScript.u32_bytes_from_r8_bytes(collision_r8, voxel_count),
+	}
+	_target_read_buffers = _runtime.prepare_target_read_buffers_from_common_gpu(settings, _sv_committer.get_sv())
+	if bool(_target_read_buffers.get("ok", false)):
+		_tile_store.mark_all_scene_voxel_tiles_dirty(
+			{"target": true, "scoring": true},
+			{"id": "target_sv_revision", "source_id": "target_sv_revision"}
+		)
+
+
+func get_identity_report() -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	var rd := get_rendering_device()
+	# GPU AutoObject runtime 的就绪位单独报：它**不等于** SPA 的 ready。它没就绪时，
+	# 放置的 write_accepted_placements_to_gpu_runtime 不会置位（scene_placement_runtime.gd
+	# 的 `if _gpu_runtime != null and _gpu_runtime.is_ready()` 门），于是 alive/transform
+	# 缓冲一个字节都不写——而 spawned 计的是放置结果，照样报几百个。
+	# 表现是"放置成功但什么都没渲染、点选也拿不到对象"，且全程零报错。
+	var gpu_runtime = get_gpu_runtime()   # 无静态类型（RefCounted 子类），故不用 :=
+	var gpu_runtime_ready: bool = gpu_runtime != null and gpu_runtime.is_ready()
+	return {
+		"lifecycle_state": lifecycle_state_name(),
+		"gpu_autoobject_runtime_ready": gpu_runtime_ready,
+		"gpu_autoobject_runtime_not_ready_reason": 			"" if gpu_runtime_ready else (
+				str(gpu_runtime.get_not_ready_reason()) if gpu_runtime != null 					and gpu_runtime.has_method("get_not_ready_reason") else "gpu_runtime_null"),
+		"ready": is_ready(),
+		"failure_reason": _failure_reason,
+		"spa_instance_id": get_instance_id(),
+		"runtime_instance_id": _instance_id(_runtime),
+		"rendering_device_instance_id": _instance_id(rd),
+		"committer_instance_id": _instance_id(_sv_committer),
+		"tile_store_instance_id": _instance_id(_tile_store),
+		"field_builder_instance_id": _instance_id(_field_builder),
+		"make_count": _make_count,
+		"dispose_count": _dispose_count,
+		"ready_initialization_ms": _ready_initialization_ms,
+		"grid_size": grid_size,
+		"voxel_size": voxel_size,
+		"grid_origin": grid_origin,
+	}
+
+
+func get_volume_ownership_report() -> Array[Dictionary]:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	# 旧实现按 VOLUME_KEYS 逐键 get_volume()，树的存在性由那条链隐式保证；
+	# 现在直接遍历 _volumes 的孩子，先显式把树建出来。
+	_ensure_owned_tree()
+	var report: Array[Dictionary] = []
+	var rd_id := _instance_id(get_rendering_device())
+	# 每个域自报一行（PickableDomain.ownership_report_entry，2026-08-10）：
+	# 修订号 / resident / 域专属明细全部由节点回答——此前 SVTile 靠一条手工合成行、
+	# Anchor / AutoObject 干脆缺席、BlendSV 的 resident 因字典读数被节点覆盖而恒 false。
+	# SPA 只补它自己才知道的键；"ready" 缺席才补（SVTile 按 GPU 真值先写，不覆盖）。
+	if _volumes != null:
+		for child in _volumes.get_children():
+			if not (child is PickableDomain):
+				continue
+			var entry := (child as PickableDomain).ownership_report_entry()
+			entry["lifecycle_owner_path"] = get_path() if is_inside_tree() else NodePath()
+			if not entry.has("ready"):
+				entry["ready"] = is_ready()
+			entry["rd_instance_id"] = rd_id
+			report.append(entry)
+	for provider_key in _providers:
+		var provider := _providers[provider_key] as Node
+		report.append({
+			"name": String(provider_key),
+			"owner_path": provider.get_path() if provider != null and provider.is_inside_tree() else NodePath(),
+			"lifecycle_owner_path": get_path() if is_inside_tree() else NodePath(),
+			"revision": 0,
+			"resident": true,
+			"ready": provider != null and is_ready(),
+			"rd_instance_id": rd_id,
+			"direct_component_instance_id": _instance_id(provider),
+		})
+	# revision 显式传入而不是从 state 字典里猜：现在它由 SPA 自己持有，
+	# 也是借方核对快照新鲜度用的同一个数（见 get_placement_selection_handoff）。
+	report.append(_pipeline_state_report(
+		&"AnchorHandoff", get_anchor_candidate_handoff(), rd_id, _anchor_revision))
+	report.append(_pipeline_state_report(
+		&"FineCandidates", _last_score_result, rd_id, _score_revision))
+	report.append(_pipeline_state_report(&"FineWinners", _last_place_result, rd_id))
+	return report
+
+## 当前 Anchor 常驻交接（AutoObjectProbePrefilterGPU 产出，owner=prefilter）。
+func get_anchor_candidate_handoff() -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	return _anchor_handoff
+
+
+## 当前 Fine（Score）常驻交接（VoxelPlacementGenerator 产出，owner=VPG）。
+func get_fine_score_handoff() -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	return _fine_score_handoff
+
+
+## 从任意一层结果里取 Anchor 交接。两种承载形态：run_autoobject_prefilter 的直返结果
+## 把它放顶层，走完整流水线的结果把 prefilter 结果整份嵌在 prefilter_result 里——
+## 两处都要认，否则换一条入口跑 Anchors 就取不到。
+static func _anchor_handoff_in(result: Dictionary) -> Dictionary:
+	var handoff: Dictionary = result.get("anchor_candidate_handoff", {})
+	if handoff.is_empty():
+		var nested_prefilter: Dictionary = result.get("prefilter_result", {})
+		handoff = nested_prefilter.get("anchor_candidate_handoff", {})
+	return handoff
+
+
+func get_anchor_revision() -> int:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	return _anchor_revision
+
+
+func get_score_revision() -> int:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	return _score_revision
+
+
+## 点选/显示用的**只读**交接：把互相关联的 Anchor + Fine RID 与几何参数打成一条一致记录，
+## 而不是让借方各自去翻 _last_*_result。
+##
+## 借用契约（借方 = SelectionHost / 统一 GPU 点选，不是所有者）：
+## - 全部 RID 为借用，借方不得 free_rid / release_rid / buffer update / dispatch；
+## - 只发布**当前常驻**且有效的 RID；任一必需 RID 失效即整条 ok=false，不发半条；
+## - 禁止仅凭 RID 数值判断快照是否新鲜——RID 会被复用，必须核对 anchor_revision /
+##   score_revision，读取前后各一次，不一致则丢弃结果并最多重试一次；
+## - 无 RD 或交接不可用时明确返回 ok=false + reason，绝不伪造 CPU fallback 成功。
+##
+## scored=false 是合法状态（只跑过 Anchors 没跑过 Score）：此时 Anchor 侧 RID 有效、
+## Fine 侧为空 RID，借方按 scored 分支决定能不能做 winner 命中。
+func get_placement_selection_handoff() -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	var rd := get_rendering_device()
+	if rd == null:
+		return {"ok": false, "reason": "selection_data_unavailable", "detail": "rendering_device_unavailable"}
+	var anchor_handoff := get_anchor_candidate_handoff()
+	if anchor_handoff.is_empty() or not bool(anchor_handoff.get("ok", false)):
+		return {"ok": false, "reason": "selection_data_unavailable", "detail": "anchor_handoff_not_resident"}
+	var anchor_rid: RID = anchor_handoff.get("anchor_buffer_rid", RID())
+	var anchor_count_rid: RID = anchor_handoff.get("anchor_count_buffer_rid", RID())
+	var topk_rid: RID = anchor_handoff.get("topk_buffer_rid", RID())
+	if not anchor_rid.is_valid() or not anchor_count_rid.is_valid() or not topk_rid.is_valid():
+		return {"ok": false, "reason": "selection_data_unavailable", "detail": "anchor_rid_invalid"}
+	var fine_handoff := get_fine_score_handoff()
+	var fine_candidate_rid: RID = fine_handoff.get("fine_candidate_buffer_rid", RID())
+	var fine_winner_rid: RID = fine_handoff.get("fine_winner_buffer_rid", RID())
+	# Fine 侧要么整对有效要么整对判空：只有候选没有胜出（或反过来）时，按「已评分」
+	# 分支去点选会朝一个空 RID 建 uniform set。
+	var scored := bool(fine_handoff.get("ok", false)) \
+		and fine_candidate_rid.is_valid() and fine_winner_rid.is_valid()
+	return {
+		"ok": true,
+		"scored": scored,
+		"anchor_revision": _anchor_revision,
+		"score_revision": _score_revision,
+		"anchor_buffer_rid": anchor_rid,
+		"anchor_count_buffer_rid": anchor_count_rid,
+		"topk_buffer_rid": topk_rid,
+		"fine_candidate_buffer_rid": fine_candidate_rid if scored else RID(),
+		"fine_winner_buffer_rid": fine_winner_rid if scored else RID(),
+		"anchor_capacity": int(anchor_handoff.get("anchor_capacity", 0)),
+		"anchor_stride_bytes": int(anchor_handoff.get("anchor_stride_bytes", 16)),
+		"topk": int(anchor_handoff.get("topk", 4)),
+		"topk_stride_bytes": int(anchor_handoff.get("topk_stride_bytes", 8)),
+		"fine_record_stride_bytes": int(fine_handoff.get("fine_record_stride_bytes", 0)) if scored else 0,
+		"live_anchor_count": int(fine_handoff.get("live_anchor_count", -1)) if scored else -1,
+		"asset_stride": int(anchor_handoff.get("asset_stride", 1)),
+		"grid_size": grid_size,
+		"voxel_size": voxel_size,
+		"grid_origin": grid_origin,
+		"rendering_device": rd,
+		"borrowed": true,
+		"owner_path": get_path() if is_inside_tree() else NodePath(),
+	}
+
+
+## Anchors 结果落库；只有**真的带交接**的那一层才换代。
+## 不带交接的薄状态字典（例如 demo 的 {ok, anchors, scored}）只更新 _last_anchor_result，
+## 保留内层刚发布的交接——否则外层返回会把它抹掉。
+func _publish_anchor_result(result: Dictionary) -> Dictionary:
+	_last_anchor_result = result
+	var handoff := _anchor_handoff_in(result)
+	if handoff.is_empty():
+		return _last_anchor_result
+	_anchor_revision += 1
+	_anchor_handoff = handoff
+	# 新锚点 = 旧评分的输入没了。Score 交接必须同批作废，否则点选会拿上一代 winner
+	# 去配这一代 anchor 下标。
+	_invalidate_score_handoff()
+	return _last_anchor_result
+
+
+## Score 结果落库；同样只有带 fine_score_handoff 的那一层才换代。
+func _publish_score_result(result: Dictionary) -> Dictionary:
+	_last_score_result = result
+	var handoff: Dictionary = result.get("fine_score_handoff", {})
+	if handoff.is_empty():
+		return _last_score_result
+	_score_revision += 1
+	_fine_score_handoff = handoff
+	return _last_score_result
+
+
+## Place 结果落库。Place 改写 SceneSV ⇒ 评分状态失效，Score 交接同批作废。
+func _publish_place_result(result: Dictionary) -> Dictionary:
+	_last_place_result = result
+	if bool(result.get("ok", false)):
+		_invalidate_score_handoff()
+	return _last_place_result
+
+
+## 作废已发布的 Fine 交接：换代 + 丢掉 handoff 键。
+## ⚠ 只解除**发布**，不释放显存——Fine candidate/winner 的 owner 是 VPG，释放点在
+## VPG 那边（形状变化的下一次 Score / release_resident_score_handoff / dispose）。
+## 这里先换代再丢键，借方核对 score_revision 时不会看到「新 revision + 旧 RID」。
+func _invalidate_score_handoff() -> void:
+	# 没发布过就没有可作废的东西：空转不递增，免得每次 Anchors/Place 都把 revision 推高，
+	# 让借方为一次并不存在的换代重建 uniform set。
+	if _fine_score_handoff.is_empty():
+		return
+	_score_revision += 1
+	_fine_score_handoff = {}
+
+
+## revision_override < 0 = 沿用 state 自述的 revision（Place 结果仍走这条）。
+func _pipeline_state_report(
+	state_key: StringName, state: Dictionary, rd_id: int, revision_override: int = -1
+) -> Dictionary:
+	return {
+		"name": String(state_key),
+		"owner_path": get_path(),
+		"lifecycle_owner_path": get_path(),
+		"revision": revision_override if revision_override >= 0 \
+			else int(state.get("revision", state.get("handoff_revision", 0))),
+		"capacity": int(state.get("capacity", state.get("anchor_capacity", state.get("record_count", 0)))),
+		"resident": not state.is_empty(),
+		"ready": bool(state.get("ok", false)),
+		"rd_instance_id": int(state.get("rd_instance_id", rd_id)),
+	}
+
+
+static func _instance_id(value) -> int:
+	return value.get_instance_id() if value != null and is_instance_valid(value) else 0
+
+
+func get_volume(volume_key: StringName) -> Node:
+	_ensure_owned_tree()
+	if volume_key == &"VolumeScore":
+		return get_volume_provider(volume_key)
+	return _volumes.get_node_or_null(NodePath(String(volume_key)))
+
+
+# ⚠ 这里曾有 `get_scene_sv_snapshot()` / `get_target_sv_snapshot()` 两个快照门面——
+# 全仓（.gd/.js）零调用（2026-08-10 链路死码清除；TargetSV 侧的 get_display_snapshot
+# 随唯一消费方 MeshFillBrush 切进卷节点而失去调用方，一并删除）。
+
+
+## SPA-owned SVTile GPU access surface. Production consumers borrow RIDs; only
+## explicit debug methods expose immutable CPU projections.
+func ensure_svtile_gpu_ready(force: bool = false) -> bool:
+	return _tile_store != null and _tile_store.ensure_scene_voxel_tile_buffers_uploaded(force)
+
+
+func get_svtile_gpu_buffer(buffer_name: String) -> RID:
+	return _tile_store.get_scene_voxel_tile_gpu_buffer(buffer_name) if _tile_store != null else RID()
+
+
+## 回读一整块 SVTile / SceneSV 常驻缓冲。⚠ 多兆字节同步回读，只走显式路径。
+func read_svtile_gpu_buffer_bytes(buffer_name: String) -> PackedByteArray:
+	return _tile_store.read_scene_voxel_tile_buffer_bytes(buffer_name) if _tile_store != null else PackedByteArray()
+
+
+func get_svtile_gpu_status() -> Dictionary:
+	return _tile_store.get_scene_voxel_tile_gpu_buffer_status() if _tile_store != null else {
+		"ready": false,
+		"reason": "tile_store_unavailable",
+	}
+
+
+func get_svtile_initialization_phases_ms() -> Dictionary:
+	return _tile_store.get_initialization_phases_ms() if _tile_store != null else {}
+
+
+func mark_svtile_bounds_dirty(
+	voxel_min: Vector3i,
+	voxel_max: Vector3i,
+	dirty_flags: Dictionary = {},
+	source_record: Dictionary = {}
+) -> void:
+	if _tile_store != null:
+		_tile_store.mark_scene_voxel_tile_bounds_dirty(voxel_min, voxel_max, dirty_flags, source_record)
+
+func get_svtile_debug_record(tile_coord: Vector3i) -> Dictionary:
+	return _tile_store.get_scene_voxel_tile(tile_coord).duplicate(true) if _tile_store != null else {}
+
+
+## 单块 tile 的 object-ref 计数：只回读该 tile 的 32 B 槽位，不经整表调试快照。
+## -1 = 取不到（缓冲未上传/坐标越界/无 tile store），**不是** 0。
+## 见 SceneVoxelTileStore.get_scene_voxel_tile_object_ref_count() 的口径说明。
+func get_svtile_object_ref_count(tile_coord: Vector3i) -> int:
+	return _tile_store.get_scene_voxel_tile_object_ref_count(tile_coord) if _tile_store != null else -1
+
+
+func get_svtile_debug_tiles() -> Dictionary:
+	return _tile_store.get_scene_voxel_tiles().duplicate(true) if _tile_store != null else {}
+
+
+func register_volume_provider(provider: Node) -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if provider == null or not is_ancestor_of(provider):
+		return {"ok": false, "reason": "provider_must_be_owned_by_spa"}
+	var key := StringName(str(provider.get_meta("volume_key", provider.name)))
+	if key == StringName():
+		# 旧行为把无名 provider 一律当成 VolumeScore 注册，之后 get_volume_provider
+		# 拿到的是一个来路不明的节点，冲突要到用它打分时才暴露。
+		push_error("[ScenePlacementActor] register_volume_provider: provider 的 volume_key 为空（node=%s, meta=%s）——不能默认当作 VolumeScore 注册。" % [
+			str(provider.get_path()) if provider.is_inside_tree() else provider.name,
+			str(provider.get_meta("volume_key", ""))])
+		assert(false, "[ScenePlacementActor] register_volume_provider: empty volume_key")
+		return {"ok": false, "reason": "provider_volume_key_empty"}
+	if _providers.has(key):
+		return {
+			"ok": false,
+			"reason": "provider_already_registered",
+			"volume_key": key,
+			"same_provider": _providers[key] == provider,
+		}
+	_providers[key] = provider
+	if _selection_host != null and key == &"VolumeScore":
+		_selection_host.register_volume_score_provider(provider)
+	return {"ok": true, "volume_key": key, "provider": provider}
+
+
+func unregister_volume_provider(provider: Node) -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if provider == null:
+		return {"ok": false, "reason": "missing_provider"}
+	var removed := false
+	for key in _providers.keys():
+		if _providers[key] == provider:
+			_providers.erase(key)
+			removed = true
+	if _selection_host != null:
+		_selection_host.unregister_volume_score_provider(provider)
+	return {"ok": removed, "reason": "ok" if removed else "provider_not_registered"}
+
+
+func get_volume_provider(volume_key: StringName) -> Node:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if _providers.has(volume_key):
+		return _providers[volume_key] as Node
+	if volume_key == &"VolumeScore" and _volumes != null:
+		var provider := _volumes.get_node_or_null("VolumeScore")
+		if provider != null:
+			register_volume_provider(provider)
+		return provider
+	return null
+
+func refresh_volume_provider(volume_key: StringName = &"VolumeScore") -> Dictionary:
+	var provider := get_volume_provider(volume_key)
+	if provider == null:
+		return {"ok": false, "reason": "provider_not_registered", "volume_key": volume_key}
+	if not provider.has_method("reload_and_rescore"):
+		return {"ok": false, "reason": "refresh_command_unavailable", "volume_key": volume_key}
+	provider.call("reload_and_rescore")
+	return {"ok": true, "volume_key": volume_key}
+
+
+## 重新导入 TargetSV：本 SPA 的 TargetSV 节点从磁盘重读，并把持有旧解码结果的下游一起刷新。
+##
+## ⚠ 笔刷不会自己跟着刷新：MeshFillBrush.attach_target_sv() 在"同一个节点且数据已加载"时
+## 直接返回 false 不重建（那条短路是给只读路径用的，见该函数注释），而重导入前后节点没变，
+## 所以必须在这里显式 rebuild(true) 让它重新拉快照——否则它会继续按旧网格尺寸换算坐标。
+## rebuild(true) 清空的是笔刷的 CPU 与显示状态，按 _ensure_owned_tree 里那条同款配对，
+## BrushSV 的 GPU 半边必须一起清，否则留下不可见、不可编辑却仍在喂 BlendSV 与评分的孤儿体素。
+##
+## SelectionHost 只持有 TargetSV 的节点引用（attach_target_sv 就是一句赋值），
+## 其点选缓存按 content_revision + TargetSVLoader.content_generation() 做键，自动作废。
+## 只读校验一份 TargetSV FBX，不写盘、不动当前数据集。opts.deep=true 时连逐三角形读取与
+## 落格试算一起做（贵，几十万面的场景级 FBX 上是几百 MB 级开销）。
+func validate_target_sv_fbx(fbx_path: String, opts: Dictionary = {}) -> Dictionary:
+	return TargetSVFbxImportServiceScript.validate_fbx(fbx_path, opts)
+
+
+## 从一份"每个三角形 = 一个体素"的 FBX 烘出 TargetSV（覆盖 assets/target_sv）后立刻重导入。
+## 通道规则与空间契约都在 TargetSVFbxImportService，本方法只负责"烘完就换新"这条配对。
+func import_target_sv_from_fbx(fbx_path: String, opts: Dictionary = {}) -> Dictionary:
+	var import_result: Dictionary = TargetSVFbxImportServiceScript.import_fbx_as_target_sv(fbx_path, opts)
+	if not bool(import_result.get("ok", false)):
+		return import_result
+	var result := reimport_target_sv()
+	# 覆盖已经发生，烘焙详情无论重导入成败都要带出去。
+	for carried_key in ["source_fbx", "triangle_count", "valid_triangle_count",
+			"rejected_triangle_count", "used_triangle_count", "below_terrain_count",
+			"distinct_voxel_count",
+			"dropped_out_of_bounds", "clipped_height_count", "non_empty_voxel_count",
+			"capture_size", "vertical_span", "flip_z", "source_bounds", "written",
+			# 读取器整趟看到的三角形数 / 退化面 / 缺 Cd 面，与分段耗时：漏带这几个键，
+			# 编辑器那行验收摘要只会印 0，看不出"读了多少面只有多少面过门"。
+			"read_triangle_count", "degenerate_triangle_count", "missing_payload_count",
+			"timings_ms"]:
+		result[carried_key] = import_result.get(carried_key)
+	# 一格都没落进去时服务层已 push_warning 并把 reason 改掉，别让 reimport 的 "ok" 盖过它。
+	if str(import_result.get("reason", "")) == "no_samples_in_grid":
+		result["reason"] = "no_samples_in_grid"
+	return result
+
+
+## 导入一份外部 TargetSV 数据集（覆盖 assets/target_sv）后立刻重导入。
+##
+## 文件搬运在 TargetSVLoader.import_dataset —— 那里才知道规范目录布局；本方法只负责
+## "搬完就换新"这条配对，并把两段结果合成一份报告。编辑器那侧还要按 copied 把复制进来的
+## 已导入资源（preview png）交还资源系统，那一步用编辑器 API，留在插件里。
+func import_target_sv_dataset(metadata_path: String) -> Dictionary:
+	var import_result: Dictionary = TargetSVLoader.import_dataset(metadata_path)
+	if not bool(import_result.get("ok", false)):
+		return import_result
+	var result := reimport_target_sv()
+	# 覆盖已经发生：即便重导入失败也要把搬运详情带出去，否则没人说得清盖掉了什么。
+	for carried_key in ["source", "same_dataset", "copied", "replaced"]:
+		result[carried_key] = import_result.get(carried_key)
+	return result
+
+
+func reimport_target_sv() -> Dictionary:
+	_ensure_owned_tree()
+	if _target_sv == null:
+		return {"ok": false, "reason": "target_sv_missing"}
+	var result: Dictionary = _target_sv.reimport()
+	if not bool(result.get("ok", false)):
+		return result
+	# 修订号由 TargetSV 节点自己保管（报告经 ownership_report_entry 自报）。
+	# ⚠ 这里曾调 _brush_input.rebuild(true)——那时它要重读 TargetSV 快照数据。
+	# addon 侧已不持有任何笔刷数据（2026-08-10），重导入只需清空 BrushSV 两半：
+	# 笔迹画在旧靶网格上，重导入后不可编辑却仍喂合成与评分。
+	result["brush_sv_cleared"] = bool(clear_brush_sv().get("ok", false))
+	return result
+
+
+func handle_editor_input(viewport_camera: Camera3D, event: InputEvent) -> bool:
+	if not is_ready():
+		return false
+	# ⚠ 排在所有域消费方之前：Ctrl+Alt+数字 是**跨域**的显示开关，不属于任何一个域，
+	# 让它先认领可避免将来某个域加了带修饰键的数字快捷键后互相吃键。
+	if _handle_domain_visibility_editor_input(event):
+		return true
+	if _selection_host != null and _selection_host.handle_viewport_input(viewport_camera, event):
+		return true
+	# Interaction/DemoHost 的那一跳已移除：DemoHost 在 _editor_init 里无条件造第二份
+	# PlacementStageEnv，两份 env 挂同一个 SPA 会互相释放对方的常驻 target 缓冲。它的
+	# G/Space 热键已并入 VolumeScore 的 forward_editor_viewport_input（就是上面这一跳）。
+	var provider := get_volume_provider(&"VolumeScore")
+	if provider != null and provider.has_method("forward_editor_viewport_input") \
+			and bool(provider.call("forward_editor_viewport_input", viewport_camera, event)):
+		return true
+	return _handle_brush_editor_input(viewport_camera, event)
+
+
+func _handle_brush_editor_input(viewport_camera: Camera3D, event: InputEvent) -> bool:
+	# _brush_input 只剩输入参数与地形环境（2026-08-10）；内容/显示/落笔定位在 _brush_volume。
+	if _brush_input == null:
+		return false
+	if event is InputEventKey and event.pressed and not event.echo and event.shift_pressed:
+		return _handle_brush_shortcut(event.keycode)
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_is_painting = true
+			_brush_dirty = _paint_brush_at(viewport_camera, event.position)
+		else:
+			_is_painting = false
+			_flush_owned_brush()
+		return true
+	if event is InputEventMouseMotion and _is_painting:
+		_brush_dirty = _paint_brush_at(viewport_camera, event.position) or _brush_dirty
+		return true
+	return false
+
+
+func _paint_brush_at(viewport_camera: Camera3D, position: Vector2) -> bool:
+	if _brush_volume == null or not is_instance_valid(_brush_volume):
+		return false
+	# 落笔定位与体素累积都在卷节点；笔刷形状与绘制参数仍是 addon 侧的 @export（输入侧职责）。
+	var voxel := _brush_volume.screen_to_voxel_xz(viewport_camera, position)
+	if voxel.x < 0:
+		return false
+	var painted := _brush_volume.apply_brush_extent(
+		voxel,
+		Vector3i(_brush_input.brush_width, _brush_input.brush_height, _brush_input.brush_length),
+		{
+			"color": _brush_input.brush_paint_color,
+			"complexity": _brush_input.brush_paint_complexity,
+			"collision": _brush_input.brush_paint_collision,
+		})
+	if not painted:
+		return false
+	_flush_owned_brush()
+	return true
+
+
+## 把笔刷累积体素提交进 BrushSV 常驻层（每个 mouse-motion 事件触发一次，热路径）。
+##
+## 增量语义：MeshFillBrush._accumulate_brush_extent 是 append-only —— 已在
+## `_brush_voxel_keys` 里的体素直接 `continue`，绝不回改它的颜色/复杂度/碰撞。所以
+## `[0, _brush_flushed_count)` 这段前缀记录的内容在后续事件里恒定不变；而 BrushSV 散射走
+## write_mode=0（overwrite，后笔胜）是幂等写，重发取值相同的记录等价于不发。因此本函数
+## 只提交 `[_brush_flushed_count, count)` 的新增体素，最终 GPU 状态与整批重放逐位一致。
+## 脏标记同样只覆盖本次真实写入的体素（runtime 侧按去重集合下发），不漏标。
+##
+## 水位失效条件 / 由谁负责失效：
+##  1. 体素数变少，或水位末条体素的 (x, slice, z) 变了 —— 说明 MeshFillBrush 侧状态被
+##     clear_brush() / _rebuild() 重置过；本函数自查后回退整批重放。
+##  2. 笔刷绘制参数（paint color / complexity / collision）变化 —— 本函数自查后回退整批
+##     重放。前缀条目本就保留各自绘制时的参数、不受影响，这一条纯属保守兜底：防止
+##     "清空后用新参数重新涂到相同长度且末条相同"这种极端序列绕过条件 1。
+##  3. 显式清空 BrushSV（clear_brush_sv）、旁路直写 BrushSV（apply_brush_input /
+##     write_brush_sv_records 门面）、笔刷数据重建（attach_target_sv）——
+##     由这些入口调用 _invalidate_brush_flush_watermark() 归零。
+##  4. 散射失败（runtime 未就绪或 GPU 出错）—— 水位不前进并立刻归零，下次整批重试，
+##     与旧版"每次都整批重放"的最终收敛行为一致。
+## 跨编辑器会话 / 脚本重载：水位是普通实例成员（非 static），随 SPA 节点重建归零。
+## ⚠ 编辑器**软重载**是另一回事，别指望它把水位复位：GDScriptInstance::reload_members()
+## 只按名字把重载前已存在的成员搬进新槽位（值原样保留），而本次重载**新增**的成员槽是
+## 默认构造的 Variant = nil，声明里的初始化器不会重跑。水位五件套一旦是 nil，条件 1/2
+## 也救不了——`var start := _brush_flushed_count` 直接把 nil 赋给 int 局部即报错。故函数
+## 开头显式修复，见 _repair_soft_reloaded_brush_watermark()。
+func _flush_owned_brush() -> void:
+	_repair_soft_reloaded_brush_watermark()
+	if _brush_input == null or _brush_volume == null or not is_instance_valid(_brush_volume):
+		return
+	# 内容读口在卷节点（painted_voxels 是只读引用，append-only 语义见 BrushSVVolume）。
+	var voxels: PackedInt32Array = _brush_volume.painted_voxels()
+	var paint_attrs: Dictionary = _brush_volume.painted_paint_attributes()
+	var attr_complexity: PackedFloat32Array = paint_attrs["complexity"]
+	var attr_colors: PackedColorArray = paint_attrs["colors"]
+	var attr_collision: PackedFloat32Array = paint_attrs["collision"]
+	var count := int(voxels.size() / 4)
+	var paint_color: Color = _brush_input.brush_paint_color
+	var paint_levels := Vector2(_brush_input.brush_paint_complexity, _brush_input.brush_paint_collision)
+	var start := _brush_flushed_count
+	# ⚠ 必须在决定 start 之前先让 ensure_brush_sv_fields 发生：网格体素数变化时它会
+	# clear_brush_sv(true) 重建出**清零**缓冲，抹掉已提交前缀。若放任它在
+	# write_brush_sv_records 内部发生，水位看不见、增量只写新增条目，前缀就永久丢了。
+	# 前置触发后用 revision 比对识别该事件（clear_brush_sv 会递增 revision）。
+	var brush_sv_revision := -1
+	if _runtime != null:
+		_runtime.ensure_brush_sv_fields()
+		brush_sv_revision = _runtime.get_brush_sv_revision()
+	if start > count \
+			or brush_sv_revision != _brush_flushed_sv_revision \
+			or paint_color != _brush_flushed_paint_color \
+			or paint_levels != _brush_flushed_paint_levels \
+			or (start > 0 and _brush_voxel_triple(voxels, start - 1) != _brush_flushed_tail):
+		start = 0
+	if start >= count:
+		# 无新增体素：显示节点内容与 BrushSV 内容均已是最新，整批重放是纯重复功。
+		_brush_dirty = false
+		return
+	# 显示重建走基类模板（守卫按 revision + 实例数对账，空转不白跑）。
+	_brush_volume.rebuild_display()
+	var records: Array = []
+	records.resize(count - start)
+	for i in range(start, count):
+		var base := i * 4
+		records[i - start] = {
+			"voxel_xz": Vector2i(voxels[base], voxels[base + 2]),
+			"slice_index": voxels[base + 1],
+			"complexity": attr_complexity[i],
+			"color": attr_colors[i],
+			"collision_strength": attr_collision[i],
+		}
+	_brush_dirty = false
+	if _runtime == null:
+		push_error("[ScenePlacementActor] _flush_owned_brush: _runtime 为 null —— 笔刷输入只在 is_ready() 下分发，出现即生命周期已断；本批 %d 条笔刷体素无法提交。" % records.size())
+		assert(false, "[ScenePlacementActor] _flush_owned_brush: _runtime == null")
+		_invalidate_brush_flush_watermark()
+		return
+	var brush_write_result: Dictionary = _runtime.write_brush_sv_records(records)
+	if not bool(brush_write_result.get("ok", false)):
+		# 旧行为只把水位归零后静默返回：用户已经画在屏幕上的笔迹并没有进 BrushSV。
+		push_error("[ScenePlacementActor] _flush_owned_brush: BrushSV 散射失败（reason=%s, records=%d, start=%d, count=%d）——这批笔迹没有落进 GPU。" % [
+			str(brush_write_result.get("reason", "unknown")), records.size(), start, count])
+		assert(false, "[ScenePlacementActor] _flush_owned_brush: write_brush_sv_records failed")
+		_invalidate_brush_flush_watermark()
+		return
+	_brush_flushed_count = count
+	_brush_flushed_tail = _brush_voxel_triple(voxels, count - 1)
+	_brush_flushed_paint_color = paint_color
+	_brush_flushed_paint_levels = paint_levels
+	_brush_flushed_sv_revision = _runtime.get_brush_sv_revision()
+
+
+func _brush_voxel_triple(voxels: PackedInt32Array, index: int) -> Vector3i:
+	var base := index * 4
+	return Vector3i(voxels[base], voxels[base + 1], voxels[base + 2])
+
+
+## 编辑器软重载后的水位修复，⚠ 别当成冗余判空删掉。
+##
+## 事实依据（gdscript.cpp GDScriptInstance::reload_members）：软重载只把**重载前已存在**
+## 的成员按名字搬进新槽位；本次重载**新增**的成员槽是默认构造的 Variant = nil，声明里的
+## 初始化器**不会**重跑。带静态类型也拦不住——实例槽本身是 Variant，nil 就这么躺在一个
+## 声明为 int/Vector3i/Color/Vector2 的成员里。重载后第一次 _flush_owned_brush() 会炸在
+## `var start := _brush_flushed_count`（把 nil 赋给 int 局部）上；就算侥幸不炸，
+## 后面几条比较也会把 nil 的内存当 int/Color 读出垃圾值，让水位失效判定失灵。
+##
+## ⚠ 必须用 `is` 而不是 `== null`：对静态类型已知的操作数 GDScript 会挑验证求值器
+## （gdscript_byte_codegen.cpp write_binary_operator），而 Variant 给 (INT, NIL)、
+## (COLOR, NIL) 这类组合注册的是 OperatorEvaluatorAlwaysFalse（variant_op.cpp），
+## `_brush_flushed_count == null` 会被编成恒 false，判空形同虚设。
+## `is` 编成 OPCODE_TYPE_TEST_BUILTIN，查的是运行时真实类型，nil 一定为假。
+##
+## 语义：任意一件损坏就整组归零（复用失效入口），等价于失效条件 3/4——下一次
+## _flush_owned_brush 整批重放。水位只用于"能否跳过前缀"，整批重放永远是正确结果，
+## 不会漏写也不会重复写（BrushSV 散射是 overwrite 幂等）。
+func _repair_soft_reloaded_brush_watermark() -> void:
+	if _brush_flushed_count is int \
+			and _brush_flushed_tail is Vector3i \
+			and _brush_flushed_paint_color is Color \
+			and _brush_flushed_paint_levels is Vector2 \
+			and _brush_flushed_sv_revision is int:
+		return
+	_invalidate_brush_flush_watermark()
+
+
+## 让下一次 _flush_owned_brush 整批重放：BrushSV GPU 内容被本类以外的路径改动，
+## 或笔刷 CPU 侧体素状态被重建时调用（失效条件 3/4，见 _flush_owned_brush）。
+func _invalidate_brush_flush_watermark() -> void:
+	_brush_flushed_count = 0
+	_brush_flushed_tail = Vector3i(-1, -1, -1)
+	_brush_flushed_paint_color = Color(-1.0, -1.0, -1.0, -1.0)
+	_brush_flushed_paint_levels = Vector2(-1.0, -1.0)
+	_brush_flushed_sv_revision = -1
+
+
+func _handle_brush_shortcut(keycode: int) -> bool:
+	match keycode:
+		KEY_B:
+			# ⚠ 走 set_volume_display 门面（对齐 KEY_G）；真值问卷节点（2026-08-10 起
+			# 笔刷显示在 BrushSVVolume，addon 侧的 brush_visible 开关已删除）。
+			if _brush_volume != null and is_instance_valid(_brush_volume):
+				set_volume_display(&"BrushSV", not _brush_volume.is_display_visible())
+		KEY_G:
+			set_volume_display(&"TargetSV", not _target_sv.is_display_visible())
+		KEY_R:
+			set_volume_display_channel(&"TargetSV", 0)
+		KEY_T:
+			set_volume_display_channel(&"TargetSV", 1)
+		KEY_Y:
+			set_volume_display_channel(&"TargetSV", 2)
+		KEY_A:
+			# Shift+A：winner 档内循环**排名**——全场每个锚点都显示它自己的第 N 名候选。
+			# 同一排名下资产往往不同，按资产分组为多个 MultiMesh 节点同时挂（AnchorVolume 裁）。
+			# 不在 winner 档时先切回 winner，让按键有可见反馈。
+			var rank_volume := get_volume(&"Anchor")
+			if rank_volume != null and rank_volume.has_method("cycle_winner_rank"):
+				var rank := int(rank_volume.call("cycle_winner_rank"))
+				print("[SPA] Anchor 胜出排名 → 第 %s 名（档 %s）" % [
+					str(rank + 1) if rank >= 0 else "—",
+					str(rank_volume.call("display_mode_name"))])
+		KEY_S:
+			# Shift+S：anchor 域三档循环（胜出实体 → 锚点小球 → 观察态 profile）。
+			# 三档**互斥**，切换即丢弃旧档节点重建（AnchorVolume 裁）。
+			var mode_volume := get_volume(&"Anchor")
+			if mode_volume != null and mode_volume.has_method("cycle_display_mode"):
+				print("[SPA] Anchor 显示档 → %s" % str(mode_volume.call("cycle_display_mode")))
+		KEY_C:
+			clear_brush_sv()
+		KEY_EQUAL, KEY_KP_ADD:
+			_brush_input.brush_width = clampi(_brush_input.brush_width + 2, 1, 128)
+			_brush_input.brush_length = clampi(_brush_input.brush_length + 2, 1, 128)
+		KEY_MINUS, KEY_KP_SUBTRACT:
+			_brush_input.brush_width = clampi(_brush_input.brush_width - 2, 1, 128)
+			_brush_input.brush_length = clampi(_brush_input.brush_length - 2, 1, 128)
+		_:
+			return false
+	return true
+
+
+## Ctrl+Alt+1..6 的槽位键表。**只有键，没有域**——槽位到域的映射直接取
+## `SPAEditorContract.VOXEL_DOMAIN_BINDINGS` 的下标，见 `_handle_domain_visibility_shortcut()`。
+const DOMAIN_VISIBILITY_SHORTCUT_KEYS := [KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6]
+
+
+## Ctrl+Alt+数字的入口。修饰键判定刻意写成**全等匹配**（Ctrl+Alt 按下、Shift/Meta 未按）：
+## 只判 `ctrl_pressed and alt_pressed` 会把 Ctrl+Shift+Alt+数字 也吃掉，那是别人的组合。
+func _handle_domain_visibility_editor_input(event: InputEvent) -> bool:
+	if not (event is InputEventKey):
+		return false
+	var key := event as InputEventKey
+	if not key.pressed or key.echo:
+		return false
+	if not (key.ctrl_pressed and key.alt_pressed) or key.shift_pressed or key.meta_pressed:
+		return false
+	return _handle_domain_visibility_shortcut(key.keycode)
+
+
+## Ctrl+Alt+1..6：逐个翻转体素域的显示。
+##   1 AutoObject   2 SVTile   3 Anchor   4 SV(SceneSV)   5 TargetSV   6 Brush
+##
+## ⚠ 槽位顺序**直接读** `VOXEL_DOMAIN_BINDINGS` 的下标，这里刻意不另立一张「键 → 域」表：
+## 那张表一旦与合同表错位，表现是"按 3 却切了别的域"这种没有报错的错。域增删改序时
+## 只改合同表，快捷键跟着走；槽位多于域时按下即无操作（下面的 size 判据）。
+func _handle_domain_visibility_shortcut(keycode: int) -> bool:
+	var slot: int = DOMAIN_VISIBILITY_SHORTCUT_KEYS.find(keycode)
+	if slot < 0:
+		return false
+	var bindings: Array = SPAEditorContract.VOXEL_DOMAIN_BINDINGS
+	if slot >= bindings.size():
+		return false
+	var binding: Dictionary = bindings[slot]
+	var display_key := str(binding.get("display_key", ""))
+	var domain_label := str(binding.get("domain_label", display_key))
+	var volume_node := _volume_for_display_key(display_key)
+	if volume_node == null:
+		# 组合键**已被认领**（返回 true）：这里放行会让 Ctrl+Alt+数字 漏进编辑器，
+		# 而成因是本域没建出来，不是"该键归别人"。
+		push_warning("[ScenePlacementActor] Ctrl+Alt+%d：显示键 \"%s\"（%s）在 SPA/Volumes 下找不到对应域节点。" % [
+			slot + 1, display_key, domain_label])
+		return true
+	# 真值取**节点自己那份**（`is_display_visible()` 读的是显示节点的 visible），
+	# 不读 host 的记账位——两者不同步时按开关会出现"按一下没反应，按两下才动"。
+	var next_visible := not volume_node.is_display_visible()
+	set_volume_display(StringName(volume_node.name), next_visible)
+	print("[SPA] Ctrl+Alt+%d  %s 显示 → %s" % [
+		slot + 1, domain_label, "on" if next_visible else "off"])
+	return true
+
+
+## 按显示键取 SPA/Volumes 下的域节点。
+## ⚠ 刻意不建第二张「显示键 → 卷名」映射表：每个 PickableDomain 自己回答 `display_key()`，
+## 而节点名就是卷名（`set_volume_display()` 收的那个键），扫一遍孩子即可。
+func _volume_for_display_key(display_key: String) -> PickableDomain:
+	if display_key.is_empty():
+		return null
+	_ensure_owned_tree()
+	if _volumes == null:
+		return null
+	for child in _volumes.get_children():
+		if child is PickableDomain and (child as PickableDomain).display_key() == display_key:
+			return child as PickableDomain
+	return null
+
+
+## 借用交互宿主（SPA 装配并拥有它；借方不得释放或 reparent）。
+## demo/HUD 需要"当前选中了哪个 anchor"时经它取——选中态的 SSOT 在那边。
+func get_selection_host() -> SPASelectionHost:
+	_ensure_owned_tree()
+	return _selection_host
+
+
+## 当前选中的 anchor 下标（-1 = 无选中）。转发到 SelectionHost，不在 SPA 存第二份。
+func get_selected_anchor_index() -> int:
+	var host := get_selection_host()
+	return host.get_selected_anchor_index() if host != null else -1
+
+
+func get_editor_overlay_text() -> String:
+	return _selection_host.get_selection_overlay_text() if _selection_host != null else ""
+
+
+func get_selection_overlay_text() -> String:
+	return get_editor_overlay_text()
+
+
+func set_autoobject_pick_data(data: Dictionary) -> void:
+	if _selection_host != null:
+		_selection_host.set_autoobject_pick_data(data)
+
+
+func refresh_volume_score_anchor_selection() -> Dictionary:
+	return _selection_host.refresh_volume_score_anchor_selection() if _selection_host != null else {
+		"ok": false,
+		"reason": "selection_host_unavailable",
+	}
+
+
+func get_voxel_display_root(owner_key: String = "external") -> Node3D:
+	return _selection_host.get_voxel_display_root(owner_key) if _selection_host != null else null
+
+
+func attach_voxel_display_root(display_root: Node3D, owner_key: String = "external") -> Node3D:
+	return _selection_host.attach_voxel_display_root(display_root, owner_key) if _selection_host != null else null
+
+
+func register_voxel_display_node(display_key: String, node: Node3D, owner_key: String = "external") -> void:
+	if _selection_host != null:
+		_selection_host.register_voxel_display_node(display_key, node, owner_key)
+
+
+# ⚠ 这里曾有 `voxel_display_effective_visible()`：转发给 host 的同名口，而那一口在
+# 2026-08-11 已随「effective = 开关 AND 模式聚焦」这个前提一起删除（选择模式退役后与值
+# 塌成单边）。它与下面的 `is_voxel_display_visible()` 已是逐字同义的两个公开名字，留着
+# 只会让调用方以为"有效可见"和"开关开着"是两件事。查显示开关一律用下面这个。
+
+
+func is_voxel_display_visible(display_key: String) -> bool:
+	return _selection_host.is_voxel_display_visible(display_key) if _selection_host != null else false
+
+
+func set_voxel_display_visible(display_key: String, visible: bool) -> Dictionary:
+	if _selection_host == null:
+		return {"ok": false, "reason": "selection_host_unavailable"}
+	if display_key == "targetsv":
+		return set_volume_display(&"TargetSV", visible)
+	if display_key == "sv":
+		return set_volume_display(&"SceneSV", visible)
+	# ⚠ 与 "sv" 同理：不走 set_volume_display 的话，只有 host 的记账位被翻，
+	# SPA/Volumes/SVTile 节点收不到通知、rebuild_display() 永远不跑。
+	if display_key == "svtile":
+		return set_volume_display(&"SVTile", visible)
+	_selection_host.set_voxel_display_visible(display_key, visible)
+	return {"ok": true, "display_key": display_key, "visible": visible}
+
+
+func get_voxel_display_state() -> Dictionary:
+	return _selection_host.get_voxel_display_state() if _selection_host != null else {}
+
+
+func refresh_voxel_display_controls() -> void:
+	if _selection_host != null:
+		_selection_host.refresh_voxel_display_controls()
+
+
+# ⚠ 这里曾有 `set_selection_mode()` / `get_selection_mode()` 两个门面。
+# 用户 2026-08-07 裁定：**除 Mixed 外的选择模式整体退役，准入只看 `visible`**
+# ⇒ 没有可切的模式，两个门面连同 host 的状态机一起删除。
+# 想只看/只选某一个域，用 `set_voxel_display_visible()` 关掉其余域。
+
+
+## ⚠ 首参旧为 `mode: int`（模式号）。模式号整体退役后传域名字符串
+## （`SPAEditorContract.SELECTION_DOMAIN_*`："svtile" / "sv" / "targetsv" / "anchor"）。
+func select_data_voxel(domain: String, x: int, y: int, z: int) -> Dictionary:
+	return _selection_host.select_data_voxel(domain, x, y, z) if _selection_host != null else {
+		"ok": false,
+		"reason": "selection_host_unavailable",
+	}
+
+
+func set_volume_display(display_key: StringName, visible: bool) -> Dictionary:
+	if display_key == &"TargetSV" and _target_sv != null:
+		_target_sv.set_display_visible(visible)
+	# ⚠ 这里曾有 BrushSV 特例分支（转发 addon 的 set_brush_visible）。2026-08-10 起
+	# 笔刷显示在 BrushSVVolume，与 SceneSV / SVTile 一样走下面的 PickableDomain 通用分支。
+	if _selection_host != null:
+		# 显示键**问卷节点自己要**（`PickableDomain.display_key()` → 合同表）。
+		#
+		# ⚠ 这里原先是一张手写映射表，只映射了 TargetSV→"targetsv" 与 SceneSV→"sv"，
+		# 其余 volume key 落进兜底分支被**原样**当显示键传下去。于是
+		# `set_volume_display(&"BrushSV", …)`（编辑器工具栏的 Brush 按钮）每按一次都把
+		# "BrushSV" 喂给 SelectionHost，而合法键是小写 "brush" —— 撞上未知键判死，
+		# `push_error` + `assert` 各一次。表现是"按钮能切显示（当时那半边走 addon 的
+		# set_brush_visible，2026-08-10 已随切换删除），但每次都报一个错"，
+		# 且新增一个卷就会重犯一次。
+		#
+		# 现在四个卷都是 PickableDomain 子类，各自回答自己的显示键；
+		# 没有显示键的卷（BlendSV：participates_in_picking() == false）返回空串，跳过即可。
+		var volume_node := get_volume(display_key)
+		if volume_node is PickableDomain:
+			# ⚠ 节点自己那份显示必须一起翻，否则 "sv" / "svtile" / "brush" 的开关只改了
+			# host 的记账位，域节点从不重建显示 —— 表现是「开关显示已打开，但什么都没画」。
+			# TargetSV 在上面的分支里已经翻过自己那半边，这里跳过：
+			# V2 刚把 TargetSVVoxels.visible 收敛成单写入方，别再加回一个。
+			if display_key != &"TargetSV":
+				(volume_node as PickableDomain).set_display_visible(visible)
+			var selection_key := (volume_node as PickableDomain).display_key()
+			if not selection_key.is_empty():
+				_selection_host.set_voxel_display_visible(selection_key, visible)
+	return {"ok": true, "display_key": display_key, "visible": visible}
+
+
+func set_volume_display_channel(display_key: StringName, channel: int) -> Dictionary:
+	if display_key != &"TargetSV" or _target_sv == null:
+		return {"ok": false, "reason": "display_not_found"}
+	_target_sv.switch_display_channel(channel)
+	return {"ok": true, "display_key": display_key, "channel": channel}
+
+
+func apply_brush_input(command: Dictionary) -> Dictionary:
+	if _runtime == null:
+		return {"ok": false, "reason": "runtime_not_ready"}
+	var action := StringName(str(command.get("action", "write")))
+	if action == &"clear":
+		return clear_brush_sv()
+	if action == &"write":
+		if not command.has("records"):
+			push_error("[ScenePlacementActor] apply_brush_input: write 命令缺少 \"records\"（command keys=%s）——当成空批会静默返回 ok，调用方以为写进去了。" % str(command.keys()))
+			assert(false, "[ScenePlacementActor] apply_brush_input: write command missing records")
+			return {"ok": false, "reason": "brush_command_missing_records"}
+		# 旁路直写 BrushSV：可能覆盖笔刷已提交体素的取值，增量水位必须作废（失效条件 3）
+		_invalidate_brush_flush_watermark()
+		return _runtime.write_brush_sv_records(command["records"])
+	return {"ok": false, "reason": "unsupported_brush_action"}
+
+
+func clear_brush_sv(release_buffers: bool = false) -> Dictionary:
+	# BrushSV GPU 内容与笔刷 CPU 体素状态都被清空，增量水位必须归零（失效条件 3）
+	_invalidate_brush_flush_watermark()
+	if _brush_volume != null and is_instance_valid(_brush_volume):
+		# CPU 列表与显示都在卷节点（2026-08-10）；rebuild 走模板，空内容 ⇒ 丢弃显示节点。
+		_brush_volume.clear_painted_voxels()
+		_brush_volume.rebuild_display()
+	if _runtime == null:
+		return {"ok": false, "reason": "runtime_not_ready"}
+	_runtime.clear_brush_sv(release_buffers)
+	return {"ok": true, "revision": _runtime.get_brush_sv_revision(), "resident": not release_buffers}
+
+
+## 惰性构建阶段底座。失败原因留在 _placement_env_error，供命令返回与 Inspector 文案复用。
+func ensure_placement_env() -> bool:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if _placement_env != null and _placement_env.is_ready():
+		return true
+	if not is_ready():
+		_placement_env_error = "scene_placement_actor_not_ready:%s" % lifecycle_state_name()
+		return false
+	if placement_assets.is_empty():
+		_placement_env_error = "no_placement_assets"
+		return false
+	var env := PlacementStageEnvScript.make(self, {
+		# 直接交原件：pivot 剥离副本层已随三变体一并退役（见类头 Placement Tuning 处的说明）。
+		"descriptors": placement_assets.duplicate(),
+		"autoobject_capacity": autoobject_capacity,
+		"prefilter_settings": _prefilter_settings(),
+	})
+	if env == null or not env.is_ready():
+		_placement_env_error = "stage_env_make_failed:%s" % (
+			str(env.fail_reason()) if env != null else "null_env")
+		return false
+	var sv_result: Dictionary = env.ensure_sv_committed()
+	if not bool(sv_result.get("ok", false)):
+		_placement_env_error = "sv_commit_failed:%s" % str(sv_result.get("reason", "?"))
+		env.dispose()
+		return false
+	var target_result: Dictionary = env.ensure_target_ready()
+	if not bool(target_result.get("ok", false)):
+		_placement_env_error = "target_read_buffers_failed:%s" % str(target_result.get("reason", "?"))
+		env.dispose()
+		return false
+	_placement_env = env
+	_placement_env_error = ""
+	return true
+
+
+## 借用阶段底座（demo/测试用；所有权仍在 SPA，借方不得 dispose）。
+func get_placement_stage_env() -> RefCounted:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	return _placement_env
+
+
+func get_placement_env_error() -> String:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	return _placement_env_error
+
+
+## 最近一次 Score 的细筛结果模型（借用引用，调用方不得就地改写）。
+func get_last_score_model() -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	return _score_model
+
+
+## 按需物化结果模型的 CPU 锚点数组——点选 / 显示 / HUD / golden / 诊断的统一触发口。
+##
+## prefilter 与细筛全程只跑 GPU：prefilter 不回读 anchor 位置，模型带
+## cpu_anchor_model_pending=true，锚点坐标还留在 GPU 常驻缓冲里。第一次调用时回读一次
+## 并把补全后的模型写回 _score_model（pending 清成 false）。
+##
+## 失效条件不另造平行状态：缓存就是 _score_model 本身。每次 Anchors/Score 都整份替换它，
+## 新模型自带 pending=true ⇒「GPU 结果换代 ⇒ CPU 模型作废」是同一次赋值的必然结果；
+## 同一批结果内的重复调用只做一次 O(1) 标记判断。
+func ensure_score_model_cpu_anchors() -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if bool(_score_model.get("cpu_anchor_model_pending", false)):
+		_score_model = VolumeScoreFineSelectionScript.materialize_cpu_anchor_model(_score_model)
+	return _score_model
+
+
+# ---- Anchor 选中记录（数据侧）------------------------------------------------
+#
+# ⚠ 职责边界：**记录内容归 SPA，交互态归 SPASelectionHost。**
+# 下面这些全部由 _score_model + placement_assets 推导，与"当前选中了谁"无关——所以
+# 一律以 anchor_index / topk_index 入参，SPA 自己不持选中态。Host 只需要知道
+# "选中了哪个下标"和"怎么画"，不必懂 FineSelection 的结果模型结构。
+#
+# 计划 §9 原本要求把 get_selected_anchor_record / 摘要 / tooltip 迁进 Host，那是阶段 1
+# 之前定的——当时评分模型还在 provider 手里。模型归 SPA 之后照做等于让一个展示组件
+# 反过来去解析评分模型。（用户裁定，2026-08-04）
+
+## 展示用资产视图：[{name, mesh}]，顺序与 placement_assets / 模型的 asset_index 对齐。
+## topk 文案要名字，胜出物体包围盒要 mesh AABB，两者共用这一份。
+func _anchor_asset_views() -> Array:
+	var views: Array = []
+	for descriptor in placement_assets:
+		if descriptor == null:
+			views.append({"name": "Asset%d" % views.size(), "mesh": null})
+			continue
+		var asset_name := str(descriptor.asset_id)
+		if asset_name.is_empty():
+			asset_name = "Asset%d" % views.size()
+		views.append({"name": asset_name, "mesh": descriptor.get_mesh()})
+	return views
+
+
+func _anchor_asset_names() -> Array:
+	var names: Array = []
+	for view in _anchor_asset_views():
+		names.append(str((view as Dictionary).get("name", "?")))
+	return names
+
+
+## 是否已评分（有分数，不只是有锚点）。
+func is_scored() -> bool:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	return bool(_score_model.get("ok", false))
+
+
+## 当前可选锚点数（会按需物化 CPU 锚点数组——调用方是显示/点选，本就需要坐标）。
+func get_anchor_count() -> int:
+	ensure_score_model_cpu_anchors()
+	return int(_score_model.get("anchor_count", 0))
+
+
+## 指定锚点的 Top-K 条目（按分数序）。
+## ⚠ 没有"当前第几条"的高亮：滚轮切 Top-K 已整体退役（实际没人用），
+## 随之作废的还有 selected 标记与 §7.1/§7.3 的 `_topk_slice`。列表本身照常显示。
+func get_anchor_topk_entries(anchor_index: int, limit: int = 4) -> Array[Dictionary]:
+	ensure_score_model_cpu_anchors()
+	return VolumeScoreFineSelectionScript.topk_entries(
+		_score_model, anchor_index, maxi(limit, 1), _anchor_asset_names(), rotation_slots)
+
+
+## 胜出物体的定向包围盒（SelectionHost 据此画 ANCHOR_SAMPLE_BOUNDS 红框）。
+func get_anchor_sample_bounds(anchor_index: int) -> Dictionary:
+	ensure_score_model_cpu_anchors()
+	var placement := VolumeScoreFineSelectionScript.winner_placement_transform(
+		_score_model, anchor_index, _anchor_asset_views(), rotation_slots)
+	if placement.is_empty():
+		return {}
+	var aabb: AABB = placement.aabb
+	var transform: Transform3D = placement.transform
+	var obb_size: Vector3 = aabb.size * float(placement.fit_scale)
+	var obb_center: Vector3 = transform * (aabb.position + aabb.size * 0.5)
+	return {
+		"has_obb": true,
+		"obb_center": obb_center,
+		"obb_size": obb_size,
+		"obb_yaw": float(placement.yaw),
+		"aabb": AABB(obb_center - obb_size * 0.5, obb_size),
+	}
+
+
+## Inspector 一行摘要。
+func get_anchor_summary_text(anchor_index: int, limit: int = 4) -> String:
+	if not is_scored():
+		return "Anchor scores: run Score"
+	if anchor_index < 0:
+		return "Anchor scores: select an anchor"
+	var parts: Array[String] = ["Anchor #%d" % anchor_index]
+	for entry in get_anchor_topk_entries(anchor_index, limit):
+		var score := float(entry.get("score", -INF))
+		var score_text := "%.2f" % score if score > -1.0e20 else "n/a"
+		var suffix := "" if bool(entry.get("valid", false)) else " invalid"
+		parts.append("%s %s%s" % [str(entry.get("asset_name", "?")), score_text, suffix])
+	return " | ".join(parts)
+
+
+## 展开诊断文本（编辑器 tooltip / HUD）。
+func get_anchor_tooltip_text(anchor_index: int, limit: int = 4) -> String:
+	if not is_scored():
+		return "Selected anchor: run Score first"
+	if anchor_index < 0:
+		return "Selected anchor: click an anchor"
+	var voxels: Array = _score_model.get("anchor_voxels", [])
+	var voxel: Vector3i = voxels[anchor_index] if anchor_index >= 0 and anchor_index < voxels.size() \
+		else Vector3i(-1, -1, -1)
+	var lines: Array[String] = ["Selected anchor #%d voxel=%s top-%d:" % [
+		anchor_index, str(voxel), maxi(limit, 1)]]
+	var entries := get_anchor_topk_entries(anchor_index, limit)
+	if entries.is_empty():
+		lines.append("  (no score entries)")
+		return "\n".join(lines)
+	for entry in entries:
+		var score := float(entry.get("score", -INF))
+		var score_text := "%.3f" % score if score > -1.0e20 else "n/a"
+		lines.append("  %s %s" % [str(entry.get("asset_name", "?")), score_text])
+	return "\n".join(lines)
+
+
+## SelectionHost 消费的完整选中记录。未评分态（Anchors-only）也返回记录——
+## 各场景统一为"有锚点即可点"：位置/体素坐标先给，Top-K 与红框在评分后自动补全。
+func get_anchor_selection_record(anchor_index: int, limit: int = 4) -> Dictionary:
+	ensure_score_model_cpu_anchors()
+	var world_positions: PackedVector3Array = _score_model.get(
+		"anchor_world_positions", PackedVector3Array())
+	if anchor_index < 0 or anchor_index >= world_positions.size():
+		return {}
+	var voxels: Array = _score_model.get("anchor_voxels", [])
+	var record := {
+		"domain": SPAEditorContract.SELECTION_DOMAIN_ANCHOR,
+		"geometry": SPAEditorContract.SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR,
+		"id": "volume_score_anchor:%d" % anchor_index,
+		"anchor_index": anchor_index,
+		"voxel_coord": voxels[anchor_index] if anchor_index < voxels.size() else Vector3i(-1, -1, -1),
+		"world_position": world_positions[anchor_index],
+		"marker_size": _score_model.get("voxel_size", Vector3.ONE),
+		"topk": get_anchor_topk_entries(anchor_index, limit),
+		"summary": get_anchor_summary_text(anchor_index, limit),
+		"tooltip": get_anchor_tooltip_text(anchor_index, limit),
+	}
+	var sample_bounds := get_anchor_sample_bounds(anchor_index)
+	if not sample_bounds.is_empty():
+		record["sample_bounds"] = sample_bounds
+	return record
+
+
+## prefilter 的四键设置。热路径不开 debug_read_anchors：GPU 细筛只吃 handoff 的常驻 RID，
+## 需要 CPU 锚点坐标的消费方经 FineSelection.materialize_cpu_anchor_model 按需取一次。
+func _prefilter_settings() -> Dictionary:
+	return {
+		"min_target_interest": min_target_interest,
+		"min_prefilter_score": min_prefilter_score,
+		"debug_read_anchors": false,
+		"decode_anchor_dictionaries": false,
+	}
+
+
+## 本轮评分的区域清单：prefilter_tile_rect 非空 = 单区域；空（默认）= 单次全图。
+func _score_region_rects() -> Array:
+	if prefilter_tile_rect.size.x > 0 and prefilter_tile_rect.size.y > 0:
+		return [prefilter_tile_rect]
+	return full_map_region_rects()
+
+
+## 全图区域（golden 与交互空导出共用口径）。collect 只发出每个 (x,z) 列最低的
+## qualifying voxel；当前 256x256 XZ 网格的严格上限正好是 ANCHOR_CAPACITY=65536。
+func full_map_region_rects() -> Array:
+	if _placement_env == null:
+		return []
+	var sv: Dictionary = _placement_env.get_committed_sv_metadata()
+	if sv.is_empty():
+		sv = _placement_env.ensure_sv_committed().get("sv", {})
+	var tile_grid: Vector3i = sv.get("tile_grid_size", Vector3i.ZERO)
+	if tile_grid.x <= 0 or tile_grid.z <= 0:
+		return []
+	return [Rect2i(0, 0, tile_grid.x, tile_grid.z)]
+
+
+## 把本轮评分区域标脏，保证 prefilter 重算时 collect 覆盖到它（XZ tile 坐标，全 Y 层）。
+## prefilter 只消费 SVTile 脏工作清单；目标加载时的一次 mark_all 被首轮消费清空后，
+## 不补标的重算只看得到最近被盖章的 tile —— 锚点覆盖会随轮次塌缩到已放置区
+## （2026-08-10 实发：目标 81% 兴趣在 z≥64，锚点却全部收在 z<64）。
+## benchmark 的同款语义住在 volume_score_demo._mark_prefilter_region_dirty。
+## ensure_prefilter 缓存命中时标记只是滞留待消费，不强制重算。
+func _mark_score_region_dirty(region_rect: Rect2i) -> void:
+	if region_rect.size.x <= 0 or region_rect.size.y <= 0:
+		return
+	var tile_size := SceneVoxelTileStoreScript.scene_voxel_tile_size()
+	mark_svtile_bounds_dirty(
+		Vector3i(region_rect.position.x * tile_size.x, 0, region_rect.position.y * tile_size.z),
+		Vector3i(
+			mini((region_rect.position.x + region_rect.size.x) * tile_size.x, grid_size.x),
+			grid_size.y,
+			mini((region_rect.position.y + region_rect.size.y) * tile_size.z, grid_size.z)),
+		{"routing": true, "scoring": true},
+		{"id": "score_region", "source_id": "score_region"})
+
+
+## Anchors：只推进到 S6 并发布常驻 anchor handoff，不评分。
+## anchors-only 模型（有锚点无分数，ok=false）供显示消费；排序与 Score 同口径。
+func run_anchors(_settings := {}) -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if not ensure_placement_env():
+		return {"ok": false, "reason": _placement_env_error}
+	var region_rects := _score_region_rects()
+	if region_rects.is_empty():
+		return {"ok": false, "reason": "no_score_regions"}
+	var region_models: Array = []
+	for _rect in region_rects:
+		_mark_score_region_dirty(_rect)
+		var prefilter: Dictionary = _placement_env.ensure_prefilter(_prefilter_settings())
+		if not bool(prefilter.get("ok", false)):
+			return {"ok": false, "reason": str(prefilter.get("prefilter_reason", "prefilter_failed"))}
+		var handoff: Dictionary = prefilter.get("anchor_candidate_handoff", {})
+		# Anchors 命令本身就是"把锚点拿出来"，是真正需要 CPU 锚点坐标的消费方：
+		# 在这里按需读一次常驻缓冲，而不是让 prefilter 热路径顺带回读。
+		var anchors_packed := VolumeScoreFineSelectionScript.read_resident_anchors_packed(
+			get_rendering_device(), handoff, -1)
+		var sv: Dictionary = _placement_env.get_committed_sv_metadata()
+		region_models.append(VolumeScoreFineSelectionScript.anchors_only_model(
+			anchors_packed,
+			int(handoff.get("topk", 4)),
+			placement_assets.size(),
+			sv.get("grid_size", Vector3i.ZERO),
+			sv.get("voxel_size", Vector3.ONE),
+			sv.get("grid_origin", Vector3.ZERO),
+			_placement_env.get_terrain_height_field()))
+	var model: Dictionary = region_models[0] if region_models.size() == 1 \
+		else VolumeScoreFineSelectionScript.merge_models(region_models)
+	if region_models.size() > 1:
+		model["ok"] = false
+		model["reason"] = "anchors_only"
+	_score_model = model
+	var anchor_count := int(model.get("anchor_count", 0))
+	# ⚠ 这里**不带** anchor_candidate_handoff：交接已经由内层 run_autoobject_prefilter
+	# 发布过了，再塞一份回去只会让 _anchor_revision 为同一批锚点白涨一次。
+	return _publish_anchor_result({
+		"ok": anchor_count > 0,
+		"anchors": anchor_count,
+		"scored": false,
+	})
+
+
+## Score：S6 常驻 anchor handoff + BlendSV 工作对 → VolumeScoreFineSelection 细筛。
+## settings 键（全部可选）：
+##   region_rects: Array                  — 覆盖默认区域口径（golden 用它强制全图）
+##   full_candidate_diagnostics: bool     — 额外回读整片候选（诊断/golden）
+##   allow_model_cache: bool              — 命中 score cache key 时跳过重算（默认 true）
+##   profile_timing: bool                 — 打开 pass 间 submit+sync 分段计时
+func run_score(settings := {}) -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if not ensure_placement_env():
+		return {"ok": false, "reason": _placement_env_error}
+	var options: Dictionary = settings if settings is Dictionary else {}
+	var full_diagnostics := bool(options.get("full_candidate_diagnostics", false))
+	var allow_cache := bool(options.get("allow_model_cache", true))
+	var profile_timing := bool(options.get("profile_timing", false))
+	var requested_regions: Array = options.get("region_rects", [])
+	var region_rects: Array = requested_regions if not requested_regions.is_empty() \
+		else _score_region_rects()
+	if region_rects.is_empty():
+		return {"ok": false, "reason": "no_score_regions"}
+	var cache_key: Dictionary = _placement_env.build_score_cache_key(
+		region_rects, _score_cache_settings(full_diagnostics))
+	var cache_hit := allow_cache \
+		and not profile_timing \
+		and bool(_score_model.get("ok", false)) \
+		and not cache_key.is_empty() \
+		and PlacementStageEnvScript.score_cache_key_matches(_score_cache_key, cache_key)
+	if cache_hit:
+		# 命中即复用上一轮的模型与仍然常驻的 Fine 交接；revision 不动。
+		return _score_status(true, {"score_cache_hit": true, "fine_dispatch_count": 0})
+	var scored := _run_fine_scoring(region_rects, full_diagnostics, profile_timing)
+	if not bool(scored.get("ok", false)):
+		_score_model = {}
+		_score_cache_key = {}
+		return scored
+	_score_model = scored
+	_score_cache_key = cache_key
+	_publish_score_result({
+		"ok": true,
+		"fine_score_handoff": scored.get("fine_score_handoff", {}),
+	})
+	return _score_status(true, {"score_cache_hit": false, "fine_dispatch_count": 1})
+
+
+## 逐区域 prefilter + 细筛；多区域经 merge_models 合并为全覆盖确定性模型。
+func _run_fine_scoring(
+	region_rects: Array, full_candidate_diagnostics: bool, profile_timing: bool
+) -> Dictionary:
+	if _score_runner == null:
+		_score_runner = VolumeScoreFineSelectionScript.new()
+	var sv: Dictionary = _placement_env.get_committed_sv_metadata()
+	var descriptors: Array = _placement_env.get_descriptors()
+	var profile_ids: Array = _placement_env.get_profile_ids()
+	var committed_resident_fields := {
+		"complexity": get_svtile_gpu_buffer(
+			SceneVoxelTileStoreScript.SCENE_VOXEL_TILE_COMPLEXITY_FIELD_BUFFER),
+		"collision": get_svtile_gpu_buffer(
+			SceneVoxelTileStoreScript.SCENE_VOXEL_TILE_COLLISION_FIELD_BUFFER),
+	}
+	var region_models: Array = []
+	for _rect in region_rects:
+		_mark_score_region_dirty(_rect)
+		var prefilter: Dictionary = _placement_env.ensure_prefilter(_prefilter_settings())
+		if not bool(prefilter.get("ok", false)):
+			return {"ok": false, "reason": str(prefilter.get("prefilter_reason", "prefilter_failed"))}
+		var region_model: Dictionary = _score_runner.run({
+			"spa": self,
+			"committer": _sv_committer,
+			"sv": sv,
+			"target_read_buffers": _placement_env.ensure_target_ready(),
+			"prefilter_result": prefilter,
+			"committed_resident_fields": committed_resident_fields,
+			"descriptors": descriptors,
+			"profile_ids": profile_ids,
+			"terrain_height": _placement_env.get_terrain_height_field(),
+			"settings": {
+				"rotation_slots": rotation_slots,
+				"profile_score_timing": profile_timing,
+				"full_candidate_diagnostics": full_candidate_diagnostics,
+				# Place/Score 同门限契约：预览排名与提交裁决用同一套物理可行性门
+				# （否则 Score 显示的胜者在 Place 被门拒，预览失真）。
+				"collision_limit": PLACE_PIPELINE_COMMON["collision_limit"],
+				"clearance_limit": PLACE_PIPELINE_COMMON["clearance_limit"],
+			},
+		})
+		if not bool(region_model.get("ok", false)):
+			return {
+				"ok": false,
+				"reason": "fine_selection_failed:%s" % str(region_model.get("reason", "?")),
+			}
+		region_models.append(region_model)
+	if region_models.size() == 1:
+		return region_models[0]
+	return VolumeScoreFineSelectionScript.merge_models(region_models)
+
+
+## score cache key 的设置分量（与 Place 门限同源，改任一项都必须让上一轮结果失效）。
+func _score_cache_settings(full_candidate_diagnostics: bool) -> Dictionary:
+	return {
+		"rotation_slots": rotation_slots,
+		"topk": 4,
+		"min_target_interest": min_target_interest,
+		"min_prefilter_score": min_prefilter_score,
+		"collision_limit": PLACE_PIPELINE_COMMON["collision_limit"],
+		"clearance_limit": PLACE_PIPELINE_COMMON["clearance_limit"],
+		"full_candidate_diagnostics": full_candidate_diagnostics,
+		# 评分匹配参数是盘上文件：改了它必须重评，否则调参后点 Score 会静默命中旧结果。
+		"score_match_config_mtime": FileAccess.get_modified_time("res://score_match_config.cfg"),
+	}
+
+
+func _score_status(require_scored: bool, extra: Dictionary = {}) -> Dictionary:
+	# ⚠ 别直接用 _score_model.anchor_count：细筛全程只跑 GPU，模型的 CPU 锚点数组要等
+	# ensure_score_model_cpu_anchors() 才物化，在那之前 anchor_count 恒为 0——Score 会
+	# 报「45598 个锚点评分成功」却 anchors=0 / ok=false。
+	# 活锚点数取 Fine 交接自述的 live_anchor_count：VPG 本来就读过那 4 字节 anchor_count
+	# 缓冲，这里零额外回读，也不会为了报个数把整片锚点拉回 CPU。
+	var anchor_count := int(_fine_score_handoff.get("live_anchor_count", -1))
+	if anchor_count < 0:
+		anchor_count = int(_score_model.get("anchor_count", 0))
+	var scored := bool(_score_model.get("ok", false))
+	var status := {
+		"ok": anchor_count > 0 and (scored or not require_scored),
+		"anchors": anchor_count,
+		"scored": scored,
+		"asset_count": placement_assets.size(),
+		"score_ms": float(_score_model.get("elapsed_ms", 0.0)),
+	}
+	for key in extra:
+		status[key] = extra[key]
+	return status
+
+
+## Place：S5→S9 全链，多批直到放满。
+## ⚠ Place 改写 committed SV：再次 Score 会在新场上重评（env 缓存已随会话失效）。
+## 每批先保留各 Anchor 的最佳 Fine 候选，再按稳定 random 优先级原子失效 Anchor 间冲突并
+## 提交至多 place_result_capacity 个；上一批盖章的 collision 使下一批候选在已放置足迹上
+## invalid（collision_limit 门）⇒ 批间自然互斥。spawned < 每批容量 = 候选池被间距/占用
+## 耗尽 ⇒ 放满，提前停。
+func run_place(_settings := {}) -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if not ensure_placement_env():
+		return _publish_place_result({"ok": false, "reason": _placement_env_error})
+	var readiness := get_place_pipeline_readiness()
+	if not bool(readiness.get("ok", false)):
+		return _publish_place_result({
+			"ok": false,
+			"reason": "place_resources_not_ready:%s" % str(readiness.get("reason", "unknown")),
+		})
+	var common := PLACE_PIPELINE_COMMON.duplicate(true)
+	common["rotation_slots"] = rotation_slots
+	common["min_target_interest"] = min_target_interest
+	common["min_prefilter_score"] = min_prefilter_score
+	common["result_capacity"] = place_result_capacity
+	common["min_distance_voxels"] = place_min_distance_voxels
+	var session: Dictionary = _placement_env.begin_place_session(common)
+	if not bool(session.get("ok", false)):
+		return _publish_place_result({
+			"ok": false,
+			"reason": str(session.get("reason", "place_session_begin_failed")),
+		})
+	var spawned_total := 0
+	var batches := 0
+	var batch_reports: Array = []
+	for batch in range(maxi(place_max_batches, 1)):
+		if _placed_object_ids.size() + place_result_capacity > autoobject_capacity:
+			push_warning("[ScenePlacementActor] Place 停在容量帽：累计 %d 接近 runtime 容量 %d" % [
+				_placed_object_ids.size(), autoobject_capacity])
+			break
+		var batch_total_t0_usec := Time.get_ticks_usec()
+		# 跨批间距：已放置种子预插 reduce 冲突哈希（per-asset 成对间距在批间同样成立）
+		var result: Dictionary = _placement_env.run_place_session_batch(_placed_seed_floats)
+		if not bool(result.get("ok", false)):
+			var phase := str(result.get("phase", result.get("reason", "pipeline_failed")))
+			if batches == 0:
+				_placement_env.end_place_session()
+				push_warning("[ScenePlacementActor] Place 失败：phase=%s" % phase)
+				return _publish_place_result({"ok": false, "reason": phase})
+			push_warning("[ScenePlacementActor] Place 批 %d 失败（phase=%s）——保留已完成批次" % [batch, phase])
+			break
+		var host_phase_t0_usec := Time.get_ticks_usec()
+		var host_batch_phases_ms := {}
+		var placement_result: Dictionary = result.get("placement_result", {})
+		var dirty_delta_flush: Dictionary = result.get("runtime_dirty_delta_flush_result", {})
+		var session_detail: Dictionary = result.get("place_session", {})
+		var fine_contract: Dictionary = placement_result.get("anchor_fine_contract", {})
+		var writeback: Dictionary = placement_result.get("gpu_autoobject_runtime_writeback", {})
+		var batch_spawned := int(writeback.get("spawned_count", 0))
+		batches += 1
+		spawned_total += batch_spawned
+		host_batch_phases_ms["result_extract"] = float(Time.get_ticks_usec() - host_phase_t0_usec) / 1000.0
+		host_phase_t0_usec = Time.get_ticks_usec()
+		# 累积渲染面 = 全部已放置活对象；本流程不 free 对象、spawn id 不复用，直接追加。
+		for raw_object_id in writeback.get("object_ids", []):
+			_placed_object_ids.append(int(raw_object_id))
+		host_batch_phases_ms["object_id_append"] = float(Time.get_ticks_usec() - host_phase_t0_usec) / 1000.0
+		host_phase_t0_usec = Time.get_ticks_usec()
+		# 种子累积：本批定选记录的 voxel 原点 + 资产号（reduce 记录 core 键，恒在）。
+		for asset_result in placement_result.get("asset_results", []):
+			if not (asset_result is Dictionary):
+				continue
+			var seed_asset := float(int((asset_result as Dictionary).get("asset_index", 0)))
+			for record in (asset_result as Dictionary).get("results", []):
+				if not (record is Dictionary):
+					continue
+				var voxel_origin: Vector3i = (record as Dictionary).get("voxel_origin", Vector3i.ZERO)
+				_placed_seed_floats.append(float(voxel_origin.x))
+				_placed_seed_floats.append(float(voxel_origin.y))
+				_placed_seed_floats.append(float(voxel_origin.z))
+				_placed_seed_floats.append(seed_asset)
+		host_batch_phases_ms["seed_assembly"] = float(Time.get_ticks_usec() - host_phase_t0_usec) / 1000.0
+		host_phase_t0_usec = Time.get_ticks_usec()
+		# VPG 的 GPU state-chain stamp 已经**原位**把本批盖章写进常驻场对了，但瓦片摘要要靠
+		# 单独一趟 reduce。管线里唯一会触发它的 `_commit_accepted_placements()` 被
+		# `placement_result.get("ok", false)` 挡着，而 VPG 成功变体按 ReportSchema 的约定
+		# **刻意不发 ok**（report_schema.gd 原话：「成功变体故意不发 ok…勿补发」）⇒ 门恒 false。
+		# 不在这里补一趟，所有瓦片恒报 scene_voxel_count == 0，SceneSV/SVTile 的显示与点选
+		# 会一个体素都画不出来，**且零提示**。
+		#
+		# ⚠ 放**批内**而不是循环外：中途某批失败 break 时，前面成功的批次已经刷完；
+		# 批间读场的调试/显示看到的也是当批之后的状态。
+		# 代价是每批一次 submit+fence（ComputePassChain 默认 sync）——批数很大时可改挪到
+		# 循环外，代价是批间看到旧摘要。
+		var summary_refresh: Dictionary = {"ok": false, "reason": "scene_voxel_committer_unavailable"}
+		if _sv_committer != null:
+			summary_refresh = _sv_committer.refresh_scene_voxel_tile_summaries("place_batch_%d" % batch)
+		if not bool(summary_refresh.get("ok", false)):
+			# push_warning 而非 push_error：committer 已就具体成因报过错，这里只补「哪一批」。
+			# Place 本身仍算成功——对象确实放下去了，只是这批在显示/点选里看不见。
+			push_warning("[ScenePlacementActor] Place 批 %d 的瓦片摘要刷新失败（reason=%s）——本批盖章内容在 SceneSV/SVTile 的显示与点选里不可见" % [
+				batch, str(summary_refresh.get("reason", "unknown"))])
+		host_batch_phases_ms["sv_tile_summary_refresh"] = float(Time.get_ticks_usec() - host_phase_t0_usec) / 1000.0
+		host_batch_phases_ms["total"] = float(host_batch_phases_ms.get("result_extract", 0.0)) \
+			+ float(host_batch_phases_ms.get("object_id_append", 0.0)) \
+			+ float(host_batch_phases_ms.get("seed_assembly", 0.0)) \
+			+ float(host_batch_phases_ms.get("sv_tile_summary_refresh", 0.0))
+		# 逐批可观测性（benchmark_score_timing 聚合这几个键）。批循环随 Place 一起从 demo
+		# 迁到这里，报告键名保持不变——键名一变，聚合侧读到的就是空。
+		# demo_phases_ms 沿用旧名：它现在装的是 SPA 侧的编排分段，改名要同步改 benchmark。
+		batch_reports.append({
+			"batch_index": batch,
+			"wall_ms": float(session_detail.get("wall_usec", 0)) / 1000.0,
+			"environment_wall_ms": float(session_detail.get("environment_wall_usec", 0)) / 1000.0,
+			"total_wall_ms": float(Time.get_ticks_usec() - batch_total_t0_usec) / 1000.0,
+			"spawned": batch_spawned,
+			"anchor_count": int((result.get("prefilter_result", {}) as Dictionary).get("anchor_count", 0)),
+			"target_cache_hit": bool(session_detail.get("target_cache_hit", false)),
+			"target_revision": int(session_detail.get("target_revision", -1)),
+			"seed_count": int(session_detail.get("seed_count", 0)),
+			"incremental_fine_active": bool(fine_contract.get("incremental_fine_active", false)),
+			"incremental_fine_cache_hit": bool(fine_contract.get("incremental_fine_cache_hit", false)),
+			"incremental_fine_force_full": bool(fine_contract.get("incremental_fine_force_full", false)),
+			"resident_pipeline_phases_ms": result.get("resident_pipeline_phases_ms", {}),
+			"environment_phases_ms": session_detail.get("orchestration_phases_ms", {}),
+			"demo_phases_ms": host_batch_phases_ms,
+			# 摘要刷新的成败必须逐批可见：失败时 Place 仍报 ok，唯一的差别就是显示/点选
+			# 看不到这批内容——没有这个键就只能靠翻控制台警告。
+			"sv_tile_summary_refresh_ok": bool(summary_refresh.get("ok", false)),
+			# tile object_ref 更新 pass（scene_voxel_tile_object_ref_update.glsl）的逐批实况。
+			# 这条链此前被 run_placement_pipeline 里一道恒 false 的 `placement_result.ok` 门
+			# 挡着、从未跑过（VPG 成功变体刻意不发 ok），症状是「放了几千个 autoobject，
+			# SVTile 热力图 0 occupied tile」——不逐批报出来，下次坏掉照样零提示。
+			# `placement_result_has_ok` 是那道门的直接证据：成功变体恒 false。
+			"object_ref_update_pass_dispatched": bool(dirty_delta_flush.get(
+				"resident_gpu_dirty_delta_update_pass", false)),
+			"object_ref_update_pass_blocked_reason": str(dirty_delta_flush.get(
+				"resident_gpu_dirty_delta_update_pass_blocked_reason", "unreported")),
+			"object_ref_update_dirty_delta_count": int(dirty_delta_flush.get("dirty_delta_count", 0)),
+			"object_ref_update_inserted_slot_count": int(dirty_delta_flush.get("object_ref_inserted_slot_count", 0)),
+			"object_ref_update_overflow_count": int(dirty_delta_flush.get("object_ref_overflow_count", 0)),
+			"placement_result_has_ok": placement_result.has("ok"),
+			"timing": placement_result.get("score_timing_profile", {}),
+		})
+		if batch_spawned < place_result_capacity:
+			break
+	_placement_env.end_place_session()
+	# Place 改了 SceneSV ⇒ 上一轮评分的输入没了，cache key 与模型一起作废。
+	_score_cache_key = {}
+	return _publish_place_result({
+		"ok": true,
+		"spawned": spawned_total,
+		"batches": batches,
+		"total_placed": spawned_total,
+		"placed_object_ids": _placed_object_ids.duplicate(),
+		"batch_reports": batch_reports,
+		"session": session,
+	})
+
+
+## 已放置对象 id 的只读视图（demo 渲染/回读用）。
+func get_placed_object_ids() -> Array[int]:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	return _placed_object_ids.duplicate()
+
+
+## 复位 Place 的跨批累积（对象 id、reduce 种子、评分 cache key）。
+## benchmark fixture 重置这类"把场清回空"的路径必须调它：runtime 里的对象已经没了，
+## 累积表还留着就会让下一批 Place 拿一堆不存在的 id 去算容量帽与间距种子。
+func reset_place_accumulation() -> void:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	_placed_object_ids.clear()
+	_placed_seed_floats = PackedFloat32Array()
+	_score_cache_key = {}
+	_score_model = {}
+	_invalidate_score_handoff()
+
+
+## 评分状态失效的公开入口（资产表换代、grid 参数变化、rotation contract 变化、
+## 外部改写 SceneSV 等）。评分 cache key 与 Fine 交接现在都归 SPA，一次清干净即可——
+## 不再有需要转发的 provider 侧缓存。
+func invalidate_score_cache(_reason: StringName, _dirty_tile_ids := []) -> void:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	_score_cache_key = {}
+	_invalidate_score_handoff()
+
+
+# Runtime query and command surface. Lifecycle and RenderingDevice attachment
+# remain private to this scene node.
+func is_initialized() -> bool: return _runtime != null and _runtime.is_initialized()
+func get_rendering_device() -> RenderingDevice: return _runtime.get_rendering_device() if _runtime != null else (_sv_committer.get_rendering_device() if _sv_committer != null else null)
+func get_scene_voxel_committer(): return _sv_committer
+func get_gpu_runtime(): return _runtime.get_gpu_runtime() if _runtime != null else null
+func owns_gpu_runtime() -> bool: return _runtime != null and _runtime.owns_gpu_runtime()
+func set_autoobject_runtime_capacity(max_objects: int, recreate_owned_runtime: bool = false) -> void:
+	autoobject_capacity = maxi(max_objects, 1)
+	if _runtime != null: _runtime.set_autoobject_runtime_capacity(autoobject_capacity, recreate_owned_runtime)
+func get_autoobject_runtime_capacity() -> int: return _runtime.get_autoobject_runtime_capacity() if _runtime != null else autoobject_capacity
+func get_runtime_profile_container(): return _runtime.get_runtime_profile_container() if _runtime != null else null
+func is_gpu_ready() -> bool: return is_ready() and _runtime != null and _runtime.is_gpu_ready()
+func get_gpu_readiness_report() -> Dictionary:
+	var result := _runtime.get_gpu_readiness_report() if _runtime != null else {"ready": false, "reason": _failure_reason}
+	result["spa_identity"] = get_identity_report()
+	return result
+func get_profile_arena_buffer() -> RID: return _runtime.get_profile_arena_buffer() if _runtime != null else RID()
+func refresh_slot_mesh_description(asset_index: int) -> bool: return _runtime.refresh_slot_mesh_description(asset_index) if _runtime != null else false
+func get_profile_arena_summary() -> Dictionary: return _runtime.get_profile_arena_summary() if _runtime != null else {}
+func get_merged_gpu_buffer_summary() -> Dictionary: return _runtime.get_merged_gpu_buffer_summary() if _runtime != null else {}
+func is_autoobject_runtime_ready() -> bool: return _runtime != null and _runtime.is_autoobject_runtime_ready()
+func prepare_place_pipeline() -> Dictionary: return _runtime.prepare_place_pipeline() if _runtime != null else {"ok": false, "reason": "runtime_not_ready"}
+func prepare_pipelines() -> Dictionary: return _runtime.prepare_pipelines() if _runtime != null else {"ok": false, "reason": "runtime_not_ready"}
+func get_place_pipeline_readiness() -> Dictionary: return _runtime.get_place_pipeline_readiness() if _runtime != null else {"ready": false}
+## shader 编译计时探针读数（按 shader 路径分 glslang 前端 / shader module / pipeline 三段）。
+## 进程级 static，与本节点无关，挂这里只是给编辑器 bridge 的 call_method 一个入口。
+func get_shader_compile_stats() -> Dictionary: return GodotComputeShaderBase.get_shader_compile_stats()
+func reset_shader_compile_stats() -> void: GodotComputeShaderBase.reset_shader_compile_stats()
+func get_place_resource_lifecycle_summary() -> Dictionary: return _runtime.get_place_resource_lifecycle_summary() if _runtime != null else {}
+func register_asset(descriptor, mesh_ref = null, autoobject_ref = null) -> int: return _runtime.register_asset(descriptor, mesh_ref, autoobject_ref) if _runtime != null else -1
+func register_autoobject_asset(autoobject_ref, mesh_ref = null) -> int: return _runtime.register_autoobject_asset(autoobject_ref, mesh_ref) if _runtime != null else -1
+func register_assets(descriptors: Array) -> Array[int]: return _runtime.register_assets(descriptors) if _runtime != null else ([] as Array[int])
+func replace_all_assets(descriptors: Array, meshes: Array = [], autoobjects: Array = []) -> bool: return _runtime.replace_all_assets(descriptors, meshes, autoobjects) if _runtime != null else false
+func replace_all_autoobject_assets(autoobjects: Array) -> bool: return _runtime.replace_all_autoobject_assets(autoobjects) if _runtime != null else false
+func clear_assets() -> void:
+	if _runtime != null: _runtime.clear_assets()
+func get_asset_count() -> int: return _runtime.get_asset_count() if _runtime != null else 0
+func get_registered_descriptors() -> Array[AssetDescriptor]: return _runtime.get_registered_descriptors() if _runtime != null else ([] as Array[AssetDescriptor])
+func get_registered_profile_ids() -> Array[int]: return _runtime.get_registered_profile_ids() if _runtime != null else ([] as Array[int])
+func get_profile_id_for_asset(asset_index: int) -> int: return _runtime.get_profile_id_for_asset(asset_index) if _runtime != null else -1
+func get_registered_autoobject_refs() -> Array[AutoObject]: return _runtime.get_registered_autoobject_refs() if _runtime != null else ([] as Array[AutoObject])
+func own_autoobject(autoobject_ref, asset_index: int = -1) -> bool: return _runtime.own_autoobject(autoobject_ref, asset_index) if _runtime != null else false
+func get_owned_autoobject_count() -> int: return _runtime.get_owned_autoobject_count() if _runtime != null else 0
+func get_owned_autoobject(index: int): return _runtime.get_owned_autoobject(index) if _runtime != null else null
+func has_owned_autoobject(autoobject_ref) -> bool: return _runtime != null and _runtime.has_owned_autoobject(autoobject_ref)
+func get_asset_id_for_autoobject(autoobject_ref) -> int: return _runtime.get_asset_id_for_autoobject(autoobject_ref) if _runtime != null else -1
+func get_mesh_description_for_asset(asset_index: int) -> Dictionary: return _runtime.get_mesh_description_for_asset(asset_index) if _runtime != null else {}
+func get_registered_mesh_descriptions() -> Array[Dictionary]: return _runtime.get_registered_mesh_descriptions() if _runtime != null else ([] as Array[Dictionary])
+func get_mesh_description_buffer() -> RID: return _runtime.get_mesh_description_buffer() if _runtime != null else RID()
+func get_mesh_description_gpu_buffer_summary() -> Dictionary: return _runtime.get_mesh_description_gpu_buffer_summary() if _runtime != null else {}
+func readback_mesh_description_debug_snapshot() -> Dictionary: return _runtime.readback_mesh_description_debug_snapshot() if _runtime != null else {}
+## 外部直写 BrushSV 门面；旁路笔刷累积状态，故须作废增量水位（失效条件 3）
+func write_brush_sv_records(records: Array) -> Dictionary:
+	_invalidate_brush_flush_watermark()
+	return _runtime.write_brush_sv_records(records) if _runtime != null else {"ok": false, "reason": "runtime_not_ready"}
+func has_brush_sv_content() -> bool: return _runtime != null and _runtime.has_brush_sv_content()
+func get_brush_sv_revision() -> int: return _runtime.get_brush_sv_revision() if _runtime != null else 0
+func get_brush_sv_field_summary() -> Dictionary: return _runtime.get_brush_sv_field_summary() if _runtime != null else {}
+# ⚠ compose 门面不再挂修订号递增：生产管线的合成是 runtime 内部自调、不经过门面，
+# 挂在这里（2026-08-10 前是 _volume_revisions 字典）从来接不到生产事件。
+# 计数器在 runtime（_blend_sv_revision，合成成功即增），BlendSVVolume.revision() 转发。
+func compose_blend_sv_fields(sv_complexity_rid: RID, sv_collision_rid: RID) -> Dictionary:
+	return _runtime.compose_blend_sv_fields(sv_complexity_rid, sv_collision_rid) if _runtime != null else {"ok": false, "reason": "runtime_not_ready"}
+func get_blend_sv_revision() -> int: return _runtime.get_blend_sv_revision() if _runtime != null else 0
+func release_blend_sv_fields() -> void:
+	if _runtime != null: _runtime.release_blend_sv_fields()
+## BlendSV 场对 RID 的门面转发。BlendSVVolume 经这两个口读，不去摸 runtime 私有成员。
+func blend_sv_complexity_rid() -> RID: return _runtime.blend_sv_complexity_rid() if _runtime != null else RID()
+func blend_sv_collision_rid() -> RID: return _runtime.blend_sv_collision_rid() if _runtime != null else RID()
+func score_blendsv_feedback_against_target(target_visual_rgba8_bytes: PackedByteArray, target_collision_r8_bytes: PackedByteArray = PackedByteArray()) -> Dictionary: return _runtime.score_blendsv_feedback_against_target(target_visual_rgba8_bytes, target_collision_r8_bytes) if _runtime != null else {"ok": false, "reason": "runtime_not_ready"}
+func set_brush_sv_persistence_metadata(metadata: Dictionary) -> Dictionary:
+	_brush_sv_control_metadata = ScenePlacementRuntimeScript._brush_sv_control_metadata_from(metadata)
+	_brush_sv_control_metadata["owner"] = "ScenePlacementActor"
+	_brush_sv_control_metadata["control_plane_only"] = true
+	_brush_sv_control_metadata["content_mirror"] = false
+	if _runtime != null:
+		_brush_sv_control_metadata = _runtime.set_brush_sv_persistence_metadata(_brush_sv_control_metadata)
+	return _brush_sv_control_metadata.duplicate(true)
+func update_brush_sv_lifecycle_state(state: String, dirty: bool = false, dirty_keys: Array = []) -> Dictionary:
+	if _runtime != null:
+		_brush_sv_control_metadata = _runtime.update_brush_sv_lifecycle_state(state, dirty, dirty_keys)
+	else:
+		_brush_sv_control_metadata["owner"] = "ScenePlacementActor"
+		_brush_sv_control_metadata["control_plane_only"] = true
+		_brush_sv_control_metadata["content_mirror"] = false
+		_brush_sv_control_metadata["lifecycle_state"] = state
+		_brush_sv_control_metadata["dirty"] = dirty
+		if not dirty_keys.is_empty():
+			_brush_sv_control_metadata["dirty_keys"] = dirty_keys.duplicate()
+	return _brush_sv_control_metadata.duplicate(true)
+func get_brush_sv_persistence_metadata() -> Dictionary:
+	if _runtime != null:
+		_brush_sv_control_metadata = _runtime.get_brush_sv_persistence_metadata()
+	return _brush_sv_control_metadata.duplicate(true)
+func clear_brush_sv_persistence_metadata() -> void:
+	if _runtime != null: _runtime.clear_brush_sv_persistence_metadata()
+	_brush_sv_control_metadata.clear()
+func spawn_autoobject_batch_from_accepted_placement_records(spawn_records: Array[Dictionary], options: Dictionary = {}) -> Dictionary: return _runtime.spawn_autoobject_batch_from_accepted_placement_records(spawn_records, options) if _runtime != null else {"ok": false, "reason": "runtime_not_ready"}
+func flush_autoobject_runtime_to_scene_voxel_committer(options: Dictionary = {}) -> Dictionary: return _runtime.flush_autoobject_runtime_to_scene_voxel_committer(options) if _runtime != null else {"ok": false, "reason": "runtime_not_ready"}
+func run_autoobject_prefilter(sv: Dictionary, target_read_buffers: Dictionary = {}, prefilter_settings: Dictionary = {}) -> Dictionary:
+	return _publish_anchor_result(
+		_runtime.run_autoobject_prefilter(sv, target_read_buffers, prefilter_settings) if _runtime != null else {"ok": false, "reason": "runtime_not_ready"})
+func run_placement_pipeline(sv: Dictionary, placement_common: Dictionary = {}) -> Dictionary:
+	return _publish_place_result(
+		_runtime.run_placement_pipeline(sv, placement_common) if _runtime != null else {"ok": false, "reason": "runtime_not_ready"})
+func debug_read_prefilter_asset_scores(source_anchor_index: int) -> Dictionary:
+	return _runtime.debug_read_prefilter_asset_scores(source_anchor_index) if _runtime != null else {"ok": false, "reason": "runtime_not_ready"}
+func get_last_pipeline_result() -> Dictionary: return _runtime.get_last_pipeline_result() if _runtime != null else {}
+func build_resident_complexity_field_handoff(sv: Dictionary) -> Dictionary: return _runtime.build_resident_complexity_field_handoff(sv) if _runtime != null else {"ok": false, "reason": "runtime_not_ready"}
+func prepare_target_read_buffers_from_common_gpu(settings: Dictionary, sv: Dictionary) -> Dictionary:
+	_target_read_buffers = _runtime.prepare_target_read_buffers_from_common_gpu(settings, sv) if _runtime != null else {"ok": false, "reason": "runtime_not_ready"}
+	return _target_read_buffers

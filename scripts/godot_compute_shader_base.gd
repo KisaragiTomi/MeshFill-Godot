@@ -4,7 +4,6 @@ extends RefCounted
 const SCOPE_PERSISTENT := "persistent"
 const SCOPE_FRAME := "frame"
 const SCOPE_PASS := "pass"
-const SCOPE_SCRATCH := "scratch"
 
 const KIND_BUFFER := "buffer"
 const KIND_TEXTURE := "texture"
@@ -38,11 +37,53 @@ var _compute_list_active := false
 var _buffer_zero_scratch := PackedByteArray()
 
 var _resources: Array[Dictionary] = []
-var _scope_stack: Array[String] = [SCOPE_PERSISTENT]
+## ensure_shader_kernel() 的常驻 shader/pipeline 注册表：path → {"shader","pipeline","mtime"}。
+## 只是命中索引——RID 本身仍登记在下面的 _resources 里（SCOPE_PERSISTENT、本宿主自有），
+## 所有权与 GC 审计语义不变。设备是 per-host 的，所以注册表也必须是成员而非 static。
+var _kernel_registry: Dictionary = {}
+## shader RID id → 源路径，只服务于编译计时探针：create_compute_pipeline() 只拿得到 shader RID
+## 与自由格式 label，靠这张表把 pipeline 段的耗时归到与 shader 段同一个 path 键下。
+var _shader_stat_paths: Dictionary = {}
 var _deferred_gc_scopes: Array[String] = []
-var _kind_disposers: Dictionary = {}
 var _kind_orders: Dictionary = _DEFAULT_GC_ORDER.duplicate()
 var _next_resource_id := 1
+
+## GLSL→SPIR-V 前端编译结果的进程级缓存：键为 shader 路径，值 {"spirv": RDShaderSPIRV, "mtime": int}，
+## 按源文件修改时间失效。SPIR-V 字节码与具体 RenderingDevice 无关，可跨本地/全局设备与
+## 短生命周期实例（如每次 Place 新建的 runner）复用；只缓存 CPU 侧字节码、不缓存任何 RID，
+## 因此不改变 scope GC 与资源审计的生命周期语义。编译失败的结果不入缓存。
+## 无锁：load_compute_shader 的全部调用方都在主线程（display writer 一族不经过本 loader）；
+## 且 Object 型 static（如 Mutex）会在编辑器脚本重载时被重置为 null，不可依赖。
+## 类型化 Dictionary 的零值是 {}，不受 static 初始化器失效影响。
+static var _spirv_source_cache: Dictionary = {}
+
+## shader 编译计时探针：键为 shader 路径，值为
+## {"spirv_usec","module_usec","pipeline_usec","spirv_calls","module_calls","pipeline_calls"}。
+## 三段分别对应 glslang 前端（仅 SPIR-V 缓存未命中时计入）、shader_create_from_spirv
+## （SPIR-V 反射 + zstd 压缩/解压 + shader module 创建）与 compute_pipeline_create
+## （驱动 SPIR-V→ISA 编译）。local RenderingDevice 拿不到驱动的 VkPipelineCache
+## （rendering_device.cpp 里 pipeline cache 只给 is_main_instance 建），后两段每次调用都是
+## 冷成本，所以要能分别量出来。与 _spirv_source_cache 同为类型化 static Dictionary。
+static var _compile_stats: Dictionary = {}
+
+
+## 返回编译计时统计的深拷贝（path → 三段耗时/次数）。供编辑器 bridge 读数与诊断报告使用。
+static func get_shader_compile_stats() -> Dictionary:
+	var snapshot: Dictionary = {}
+	for path in _compile_stats:
+		snapshot[path] = (_compile_stats[path] as Dictionary).duplicate()
+	return snapshot
+
+
+static func reset_shader_compile_stats() -> void:
+	_compile_stats.clear()
+
+
+static func _record_compile_usec(path: String, phase: String, usec: int) -> void:
+	var entry: Dictionary = _compile_stats.get(path, {})
+	entry[phase + "_usec"] = int(entry.get(phase + "_usec", 0)) + usec
+	entry[phase + "_calls"] = int(entry.get(phase + "_calls", 0)) + 1
+	_compile_stats[path] = entry
 
 
 func _notification(what: int) -> void:
@@ -78,7 +119,9 @@ func ensure_device(prefer_local_device: bool = true, allow_global_fallback: bool
 		if DisplayServer.get_name() == "headless":
 			push_error("%s: no RenderingDevice — 当前以 --headless 启动，GPU 路径不可用。请改用 --rendering-driver vulkan 运行（编辑器启动命令见 CLAUDE.md）。" % log_name)
 		else:
-			push_error("%s: no RenderingDevice available" % log_name)
+			push_error("%s.ensure_device(): 无法获取 RenderingDevice（prefer_local=%s, allow_global_fallback=%s）—— GPU 路径不可恢复，不降级到 CPU。" % [
+				log_name, prefer_local_device, allow_global_fallback])
+		assert(false, "GodotComputeShaderBase.ensure_device: no RenderingDevice")
 		return false
 
 	_disposed = false
@@ -88,11 +131,16 @@ func ensure_device(prefer_local_device: bool = true, allow_global_fallback: bool
 
 func attach_rendering_device(rendering_device: RenderingDevice, owns_device: bool = false) -> bool:
 	if rendering_device == null:
-		push_error("%s: external RenderingDevice is null" % log_name)
+		push_error("%s.attach_rendering_device(): 外部传入的 RenderingDevice 为 null —— 拒绝绑定。" % log_name)
+		assert(false, "GodotComputeShaderBase.attach_rendering_device: null RenderingDevice")
 		return false
 
 	if _rd != null and _rd != rendering_device:
-		push_warning("%s: replacing an active RenderingDevice; call dispose() first if it owns resources" % log_name)
+		# 旧设备上登记的 RID 换设备后会在错误的设备上被绑定/释放，必须显式 dispose() 而非静默替换。
+		push_error("%s.attach_rendering_device(): 试图替换正在使用的 RenderingDevice（已登记 %d 条资源）—— 必须先 dispose()。" % [
+			log_name, _resources.size()])
+		assert(false, "GodotComputeShaderBase.attach_rendering_device: replacing an active RenderingDevice")
+		return false
 
 	_rd = rendering_device
 	_owns_rendering_device = owns_device
@@ -133,11 +181,13 @@ func dispose(sync_before_free: bool = false) -> void:
 	if _rd != null and _owns_rendering_device:
 		_rd.free()
 
+	_repair_kernel_members()
+	_kernel_registry.clear()
+	_shader_stat_paths.clear()
 	_rd = null
 	_owns_rendering_device = false
 	_compute_list_active = false
 	_deferred_gc_scopes.clear()
-	_scope_stack = [SCOPE_PERSISTENT]
 	_on_after_dispose()
 
 
@@ -147,25 +197,6 @@ func submit_and_sync(include_global_device: bool = false) -> void:
 	if _owns_rendering_device or include_global_device:
 		_rd.submit()
 		_rd.sync()
-
-
-func begin_scope(scope: String) -> String:
-	if scope.is_empty():
-		scope = SCOPE_SCRATCH
-	_scope_stack.append(scope)
-	return scope
-
-
-func end_scope(free_now: bool = true) -> void:
-	if _scope_stack.size() <= 1:
-		return
-	var scope: String = _scope_stack.pop_back()
-	if free_now:
-		gc_scope(scope)
-
-
-func current_scope() -> String:
-	return _scope_stack.back()
 
 
 func track_rid(
@@ -181,7 +212,7 @@ func track_rid(
 
 	var resolved_scope: String = scope
 	if resolved_scope.is_empty():
-		resolved_scope = current_scope()
+		resolved_scope = SCOPE_PERSISTENT
 
 	for entry in _resources:
 		if bool(entry.get("alive", false)) and entry.get("rid", RID()) == rid:
@@ -213,13 +244,6 @@ func track_borrowed_rid(
 	label: String = ""
 ) -> RID:
 	return track_rid(rid, kind, scope, label, Callable(), BORROWED)
-
-
-func is_tracked_rid_owned(rid: RID) -> bool:
-	for entry in _resources:
-		if bool(entry.get("alive", false)) and entry.get("rid", RID()) == rid:
-			return bool(entry.get("owned", OWNED))
-	return false
 
 
 func untrack_rid(rid: RID) -> RID:
@@ -325,13 +349,10 @@ func flush_deferred_gc() -> void:
 		gc_scope(scope, false)
 
 
-func register_kind_disposer(kind: String, disposer: Callable, order: int = 100) -> void:
-	_kind_disposers[kind] = disposer
-	_kind_orders[kind] = order
-
-
 func begin_compute_list() -> int:
 	if _rd == null:
+		push_error("%s.begin_compute_list(): RenderingDevice 为 null —— 无法开启 compute list。" % log_name)
+		assert(false, "GodotComputeShaderBase.begin_compute_list: no RenderingDevice")
 		return -1
 	_compute_list_active = true
 	return _rd.compute_list_begin()
@@ -339,6 +360,8 @@ func begin_compute_list() -> int:
 
 func end_compute_list() -> void:
 	if _rd == null:
+		push_error("%s.end_compute_list(): RenderingDevice 为 null —— compute list 无法正常结束，已录入的 dispatch 全部丢失。" % log_name)
+		assert(false, "GodotComputeShaderBase.end_compute_list: no RenderingDevice")
 		_compute_list_active = false
 		return
 	_rd.compute_list_end()
@@ -356,12 +379,14 @@ func _gpu_dispatch_and_sync(pipeline: RID, uniform_sets: Array, push: PackedByte
 	return true
 
 
-func _gpu_dispatch_pipeline(cl: int, pipeline: RID, uniform_set: RID, push: PackedByteArray, groups: Vector3i) -> void:
-	_gpu_dispatch_pipeline_sets(cl, pipeline, [uniform_set], push, groups)
-
-
 func _gpu_dispatch_pipeline_sets(cl: int, pipeline: RID, uniform_sets: Array, push: PackedByteArray, groups: Vector3i) -> void:
-	if _rd == null:
+	if not _dispatch_preconditions_valid("_gpu_dispatch_pipeline_sets", cl, pipeline, uniform_sets):
+		return
+	# groups 全 0 是稀疏调度的正常空批次，不报错；负值只可能来自计算错误。
+	if groups.x < 0 or groups.y < 0 or groups.z < 0:
+		push_error("%s._gpu_dispatch_pipeline_sets(): dispatch 组数为负 groups=(%d, %d, %d) —— 不 clamp、不发起 dispatch。" % [
+			log_name, groups.x, groups.y, groups.z])
+		assert(false, "GodotComputeShaderBase._gpu_dispatch_pipeline_sets: negative dispatch groups")
 		return
 	_rd.compute_list_bind_compute_pipeline(cl, pipeline)
 	for set_index in range(uniform_sets.size()):
@@ -370,10 +395,40 @@ func _gpu_dispatch_pipeline_sets(cl: int, pipeline: RID, uniform_sets: Array, pu
 	_rd.compute_list_dispatch(cl, groups.x, groups.y, groups.z)
 
 
+## dispatch 前的硬性前置校验（device / compute list / pipeline / 每个 uniform set 的 RID）。
+## 任一不满足即 push_error + assert 并返回 false —— 绝不静默跳过绑定或用占位 RID 顶替，
+## 否则错误的 buffer 会悄悄进 dispatch，脏数据要到很后面才暴露。
+func _dispatch_preconditions_valid(context: String, cl: int, pipeline: RID, uniform_sets: Array) -> bool:
+	if _rd == null:
+		push_error("%s.%s(): RenderingDevice 为 null —— 无法 dispatch。" % [log_name, context])
+		assert(false, "GodotComputeShaderBase: dispatch without RenderingDevice")
+		return false
+	if cl < 0:
+		push_error("%s.%s(): compute list 句柄非法 (cl=%d) —— 无法 dispatch。" % [log_name, context, cl])
+		assert(false, "GodotComputeShaderBase: dispatch with invalid compute list")
+		return false
+	if not pipeline.is_valid():
+		push_error("%s.%s(): compute pipeline RID 无效 —— shader/pipeline 创建失败后不得继续 dispatch。" % [log_name, context])
+		assert(false, "GodotComputeShaderBase: dispatch with invalid pipeline RID")
+		return false
+	for set_index in range(uniform_sets.size()):
+		var uniform_set: RID = uniform_sets[set_index]
+		if not uniform_set.is_valid():
+			push_error("%s.%s(): uniform set RID 无效 (set=%d, 共 %d 个) —— 不绑定占位 RID，终止 dispatch。" % [
+				log_name, context, set_index, uniform_sets.size()])
+			assert(false, "GodotComputeShaderBase: dispatch with invalid uniform set RID")
+			return false
+	return true
+
+
 ## _gpu_dispatch_pipeline_sets 的 indirect 变体:组数由 indirect_args 缓冲(GPU 写入)决定。
 ## 多段链中的 barrier 仍由调用方显式插入(compute_list_add_barrier)。
 func _gpu_dispatch_pipeline_sets_indirect(cl: int, pipeline: RID, uniform_sets: Array, push: PackedByteArray, indirect_args: RID, args_offset: int = 0) -> void:
-	if _rd == null:
+	if not _dispatch_preconditions_valid("_gpu_dispatch_pipeline_sets_indirect", cl, pipeline, uniform_sets):
+		return
+	if not indirect_args.is_valid():
+		push_error("%s._gpu_dispatch_pipeline_sets_indirect(): indirect args buffer RID 无效 —— 终止 dispatch。" % log_name)
+		assert(false, "GodotComputeShaderBase._gpu_dispatch_pipeline_sets_indirect: invalid indirect args RID")
 		return
 	_rd.compute_list_bind_compute_pipeline(cl, pipeline)
 	for set_index in range(uniform_sets.size()):
@@ -384,44 +439,153 @@ func _gpu_dispatch_pipeline_sets_indirect(cl: int, pipeline: RID, uniform_sets: 
 
 func load_compute_shader(path: String, scope: String = SCOPE_PERSISTENT, label: String = "") -> RID:
 	if _rd == null:
-		push_error("%s: load_compute_shader called before ensure_device" % log_name)
+		push_error("%s.load_compute_shader(): 在 ensure_device 之前调用，shader='%s' —— 无法编译。" % [log_name, path])
+		assert(false, "GodotComputeShaderBase.load_compute_shader: no RenderingDevice")
 		return RID()
 
-	var spirv: RDShaderSPIRV
-	var source_text: String = read_compute_shader_source(path)
-	if not source_text.is_empty():
-		var source: RDShaderSource = RDShaderSource.new()
-		source.language = RenderingDevice.SHADER_LANGUAGE_GLSL
-		source.set_stage_source(RenderingDevice.SHADER_STAGE_COMPUTE, source_text)
-		spirv = _rd.shader_compile_spirv_from_source(source)
-	else:
+	var spirv: RDShaderSPIRV = _compile_spirv_cached(path)
+	if spirv == null:
 		var shader_file: RDShaderFile = load(path) as RDShaderFile
 		if shader_file != null:
 			spirv = shader_file.get_spirv()
 
 	if spirv == null:
-		push_error("%s: failed to compile compute shader: %s" % [log_name, path])
+		push_error("%s.load_compute_shader(): shader '%s' 无法取得 SPIR-V（源文本不可读且 RDShaderFile 导入失败）—— 不返回占位 shader。" % [
+			log_name, path])
+		assert(false, "GodotComputeShaderBase.load_compute_shader: no SPIR-V")
 		return RID()
 
 	var err_msg: String = spirv.get_stage_compile_error(RenderingDevice.SHADER_STAGE_COMPUTE)
 	if not err_msg.is_empty():
-		push_error("%s GLSL compile error [%s]: %s" % [log_name, path, err_msg])
+		push_error("%s.load_compute_shader(): shader '%s' GLSL 编译失败 —— 无法继续 dispatch：%s" % [log_name, path, err_msg])
+		assert(false, "GodotComputeShaderBase.load_compute_shader: GLSL compile error")
 		return RID()
 
+	var module_start := Time.get_ticks_usec()
 	var shader: RID = _rd.shader_create_from_spirv(spirv)
+	_record_compile_usec(path, "module", Time.get_ticks_usec() - module_start)
 	if not shader.is_valid():
-		push_error("%s: SPIR-V create failed: %s" % [log_name, path])
+		push_error("%s.load_compute_shader(): shader '%s' 的 shader_create_from_spirv 返回无效 RID —— 无法继续 dispatch。" % [
+			log_name, path])
+		assert(false, "GodotComputeShaderBase.load_compute_shader: invalid shader RID")
 		return RID()
 
 	var resolved_label: String = label if not label.is_empty() else path.get_file()
+	_repair_kernel_members()
+	_shader_stat_paths[shader.get_id()] = path
 	return track_rid(shader, KIND_SHADER, scope, resolved_label)
 
 
 func create_compute_pipeline(shader: RID, scope: String = SCOPE_PERSISTENT, label: String = "") -> RID:
-	if _rd == null or not shader.is_valid():
+	if _rd == null:
+		push_error("%s.create_compute_pipeline(): RenderingDevice 为 null（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.create_compute_pipeline: no RenderingDevice")
 		return RID()
+	if not shader.is_valid():
+		push_error("%s.create_compute_pipeline(): shader RID 无效（label='%s'）—— shader 编译失败后不得创建 pipeline。" % [
+			log_name, label])
+		assert(false, "GodotComputeShaderBase.create_compute_pipeline: invalid shader RID")
+		return RID()
+	_repair_kernel_members()
+	var pipeline_start := Time.get_ticks_usec()
 	var pipeline: RID = _rd.compute_pipeline_create(shader)
+	_record_compile_usec(
+		str(_shader_stat_paths.get(shader.get_id(), label if not label.is_empty() else "<unknown>")),
+		"pipeline",
+		Time.get_ticks_usec() - pipeline_start
+	)
+	if not pipeline.is_valid():
+		push_error("%s.create_compute_pipeline(): compute_pipeline_create 返回无效 RID（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.create_compute_pipeline: invalid pipeline RID")
+		return RID()
 	return track_rid(pipeline, KIND_PIPELINE, scope, label)
+
+
+## 取得 path 对应的常驻 shader + pipeline，首次调用编译、之后直接命中；返回
+## {"shader": RID, "pipeline": RID}，任一无效表示编译失败（调用方沿用各自既有的报错/reason 路径）。
+##
+## 用于取代“每次 dispatch 都 load_compute_shader(..., SCOPE_FRAME) + create_compute_pipeline
+## 再随 gc_frame 释放”的写法。基类的 SPIR-V 缓存只去重 glslang 前端；shader_create_from_spirv
+## （反射 + zstd 压缩/解压 + shader module）与 compute_pipeline_create（驱动 SPIR-V→ISA）
+## 在每次调用里都是全额重做，而 local RenderingDevice 拿不到驱动的 VkPipelineCache，
+## 这两段没有任何底层缓存兜底，只能靠本注册表在宿主生命周期内前移一次。
+##
+## RID 按 SCOPE_PERSISTENT 登记进宿主自己的追踪器，所有权与 GC 审计语义不变（dispose/gc_all
+## 照常回收）；注册表只是命中索引。源文件 mtime 变化时释放旧 RID 并重建，保留改 .glsl
+## 后无需重启即时生效的调试行为——原 SCOPE_FRAME 写法靠“每次重编译”白拿到这一点。
+func ensure_shader_kernel(path: String, label: String = "") -> Dictionary:
+	_repair_kernel_members()
+	var mtime: int = shader_source_mtime(path)
+	var cached: Dictionary = _kernel_registry.get(path, {})
+	if not cached.is_empty():
+		var cached_shader: RID = cached.get("shader", RID())
+		var cached_pipeline: RID = cached.get("pipeline", RID())
+		var fresh: bool = mtime == 0 or int(cached.get("mtime", -1)) == mtime
+		if cached_shader.is_valid() and cached_pipeline.is_valid() and fresh:
+			return cached
+		# 源文件已改动（或常驻 RID 意外失效）：先退掉旧的常驻 RID 再重建，避免注册表
+		# 换新后旧 shader/pipeline 变成无人引用、只能等 dispose 才回收的悬挂常驻资源。
+		if cached_pipeline.is_valid():
+			release_rid(cached_pipeline)
+		if cached_shader.is_valid():
+			release_rid(cached_shader)
+		_kernel_registry.erase(path)
+
+	var resolved_label: String = label if not label.is_empty() else path.get_file()
+	var shader: RID = load_compute_shader(path, SCOPE_PERSISTENT, resolved_label)
+	if not shader.is_valid():
+		return {"shader": RID(), "pipeline": RID()}
+	var pipeline: RID = create_compute_pipeline(shader, SCOPE_PERSISTENT, resolved_label)
+	if not pipeline.is_valid():
+		release_rid(shader)
+		return {"shader": RID(), "pipeline": RID()}
+
+	var entry: Dictionary = {"shader": shader, "pipeline": pipeline, "mtime": mtime}
+	_kernel_registry[path] = entry
+	return entry
+
+
+## shader 源文件的修改时间；0 表示两种路径形式都取不到（打包运行等），调用方按“无法失效”处理。
+func shader_source_mtime(path: String) -> int:
+	var mtime: int = FileAccess.get_modified_time(ProjectSettings.globalize_path(path))
+	if mtime == 0:
+		mtime = FileAccess.get_modified_time(path)
+	return mtime
+
+
+## @tool 软重载后新增成员回来是 nil（见 gpu_autoobject_runtime.reset_state 的同类守卫）：
+## 归零成空字典，注册表随之失效、下次调用照常重新编译，不会朝设备 free 假句柄。
+func _repair_kernel_members() -> void:
+	if not (_kernel_registry is Dictionary): _kernel_registry = {}
+	if not (_shader_stat_paths is Dictionary): _shader_stat_paths = {}
+
+
+## 文本源路径的 GLSL→SPIR-V 编译，带进程级 path→SPIR-V 缓存（mtime 失效）。
+## 返回 null 表示源文本不可读（调用方回退到 RDShaderFile 路径）；编译失败时返回带
+## stage error 的 SPIR-V，由调用方沿用原有报错路径，失败结果不写入缓存。
+func _compile_spirv_cached(path: String) -> RDShaderSPIRV:
+	var mtime: int = shader_source_mtime(path)
+
+	if mtime != 0:
+		var cached: Dictionary = _spirv_source_cache.get(path, {})
+		if int(cached.get("mtime", -1)) == mtime:
+			return cached.get("spirv")
+
+	var source_text: String = read_compute_shader_source(path)
+	if source_text.is_empty():
+		return null
+
+	var source: RDShaderSource = RDShaderSource.new()
+	source.language = RenderingDevice.SHADER_LANGUAGE_GLSL
+	source.set_stage_source(RenderingDevice.SHADER_STAGE_COMPUTE, source_text)
+	var spirv_start := Time.get_ticks_usec()
+	var spirv: RDShaderSPIRV = _rd.shader_compile_spirv_from_source(source)
+	_record_compile_usec(path, "spirv", Time.get_ticks_usec() - spirv_start)
+	if spirv == null:
+		return null
+	if mtime != 0 and spirv.get_stage_compile_error(RenderingDevice.SHADER_STAGE_COMPUTE).is_empty():
+		_spirv_source_cache[path] = {"spirv": spirv, "mtime": mtime}
+	return spirv
 
 
 func read_compute_shader_source(path: String) -> String:
@@ -449,8 +613,20 @@ func create_uniform_set(
 	label: String = ""
 ) -> RID:
 	if _rd == null:
+		push_error("%s.create_uniform_set(): RenderingDevice 为 null（set=%d, label='%s'）。" % [log_name, set_index, label])
+		assert(false, "GodotComputeShaderBase.create_uniform_set: no RenderingDevice")
+		return RID()
+	if not shader.is_valid():
+		push_error("%s.create_uniform_set(): shader RID 无效（set=%d, label='%s'）—— 不创建 uniform set。" % [
+			log_name, set_index, label])
+		assert(false, "GodotComputeShaderBase.create_uniform_set: invalid shader RID")
 		return RID()
 	var uniform_set: RID = _rd.uniform_set_create(uniforms, shader, set_index)
+	if not uniform_set.is_valid():
+		push_error("%s.create_uniform_set(): uniform_set_create 失败（set=%d, label='%s', uniform 数=%d）—— 绑定的 buffer/texture RID 或 binding 序号与 shader 布局不符。" % [
+			log_name, set_index, label, uniforms.size()])
+		assert(false, "GodotComputeShaderBase.create_uniform_set: invalid uniform set RID")
+		return RID()
 	return track_rid(uniform_set, KIND_UNIFORM_SET, scope, label)
 
 
@@ -481,40 +657,90 @@ func make_sampler_uniform(binding: int, sampler: RID, texture: RID) -> RDUniform
 
 func storage_buffer_from_bytes(bytes: PackedByteArray, scope: String = SCOPE_FRAME, label: String = "") -> RID:
 	if _rd == null:
+		push_error("%s.storage_buffer_from_bytes(): RenderingDevice 为 null（label='%s', %d 字节）。" % [
+			log_name, label, bytes.size()])
+		assert(false, "GodotComputeShaderBase.storage_buffer_from_bytes: no RenderingDevice")
 		return RID()
 	var safe: PackedByteArray = bytes
+	# RenderingDevice 不接受 0 字节缓冲，空载荷补到 4 字节占位（容量仍由调用方的 count 传给 shader）。
 	if safe.size() <= 0:
 		safe = PackedByteArray()
 		safe.resize(4)
-	return track_rid(_rd.storage_buffer_create(safe.size(), safe), KIND_BUFFER, scope, label)
+	var buffer: RID = _rd.storage_buffer_create(safe.size(), safe)
+	if not buffer.is_valid():
+		push_error("%s.storage_buffer_from_bytes(): storage_buffer_create 失败（label='%s', %d 字节）。" % [
+			log_name, label, safe.size()])
+		assert(false, "GodotComputeShaderBase.storage_buffer_from_bytes: invalid buffer RID")
+		return RID()
+	return track_rid(buffer, KIND_BUFFER, scope, label)
 
 
 func storage_buffer_from_floats(values: PackedFloat32Array, scope: String = SCOPE_FRAME, label: String = "") -> RID:
-	return storage_buffer_from_bytes(pack_float_array(values), scope, label)
+	return storage_buffer_from_bytes(values.to_byte_array(), scope, label)
 
 
 func storage_buffer_zero(byte_count: int, scope: String = SCOPE_FRAME, label: String = "") -> RID:
+	if byte_count < 0:
+		push_error("%s.storage_buffer_zero(): 请求的字节数为负 (%d, label='%s') —— 不 clamp，拒绝创建。" % [
+			log_name, byte_count, label])
+		assert(false, "GodotComputeShaderBase.storage_buffer_zero: negative byte_count")
+		return RID()
 	var bytes: PackedByteArray = PackedByteArray()
 	bytes.resize(maxi(byte_count, 4))
 	return storage_buffer_from_bytes(bytes, scope, label)
 
 
+## 创建不带 CPU 初始化载荷的 storage buffer。仅用于后续 GPU pass 会在任何读取前
+## 完整覆盖的工作缓冲；计数器、原子目标和部分写入缓冲仍应使用 storage_buffer_zero()。
+func storage_buffer_uninitialized(byte_count: int, scope: String = SCOPE_FRAME, label: String = "") -> RID:
+	if _rd == null:
+		push_error("%s.storage_buffer_uninitialized(): RenderingDevice 为 null（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.storage_buffer_uninitialized: no RenderingDevice")
+		return RID()
+	if byte_count < 0:
+		push_error("%s.storage_buffer_uninitialized(): 请求的字节数为负 (%d, label='%s') —— 不 clamp，拒绝创建。" % [
+			log_name, byte_count, label])
+		assert(false, "GodotComputeShaderBase.storage_buffer_uninitialized: negative byte_count")
+		return RID()
+	var safe_byte_count := maxi(byte_count, 4)
+	var buffer: RID = _rd.storage_buffer_create(safe_byte_count)
+	if not buffer.is_valid():
+		push_error("%s.storage_buffer_uninitialized(): storage_buffer_create 失败（label='%s', %d 字节）。" % [
+			log_name, label, safe_byte_count])
+		assert(false, "GodotComputeShaderBase.storage_buffer_uninitialized: invalid buffer RID")
+		return RID()
+	return track_rid(buffer, KIND_BUFFER, scope, label)
+
+
 func buffer_zero(rid: RID, byte_count: int) -> bool:
-	if _rd == null or not rid.is_valid():
+	if _rd == null:
+		push_error("%s.buffer_zero(): RenderingDevice 为 null。" % log_name)
+		assert(false, "GodotComputeShaderBase.buffer_zero: no RenderingDevice")
+		return false
+	if not rid.is_valid():
+		push_error("%s.buffer_zero(): 目标 buffer RID 无效（byte_count=%d）—— 不静默跳过清零。" % [log_name, byte_count])
+		assert(false, "GodotComputeShaderBase.buffer_zero: invalid buffer RID")
 		return false
 	if byte_count < 0:
+		push_error("%s.buffer_zero(): 字节数为负 (%d)。" % [log_name, byte_count])
+		assert(false, "GodotComputeShaderBase.buffer_zero: negative byte_count")
 		return false
 	if byte_count == 0:
 		return true
 	if _compute_list_active:
-		push_error("%s: buffer_zero called while compute list is active" % log_name)
+		push_error("%s.buffer_zero(): compute list 处于活动状态时不能执行 buffer_update（byte_count=%d）。" % [log_name, byte_count])
+		assert(false, "GodotComputeShaderBase.buffer_zero: compute list is active")
 		return false
 
 	var remaining := byte_count
 	var offset := 0
 	while remaining > 0:
 		var chunk_size := mini(remaining, _BUFFER_ZERO_UPDATE_CHUNK_BYTES)
-		if _rd.buffer_update(rid, offset, chunk_size, _buffer_zero_bytes(chunk_size)) != OK:
+		var err := _rd.buffer_update(rid, offset, chunk_size, _buffer_zero_bytes(chunk_size))
+		if err != OK:
+			push_error("%s.buffer_zero(): buffer_update 失败 err=%d（offset=%d, chunk=%d, 总计=%d）—— 缓冲内容已处于半清零的脏状态。" % [
+				log_name, err, offset, chunk_size, byte_count])
+			assert(false, "GodotComputeShaderBase.buffer_zero: buffer_update failed")
 			return false
 		offset += chunk_size
 		remaining -= chunk_size
@@ -529,23 +755,27 @@ func _buffer_zero_bytes(byte_count: int) -> PackedByteArray:
 
 func dispatch_indirect_args_buffer_zero(scope: String = SCOPE_FRAME, label: String = "dispatch_indirect_args") -> RID:
 	if _rd == null:
+		push_error("%s.dispatch_indirect_args_buffer_zero(): RenderingDevice 为 null（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.dispatch_indirect_args_buffer_zero: no RenderingDevice")
 		return RID()
 	var bytes: PackedByteArray = PackedByteArray()
 	bytes.resize(12)
-	return track_rid(
-		_rd.storage_buffer_create(
-			bytes.size(),
-			bytes,
-			RenderingDevice.STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT
-		),
-		KIND_BUFFER,
-		scope,
-		label
+	var buffer: RID = _rd.storage_buffer_create(
+		bytes.size(),
+		bytes,
+		RenderingDevice.STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT
 	)
+	if not buffer.is_valid():
+		push_error("%s.dispatch_indirect_args_buffer_zero(): indirect args buffer 创建失败（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.dispatch_indirect_args_buffer_zero: invalid buffer RID")
+		return RID()
+	return track_rid(buffer, KIND_BUFFER, scope, label)
 
 
 func create_linear_sampler(scope: String = SCOPE_PERSISTENT, label: String = "linear_sampler") -> RID:
 	if _rd == null:
+		push_error("%s.create_linear_sampler(): RenderingDevice 为 null（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.create_linear_sampler: no RenderingDevice")
 		return RID()
 	var state: RDSamplerState = RDSamplerState.new()
 	state.mag_filter = RenderingDevice.SAMPLER_FILTER_LINEAR
@@ -562,7 +792,13 @@ func upload_texture_2d(
 	scope: String = SCOPE_FRAME,
 	label: String = ""
 ) -> RID:
-	if _rd == null or image == null:
+	if _rd == null:
+		push_error("%s.upload_texture_2d(): RenderingDevice 为 null（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.upload_texture_2d: no RenderingDevice")
+		return RID()
+	if image == null:
+		push_error("%s.upload_texture_2d(): 传入的 Image 为 null（label='%s'）—— 不返回占位纹理。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.upload_texture_2d: null image")
 		return RID()
 
 	var img: Image = image
@@ -588,6 +824,8 @@ func create_rw_texture_2d(
 	label: String = ""
 ) -> RID:
 	if _rd == null:
+		push_error("%s.create_rw_texture_2d(): RenderingDevice 为 null（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.create_rw_texture_2d: no RenderingDevice")
 		return RID()
 	var texture_format: RDTextureFormat = _texture_format_2d(width, height, format, usage_bits)
 	var texture: RID = _rd.texture_create(texture_format, RDTextureView.new())
@@ -604,7 +842,14 @@ func upload_texture_3d(
 	scope: String = SCOPE_FRAME,
 	label: String = ""
 ) -> RID:
-	if _rd == null or width <= 0 or height <= 0 or depth <= 0 or bytes.is_empty():
+	if _rd == null:
+		push_error("%s.upload_texture_3d(): RenderingDevice 为 null（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.upload_texture_3d: no RenderingDevice")
+		return RID()
+	if width <= 0 or height <= 0 or depth <= 0 or bytes.is_empty():
+		push_error("%s.upload_texture_3d(): 尺寸/载荷非法 (%d×%d×%d, %d 字节, label='%s') —— 不返回占位纹理。" % [
+			log_name, width, height, depth, bytes.size(), label])
+		assert(false, "GodotComputeShaderBase.upload_texture_3d: invalid dimensions or empty payload")
 		return RID()
 	var texture_format: RDTextureFormat = _texture_format_3d(width, height, depth, format, usage_bits)
 	var texture: RID = _rd.texture_create(texture_format, RDTextureView.new(), [bytes])
@@ -619,10 +864,18 @@ func upload_texture_3d_from_images(
 	scope: String = SCOPE_FRAME,
 	label: String = ""
 ) -> RID:
-	if _rd == null or images.is_empty():
+	if _rd == null:
+		push_error("%s.upload_texture_3d_from_images(): RenderingDevice 为 null（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.upload_texture_3d_from_images: no RenderingDevice")
+		return RID()
+	if images.is_empty():
+		push_error("%s.upload_texture_3d_from_images(): 切片数组为空（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.upload_texture_3d_from_images: empty image array")
 		return RID()
 	var first: Image = images[0] as Image
 	if first == null:
+		push_error("%s.upload_texture_3d_from_images(): 第 0 层切片不是 Image（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.upload_texture_3d_from_images: slice 0 is not an Image")
 		return RID()
 	var width: int = first.get_width()
 	var height: int = first.get_height()
@@ -631,9 +884,13 @@ func upload_texture_3d_from_images(
 	for raw_image in images:
 		var img: Image = raw_image as Image
 		if img == null:
+			push_error("%s.upload_texture_3d_from_images(): 切片数组中存在非 Image 元素（label='%s'）。" % [log_name, label])
+			assert(false, "GodotComputeShaderBase.upload_texture_3d_from_images: non-Image slice")
 			return RID()
 		if img.get_width() != width or img.get_height() != height:
-			push_error("%s: 3D texture slices must have matching dimensions" % log_name)
+			push_error("%s.upload_texture_3d_from_images(): 切片尺寸不一致（期望 %d×%d，实得 %d×%d, label='%s'）。" % [
+				log_name, width, height, img.get_width(), img.get_height(), label])
+			assert(false, "GodotComputeShaderBase.upload_texture_3d_from_images: slice dimension mismatch")
 			return RID()
 		if img.get_format() != image_format:
 			img = img.duplicate()
@@ -655,31 +912,47 @@ func create_rw_texture_3d(
 	scope: String = SCOPE_FRAME,
 	label: String = ""
 ) -> RID:
-	if _rd == null or width <= 0 or height <= 0 or depth <= 0:
+	if _rd == null:
+		push_error("%s.create_rw_texture_3d(): RenderingDevice 为 null（label='%s'）。" % [log_name, label])
+		assert(false, "GodotComputeShaderBase.create_rw_texture_3d: no RenderingDevice")
+		return RID()
+	if width <= 0 or height <= 0 or depth <= 0:
+		push_error("%s.create_rw_texture_3d(): 尺寸非法 (%d×%d×%d, label='%s')。" % [
+			log_name, width, height, depth, label])
+		assert(false, "GodotComputeShaderBase.create_rw_texture_3d: invalid dimensions")
 		return RID()
 	var texture_format: RDTextureFormat = _texture_format_3d(width, height, depth, format, usage_bits)
 	var texture: RID = _rd.texture_create(texture_format, RDTextureView.new())
 	return track_rid(texture, KIND_TEXTURE, scope, label)
 
 
-func pack_float_array(values: PackedFloat32Array) -> PackedByteArray:
-	return values.to_byte_array()
-
-
-func pack_u32_array(values: PackedInt32Array) -> PackedByteArray:
-	return values.to_byte_array()
-
-
 ## 通过 buffer_get_data 从 GPU 缓冲区回读字节；无 device / RID 无效 / 字节数<=0 时返回空数组。
 ## 供各子类的调试/测试回读路径共用（生产路径用常驻 GPU→GPU 交接，不回读）。原多处 _read_buffer_bytes/_readback_buffer_bytes。
 func read_buffer_bytes(buffer: RID, offset: int = 0, byte_count: int = -1) -> PackedByteArray:
-	if _rd == null or not buffer.is_valid() or byte_count <= 0:
+	if _rd == null:
+		push_error("%s.read_buffer_bytes(): RenderingDevice 为 null（offset=%d, byte_count=%d）。" % [
+			log_name, offset, byte_count])
+		assert(false, "GodotComputeShaderBase.read_buffer_bytes: no RenderingDevice")
+		return PackedByteArray()
+	if not buffer.is_valid():
+		push_error("%s.read_buffer_bytes(): 源 buffer RID 无效（offset=%d, byte_count=%d）—— 不返回空数组顶替回读结果。" % [
+			log_name, offset, byte_count])
+		assert(false, "GodotComputeShaderBase.read_buffer_bytes: invalid buffer RID")
+		return PackedByteArray()
+	if byte_count < 0:
+		push_error("%s.read_buffer_bytes(): 回读字节数为负 (%d, offset=%d)。" % [log_name, byte_count, offset])
+		assert(false, "GodotComputeShaderBase.read_buffer_bytes: negative byte_count")
+		return PackedByteArray()
+	if byte_count == 0:
 		return PackedByteArray()
 	return _rd.buffer_get_data(buffer, offset, byte_count)
 
 
 func ceil_div(value: int, divisor: int) -> int:
 	if divisor <= 0:
+		push_error("%s.ceil_div(): 除数非法 (value=%d, divisor=%d) —— 返回 0 组会让 dispatch 静默空跑。" % [
+			log_name, value, divisor])
+		assert(false, "GodotComputeShaderBase.ceil_div: non-positive divisor")
 		return 0
 	return int((value + divisor - 1) / divisor)
 
@@ -696,20 +969,10 @@ func dispatch_groups_3d(width: int, height: int, depth: int, local_size_x: int, 
 	return Vector3i(ceil_div(width, local_size_x), ceil_div(height, local_size_y), ceil_div(depth, local_size_z))
 
 
-func cell_count_3d(width: int, height: int, depth: int) -> int:
-	return maxi(width, 0) * maxi(height, 0) * maxi(depth, 0)
-
-
-func byte_size_3d(width: int, height: int, depth: int, bytes_per_cell: int = 4) -> int:
-	return cell_count_3d(width, height, depth) * maxi(bytes_per_cell, 1)
-
-
-func storage_buffer_zero_3d(width: int, height: int, depth: int, bytes_per_cell: int = 4, scope: String = SCOPE_FRAME, label: String = "") -> RID:
-	return storage_buffer_zero(byte_size_3d(width, height, depth, bytes_per_cell), scope, label)
-
-
-func flatten_index_3d(x: int, y: int, z: int, width: int, height: int) -> int:
-	return z * width * height + y * width + x
+## 缓存的 uniform set 是否仍然可用。只查 RID 非空是不够的：RD 在释放被绑定的缓冲时会连带
+## 释放依赖它的 uniform set，而调用方手里的 RID 仍非空。
+func uniform_set_alive(uniform_set: RID) -> bool:
+	return _rd != null and uniform_set.is_valid() and _rd.uniform_set_is_valid(uniform_set)
 
 
 func _texture_format_2d(width: int, height: int, format: int, usage_bits: int) -> RDTextureFormat:
@@ -767,6 +1030,7 @@ func _free_entry(entry: Dictionary) -> void:
 		return
 	if not _should_free_resource(entry):
 		return
+	_forget_kernel_rid(rid, str(entry.get("kind", KIND_OTHER)))
 
 	_on_before_free_resource(entry)
 
@@ -774,14 +1038,25 @@ func _free_entry(entry: Dictionary) -> void:
 	if disposer.is_valid():
 		disposer.call(_rd, rid, entry)
 	else:
-		var kind: String = str(entry.get("kind", KIND_OTHER))
-		var kind_disposer: Callable = _kind_disposers.get(kind, Callable())
-		if kind_disposer.is_valid():
-			kind_disposer.call(_rd, rid, entry)
-		else:
-			_rd.free_rid(rid)
+		_rd.free_rid(rid)
 
 	_on_after_free_resource(entry)
+
+
+## 释放 shader/pipeline RID 时同步剔除注册表条目。RID.is_valid() 只看 id 非零，freed 之后
+## 依然为 true，所以注册表不能靠 is_valid() 自愈：任何绕开 ensure_shader_kernel 的回收路径
+## （gc_all()、显式 gc_scope(SCOPE_PERSISTENT)、release_rid()）都必须在这里把条目摘掉，
+## 否则下次命中会把已释放的句柄交给 dispatch。
+func _forget_kernel_rid(rid: RID, kind: String) -> void:
+	if kind != KIND_SHADER and kind != KIND_PIPELINE:
+		return
+	_repair_kernel_members()
+	if kind == KIND_SHADER:
+		_shader_stat_paths.erase(rid.get_id())
+	for path in _kernel_registry.keys():
+		var entry: Dictionary = _kernel_registry[path]
+		if entry.get("shader", RID()) == rid or entry.get("pipeline", RID()) == rid:
+			_kernel_registry.erase(path)
 
 
 func _queue_gc_scope(scope: String) -> void:

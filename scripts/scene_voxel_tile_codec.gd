@@ -1,7 +1,6 @@
 extends RefCounted
 
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
-const HashUtils := preload("res://scripts/utils/hash_utils.gd")
 
 const RECORD_STRIDE_BYTES := 128
 const SUMMARY_STRIDE_BYTES := 32
@@ -33,7 +32,6 @@ const FLAG_ROUTING := 32
 const FLAG_SCORING := 64
 const FLAG_FEEDBACK := 128
 const FLAG_OBJECT_REFS := 256
-const FLAG_MASK := 512
 
 ## 若项目设置中尚无该项，则以 default_size 注册一个 Vector3i 类型的项目设置并登记其属性信息。
 static func register_project_settings(setting_name: String, default_size: Vector3i) -> void:
@@ -119,14 +117,57 @@ static func tile_info_for_voxel(voxel_coord: Vector3i, grid_size: Vector3i, tile
 static func tile_key(tile_coord: Vector3i) -> String:
 	return "%d:%d:%d" % [tile_coord.x, tile_coord.y, tile_coord.z]
 
-## 统计一条瓦片记录里关联的对象引用数量：优先用 debug id 数组长度，否则取 debug/正式 range_count 的较大值。
+## 统计一条瓦片**记录**里关联的对象引用数量：有 debug id 数组就用它的长度，否则取
+## debug/正式 range_count 的较大值。
+##
+## ⚠ 这条路只对**CPU 侧构造**的记录有意义。GPU 常驻路径的真相在
+## `scene_voxel_tile_object_refs` 槽位缓冲里（每 tile 8 个固定槽，0 = 空），
+## 而 `scene_voxel_tile_object_ref_update.glsl` **只写那个缓冲**，不回填 tile record 的
+## `object_range_count`（record buffer 偏移 84）—— 所以对一条 GPU 回读的 record 调用本函数
+## 恒得 0。要按 GPU 实况计数请用 `object_ref_counts_from_slot_bytes()`。
+##
+## ⚠ 曾经的坑：默认值写成 `get("auto_object_ids_debug", [])` 时，键缺席也会返回一个
+## **Array**（`[]`），`ids is Array` 因此恒真 ⇒ 无条件 `return 0`，后面两个 range_count
+## 分支是死码。全仓从没有人写过 `auto_object_ids_debug` 这个键，所以本函数一直恒返回 0。
 static func object_ref_count(tile_record: Dictionary) -> int:
 	if tile_record.is_empty():
 		return 0
-	var ids = tile_record.get("auto_object_ids_debug", [])
-	if ids is Array:
-		return (ids as Array).size()
+	if tile_record.has("auto_object_ids_debug"):
+		var ids = tile_record["auto_object_ids_debug"]
+		if ids is Array:
+			return (ids as Array).size()
 	return maxi(int(tile_record.get("object_debug_range_count", 0)), int(tile_record.get("object_range_count", 0)))
+
+
+## 由 `scene_voxel_tile_object_refs` 槽位缓冲字节直接数出**逐 tile** 的非空引用数。
+##
+## 布局（与 `scene_voxel_tile_object_ref_update.glsl` 的 binding 1 同一契约）：
+##   `object_refs[tile_index * refs_per_tile + slot]`，u32，0 = 空槽，
+##   数值 ref_key = GPU AutoObject `object_id + 1`。
+##
+## 这是 GPU 常驻路径下**唯一**可信的 object-ref 计数源：tile record 的 `object_range_count`
+## 没有任何 GPU pass 会去写。缓冲短于期望时按可用槽位截断计数（不补零伪造满格）。
+static func object_ref_counts_from_slot_bytes(
+	slot_bytes: PackedByteArray,
+	tile_count: int,
+	refs_per_tile: int = SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT
+) -> PackedInt32Array:
+	var counts := PackedInt32Array()
+	var safe_tile_count := maxi(tile_count, 0)
+	counts.resize(safe_tile_count)
+	var safe_refs_per_tile := maxi(refs_per_tile, 1)
+	var available_slots := int(slot_bytes.size() / 4)
+	for tile_index in range(safe_tile_count):
+		var slot_base := tile_index * safe_refs_per_tile
+		if slot_base >= available_slots:
+			break
+		var slot_limit := mini(slot_base + safe_refs_per_tile, available_slots)
+		var used := 0
+		for slot_index in range(slot_base, slot_limit):
+			if slot_bytes.decode_u32(slot_index * 4) != 0:
+				used += 1
+		counts[tile_index] = used
+	return counts
 
 ## 计算某瓦片在体素空间的边界范围（min/max 均钳到网格内），并附带 XZ 平面的 base_rect，返回边界字典。
 static func tile_bounds(tile_coord: Vector3i, grid_size: Vector3i, tile_size: Vector3i) -> Dictionary:
@@ -151,7 +192,9 @@ static func tile_bounds(tile_coord: Vector3i, grid_size: Vector3i, tile_size: Ve
 		),
 	}
 
-## 把多种形态的输入（字典/数组/字符串/整数掩码）归一化为标志字典；纯 guidance 标志(target/routing/scoring/feedback)
+## 把多种形态的输入（字典/数组/字符串）归一化为标志字典。⚠ 不再接受整数位掩码：
+## 传 int 会得到空字典并落到调用方的 default_layer 兜底，而不是按位解读。
+## 纯 guidance 标志(target/routing/scoring/feedback)
 ## 不补默认层，否则在既无 scene 又无 collision 时补上 default_layer。
 static func flags_from_value(value, default_layer: String = "scene") -> Dictionary:
 	var flags := {}
@@ -169,9 +212,12 @@ static func flags_from_value(value, default_layer: String = "scene") -> Dictiona
 		var flag := str(value)
 		if not flag.is_empty():
 			flags[flag] = true
-	elif value is int:
-		if int(value) != 0:
-			flags["mask"] = int(value)
+	else:
+		# 整数位掩码/null/其他类型不再被解读：过去这里静默落到 default_layer，
+		# 调用方以为标记了 collision/target，实际只标了 scene —— 脏范围错位且无从追查。
+		push_error("SceneVoxelTileCodec.flags_from_value: 不支持的标志值类型 typeof=%d 值=%s（仅接受 Dictionary/Array/String；整数位掩码请先经 flags_from_bits 转换）—— 继续会静默降级为 default_layer='%s'" % [typeof(value), str(value), default_layer])
+		assert(false, "SceneVoxelTileCodec.flags_from_value: unsupported flag value type")
+		return {}
 
 	var guidance_only := (
 		bool(flags.get("target", false))
@@ -195,13 +241,6 @@ static func first_vector3i(record: Dictionary, keys: Array[String], fallback: Ve
 		if record.has(key):
 			return vector3i_from_value(record.get(key), fallback)
 	return fallback
-
-## 判断记录中是否至少存在 keys 里的任意一个键。
-static func has_any_key(record: Dictionary, keys: Array[String]) -> bool:
-	for key in keys:
-		if record.has(key):
-			return true
-	return false
 
 
 # ============================================================
@@ -253,6 +292,30 @@ static func normalized_bounds(voxel_min: Vector3i, voxel_max: Vector3i, grid_siz
 		"voxel_max": max_v,
 	}
 
+## TargetSV 元数据（texture_size / slice_count）→ 规范 grid_size。
+##
+## **全仓唯一允许把 texture_size/slice_count 换成 Vector3i 的地方**（计划 §6.3）。
+## 其余层的 grid_size 是 ScenePlacementActor 导出的 SSOT，不经过这里。
+## 换算式 (ts, slices, ts) 顺带把「XZ 必须方形」这条隐含假设变成显式的一行：
+## 磁盘布局 (slice * ts + z) * ts + x 与 VoxelGeneral.voxel_index(v, grid) 在此换算下
+## 逐值相同，索引口径因此不再有第二式。
+##
+## 缺字段/尺寸非正一律判死并返回 fallback：旧调用方各自 get(key, 1) 兜底，
+## 缺 texture_size 就按 1 建索引，后续所有缓冲尺寸校验都按错误量级通过。
+static func grid_from_target_metadata(metadata: Dictionary, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
+	for required_key in ["texture_size", "slice_count"]:
+		if not metadata.has(required_key):
+			push_error("SceneVoxelTileCodec.grid_from_target_metadata: TargetSV 元数据缺少 '%s'（现有 keys=%s）—— 拒绝按默认尺寸建索引" % [required_key, str(metadata.keys())])
+			assert(false, "SceneVoxelTileCodec.grid_from_target_metadata: metadata missing dimension key")
+			return fallback
+	var texture_size := int(metadata["texture_size"])
+	var slice_count := int(metadata["slice_count"])
+	if texture_size <= 0 or slice_count <= 0:
+		push_error("SceneVoxelTileCodec.grid_from_target_metadata: TargetSV 尺寸非法 texture_size=%d slice_count=%d" % [texture_size, slice_count])
+		assert(false, "SceneVoxelTileCodec.grid_from_target_metadata: non-positive target dimensions")
+		return fallback
+	return Vector3i(texture_size, slice_count, texture_size)
+
 ## 计算存放 voxel_count 个 RGBA8 复杂度体素所需的字节数（每体素 4 字节）。
 static func rgba8_byte_count(voxel_count: int) -> int:
 	return maxi(voxel_count, 0) * COMPLEXITY_FIELD_STRIDE_BYTES
@@ -296,12 +359,18 @@ static func pack_complexity_field_rgba8_bytes(values: PackedFloat32Array, voxel_
 		out.encode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES, BufferUtils.pack_shader_rgba8_word(color))
 	return out
 
-## 把 RGBA8 复杂度场字节解码为每体素 4 个 float（r,g,b,a 依次展开），越界部分保持 0。
+## 把 RGBA8 复杂度场字节解码为每体素 4 个 float（r,g,b,a 依次展开）。
+## 字节数不足 voxel_count 时硬失败：以前尾部体素被静默补 0，读到的是"空体素"假象。
 static func decode_complexity_field_rgba8_vec4_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
 	var safe_count := maxi(voxel_count, 0)
+	var required := safe_count * COMPLEXITY_FIELD_STRIDE_BYTES
+	if bytes.size() < required:
+		push_error("SceneVoxelTileCodec.decode_complexity_field_rgba8_vec4_bytes: 复杂度场字节数不足 —— voxel_count=%d 期望 >= %d 字节，实际 %d 字节；继续解码会把尾部 %d 个体素静默补零" % [safe_count, required, bytes.size(), safe_count - int(bytes.size() / COMPLEXITY_FIELD_STRIDE_BYTES)])
+		assert(false, "SceneVoxelTileCodec: complexity field byte buffer shorter than voxel_count")
+		return PackedFloat32Array()
 	var out := PackedFloat32Array()
 	out.resize(safe_count * 4)
-	var available := mini(safe_count, int(bytes.size() / COMPLEXITY_FIELD_STRIDE_BYTES))
+	var available := safe_count
 	for i in range(available):
 		var color := BufferUtils.shader_rgba8_word_to_color(bytes.decode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES))
 		var base := i * 4
@@ -312,14 +381,35 @@ static func decode_complexity_field_rgba8_vec4_bytes(bytes: PackedByteArray, vox
 	return out
 
 ## 只取 RGBA8 复杂度场每体素的 alpha 通道，解为标量 float 数组（与标量打包路径对应）。
+## 字节数不足 voxel_count 时硬失败（同 vec4 版本：静默补零会伪造空体素）。
 static func decode_complexity_field_rgba8_alpha_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
 	var safe_count := maxi(voxel_count, 0)
+	var required := safe_count * COMPLEXITY_FIELD_STRIDE_BYTES
+	if bytes.size() < required:
+		push_error("SceneVoxelTileCodec.decode_complexity_field_rgba8_alpha_bytes: 复杂度场字节数不足 —— voxel_count=%d 期望 >= %d 字节，实际 %d 字节；继续解码会把尾部体素静默补零" % [safe_count, required, bytes.size()])
+		assert(false, "SceneVoxelTileCodec: complexity field byte buffer shorter than voxel_count")
+		return PackedFloat32Array()
 	var out := PackedFloat32Array()
 	out.resize(safe_count)
-	var available := mini(safe_count, int(bytes.size() / COMPLEXITY_FIELD_STRIDE_BYTES))
+	var available := safe_count
 	for i in range(available):
 		out[i] = BufferUtils.shader_rgba8_word_to_color(bytes.decode_u32(i * COMPLEXITY_FIELD_STRIDE_BYTES)).a
 	return out
+
+## RGBA8 复杂度场逐体素解码：取第 idx 个体素的整个 Color（rgb = 颜色，a = complexity）。
+## 单点查询热路径（TargetSV 直选/解码/回归测试用）：按 offset 直解，不解整场。
+## 越界/坏输入返回透明黑，与整场解码路径对尾部体素的语义一致。
+static func decode_complexity_field_rgba8_color_at(bytes: PackedByteArray, idx: int) -> Color:
+	var offset := idx * COMPLEXITY_FIELD_STRIDE_BYTES
+	if idx < 0 or offset + COMPLEXITY_FIELD_STRIDE_BYTES > bytes.size():
+		return Color(0.0, 0.0, 0.0, 0.0)
+	return BufferUtils.shader_rgba8_word_to_color(bytes.decode_u32(offset))
+
+
+## 同上，只要 alpha（complexity）。
+static func decode_complexity_field_rgba8_alpha_at(bytes: PackedByteArray, idx: int) -> float:
+	return clampf(decode_complexity_field_rgba8_color_at(bytes, idx).a, 0.0, 1.0)
+
 
 ## 把碰撞标量场量化打包为 R8 字节（每体素 1 字节，unorm8 量化），未紧凑到 4 字节对齐。
 static func pack_collision_field_r8_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
@@ -330,127 +420,169 @@ static func pack_collision_field_r8_bytes(values: PackedFloat32Array, voxel_coun
 		out[i] = BufferUtils.quantize_unorm8(values[i])
 	return out
 
-## 打包碰撞场为 R8 后展开成 GPU u32 上传格式（每体素 1 个 uint32，量化值存低字节）。
+## 打包碰撞场为 GPU u32 上传格式（每体素 1 个 uint32，量化值存低字节，其余 3 字节为 0）。
+## 与「pack_collision_field_r8_bytes(...) 再 u32_bytes_from_r8_bytes(...)」逐字节等价：
+## 两者都只在 i < mini(safe_count, values.size()) 处写入 quantize_unorm8(values[i])，
+## 其余字节由 resize 补 0。融合后省掉一次 voxel_count 级遍历与一份 R8 中间缓冲。
 static func pack_collision_field_u32_bytes(values: PackedFloat32Array, voxel_count: int = -1) -> PackedByteArray:
 	var safe_count := infer_scalar_voxel_count(values, voxel_count)
-	return u32_bytes_from_r8_bytes(pack_collision_field_r8_bytes(values, safe_count), safe_count)
+	var out := PackedByteArray()
+	out.resize(u32_field_byte_count(safe_count))
+	for i in range(mini(safe_count, values.size())):
+		out[i * 4] = BufferUtils.quantize_unorm8(values[i])
+	return out
+
+
+# --- R8 ↔ u32 布局的整块字节重排（避开百万级逐字节 GDScript 循环） ---
+#
+# 借 Image 的通道转换在 C++ 侧做定步长搬运，全程不经过 Variant。等价性依据
+# （Godot 源码 core/io/image.cpp::Image::convert 的 switch 分派 + _convert 模板）：
+#   * FORMAT_R8 → FORMAT_RG8 走 _convert<1, false, 2, false, false, false>：
+#     max_bytes = 2，rgba[0] = rofs[0]、rgba[1] = 0（i >= read_bytes 一律填 0），
+#     write_alpha 为 false 故不写 255；每像素写入 wofs[0] = rofs[0]; wofs[1] = 0。
+#     ⇒ 语义正好是「每字节后补 1 个 0」。做两次即「每字节后补 3 个 0」，
+#       亦即小端 u32 的低字节布局（与原 out[i*4] = r8[i] 逐位相同）。
+#   * FORMAT_RG8 → FORMAT_R8 走 _convert<2, false, 1, false, false, false>：
+#     每像素写入 wofs[0] = rofs[0] ⇒「每 2 字节取第 0 字节」。做两次即
+#     「每 4 字节取第 0 字节」（与原 out[i] = word_bytes[i*4] 逐位相同）。
+#   * R8/RG8 同属 <= FORMAT_RGBA8 的字节格式组，_are_formats_compatible 为真，
+#     走的是上述整块通道转换分支，不会退化到逐像素 Color 路径。
+# 这条路径只做字节搬运，不做任何数值量化/归一化，因此与小端/大端无关：
+# 补零位置由 _convert 显式写死，不依赖宿主字节序。
+#
+## Image 宽度上限（core/io/image.h：MAX_WIDTH = 1 << 24）。展开路径的中间图宽度是
+## 2 * byte_count，故 byte_count 需满足 byte_count * 2 <= MAX_WIDTH；越界即回退循环。
+const _STRIDE_IMAGE_MAX_WIDTH := 1 << 24
+## 小缓冲走 Image 会被两次 Image 分配吃掉收益，低于该字节数直接用逐元素循环。
+const _STRIDE_IMAGE_MIN_BYTES := 4096
+
+## 把 N 字节展开为 4N 字节（每字节后补 3 个 0）。失败时返回空数组，由调用方回退循环。
+static func _expand_bytes_x4(src: PackedByteArray) -> PackedByteArray:
+	var n := src.size()
+	if n <= 0 or n * 2 > _STRIDE_IMAGE_MAX_WIDTH:
+		return PackedByteArray()
+	var img := Image.create_from_data(n, 1, false, Image.FORMAT_R8, src)
+	if img == null:
+		return PackedByteArray()
+	img.convert(Image.FORMAT_RG8)
+	var half := img.get_data()
+	if half.size() != n * 2:
+		return PackedByteArray()
+	var img2 := Image.create_from_data(half.size(), 1, false, Image.FORMAT_R8, half)
+	if img2 == null:
+		return PackedByteArray()
+	img2.convert(Image.FORMAT_RG8)
+	var full := img2.get_data()
+	return full if full.size() == n * 4 else PackedByteArray()
+
+## 从 4 * count 字节里取每 4 字节的第 0 字节，得到 count 字节。失败时返回空数组。
+static func _gather_bytes_x4(src: PackedByteArray, count: int) -> PackedByteArray:
+	if count <= 0 or src.size() < count * 4 or count * 2 > _STRIDE_IMAGE_MAX_WIDTH:
+		return PackedByteArray()
+	var quad := src if src.size() == count * 4 else src.slice(0, count * 4)
+	var img := Image.create_from_data(count * 2, 1, false, Image.FORMAT_RG8, quad)
+	if img == null:
+		return PackedByteArray()
+	img.convert(Image.FORMAT_R8)
+	var half := img.get_data()
+	if half.size() != count * 2:
+		return PackedByteArray()
+	var img2 := Image.create_from_data(count, 1, false, Image.FORMAT_RG8, half)
+	if img2 == null:
+		return PackedByteArray()
+	img2.convert(Image.FORMAT_R8)
+	var out := img2.get_data()
+	return out if out.size() == count else PackedByteArray()
 
 ## 把紧凑的 R8 字节展开为 u32 布局缓冲：源第 i 字节写入 out[i*4]（小端低字节），其余 3 字节留 0。
+## 源字节数不足 voxel_count 时硬失败：以前尾部体素被静默补 0（碰撞消失）。
 static func u32_bytes_from_r8_bytes(r8_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
+	var out_size := u32_field_byte_count(voxel_count)
+	var required := r8_byte_count(voxel_count)
+	if r8_bytes.size() < required:
+		push_error("SceneVoxelTileCodec.u32_bytes_from_r8_bytes: R8 源字节数不足 —— voxel_count=%d 期望 >= %d 字节，实际 %d 字节；继续展开会把尾部体素静默补零" % [voxel_count, required, r8_bytes.size()])
+		assert(false, "SceneVoxelTileCodec: r8 source buffer shorter than voxel_count")
+		return PackedByteArray()
+	var byte_count := required
+	if byte_count >= _STRIDE_IMAGE_MIN_BYTES:
+		var src := r8_bytes if r8_bytes.size() == byte_count else r8_bytes.slice(0, byte_count)
+		var expanded := _expand_bytes_x4(src)
+		if expanded.size() == byte_count * 4:
+			# byte_count <= max(voxel_count, 0) ⇒ byte_count * 4 <= out_size；
+			# resize 走 resize_initialized（core/variant/variant_call.cpp 的 bind_methodv），尾部补 0。
+			if expanded.size() != out_size:
+				expanded.resize(out_size)
+			return expanded
 	var out := PackedByteArray()
-	out.resize(u32_field_byte_count(voxel_count))
-	var byte_count := mini(r8_bytes.size(), r8_byte_count(voxel_count))
+	out.resize(out_size)
 	for i in range(byte_count):
 		out[i * 4] = r8_bytes[i]
 	return out
 
 ## 逆操作：从 u32 布局缓冲取回紧凑的 R8 字节（每体素取 word 的低字节 word_bytes[i*4]）。
+## 源 word 数不足 voxel_count 时硬失败（同 u32_bytes_from_r8_bytes 的理由）。
 static func r8_bytes_from_u32_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
+	var out_size := r8_byte_count(voxel_count)
+	var required := u32_field_byte_count(voxel_count)
+	if word_bytes.size() < required:
+		push_error("SceneVoxelTileCodec.r8_bytes_from_u32_bytes: u32 源字节数不足 —— voxel_count=%d 期望 >= %d 字节（每体素 1 个 u32），实际 %d 字节；继续压缩会把尾部体素静默补零" % [voxel_count, required, word_bytes.size()])
+		assert(false, "SceneVoxelTileCodec: u32 source buffer shorter than voxel_count")
+		return PackedByteArray()
+	var byte_count := out_size
+	if byte_count >= _STRIDE_IMAGE_MIN_BYTES:
+		var gathered := _gather_bytes_x4(word_bytes, byte_count)
+		if gathered.size() == byte_count:
+			if gathered.size() != out_size:
+				gathered.resize(out_size)
+			return gathered
 	var out := PackedByteArray()
-	out.resize(r8_byte_count(voxel_count))
-	var byte_count := mini(out.size(), int(word_bytes.size() / 4))
+	out.resize(out_size)
 	for i in range(byte_count):
 		out[i] = word_bytes[i * 4]
 	return out
 
 ## 把 R8 碰撞场字节解码为 [0,1] 归一化 float 数组（每字节 /255）。
+## 字节数不足 voxel_count 时硬失败：静默补零会把"有碰撞"的尾部体素报告成可通行。
 static func decode_collision_field_r8_bytes(bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
 	var safe_count := maxi(voxel_count, 0)
+	if bytes.size() < safe_count:
+		push_error("SceneVoxelTileCodec.decode_collision_field_r8_bytes: 碰撞场字节数不足 —— voxel_count=%d 期望 >= %d 字节（R8 每体素 1 字节），实际 %d 字节；继续解码会把尾部 %d 个体素静默报告为无碰撞" % [safe_count, safe_count, bytes.size(), safe_count - bytes.size()])
+		assert(false, "SceneVoxelTileCodec: collision field byte buffer shorter than voxel_count")
+		return PackedFloat32Array()
 	var out := PackedFloat32Array()
 	out.resize(safe_count)
-	var available := mini(safe_count, bytes.size())
+	var available := safe_count
 	for i in range(available):
 		out[i] = float(bytes[i] & 0xFF) / 255.0
 	return out
 
+## R8 碰撞场逐体素解码：第 idx 字节 unorm8 → [0,1]。磁盘/回读边界口径
+## （TargetSVSetup.get_collision_bytes 的 .r8 布局）；常驻/上传口径见 u32 家族。
+## 与 decode_collision_field_r8_bytes 逐体素语义一致。越界/坏输入返回 0.0。
+static func decode_collision_field_r8_at(bytes: PackedByteArray, idx: int) -> float:
+	if idx < 0 or idx >= bytes.size():
+		return 0.0
+	return clampf(float(bytes[idx] & 0xFF) / 255.0, 0.0, 1.0)
+
+
 ## 从 u32 布局缓冲直接解码碰撞场为归一化 float（= 先压缩回紧凑 R8 再按 R8 解码）。
 static func decode_collision_field_u32_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedFloat32Array:
-	return decode_collision_field_r8_bytes(r8_bytes_from_u32_bytes(word_bytes, voxel_count), voxel_count)
+	var r8 := r8_bytes_from_u32_bytes(word_bytes, voxel_count)
+	if r8.is_empty() and voxel_count > 0:
+		# r8_bytes_from_u32_bytes 已 push_error/assert；此处只做硬失败传播，不再补零。
+		return PackedFloat32Array()
+	return decode_collision_field_r8_bytes(r8, voxel_count)
 
-## 取瓦片字典的所有键转为字符串并排序，得到确定性的瓦片 id 列表（保证打包/解包顺序一致）。
-static func sorted_tile_ids(scene_voxel_tiles: Dictionary) -> Array[String]:
-	var ids: Array[String] = []
-	for raw_id in scene_voxel_tiles.keys():
-		ids.append(str(raw_id))
-	ids.sort()
-	return ids
-
-## 把每个瓦片记录序列化为 128 字节定长结构（坐标/尺寸/边界/脏标志/各类 tick/计数/哈希等），供 GPU SSBO 读取。
-static func pack_record_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictionary, default_tile_size: Vector3i) -> PackedByteArray:
-	var bytes := PackedByteArray()
-	bytes.resize(tile_ids.size() * RECORD_STRIDE_BYTES)
-
-	for i in range(tile_ids.size()):
-		var tile_key := tile_ids[i]
-		var tile: Dictionary = scene_voxel_tiles.get(tile_key, {})
-		var base := i * RECORD_STRIDE_BYTES
-		var tile_coord: Vector3i = tile.get("tile_coord", Vector3i.ZERO)
-		var tile_size: Vector3i = tile.get("tile_size", default_tile_size)
-		var voxel_min: Vector3i = tile.get("voxel_min", Vector3i.ZERO)
-		var voxel_max: Vector3i = tile.get("voxel_max", voxel_min + Vector3i.ONE)
-		var base_rect: Rect2i = tile.get("base_rect", Rect2i())
-		var dirty_flags: Dictionary = tile.get("dirty_flags", {})
-
-		BufferUtils.encode_vec3i4_with_w(bytes, base + 0, tile_coord, flags_to_bits(dirty_flags))
-		BufferUtils.encode_vec3i4_with_w(bytes, base + 16, tile_size, int(tile.get("epoch", 0)))
-		BufferUtils.encode_vec3i4_with_w(bytes, base + 32, voxel_min, int(tile.get("last_commit_tick", 0)))
-		BufferUtils.encode_vec3i4_with_w(bytes, base + 48, voxel_max, int(tile.get("write_tick", 0)))
-		bytes.encode_s32(base + 64, base_rect.position.x)
-		bytes.encode_s32(base + 68, base_rect.position.y)
-		bytes.encode_s32(base + 72, base_rect.size.x)
-		bytes.encode_s32(base + 76, base_rect.size.y)
-		bytes.encode_s32(base + 80, int(tile.get("object_range_start", 0)))
-		bytes.encode_s32(base + 84, int(tile.get("object_range_count", 0)))
-		bytes.encode_s32(base + 88, 0)
-		bytes.encode_s32(base + 92, 0)
-		bytes.encode_s32(base + 96, int(tile.get("scene_voxel_count", 0)))
-		bytes.encode_s32(base + 100, int(tile.get("collision_voxel_count", 0)))
-		bytes.encode_s32(base + 104, 0)  # was non_empty
-		bytes.encode_s32(base + 108, 1 if bool(tile.get("updated_this_commit", false)) else 0)
-		bytes.encode_u32(base + 112, HashUtils.stable_u32_from_string(tile_key))
-		bytes.encode_s32(base + 116, 1 if bool(tile.get("dirty", false)) else 0)
-		bytes.encode_s32(base + 120, 0)
-		bytes.encode_s32(base + 124, 0)
-
-	return bytes
-
-## 把每个瓦片的摘要序列化为 32 字节定长结构（复杂度/碰撞的 min-max 与场景/碰撞体素计数）。
-static func pack_summary_bytes(tile_ids: Array[String], scene_voxel_tiles: Dictionary) -> PackedByteArray:
-	var bytes := PackedByteArray()
-	bytes.resize(tile_ids.size() * SUMMARY_STRIDE_BYTES)
-
-	for i in range(tile_ids.size()):
-		var tile: Dictionary = scene_voxel_tiles.get(tile_ids[i], {})
-		var complexity_minmax: Vector2 = tile.get("complexity_minmax", Vector2.ZERO)
-		var collision_minmax: Vector2 = tile.get("collision_minmax", Vector2.ZERO)
-		var base := i * SUMMARY_STRIDE_BYTES
-
-		bytes.encode_float(base + 0, complexity_minmax.x)
-		bytes.encode_float(base + 4, complexity_minmax.y)
-		bytes.encode_float(base + 8, collision_minmax.x)
-		bytes.encode_float(base + 12, collision_minmax.y)
-		bytes.encode_s32(base + 16, int(tile.get("scene_voxel_count", 0)))
-		bytes.encode_s32(base + 20, int(tile.get("collision_voxel_count", 0)))
-		bytes.encode_s32(base + 24, 0)  # was non_empty
-		bytes.encode_s32(base + 28, 0)
-
-	return bytes
-
-## 从瓦片 id 列表中筛出被标记为 dirty（需重新提交）的瓦片 id 子集。
-static func dirty_tile_ids(tile_ids: Array[String], scene_voxel_tiles: Dictionary) -> Array[String]:
-	var result: Array[String] = []
-	for i in range(tile_ids.size()):
-		var tile: Dictionary = scene_voxel_tiles.get(tile_ids[i], {})
-		if bool(tile.get("dirty", false)):
-			result.append(tile_ids[i])
-	return result
-
-## pack_record_bytes 的逆操作：把 128 字节定长记录缓冲解回瓦片字典数组，与 tile_ids 按序配对。
+## 把 128 字节定长记录缓冲（GPU 常驻 tile record buffer 回读）解回瓦片字典数组，与 tile_ids 按序配对。
+## 字节数与 tile_ids 不匹配时硬失败：以前会静默只解出前 N 个 tile，后面的 tile 凭空消失。
 static func decode_records(bytes: PackedByteArray, tile_ids: Array[String]) -> Array[Dictionary]:
 	var records: Array[Dictionary] = []
-	var available_bytes := mini(bytes.size(), tile_ids.size() * RECORD_STRIDE_BYTES)
-	available_bytes -= available_bytes % RECORD_STRIDE_BYTES
-	var count := mini(tile_ids.size(), int(available_bytes / RECORD_STRIDE_BYTES))
+	var required := tile_ids.size() * RECORD_STRIDE_BYTES
+	if bytes.size() < required or bytes.size() % RECORD_STRIDE_BYTES != 0:
+		push_error("SceneVoxelTileCodec.decode_records: tile record 缓冲长度不合法 —— tile_ids=%d 期望 %d 字节（stride=%d 的整数倍），实际 %d 字节；继续解码只会得到前 %d 个 tile，其余静默丢失" % [tile_ids.size(), required, RECORD_STRIDE_BYTES, bytes.size(), int(bytes.size() / RECORD_STRIDE_BYTES)])
+		assert(false, "SceneVoxelTileCodec: tile record buffer size mismatch")
+		return records
+	var count := tile_ids.size()
 
 	for i in range(count):
 		var base := i * RECORD_STRIDE_BYTES
@@ -479,12 +611,34 @@ static func decode_records(bytes: PackedByteArray, tile_ids: Array[String]) -> A
 
 	return records
 
-## pack_summary_bytes 的逆操作：把 32 字节定长摘要缓冲解回摘要字典数组，与 tile_ids 按序配对。
+## 单块瓦片摘要里的两个占用计数 `(scene_voxel_count, collision_voxel_count)`。
+##
+## 摘要布局的事实源在本 codec（见 decode_summaries：+16 / +20）——此前三个消费方
+## （SceneSVVolume 紧凑表、SVTileVolume 活跃数与显示构建）各写一份手写偏移，
+## 布局一改就是三处静默错位。偏移只此一份。
+## 调用方自己保证 bytes 长度足够（短读语义各家不同：跳过 / 报警 / 返回 -1）。
+static func decode_summary_counts(bytes: PackedByteArray, tile_index: int) -> Vector2i:
+	var base := tile_index * SUMMARY_STRIDE_BYTES
+	return Vector2i(bytes.decode_s32(base + 16), bytes.decode_s32(base + 20))
+
+
+## 非空砖判据的唯一定义：场景体素或碰撞体素任一 > 0。
+## 三个消费方（SceneSV 紧凑表、SVTile 活跃数与显示）此前各写一份布尔式，
+## 注释自承"三处不会各说各话"——靠注释维持的同源改由代码维持。
+static func summary_counts_live(counts: Vector2i) -> bool:
+	return counts.x > 0 or counts.y > 0
+
+
+## 把 32 字节定长摘要缓冲（GPU 常驻 tile summary buffer 回读）解回摘要字典数组，与 tile_ids 按序配对。
+## 字节数与 tile_ids 不匹配时硬失败（同 decode_records：静默截断会让尾部 tile 摘要凭空消失）。
 static func decode_summaries(bytes: PackedByteArray, tile_ids: Array[String]) -> Array[Dictionary]:
 	var summaries: Array[Dictionary] = []
-	var available_bytes := mini(bytes.size(), tile_ids.size() * SUMMARY_STRIDE_BYTES)
-	available_bytes -= available_bytes % SUMMARY_STRIDE_BYTES
-	var count := mini(tile_ids.size(), int(available_bytes / SUMMARY_STRIDE_BYTES))
+	var required := tile_ids.size() * SUMMARY_STRIDE_BYTES
+	if bytes.size() < required or bytes.size() % SUMMARY_STRIDE_BYTES != 0:
+		push_error("SceneVoxelTileCodec.decode_summaries: tile summary 缓冲长度不合法 —— tile_ids=%d 期望 %d 字节（stride=%d 的整数倍），实际 %d 字节；继续解码只会得到前 %d 个 tile 摘要" % [tile_ids.size(), required, SUMMARY_STRIDE_BYTES, bytes.size(), int(bytes.size() / SUMMARY_STRIDE_BYTES)])
+		assert(false, "SceneVoxelTileCodec: tile summary buffer size mismatch")
+		return summaries
+	var count := tile_ids.size()
 
 	for i in range(count):
 		var base := i * SUMMARY_STRIDE_BYTES
@@ -498,7 +652,7 @@ static func decode_summaries(bytes: PackedByteArray, tile_ids: Array[String]) ->
 
 	return summaries
 
-## 把脏标志字典编码为整数位掩码（scene/collision/auto/brush/target/routing/scoring/feedback/object_refs/mask 各占一位）。
+## 把脏标志字典编码为整数位掩码（scene/collision/auto/brush/target/routing/scoring/feedback/object_refs 各占一位）。
 static func flags_to_bits(dirty_flags: Dictionary) -> int:
 	var bits := 0
 	if bool(dirty_flags.get("scene", false)):
@@ -519,8 +673,6 @@ static func flags_to_bits(dirty_flags: Dictionary) -> int:
 		bits |= FLAG_FEEDBACK
 	if bool(dirty_flags.get("object_refs", false)):
 		bits |= FLAG_OBJECT_REFS
-	if int(dirty_flags.get("mask", 0)) != 0:
-		bits |= FLAG_MASK
 	return bits
 
 ## flags_to_bits 的逆操作：把整数位掩码解回脏标志字典（每个置位对应一个标志键为 true）。
@@ -544,10 +696,4 @@ static func flags_from_bits(bits: int) -> Dictionary:
 		flags["feedback"] = true
 	if (bits & FLAG_OBJECT_REFS) != 0:
 		flags["object_refs"] = true
-	if (bits & FLAG_MASK) != 0:
-		flags["mask"] = true
 	return flags
-
-## 把有符号整数按位重解释为无符号 32 位数值（负数加 2^32），用于以 u32 语义处理 word。
-static func _u32_word(value: int) -> int:
-	return value if value >= 0 else value + 4294967296

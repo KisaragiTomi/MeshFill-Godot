@@ -208,10 +208,6 @@ func _cpu_fallback_failures(text: String) -> Array:
 	return failures
 
 
-static func mentions_no_rd_cpu_success(lower_text: String) -> bool:
-	return TestUtilsScript.mentions_no_rd_cpu_success(lower_text)
-
-
 func _meta_bool(key: String, fallback: bool) -> bool:
 	if not has_meta(key):
 		return fallback

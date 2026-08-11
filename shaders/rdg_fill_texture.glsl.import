@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bjtqwds0twfnm"
+path="res://.godot/imported/rdg_fill_texture.glsl-d5b5f275d1183e3199affd2f38defca7.res"
+
+[deps]
+
+source_file="res://shaders/rdg_fill_texture.glsl"
+dest_files=["res://.godot/imported/rdg_fill_texture.glsl-d5b5f275d1183e3199affd2f38defca7.res"]
+
+[params]
+

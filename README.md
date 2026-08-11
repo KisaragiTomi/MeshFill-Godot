@@ -13,7 +13,7 @@ MeshFill-Godot 是一套运行在 Godot 4.x 上的 GPU 加速程序化内容生�
 
 MeshFill 采用截然不同的设计：
 
-```
+```text
 TargetSceneVoxel（目标画布）            Placement Pipeline（生成管线）
 ┌─────────────────────────┐           ┌──────────────────────────┐
 │ "我希望这里看起来是：      │           │ 读取目标画布               │
@@ -41,13 +41,20 @@ TargetSceneVoxel（目标画布）            Placement Pipeline（生成管线�
 
 | 模块 | 文件 | 职责 |
 | --- | --- | --- |
-| **SPA**（ScenePlacementActor） | `scripts/scene_placement_actor.gd` | 运行时统一编排器，管理资产注册、GPU buffer 生命周期、prefilter→placement→commit 三阶段流水线 |
+| **SPA**（ScenePlacementActor） | `scripts/scene_placement_actor.gd` | 场景侧 facade / 唯一生命周期与 RD 所有者：导出生产门限、发布 Anchor / Fine 常驻交接、驱动 `run_anchors` / `run_score` / `run_place` |
+| **ScenePlacementRuntime** | `scripts/scene_placement_runtime.gd` | 编排主体：资产注册、GPU buffer 生命周期、prefilter→placement→commit 三阶段流水线 |
+| **SPASelectionHost** | `scripts/spa_selection_host.gd` | 选择模式状态机、点选路由、记录构建；独占持有 `VoxelPickGPU`（生产路径唯一的 GPU 点选后端） |
+| **VoxelPickGPU** | `scripts/voxel_pick_gpu.gd` | GPU 射线求交后端（`shaders/pick_scene_voxel.glsl`），只出坐标不含选择语义：`pick_scene_voxel()` / `pick_targetsv()` + anchor / AutoObject 常驻缓冲灌注 |
+| **UnifiedPickGPU** | `scripts/unified_pick_gpu.gd` | 下一代统一多域 GPU 点选（`shaders/pick_unified.glsl`）。**尚未接线**：无任何生产调用方，仅 `scripts/checks/glsl_gen_block_checks.gd` 引用其 GLSL 布局 SSOT |
+| **VolumeScoreFineSelection** | `scripts/volume_score_fine_selection.gd` | Score 步的结果模型装配与 golden 快照格式化 |
 | **TargetSV** | `scripts/target_scene_voxel_generator.gd` | 目标体素画布，GPU 生成/持久化/解码，对外提供 `target_completeness`/`target_collision` + `target_color` |
-| **AssetDescriptor** | `scripts/asset_descriptor.gd` | 资产语义描述符，定义每个可放置物体的默认 color/complexity/collision/探针 |
+| **AssetDescriptor** | `scripts/asset_descriptor.gd` | 资产语义描述符，持久化 canonical `profile_samples`、pivot 与默认 color/complexity/collision；旧资源字段只在读取边界归一化 |
 | **Probe Prefilter** | `scripts/autoobject_probe_prefilter_gpu.gd` | GPU 语义探针粗筛，从 TargetSV 和 SV[t-1] 中提取 anchor，匹配候选资产 |
-| **VoxelPlacementGenerator** | `scripts/voxel_placement_generator.gd` | GPU 放置评分与放置：数据驱动语义维度打分（per-dimension MATCH，`score_voxel_tile.glsl`）+ collision 采样/clearance 精筛（资产形状读 profile 容器常驻 `collision_records`，无每-run 烘焙；support 已由 anchor 阶段保证，不再评分） |
+| **VoxelPlacementGenerator** | `scripts/voxel_placement_generator.gd` | GPU Fine Score、Reduce 与 Stamp：从固定槽位 `profile_arena` 单 binding 读取本 slot 的 32 B `ProfileSample` fine range，共用 pivot/yaw/round/边界规则 |
+| **ProfileArenaLayout** | `scripts/utils/profile_arena_layout.gd` | 固定槽位 Profile Arena 的布局单一真值源：容量常量 + `align16` 推导的各区偏移、`verify_layout()` 自检、`budget_report()` 浪费量报告、GLSL 常量与访问器发射 |
+| **BakedAssetLoader** | `scripts/baked_asset_loader.gd` | Bake 产物的发现与校验单一入口：只扫 `BAKED_DESCRIPTOR_DIR`、按 `asset_id → 路径 → UID` 稳定排序、超限/重复/损坏一律明确失败 |
 | **SceneVoxelCommitter** | `scripts/scene_voxel_committer.gd` | 体素提交与合成，管理 SceneVoxel 常驻显存状态（stamp-only 提交），tile/field 工具/debug 子系统拆分见 `scene_voxel_tile_store.gd` / `scene_voxel_field_builder.gd` / `scene_voxel_debug.gd` |
-| **SceneVoxelTile** | `scripts/scene_voxel_tile_store.gd` | 粗粒度体素瓦片（4×4×4），dirty 追踪、局部重建、对象引用索引 |
+| **SceneVoxelTile** | `scripts/scene_voxel_tile_store.gd` | GPU 常驻粗粒度体素瓦片（默认 8×8×8、项目配置可覆盖），dirty worklist、summary 与对象引用索引 |
 | **GPUAutoObjectRuntime** | `scripts/gpu_autoobject_runtime.gd` | GPU 端百万级运行时对象池，管理 object id/transform/profile |
 
 ### 数据流
@@ -61,11 +68,11 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
       ├──────────────────────────────────┐
       ▼                                  ▼
   Probe Prefilter                  SceneVoxel[t-1]
-  （语义探针粗筛）                 （上一轮已提交场景状态）
+  （coarse sample 离散粗筛）       （上一轮已提交场景状态）
       │                                  │
       ▼                                  ▼
-  Candidate Voxel Regions         Placement Scoring
-  （候选体素区域）          ←────  （语义维度 + 物理精筛评分）
+  Anchor Candidate Handoff        Placement Scoring
+  （anchor/count/top-K 常驻）←────  （Fine residual + 物理约束）
       │
       ▼
   Voxel Placement Generator
@@ -83,19 +90,23 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 
 ### 三阶段流水线
 
-1. **Prefilter（粗筛）**：从 `SV[t-1]` 和 `TargetSV_B` 中提取 position-only anchors，用 descriptor 的语义探针对每个 anchor 打分，选出 top-K 候选资产，扩张为候选体素区域。
-2. **Placement（精筛）**：对每个资产的候选区域，执行 GPU 放置评分（数据驱动语义维度打分 + 采样覆盖、collision 碰撞、clearance 间距、overlap 重叠、target fit 目标匹配；资产形状直接读 SPA profile 容器常驻的 descriptor collision 采样；support 已在 anchor 阶段保证，不再评分），通过后 stamp 放置。
+1. **Prefilter（粗筛）**：从 `SV[t-1]` 和 `TargetSV_B` 中提取 position-only anchors，用 descriptor 的 coarse `ProfileSample` 对每个 anchor 做离散单格评分，选出 top-K 资产并发布 GPU 常驻 `anchor_candidate_handoff`。
+2. **Placement（精筛）**：对每个 anchor × top-K asset × pivot × yaw 执行 residual-gain Fine Score；Fine 与 Stamp 从同一个 sample RID 的 `fine_sample_range` 读取，并共用离散地址解析、字段解码和 compose 规则。
 3. **Commit（提交）**：本轮 stamp 的 `AutoSceneVoxel` 字段状态即 committed `SceneVoxel[tick]`（stamp-only 提交；`BrushSceneVoxel` 只是 SPA 常驻 overlay，不进入提交），发布为下一轮的稳定读取输入 `SV[t]`。最后对比 `SceneVoxel[tick]` 与 `TargetSV_B` 计算反馈评分。
 
 ## GPU 优先架构
 
-项目包含 43 个 GLSL compute shader，核心路径全部 GPU 化：
+项目的核心路径由 GLSL compute shader 在 Vulkan `RenderingDevice` 上执行：
 
 - **目标生成**：`target_scene_voxel.glsl` 生成 TargetSV visual/collision buffers
-- **探针评分**：`score_anchor_asset_probes.glsl` 对标 anchor 和资产探针
-- **细粒度放置评分**：`score_voxel_tile.glsl` 在真实 origin/yaw/collision samples 上执行 per-dimension semantic fit，并结合 collision/clearance/coverage 约束精筛
-- **Stamp-only 提交**：committed `SceneVoxel` 纯 auto，stamp 即提交（`stamp_voxel_field.glsl` / `scatter_sv_field_records.glsl`）；`BrushSV` 常驻挂 SPA，`BlendSV` = SV + BrushSV 按需合成（`compose_blend_sv_fields.glsl`），供 3D score 与 TargetSV 对比，用完即删
-- **瓦片管理**：`scene_voxel_tile_object_ref_update.glsl` dirty 追踪与对象引用更新
+- **统一样本粗筛**：`score_anchor_asset_probes.glsl` 按 `(slot_index, 槽内局部下标)` 从 Arena 读取一个离散 voxel，不再做八邻域三线性采样
+- **细粒度放置评分**：`score_anchor_asset_residual.glsl` 从固定槽位 `profile_arena` 单 binding 读本 slot 的 fine range 计算 residual gain；`stamp_asset_voxels.glsl` 仅写带 `SAMPLE_FLAG_STAMP_WRITE` 的样本
+- **固定槽位 Profile Arena**：Header/Samples/Pivots 同住一个定长 slot（Mesh 区保留占位不写：mesh 是每资产的），一个 RID / 一个 Binding / 一个单调 Revision；地址按 `profile_index`（稠密）直接算出，容量守卫是编译期常量。布局权威见 `ProfileArenaLayout`
+- **Stamp-only 提交**：committed `SceneVoxel` 纯 auto，stamp 即提交（`stamp_asset_voxels.glsl` / `scatter_sv_field_records.glsl`）；`BrushSV` 常驻挂 SPA，`BlendSV` = SV + BrushSV 按需合成（`compose_blend_sv_fields.glsl`），供 3D score 与 TargetSV 对比，用完即删
+- **Anchor 采集与选择**：`collect_sv_anchors.glsl`（两门合取：in-target 且为该 `(x,z)` 列最底体素）→ `select_anchor_topk.glsl`（每 anchor `TOPK = 4`）→ `select_anchor_winners.glsl`（Score-only 分支的 per-anchor 胜者）
+- **Reduce 三阶段**：`init_anchor_atomic_reduce.glsl` → `invalidate_anchor_conflicts.glsl` → `compact_anchor_atomic_reduce.glsl`
+- **点选**：生产路径只有 `pick_scene_voxel.glsl`（单 invocation 写命中记录，由 `VoxelPickGPU` 派发）；`pick_unified.glsl` 是下一代统一多域 pass，已写完但尚未接线
+- **瓦片管理**：`scene_voxel_tile_object_ref_update.glsl` dirty 追踪与 tile 级固定槽位（每 tile 8 槽）对象引用更新，配合 `init_scene_voxel_tile_summaries.glsl` / `reduce_scene_voxel_tile_summaries.glsl` / `compact_scene_voxel_tile_summaries.glsl`
 
 ### 调度基础设施（compute-pass toolkit）
 
@@ -117,19 +128,19 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 
 ## 文档导航
 
-- [`demos/core-meshfill-framework/meshfill-framework.md`](demos/core-meshfill-framework/meshfill-framework.md) — 框架总览，模块归属与运行时流程
-- [`demos/core-scene-voxel-field-system/scene-voxel-field-system.md`](demos/core-scene-voxel-field-system/scene-voxel-field-system.md) — SceneVoxel 字段契约与 source/commit 边界
-- [`demos/asset-descriptor-demo/asset-descriptor.md`](demos/asset-descriptor-demo/asset-descriptor.md) — AssetDescriptor 资产语义定义
-- [`demos/core-SPA-scene-placement-actor/scene-placement-actor.md`](demos/core-SPA-scene-placement-actor/scene-placement-actor.md) — SPA 运行时编排器契约
-- [`demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md`](demos/core-SPA-scene-placement-actor/autoobject-gpu-runtime-architecture.md) — GPU 端百万级运行时架构
-- [`demos/target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md`](demos/target-sv-point-cloud-conversion-c/target-scene-voxel-projection.md) — TargetSV 目标画布边界
-- [`demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md`](demos/placement-autoobject-probe-prefilter/autoobject-probe-prefilter.md) — 语义探针粗筛流程
-- [`demos/placement-voxel-semantic-routing/diagrams/voxel-semantic-routing.svg`](demos/placement-voxel-semantic-routing/diagrams/voxel-semantic-routing.svg) — 候选资产路由契约图
+- [`doc/README.md`](doc/README.md) — 完整文档索引、命名规则与术语表
+- [`doc/scene-voxel-field-system.md`](doc/scene-voxel-field-system.md) — SceneVoxel 字段契约与 source/commit 边界
+- [`doc/asset-descriptor.md`](doc/asset-descriptor.md) — AssetDescriptor 资产语义定义
+- [`doc/scene-placement-actor.md`](doc/scene-placement-actor.md) — SPA 运行时编排器契约
+- [`doc/auto-object-gpu-runtime-architecture.md`](doc/auto-object-gpu-runtime-architecture.md) — GPU 端百万级运行时架构
+- [`doc/target-scene-voxel-projection.md`](doc/target-scene-voxel-projection.md) — TargetSV 目标画布边界
+- [`doc/auto-object-probe-prefilter.md`](doc/auto-object-probe-prefilter.md) — 语义探针粗筛流程
+- [`demos/placement-voxel-semantic-routing/voxel-semantic-routing.svg`](demos/placement-voxel-semantic-routing/voxel-semantic-routing.svg) — 候选资产路由契约图
 
 ## 技术栈
 
 - **引擎**：Godot 4.x（RenderingDevice + Vulkan）
-- **计算**：43 个 GLSL compute shader
+- **计算**：40 个 GLSL compute shader（`shaders/*.glsl`）
 - **调度**：compute-pass toolkit（`PushConstantLayout` / `ComputeKernel` / `ComputePassChain`）统一 GPU 派发与 barrier 编排
 - **语言**：GDScript（编排层） + GLSL（GPU 计算层）
 - **数据**：体素存储缓冲区（storage buffer）、3D 纹理、SceneVoxelTile 稀疏瓦片管理

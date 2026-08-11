@@ -84,6 +84,12 @@ static func _dispatch_one(rd: RenderingDevice, cl: int, pass_desc: Dictionary) -
 	if indirect.is_valid():
 		rd.compute_list_dispatch_indirect(cl, indirect, int(pass_desc.get("indirect_offset", 0)))
 	else:
-		var g: Vector3i = pass_desc.get("groups", Vector3i.ONE)
+		# groups 缺席时原先按 Vector3i.ONE 派发 —— 只跑 1 个工作组、只处理前 local_size 个元素，
+		# 结果「有输出但绝大部分没算」。groups 是直接派发的必填项，缺席即中止。
+		if not pass_desc.has("groups"):
+			push_error("ComputePassChain: pass 描述符缺少必填的 'groups'（且无 indirect_args）—— 拒绝按 1 组假派发；实有键 %s" % str(pass_desc.keys()))
+			assert(false, "ComputePassChain: missing groups in pass descriptor")
+			return false
+		var g: Vector3i = pass_desc["groups"]
 		rd.compute_list_dispatch(cl, g.x, g.y, g.z)
 	return true

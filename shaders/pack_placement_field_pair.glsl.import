@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cj2y8k0crsy2l"
+path="res://.godot/imported/pack_placement_field_pair.glsl-3d85d3adbe88ce446cd04946bdb9e779.res"
+
+[deps]
+
+source_file="res://shaders/pack_placement_field_pair.glsl"
+dest_files=["res://.godot/imported/pack_placement_field_pair.glsl-3d85d3adbe88ce446cd04946bdb9e779.res"]
+
+[params]
+

@@ -2,7 +2,9 @@
 class_name DebugBufferSet
 extends RefCounted
 
-## GPU↔CPU debug 承载的统一设施（《统一Debug承载与输出字典精简方案.md》方案一）。
+## GPU↔CPU debug 承载的统一设施（设计决策沿自已归档旧方案的"方案一"：单一 schema 真源驱动
+## GPU debug 承载，只做 stat_slots / channel_field 两种固定形态、不做万能 buffer；
+## 现状盘点与后续演进见《GPU_Buffer_Debug_Plan.md》）。
 ##
 ## 项目里自发长出多套同构的 GPU debug 缓冲机制——命名计数槽（score_contract_debug 48 字、
 ## target_stats 9 字）与逐体素通道场（debug_voxel 8 通道）——每套都把
@@ -11,7 +13,7 @@ extends RefCounted
 ## [method emit_glsl_block] 生成后以 `// @@GEN debug_set <name> … // @@END debug_set <name>`
 ## 标记粘进 `.glsl`（本项目走 shader_compile_spirv_from_source 直读原始串、绕过预处理器，
 ## 因此 `#include` 不参与编译——共享一律走 codegen 生成块，见 [PlacementSharedGLSL]）。
-## tools/verify_glsl_gen_blocks.gd 是对应的 desync guard。
+## scripts/checks/glsl_gen_block_checks.gd 是对应的 desync guard。
 ##
 ## 与 [PushConstantLayout]（push 打包器）同款「有序字段表→机器强制布局」思路，只是这里管的是
 ## 一个 storage buffer 的观测承载而非 push constant。本类完全通过 owner（[GodotComputeShaderBase]
@@ -28,9 +30,14 @@ extends RefCounted
 ##
 ## contract 与 debug 分实例：score_contract_debug 是[b]契约守卫[/b]（magic/enabled 判定
 ## contract_blocked），承载形态用 stat_slots 但语义 always-on，不可与可 gate 的观测槽混进一个
-## buffer——本类只提供机制，是否 gate 由各家 buffer 各自的 schema/实例决定。
+## buffer——本类只提供机制，是否 gate 由各家 buffer 各自的 schema/实例决定。该 gate 语义由每份
+## schema 的 [code]readback_policy[/code] 字段**显式承载**（见下方各 schema 与「schema →
+## BufferDescriptor」段）：它必须逐字对应真实调用点是否受 debug 开关 gate，不是"默认 debug_only"。
 
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+## 阶段 2 的旁路描述能力（见文件末尾「schema → BufferDescriptor」段）。用 preload 常量而非全局
+## class_name 引用，避免依赖 global_script_class_cache 的注册时机。
+const BufferDescriptorScript := preload("res://scripts/utils/buffer_descriptor.gd")
 
 const KIND_STAT_SLOTS := "stat_slots"
 const KIND_CHANNEL_FIELD := "channel_field"
@@ -48,9 +55,13 @@ const DECODE_INVERTED_MIN := "inverted_min"   # atomicMax(BASE - q) 反转 min �
 ## 契约守卫，always-on。48 个 decode 名与 GLSL 常量名部分不同（如 ENABLED vs contract_enabled），
 ## 故每槽同时携带 name（decode 键，= 原 SCORE_CONTRACT_DEBUG_NAMES）与 glsl（GLSL 常量名，仅有
 ## 常量的槽携带；debug_max 通道用单个 DEBUG_MAX_BASE 基址寻址，故 24–30 无独立常量）。
+## readback_policy=ENABLED：[VoxelPlacementGenerator] 在 anchor-fine 与 legacy 两条路径上都
+## **无条件** buffer_get_data + _decode_score_contract_debug（不受任何 debug 开关 gate），
+## 读不到就等于把正常工作的 shader 判成 score_shader_consumed_profile_buffers=false。
 const SCORE_CONTRACT_STATS := {
 	"name": "score_contract_stats",
 	"kind": KIND_STAT_SLOTS,
+	"readback_policy": BufferDescriptorScript.READBACK_ENABLED,
 	"glsl_struct": "ScoreRuntimeProfileDebug",
 	"glsl_array": "score_contract_debug",
 	"set": 1,
@@ -66,7 +77,7 @@ const SCORE_CONTRACT_STATS := {
 		{"index": 1, "name": "contract_enabled", "glsl": "SCORE_DEBUG_ENABLED", "decode": DECODE_BOOL},
 		{"index": 2, "name": "runtime_object_capacity", "glsl": "SCORE_DEBUG_RUNTIME_OBJECT_CAPACITY"},
 		{"index": 3, "name": "profile_count", "glsl": "SCORE_DEBUG_PROFILE_COUNT"},
-		{"index": 4, "name": "alive_object_reads", "glsl": "SCORE_DEBUG_ALIVE_OBJECT_READS", "op": "add"},
+		{"index": 4, "name": "reserved_alive_object_reads"},
 		{"index": 5, "name": "profile_records_matched", "glsl": "SCORE_DEBUG_PROFILE_RECORDS_MATCHED", "op": "add"},
 		{"index": 6, "name": "runtime_overlap_tests", "glsl": "SCORE_DEBUG_RUNTIME_OVERLAP_TESTS", "op": "add"},
 		{"index": 7, "name": "runtime_overlap_hits", "glsl": "SCORE_DEBUG_RUNTIME_OVERLAP_HITS", "op": "add"},
@@ -76,10 +87,10 @@ const SCORE_CONTRACT_STATS := {
 		{"index": 11, "name": "profile_complexity_q1000", "glsl": "SCORE_DEBUG_PROFILE_COMPLEXITY_Q1000", "decode": DECODE_Q1000},
 		{"index": 12, "name": "runtime_profile_reads", "glsl": "SCORE_DEBUG_RUNTIME_PROFILE_READS", "op": "add"},
 		{"index": 13, "name": "runtime_profile_matches", "glsl": "SCORE_DEBUG_RUNTIME_PROFILE_MATCHES", "op": "add"},
-		{"index": 14, "name": "probe_record_reads", "glsl": "SCORE_DEBUG_PROBE_RECORD_READS", "op": "add"},
+		{"index": 14, "name": "reserved_probe_record_reads"},
 		{"index": 15, "name": "reserved_profile_side_read"},
 		{"index": 16, "name": "pivot_record_reads", "glsl": "SCORE_DEBUG_PIVOT_RECORD_READS", "op": "add"},
-		{"index": 17, "name": "probe_weight_q1000", "glsl": "SCORE_DEBUG_PROBE_WEIGHT_Q1000", "op": "max", "decode": DECODE_Q1000},
+		{"index": 17, "name": "reserved_probe_weight_q1000"},
 		{"index": 18, "name": "reserved_profile_side_metric"},
 		{"index": 19, "name": "pivot_bias_q1000", "glsl": "SCORE_DEBUG_PIVOT_BIAS_Q1000", "op": "max", "decode": DECODE_Q1000},
 		{"index": 20, "name": "profile_probe_count", "glsl": "SCORE_DEBUG_PROFILE_PROBE_COUNT", "op": "max"},
@@ -120,10 +131,12 @@ const SCORE_CONTRACT_STATS := {
 ## debug_voxel（score_anchor_asset_residual.glsl set0 binding7，8 通道 float 场）。
 ## index_space = voxel_dense_xzy（稠密体素空间，x 最快 → z → y 最外；voxel_index() 计算
 ## p.x + gx*(p.z + gz*p.y)）。读侧默认关闭（settings debug_read_voxel_channels），是可 gate
-## 的观测数据（非契约守卫）。
+## 的观测数据（非契约守卫）。readback_policy=DEBUG_ONLY：[VoxelPlacementGenerator] 的
+## buffer_get_data(debug_voxel_buffer) 由 `debug_read_voxel` 三目 gate，关时连分配都只给 1 元素。
 const VOXEL_DEBUG_CHANNELS := {
 	"name": "voxel_debug_channels",
 	"kind": KIND_CHANNEL_FIELD,
+	"readback_policy": BufferDescriptorScript.READBACK_DEBUG_ONLY,
 	"glsl_struct": "DebugVoxelOutput",
 	"glsl_array": "debug_voxel",
 	"set": 0,
@@ -147,11 +160,14 @@ const VOXEL_DEBUG_CHANNELS := {
 ## q1000000 定点（shader 侧 quantize_unit）；min 用 MIN_PACK_BASE 反转编码：atomicMax(BASE - q)，
 ## CPU 解码 (BASE - word) / (BASE - 1)，word 0 = 无 active voxel。set/binding 因 shader 而异
 ## （target_scene_voxel set1/b4、target_sv_pack_read_buffers set0/b5），emit 时按 consumer 覆盖。
+## readback_policy=ENABLED：[TargetSceneVoxelGenerator] 的两条生成路径（pack 与 generate）都
+## **无条件** buffer_get_data(stats_*) + _decode_target_stats，统计值进常规返回字典。
 const TARGET_STATS_MIN_PACK_BASE := 1000001
 const TARGET_STATS_ACTIVE_THRESHOLD := 0.001
 const TARGET_STATS := {
 	"name": "target_stats",
 	"kind": KIND_STAT_SLOTS,
+	"readback_policy": BufferDescriptorScript.READBACK_ENABLED,
 	"glsl_struct": "TargetStats",
 	"glsl_array": "target_stats",
 	"set": 1,
@@ -181,7 +197,7 @@ const TARGET_STATS := {
 	],
 }
 
-## 每个生成块被哪些 shader 承载（供 verify_glsl_gen_blocks.gd 扫描；set/binding 按 shader 覆盖）。
+## 每个生成块被哪些 shader 承载（供 glsl_gen_block_checks.gd 扫描；set/binding 按 shader 覆盖）。
 ## 每项：{schema, overrides:{set,binding}}。marker 名统一 debug_set <schema.name>。
 const CONSUMERS := [
 	# score_contract_debug —— decl 与 consts 分处两段（binding 扎堆区 / 常量扎堆区），故分 section。
@@ -231,22 +247,6 @@ func channel_names() -> PackedStringArray:
 	return names
 
 
-## 通道名 → 通道索引（channel_field）；未知名返回 -1。消费者据此免去硬编码通道号。
-func channel_index(channel_name: String) -> int:
-	var channels := channel_list()
-	for i in range(channels.size()):
-		if str(channels[i].get("name", "")) == channel_name:
-			return i
-	return -1
-
-
-## voxel_dense_xzy 索引空间的扁平化（x 最快 → z → y 最外），与 shader voxel_index() 对称：
-## p.x + grid.x * (p.z + grid.z * p.y)。channel_field 消费者在 CPU 侧定位体素时用此，避免各处
-## 重抄这条公式（现存 shader voxel_index + demo CPU 侧两抄）。
-static func voxel_dense_xzy_index(p: Vector3i, grid: Vector3i) -> int:
-	return p.x + grid.x * (p.z + grid.z * p.y)
-
-
 ## 槽名 → 字索引；未知名返回 -1。
 func slot_index(slot_name: String) -> int:
 	for slot in schema.get("slots", []):
@@ -291,7 +291,10 @@ func reset_bytes(seed: Dictionary = {}) -> PackedByteArray:
 		if idx >= 0:
 			bytes.encode_u32(idx * 4, int(seed[slot_name]))
 		else:
-			push_error("DebugBufferSet(%s).reset_bytes: 未知播种槽 '%s'" % [str(schema.get("name", "")), slot_name])
+			# 原先只报错、照常返回缺了这个播种值的字节：shader 读到 0，行为静默改变（如 enabled=0）。
+			push_error("DebugBufferSet(%s).reset_bytes: 未知播种槽 '%s' —— 该播种值不会写入，拒绝返回半成品" % [str(schema.get("name", "")), slot_name])
+			assert(false, "DebugBufferSet.reset_bytes: unknown seed slot")
+			return PackedByteArray()
 	return bytes
 
 
@@ -299,13 +302,6 @@ func reset_bytes(seed: Dictionary = {}) -> PackedByteArray:
 func make_uniform(owner, binding_override: int = -1) -> RDUniform:
 	var binding := binding_override if binding_override >= 0 else int(schema.get("binding", 0))
 	return owner.make_storage_uniform(binding, buffer)
-
-
-## 与方案接口骨架一致：返回单元素数组（本承载占一个 binding）。
-func make_uniforms(owner, binding_override: int = -1) -> Array[RDUniform]:
-	var out: Array[RDUniform] = []
-	out.append(make_uniform(owner, binding_override))
-	return out
 
 
 ## 按需 readback（贵的是 submit_and_sync + buffer_get_data，默认不读；调用方决定何时读）。
@@ -323,12 +319,22 @@ func readback(owner, byte_data: PackedByteArray = PackedByteArray()) -> Dictiona
 
 func _readback_stat_slots(bytes: PackedByteArray) -> Dictionary:
 	var total := word_count()
-	var available_bytes := mini(bytes.size(), total * 4)
-	available_bytes -= available_bytes % 4
-	var available_words := int(available_bytes / 4)
 	var words := PackedInt32Array()
 	words.resize(total)
-	for i in range(available_words):
+	# 回读字数不足时原先只填前若干字、其余留 0：magic 槽可能落在补零区，
+	# magic_ok 会因此莫名其妙为 false，而真正的原因（回读被截断）被埋掉。
+	if bytes.size() < total * 4:
+		push_error("DebugBufferSet(%s)._readback_stat_slots: 回读字节数不足 期望 %d 实际 %d —— 拒绝零填充后解码" % [str(schema.get("name", "")), total * 4, bytes.size()])
+		assert(false, "DebugBufferSet._readback_stat_slots: short read")
+		return {
+			"kind": KIND_STAT_SLOTS,
+			"name": str(schema.get("name", "")),
+			"word_count": total,
+			"words": PackedInt32Array(),
+			"values": {},
+			"magic_ok": false,
+		}
+	for i in range(total):
 		words[i] = bytes.decode_s32(i * 4)
 	var values := {}
 	for slot in schema.get("slots", []):
@@ -506,3 +512,139 @@ static func _join_sections(decl_lines: Array[String], const_lines: Array[String]
 			return "\n".join(const_lines)
 		_:
 			return "\n".join(decl_lines + const_lines)
+
+
+# ── schema → BufferDescriptor（《GPU_Buffer_Debug_Plan.md》阶段 2）──
+#
+# **旁路新增能力，不接入任何既有路径**：本段只读 schema 常量、只 new 出新的描述对象，
+# 既不改 schema、也不参与 emit_glsl_body / reset_bytes / readback / golden_snapshot。
+# desync guard（scripts/checks/glsl_gen_block_checks.gd）比对的是 emit_glsl_body 的输出，golden 比对的是
+# golden_snapshot 的输出——两条链的输入（三个 schema 常量）与代码路径均未被触及，故 @@GEN 生成块
+# 与 golden 快照逐字节不变。
+#
+# 形态映射（计划 §1.3 的模式分类）：
+#   stat_slots    → KIND_AOS_ARRAY，一条 word_count×4 字节的记录（element_count = 1），
+#                   逐槽落成 aos_fields（offset = index*4，uint32，decode 按槽声明）；
+#                   每个槽都有定义值 → DENSITY_DENSE。
+#   channel_field → KIND_VOXEL_FIELD，stride = 通道数×4，容量随 allocate 的 element_count
+#                   （未知时 COUNT_DYNAMIC）；稠密体素场 → DENSITY_DENSE。
+#
+# readback_policy 是**每个 schema 自己的语义**，故写进 schema 常量（emit_glsl_body / reset_bytes /
+# readback 都只读各自那几个键，多一个键不改变任何生成块或字节；见本段开头的零行为改变论证）。
+# 它必须逐字对应真实调用点是否受 debug 开关 gate：
+#   score_contract_stats  ENABLED    —— VPG 两处 buffer_get_data(score_contract_debug_buffer) 无 gate
+#   target_stats          ENABLED    —— TargetSceneVoxelGenerator 两条路径 buffer_get_data(stats_*) 无 gate
+#   voxel_debug_channels  DEBUG_ONLY —— VPG 的 debug_voxel 回读受 settings debug_read_voxel_channels gate
+# 缺省不猜：schema 未声明时 _resolve_readback_policy 报错（阶段 4 的 DebugProbe 按
+# descriptor.readback_policy 决定读不读，猜成 DEBUG_ONLY 会让 always-on 的契约守卫停读，
+# 进而把"该成功"静默判成失败）。overrides 仍可覆盖，用于同一 schema 被语义不同的所有者复用。
+# scope / tags / purpose 不写进 schema，一律由 overrides 传入，scope 缺省取 SCOPE_FRAME
+# （= allocate 的默认 scope）。各 buffer 的其余登记信息在阶段 3 注册时按所有者声明。
+#
+# 一处读法差异（新增读法，既有 readback 输出不变）：_readback_stat_slots 用 decode_s32 读字，
+# descriptor 按 schema 声明的 GLSL `uint` 用 decode_u32；两者仅在 word >= 2^31 时不同，现存槽
+# 全是计数/定点量化值，未触及该区间。
+
+## DebugBufferSet 的槽级 decode 名 → BufferDescriptor 的 decode 名（仅 "int" → "none" 不同名）。
+const _DECODE_TO_DESCRIPTOR := {
+	DECODE_INT: BufferDescriptorScript.DECODE_NONE,
+	DECODE_BOOL: BufferDescriptorScript.DECODE_BOOL,
+	DECODE_Q1000: BufferDescriptorScript.DECODE_Q1000,
+	DECODE_Q1000000: BufferDescriptorScript.DECODE_Q1000000,
+	DECODE_INVERTED_MIN: BufferDescriptorScript.DECODE_INVERTED_MIN,
+}
+
+
+## 真实回读语义的解析：schema 是真源，overrides 只在同一 schema 被语义不同的所有者复用时才该出现。
+## 两者都没有 = 新 schema 忘了声明；此时**报错而不是猜 DEBUG_ONLY**（猜错会让 always-on 的契约
+## 守卫在阶段 4 停止回读，把正常结果判成失败）。
+static func _resolve_readback_policy(schema_dict: Dictionary, overrides: Dictionary) -> String:
+	if overrides.has("readback_policy"):
+		return str(overrides["readback_policy"])
+	if schema_dict.has("readback_policy"):
+		return str(schema_dict["readback_policy"])
+	push_error("DebugBufferSet.descriptor_from_schema('%s'): schema 未声明 readback_policy —— 拒绝按 debug_only 猜测（契约守卫会被误描述成可 gate 的观测）" % str(schema_dict.get("name", "")))
+	assert(false, "DebugBufferSet: schema missing readback_policy")
+	return BufferDescriptorScript.READBACK_DEBUG_ONLY
+
+
+## 由 schema 生成 BufferDescriptor。overrides 可覆盖 set / binding（同一 schema 被多 shader 以不同
+## set/binding 承载，见 CONSUMERS）与 element_count / scope / readback_policy / tags / owner_class；
+## readback_policy 的缺省来自 schema 自身（真实回读语义），不是硬编码的 DEBUG_ONLY。
+static func descriptor_from_schema(schema_dict: Dictionary, overrides: Dictionary = {}) -> BufferDescriptorScript:
+	var schema_name := str(schema_dict.get("name", "unnamed"))
+	var schema_kind := str(schema_dict.get("kind", KIND_STAT_SLOTS))
+	var config := {
+		"name": schema_name,
+		"owner_class": str(overrides.get("owner_class", "DebugBufferSet")),
+		"scope": str(overrides.get("scope", BufferDescriptorScript.SCOPE_FRAME)),
+		"density": BufferDescriptorScript.DENSITY_DENSE,
+		"glsl_set": int(overrides.get("set", schema_dict.get("set", 0))),
+		"glsl_binding": int(overrides.get("binding", schema_dict.get("binding", 0))),
+		"glsl_qualifier": "std430 restrict",
+		"readback_policy": _resolve_readback_policy(schema_dict, overrides),
+		"tags": overrides.get("tags", ["debug", schema_kind]),
+	}
+	if schema_kind == KIND_CHANNEL_FIELD:
+		var channels: Array = schema_dict.get("channels", [])
+		var channel_names: Array[String] = []
+		for ch in channels:
+			channel_names.append(str(ch.get("name", "")))
+		config["kind"] = BufferDescriptorScript.KIND_VOXEL_FIELD
+		config["element_format"] = "float32"
+		config["element_stride"] = channels.size() * 4
+		config["element_count"] = int(overrides.get("element_count", BufferDescriptorScript.COUNT_DYNAMIC))
+		config["field_channels"] = channels.size()
+		config["field_channel_names"] = channel_names
+		config["field_index_space"] = str(schema_dict.get("index_space", ""))
+		config["field_dims"] = overrides.get("field_dims", Vector3i.ZERO)
+		config["glsl_type"] = "float[]"
+		config["purpose"] = "DebugBufferSet channel_field 承载：%s（%d 通道/元素，index_space=%s，GLSL %s.%s）" % [
+			schema_name, channels.size(), str(schema_dict.get("index_space", "?")),
+			str(schema_dict.get("glsl_struct", "")), str(schema_dict.get("glsl_array", ""))]
+		return BufferDescriptorScript.new(config)
+
+	var word_count := int(schema_dict.get("word_count", 0))
+	var slots: Array = schema_dict.get("slots", [])
+	var fields: Array = []
+	for slot in slots:
+		var field := {
+			"name": str(slot.get("name", "")),
+			"offset": int(slot.get("index", 0)) * 4,
+			"type": "uint32",
+			"size": 4,
+			"decode": str(_DECODE_TO_DESCRIPTOR.get(str(slot.get("decode", DECODE_INT)), BufferDescriptorScript.DECODE_NONE)),
+		}
+		if slot.has("base"):
+			field["base"] = float(slot["base"])
+		fields.append(field)
+	config["kind"] = BufferDescriptorScript.KIND_AOS_ARRAY
+	config["element_format"] = "uint32"
+	config["element_stride"] = word_count * 4
+	config["element_count"] = 1
+	config["aos_fields"] = fields
+	config["glsl_type"] = "uint[]"
+	var magic_text := ""
+	if schema_dict.has("magic"):
+		magic_text = "，magic 0x%08X" % int(schema_dict["magic"])
+	config["purpose"] = "DebugBufferSet stat_slots 承载：%s（%d 字%s，GLSL %s.%s）" % [
+		schema_name, word_count, magic_text,
+		str(schema_dict.get("glsl_struct", "")), str(schema_dict.get("glsl_array", ""))]
+	return BufferDescriptorScript.new(config)
+
+
+## 本实例的描述（channel_field 用 allocate 时记下的 element_count；scope 缺省同 allocate 默认值，
+## 实际 scope 由调用方经 overrides 传入）。
+func descriptor(overrides: Dictionary = {}) -> BufferDescriptorScript:
+	var merged := overrides.duplicate()
+	if kind() == KIND_CHANNEL_FIELD and not merged.has("element_count") and _element_count > 0:
+		merged["element_count"] = _element_count
+	return descriptor_from_schema(schema, merged)
+
+
+## CONSUMERS 里出现过的全部承载的描述，按 (schema 名, set, binding) 去重
+## （同一 schema 的 decl/consts 两段共用一个承载；target_stats 在两个 shader 上 set/binding 不同，
+## 计两条）。承载它的 shader 路径进 tags，便于按 shader 检索。返回稳定顺序（CONSUMERS 顺序）。
+## 只覆盖 set/binding/tags——readback_policy 由各 schema 自己声明并原样透出，故枚举出来的描述里
+## score_contract_stats/target_stats 是 ENABLED、voxel_debug_channels 是 DEBUG_ONLY，
+## 与真实调用点一致；调用方无需（也不该）事后 override 修正。

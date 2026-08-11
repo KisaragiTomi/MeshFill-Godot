@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cjxwgmca66djk"
+path="res://.godot/imported/rdg_scale.glsl-c1946408bd7a84312e4ec4e8ebf78342.res"
+
+[deps]
+
+source_file="res://shaders/rdg_scale.glsl"
+dest_files=["res://.godot/imported/rdg_scale.glsl-c1946408bd7a84312e4ec4e8ebf78342.res"]
+
+[params]
+

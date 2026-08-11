@@ -23,7 +23,7 @@ layout(set = 0, binding = 2, std430) restrict readonly buffer ColorField {
 	uint color_rgba8[];
 };
 
-// Terrain world height, row-major size = xz_res * xz_res.
+// Terrain world height, row-major size = grid_x * grid_z.
 layout(set = 0, binding = 3, std430) restrict readonly buffer TerrainHeight {
 	float terrain_height[];
 };
@@ -34,19 +34,39 @@ layout(set = 0, binding = 4, std430) restrict writeonly buffer InstanceBuffer {
 	float instances[];
 };
 
+// 紧凑显示的实例序 → 体素下标映射。use_index_map == 0 时本缓冲不被读取，
+// 但仍必须绑定一个合法 SSBO（Vulkan 要求已声明的 binding 都有绑定），
+// CPU 侧在那种情况下绑一块 4 字节占位。
+layout(set = 0, binding = 5, std430) restrict readonly buffer InstanceVoxelIndex {
+	int instance_voxel_index[];
+};
+
+// 坐标词汇与其余 volume 同款：grid_size / grid_origin / voxel_size。
+// 实例位置 = grid_origin + (voxel + 0.5) * voxel_size，Y 再加 terrain * display_scale
+// （TargetSV 的 Y 是地形相对带）。旧的 xz_res / capture_size / vertical_span 三元组
+// 编码了「XZ 必须方形」与「端点铺开式」两条隐含假设，已由 CPU 侧
+// VoxelGeneral.grid_frame_from_capture_endpoints 一次性换算掉。
 layout(push_constant, std430) uniform Params {
 	int voxel_count;
-	int xz_res;
-	int slice_count;
+	int grid_x;
+	int grid_y;        // = slice 数
+	int grid_z;
 	int view_mode;     // 0 target_color, 1 project_color, 2 complexity, 3 collision
-	float capture_size;
-	float display_scale;
-	float vertical_span;
-	float height_span;
-	float threshold;
 	int terrain_len;
+	float display_scale;
+	float threshold;
+	float grid_origin_x;
+	float grid_origin_y;
+	float grid_origin_z;
+	float voxel_size_x;
+	float voxel_size_y;
+	float voxel_size_z;
+	// 紧凑显示开关（原 pad0）。0 = 全网格：实例序 == 体素下标（TargetSV 的既有行为，逐位不变）。
+	// 非 0 = 紧凑：实例序经 instance_voxel_index[] 映射到体素下标，voxel_count 此时是
+	// **实例数**而不是网格体素总数。
+	// ⚠ 开了它，CPU 侧的 pick 载荷解码也必须跟着走同一张表——否则点中的实例会被解成别的体素。
+	int use_index_map;
 	float pad1;
-	float pad2;
 };
 
 const int FLOATS_PER_INSTANCE = 16;
@@ -90,10 +110,14 @@ void main() {
 		return;
 	}
 
+	// 实例槽位始终按 idx 算（MultiMesh 的第 idx 个实例）；
+	// 而“这个实例画的是哪一格”在紧凑模式下要经映射表。两者必须分开，
+	// 混用会让紧凑模式把体素画到错误的实例槽上。
 	uint base = idx * uint(FLOATS_PER_INSTANCE);
+	uint vidx = (use_index_map != 0) ? uint(instance_voxel_index[idx]) : idx;
 
-	float occ = load_occupancy_r8(idx);
-	float coll = load_collision_r8(idx);
+	float occ = load_occupancy_r8(vidx);
+	float coll = load_collision_r8(vidx);
 
 	bool visible;
 	if (view_mode == VIEW_TARGET_COLOR) {
@@ -106,33 +130,36 @@ void main() {
 		return;
 	}
 
-	int xz = xz_res;
-	int slice_voxel_count = xz * xz;
-	int slice_index = int(idx) / slice_voxel_count;
-	int rem = int(idx) % slice_voxel_count;
-	int vz = rem / xz;
-	int vx = rem % xz;
+	// 规范索引式 index = x + gx * (z + gz * y)（VoxelGeneral.voxel_index 的逆解），
+	// 非方形 XZ 同样成立；旧式 slice*xz*xz + z*xz + x 只在 gx == gz 时才碰巧一致。
+	int gx = max(grid_x, 1);
+	int gz = max(grid_z, 1);
+	int plane = gx * gz;
+	int slice_index = int(vidx) / plane;
+	int rem = int(vidx) % plane;
+	int vz = rem / gx;
+	int vx = rem % gx;
 
-	float denom = max(float(xz - 1), 1.0);
-	float fx = (float(vx) / denom - 0.5) * capture_size * display_scale;
-	float fz = (float(vz) / denom - 0.5) * capture_size * display_scale;
+	float fx = grid_origin_x + (float(vx) + 0.5) * voxel_size_x;
+	float fz = grid_origin_z + (float(vz) + 0.5) * voxel_size_z;
 
 	float terrain_y = 0.0;
-	int height_idx = vz * xz + vx;
-	if (vx >= 0 && vx < xz && vz >= 0 && vz < xz && height_idx < terrain_len) {
+	int height_idx = vz * gx + vx;
+	if (vx >= 0 && vx < gx && vz >= 0 && vz < gz && height_idx < terrain_len) {
 		terrain_y = terrain_height[height_idx];
 	}
-	float local_y = (float(slice_index) + 0.5) / max(float(slice_count), 1.0) * vertical_span;
-	float wy = (terrain_y + local_y) * display_scale;
+	float wy = grid_origin_y + (float(slice_index) + 0.5) * voxel_size_y + terrain_y * display_scale;
 
-	vec4 src_rgba = unpack_rgba8(color_rgba8[idx]);
+	vec4 src_rgba = unpack_rgba8(color_rgba8[vidx]);
 	vec3 src_rgb = src_rgba.rgb;
 
 	vec4 out_color;
 	if (view_mode == VIEW_TARGET_COLOR) {
-		vec3 sand = vec3(0.82, 0.78, 0.68);
-		vec3 rgb = mix(src_rgb, sand, clamp(coll * 0.45, 0.0, 1.0));
-		out_color = vec4(rgb, clamp(max(occ, 0.35), 0.35, 1.0));
+		// Faithful target color: show the baked Cd directly. Previously this
+		// washed collision-heavy voxels toward a pale "sand" tint (coll * 0.45),
+		// which turned high-collision cliffs near-white — the "Color" view must
+		// not tint the target's own color. Cliff -> true grey, grass -> green.
+		out_color = vec4(src_rgb, clamp(max(occ, 0.35), 0.35, 1.0));
 	} else if (view_mode == VIEW_COMPLEXITY) {
 		out_color = vec4(occ, occ, occ, clamp(max(occ, 0.55), 0.55, 1.0));
 	} else if (view_mode == VIEW_COLLISION) {

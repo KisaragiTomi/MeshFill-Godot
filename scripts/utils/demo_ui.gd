@@ -50,33 +50,3 @@ static func find_camera(
 	return owner.find_child(camera_name, true, false) as Camera3D
 
 
-static func find_any_camera(
-	owner: Node,
-	prefer_viewport: bool = true,
-	search_parent: bool = true
-) -> Camera3D:
-	if owner == null:
-		return null
-	if prefer_viewport:
-		var viewport := owner.get_viewport()
-		if viewport != null:
-			var viewport_camera := viewport.get_camera_3d()
-			if viewport_camera != null:
-				return viewport_camera
-	if search_parent and owner.get_parent() != null:
-		var parent_camera := _find_camera_recursive(owner.get_parent())
-		if parent_camera != null:
-			return parent_camera
-	return _find_camera_recursive(owner)
-
-
-static func _find_camera_recursive(root_node: Node) -> Camera3D:
-	if root_node == null:
-		return null
-	if root_node is Camera3D:
-		return root_node as Camera3D
-	for child in root_node.get_children():
-		var found := _find_camera_recursive(child)
-		if found != null:
-			return found
-	return null

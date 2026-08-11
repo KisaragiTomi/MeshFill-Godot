@@ -1,7 +1,6 @@
 class_name TargetSceneVoxelGenerator
 extends "res://scripts/godot_compute_shader_base.gd"
 
-const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const DebugBufferSetScript := preload("res://scripts/utils/debug_buffer_set.gd")
 
@@ -25,14 +24,9 @@ const TARGET_GENERATE_PUSH_DIRTY_Y_OFFSET := 32
 const TARGET_GENERATE_PUSH_DIRTY_W_OFFSET := 36
 const TARGET_GENERATE_PUSH_DIRTY_H_OFFSET := 40
 const TARGET_GENERATE_PUSH_PAD0_OFFSET := 44
-const TARGET_VISUAL_FORMAT_RGBA8 := "rgba8"
-const TARGET_VISUAL_FORMAT_RGBA32F := "rgba32f"
-const TARGET_SCALAR_FORMAT_R8 := "r8_unorm"
-const TARGET_SCALAR_FORMAT_R32F := "r32f"
-const TARGET_RGBA8_STRIDE_BYTES := 4
-const TARGET_R8_STRIDE_BYTES := 1
-const TARGET_LEGACY_RGBA32F_STRIDE_BYTES := 16
-const TARGET_LEGACY_R32F_STRIDE_BYTES := 4
+# TargetSV 的磁盘/回读格式 = SceneVoxelTileCodec 的规范场对格式，与 SceneSV / BrushSV /
+# BlendSV 逐字相同（complexity rgba8_unorm 4 B/体素、collision r8_unorm 1 B/体素，
+# 上传时展开成 unorm8-in-u32），故本文件直接引用 codec 常量，不再自建 TARGET_* 别名。
 
 const TARGET_PACK_PUSH := [
 	["voxel_count", "int"],
@@ -89,168 +83,6 @@ static func _decode_target_stats(stats_bytes: PackedByteArray) -> Dictionary:
 	}
 
 
-static func _target_field_vec4_from_color_and_completeness(
-	color_rgba32f_bytes: PackedByteArray,
-	completeness_bytes: PackedByteArray,
-	voxel_count: int
-) -> PackedFloat32Array:
-	var safe_count := maxi(voxel_count, 0)
-	var field := PackedFloat32Array()
-	field.resize(safe_count * 4)
-	var color_values := PackedFloat32Array()
-	if color_rgba32f_bytes.size() >= safe_count * 16:
-		color_values = color_rgba32f_bytes.to_float32_array()
-	var completeness_values := PackedFloat32Array()
-	if completeness_bytes.size() >= safe_count * 4:
-		completeness_values = completeness_bytes.to_float32_array()
-	for i in range(safe_count):
-		var field_base := i * 4
-		var color_base := i * 4
-		if color_values.size() >= color_base + 4:
-			field[field_base + 0] = color_values[color_base + 0]
-			field[field_base + 1] = color_values[color_base + 1]
-			field[field_base + 2] = color_values[color_base + 2]
-		if completeness_values.size() > i:
-			field[field_base + 3] = completeness_values[i]
-		elif color_values.size() >= color_base + 4:
-			field[field_base + 3] = color_values[color_base + 3]
-	return field
-
-
-static func _target_rgba8_byte_count(voxel_count: int) -> int:
-	return SceneVoxelTileCodecScript.rgba8_byte_count(voxel_count)
-
-
-static func _target_r8_byte_count(voxel_count: int) -> int:
-	return SceneVoxelTileCodecScript.r8_byte_count(voxel_count)
-
-
-static func _target_u32_field_byte_count(voxel_count: int) -> int:
-	return SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count)
-
-
-static func _visual_format_from_bytes(bytes: PackedByteArray, voxel_count: int, hint: String = "") -> String:
-	var hint_l := hint.to_lower()
-	var rgba8_bytes := _target_rgba8_byte_count(voxel_count)
-	var rgba32f_bytes := maxi(voxel_count, 0) * TARGET_LEGACY_RGBA32F_STRIDE_BYTES
-	if hint_l in [TARGET_VISUAL_FORMAT_RGBA8, "rgba8_u32", "rgba8_unorm"] and bytes.size() >= rgba8_bytes:
-		return TARGET_VISUAL_FORMAT_RGBA8
-	if hint_l in [TARGET_VISUAL_FORMAT_RGBA32F, "rgba32f_storage_buffer", "vec4"] and bytes.size() >= rgba32f_bytes:
-		return TARGET_VISUAL_FORMAT_RGBA32F
-	if bytes.size() == rgba8_bytes:
-		return TARGET_VISUAL_FORMAT_RGBA8
-	if bytes.size() >= rgba32f_bytes:
-		return TARGET_VISUAL_FORMAT_RGBA32F
-	if bytes.size() >= rgba8_bytes:
-		return TARGET_VISUAL_FORMAT_RGBA8
-	return ""
-
-
-static func _scalar_format_from_bytes(bytes: PackedByteArray, voxel_count: int, hint: String = "") -> String:
-	var hint_l := hint.to_lower()
-	var r8_bytes := _target_r8_byte_count(voxel_count)
-	var r32f_bytes := maxi(voxel_count, 0) * TARGET_LEGACY_R32F_STRIDE_BYTES
-	if hint_l in [TARGET_SCALAR_FORMAT_R8, "r8", "r8_unorm_storage_buffer"] and bytes.size() >= r8_bytes:
-		return TARGET_SCALAR_FORMAT_R8
-	if hint_l in [TARGET_SCALAR_FORMAT_R32F, "r32f_storage_buffer", "float"] and bytes.size() >= r32f_bytes:
-		return TARGET_SCALAR_FORMAT_R32F
-	if bytes.size() == r8_bytes:
-		return TARGET_SCALAR_FORMAT_R8
-	if bytes.size() >= r32f_bytes:
-		return TARGET_SCALAR_FORMAT_R32F
-	if bytes.size() >= r8_bytes:
-		return TARGET_SCALAR_FORMAT_R8
-	return ""
-
-
-static func _rgba8_bytes_from_visual_bytes(
-	visual_bytes: PackedByteArray,
-	voxel_count: int,
-	visual_format: String
-) -> PackedByteArray:
-	var out := PackedByteArray()
-	var rgba8_bytes := _target_rgba8_byte_count(voxel_count)
-	out.resize(rgba8_bytes)
-	if visual_format == TARGET_VISUAL_FORMAT_RGBA8:
-		var byte_count := mini(visual_bytes.size(), rgba8_bytes)
-		for i in range(byte_count):
-			out[i] = visual_bytes[i]
-		return out
-	if visual_format != TARGET_VISUAL_FORMAT_RGBA32F:
-		return out
-	var available := mini(voxel_count, int(visual_bytes.size() / TARGET_LEGACY_RGBA32F_STRIDE_BYTES))
-	for i in range(available):
-		var base := i * TARGET_LEGACY_RGBA32F_STRIDE_BYTES
-		var color := Color(
-			visual_bytes.decode_float(base + 0),
-			visual_bytes.decode_float(base + 4),
-			visual_bytes.decode_float(base + 8),
-			visual_bytes.decode_float(base + 12)
-		)
-		out.encode_u32(i * TARGET_RGBA8_STRIDE_BYTES, BufferUtils.pack_shader_rgba8_word(color))
-	return out
-
-
-static func _r8_bytes_from_scalar_bytes(
-	scalar_bytes: PackedByteArray,
-	voxel_count: int,
-	scalar_format: String
-) -> PackedByteArray:
-	var out := PackedByteArray()
-	var r8_bytes := _target_r8_byte_count(voxel_count)
-	out.resize(r8_bytes)
-	if scalar_format == TARGET_SCALAR_FORMAT_R8:
-		var byte_count := mini(scalar_bytes.size(), r8_bytes)
-		for i in range(byte_count):
-			out[i] = scalar_bytes[i]
-		return out
-	if scalar_format != TARGET_SCALAR_FORMAT_R32F:
-		return out
-	var available := mini(voxel_count, int(scalar_bytes.size() / TARGET_LEGACY_R32F_STRIDE_BYTES))
-	for i in range(available):
-		out[i] = BufferUtils.quantize_unorm8(scalar_bytes.decode_float(i * TARGET_LEGACY_R32F_STRIDE_BYTES))
-	return out
-
-
-static func _u32_bytes_from_r8_bytes(r8_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
-	return SceneVoxelTileCodecScript.u32_bytes_from_r8_bytes(r8_bytes, voxel_count)
-
-
-static func _r8_bytes_from_u32_bytes(word_bytes: PackedByteArray, voxel_count: int) -> PackedByteArray:
-	return SceneVoxelTileCodecScript.r8_bytes_from_u32_bytes(word_bytes, voxel_count)
-
-
-static func _r8_value_at(r8_bytes: PackedByteArray, index: int) -> float:
-	if index < 0 or index >= r8_bytes.size():
-		return 0.0
-	return float(r8_bytes[index] & 0xFF) / 255.0
-
-
-static func _rgba8_color_at(rgba8_bytes: PackedByteArray, index: int) -> Color:
-	var offset := index * TARGET_RGBA8_STRIDE_BYTES
-	if offset + TARGET_RGBA8_STRIDE_BYTES > rgba8_bytes.size():
-		return Color(0.0, 0.0, 0.0, 0.0)
-	return BufferUtils.shader_rgba8_word_to_color(rgba8_bytes.decode_u32(offset))
-
-
-static func _target_field_vec4_from_rgba8_and_r8(
-	color_rgba8_bytes: PackedByteArray,
-	completeness_r8_bytes: PackedByteArray,
-	voxel_count: int
-) -> PackedFloat32Array:
-	var field := PackedFloat32Array()
-	var safe_count := maxi(voxel_count, 0)
-	field.resize(safe_count * 4)
-	for i in range(safe_count):
-		var color := _rgba8_color_at(color_rgba8_bytes, i)
-		var base := i * 4
-		field[base + 0] = color.r
-		field[base + 1] = color.g
-		field[base + 2] = color.b
-		field[base + 3] = _r8_value_at(completeness_r8_bytes, i)
-	return field
-
-
 static func decode_target_read_buffers(
 	visual_bytes: PackedByteArray,
 	collision_bytes: PackedByteArray,
@@ -262,22 +94,18 @@ static func decode_target_read_buffers(
 	var tex_size := maxi(texture_size, 1)
 	var slices := maxi(slice_count, 1)
 	var voxel_count := tex_size * tex_size * slices
-	var expected_visual_bytes := _target_rgba8_byte_count(voxel_count)
-	var expected_collision_bytes := _target_r8_byte_count(voxel_count)
-	var legacy_expected_visual_bytes := voxel_count * TARGET_LEGACY_RGBA32F_STRIDE_BYTES
-	var legacy_expected_collision_bytes := voxel_count * TARGET_LEGACY_R32F_STRIDE_BYTES
+	var expected_visual_bytes := SceneVoxelTileCodecScript.rgba8_byte_count(voxel_count)
+	var expected_collision_bytes := SceneVoxelTileCodecScript.r8_byte_count(voxel_count)
 	var target_completeness := PackedFloat32Array()
 	var target_collision := PackedFloat32Array()
 	var target_color := PackedColorArray()
 	target_completeness.resize(voxel_count)
 	target_collision.resize(voxel_count)
 	target_color.resize(voxel_count)
-	var visual_format := _visual_format_from_bytes(visual_bytes, voxel_count)
-	var collision_format := _scalar_format_from_bytes(collision_bytes, voxel_count)
-	var completeness_format := _scalar_format_from_bytes(completeness_bytes, voxel_count)
-	var visual_valid := not visual_format.is_empty()
-	var collision_valid := not collision_format.is_empty()
-	var completeness_valid := not completeness_format.is_empty()
+	# 入参字节即规范字节（codec 场对格式），够长就能直接读——没有格式嗅探、没有转换缓冲。
+	var visual_valid := visual_bytes.size() >= expected_visual_bytes
+	var collision_valid := collision_bytes.size() >= expected_collision_bytes
+	var completeness_valid := completeness_bytes.size() >= expected_collision_bytes
 	if not visual_valid and not collision_valid:
 		return {
 			"valid": false,
@@ -286,19 +114,13 @@ static func decode_target_read_buffers(
 			"slice_count": slices,
 			"voxel_count": voxel_count,
 			"expected_visual_bytes": expected_visual_bytes,
-			"legacy_expected_visual_bytes": legacy_expected_visual_bytes,
 			"actual_visual_bytes": visual_bytes.size(),
 			"expected_collision_bytes": expected_collision_bytes,
-			"legacy_expected_collision_bytes": legacy_expected_collision_bytes,
 			"actual_collision_bytes": collision_bytes.size(),
 			"target_completeness": target_completeness,
 			"target_collision": target_collision,
-			"target_field": target_completeness,
 			"target_color": target_color,
 		}
-	var visual_rgba8 := _rgba8_bytes_from_visual_bytes(visual_bytes, voxel_count, visual_format)
-	var collision_r8 := _r8_bytes_from_scalar_bytes(collision_bytes, voxel_count, collision_format)
-	var completeness_r8 := _r8_bytes_from_scalar_bytes(completeness_bytes, voxel_count, completeness_format) if completeness_valid else PackedByteArray()
 
 	var max_completeness := 0.0
 	var max_collision := 0.0
@@ -308,15 +130,15 @@ static func decode_target_read_buffers(
 	var min_active_completeness := 0.0
 	var max_visual_complexity := 0.0
 	for i in range(voxel_count):
-		var color := _rgba8_color_at(visual_rgba8, i) if visual_valid else Color(0.0, 0.0, 0.0, 0.0)
+		var color := SceneVoxelTileCodecScript.decode_complexity_field_rgba8_color_at(visual_bytes, i) if visual_valid else Color(0.0, 0.0, 0.0, 0.0)
 		var complexity := color.a
-		var collision := _r8_value_at(collision_r8, i) if collision_valid else 0.0
+		var collision := SceneVoxelTileCodecScript.decode_collision_field_r8_at(collision_bytes, i) if collision_valid else 0.0
 		complexity = clampf(complexity, 0.0, 1.0)
 		collision = clampf(collision, 0.0, 1.0)
 		target_collision[i] = collision
 		var completeness := complexity
 		if completeness_valid:
-			completeness = clampf(_r8_value_at(completeness_r8, i), 0.0, 1.0)
+			completeness = clampf(SceneVoxelTileCodecScript.decode_collision_field_r8_at(completeness_bytes, i), 0.0, 1.0)
 		elif use_collision_as_completeness:
 			completeness = maxf(complexity, collision)
 		target_completeness[i] = completeness
@@ -345,20 +167,15 @@ static func decode_target_read_buffers(
 		"slice_count": slices,
 		"voxel_count": voxel_count,
 		"expected_visual_bytes": expected_visual_bytes,
-		"legacy_expected_visual_bytes": legacy_expected_visual_bytes,
 		"actual_visual_bytes": visual_bytes.size(),
 		"expected_collision_bytes": expected_collision_bytes,
-		"legacy_expected_collision_bytes": legacy_expected_collision_bytes,
 		"actual_collision_bytes": collision_bytes.size(),
-		"visual_format": visual_format,
-		"collision_format": collision_format,
-		"visual_stride_bytes": TARGET_RGBA8_STRIDE_BYTES if visual_format == TARGET_VISUAL_FORMAT_RGBA8 else TARGET_LEGACY_RGBA32F_STRIDE_BYTES,
-		"collision_stride_bytes": TARGET_R8_STRIDE_BYTES if collision_format == TARGET_SCALAR_FORMAT_R8 else TARGET_LEGACY_R32F_STRIDE_BYTES,
-		"canonical_visual_format": TARGET_VISUAL_FORMAT_RGBA8,
-		"canonical_collision_format": TARGET_SCALAR_FORMAT_R8,
+		"visual_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8,
+		"collision_format": SceneVoxelTileCodecScript.COLLISION_FIELD_FORMAT_R8,
+		"visual_stride_bytes": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES,
+		"collision_stride_bytes": SceneVoxelTileCodecScript.COLLISION_FIELD_STRIDE_BYTES,
 		"target_completeness": target_completeness,
 		"target_collision": target_collision,
-		"target_field": target_completeness,
 		"target_color": target_color,
 		"max_completeness": max_completeness,
 		"max_occupancy": max_completeness,
@@ -382,26 +199,21 @@ static func decode_target_read_buffers_gpu(
 	completeness_bytes: PackedByteArray = PackedByteArray()
 ) -> Dictionary:
 	# GPU-only TargetSV_B decode for placement/readback buffers.
-	# Canonical layout is visual RGBA8 (4 bytes/voxel) plus scalar R8 fields
-	# (1 byte/voxel on disk, expanded to one uint32 per voxel for compute).
-	# Legacy fp32 input is converted to the canonical 8bit layout before GPU dispatch.
+	# 布局 = codec 规范场对：visual rgba8_unorm（4 B/体素）+ collision r8_unorm（1 B/体素，
+	# 上传 compute 时展开成每体素一个 uint32）。只有这一种格式，故无需嗅探与转换。
 	var tex_size := maxi(texture_size, 1)
 	var slices := maxi(slice_count, 1)
 	var voxel_count := tex_size * tex_size * slices
-	var expected_visual_bytes := _target_rgba8_byte_count(voxel_count)
-	var expected_collision_bytes := _target_r8_byte_count(voxel_count)
-	var legacy_expected_visual_bytes := voxel_count * TARGET_LEGACY_RGBA32F_STRIDE_BYTES
-	var legacy_expected_collision_bytes := voxel_count * TARGET_LEGACY_R32F_STRIDE_BYTES
+	var expected_visual_bytes := SceneVoxelTileCodecScript.rgba8_byte_count(voxel_count)
+	var expected_collision_bytes := SceneVoxelTileCodecScript.r8_byte_count(voxel_count)
 	var target_completeness := PackedFloat32Array()
 	var target_collision := PackedFloat32Array()
 	var target_color := PackedColorArray()
 	target_completeness.resize(voxel_count)
 	target_collision.resize(voxel_count)
 	target_color.resize(voxel_count)
-	var visual_format := _visual_format_from_bytes(visual_bytes, voxel_count)
-	var collision_format := _scalar_format_from_bytes(collision_bytes, voxel_count)
-	var visual_valid := not visual_format.is_empty()
-	var collision_valid := not collision_format.is_empty()
+	var visual_valid := visual_bytes.size() >= expected_visual_bytes
+	var collision_valid := collision_bytes.size() >= expected_collision_bytes
 	if not visual_valid and not collision_valid:
 		return {
 			"valid": false,
@@ -412,14 +224,11 @@ static func decode_target_read_buffers_gpu(
 			"slice_count": slices,
 			"voxel_count": voxel_count,
 			"expected_visual_bytes": expected_visual_bytes,
-			"legacy_expected_visual_bytes": legacy_expected_visual_bytes,
 			"actual_visual_bytes": visual_bytes.size(),
 			"expected_collision_bytes": expected_collision_bytes,
-			"legacy_expected_collision_bytes": legacy_expected_collision_bytes,
 			"actual_collision_bytes": collision_bytes.size(),
 			"target_completeness": target_completeness,
 			"target_collision": target_collision,
-			"target_field": target_completeness,
 			"target_color": target_color,
 		}
 
@@ -433,7 +242,6 @@ static func decode_target_read_buffers_gpu(
 			"cpu_fallback": false,
 			"target_completeness": target_completeness,
 			"target_collision": target_collision,
-			"target_field": target_completeness,
 			"target_color": target_color,
 		}
 	var generator = generator_script.new()
@@ -450,7 +258,6 @@ static func decode_target_read_buffers_gpu(
 		packed["valid"] = false
 		packed["target_completeness"] = target_completeness
 		packed["target_collision"] = target_collision
-		packed["target_field"] = target_completeness
 		packed["target_color"] = target_color
 		return packed
 
@@ -467,25 +274,23 @@ static func decode_target_read_buffers_gpu(
 	target_completeness.resize(voxel_count)
 	target_collision.resize(voxel_count)
 	target_color.resize(voxel_count)
-	var collision_r8 := _r8_bytes_from_scalar_bytes(collision_bytes, voxel_count, collision_format)
 	for i in range(voxel_count):
-		target_completeness[i] = _r8_value_at(completeness_out, i)
-		target_collision[i] = _r8_value_at(collision_r8, i)
-		target_color[i] = _rgba8_color_at(color_out, i)
+		target_completeness[i] = SceneVoxelTileCodecScript.decode_collision_field_r8_at(completeness_out, i)
+		target_collision[i] = SceneVoxelTileCodecScript.decode_collision_field_r8_at(collision_bytes, i) if collision_valid else 0.0
+		target_color[i] = SceneVoxelTileCodecScript.decode_complexity_field_rgba8_color_at(color_out, i)
 
 	packed["valid"] = visual_valid and collision_valid
 	packed["partial"] = not (visual_valid and collision_valid)
 	packed["reason"] = "ok" if visual_valid and collision_valid else "target_buffer_partial"
 	packed["target_completeness"] = target_completeness
 	packed["target_collision"] = target_collision
-	packed["target_field"] = target_completeness
 	packed["target_color"] = target_color
 	packed["max_occupancy"] = packed.get("max_completeness", 0.0)
 	packed["min_active_occupancy"] = packed.get("min_active_completeness", 0.0)
 	packed["decode_source"] = "target_sv_pack_read_buffers_compute"
-	packed["target_color_decode_format"] = TARGET_VISUAL_FORMAT_RGBA8
-	packed["target_color_stride_bytes"] = TARGET_RGBA8_STRIDE_BYTES
-	packed["target_completeness_stride_bytes"] = TARGET_R8_STRIDE_BYTES
+	packed["target_color_decode_format"] = SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8
+	packed["target_color_stride_bytes"] = SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES
+	packed["target_completeness_stride_bytes"] = SceneVoxelTileCodecScript.COLLISION_FIELD_STRIDE_BYTES
 	return packed
 
 
@@ -501,14 +306,10 @@ func derive_target_packed_buffers(
 	var tex_size := maxi(texture_size, 1)
 	var slices := maxi(slice_count, 1)
 	var voxel_count := tex_size * tex_size * slices
-	var expected_visual_bytes := _target_rgba8_byte_count(voxel_count)
-	var expected_collision_bytes := _target_r8_byte_count(voxel_count)
-	var legacy_expected_visual_bytes := voxel_count * TARGET_LEGACY_RGBA32F_STRIDE_BYTES
-	var legacy_expected_collision_bytes := voxel_count * TARGET_LEGACY_R32F_STRIDE_BYTES
-	var visual_format := _visual_format_from_bytes(visual_bytes, voxel_count)
-	var collision_format := _scalar_format_from_bytes(collision_bytes, voxel_count)
-	var visual_valid := not visual_format.is_empty()
-	var collision_valid := not collision_format.is_empty()
+	var expected_visual_bytes := SceneVoxelTileCodecScript.rgba8_byte_count(voxel_count)
+	var expected_collision_bytes := SceneVoxelTileCodecScript.r8_byte_count(voxel_count)
+	var visual_valid := visual_bytes.size() >= expected_visual_bytes
+	var collision_valid := collision_bytes.size() >= expected_collision_bytes
 	if not visual_valid and not collision_valid:
 		return {
 			"ok": false,
@@ -517,10 +318,8 @@ func derive_target_packed_buffers(
 			"cpu_fallback": false,
 			"voxel_count": voxel_count,
 			"expected_visual_bytes": expected_visual_bytes,
-			"legacy_expected_visual_bytes": legacy_expected_visual_bytes,
 			"actual_visual_bytes": visual_bytes.size(),
 			"expected_collision_bytes": expected_collision_bytes,
-			"legacy_expected_collision_bytes": legacy_expected_collision_bytes,
 			"actual_collision_bytes": collision_bytes.size(),
 		}
 
@@ -548,18 +347,15 @@ func derive_target_packed_buffers(
 			"voxel_count": voxel_count,
 	}
 
-	var completeness_format := _scalar_format_from_bytes(completeness_bytes, voxel_count)
-	var completeness_valid := not completeness_format.is_empty()
-	var visual_rgba8 := _rgba8_bytes_from_visual_bytes(visual_bytes, voxel_count, visual_format)
-	var collision_r8 := _r8_bytes_from_scalar_bytes(collision_bytes, voxel_count, collision_format)
-	var completeness_r8 := _r8_bytes_from_scalar_bytes(completeness_bytes, voxel_count, completeness_format) if completeness_valid else PackedByteArray()
-	var collision_words := _u32_bytes_from_r8_bytes(collision_r8, voxel_count)
-	var completeness_input_words := _u32_bytes_from_r8_bytes(completeness_r8, voxel_count) if completeness_valid else PackedByteArray()
-	var u32_field_byte_count := _target_u32_field_byte_count(voxel_count)
+	var completeness_valid := completeness_bytes.size() >= expected_collision_bytes
+	# 入参即规范字节；缺失通道由下方的 storage_buffer_zero 分支显式补零 SSBO。
+	# R8 → 上传口径（每体素一个 uint32）是唯一还需要的换算，走 codec。
+	var collision_words := SceneVoxelTileCodecScript.u32_bytes_from_r8_bytes(collision_bytes, voxel_count) if collision_valid else PackedByteArray()
+	var completeness_input_words := SceneVoxelTileCodecScript.u32_bytes_from_r8_bytes(completeness_bytes, voxel_count) if completeness_valid else PackedByteArray()
+	var u32_field_byte_count := SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count)
 	# Partial TargetSV_B decode stays GPU-only: missing visual/collision input is a full-size zero SSBO.
-	# Shader input layout is canonical RGBA8 u32 plus R8 scalar values expanded one voxel per uint32.
 	var visual_buffer := storage_buffer_from_bytes(
-		visual_rgba8.slice(0, expected_visual_bytes),
+		visual_bytes.slice(0, expected_visual_bytes),
 		SCOPE_FRAME,
 		"target_visual_rgba8"
 	) if visual_valid else storage_buffer_zero(expected_visual_bytes, SCOPE_FRAME, "target_visual_zero_rgba8")
@@ -623,9 +419,8 @@ func derive_target_packed_buffers(
 	var packed_color := PackedByteArray()
 	if readback_packed_buffers:
 		var completeness_words := _rd.buffer_get_data(completeness_out_buffer, 0, u32_field_byte_count)
-		packed_completeness = _r8_bytes_from_u32_bytes(completeness_words, voxel_count)
+		packed_completeness = SceneVoxelTileCodecScript.r8_bytes_from_u32_bytes(completeness_words, voxel_count)
 		packed_color = _rd.buffer_get_data(color_rgba8_out_buffer, 0, voxel_count * 4)
-	var target_field_bytes := _target_field_vec4_from_rgba8_and_r8(packed_color, packed_completeness, voxel_count) if readback_packed_buffers else PackedFloat32Array()
 	var stats_bytes := _rd.buffer_get_data(stats_out_buffer, 0, stats_set.byte_count())
 	var stats := _decode_target_stats(stats_bytes)
 	_free_gpu()
@@ -643,27 +438,21 @@ func derive_target_packed_buffers(
 		"dispatch_groups": Vector3i(groups, 1, 1),
 		"readback_packed_buffers": readback_packed_buffers,
 		"write_packed_buffers": readback_packed_buffers,
-		"visual_format": TARGET_VISUAL_FORMAT_RGBA8,
-		"collision_format": TARGET_SCALAR_FORMAT_R8,
-		"completeness_format": TARGET_SCALAR_FORMAT_R8,
-		"target_color_format": TARGET_VISUAL_FORMAT_RGBA8,
-		"target_color_decode_format": TARGET_VISUAL_FORMAT_RGBA8,
-		"target_color_stride_bytes": TARGET_RGBA8_STRIDE_BYTES,
-		"target_completeness_stride_bytes": TARGET_R8_STRIDE_BYTES,
-		"input_visual_format": visual_format,
-		"input_collision_format": collision_format,
-		"input_completeness_format": completeness_format if completeness_valid else "",
+		"visual_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8,
+		"collision_format": SceneVoxelTileCodecScript.COLLISION_FIELD_FORMAT_R8,
+		"completeness_format": SceneVoxelTileCodecScript.COLLISION_FIELD_FORMAT_R8,
+		"target_color_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8,
+		"target_color_decode_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8,
+		"target_color_stride_bytes": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES,
+		"target_completeness_stride_bytes": SceneVoxelTileCodecScript.COLLISION_FIELD_STRIDE_BYTES,
 		"visual_buffer_source": "visual_bytes" if visual_valid else "zero_filled",
 		"collision_buffer_source": "collision_bytes" if collision_valid else "zero_filled",
 		"expected_visual_bytes": expected_visual_bytes,
-		"legacy_expected_visual_bytes": legacy_expected_visual_bytes,
 		"actual_visual_bytes": visual_bytes.size(),
 		"expected_collision_bytes": expected_collision_bytes,
-		"legacy_expected_collision_bytes": legacy_expected_collision_bytes,
 		"actual_collision_bytes": collision_bytes.size(),
 		"target_completeness_source": "gpu_target_completeness_buffer" if completeness_valid else "gpu_derived_visual_collision",
 		"target_completeness_bytes": packed_completeness,
-		"target_field_bytes": target_field_bytes,
 		"target_visual_rgba8_bytes": packed_color,
 		"max_completeness": stats.get("max_completeness", 0.0),
 		"max_occupancy": stats.get("max_occupancy", stats.get("max_completeness", 0.0)),
@@ -676,30 +465,6 @@ func derive_target_packed_buffers(
 		"max_visual_complexity": stats.get("max_visual_complexity", 0.0),
 		"target_stats_source": "target_sv_pack_read_buffers_compute",
 	}
-
-
-func derive_target_stats(
-	visual_bytes: PackedByteArray,
-	collision_bytes: PackedByteArray,
-	texture_size: int,
-	slice_count: int,
-	use_collision_as_completeness: bool = true,
-	completeness_bytes: PackedByteArray = PackedByteArray()
-) -> Dictionary:
-	var stats := derive_target_packed_buffers(
-		visual_bytes,
-		collision_bytes,
-		texture_size,
-		slice_count,
-		use_collision_as_completeness,
-		completeness_bytes,
-		false
-	)
-	stats.erase("target_completeness_bytes")
-	stats.erase("target_field_bytes")
-	stats.erase("target_visual_rgba8_bytes")
-	stats["stats_only"] = true
-	return stats
 
 
 func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: Image = null, dirty_rect: Rect2i = Rect2i()) -> Dictionary:
@@ -758,8 +523,8 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	var tex_rock := upload_texture_2d(rock_img)                 # rock mask 输入
 	var preview_tex := create_rw_texture_2d(texture_size, texture_size)  # TargetSV preview
 	var voxel_count := texture_size * texture_size * slice_count         # 3D flat buffer voxel 数
-	var u32_field_byte_count := _target_u32_field_byte_count(voxel_count)
-	var visual_buffer := storage_buffer_zero(voxel_count * TARGET_RGBA8_STRIDE_BYTES) # RGBA8 u32 color+complexity
+	var u32_field_byte_count := SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count)
+	var visual_buffer := storage_buffer_zero(voxel_count * SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES) # RGBA8 u32 color+complexity
 	var collision_buffer := storage_buffer_zero(u32_field_byte_count)       # collision, 1 voxel per uint32
 	var completeness_buffer := storage_buffer_zero(u32_field_byte_count)      # max(complexity, collision), 1 voxel per uint32
 	var stats_set := DebugBufferSetScript.new(DebugBufferSetScript.TARGET_STATS)
@@ -805,12 +570,11 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 	end_compute_list()
 	submit_and_sync(true)
 
-	var visual_bytes := _rd.buffer_get_data(visual_buffer, 0, voxel_count * TARGET_RGBA8_STRIDE_BYTES)
+	var visual_bytes := _rd.buffer_get_data(visual_buffer, 0, voxel_count * SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES)
 	var collision_word_bytes := _rd.buffer_get_data(collision_buffer, 0, u32_field_byte_count)
 	var completeness_word_bytes := _rd.buffer_get_data(completeness_buffer, 0, u32_field_byte_count)
-	var collision_bytes := _r8_bytes_from_u32_bytes(collision_word_bytes, voxel_count)
-	var completeness_bytes := _r8_bytes_from_u32_bytes(completeness_word_bytes, voxel_count)
-	var target_field_bytes := _target_field_vec4_from_rgba8_and_r8(visual_bytes, completeness_bytes, voxel_count)
+	var collision_bytes := SceneVoxelTileCodecScript.r8_bytes_from_u32_bytes(collision_word_bytes, voxel_count)
+	var completeness_bytes := SceneVoxelTileCodecScript.r8_bytes_from_u32_bytes(completeness_word_bytes, voxel_count)
 	var stats_bytes := _rd.buffer_get_data(stats_buffer, 0, stats_set.byte_count())
 	var preview_data := _rd.texture_get_data(preview_tex, 0)
 	var preview_img := Image.create_from_data(texture_size, texture_size, false, Image.FORMAT_RGBAH, preview_data)
@@ -826,17 +590,16 @@ func generate(scene_depth_img: Image, target_height_img: Image, rock_mask_img: I
 		"max_height": max_height,            # 目标高度解码上限
 		"capture_size": capture_size,        # 俯视捕获场景范围
 		"vertical_span": vertical_span,      # TargetSV 高度跨度
-		"visual_format": TARGET_VISUAL_FORMAT_RGBA8, # visual buffer 格式
-		"collision_format": TARGET_SCALAR_FORMAT_R8, # collision buffer 格式
-		"completeness_format": TARGET_SCALAR_FORMAT_R8, # target completeness buffer 格式
-		"target_color_format": TARGET_VISUAL_FORMAT_RGBA8, # placement shader RGBA8 格式
-		"visual_stride_bytes": TARGET_RGBA8_STRIDE_BYTES,
-		"collision_stride_bytes": TARGET_R8_STRIDE_BYTES,
-		"target_completeness_stride_bytes": TARGET_R8_STRIDE_BYTES,
+		"visual_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8, # visual buffer 格式
+		"collision_format": SceneVoxelTileCodecScript.COLLISION_FIELD_FORMAT_R8, # collision buffer 格式
+		"completeness_format": SceneVoxelTileCodecScript.COLLISION_FIELD_FORMAT_R8, # target completeness buffer 格式
+		"target_color_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8, # placement shader RGBA8 格式
+		"visual_stride_bytes": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES,
+		"collision_stride_bytes": SceneVoxelTileCodecScript.COLLISION_FIELD_STRIDE_BYTES,
+		"target_completeness_stride_bytes": SceneVoxelTileCodecScript.COLLISION_FIELD_STRIDE_BYTES,
 		"visual_bytes": visual_bytes,        # 源 visual buffer 字节
 		"collision_bytes": collision_bytes,  # 源 collision buffer 字节
 		"target_completeness_bytes": completeness_bytes,  # GPU 解码后的 max(complexity, collision)
-		"target_field_bytes": target_field_bytes,
 		"target_visual_rgba8_bytes": visual_bytes, # 与 visual_bytes 同一 RGBA8 数据（A-2：删除重复 dup buffer 后复用 binding0 回读）
 		"max_completeness": stats.get("max_completeness", 0.0), # GPU stats: max target completeness in dirty dispatch
 		"max_occupancy": stats.get("max_occupancy", stats.get("max_completeness", 0.0)),

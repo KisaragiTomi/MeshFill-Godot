@@ -18,18 +18,24 @@ const CHANNEL_COMPLEXITY := 1
 const CHANNEL_COLLISION := 2
 
 
-## Builds the translucent rim/fresnel material used for guidance voxels.
-## Returns a fresh StandardMaterial3D byte-identical to the previous inline copies.
+## Builds the translucent material used for guidance voxels.
+## Unshaded: the vertex color (target Cd) IS the final color, so guidance voxels
+## faithfully show their data color regardless of scene lights. The previous
+## lit + fresnel-rim setup (rim 0.65, white-ish rim_tint 0.25) blew low-albedo
+## voxels (the grey cliff/terrain) out to near-white at grazing angles — the very
+## "cliff shows white" artifact. Kept translucent + double-sided so the overlay
+## still reads as a see-through guidance field.
 static func create_fresnel_rim_material() -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.vertex_color_use_as_albedo = true
-	mat.rim_enabled = true
-	mat.rim = 0.65
-	mat.rim_tint = 0.25
+	# Cd is copied from the source field as a linear rendering value. Marking it
+	# as sRGB would decode it a second time (0.5 -> ~0.214) and make the copied
+	# color substantially darker than the source mesh.
+	mat.vertex_color_is_srgb = false
 	mat.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
 	return mat
 

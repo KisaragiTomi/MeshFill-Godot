@@ -2,116 +2,7 @@ class_name VoxelPlacementStateChain
 
 
 extends RefCounted
-## State-chain contracts and compact CPU delta application for voxel placement.
-
-const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
-
-
-static func _full_field_readback_contract(voxel_count: int, output_source: String, is_gpu_readback: bool) -> Dictionary:
-	var complexity_byte_count := SceneVoxelTileCodecScript.rgba8_byte_count(voxel_count)
-	var collision_byte_count := SceneVoxelTileCodecScript.u32_field_byte_count(voxel_count)
-	return {
-		"complexity_field_out_source": output_source,
-		"collision_field_out_source": output_source,
-		"complexity_field_out_is_full_field": true,
-		"collision_field_out_is_full_field": true,
-		"complexity_field_out_byte_count": complexity_byte_count,
-		"collision_field_out_byte_count": collision_byte_count,
-		"complexity_field_out_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8,
-		"collision_field_out_format": SceneVoxelTileCodecScript.COLLISION_FIELD_FORMAT_UNORM8_U32,
-		"complexity_field_out_stride_bytes": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES,
-		"collision_field_out_stride_bytes": SceneVoxelTileCodecScript.COLLISION_FIELD_U32_STRIDE_BYTES,
-		"collision_field_out_upload_stride_bytes": 4,
-		"complexity_field_out_gpu_storage_buffer_readback": is_gpu_readback,
-		"collision_field_out_gpu_storage_buffer_readback": is_gpu_readback,
-		"cpu_state_chaining": true,
-		"cpu_state_chain_mode": "full_field_readback",
-		"cpu_state_chain_source": output_source,
-		"stamp_delta_cpu_state_chaining": false,
-		"full_field_readback_required": true,
-	}
-
-
-## CPU-input state chain: compact stamp-delta contract. Used when the caller
-## provides CPU field arrays instead of resident GPU buffers (demos/tests).
-## CPU 输入状态链：紧凑戳记增量（compact stamp-delta）契约，
-## 调用方传 CPU 场数组（而非常驻 GPU 缓冲）时使用（演示/测试路径）。
-static func _compact_delta_state_chain_contract(
-	voxel_count: int,
-	stamp_delta_count: int,
-	decoded_delta_count: int
-) -> Dictionary:
-	return {
-		"complexity_field_out_source": "cpu_state_chain_compact_stamp_deltas",
-		"collision_field_out_source": "cpu_state_chain_compact_stamp_deltas",
-		"complexity_field_out_is_full_field": false,
-		"collision_field_out_is_full_field": false,
-		"complexity_field_out_byte_count": 0,
-		"collision_field_out_byte_count": 0,
-		"complexity_field_out_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8,
-		"collision_field_out_format": SceneVoxelTileCodecScript.COLLISION_FIELD_FORMAT_UNORM8_U32,
-		"complexity_field_out_stride_bytes": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES,
-		"collision_field_out_stride_bytes": SceneVoxelTileCodecScript.COLLISION_FIELD_U32_STRIDE_BYTES,
-		"collision_field_out_upload_stride_bytes": 4,
-		"complexity_field_out_gpu_storage_buffer_readback": false,
-		"collision_field_out_gpu_storage_buffer_readback": false,
-		"cpu_state_chaining": true,
-		"cpu_state_chain_mode": "compact_stamp_deltas",
-		"cpu_state_chain_source": "stamp_shader_storage_buffer",
-		"stamp_delta_cpu_state_chaining": true,
-		"stamp_delta_gpu_storage_buffer_readback": true,
-		"stamp_delta_count": stamp_delta_count,
-		"stamp_delta_decoded_count": decoded_delta_count,
-		"voxel_count": maxi(voxel_count, 0),
-		"full_field_readback_required": false,
-	}
-
-
-## GPU-resident state chain: scene/collision buffers live on GPU as borrowed RIDs.
-## No full-field readback, no CPU array pass-through. This is the production default.
-## GPU 常驻状态链：场景/碰撞缓冲以借用的 RID 形式常驻显存，无需完整场回读，
-## 也无需 CPU 数组传递，是生产环境的默认路径。
-static func _gpu_resident_state_chain_contract(
-	voxel_count: int,
-	gpu_resident: bool,
-	scene_rid: RID,
-	collision_rid: RID,
-	source_label: String = "caller_provided_rid",
-	owner: String = "external",
-	borrowed_external: bool = true,
-	blocked_reason: String = "none"
-) -> Dictionary:
-	return {
-		"complexity_field_out_source": "gpu_resident_buffer" if gpu_resident else "gpu_resident_unavailable",
-		"collision_field_out_source": "gpu_resident_buffer" if gpu_resident else "gpu_resident_unavailable",
-		"complexity_field_out_is_full_field": false,
-		"collision_field_out_is_full_field": false,
-		"complexity_field_out_byte_count": 0,
-		"collision_field_out_byte_count": 0,
-		"complexity_field_out_format": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_FORMAT_RGBA8,
-		"collision_field_out_format": SceneVoxelTileCodecScript.COLLISION_FIELD_FORMAT_UNORM8_U32,
-		"complexity_field_out_stride_bytes": SceneVoxelTileCodecScript.COMPLEXITY_FIELD_STRIDE_BYTES,
-		"collision_field_out_stride_bytes": SceneVoxelTileCodecScript.COLLISION_FIELD_U32_STRIDE_BYTES,
-		"collision_field_out_upload_stride_bytes": 4,
-		"complexity_field_out_gpu_storage_buffer_readback": false,
-		"collision_field_out_gpu_storage_buffer_readback": false,
-		"gpu_state_chaining": gpu_resident,
-		"gpu_state_chain_mode": "resident_buffer_borrow",
-		"gpu_state_chain_source": source_label if gpu_resident else "none",
-		"gpu_state_chain_owner": owner if gpu_resident else "none",
-		"gpu_state_chain_borrowed_external": gpu_resident and borrowed_external,
-		"gpu_state_chain_blocked_reason": "none" if gpu_resident else blocked_reason,
-		"cpu_state_chaining": false,
-		"cpu_state_chain_mode": "none",
-		"stamp_delta_cpu_state_chaining": false,
-		"stamp_delta_gpu_storage_buffer_readback": false,
-		"stamp_delta_count": 0,
-		"stamp_delta_decoded_count": 0,
-		"voxel_count": maxi(voxel_count, 0),
-		"full_field_readback_required": false,
-		"complexity_field_buffer_rid": scene_rid if gpu_resident else RID(),
-		"collision_field_buffer_rid": collision_rid if gpu_resident else RID(),
-	}
+## State-chain mode selection and compact CPU stamp-delta application for voxel placement.
 
 
 ## 判断 CPU 输入模式下是否使用紧凑戳记增量状态链（默认开启，PCIe 带宽较
@@ -134,7 +25,12 @@ static func _gpu_state_chain_enabled(settings: Dictionary) -> bool:
 
 
 ## 将戳记增量（stamp deltas）应用到 CPU 端的复杂度/碰撞场数组，
-## 并返回已应用、跳过的增量数量等统计信息。
+## 并返回已应用的增量数量等统计信息。
+## **非法增量不再静默跳过计数**：deltas 由 stamp shader 写、
+## VoxelPlacementGenerator._decode_stamp_deltas 解码，非 Dictionary / 越界体素 /
+## 越界线性下标全部意味着 shader 或解码 ABI 出错。原来的 skipped_count 会让状态链
+## 少应用一部分写入，CPU 端场与 GPU 端场从此静默漂移。任一条非法即 push_error +
+## assert + 返回空字典（调用方拿不到 applied_delta_count，不会把半应用当成功）。
 static func _apply_stamp_deltas_to_cpu_state(
 	current_complexity: PackedFloat32Array,
 	current_collision: PackedFloat32Array,
@@ -145,21 +41,27 @@ static func _apply_stamp_deltas_to_cpu_state(
 	var applied_count := 0
 	var complexity_write_count := 0
 	var collision_write_count := 0
-	var skipped_count := 0
-	for raw_delta in stamp_deltas:
+	for delta_index in range(stamp_deltas.size()):
+		var raw_delta = stamp_deltas[delta_index]
 		if not raw_delta is Dictionary:
-			skipped_count += 1
-			continue
+			push_error("VoxelPlacementStateChain: stamp delta[%d] 不是 Dictionary（实际 %s）—— stamp 解码 ABI 出错" % [
+				delta_index, type_string(typeof(raw_delta))])
+			assert(false, "VoxelPlacementStateChain: stamp delta is not a Dictionary")
+			return {}
 		var delta: Dictionary = raw_delta
 		var voxel := VoxelGeneral.vector3i_from_value(delta.get("voxel", Vector3i.ZERO), Vector3i.ZERO)
 		if voxel.x < 0 or voxel.y < 0 or voxel.z < 0 \
 				or voxel.x >= grid_size.x or voxel.y >= grid_size.y or voxel.z >= grid_size.z:
-			skipped_count += 1
-			continue
+			push_error("VoxelPlacementStateChain: stamp delta[%d] 体素越界 voxel=%s grid_size=%s —— stamp shader 写出了网格外坐标" % [
+				delta_index, str(voxel), str(grid_size)])
+			assert(false, "VoxelPlacementStateChain: stamp delta voxel out of grid")
+			return {}
 		var index := VoxelGeneral.voxel_index(voxel, grid_size)
 		if index < 0 or index >= current_complexity.size() or index >= current_collision.size():
-			skipped_count += 1
-			continue
+			push_error("VoxelPlacementStateChain: stamp delta[%d] 线性下标越界 index=%d voxel=%s complexity_size=%d collision_size=%d（期望 voxel_count=%d）" % [
+				delta_index, index, str(voxel), current_complexity.size(), current_collision.size(), expected_voxel_count])
+			assert(false, "VoxelPlacementStateChain: stamp delta index out of field array")
+			return {}
 		var scene_value := clampf(float(delta.get("complexity", 0.0)), 0.0, 1.0)
 		var collision_value := clampf(float(delta.get("collision_strength", 0.0)), 0.0, 1.0)
 		if scene_value > current_complexity[index]:
@@ -179,6 +81,7 @@ static func _apply_stamp_deltas_to_cpu_state(
 		"applied_delta_count": applied_count,
 		"complexity_write_count": complexity_write_count,
 		"collision_write_count": collision_write_count,
-		"skipped_delta_count": skipped_count,
+		# 非法增量已改为硬失败，走到这里恒为 0（键保留：报告契约字段）。
+		"skipped_delta_count": 0,
 		"voxel_count": expected_voxel_count,
 	}

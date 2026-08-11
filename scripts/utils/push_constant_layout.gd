@@ -45,18 +45,26 @@ const _TYPES := {
 
 var _fields: Array = []  # [{name, enc, n, offset}]
 var _total := 0
+# schema 条目非法时置位：跳过一个字段会让其后所有字段的偏移整体前移，产出一个「能用但与 GLSL
+# push_constant 块静默错位」的布局——正是本类要根除的 bug 类型。故一旦非法，整个布局作废，
+# pack() 硬失败，不再产出任何字节。
+var _invalid := false
 
 
 func _init(schema: Array = []) -> void:
 	var cursor := 0
 	for entry in schema:
 		if not (entry is Array) or entry.size() < 2:
-			push_error("PushConstantLayout: schema 条目须为 [name, glsl_type]，实得 %s" % [entry])
+			push_error("PushConstantLayout: schema 条目须为 [name, glsl_type]，实得 %s —— 布局作废" % [entry])
+			assert(false, "PushConstantLayout: malformed schema entry")
+			_invalid = true
 			continue
 		var field_name := str(entry[0])
 		var type_tag := str(entry[1])
 		if not _TYPES.has(type_tag):
-			push_error("PushConstantLayout: 字段 '%s' 使用了不支持的 glsl 类型 '%s'" % [field_name, type_tag])
+			push_error("PushConstantLayout: 字段 '%s' 使用了不支持的 glsl 类型 '%s' —— 布局作废" % [field_name, type_tag])
+			assert(false, "PushConstantLayout: unsupported glsl type")
+			_invalid = true
 			continue
 		var t: Dictionary = _TYPES[type_tag]
 		cursor = _round_up(cursor, int(t["align"]))
@@ -70,16 +78,25 @@ func size() -> int:
 	return _total
 
 
-## 把 {字段名: 值} 打成 PackedByteArray。缺失的非 _pad 字段会报错，_pad/reserved 缺省补零。
+## 把 {字段名: 值} 打成 PackedByteArray。_pad/reserved 缺省补零；其余任何字段缺失、
+## 类型不符或分量不足都不再补零放行，直接返回空 PackedByteArray（dispatch 侧硬失败）。
 func pack(values: Dictionary) -> PackedByteArray:
+	if _invalid:
+		push_error("PushConstantLayout.pack: 布局构造时已失败（见上文 schema 报错），拒绝打包")
+		assert(false, "PushConstantLayout.pack: invalid layout")
+		return PackedByteArray()
 	var bytes := PackedByteArray()
 	bytes.resize(_total)  # resize 后为全零，未写到的字节即为 0
 	for f in _fields:
 		var field_name: String = f["name"]
 		if not values.has(field_name):
-			if not _is_padding_name(field_name):
-				push_error("PushConstantLayout.pack: 缺少字段 '%s'（布局: %s）" % [field_name, describe()])
-			continue
+			if _is_padding_name(field_name):
+				continue
+			# 缺字段时原先只报错、留全零继续 dispatch —— shader 拿到一个「合法的零」参数，
+			# 后果（0 个记录 / 0 分辨率 / 单位缩放）远比崩溃难查。
+			push_error("PushConstantLayout.pack: 缺少字段 '%s'（布局: %s）—— 拒绝以零值 dispatch" % [field_name, describe()])
+			assert(false, "PushConstantLayout.pack: missing field")
+			return PackedByteArray()
 		var off: int = f["offset"]
 		var enc: String = f["enc"]
 		var n: int = f["n"]
@@ -88,8 +105,12 @@ func pack(values: Dictionary) -> PackedByteArray:
 			_write_scalar(bytes, off, enc, v)
 		else:
 			var comps := _components(v, n)
+			if comps.size() < n:
+				push_error("PushConstantLayout.pack: 字段 '%s' 需要 %d 分量，实得 %d（布局: %s）—— 拒绝以零值补齐" % [field_name, n, comps.size(), describe()])
+				assert(false, "PushConstantLayout.pack: component count mismatch")
+				return PackedByteArray()
 			for i in range(n):
-				_write_scalar(bytes, off + i * 4, enc, comps[i] if i < comps.size() else 0)
+				_write_scalar(bytes, off + i * 4, enc, comps[i])
 	return bytes
 
 
@@ -140,16 +161,16 @@ func _components(v: Variant, n: int) -> Array:
 		TYPE_PLANE:
 			return [v.normal.x, v.normal.y, v.normal.z, v.d]
 		TYPE_ARRAY, TYPE_PACKED_FLOAT32_ARRAY, TYPE_PACKED_INT32_ARRAY:
+			# 分量不足时原先补 0；短数组交由 pack() 的分量数硬门拦截，这里如实返回实际分量。
 			var out: Array = []
-			for i in range(n):
-				out.append(v[i] if i < v.size() else 0)
+			for i in range(mini(n, v.size())):
+				out.append(v[i])
 			return out
 		_:
+			# 返回空数组；pack() 的分量数硬门会据此拒绝打包（原先返回全零向量静默放行）。
 			push_error("PushConstantLayout: 字段需要 %d 分量向量，实得类型 %d" % [n, typeof(v)])
-			var zeros: Array = []
-			for i in range(n):
-				zeros.append(0)
-			return zeros
+			assert(false, "PushConstantLayout: unsupported vector value type")
+			return []
 
 
 func _is_padding_name(field_name: String) -> bool:

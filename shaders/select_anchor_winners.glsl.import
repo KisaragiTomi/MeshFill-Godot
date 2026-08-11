@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://6lnuuoxleqjo"
+path="res://.godot/imported/select_anchor_winners.glsl-bef97b0e484849fafae00375ba9297f5.res"
+
+[deps]
+
+source_file="res://shaders/select_anchor_winners.glsl"
+dest_files=["res://.godot/imported/select_anchor_winners.glsl-bef97b0e484849fafae00375ba9297f5.res"]
+
+[params]
+

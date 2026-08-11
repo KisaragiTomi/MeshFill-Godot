@@ -2,22 +2,15 @@
 class_name AutoObject
 extends MeshInstance3D
 
-const SemanticProbeGeneratorScript := preload("res://scripts/semantic_probe_generator.gd")
 const AssetDescriptorScript := preload("res://scripts/asset_descriptor.gd")
 const AutoVoxelProfile := preload("res://scripts/auto_voxel_profile.gd")
+const ProfileRecordSchemaScript := preload("res://scripts/utils/profile_record_schema.gd")
 const SharedPropertyTypeScript := preload("res://scripts/shared_property_type.gd")
 const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
-const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 const ANCHOR_KIND := "anchor"
-## 显式 3D 体素边界别名键表（与 SceneVoxelTileStore._scene_voxel_tile_bounds_from_record
-## 显式-bounds 分支的键表逐字一致，勿单独改动）。
-const VOXEL_BOUNDS_MIN_KEYS: Array[String] = ["voxel_min", "bounds_min", "new_voxel_min", "new_bounds_min"]
-const VOXEL_BOUNDS_MAX_KEYS: Array[String] = ["voxel_max", "bounds_max", "new_voxel_max", "new_bounds_max"]
 const INSTANCE_STAMP_WRITE_SPEC_META_KEY := "instance_stamp_write_spec"
-const VOXEL_WRITE_SPEC_META_KEY := "voxel_write_spec"  ## Deprecated read-compat alias; new writes use INSTANCE_STAMP_WRITE_SPEC_META_KEY
 const SELECTABLE_GROUP := "autoobject_selectable"
 const SELECTABLE_META_KEY := "autoobject_selectable"
-const SELECTED_META_KEY := "autoobject_selected"
 
 @export var auto_id: String = ""                              # 查询和调试身份
 @export var instance_id: int = 0                              # MeshInstance3D instance id
@@ -32,9 +25,9 @@ const SELECTED_META_KEY := "autoobject_selected"
 @export var source_mesh: Mesh                                 # source mesh，用于导入/重建
 @export var source_mesh_path: String = ""                     # source mesh 资源路径
 @export var pivot_variants: Array[Dictionary] = []            # pivot mirror，同步到 descriptor
-@export var auto_generate_vertical_pivots: bool = false       # 从 collision 高度生成 vertical pivots
-@export_range(0.0, 16.0, 0.1) var vertical_pivot_middle_min_height: float = 1.5 # middle pivot 最小高度
-@export_range(0.0, 16.0, 0.1) var vertical_pivot_upper_min_height: float = 3.0 # upper pivot 最小高度
+# ⚠ auto_generate_vertical_pivots + middle/upper 阈值三个镜像已随三变体删除
+# （见 AssetDescriptor.get_pivot_variants 的说明）。pivot 现在要么是作者显式写的
+# pivot_variants，要么是单条零偏移 bottom。
 @export var semantic_probe_generator: Resource                  # semantic probes mirror
 @export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0 # semantic probe 生成密度
 @export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0 # context probes 半径；0 禁用
@@ -53,22 +46,6 @@ var min_spacing_auto: bool = true                             # 是否按 bound_
 
 func _ready() -> void:
 	_sync_selectable_metadata()
-
-
-## Legacy compat: the `voxel_descriptor` @export property was renamed to
-## `asset_descriptor` (B-9). Redirect old serialized scenes / scripts that still
-## set or read `voxel_descriptor` onto the canonical `asset_descriptor`.
-func _set(property: StringName, value) -> bool:
-	if property == &"voxel_descriptor":
-		asset_descriptor = value
-		return true
-	return false
-
-
-func _get(property: StringName):
-	if property == &"voxel_descriptor":
-		return asset_descriptor
-	return null
 
 
 static func create_voxel_profile(
@@ -104,99 +81,6 @@ static func create_asset_descriptor(
 	return descriptor
 
 
-static func make_profile_instance_stamp_write_spec(
-	record_id: String,
-	object_type: String,
-	position: Vector3,
-	rotation_degrees: Vector3,
-	scale: Vector3,
-	base_pixel: Vector2i,
-	volume_xz_resolution: int,
-	profile: AutoVoxelProfile,
-	default_radius: float,
-	y_min: float = 0.0,
-	y_max: float = 0.0,
-	collision_override: Array = [],
-	extra_fields: Dictionary = {}
-) -> Dictionary:
-	var shared_fields := SharedPropertyTypeScript.from_profile(profile, default_radius, collision_override)
-	var color: Color = shared_fields.color
-	var complexity := float(shared_fields.complexity)
-
-	var source_type := str(extra_fields.get("source_voxel_type", "AutoSceneVoxel"))
-
-	var record := SharedPropertyTypeScript.apply_to_record(extra_fields, shared_fields)
-	record["id"] = record_id                            # record id / debug handle
-	record["object_type"] = object_type                 # runtime object type/group
-	record["position"] = position                       # instance world position
-	record["rotation_mode"] = "XYZ"                     # rotation_degrees interpretation
-	record["rotation_degrees"] = rotation_degrees       # instance rotation
-	record["scale"] = scale                             # instance scale
-	record["base_pixel"] = base_pixel                   # placement base XZ pixel
-	record["voxel_xz"] = base_pixel
-	record["volume_xz_resolution"] = volume_xz_resolution # source volume XZ resolution
-	if not record.has("channel"):
-		record["channel"] = 0
-	record["channel"] = int(record.channel)
-	if not record.has("radius"):
-		record["radius"] = default_radius
-	if not record.has("y_min"):
-		record["y_min"] = y_min
-	if not record.has("y_max"):
-		record["y_max"] = y_max
-	record["source_voxel_type"] = source_type           # AutoSceneVoxel / BrushSceneVoxel / TargetSceneVoxel
-	# V1e 记录契约 3D 化（additive 双写期）：保留旧 2D 键的同时新增显式 3D 体素边界，
-	# 供 tile_store 显式-bounds 分支直接消费；调用方经 extra_fields 显式给过任一
-	# 别名边界键则整体不覆写（避免打乱别名键优先序或混拼半套边界）。
-	if not SceneVoxelTileCodecScript.has_any_key(record, VOXEL_BOUNDS_MIN_KEYS) and not SceneVoxelTileCodecScript.has_any_key(record, VOXEL_BOUNDS_MAX_KEYS):
-		var voxel_bounds := stamp_record_voxel_bounds_from_2d_keys(record)
-		record["voxel_min"] = voxel_bounds.voxel_min    # 显式 3D 体素边界（含端点）
-		record["voxel_max"] = voxel_bounds.voxel_max    # 显式 3D 体素边界（不含端点，半开区间）
-	return record
-
-
-## 由 ISWS 记录既有 2D 键（base_pixel/voxel_xz + radius_px/radius + slice_indices/slice_index）
-## 换算显式 3D 体素边界 {voxel_min, voxel_max}——voxel_min 含端点、voxel_max 不含端点（半开区间）。
-## 换算逻辑与 SceneVoxelTileStore._scene_voxel_tile_bounds_from_record 旧 2D 回退分支等价，
-## 在记录自带的 volume_xz_resolution 像素空间内求值（严格逐位等价条件：消费方 committer 的
-## grid_size.x == base_resolution == volume_xz_resolution；无 "radius_px" 键时另需
-## capture_size == base_resolution，即像素尺寸 1.0——当前仓内所有消费此类记录的 committer
-## 配置均满足）。消费端显式-bounds 分支仍会按实际 grid_size 走 normalized_bounds 裁剪，
-## 越界 slice/半径经该裁剪后与旧回退分支结果一致。
-static func stamp_record_voxel_bounds_from_2d_keys(record: Dictionary) -> Dictionary:
-	var xz_res := maxi(int(record.get("volume_xz_resolution", 1)), 1)
-	var base_px_value = record.get("base_pixel", record.get("voxel_xz", Vector2i.ZERO))
-	var base_px: Vector2i = base_px_value if base_px_value is Vector2i else Vector2i.ZERO
-	var center_px := VoxelGeneral.base_pixel_to_volume_pixel(base_px, xz_res, xz_res)
-	var radius_px := 1
-	if record.has("radius_px"):
-		radius_px = maxi(int(record.radius_px), 1)
-	else:
-		radius_px = VoxelGeneral.world_radius_to_texture_radius(float(record.get("radius", 0.0)), float(xz_res), xz_res)
-	var radius_vol := VoxelGeneral.base_radius_to_volume_radius(radius_px, xz_res, xz_res)
-	var min_y := 0
-	var max_y := 1
-	var slice_indices: Array = []
-	var raw_slices = record.get("slice_indices", [])
-	if raw_slices is Array:
-		slice_indices = raw_slices
-	if not slice_indices.is_empty():
-		min_y = 2147483647
-		max_y = 0
-		for raw_slice in slice_indices:
-			var slice_index := maxi(int(raw_slice), 0)
-			min_y = mini(min_y, slice_index)
-			max_y = maxi(max_y, slice_index + 1)
-	else:
-		var slice_index := maxi(int(record.get("slice_index", 0)), 0)
-		min_y = slice_index
-		max_y = slice_index + 1
-	return {
-		"voxel_min": Vector3i(maxi(center_px.x - radius_vol, 0), min_y, maxi(center_px.y - radius_vol, 0)),
-		"voxel_max": Vector3i(mini(center_px.x + radius_vol + 1, xz_res), max_y, mini(center_px.y + radius_vol + 1, xz_res)),
-	}
-
-
 func _ensure_asset_descriptor():
 	if asset_descriptor == null:
 		asset_descriptor = load("res://scripts/asset_descriptor.gd").new()
@@ -212,9 +96,6 @@ func _sync_descriptor_from_exported_fields() -> void:
 		asset_descriptor.set_collision(collision)
 	if not pivot_variants.is_empty():
 		asset_descriptor.set_pivot_variants(pivot_variants)
-	asset_descriptor.auto_generate_vertical_pivots = auto_generate_vertical_pivots
-	asset_descriptor.vertical_pivot_middle_min_height = vertical_pivot_middle_min_height
-	asset_descriptor.vertical_pivot_upper_min_height = vertical_pivot_upper_min_height
 	asset_descriptor.semantic_probe_density = semantic_probe_density
 	asset_descriptor.context_sensing_radius = context_sensing_radius
 	if semantic_probe_generator != null:
@@ -229,9 +110,6 @@ func _sync_exported_fields_from_descriptor() -> void:
 	voxel_complexity = float(shared_fields.complexity)
 	collision = SharedPropertyTypeScript.duplicate_dictionary_array(shared_fields.get("collision", []))
 	pivot_variants = asset_descriptor.pivot_variants.duplicate(true)
-	auto_generate_vertical_pivots = asset_descriptor.auto_generate_vertical_pivots
-	vertical_pivot_middle_min_height = asset_descriptor.vertical_pivot_middle_min_height
-	vertical_pivot_upper_min_height = asset_descriptor.vertical_pivot_upper_min_height
 	semantic_probe_density = asset_descriptor.semantic_probe_density
 	context_sensing_radius = asset_descriptor.context_sensing_radius
 	semantic_probe_generator = asset_descriptor.semantic_probe_generator
@@ -279,9 +157,6 @@ func configure_object(config: Dictionary) -> void:
 	if cfg.has("random_height_offset"):
 		random_height_offset = VariantUtils.vector2_from_value(cfg.random_height_offset, random_height_offset)
 
-	if not cfg.has("auto_generate_vertical_pivots") and not cfg.has("pivot_variants"):
-		cfg["auto_generate_vertical_pivots"] = true
-
 	var radius := mesh_size * 0.5
 	_apply_voxel_profile_fallback(cfg, radius)
 	_fill_config_shared_defaults(cfg, radius)
@@ -290,12 +165,6 @@ func configure_object(config: Dictionary) -> void:
 
 	if cfg.has("mesh_index"):
 		mesh_index = int(cfg.mesh_index)
-
-
-func configure_from_asset(asset: AutoObject, config: Dictionary = {}) -> void:
-	if asset == null:
-		return
-	configure_object(asset.make_instance_config(config))
 
 
 func configure_auto_object(config: Dictionary) -> void:
@@ -375,9 +244,6 @@ func configure_auto_object(config: Dictionary) -> void:
 		_ensure_asset_descriptor()
 	if config.has("pivot_variants"):
 		set_pivot_variants(config.pivot_variants)
-	if config.has("auto_generate_vertical_pivots"):
-		auto_generate_vertical_pivots = bool(config.auto_generate_vertical_pivots)
-		_ensure_asset_descriptor().auto_generate_vertical_pivots = auto_generate_vertical_pivots
 	if config.has("semantic_probe_density"):
 		semantic_probe_density = clampf(float(config.semantic_probe_density), 0.1, 8.0)
 		_ensure_asset_descriptor().semantic_probe_density = semantic_probe_density
@@ -385,8 +251,8 @@ func configure_auto_object(config: Dictionary) -> void:
 		var configured_probe_profile = config.get("semantic_probe_generator", null)
 		if configured_probe_profile is Resource:
 			set_semantic_probe_generator(configured_probe_profile as Resource)
-	if config.has("semantic_probes"):
-		set_semantic_probes(config.semantic_probes)
+	if config.has("profile_samples"):
+		set_profile_samples(config.profile_samples)
 	if config.has("allowed_anchor_kinds"):
 		set_allowed_anchor_kinds(config.allowed_anchor_kinds)
 	_sync_descriptor_from_exported_fields()
@@ -399,10 +265,6 @@ func configure_auto_object(config: Dictionary) -> void:
 		add_to_group(str(group_name))
 
 	_sync_auto_metadata()
-
-
-func configure_asset(config: Dictionary) -> void:
-	configure_auto_object(config)
 
 
 func _apply_voxel_profile_fallback(config: Dictionary, default_radius: float) -> void:
@@ -418,27 +280,27 @@ func _apply_voxel_profile_fallback(config: Dictionary, default_radius: float) ->
 			config["complexity"] = voxel_profile.get_complexity()
 		if not config.has("collision") and not has_descriptor:
 			config["collision"] = voxel_profile.get_collision(default_radius)
+	elif configured_profile == null:
+		# 显式传 voxel_profile=null —— 合法的“清空 profile”语义。
+		voxel_profile = null
 	else:
+		push_error("[AutoObject] %s: config.voxel_profile 类型非法（typeof=%d，期望 AutoVoxelProfile）—— 原行为把它当没配并静默清空 profile" % [name, typeof(configured_profile)])
+		assert(false, "AutoObject._apply_voxel_profile_fallback: config.voxel_profile is not an AutoVoxelProfile")
 		voxel_profile = null
 
 
 func _fill_config_shared_defaults(config: Dictionary, default_radius: float = 0.0) -> Dictionary:
 	var has_descriptor := asset_descriptor != null or config.get("asset_descriptor", null) is Resource
-	if not config.has("color") and not has_descriptor:
-		config["color"] = get_voxel_color()
-	if not config.has("complexity") and not has_descriptor:
-		config["complexity"] = get_voxel_complexity()
-	if not config.has("collision") and not has_descriptor:
-		config["collision"] = get_collision(default_radius)
-	if not config.has("pivot_variants") and not has_descriptor:
-		config["pivot_variants"] = get_pivot_variants()
-	if not config.has("semantic_probe_density") and not has_descriptor:
-		config["semantic_probe_density"] = semantic_probe_density
-	if not config.has("semantic_probe_generator") and semantic_probe_generator != null and not has_descriptor:
-		config["semantic_probe_generator"] = semantic_probe_generator
-	if not config.has("semantic_probes") and not has_descriptor:
-		config["semantic_probes"] = get_semantic_probes(semantic_probe_density)
-	return config
+	var specs: Array = [
+		{"key": "color", "get": func(): return get_voxel_color() if not has_descriptor else null},
+		{"key": "complexity", "get": func(): return get_voxel_complexity() if not has_descriptor else null},
+		{"key": "collision", "get": func(): return get_collision(default_radius) if not has_descriptor else null},
+		{"key": "pivot_variants", "get": func(): return get_pivot_variants() if not has_descriptor else null},
+		{"key": "semantic_probe_density", "get": func(): return semantic_probe_density if not has_descriptor else null},
+		{"key": "semantic_probe_generator", "get": func(): return semantic_probe_generator if semantic_probe_generator != null and not has_descriptor else null},
+		{"key": "profile_samples", "get": func(): return get_profile_samples(semantic_probe_density) if not has_descriptor else null},
+	]
+	return ProfileRecordSchemaScript.merge_instance_config(config, specs)
 
 
 func _clear_subclass_state_mirror_metadata() -> void:
@@ -452,31 +314,6 @@ func _clear_subclass_state_mirror_metadata() -> void:
 	]:
 		if has_meta(key):
 			remove_meta(key)
-
-
-func make_instance_config(config: Dictionary = {}) -> Dictionary:
-	var cfg := config.duplicate(true)
-	if not cfg.has("mesh"):
-		cfg["mesh"] = mesh
-	if not cfg.has("source_mesh") and get_source_mesh() != null and get_source_mesh() != mesh:
-		cfg["source_mesh"] = get_source_mesh()
-	if not cfg.has("source_mesh_path") and not source_mesh_path.is_empty():
-		cfg["source_mesh_path"] = source_mesh_path
-	if not cfg.has("voxel_profile") and voxel_profile != null:
-		cfg["voxel_profile"] = voxel_profile
-	if not cfg.has("asset_id") and not asset_id.is_empty():
-		cfg["asset_id"] = asset_id
-	if not cfg.has("mesh_height_texture") and mesh_height_texture != null:
-		cfg["mesh_height_texture"] = mesh_height_texture
-	if not cfg.has("mesh_size"):
-		cfg["mesh_size"] = mesh_size
-	if not cfg.has("random_rotate"):
-		cfg["random_rotate"] = random_rotate
-	if not cfg.has("random_scale"):
-		cfg["random_scale"] = random_scale
-	if not cfg.has("random_height_offset"):
-		cfg["random_height_offset"] = random_height_offset
-	return _fill_config_shared_defaults(cfg, get_record_radius())
 
 
 func get_world_bound_size() -> Vector3:
@@ -517,25 +354,10 @@ func refresh_bound_spacing() -> void:
 func get_source_mesh() -> Mesh:
 	var factory_script = load("res://scripts/auto_asset_factory.gd")
 	if factory_script == null:
-		return source_mesh if source_mesh != null else mesh
+		push_error("[AutoObject] %s: 无法加载 res://scripts/auto_asset_factory.gd —— source mesh 解析链不可用" % name)
+		assert(false, "AutoObject.get_source_mesh: auto_asset_factory.gd load failed")
+		return null
 	return factory_script.resolve_cached_source_mesh(self, mesh, mesh)
-
-
-func get_axis_center_xz() -> Vector2:
-	return Vector2(global_position.x, global_position.z)
-
-
-func get_required_axis_center_distance_to(other: AutoObject) -> float:
-	if other == null:
-		return min_spacing
-	return min_spacing + other.min_spacing
-
-
-func is_axis_center_too_close_to(other: AutoObject) -> bool:
-	if other == null:
-		return false
-	var required_distance := get_required_axis_center_distance_to(other)
-	return get_axis_center_xz().distance_to(other.get_axis_center_xz()) < required_distance
 
 
 func get_voxel_color() -> Color:
@@ -558,11 +380,6 @@ func get_record_object_type() -> String:
 	return record_type if not record_type.is_empty() else "object"
 
 
-func get_record_auto_source(fallback: String = "generated") -> String:
-	var source := str(instance_stamp_write_spec.get("auto_source", instance_stamp_write_spec.get("placement_source", instance_stamp_write_spec.get("source", ""))))
-	return source if not source.is_empty() else fallback
-
-
 func get_record_radius() -> float:
 	var mesh_radius := get_xz_radius()
 	if min_spacing > 0.0:
@@ -575,60 +392,6 @@ func get_xz_radius() -> float:
 		return 0.0
 	var aabb := mesh.get_aabb()
 	return maxf(absf(aabb.size.x * scale.x), absf(aabb.size.z * scale.z)) * 0.5
-
-
-func get_record_y_bounds() -> Vector2:
-	if mesh == null:
-		return Vector2(position.y, position.y)
-	var aabb := mesh.get_aabb()
-	var y0 := position.y + aabb.position.y * scale.y
-	var y1 := position.y + (aabb.position.y + aabb.size.y) * scale.y
-	return Vector2(minf(y0, y1), maxf(y0, y1))
-
-
-func make_voxel_profile(default_radius: float = -1.0) -> AutoVoxelProfile:
-	var radius := get_record_radius() if default_radius < 0.0 else default_radius
-	var color := get_voxel_color()
-	var complexity := get_voxel_complexity()
-	color.a = complexity
-	return create_voxel_profile(
-		color,
-		complexity,
-		radius,
-		get_collision(radius)
-	)
-
-
-func is_valid_asset() -> bool:
-	return mesh != null and mesh_height_texture != null and mesh_size > 0.0
-
-
-func make_instance_stamp_write_spec(
-	record_id: String,
-	base_pixel: Vector2i,
-	volume_xz_resolution: int,
-	extra_fields: Dictionary = {}
-) -> Dictionary:
-	var radius := get_record_radius()
-	var bounds_y := get_record_y_bounds()
-	var fields := extra_fields.duplicate(true)
-	if not fields.has("mesh_index"):
-		fields["mesh_index"] = mesh_index
-	return make_profile_instance_stamp_write_spec(
-		record_id,
-		get_record_object_type(),
-		position,
-		rotation_degrees,
-		scale,
-		base_pixel,
-		volume_xz_resolution,
-		make_voxel_profile(radius),
-		radius,
-		bounds_y.x,
-		bounds_y.y,
-		[],
-		fields
-	)
 
 
 func set_pivot_variants(variants: Array) -> void:
@@ -645,47 +408,6 @@ func get_pivot_variants() -> Array[Dictionary]:
 func set_allowed_anchor_kinds(kinds) -> void:
 	allowed_anchor_kinds = _normalize_anchor_kind_array(kinds)
 	_sync_auto_metadata()
-
-
-func get_allowed_anchor_kinds() -> PackedStringArray:
-	var explicit := _normalize_anchor_kind_array(allowed_anchor_kinds)
-	if not explicit.is_empty():
-		return explicit
-	var result := PackedStringArray()
-	result.append(ANCHOR_KIND)
-	return result
-
-
-func accepts_anchor_kind(anchor_kind: String) -> bool:
-	var normalized := _canonical_anchor_kind(anchor_kind)
-	if normalized.is_empty():
-		return false
-	return normalized == ANCHOR_KIND
-
-
-func get_anchor_pivot_variant(anchor_kind: String = ANCHOR_KIND) -> Dictionary:
-	var pivots := get_pivot_variants()
-	if pivots.is_empty():
-		return {"name": "anchor", "offset": Vector3.ZERO, "score_bias": 0.0}
-	var best: Dictionary = {}
-	for raw_pivot in pivots:
-		var pivot := raw_pivot as Dictionary
-		var name := str(pivot.get("name", "")).to_lower()
-		if ["anchor", "primary", "pivot", "bottom", "ground", "base", "foot", "root"].has(name):
-			return pivot
-	var best_y := INF
-	for raw_pivot in pivots:
-		var pivot := raw_pivot as Dictionary
-		var offset := VariantUtils.vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
-		if offset.y < best_y:
-			best_y = offset.y
-			best = pivot
-	return best
-
-
-func get_anchor_pivot_offset(anchor_kind: String = ANCHOR_KIND) -> Vector3:
-	var pivot := get_anchor_pivot_variant(anchor_kind)
-	return VariantUtils.vector3_from_value(pivot.get("offset", Vector3.ZERO), Vector3.ZERO)
 
 
 func set_collision(voxels: Array) -> void:
@@ -709,53 +431,19 @@ func set_semantic_probes(probes: Array) -> void:
 	_sync_auto_metadata()
 
 
-func rebuild_semantic_probes(density_override: float = -1.0) -> Array[Dictionary]:
+func set_profile_samples(samples: Array) -> void:
 	var descriptor = _ensure_asset_descriptor()
-	var profile = descriptor.ensure_semantic_probe_generator()
-	var probes: Array[Dictionary] = profile.rebuild_from_mesh(
-		mesh,
-		descriptor.get_collision(),
-		descriptor.get_color(),
-		descriptor.get_complexity(),
-		density_override,
-		Vector3.ONE,
-		descriptor.context_sensing_radius
-	)
-	semantic_probe_generator = descriptor.semantic_probe_generator
+	descriptor.set_profile_samples(samples)
 	_sync_auto_metadata()
-	return probes
 
 
-func get_semantic_probes(density_override: float = -1.0, anchor_kind: String = ANCHOR_KIND) -> Array[Dictionary]:
-	var probes = _ensure_asset_descriptor().get_semantic_probes(
+func get_profile_samples(density_override: float = -1.0) -> Array[Dictionary]:
+	return _ensure_asset_descriptor().get_profile_samples(
 		mesh,
 		density_override,
 		Vector3.ONE,
 		get_collision()
 	)
-	var pivot_offset := get_anchor_pivot_offset(anchor_kind)
-	if pivot_offset.length_squared() <= 0.000001:
-		return probes
-	var remapped: Array[Dictionary] = []
-	for raw_probe in probes:
-		var probe = raw_probe.duplicate(true)
-		var offset := VariantUtils.vector3_from_value(probe.get("offset", Vector3.ZERO), Vector3.ZERO)
-		probe["offset"] = offset - pivot_offset
-		remapped.append(SemanticProbeGeneratorScript.normalize_probe(probe))
-	return remapped
-
-
-func _ensure_semantic_probe_generator() -> Resource:
-	var descriptor = _ensure_asset_descriptor()
-	descriptor.semantic_probe_density = semantic_probe_density
-	semantic_probe_generator = descriptor.ensure_semantic_probe_generator()
-	return semantic_probe_generator
-
-
-func _get_default_semantic_probe_radius() -> float:
-	var world_size := get_world_bound_size()
-	var radius := maxf(world_size.x, world_size.z) * 0.5
-	return maxf(radius, 0.5)
 
 
 func set_instance_stamp_write_spec(record: Dictionary) -> void:
@@ -791,10 +479,8 @@ func get_instance_stamp_write_spec() -> Dictionary:
 
 
 func _get_instance_stamp_write_spec_metadata() -> Dictionary:
-	for key in [INSTANCE_STAMP_WRITE_SPEC_META_KEY, VOXEL_WRITE_SPEC_META_KEY]:
-		if not has_meta(key):
-			continue
-		var raw_record = get_meta(key)
+	if has_meta(INSTANCE_STAMP_WRITE_SPEC_META_KEY):
+		var raw_record = get_meta(INSTANCE_STAMP_WRITE_SPEC_META_KEY)
 		if raw_record is Dictionary:
 			return (raw_record as Dictionary).duplicate(true)
 	return {}

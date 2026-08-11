@@ -9,11 +9,14 @@ extends RefCounted
 const SHADER_PATH := "res://shaders/scatter_sv_field_records.glsl"
 const RECORD_FLOAT_STRIDE := 8  # [x, z, slice, complexity, r, g, b, collision]
 
-## std430 push-constant 布局(16B,4×int),字段名以 shader push 块为准;
+## std430 push-constant 布局(20B,5×int),字段名以 shader push 块为准;
 ## write_mode: 0=overwrite(BrushSV 后笔胜)、1=max-by-complexity(committed SV 单调合并)。
+## 网格用规范三元组(grid_x/y/z)而非旧的 (xz_res, total_slices)——后者把「XZ 必须方形」
+## 编进了寻址式,gx != gz 时散射写入的体素与 pick/score 读出的不是同一个。
 const SCATTER_PUSH := [
-	["xz_res", "int"],
-	["total_slices", "int"],
+	["grid_x", "int"],
+	["grid_y", "int"],
+	["grid_z", "int"],
 	["record_count", "int"],
 	["write_mode", "int"],
 ]
@@ -46,15 +49,17 @@ static func dispatch_scatter(
 	complexity_buffer: RID,
 	collision_buffer: RID,
 	slots_by_key: Dictionary,
-	xz_res: int,
-	total_slices: int,
+	grid_size: Vector3i,
 	write_mode: int,
 	reason_prefix: String = "scatter",
 	debug_label: String = "sv_field_scatter"
 ) -> Dictionary:
 	var record_count := slots_by_key.size()
-	var shader: RID = host.load_compute_shader(SHADER_PATH, GodotComputeShaderBase.SCOPE_FRAME, debug_label)
-	var pipeline: RID = host.create_compute_pipeline(shader, GodotComputeShaderBase.SCOPE_FRAME, debug_label)
+	# 常驻 kernel：shader/pipeline 由 host 在其生命周期内复用，不再每次 scatter 重编译。
+	# debug_label 只作诊断标签，注册表按 SHADER_PATH 去重，两个调用方共用同一份编译产物。
+	var kernel: Dictionary = host.ensure_shader_kernel(SHADER_PATH, debug_label)
+	var shader: RID = kernel.get("shader", RID())
+	var pipeline: RID = kernel.get("pipeline", RID())
 	if not shader.is_valid() or not pipeline.is_valid():
 		host.gc_frame()
 		return {"ok": false, "reason": reason_prefix + "_shader_not_ready", "record_count": record_count, "gpu_dispatched": false}
@@ -71,8 +76,9 @@ static func dispatch_scatter(
 		host.gc_frame()
 		return {"ok": false, "reason": reason_prefix + "_uniform_set_failed", "record_count": record_count, "gpu_dispatched": false}
 	var push := PushConstantLayout.new(SCATTER_PUSH).pack({
-		xz_res = xz_res,
-		total_slices = total_slices,
+		grid_x = grid_size.x,
+		grid_y = grid_size.y,
+		grid_z = grid_size.z,
 		record_count = record_count,
 		write_mode = write_mode,
 	})

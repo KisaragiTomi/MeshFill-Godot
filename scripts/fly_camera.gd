@@ -148,7 +148,7 @@ func _merge_bounds(result: Dictionary, bounds: AABB) -> void:
 
 
 func _transform_aabb(transform: Transform3D, local: AABB) -> AABB:
-	var result := VoxelGeneral.transformed_aabb(local, transform)
+	var result := transform * local
 	if result.size.length_squared() <= 0.000001:
 		# 退化为零体积时按取景半径补一层 padding，避免相机贴到零尺寸包围盒上
 		var pad := maxf(auto_frame_min_radius * 0.05, 0.1)

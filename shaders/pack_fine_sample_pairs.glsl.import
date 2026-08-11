@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://ctypvtuk6rrq8"
+path="res://.godot/imported/pack_fine_sample_pairs.glsl-6ffdc6dc82743fdd7c4ca76bb338e5ec.res"
+
+[deps]
+
+source_file="res://shaders/pack_fine_sample_pairs.glsl"
+dest_files=["res://.godot/imported/pack_fine_sample_pairs.glsl-6ffdc6dc82743fdd7c4ca76bb338e5ec.res"]
+
+[params]
+

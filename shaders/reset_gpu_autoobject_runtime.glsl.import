@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://8wca74721iu1"
+path="res://.godot/imported/reset_gpu_autoobject_runtime.glsl-5607355d82469c6e6b43113ebf57cb09.res"
+
+[deps]
+
+source_file="res://shaders/reset_gpu_autoobject_runtime.glsl"
+dest_files=["res://.godot/imported/reset_gpu_autoobject_runtime.glsl-5607355d82469c6e6b43113ebf57cb09.res"]
+
+[params]
+

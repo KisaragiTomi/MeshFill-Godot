@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dab800gvmt2ij"
+path="res://.godot/imported/rdg_fill_texture_3d.glsl-6ea51112661a813f8f990cb14fde6ebc.res"
+
+[deps]
+
+source_file="res://shaders/rdg_fill_texture_3d.glsl"
+dest_files=["res://.godot/imported/rdg_fill_texture_3d.glsl-6ea51112661a813f8f990cb14fde6ebc.res"]
+
+[params]
+

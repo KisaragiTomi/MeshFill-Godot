@@ -7,7 +7,7 @@ extends RefCounted
 ##   - spa_interactive_demo：选中标签 _make_selection_label（24 / 0.16 / 6，billboard 悬浮）、
 ##     AutoObject 总览标题（28 / 0.45 / 8，非 billboard）
 ##   - volume_score_demo:654：锚点评分标签（24 / 0.16 / 6，和选中标签完全重复）
-##   - asset_descriptor_demo：资产 / probe / 体素通道标签（18~28 / 0.01 / 3~5，非 billboard）
+##   - asset_overview：资产 / probe / 体素通道标签（18~28 / 0.01 / 3~5，非 billboard）
 ## 现在所有 Label3D 文字都从这里出，样式集中一处。
 ##
 ## 前 4 个参数是常用控制项（文字、颜色、字号、宽度）；后 3 个可选参数（世界缩放 pixel_size、

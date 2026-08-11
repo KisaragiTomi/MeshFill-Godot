@@ -1,0 +1,306 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="1830" viewBox="0 0 1700 1830" role="img" aria-labelledby="title desc">
+  <title id="title">GPU 体素拾取（选中 voxel）全链路</title>
+  <desc id="desc">从编辑器视口点击或桥调用出发，经射线构造、模式分派、常驻 GPU 资源按内容代号复用、push constant 打包与单 invocation dispatch，到回读时先校验派发序列号再解码命中记录的完整流程。</desc>
+
+  <defs>
+    <pattern id="grid" patternUnits="userSpaceOnUse" width="32" height="32">
+      <path d="M32 0H0V32" fill="none" stroke="#dbe4ee" stroke-width="1" opacity="0.62"/>
+    </pattern>
+
+    <!-- 常驻 GPU 缓冲/资源（复用 retained-pooled-stripe-amber） -->
+    <pattern id="retained-stripe-bg" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#fef3c7"/>
+      <rect y="1" width="10" height="2" fill="#d97706" opacity="0.264249"/>
+      <rect y="6" width="10" height="1.5" fill="#d97706" opacity="0.264249"/>
+    </pattern>
+    <!-- GPU 回读/解码核心（复用 gpu-readback-dot-violet） -->
+    <pattern id="readback-dot-bg" patternUnits="userSpaceOnUse" width="12" height="12">
+      <rect width="12" height="12" fill="#ede9fe"/>
+      <circle cx="3" cy="3" r="1.25" fill="#7c3aed" opacity="0.291429"/>
+      <circle cx="9" cy="9" r="1.25" fill="#7c3aed" opacity="0.291429"/>
+    </pattern>
+    <!-- TargetSV 体素状态（复用 scene-voxel-stripe-blue） -->
+    <pattern id="sv-stripe-bg" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#dbeafe"/>
+      <rect y="1" width="10" height="2" fill="#0284c7" opacity="0.235023"/>
+      <rect y="6" width="10" height="1.5" fill="#0284c7" opacity="0.235023"/>
+    </pattern>
+
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="124%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1 1L11 6L1 11Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1 1L11 6L1 11Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1 1L11 6L1 11Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1 1L11 6L1 11Z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <style>
+    :root { color-scheme: light; }
+    .bg { fill: #f8fafc; }
+    .title { fill: #0f172a; font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .subtitle { fill: #475569; font: 500 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .section { fill: #334155; font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .node-title { fill: #0f172a; font: 700 17px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .body { fill: #475569; font: 500 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .body-strong { fill: #1e293b; font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .mono { fill: #334155; font: 600 12px Consolas, "Cascadia Mono", "Microsoft YaHei", monospace; }
+    .branch { fill: #334155; font: 700 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .card { stroke-width: 1.4; filter: url(#shadow); }
+    .edge { fill: none; stroke: #334155; stroke-width: 2.1; marker-end: url(#arrow); }
+    .edge-blue { fill: none; stroke: #2563eb; stroke-width: 2.2; marker-end: url(#arrow-blue); }
+    .edge-green { fill: none; stroke: #059669; stroke-width: 2.2; marker-end: url(#arrow-green); }
+    .edge-red { fill: none; stroke: #dc2626; stroke-width: 2.2; marker-end: url(#arrow-red); }
+    .divider { stroke: #cbd5e1; stroke-width: 1; }
+  </style>
+
+  <rect class="bg" width="1700" height="1830"/>
+  <rect width="1700" height="1830" fill="url(#grid)"/>
+
+  <text class="title" x="64" y="60">GPU 体素拾取（选中 voxel）全链路</text>
+  <text class="subtitle" x="64" y="88">入口只提供相机与屏幕坐标；VoxelPickGPU 按内容代号复用常驻资源，回读时先校验派发序列号，再解码命中记录。</text>
+
+  <!-- ============ 1 · 入口与射线 ============ -->
+  <text class="section" x="64" y="126">1 · 入口与射线构造</text>
+
+  <rect class="card" x="64" y="142" width="495" height="120" rx="6" fill="#eff6ff" stroke="#93c5fd"/>
+  <rect x="64" y="142" width="7" height="120" rx="3" fill="#2563eb"/>
+  <text class="node-title" x="91" y="174">编辑器视口点击</text>
+  <text class="mono" x="91" y="202">plugin._forward_to_scene_viewport_input</text>
+  <text class="mono" x="91" y="223">→ SPA.handle_editor_input</text>
+  <text class="body" x="91" y="248">生产路径：鼠标事件带相机与屏幕坐标</text>
+
+  <rect class="card" x="579" y="142" width="495" height="120" rx="6" fill="#eff6ff" stroke="#93c5fd"/>
+  <rect x="579" y="142" width="7" height="120" rx="3" fill="#2563eb"/>
+  <text class="node-title" x="606" y="174">桥调用（验证用）</text>
+  <text class="mono" x="606" y="202">SelectionHost.pick_at_camera_pose(json)</text>
+  <text class="mono" x="606" y="223">离屏 SubViewport + Camera3D</text>
+  <text class="body" x="606" y="248">UPDATE_DISABLED，只取投影数学不出图</text>
+
+  <path class="edge" d="M311 262 L311 296"/>
+  <path class="edge" d="M826 262 L826 296"/>
+
+  <rect class="card" x="64" y="296" width="1010" height="104" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <rect x="64" y="296" width="7" height="104" rx="3" fill="#475569"/>
+  <text class="node-title" x="91" y="328">SPASelectionHost · 构造世界射线</text>
+  <text class="mono" x="91" y="356">origin = camera.global_position</text>
+  <text class="mono" x="91" y="377">dir = camera.project_ray_normal(screen)</text>
+  <text class="body" x="600" y="356">退化方向不静默兜底：_pack_push 直接 push_error</text>
+  <text class="body" x="600" y="377">并返回空 push constant，绝不拿坏参数 dispatch</text>
+
+  <path class="edge" d="M569 400 L569 438"/>
+
+  <!-- ============ 2 · 模式分派 ============ -->
+  <text class="section" x="64" y="428">2 · 模式分派</text>
+
+  <rect class="card" x="64" y="438" width="495" height="104" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <rect x="64" y="438" width="7" height="104" rx="3" fill="#059669"/>
+  <text class="node-title" x="91" y="470">MODE_SCENE_VOXEL = 0</text>
+  <text class="mono" x="91" y="498">VoxelPickGPU.pick_scene_voxel(...)</text>
+  <text class="body" x="91" y="523">体素/碰撞绑定走 dummy 占位缓冲</text>
+
+  <rect class="card" x="579" y="438" width="495" height="104" rx="6" fill="url(#sv-stripe-bg)" stroke="#0284c7"/>
+  <rect x="579" y="438" width="7" height="104" rx="3" fill="#0284c7"/>
+  <text class="node-title" x="606" y="470">MODE_TARGETSV = 1</text>
+  <text class="mono" x="606" y="498">VoxelPickGPU.pick_targetsv(...)</text>
+  <text class="body" x="606" y="523">绑真实 TargetSV visual + collision 缓冲</text>
+
+  <path class="edge" d="M311 542 L311 592"/>
+  <path class="edge" d="M826 542 L826 592"/>
+
+  <!-- ============ 3 · 常驻资源准备 ============ -->
+  <text class="section" x="64" y="582">3 · 常驻 GPU 资源准备（全部按内容代号复用，命中即跳过上传）</text>
+
+  <rect class="card" x="64" y="592" width="1010" height="286" rx="6" fill="url(#retained-stripe-bg)" stroke="#d97706"/>
+  <rect x="64" y="592" width="7" height="286" rx="3" fill="#d97706"/>
+
+  <text class="node-title" x="91" y="624">_ensure_pipeline()</text>
+  <text class="body" x="500" y="624">shader + pipeline 一次编译，SCOPE_PERSISTENT 跨次复用</text>
+  <line class="divider" x1="91" y1="640" x2="1050" y2="640"/>
+
+  <text class="node-title" x="91" y="672">_ensure_target_buffers(…, content_key)</text>
+  <text class="body" x="500" y="666">代号命中 ⇒ 跳过 R8→u32 展开与两次 buffer_update</text>
+  <text class="body-strong" x="500" y="687">每次热点击省约 8 MiB 上传 + 5 MiB CPU 拷贝</text>
+  <line class="divider" x1="91" y1="703" x2="1050" y2="703"/>
+
+  <text class="node-title" x="91" y="735">_ensure_terrain_buffer(values, terrain_key)</text>
+  <text class="body" x="500" y="729">代号命中 ⇒ 复用；尺寸相同 ⇒ buffer_update 覆写</text>
+  <text class="body" x="500" y="750">尺寸变化 ⇒ 释放重建（重建前先作废 uniform set）</text>
+  <line class="divider" x1="91" y1="766" x2="1050" y2="766"/>
+
+  <text class="node-title" x="91" y="798">_ensure_output_buffer()</text>
+  <text class="body" x="500" y="798">常驻 64 B，零初始化创建；尺寸恒定故 RID 稳定</text>
+  <line class="divider" x1="91" y1="814" x2="1050" y2="814"/>
+
+  <text class="node-title" x="91" y="846">_ensure_uniform_set(4 × RID)</text>
+  <text class="body" x="500" y="840">按四个绑定 RID 的快照逐个比对，任一变化才重建</text>
+  <text class="body" x="500" y="861">另用 uniform_set_is_valid 二次确认 set 自身仍存活</text>
+
+  <path class="edge" d="M569 878 L569 928"/>
+
+  <!-- ============ 4 · 打包与派发 ============ -->
+  <text class="section" x="64" y="918">4 · push constant 打包与派发</text>
+
+  <rect class="card" x="64" y="928" width="495" height="126" rx="6" fill="#fef2f2" stroke="#fca5a5"/>
+  <rect x="64" y="928" width="7" height="126" rx="3" fill="#dc2626"/>
+  <text class="node-title" x="91" y="960">_pack_push(…)　序列号 +1</text>
+  <text class="mono" x="91" y="988">_pick_serial = _pick_serial % 0x7FFFFFFF + 1</text>
+  <text class="body-strong" x="91" y="1013">恒 &gt; 0：零初始化缓冲的 0 永不匹配</text>
+  <text class="body" x="91" y="1038">PushConstantLayout 打成 128 B（占用原 _pad_i0 槽）</text>
+
+  <rect class="card" x="579" y="928" width="495" height="126" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <rect x="579" y="928" width="7" height="126" rx="3" fill="#475569"/>
+  <text class="node-title" x="606" y="960">单 invocation 派发</text>
+  <text class="mono" x="606" y="988">begin_compute_list → bind(pipeline, set0, push)</text>
+  <text class="mono" x="606" y="1009">→ dispatch(1,1,1) → end → submit_and_sync(true)</text>
+  <text class="body" x="606" y="1038">local_size 全 1，无写竞态，无需组内同步</text>
+
+  <path class="edge" d="M569 1054 L569 1104"/>
+
+  <!-- ============ 5 · GPU 执行 ============ -->
+  <text class="section" x="64" y="1094">5 · GPU 执行 · shaders/pick_scene_voxel.glsl</text>
+
+  <rect class="card" x="64" y="1104" width="1010" height="184" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+  <rect x="64" y="1104" width="7" height="184" rx="3" fill="#059669"/>
+  <text class="node-title" x="91" y="1136">main() —— 三段，顺序即契约</text>
+
+  <text class="mono" x="91" y="1168">① out_words[0] = 0u</text>
+  <text class="body" x="520" y="1168">首句清命中标志，其前无任何早退</text>
+
+  <text class="mono" x="91" y="1200">② mode == MODE_TARGETSV ? pick_targetsv() : pick_scene_voxel()</text>
+
+  <text class="body" x="91" y="1228">　　命中时 write_hit() 写 words 0..11；未命中不写任何内容</text>
+
+  <text class="mono" x="91" y="1262">③ out_words[12] = uint(pick_serial)</text>
+  <text class="body-strong" x="520" y="1262">末句完成戳：匹配即证明 main() 跑到了结尾</text>
+
+  <path class="edge" d="M569 1288 L569 1338"/>
+
+  <!-- ============ 6 · 回读与解码 ============ -->
+  <text class="section" x="64" y="1328">6 · 回读与解码 · _decode_output(bytes, expected_serial)</text>
+
+  <rect class="card" x="64" y="1338" width="1010" height="248" rx="6" fill="url(#readback-dot-bg)" stroke="#7c3aed"/>
+  <rect x="64" y="1338" width="7" height="248" rx="3" fill="#7c3aed"/>
+  <text class="node-title" x="91" y="1370">buffer_get_data(output, 0, 64) 后按阶梯判定</text>
+
+  <text class="branch" x="91" y="1402">① 字节数 &lt; 64</text>
+  <text class="mono" x="470" y="1402">reason = "output_readback_too_small"</text>
+
+  <text class="branch" x="91" y="1440">② word12 ≠ expected_serial</text>
+  <text class="mono" x="470" y="1440">reason = "pick_dispatch_not_completed"</text>
+  <text class="body-strong" x="91" y="1462">　　没跑完 / 读到的是上一次或初始内容 —— 陈旧数据在此必然暴露</text>
+
+  <text class="branch" x="91" y="1500">③ word0 == 0</text>
+  <text class="mono" x="470" y="1500">reason = "no_gpu_hit"</text>
+  <text class="body" x="91" y="1522">　　射线确实没打中（与 ② 是两件事，不再共用一个 0）</text>
+
+  <text class="branch" x="91" y="1560">④ 否则</text>
+  <text class="mono" x="470" y="1560">解码 words 1..11 → 命中记录</text>
+
+  <path class="edge-green" d="M311 1586 L311 1636"/>
+  <path class="edge-red" d="M826 1586 L826 1636"/>
+
+  <!-- ============ 7 · 宿主后续 ============ -->
+  <text class="section" x="64" y="1626">7 · 宿主后续</text>
+
+  <rect class="card" x="64" y="1636" width="495" height="108" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+  <rect x="64" y="1636" width="7" height="108" rx="3" fill="#059669"/>
+  <text class="node-title" x="91" y="1668">命中 · 更新选中状态</text>
+  <text class="mono" x="91" y="1696">pick_backend = "gpu_compute"</text>
+  <text class="body" x="91" y="1721">SelectionHost 写入选中记录并刷新显示</text>
+
+  <rect class="card" x="579" y="1636" width="495" height="108" rx="6" fill="#fff7ed" stroke="#fdba74"/>
+  <rect x="579" y="1636" width="7" height="108" rx="3" fill="#ea580c"/>
+  <text class="node-title" x="606" y="1668">GPU 未命中 · CPU 回退</text>
+  <text class="mono" x="606" y="1696">pick_backend = "cpu_fallback"</text>
+  <text class="body" x="606" y="1721">宿主改走 CPU 射线求交，结果口径一致</text>
+
+  <!-- ============ 右栏 · 参考 ============ -->
+  <text class="section" x="1114" y="126">输出缓冲布局 · 64 B / 16 words</text>
+
+  <rect class="card" x="1114" y="142" width="522" height="400" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <rect x="1114" y="142" width="7" height="400" rx="3" fill="#7c3aed"/>
+  <text class="mono" x="1141" y="176">word 0　　hit_flag　　0 = 未命中</text>
+  <text class="mono" x="1141" y="204">word 1..3　voxel_coord　x / y / z</text>
+  <text class="mono" x="1141" y="232">word 4..6　world_position　float bits</text>
+  <text class="mono" x="1141" y="260">word 7　　score</text>
+  <text class="mono" x="1141" y="288">word 8　　complexity</text>
+  <text class="mono" x="1141" y="316">word 9　　collision</text>
+  <text class="mono" x="1141" y="344">word 10　 mode_id</text>
+  <text class="mono" x="1141" y="372">word 11　 buffer_index</text>
+  <line class="divider" x1="1141" y1="392" x2="1610" y2="392"/>
+  <text class="mono" x="1141" y="420">word 12　 pick_serial　完成戳</text>
+  <text class="body" x="1141" y="446">占用原本空闲的槽位，输出缓冲未扩容</text>
+  <line class="divider" x1="1141" y1="466" x2="1610" y2="466"/>
+  <text class="mono" x="1141" y="494">word 13..15　保留</text>
+  <text class="body" x="1141" y="520">新增无条件读取的字段前，先读 word 12 契约</text>
+
+  <text class="section" x="1114" y="582">三个内容代号 · 复用判据</text>
+
+  <rect class="card" x="1114" y="592" width="522" height="306" rx="6" fill="url(#retained-stripe-bg)" stroke="#d97706"/>
+  <rect x="1114" y="592" width="7" height="306" rx="3" fill="#d97706"/>
+
+  <text class="body-strong" x="1141" y="624">content_key（TargetSV 体素）</text>
+  <text class="mono" x="1141" y="650">targetsv:&lt;instance_id&gt;</text>
+  <text class="mono" x="1141" y="672">　:&lt;节点 content_revision&gt;</text>
+  <text class="mono" x="1141" y="694">　:&lt;loader content_generation&gt;</text>
+  <text class="body" x="1141" y="718">第三段不可省：字节来自 loader 进程级静态数组</text>
+  <line class="divider" x1="1141" y1="736" x2="1610" y2="736"/>
+
+  <text class="body-strong" x="1141" y="764">terrain_key（地形高度场）</text>
+  <text class="mono" x="1141" y="790">terrain:&lt;_terrain_field_revision&gt;</text>
+  <text class="body" x="1141" y="814">refresh_terrain_cache() 是唯一写入点且必递增</text>
+  <line class="divider" x1="1141" y1="832" x2="1610" y2="832"/>
+
+  <text class="body-strong" x="1141" y="858">uniform set 快照（4 × RID）</text>
+  <text class="body" x="1141" y="882">空串代号 = 内容未知 ⇒ 一律重新上传</text>
+
+  <text class="section" x="1114" y="918">设计要点</text>
+
+  <rect class="card" x="1114" y="928" width="522" height="360" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <rect x="1114" y="928" width="7" height="360" rx="3" fill="#475569"/>
+
+  <text class="body-strong" x="1141" y="960">陈旧数据：从“设法预防”改为“必然被发现”</text>
+  <text class="body" x="1141" y="984">复用常驻输出缓冲后，正确性由回读侧的序列号</text>
+  <text class="body" x="1141" y="1004">校验保证，不再依赖缓冲初值与“清零必须是首句”</text>
+  <text class="body" x="1141" y="1024">这类隐式约定。</text>
+  <line class="divider" x1="1141" y1="1044" x2="1610" y2="1044"/>
+
+  <text class="body-strong" x="1141" y="1072">两类失败从此可区分</text>
+  <text class="body" x="1141" y="1096">原设计里“射线没打中”与“管线没跑”都读到 0，</text>
+  <text class="body" x="1141" y="1116">后者会被谎报成 no_gpu_hit。</text>
+  <line class="divider" x1="1141" y1="1136" x2="1610" y2="1136"/>
+
+  <text class="body-strong" x="1141" y="1164">RID 是代际句柄，不是裸指针</text>
+  <text class="body" x="1141" y="1188">index + validator：索引回收复用时 validator 变，</text>
+  <text class="body" x="1141" y="1208">旧 RID 可靠失效，不会别名到新资源。</text>
+  <text class="body" x="1141" y="1232">逐个比对 RID 是为识别“换了另一块缓冲”，</text>
+  <text class="body" x="1141" y="1252">不是防别名。buffer 无 is_valid 查询，只能自行记账。</text>
+
+  <text class="section" x="1114" y="1328">图例</text>
+
+  <rect class="card" x="1114" y="1338" width="522" height="180" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <rect x="1114" y="1338" width="7" height="180" rx="3" fill="#475569"/>
+
+  <rect x="1141" y="1360" width="34" height="24" rx="4" fill="url(#retained-stripe-bg)" stroke="#d97706"/>
+  <text class="body" x="1189" y="1377">常驻 GPU 资源（按内容代号复用）</text>
+
+  <rect x="1141" y="1400" width="34" height="24" rx="4" fill="url(#readback-dot-bg)" stroke="#7c3aed"/>
+  <text class="body" x="1189" y="1417">GPU 回读与解码</text>
+
+  <rect x="1141" y="1440" width="34" height="24" rx="4" fill="url(#sv-stripe-bg)" stroke="#0284c7"/>
+  <text class="body" x="1189" y="1457">TargetSV 体素状态</text>
+
+  <path class="edge-green" d="M1141 1490 L1175 1490"/>
+  <text class="body" x="1189" y="1495">命中路径</text>
+  <path class="edge-red" d="M1370 1490 L1404 1490"/>
+  <text class="body" x="1418" y="1495">未命中 / 失败路径</text>
+</svg>

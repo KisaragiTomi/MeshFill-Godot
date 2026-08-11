@@ -10,8 +10,11 @@ extends SceneTree
 ## shader_compile_spirv_from_source path GodotComputeShaderBase uses, with the
 ## #[compute] marker stripped) and exits non-zero on any compile error.
 ##
-## Run (needs a real rendering backend — NOT --headless):
-##   godot --path . --rendering-driver vulkan --script tools/verify_shader_compile.gd
+## Run: needs a real (non-headless) rendering backend, and the only launch form
+## that provides one — `godot --path . --rendering-driver vulkan --script
+## tools/verify_shader_compile.gd` — is a runtime launch banned by CLAUDE.md.
+## Start it only after the user explicitly permits that one runtime run; the
+## routine gate is the `-e` editor launch plus the meshfill bridge.
 
 func _init() -> void:
 	var rd := RenderingServer.create_local_rendering_device()

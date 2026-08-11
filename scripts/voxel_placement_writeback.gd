@@ -307,7 +307,7 @@ func _write_mixed_accepted_placements_to_gpu_runtime(
 	runtime_provider: Object,
 	placement_handoff: Dictionary,
 	asset_lookup_rid: RID,
-	pivot_records_rid: RID,
+	profile_arena_rid: RID,
 	rotation_slots: int,
 	common_settings: Dictionary,
 	world_convert_params: Dictionary
@@ -364,7 +364,7 @@ func _write_mixed_accepted_placements_to_gpu_runtime(
 		maxi(rotation_slots, 1),
 		Vector3.ZERO,
 		world_convert_params,
-		pivot_records_rid
+		profile_arena_rid
 	)
 	if not bool(world_convert.get("ok", false)):
 		report["ok"] = false
@@ -432,31 +432,47 @@ func _write_mixed_accepted_placements_to_gpu_runtime(
 
 ## 在 VPG 常驻 result 记录缓冲区上调度 placement_results_to_world pass，
 ## 输出常驻 world 缓冲区（SCOPE_FRAME，由 runtime 消费后经 gc_frame 释放）。
-## pivot_records_rid 有效时走 per-record pivot（record 的 global_pivot_index）。
+## profile_arena_rid 有效时走 per-record pivot（record 的槽内局部 pivot 下标 + profile_index）。
 func _dispatch_world_results_resident(
 	placement_results_rid: RID,
 	record_count: int,
 	rotation_count: int,
 	pivot_offset: Vector3,
 	world_convert_params: Dictionary,
-	pivot_records_rid: RID = RID()
+	profile_arena_rid: RID = RID()
 ) -> Dictionary:
 	if _rd == null:
 		return {"ok": false, "reason": "missing_rendering_device"}
-	var voxel_size_value = world_convert_params.get("voxel_size", Vector3.ONE)
-	var voxel_size: Vector3 = voxel_size_value if voxel_size_value is Vector3 else Vector3.ONE
-	var grid_origin_value = world_convert_params.get("grid_origin", Vector3.ZERO)
-	var grid_origin: Vector3 = grid_origin_value if grid_origin_value is Vector3 else Vector3.ZERO
-	if pivot_records_rid.is_valid():
-		track_borrowed_rid(pivot_records_rid, KIND_BUFFER, SCOPE_FRAME, "auto_voxel_runtime_profile_container:pivot_records")
+	# voxel_size / grid_origin 缺失或类型不符时不再兜底成 ONE / ZERO：那是
+	# "单位体素、原点在世界零点"的假设，会把整批对象按错误的比例和偏移放进世界，
+	# 而且全程没有任何报错。
+	var voxel_size_value = world_convert_params.get("voxel_size", null)
+	var grid_origin_value = world_convert_params.get("grid_origin", null)
+	if not (voxel_size_value is Vector3) or not (grid_origin_value is Vector3):
+		push_error("[VoxelPlacementWriteback] world_convert_params 缺少合法的 voxel_size/grid_origin voxel_size=%s grid_origin=%s —— 拒绝用单位体素/零原点换算世界坐标" % [
+			str(voxel_size_value), str(grid_origin_value)])
+		assert(false, "VoxelPlacementWriteback: world_convert_params voxel_size/grid_origin invalid")
+		return {"ok": false, "reason": "world_convert_params_invalid"}
+	var voxel_size: Vector3 = voxel_size_value
+	var grid_origin: Vector3 = grid_origin_value
+	if profile_arena_rid.is_valid():
+		track_borrowed_rid(profile_arena_rid, KIND_BUFFER, SCOPE_FRAME, "auto_voxel_runtime_profile_container:profile_arena")
 	var dispatched := PlacementResultCodec.dispatch_results_to_world(
 		self, placement_results_rid, record_count, rotation_count,
 		grid_origin, voxel_size, pivot_offset,
-		SCOPE_FRAME, "vpg_resident_world_results", "vpg_resident_world_results_set0",
-		pivot_records_rid
+		"vpg_resident_world_results", "vpg_resident_world_results_set0",
+		profile_arena_rid
 	)
 	if not bool(dispatched.get("ok", false)):
-		return {"ok": false, "reason": str(WORLD_CONVERT_FAIL_REASONS.get(str(dispatched.get("fail_step", "")), "world_convert_shader_not_ready"))}
+		# fail_step 未登记时不再兜底成 "world_convert_shader_not_ready"：未知失败被
+		# 贴上已知标签，报告里看到的原因是假的。
+		var fail_step := str(dispatched.get("fail_step", ""))
+		if not WORLD_CONVERT_FAIL_REASONS.has(fail_step):
+			push_error("[VoxelPlacementWriteback] dispatch_results_to_world 返回未登记的 fail_step='%s'（已知：%s）record_count=%d" % [
+				fail_step, str(WORLD_CONVERT_FAIL_REASONS.keys()), record_count])
+			assert(false, "VoxelPlacementWriteback: unmapped world convert fail_step")
+			return {"ok": false, "reason": "world_convert_unknown_fail_step:%s" % fail_step}
+		return {"ok": false, "reason": str(WORLD_CONVERT_FAIL_REASONS[fail_step])}
 	return {"ok": true, "reason": "ok", "world_results_rid": dispatched.get("world_results_rid", RID())}
 
 
@@ -484,9 +500,14 @@ static func _runtime_writeback_dirty_flags(asset_def: Dictionary, per_asset_sett
 
 
 
-## 若 source 是字典，则将其每个键值转换为 bool 后合并进 target。
+## 将 source（必须是字典）的每个键值转换为 bool 后合并进 target。
+## 三处调用点都以 `.get("runtime_writeback_dirty_flags", {})` 取值，缺席时拿到的
+## 就是 {}；走到非 Dictionary 分支只可能是调用方把该键配成了别的类型——不再静默
+## 忽略（那会让配置的脏标记整层丢失，对象生成后不触发刷新且毫无提示）。
 static func _runtime_writeback_merge_flags(target: Dictionary, source) -> void:
 	if not (source is Dictionary):
+		push_error("[VoxelPlacementWriteback] runtime_writeback_dirty_flags 类型非法 期望 Dictionary 实际 %s —— 该层脏标记覆盖会整层丢失" % type_string(typeof(source)))
+		assert(false, "VoxelPlacementWriteback: runtime_writeback_dirty_flags type invalid")
 		return
 	for key in (source as Dictionary).keys():
 		target[key] = bool((source as Dictionary)[key])

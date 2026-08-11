@@ -111,7 +111,7 @@
     <g id="descriptor-source">
       <rect class="node" x="85" y="165" width="275" height="115" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>
       <text class="node-title" x="103" y="193">AssetDescriptor</text>
-      <text class="small"><tspan x="103" y="215">asset semantic source</tspan><tspan x="103" y="232">probes / collision / pivots</tspan><tspan x="103" y="249">descriptor-backed defaults</tspan></text>
+      <text class="small"><tspan x="103" y="215">asset semantic source</tspan><tspan x="103" y="232">profile samples / pivots</tspan><tspan x="103" y="249">descriptor-backed defaults</tspan></text>
     </g>
 
     <g id="register-asset">
@@ -142,7 +142,7 @@
     <g id="runtime-profile-container">
       <rect class="node" x="480" y="340" width="275" height="145" rx="8" fill="url(#descriptor-grid)" stroke="#16a34a"/>
       <text class="node-title" x="498" y="368">RuntimeProfileContainer</text>
-      <text class="small"><tspan x="498" y="390">profile_table buffer</tspan><tspan x="498" y="407">probe_records buffer</tspan><tspan x="498" y="424">pivot_records buffer</tspan><tspan x="498" y="441">GPU resident after upload</tspan></text>
+      <text class="small"><tspan x="498" y="390">profile_table buffer</tspan><tspan x="498" y="407">profile_sample_records buffer</tspan><tspan x="498" y="424">pivot_records buffer</tspan><tspan x="498" y="441">GPU resident after upload</tspan></text>
     </g>
 
     <g id="gpu-readiness-api">
@@ -161,20 +161,20 @@
       <rect class="node" x="875" y="160" width="275" height="125" rx="8" fill="#eff6ff" stroke="#2563eb"/>
       <rect x="875" y="160" width="275" height="26" rx="8" fill="#2563eb"/>
       <text class="tag" x="893" y="178">Phase 0: AutoObjectProbePrefilterGPU</text>
-      <text class="small"><tspan x="893" y="210">SV + TargetSV_B sampling</tspan><tspan x="893" y="227">borrowed probe_records</tspan><tspan x="893" y="244">transient probe_range_buf</tspan><tspan x="893" y="261">output: candidate regions</tspan></text>
+      <text class="small"><tspan x="893" y="210">SV + TargetSV_B sampling</tspan><tspan x="893" y="227">borrowed profile samples</tspan><tspan x="893" y="244">transient coarse ranges</tspan><tspan x="893" y="261">output: anchor handoff</tspan></text>
     </g>
 
-    <g id="candidate-regions">
+    <g id="anchor-candidate-handoff">
       <rect class="node" x="875" y="330" width="275" height="110" rx="8" fill="#f1f5f9" stroke="#64748b"/>
-      <text class="node-title" x="893" y="358">candidate_voxel_regions_by_asset</text>
-      <text class="small"><tspan x="893" y="380">readback route view</tspan><tspan x="893" y="397">per asset candidate region list</tspan><tspan x="893" y="414">stored only in last result</tspan></text>
+      <text class="node-title" x="893" y="358">anchor_candidate_handoff</text>
+      <text class="small"><tspan x="893" y="380">resident anchor / count / top-K</tspan><tspan x="893" y="397">one origin per anchor</tspan><tspan x="893" y="414">anchors readback debug-only</tspan></text>
     </g>
 
     <g id="placement-worker">
       <rect class="node" x="875" y="500" width="275" height="125" rx="8" fill="#eff6ff" stroke="#2563eb"/>
       <rect x="875" y="500" width="275" height="26" rx="8" fill="#2563eb"/>
       <text class="tag" x="893" y="518">Phase 1: VoxelPlacementGenerator</text>
-      <text class="small"><tspan x="893" y="550">candidate regions -> placements</tspan><tspan x="893" y="567">profile / collision / pivot buffers</tspan><tspan x="893" y="584">same-type exclusion + physical score</tspan><tspan x="893" y="601">optional GPU runtime writeback</tspan></text>
+      <text class="small"><tspan x="893" y="550">anchor top-K slots -> placements</tspan><tspan x="893" y="567">profile sample / pivot buffers</tspan><tspan x="893" y="584">residual Fine score + constraints</tspan><tspan x="893" y="601">optional GPU runtime writeback</tspan></text>
     </g>
 
     <g id="commit-result">

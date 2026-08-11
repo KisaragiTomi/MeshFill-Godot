@@ -16,7 +16,9 @@ layout(set = 0, binding = 2, std430) restrict buffer TileSummaries {
 };
 
 layout(push_constant, std430) uniform Params {
-    ivec4 dims;      // xz_res, total_slices, voxel_count, tile_count
+    // 规范网格词汇。迁移前是 (xz_res, total_slices, voxel_count, tile_count) 四元组 +
+    // `plane = xz_res * xz_res` 的方形式；voxel_count 现由 gx*gy*gz 导出，省下的字给 grid_z。
+    ivec4 dims;      // grid_x, grid_y(= slice 数), grid_z, tile_count
     ivec4 tile_size; // tile_size_x, tile_size_y, tile_size_z, summary_stride
     ivec4 tile_grid; // tile_grid_x, tile_grid_y, tile_grid_z, unused
     vec4 params;     // occupied_threshold, quant_scale, unused, unused
@@ -53,26 +55,28 @@ void reduce_value(int tile_index, int count_offset, int min_offset, int max_offs
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    int voxel_count = max(dims.z, 0);
+    int grid_x = max(dims.x, 0);
+    int grid_y = max(dims.y, 0);
+    int grid_z = max(dims.z, 0);
+    int voxel_count = grid_x * grid_y * grid_z;
     if (idx >= uint(voxel_count)) {
         return;
     }
 
-    int xz_res = max(dims.x, 0);
-    int total_slices = max(dims.y, 0);
-    int plane_voxels = xz_res * xz_res;
-    if (xz_res <= 0 || total_slices <= 0 || plane_voxels <= 0) {
+    // 规范索引式 x + gx * (z + gz * y) 的逆（= VoxelGeneral.voxel_from_index）。
+    int plane_voxels = grid_x * grid_z;
+    if (grid_x <= 0 || grid_y <= 0 || plane_voxels <= 0) {
         return;
     }
 
     int slice_index = int(idx / uint(plane_voxels));
-    if (slice_index < 0 || slice_index >= total_slices) {
+    if (slice_index < 0 || slice_index >= grid_y) {
         return;
     }
 
     int in_slice = int(idx - uint(slice_index * plane_voxels));
-    int z = in_slice / xz_res;
-    int x = in_slice - z * xz_res;
+    int z = in_slice / grid_x;
+    int x = in_slice - z * grid_x;
 
     int tile_x = clamp(x / max(tile_size.x, 1), 0, max(tile_grid.x - 1, 0));
     int tile_y = clamp(slice_index / max(tile_size.y, 1), 0, max(tile_grid.y - 1, 0));

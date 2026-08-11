@@ -33,6 +33,7 @@
 //   10 int dirty_delta_words[]; 20 s32 words per row, 80-byte stride
 //   11 int dirty_count[1]
 //   12 uint stats[]
+//   13 int asset_index[]                # 渲染批次的分批键；profile_id 一对多，顶替不了
 //
 // Push constants:
 //   counts.x = record_count
@@ -123,6 +124,10 @@ layout(set = 1, binding = 11, std430) restrict buffer DirtyCount {
 
 layout(set = 1, binding = 12, std430) restrict buffer Stats {
     uint stats[];
+};
+
+layout(set = 1, binding = 13, std430) restrict buffer AssetIndexBuffer {
+    int object_asset_index[];
 };
 
 layout(push_constant, std430) uniform Params {
@@ -259,10 +264,13 @@ void main() {
     // Per-record asset metadata: mixed-asset mode resolves through asset_lookup
     // by the record's asset_index (world_meta.z); legacy mode keeps the shared
     // push values.
+    // legacy 模式下整批同一个 asset，asset_index 由 push 的 meta.x 给出（已存在，无需扩 push）；
+    // mixed 模式下逐记录从 world_meta.z 解出，下面覆写。
     int record_profile_id = asset_params.x;
     int record_object_type = asset_params.y;
+    int record_asset_index = meta.x;
     if (meta.w != 0) {
-        int record_asset_index = int(round(world_meta.z));
+        record_asset_index = int(round(world_meta.z));
         // asset_lookup capacity gate: host-passed element count (grid.w), so a
         // stale or short lookup table skips the record instead of reading past it.
         if (record_asset_index < 0 || record_asset_index >= max(grid.w, 0)) {
@@ -302,6 +310,7 @@ void main() {
     object_type[object_id] = record_object_type;
     profile[object_id] = record_profile_id;
     object_flags[object_id] = asset_params.z;
+    object_asset_index[object_id] = record_asset_index;
     bounds_min[object_id] = ivec4(voxel_min, 0);
     bounds_max[object_id] = ivec4(voxel_max, 0);
     previous_bounds_min[object_id] = ivec4(voxel_min, 0);

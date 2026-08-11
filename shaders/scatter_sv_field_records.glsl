@@ -29,9 +29,13 @@ layout(set = 0, binding = 2, std430) restrict readonly buffer FieldRecords {
     float field_records[];
 };
 
+// 规范网格词汇（grid_x/y/z），与 SceneSV / BrushSV / BlendSV / TargetSV 其余通路同一套。
+// 迁移前是 (xz_res, total_slices) 二元组 + `x + xz_res*(z + xz_res*slice)` 方形式：它把
+// 「XZ 必须方形」编进了寻址，gx != gz 时写入的体素与 pick/score 读出的不是同一个。
 layout(push_constant, std430) uniform Params {
-    int xz_res;
-    int total_slices;
+    int grid_x;
+    int grid_y;      // = slice 数
+    int grid_z;
     int record_count;
     int write_mode;  // 0 = overwrite (brush overlay), 1 = max-by-complexity (committed SV)
 };
@@ -84,7 +88,7 @@ void main() {
     int x = int(field_records[base + 0u]);
     int z = int(field_records[base + 1u]);
     int slice_index = int(field_records[base + 2u]);
-    if (x < 0 || x >= xz_res || z < 0 || z >= xz_res || slice_index < 0 || slice_index >= total_slices) {
+    if (x < 0 || x >= grid_x || z < 0 || z >= grid_z || slice_index < 0 || slice_index >= grid_y) {
         return;
     }
     float complexity_raw = field_records[base + 3u];
@@ -95,7 +99,8 @@ void main() {
     );
     float collision_strength = clamp(field_records[base + 7u], 0.0, 1.0);
 
-    int index = x + xz_res * (z + xz_res * slice_index);
+    // 规范索引式 x + gx * (z + gz * y)（= VoxelGeneral.voxel_index）。
+    int index = x + grid_x * (z + grid_z * slice_index);
     if (complexity_raw >= 0.0) {
         uint packed_complexity = pack_rgba8(vec4(color, clamp(complexity_raw, 0.0, 1.0)));
         if (write_mode == 1) {

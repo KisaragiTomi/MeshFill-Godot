@@ -8,7 +8,7 @@ layout(set = 0, binding = 0, std430) restrict readonly buffer BrushVoxels {
     ivec4 brush_voxels[];
 };
 
-// Terrain height field, row-major, size = xz_res * xz_res. Stored as world
+// Terrain height field, row-major, size = grid_x * grid_z. Stored as world
 // height (already multiplied by height_span on the CPU staging side).
 layout(set = 0, binding = 1, std430) restrict readonly buffer TerrainHeight {
     float terrain_height[];
@@ -25,15 +25,21 @@ layout(set = 0, binding = 3, std430) restrict readonly buffer BrushColors {
     vec4 brush_colors[];
 };
 
+// 坐标词汇与 voxel_field_instances.glsl / 其余 volume 同款：
+// 位置 = grid_origin + (voxel + 0.5) * voxel_size，Y 再加 terrain * display_scale。
 layout(push_constant, std430) uniform Params {
     int instance_count;
-    int xz_res;
-    int slice_count;
+    int grid_x;
+    int grid_y;        // = slice 数
+    int grid_z;
     int height_count;
-    float capture_size;
     float display_scale;
-    float vertical_span;
-    float height_span;
+    float grid_origin_x;
+    float grid_origin_y;
+    float grid_origin_z;
+    float voxel_size_x;
+    float voxel_size_y;
+    float voxel_size_z;
     float brush_r;
     float brush_g;
     float brush_b;
@@ -53,17 +59,17 @@ void main() {
     int slice_index = voxel.y;
     int vz = voxel.z;
 
-    float denom = max(float(xz_res - 1), 1.0);
-    float fx = (float(vx) / denom - 0.5) * capture_size * display_scale;
-    float fz = (float(vz) / denom - 0.5) * capture_size * display_scale;
+    int gx = max(grid_x, 1);
+    int gz = max(grid_z, 1);
+    float fx = grid_origin_x + (float(vx) + 0.5) * voxel_size_x;
+    float fz = grid_origin_z + (float(vz) + 0.5) * voxel_size_z;
 
     float terrain_y = 0.0;
-    int height_idx = vz * xz_res + vx;
-    if (vx >= 0 && vx < xz_res && vz >= 0 && vz < xz_res && height_idx >= 0 && height_idx < height_count) {
+    int height_idx = vz * gx + vx;
+    if (vx >= 0 && vx < gx && vz >= 0 && vz < gz && height_idx >= 0 && height_idx < height_count) {
         terrain_y = terrain_height[height_idx];
     }
-    float local_y = (float(slice_index) + 0.5) / max(float(slice_count), 1.0) * vertical_span;
-    float wy = (terrain_y + local_y) * display_scale;
+    float wy = grid_origin_y + (float(slice_index) + 0.5) * voxel_size_y + terrain_y * display_scale;
 
     uint base = idx * uint(FLOATS_PER_INSTANCE);
     // Row 0: basis row x + origin.x

@@ -11,8 +11,11 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer CollisionRecords {
     vec4 records[]; // x, z, slice, collision_strength
 };
 
+// 规范网格词汇（grid.xyz = grid_size，grid.w = record_count）。迁移前是
+// (xz_res, total_slices, voxel_count, record_count) 四元组 + `x + xz_res*(z + xz_res*y)`
+// 方形式；voxel_count 现由 gx*gy*gz 导出（CPU 侧本来就是这么算的），省下的那一格放 grid_z。
 layout(push_constant, std430) uniform Params {
-    ivec4 dims_counts; // xz_res, total_slices, voxel_count, record_count
+    ivec4 grid; // grid_x, grid_y(= slice 数), grid_z, record_count
 };
 
 uint quantize_unorm8(float value) {
@@ -27,7 +30,7 @@ void atomic_max_r8(uint index, float value) {
 
 void main() {
     uint record_index = gl_GlobalInvocationID.x;
-    if (record_index >= uint(max(dims_counts.w, 0))) {
+    if (record_index >= uint(max(grid.w, 0))) {
         return;
     }
 
@@ -36,15 +39,17 @@ void main() {
     int z = int(record.y + 0.5);
     int y = int(record.z + 0.5);
     if (
-        x < 0 || x >= dims_counts.x ||
-        z < 0 || z >= dims_counts.x ||
-        y < 0 || y >= dims_counts.y
+        x < 0 || x >= grid.x ||
+        z < 0 || z >= grid.z ||
+        y < 0 || y >= grid.y
     ) {
         return;
     }
 
-    int idx = x + dims_counts.x * (z + dims_counts.x * y);
-    if (idx < 0 || idx >= dims_counts.z) {
+    // 规范索引式 x + gx * (z + gz * y)（= VoxelGeneral.voxel_index）。
+    int idx = x + grid.x * (z + grid.z * y);
+    int voxel_count = max(grid.x, 0) * max(grid.y, 0) * max(grid.z, 0);
+    if (idx < 0 || idx >= voxel_count) {
         return;
     }
 

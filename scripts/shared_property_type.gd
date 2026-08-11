@@ -42,7 +42,11 @@ static func normalize_shared_fields(source: Dictionary, fallback: Dictionary = {
 
 static func from_descriptor(descriptor: Resource, default_radius: float = 0.0) -> Dictionary:
 	if descriptor == null:
-		return normalize_shared_fields({})
+		# 原行为：静默返回一份全默认共享字段（WHITE / 1.0 / 空 collision），
+		# 上游拿到的是"看起来正常"的假语义。调用方全部已在外层判过空。
+		push_error("[SharedPropertyType] from_descriptor(): descriptor 为 null —— 不再返回默认共享字段冒充语义")
+		assert(false, "SharedPropertyType.from_descriptor: null descriptor")
+		return {}
 	var color := Color.WHITE
 	var complexity := 1.0
 	var collision: Array = []
@@ -73,7 +77,9 @@ static func from_descriptor(descriptor: Resource, default_radius: float = 0.0) -
 
 static func from_profile(profile: AutoVoxelProfile, default_radius: float = 0.0, collision_override: Array = []) -> Dictionary:
 	if profile == null:
-		return normalize_shared_fields({})
+		push_error("[SharedPropertyType] from_profile(): profile 为 null —— 不再返回默认共享字段冒充语义")
+		assert(false, "SharedPropertyType.from_profile: null profile")
+		return {}
 	var collision := profile.get_collision(default_radius)
 	if not collision_override.is_empty():
 		collision = VoxelGeneralScript.normalize_collision_samples(collision_override, default_radius)

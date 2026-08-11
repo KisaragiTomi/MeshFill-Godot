@@ -35,6 +35,7 @@ static func build(schema: Dictionary, values: Dictionary, include_diagnostics: b
 	for key in values:
 		if not declared.has(key):
 			push_error("ReportSchema.build[%s]: 未声明的键 '%s'——加键须先进某一 tier（core/contract/diag/derived）" % [_schema_name(schema), key])
+			assert(false, "ReportSchema.build: undeclared key")
 	var out := {}
 	_emit_tier(out, schema, values, TIER_CORE)
 	_emit_tier(out, schema, values, TIER_CONTRACT)
@@ -72,10 +73,13 @@ static func validate_report(schema: Dictionary, report: Dictionary, include_diag
 	for key in report:
 		if not declared.has(key):
 			push_error("ReportSchema.validate_report[%s]: 发射后出现未声明键 '%s'——merge 突变须先把键登进某一 tier" % [_schema_name(schema), key])
+			assert(false, "ReportSchema.validate_report: undeclared key")
 		elif derived_keys.has(key):
 			push_error("ReportSchema.validate_report[%s]: derived 键 '%s' 不得输出" % [_schema_name(schema), key])
+			assert(false, "ReportSchema.validate_report: derived key emitted")
 		elif not include_diagnostics and diag_keys.has(key):
 			push_error("ReportSchema.validate_report[%s]: 未请求 include_diagnostics 时 merge 重新引入了 diag 键 '%s'" % [_schema_name(schema), key])
+			assert(false, "ReportSchema.validate_report: diag key reintroduced")
 	return report
 
 
@@ -84,14 +88,6 @@ static func validate_report(schema: Dictionary, report: Dictionary, include_diag
 static func metadata(schema: Dictionary) -> Dictionary:
 	return schema.get("metadata", {}).duplicate(true)
 
-
-## schema 声明的全部键（四级并集），用于消费者自检 / 测试。
-static func declared_keys(schema: Dictionary) -> PackedStringArray:
-	var out := PackedStringArray()
-	for tier in TIERS:
-		for key in schema.get(tier, []):
-			out.append(str(key))
-	return out
 
 
 static func _emit_tier(out: Dictionary, schema: Dictionary, values: Dictionary, tier: String) -> void:
@@ -124,7 +120,7 @@ static func _schema_name(schema: Dictionary) -> String:
 ## writeback_detail_reason（仅 runtime spawn 失败）、pending_dirty_delta_count（spawn 成功或 merge 后）、
 ## live_count/profile_summary（仅 merge 后的总报告）、runtime_summary（总报告恒有；per-asset 仅成功尾）。
 ## 冻结 contract 消费者（改名须同 commit 改读者）：
-##   spa_test.check_resident_placement_writeback — ok/reason/writeback_detail_reason/spawned_count/
+##   ~~spa_pipeline_checks.check_resident_placement_writeback~~（该套件 2026-08-07 已删）曾读 — ok/reason/writeback_detail_reason/spawned_count/
 ##     accepted_placement_spawn_api/accepted_placement_record_shader_consumed/
 ##     accepted_placement_record_shader_stats(applied,skipped)；
 ##   scene_placement_actor._accepted_placement_writeback_summary_from_placement — ok/reason/
@@ -177,11 +173,12 @@ const WRITEBACK_REPORT := {
 ##     gpu_autoobject_runtime_writeback（write_accepted_placements_to_gpu_runtime）、
 ##     instance_stamp_writeback（gpu 链 stamp 提交）、placement_result_buffers/
 ##     placement_score_sum/placement_valid_count（retain_placement_result_buffers）、
-##     stamp_delta_count（read_stamp_deltas/compact 链）、debug_voxel
+##     stamp_delta_count（read_stamp_deltas/compact 链）、fine_winner_bytes（read_fine_winner_bytes
+##     显式 opt-in；默认零回读，结果改经 fine_score_handoff 常驻交出）、debug_voxel
 ##     （debug_read_voxel_channels）、score_timing_profile（score_timing_profile 自带门）、
 ##     cpu_fallback（contract.reason != "not_requested"）；anchor_fine_contract 恒有。
 ## 冻结 contract 消费者（改名须同 commit 改读者）：
-##   spa_test.check_resident_placement_writeback — gpu_runtime_profile_contract/total_placed/
+##   spa_pipeline_checks.check_resident_placement_writeback（spa_test 门面委托） — gpu_runtime_profile_contract/total_placed/
 ##     gpu_autoobject_runtime_writeback/asset_results；
 ##   scene_placement_actor.run_placement_pipeline — ok/total_placed/instance_stamp_writeback/
 ##     gpu_autoobject_runtime_writeback/cpu_state_chain/target_read_buffer_summary；
@@ -197,12 +194,16 @@ const VPG_MULTI_ASSET_REPORT := {
 		# anchor-fine 单管线的顶层承载（旧 run_minimal 族的对应键上移至此）：
 		"placement_result_buffers", "placement_score_sum", "placement_valid_count",
 		"stamp_delta_count", "stamp_bounds",
-		"debug_voxel", "fine_candidates", "score_timing_profile",
+		"debug_voxel", "fine_winner_bytes", "fine_candidates", "fine_candidate_bytes",
+		"score_timing_profile",
 	],
 	"contract": [
 		"contract_blocked", "cpu_fallback",
 		"gpu_runtime_profile_contract",
 		"anchor_fine_contract",
+		# Score（fine_candidates_only）的常驻候选/胜出交接：借用 RID + stride + live count
+		# 来源。必须恒发（contract tier），因为零回读的 Score 只靠它把结果交出去。
+		"fine_score_handoff",
 		"cpu_state_chain",
 		"instance_stamp_writeback",
 		"gpu_autoobject_runtime_writeback",
@@ -227,7 +228,7 @@ const VPG_MULTI_ASSET_REPORT := {
 ##   仅 blocked 变体：ok/contract_blocked/gpu_first/runtime_read_source/readback_source；
 ##   成功变体门控键：cpu_fallback（contract.reason != "not_requested" 时置 false）。
 ## 冻结 contract 消费者（改名须同 commit 改读者）：
-##   spa_test.check_resident_placement_writeback（asset_results[0]）— world_results/results/
+##   spa_pipeline_checks.check_resident_placement_writeback（asset_results[0]，spa_test 门面委托）— world_results/results/
 ##     result_count。
 const VPG_MULTI_ASSET_RESULT := {
 	"name": "vpg_run_multi_asset_result",

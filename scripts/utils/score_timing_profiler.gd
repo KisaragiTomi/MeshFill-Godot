@@ -54,7 +54,7 @@ func mark(name: String) -> void:
 ## 由相邻 mark 差算出各阶段耗时,并累加进静态聚合。返回:
 ##   { label, total_usec, phases: [{name, usec}], phases_by_name: {name: usec} }
 ## 首个 mark(通常 "run_start")无前驱,不产出阶段,仅作为总时长起点。
-func build_report() -> Dictionary:
+func build_report(accumulate := true) -> Dictionary:
 	var phases: Array = []
 	var by_name: Dictionary = {}
 	var total := 0
@@ -65,7 +65,7 @@ func build_report() -> Dictionary:
 		by_name[name] = int(by_name.get(name, 0)) + dt
 		total += dt
 	# 累加进静态聚合
-	if enabled and not _marks.is_empty():
+	if enabled and accumulate and not _marks.is_empty():
 		for p in phases:
 			var pname: String = p["name"]
 			if not _agg.has(pname):
@@ -146,5 +146,3 @@ static func reset_aggregate() -> void:
 	_agg_total_usec = 0
 
 
-static func aggregate_calls() -> int:
-	return _agg_calls

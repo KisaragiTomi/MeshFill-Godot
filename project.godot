@@ -28,7 +28,7 @@ import/fbx/enabled=false
 
 [meshfill]
 
-scene_voxel_tile/size_voxels=Vector3i(4, 4, 4)
+scene_voxel_tile/size_voxels=Vector3i(8, 8, 8)
 
 [meshfill_editor]
 

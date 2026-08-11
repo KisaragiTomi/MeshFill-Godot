@@ -16,7 +16,7 @@ layout(set = 0, binding = 2, std430) restrict buffer CompactCounter {
 };
 
 layout(push_constant, std430) uniform Params {
-    ivec4 counts; // tile_count, summary_stride, compact_stride, unused
+    ivec4 counts; // tile_count, summary_stride, output stride, fixed-output mode
 };
 
 void main() {
@@ -31,6 +31,30 @@ void main() {
     int src_base = int(tile_index) * summary_stride;
     uint scene_count = tile_summaries[src_base + 0];
     uint collision_count = tile_summaries[src_base + 3];
+    if (counts.w != 0) {
+        int dst_base = int(tile_index) * compact_stride;
+        float complexity_min = scene_count > 0u
+            ? float(tile_summaries[src_base + 1]) * (1.0 / 1000000.0)
+            : 0.0;
+        float complexity_max = scene_count > 0u
+            ? float(tile_summaries[src_base + 2]) * (1.0 / 1000000.0)
+            : 0.0;
+        float collision_min = collision_count > 0u
+            ? float(tile_summaries[src_base + 4]) * (1.0 / 1000000.0)
+            : 0.0;
+        float collision_max = collision_count > 0u
+            ? float(tile_summaries[src_base + 5]) * (1.0 / 1000000.0)
+            : 0.0;
+        compact_summary[dst_base + 0] = floatBitsToUint(complexity_min);
+        compact_summary[dst_base + 1] = floatBitsToUint(complexity_max);
+        compact_summary[dst_base + 2] = floatBitsToUint(collision_min);
+        compact_summary[dst_base + 3] = floatBitsToUint(collision_max);
+        compact_summary[dst_base + 4] = scene_count;
+        compact_summary[dst_base + 5] = collision_count;
+        compact_summary[dst_base + 6] = 0u;
+        compact_summary[dst_base + 7] = 0u;
+        return;
+    }
     if (scene_count == 0u && collision_count == 0u) {
         return;
     }

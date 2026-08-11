@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="1420" viewBox="0 0 1700 1420" role="img" aria-labelledby="title desc">
+  <title id="title">SPA 选择模式统一切换规范与当前结论</title>
+  <desc id="desc">展示工具栏、快捷键、脚本选择和场景恢复如何进入统一状态机，并统一说明所有权、clear、preserve、同模式切换以及 Anchor 显示开关的当前结论。</desc>
+
+  <defs>
+    <pattern id="grid" patternUnits="userSpaceOnUse" width="32" height="32">
+      <path d="M32 0H0V32" fill="none" stroke="#dbe4ee" stroke-width="1" opacity="0.62"/>
+    </pattern>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="124%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1 1L11 6L1 11Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1 1L11 6L1 11Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1 1L11 6L1 11Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M1 1L11 6L1 11Z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <style>
+    :root { color-scheme: light; }
+    .bg { fill: #f8fafc; }
+    .title { fill: #0f172a; font: 700 34px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .subtitle { fill: #475569; font: 500 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .section { fill: #334155; font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .node-title { fill: #0f172a; font: 700 17px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .body { fill: #475569; font: 500 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .body-strong { fill: #1e293b; font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .mono { fill: #334155; font: 600 12px Consolas, "Cascadia Mono", "Microsoft YaHei", monospace; letter-spacing: 0; }
+    .mono-light { fill: #eff6ff; font: 600 13px Consolas, "Cascadia Mono", "Microsoft YaHei", monospace; letter-spacing: 0; }
+    .branch { fill: #334155; font: 700 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; letter-spacing: 0; }
+    .card { stroke-width: 1.4; filter: url(#shadow); }
+    .edge { fill: none; stroke: #334155; stroke-width: 2.1; marker-end: url(#arrow); }
+    .edge-blue { fill: none; stroke: #2563eb; stroke-width: 2.2; marker-end: url(#arrow-blue); }
+    .edge-green { fill: none; stroke: #059669; stroke-width: 2.2; marker-end: url(#arrow-green); }
+    .edge-red { fill: none; stroke: #dc2626; stroke-width: 2.2; marker-end: url(#arrow-red); }
+    .divider { stroke: #cbd5e1; stroke-width: 1; }
+  </style>
+
+  <rect class="bg" width="1700" height="1420"/>
+  <rect width="1700" height="1420" fill="url(#grid)"/>
+
+  <text id="diagram-heading" class="title" x="64" y="60">SPA 选择模式统一切换规范与当前结论</text>
+  <text class="subtitle" x="64" y="88">所有入口只声明目标模式、选择保留策略和原因；SPASelectionHost 负责唯一的状态转换顺序。</text>
+
+  <g aria-labelledby="entry-heading">
+    <text id="entry-heading" class="section" x="64" y="127">1 · 切换入口</text>
+
+    <rect class="card" x="64" y="145" width="360" height="142" rx="6" fill="#eff6ff" stroke="#93c5fd"/>
+    <rect x="64" y="145" width="7" height="142" rx="3" fill="#2563eb"/>
+    <text class="node-title" x="91" y="181">工具栏 OptionButton</text>
+    <text class="mono" x="91" y="211">retention = CLEAR</text>
+    <text class="mono" x="91" y="234">reason = "toolbar"</text>
+    <text class="body" x="91" y="263">用户主动跨域，旧选择立即失效</text>
+
+    <rect class="card" x="468" y="145" width="360" height="142" rx="6" fill="#f0fdf4" stroke="#86efac"/>
+    <rect x="468" y="145" width="7" height="142" rx="3" fill="#059669"/>
+    <text class="node-title" x="495" y="181">Shift + 0..5 快捷键</text>
+    <text class="mono" x="495" y="211">retention = CLEAR</text>
+    <text class="mono" x="495" y="234">reason = "shortcut"</text>
+    <text class="body" x="495" y="263">行为与工具栏一致</text>
+
+    <rect class="card" x="872" y="145" width="360" height="142" rx="6" fill="#fff7ed" stroke="#fdba74"/>
+    <rect x="872" y="145" width="7" height="142" rx="3" fill="#ea580c"/>
+    <text class="node-title" x="899" y="181">脚本选择入口</text>
+    <text class="mono" x="899" y="211">retention = CLEAR</text>
+    <text class="mono" x="899" y="234">reason = "select_*"</text>
+    <text class="body" x="899" y="263">先切模式，再写入新域选择</text>
+
+    <rect class="card" x="1276" y="145" width="360" height="142" rx="6" fill="#f5f3ff" stroke="#c4b5fd"/>
+    <rect x="1276" y="145" width="7" height="142" rx="3" fill="#7c3aed"/>
+    <text class="node-title" x="1303" y="181">场景属性 / Host 初始化</text>
+    <text class="mono" x="1303" y="211">retention = PRESERVE</text>
+    <text class="mono" x="1303" y="234">reason = "scene_property"</text>
+    <text class="body" x="1303" y="263">反序列化不意外销毁已有状态</text>
+
+    <path class="edge-blue" d="M244 287V318H690V344"/>
+    <path class="edge-green" d="M648 287V318H795V344"/>
+    <path class="edge" d="M1052 287V318H905V344"/>
+    <path class="edge" d="M1456 287V318H1010V344"/>
+  </g>
+
+  <g aria-labelledby="machine-heading">
+    <text id="machine-heading" class="section" x="64" y="337">2 · 唯一状态机</text>
+
+    <rect class="card" x="430" y="353" width="840" height="112" rx="6" fill="#1e3a5f" stroke="#1d4ed8"/>
+    <text class="mono-light" x="850" y="390" text-anchor="middle">transition_selection_mode(mode, retention, reason)</text>
+    <text x="850" y="420" text-anchor="middle" fill="#bfdbfe" font-family="Segoe UI, Microsoft YaHei, Arial, sans-serif" font-size="14" font-weight="600">规范化 mode / retention，记录 previous、had_selection</text>
+    <text x="850" y="444" text-anchor="middle" fill="#dbeafe" font-family="Segoe UI, Microsoft YaHei, Arial, sans-serif" font-size="13">所有调用者得到同一种 Dictionary 结果结构</text>
+
+    <path class="edge" d="M850 465V505"/>
+    <polygon class="card" points="850,505 1000,570 850,635 700,570" fill="#ffffff" stroke="#64748b"/>
+    <text class="node-title" x="850" y="564" text-anchor="middle">模式真的变化？</text>
+    <text class="mono" x="850" y="588" text-anchor="middle">previous != next</text>
+
+    <text class="branch" x="648" y="555">否</text>
+    <path class="edge" d="M700 570H532"/>
+    <rect class="card" x="64" y="494" width="468" height="180" rx="6" fill="#f1f5f9" stroke="#94a3b8"/>
+    <text class="node-title" x="92" y="531">同模式：幂等刷新</text>
+    <text class="body-strong" x="92" y="563">保留当前选择，不调用 clear</text>
+    <text class="body" x="92" y="590">重新应用显示规则并刷新 HUD / overlay</text>
+    <text class="body" x="92" y="617">不发出 selection_mode_transitioned</text>
+    <rect x="92" y="637" width="167" height="24" rx="4" fill="#e2e8f0"/>
+    <text class="mono" x="175" y="654" text-anchor="middle">changed = false</text>
+
+    <text class="branch" x="872" y="665">是</text>
+    <path class="edge" d="M850 635V681"/>
+    <polygon class="card" points="850,681 1000,746 850,811 700,746" fill="#ffffff" stroke="#64748b"/>
+    <text class="node-title" x="850" y="740" text-anchor="middle">选择保留策略？</text>
+    <text class="mono" x="850" y="764" text-anchor="middle">retention</text>
+
+    <text class="branch" x="590" y="729" fill="#047857">PRESERVE</text>
+    <path class="edge-green" d="M700 746H540"/>
+    <rect class="card" x="64" y="692" width="476" height="174" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+    <text class="node-title" x="92" y="729">保留选择状态</text>
+    <text class="body-strong" x="92" y="759">provider 选择 + SPA 镜像继续存在</text>
+    <text class="body" x="92" y="786">离开 Anchor 时反馈隐藏，不代表数据清除</text>
+    <text class="body" x="92" y="813">返回 Anchor 且显示开关开启时反馈恢复</text>
+    <rect x="92" y="833" width="225" height="24" rx="4" fill="#d1fae5"/>
+    <text class="mono" x="204" y="850" text-anchor="middle">selection_cleared = false</text>
+
+    <text class="branch" x="1030" y="729" fill="#b91c1c">CLEAR</text>
+    <path class="edge-red" d="M1000 746H1160"/>
+    <rect class="card" x="1160" y="692" width="476" height="174" rx="6" fill="#fef2f2" stroke="#fca5a5"/>
+    <text class="node-title" x="1188" y="729">清除旧域选择</text>
+    <text class="body-strong" x="1188" y="759">清 SPA record、marker、label 和 provider</text>
+    <text class="body" x="1188" y="786">重置未消费的编辑器鼠标 release</text>
+    <text class="body" x="1188" y="813">返回 Anchor 后旧选择不会再次出现</text>
+    <rect x="1188" y="833" width="216" height="24" rx="4" fill="#fee2e2"/>
+    <text class="mono" x="1296" y="850" text-anchor="middle">selection_cleared = true</text>
+
+    <path class="edge-green" d="M302 866V910H570"/>
+    <path class="edge-red" d="M1398 866V910H1130"/>
+    <rect class="card" x="570" y="886" width="560" height="142" rx="6" fill="#ffffff" stroke="#60a5fa"/>
+    <text class="node-title" x="850" y="922" text-anchor="middle">统一收尾顺序</text>
+    <text class="mono" x="850" y="950" text-anchor="middle">apply visuals → notify HUD → emit transition</text>
+    <line class="divider" x1="602" y1="966" x2="1098" y2="966"/>
+    <text class="body" x="850" y="991" text-anchor="middle">只在模式实际变化时发出 selection_mode_transitioned</text>
+    <text class="body" x="850" y="1014" text-anchor="middle">结果包含 previous / mode / retention / reason / cleared</text>
+  </g>
+
+  <g aria-labelledby="result-heading">
+    <text id="result-heading" class="section" x="64" y="1082">3 · 显示和状态是两条独立规则</text>
+
+    <rect class="card" x="64" y="1100" width="760" height="128" rx="6" fill="#eff6ff" stroke="#93c5fd"/>
+    <text class="node-title" x="92" y="1135">实际显示条件</text>
+    <text class="mono" x="92" y="1165">effective_visible = manual_toggle &amp;&amp; mode_focuses(display_key)</text>
+    <text class="body" x="92" y="1194">Anchor 只有在 Mixed / Anchor 模式且 Anchor 开关开启时显示。</text>
+    <text class="body" x="92" y="1217">关闭显示只隐藏视觉反馈，不会清除已经选择的信息。</text>
+
+    <rect class="card" x="868" y="1100" width="768" height="128" rx="6" fill="#fff7ed" stroke="#fdba74"/>
+    <text class="node-title" x="896" y="1135">行为速查</text>
+    <text class="body-strong" x="896" y="1165">主动切模式：CLEAR　　场景恢复：PRESERVE</text>
+    <text class="body" x="896" y="1194">同模式重选：不清除、不发信号　　显示开关：只控制显示</text>
+    <text class="body" x="896" y="1217">清除后返回 Anchor：旧 marker / label / overlay 均不恢复</text>
+  </g>
+
+  <g aria-labelledby="conclusion-heading">
+    <text id="conclusion-heading" class="section" x="64" y="1270">4 · 当前结论</text>
+
+    <rect class="card" x="64" y="1288" width="1572" height="94" rx="6" fill="#ecfdf5" stroke="#6ee7b7"/>
+    <rect x="64" y="1288" width="7" height="94" rx="3" fill="#059669"/>
+    <line x1="574" y1="1305" x2="574" y2="1365" stroke="#a7f3d0" stroke-width="1.5"/>
+    <line x1="1085" y1="1305" x2="1085" y2="1365" stroke="#a7f3d0" stroke-width="1.5"/>
+
+    <text class="body-strong" x="92" y="1321">所有权</text>
+    <text class="body" x="92" y="1345">SPA 管模式、显示策略和反馈视觉；provider 管域数据，</text>
+    <text class="body" x="92" y="1367">Anchor 权威选择由 provider 持有，SPA 保存镜像。</text>
+
+    <text class="body-strong" x="602" y="1321">切换规范</text>
+    <text class="body" x="602" y="1345">只有 transition_selection_mode 修改模式；主动切换清除，</text>
+    <text class="body" x="602" y="1367">场景恢复保留，同模式重选保持幂等。</text>
+
+    <text class="body-strong" x="1113" y="1321">显示结论</text>
+    <text class="body" x="1113" y="1345">隐藏不等于清除；Anchor 显示由模式与手动开关共同决定，</text>
+    <text class="body" x="1113" y="1367">清除 provider 时同步刷新 SPA，旧反馈不会复现。</text>
+  </g>
+
+  <text class="subtitle" x="1636" y="1404" text-anchor="end">Source of truth: SPAEditorContract + SPASelectionHost</text>
+</svg>

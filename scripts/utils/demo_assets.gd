@@ -2,9 +2,6 @@
 class_name DemoAssets
 extends RefCounted
 
-const AutoObjectScript := preload("res://scripts/auto_object.gd")
-const SemanticProbeGeneratorScript := preload("res://scripts/semantic_probe_generator.gd")
-
 const GEO_PATHS := [
 	"res://geo/SM_TestLeaf_Test2.FBX",
 	"res://geo/cliff_01.FBX",
@@ -14,12 +11,6 @@ const GEO_PATHS := [
 const SUPPORTED_GEO_EXTENSIONS := ["fbx", "glb", "gltf", "obj", "dae", "blend", "mesh", "res", "tscn", "scn"]
 
 const ASSET_NAMES := ["Leaf", "Cliff01", "Cliff02"]
-
-const ASSET_COLORS := [
-	Color(0.35, 0.58, 0.24, 0.45),
-	Color(0.48, 0.42, 0.35, 0.75),
-	Color(0.52, 0.46, 0.38, 0.70),
-]
 
 const WIRE_COLORS := [
 	Color(0.2, 0.9, 0.3, 0.7),
@@ -32,121 +23,8 @@ static func count() -> int:
 	return GEO_PATHS.size()
 
 
-static func geo_paths() -> Array:
-	return GEO_PATHS.duplicate()
-
-
-static func supported_geo_extensions() -> Array:
-	return SUPPORTED_GEO_EXTENSIONS.duplicate()
-
-
 static func asset_names() -> Array:
 	return ASSET_NAMES.duplicate()
-
-
-static func asset_colors() -> Array:
-	return ASSET_COLORS.duplicate()
-
-
-static func wire_colors() -> Array:
-	return WIRE_COLORS.duplicate()
-
-
-static func geo_path(index: int, fallback: String = "") -> String:
-	if index >= 0 and index < GEO_PATHS.size():
-		return GEO_PATHS[index]
-	return fallback
-
-
-static func asset_name(index: int, fallback: String = "") -> String:
-	if index >= 0 and index < ASSET_NAMES.size():
-		return ASSET_NAMES[index]
-	if not fallback.is_empty():
-		return fallback
-	return "Asset%d" % index
-
-
-static func asset_color(index: int, fallback: Color = Color.WHITE) -> Color:
-	if index >= 0 and index < ASSET_COLORS.size():
-		return ASSET_COLORS[index]
-	return fallback
-
-
-static func wire_color(index: int, fallback: Color = Color.WHITE) -> Color:
-	if index >= 0 and index < WIRE_COLORS.size():
-		return WIRE_COLORS[index]
-	return fallback
-
-
-static func asset_entries() -> Array[Dictionary]:
-	var entries: Array[Dictionary] = []
-	for i in range(GEO_PATHS.size()):
-		entries.append({
-			"path": geo_path(i),
-			"name": asset_name(i),
-			"color": asset_color(i),
-			"wire_color": wire_color(i),
-		})
-	return entries
-
-
-static func make_sv_anchor_collection_assets() -> Array:
-	var rock := AutoObjectScript.new()
-	rock.name = "rock_small"
-	rock.set_semantic_probes([
-		SemanticProbeGeneratorScript.make_probe(
-			Vector3.ZERO, Color(0.5, 0.45, 0.4), 0.6, 0.0, 0.0, 0.8, "rock_small")
-	])
-
-	var bush := AutoObjectScript.new()
-	bush.name = "bush_medium"
-	bush.set_semantic_probes([
-		SemanticProbeGeneratorScript.make_probe(
-			Vector3.ZERO, Color(0.2, 0.6, 0.15), 0.3, 0.0, 0.4, 0.4, "bush_medium"),
-		SemanticProbeGeneratorScript.make_probe(
-			Vector3(0, 1, 0), Color(0.25, 0.7, 0.2), 0.2, 0.0, 0.2, 0.0, "bush_medium_top"),
-	])
-
-	var tree := AutoObjectScript.new()
-	tree.name = "tree_tall"
-	tree.set_semantic_probes([
-		SemanticProbeGeneratorScript.make_probe(
-			Vector3.ZERO, Color(0.35, 0.25, 0.15), 0.9, 0.0, 0.0, 1.0, "tree_trunk"),
-		SemanticProbeGeneratorScript.make_probe(
-			Vector3(0, 2, 0), Color(0.15, 0.5, 0.1), 0.4, 0.0, 0.3, 0.0, "tree_canopy"),
-	])
-
-	var grass := AutoObjectScript.new()
-	grass.name = "grass_patch"
-	grass.set_semantic_probes([
-		SemanticProbeGeneratorScript.make_probe(
-			Vector3.ZERO, Color(0.3, 0.7, 0.2), 0.1, 0.0, 0.1, 0.0, "grass")
-	])
-	return [rock, bush, tree, grass]
-
-
-static func load_mesh_entries(use_asset_names: bool = false) -> Array[Dictionary]:
-	var entries: Array[Dictionary] = []
-	for i in range(GEO_PATHS.size()):
-		var path := geo_path(i)
-		var mesh := load_mesh(path)
-		if mesh == null:
-			push_warning("[DemoAssets] Cannot load mesh: %s" % path)
-			continue
-		var aabb := mesh.get_aabb()
-		var volume := aabb.size.x * aabb.size.y * aabb.size.z
-		entries.append({
-			"asset_index": i,
-			"path": path,
-			"name": asset_name(i, path.get_file().get_basename()) if use_asset_names else path.get_file().get_basename(),
-			"asset_name": asset_name(i, path.get_file().get_basename()),
-			"mesh": mesh,
-			"aabb": aabb,
-			"volume": volume,
-			"color": asset_color(i),
-			"wire_color": wire_color(i),
-		})
-	return entries
 
 
 static func discover_geo_files(root_path: String, supported_extensions: Array = []) -> Array[String]:
@@ -291,18 +169,3 @@ static func bake_mesh_xform(source: Mesh, xform: Transform3D, bake_tangents: boo
 		result.add_surface_from_arrays(source.surface_get_primitive_type(surf_idx), arrays)
 		result.surface_set_material(surf_idx, source.surface_get_material(surf_idx))
 	return result
-
-
-# Returns the combined transform that: (1) applies mesh_transform, then (2)
-# shifts the result so the AABB bottom-center lands at the local origin.
-# Use as the xform argument to bake_mesh_xform.
-static func base_pivot_xform(mesh: Mesh, mesh_transform: Transform3D) -> Transform3D:
-	if mesh == null:
-		return mesh_transform
-	var bounds := VoxelGeneral.transformed_aabb(mesh.get_aabb(), mesh_transform)
-	var shift := Vector3(
-		-(bounds.position.x + bounds.size.x * 0.5),
-		-bounds.position.y,
-		-(bounds.position.z + bounds.size.z * 0.5)
-	)
-	return Transform3D(mesh_transform.basis, mesh_transform.origin + shift)

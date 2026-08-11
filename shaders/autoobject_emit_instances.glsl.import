@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://03jn4btj8l4j"
+path="res://.godot/imported/autoobject_emit_instances.glsl-f5abbd7eb78450f588d17e291c42b903.res"
+
+[deps]
+
+source_file="res://shaders/autoobject_emit_instances.glsl"
+dest_files=["res://.godot/imported/autoobject_emit_instances.glsl-f5abbd7eb78450f588d17e291c42b903.res"]
+
+[params]
+

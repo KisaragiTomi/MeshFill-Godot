@@ -1,53 +1,24 @@
 @tool
 extends EditorPlugin
 
-const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
-const MeshFillBrushScript := preload("res://addons/meshfill_editor/meshfill_brush.gd")
-const TargetSVLookup := preload("res://scripts/utils/target_sv_lookup.gd")
-const VolumeScoreProviderRegistry := preload("res://scripts/volume_score_provider_registry.gd")
+const AssetInfoInspector := preload("res://addons/meshfill_editor/asset_info_inspector.gd")
+const SPAInspector := preload("res://addons/meshfill_editor/spa_inspector.gd")
 
 var _last_viewport_camera: Camera3D
 
-# ---- MeshFillBrush plugin integration ----
-var _brush: MeshFillBrushScript = null
 var _brush_btn: Button
-# The brush toolbar button is only relevant for scenes that actually contain a
-# MeshFillBrush (e.g. terrain/SPA scenes). Scenes like asset-descriptor-demo have
-# no brush, so the button is hidden there. Recomputed on scene change.
-var _scene_has_brush := false
-var _selection_mode_option: OptionButton
-var _geo_scan_btn: Button
-var _geo_scan_status_label: Label
-var _asset_descriptor_debug_menu: MenuButton
-var _asset_descriptor_debug_status_label: Label
-var _asset_descriptor_debug_host_instance_id := 0
-var _asset_descriptor_debug_action_ids: Array[StringName] = []
+var _import_all_fbx_btn: Button
 var _bake_descriptor_btn: Button
-var _bake_descriptor_status_label: Label
-var _generate_anchor_btn: Button
-var _voxel_score_btn: Button
-var _anchor_score_status_label: Label
-var _voxel_visibility_panel: PanelContainer
-var _voxel_visibility_buttons: Dictionary = {}
-var _is_painting: bool = false
-var _brush_dirty: bool = false
-var _last_flush_msec: int = 0
-const BRUSH_FLUSH_INTERVAL_MS := 120
-const SPA_SELECTION_MODE_NAMES := SPAEditorContract.SELECTION_MODE_NAMES
-const VOXEL_VISIBILITY_PANEL_NAME := "MeshFillVoxelDisplayPanel"
-const VOXEL_DISPLAY_DEFINITIONS := SPAEditorContract.VOXEL_DISPLAY_DEFINITIONS
-const SPA_VOLUME_SCORE_ANCHOR_METHOD := SPAEditorContract.SPA_VOLUME_SCORE_ANCHOR_METHOD
-const SPA_VOLUME_SCORE_METHOD := SPAEditorContract.SPA_VOLUME_SCORE_METHOD
-const SPA_VOLUME_SCORE_PROVIDER_METHOD := SPAEditorContract.SPA_VOLUME_SCORE_PROVIDER_METHOD
-const VOLUME_SCORE_STATUS_METHODS := SPAEditorContract.VOLUME_SCORE_STATUS_METHODS
+var _import_fbx_btn: Button
+var _reimport_targetsv_btn: Button
+var _targetsv_import_dialog: EditorFileDialog
+var _asset_info_inspector: EditorInspectorPlugin
+var _spa_inspector: EditorInspectorPlugin
 const GEO_SCAN_METHOD := &"_scan_geo_assets"
-const GEO_SCAN_STATUS_METHOD := &"_update_geo_scan_status"
 const GEO_SCAN_FORMAT_METHOD := &"_format_geo_scan_result"
-const ASSET_DESCRIPTOR_ACTION_METHOD := &"asset_descriptor_editor_action"
-const ASSET_DESCRIPTOR_ACTIONS_METHOD := &"asset_descriptor_editor_actions"
-const ASSET_DESCRIPTOR_STATE_METHOD := &"get_asset_descriptor_debug_state"
 const ASSET_DESCRIPTOR_BAKE_METHOD := &"bake_scene_descriptors"
-const ASSET_DESCRIPTOR_BAKE_STATE_METHOD := &"get_asset_descriptor_bake_state"
+const IMPORT_FBX_METHOD := &"import_single_fbx"
+const TARGETSV_DIALOG_NAME := "MeshFillTargetSVImportDialog"
 
 # ---- MCP TCP Server ----
 var _tcp_server: TCPServer
@@ -67,9 +38,35 @@ var _duplicate_reason := ""
 var _heartbeat_timer: float = 0.0
 var _instance_token := ""
 var _project_key := ""
+var _score_benchmark_mode := false
+
+# ---- RDG self-test (opt-in, off by default) ----
+# 只有 `-e ... -- --rdg-selftest` 才跑；日常开编辑器一行都不跑、一个字都不打印。
+# 脚本用运行时 load() 取，不用 preload/class_name —— 后两者会让套件在每次编辑器启动时
+# 都被解析编译，而这里在意的正是默认启动路径的零成本。
+const RDG_SELFTEST_FLAG := "--rdg-selftest"
+const RDG_SELFTEST_SCRIPT := "res://scripts/checks/rdg_selftest.gd"
+
+# ---- GLSL 生成区块去同步守卫（opt-in，默认关）----
+# 只有 `-e ... -- --glsl-gen-check` 才跑。同样用运行时 load()，理由同上。
+# 本套件纯读文件、不碰 RenderingDevice，但仍只给 `-e` 入口：CLAUDE.md 禁止一切
+# runtime 启动，`-e` + 插件 flag 是本仓唯一合规的自检形式。
+const GLSL_GEN_CHECK_FLAG := "--glsl-gen-check"
+const GLSL_GEN_CHECK_SCRIPT := "res://scripts/checks/glsl_gen_block_checks.gd"
+
+# ---- Selection info viewport overlay ----
+# 编辑态下场景自己的 CanvasLayer HUD 不渲染进编辑器 3D 视口,故场景选中信息经本插件的
+# _forward_3d_draw_over_viewport 直接画在编辑器 3D 视口左上。文本每帧从 overlay host 轮询,
+# 变化时 update_overlays() 触发重绘(相机 orbit/pan 会自动触发重绘)。
+var _selection_overlay_text := ""
 
 
 func _enter_tree() -> void:
+	if OS.get_cmdline_user_args().has("--score-benchmark"):
+		_score_benchmark_mode = true
+		set_process(false)
+		print("[MeshFill Editor] Score benchmark mode — plugin services disabled")
+		return
 	_ensure_instance_identity()
 	if not _acquire_single_instance_lock():
 		_mark_duplicate_and_quit(_duplicate_reason)
@@ -81,28 +78,71 @@ func _enter_tree() -> void:
 		_mark_duplicate_and_quit("MCP TCP port %d is already in use." % MCP_PORT)
 		return
 	set_input_event_forwarding_always_enabled()
+	set_force_draw_over_forwarding_enabled()  # ensure _forward_3d_draw_over_viewport always fires (selection overlay)
 	set_process(true)
 	_cleanup_doc_import_files()
 	EditorInterface.get_resource_filesystem().filesystem_changed.connect(_cleanup_doc_import_files)
 	_connect_scene_signals()
 	_validate_current_scene.call_deferred()
 	_create_brush_toolbar_button()
-	_create_selection_mode_toolbar()
 	_create_geo_scan_toolbar()
-	_create_asset_descriptor_debug_toolbar()
 	_create_asset_descriptor_bake_toolbar()
-	_create_volume_score_toolbar()
-	_create_voxel_visibility_panel()
+	_create_targetsv_toolbar()
+	_asset_info_inspector = AssetInfoInspector.new()
+	add_inspector_plugin(_asset_info_inspector)
+	_spa_inspector = SPAInspector.new()
+	add_inspector_plugin(_spa_inspector)
 	print("[MeshFill Editor] Activated — MCP bridge on 127.0.0.1:%d" % MCP_PORT)
+	if OS.get_cmdline_user_args().has(RDG_SELFTEST_FLAG):
+		_run_rdg_selftest.call_deferred()
+	if OS.get_cmdline_user_args().has(GLSL_GEN_CHECK_FLAG):
+		_run_glsl_gen_check.call_deferred()
+
+
+## RDG 自检套件的唯一触发点（见 RDG_SELFTEST_FLAG）。延后一帧执行，让插件先完成挂载。
+func _run_rdg_selftest() -> void:
+	var script: GDScript = load(RDG_SELFTEST_SCRIPT)
+	if script == null:
+		printerr("[RDG selftest] 无法加载 %s" % RDG_SELFTEST_SCRIPT)
+		return
+	var result: Dictionary = script.new().run({"self_check": true})
+	for line in result.get("report", []):
+		print(line)
+	if bool(result.get("ok", false)):
+		print("[RDG selftest] PASS（%d 项断言）" % int(result.get("passed", 0)))
+	else:
+		printerr("[RDG selftest] FAIL（%d 通过 / %d 失败）" % [
+			int(result.get("passed", 0)), int(result.get("failed", 0))])
+
+
+## GLSL 生成区块守卫的唯一触发点（见 GLSL_GEN_CHECK_FLAG）。
+func _run_glsl_gen_check() -> void:
+	var script: GDScript = load(GLSL_GEN_CHECK_SCRIPT)
+	if script == null:
+		printerr("[glsl-gen] 无法加载 %s" % GLSL_GEN_CHECK_SCRIPT)
+		return
+	var result: Dictionary = script.new().run()
+	for line in result.get("report", []):
+		print(line)
+	if bool(result.get("ok", false)):
+		print("[glsl-gen] PASS（%d 个区块比对一致）" % int(result.get("passed", 0)))
+	else:
+		printerr("[glsl-gen] FAIL（%d 通过 / %d 失败）" % [
+			int(result.get("passed", 0)), int(result.get("failed", 0))])
 
 
 func _exit_tree() -> void:
-	_remove_voxel_visibility_panel()
-	_remove_volume_score_toolbar()
+	if _score_benchmark_mode:
+		return
+	if _asset_info_inspector != null:
+		remove_inspector_plugin(_asset_info_inspector)
+		_asset_info_inspector = null
+	if _spa_inspector != null:
+		remove_inspector_plugin(_spa_inspector)
+		_spa_inspector = null
+	_remove_targetsv_toolbar()
 	_remove_asset_descriptor_bake_toolbar()
-	_remove_asset_descriptor_debug_toolbar()
 	_remove_geo_scan_toolbar()
-	_remove_selection_mode_toolbar()
 	_remove_brush_toolbar_button()
 	_stop_tcp_server()
 	_stop_single_instance_port()
@@ -120,12 +160,10 @@ func _process(delta: float) -> void:
 	_poll_single_instance_port()
 	_poll_tcp()
 	_sync_brush_btn_visibility()
-	_sync_selection_mode_option_from_scene()
 	_sync_geo_scan_toolbar_from_scene()
-	_sync_asset_descriptor_debug_toolbar_from_scene()
 	_sync_asset_descriptor_bake_toolbar_from_scene()
-	_sync_volume_score_toolbar_from_scene()
-	_sync_voxel_visibility_panel_from_scene()
+	_sync_targetsv_toolbar_from_scene()
+	_sync_selection_overlay()
 	_heartbeat_timer += delta
 	if _heartbeat_timer >= HEARTBEAT_INTERVAL_SEC:
 		_heartbeat_timer = 0.0
@@ -135,95 +173,38 @@ func _process(delta: float) -> void:
 # ---- MeshFillBrush EditorPlugin integration --------------------------------
 
 func _handles(object: Object) -> bool:
-	return object is MeshFillBrushScript or object is Node3D
+	return object is Node3D
 
 
-func _edit(object: Object) -> void:
-	if object is MeshFillBrushScript:
-		_brush = object as MeshFillBrushScript
-		_sync_brush_btn(_brush.brush_visible)
-	else:
-		_brush = null
-		_is_painting = false
+func _edit(_object: Object) -> void:
+	pass
 
 
 func _forward_3d_gui_input(viewport_camera: Camera3D, event: InputEvent) -> int:
 	_last_viewport_camera = viewport_camera
-	_refresh_brush_from_selection()
-
-	if _brush and _brush.is_data_loaded():
-		if event is InputEventKey and event.pressed and not event.echo and event.shift_pressed:
-			var handled := _handle_brush_shortcut(event.keycode)
-			if handled:
-				return AFTER_GUI_INPUT_STOP
-
-	var result := _forward_to_scene_viewport_input(viewport_camera, event)
-	if result != AFTER_GUI_INPUT_PASS:
-		return result
-	if _handle_brush_input(viewport_camera, event):
-		return AFTER_GUI_INPUT_STOP
-
-	return AFTER_GUI_INPUT_PASS
-
-
-func _refresh_brush_from_selection() -> void:
-	var selected := get_editor_interface().get_selection().get_selected_nodes()
-	for node in selected:
-		if node is MeshFillBrushScript:
-			if _brush != node:
-				_brush = node as MeshFillBrushScript
-				_sync_brush_btn(_brush.brush_visible)
-			return
-	if _brush != null:
-		_brush = null
-		_is_painting = false
-
-
-func _handle_brush_input(viewport_camera: Camera3D, event: InputEvent) -> bool:
-	if not _is_brush_painting_active():
-		return false
-	if event is InputEventMouseButton:
-		var mb := event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_LEFT:
-			if mb.pressed:
-				_is_painting = true
-				_brush_dirty = false
-				var voxel := _brush.screen_to_voxel_xz(viewport_camera, mb.position)
-				if voxel.x >= 0:
-					_brush.paint_at_voxel(voxel)
-					_brush_dirty = true
-					_throttled_flush()
-			else:
-				_is_painting = false
-				_flush_brush()
-			return true
-	if event is InputEventMouseMotion and _is_painting:
-		var voxel := _brush.screen_to_voxel_xz(viewport_camera, (event as InputEventMouseMotion).position)
-		if voxel.x >= 0:
-			_brush.paint_at_voxel(voxel)
-			_brush_dirty = true
-			_throttled_flush()
-		return true
-	return false
+	return _forward_to_scene_viewport_input(viewport_camera, event)
 
 
 func _forward_to_scene_viewport_input(viewport_camera: Camera3D, event: InputEvent) -> int:
 	var host := _scene_viewport_input_host()
 	if host == null:
 		return AFTER_GUI_INPUT_PASS
-	if host._editor_viewport_input(viewport_camera, event):
+	var consumed: bool = host.handle_editor_input(viewport_camera, event) \
+		if host is ScenePlacementActor \
+		else bool(host.call(&"_editor_viewport_input", viewport_camera, event))
+	if consumed:
 		return AFTER_GUI_INPUT_STOP
 	return AFTER_GUI_INPUT_PASS
 
 
 # Any edited scene implementing the editor viewport input contract receives
 # forwarded 3D viewport events. The SPA host takes priority (it owns selection
-# mode), otherwise the edited scene root (e.g. AssetDescriptorDemo) is used so
+# mode), otherwise the edited scene root (e.g. AssetOverview) is used so
 # its debug shortcuts cover the editor viewport instead of relying on runtime
 # _unhandled_input.
 func _scene_viewport_input_host() -> Node:
 	var spa := _scene_spa_host()
-	if spa != null and spa.has_method(&"_editor_viewport_input"):
+	if spa != null and spa.has_method(&"handle_editor_input"):
 		return spa
 	var root := get_editor_interface().get_edited_scene_root()
 	if root != null and root.has_method(&"_editor_viewport_input"):
@@ -231,78 +212,78 @@ func _scene_viewport_input_host() -> Node:
 	return null
 
 
-func _handle_brush_shortcut(keycode: int) -> bool:
-	match keycode:
-		KEY_B:
-			_brush.brush_visible = not _brush.brush_visible
-			_brush.set_brush_visible(_brush.brush_visible)
-			_sync_brush_btn(_brush.brush_visible)
-			return true
-		KEY_G:
-			var targetsv := _find_targetsv_setup()
-			if targetsv != null and targetsv.has_method("set_display_visible"):
-				var visible := true
-				if targetsv.has_method("is_display_visible"):
-					visible = not bool(targetsv.is_display_visible())
-				targetsv.set_display_visible(visible)
-			else:
-				_brush.guidance_visible = not _brush.guidance_visible
-				_brush.set_guidance_visible(_brush.guidance_visible)
-			return true
-		KEY_R:
-			_set_targetsv_channel(MeshFillBrushScript.DisplayChannel.COLOR)
-			_brush.switch_channel(MeshFillBrushScript.DisplayChannel.COLOR)
-			return true
-		KEY_T:
-			_set_targetsv_channel(MeshFillBrushScript.DisplayChannel.COMPLEXITY)
-			_brush.switch_channel(MeshFillBrushScript.DisplayChannel.COMPLEXITY)
-			return true
-		KEY_Y:
-			_set_targetsv_channel(MeshFillBrushScript.DisplayChannel.COLLISION)
-			_brush.switch_channel(MeshFillBrushScript.DisplayChannel.COLLISION)
-			return true
-		KEY_C:
-			_brush.clear_brush()
-			return true
-		KEY_EQUAL, KEY_KP_ADD:
-			_brush.brush_width = clampi(_brush.brush_width + 2, 1, 128)
-			_brush.brush_length = clampi(_brush.brush_length + 2, 1, 128)
-			return true
-		KEY_MINUS, KEY_KP_SUBTRACT:
-			_brush.brush_width = clampi(_brush.brush_width - 2, 1, 128)
-			_brush.brush_length = clampi(_brush.brush_length - 2, 1, 128)
-			return true
-	return false
+# ---- Selection info viewport overlay --------------------------------------
+# Edit-time CanvasLayer HUDs don't composite into the 3D editor viewport, so scene
+# selection info is drawn straight onto the viewport here instead. Text is polled from
+# the active overlay host each frame; a change triggers update_overlays() (camera moves
+# already trigger a viewport redraw on their own).
+
+# ⚠ 编辑器软重载后的成员修复，别当成冗余判空删掉。EditorPlugin 是全项目最容易吃到软重载
+# 的脚本：改动 addons/ 下任何脚本都会让它就地重载。事实依据（gdscript.cpp
+# GDScriptInstance::reload_members）：软重载只把**重载前已存在**的成员按名字搬进新槽位；
+# 本次重载**新增**的成员槽是默认构造的 Variant = nil，声明里的初始化器不会重跑，静态类型
+# 也拦不住（实例槽本身是 Variant）。_selection_overlay_text 是本轮新增的，重载后
+# _forward_3d_draw_over_viewport() 每帧都会调 `nil.is_empty()`，而 `text != nil` 这一句
+# 会走 String≠String 的验证求值器、把 nil 的内存当 String 读。
+# ⚠ 必须用 `is` 而不是 `== null`：Variant 给 (STRING, NIL) 注册的是
+# OperatorEvaluatorAlwaysFalse（variant_op.cpp），静态类型已知时 `== null` 恒 false。
+# 语义：回到空串 = "当前没有覆盖层文本"，下一次 _sync_selection_overlay 立刻重新填。
+func _repair_soft_reloaded_members() -> void:
+	if not (_selection_overlay_text is String): _selection_overlay_text = ""
+	if not (_score_benchmark_mode is bool): _score_benchmark_mode = false
+	# 语义：回到 null = "本插件不再持有那个按钮"。控件本身还挂在工具栏容器里（重载不动
+	# 场景树），只是引用丢了；下次 _exit_tree 收不走它，与另外几个按钮成员同样的既有行为。
+	if not (_reimport_targetsv_btn is Button): _reimport_targetsv_btn = null
+	# 同上；置空后 _ensure_targetsv_import_dialog() 会按结点名把既有对话框认领回来。
+	if not (_targetsv_import_dialog is EditorFileDialog): _targetsv_import_dialog = null
 
 
-func _find_targetsv_setup() -> Node:
-	if _brush == null:
-		return null
-	var root := get_editor_interface().get_edited_scene_root()
-	return TargetSVLookup.find_setup(_brush, root, false, true, false)
+func _sync_selection_overlay() -> void:
+	_repair_soft_reloaded_members()
+	var text := ""
+	var host := _scene_selection_overlay_host()
+	if host != null and host.has_method(&"get_selection_overlay_text"):
+		text = str(host.call(&"get_selection_overlay_text"))
+	if text != _selection_overlay_text:
+		_selection_overlay_text = text
+		update_overlays()
 
 
-func _set_targetsv_channel(channel: int) -> void:
-	var targetsv := _find_targetsv_setup()
-	if targetsv != null and targetsv.has_method("switch_display_channel"):
-		targetsv.switch_display_channel(channel)
+func _scene_selection_overlay_host() -> Node:
+	var spa := _scene_spa_host()
+	if spa != null and spa.has_method(&"get_selection_overlay_text"):
+		return spa
+	return _scene_root_host(&"get_selection_overlay_text")
 
 
-func _is_brush_painting_active() -> bool:
-	return _brush != null and _brush.is_data_loaded() and _brush.brush_visible
+## Godot calls this to let the plugin paint 2D over the 3D editor viewport.
+func _forward_3d_draw_over_viewport(overlay: Control) -> void:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if overlay == null or _selection_overlay_text.is_empty():
+		return
+	_draw_selection_overlay(overlay, _selection_overlay_text)
 
 
-func _flush_brush() -> void:
-	if _brush_dirty and _brush:
-		_brush.flush_brush()
-		_brush_dirty = false
-		_last_flush_msec = Time.get_ticks_msec()
-
-
-func _throttled_flush() -> void:
-	var now := Time.get_ticks_msec()
-	if now - _last_flush_msec >= BRUSH_FLUSH_INTERVAL_MS:
-		_flush_brush()
+func _draw_selection_overlay(overlay: Control, text: String) -> void:
+	var font := overlay.get_theme_default_font()
+	if font == null:
+		return
+	var font_size := 15
+	var lines := text.split("\n")
+	var pad := 8.0
+	var line_h := font.get_height(font_size) + 2.0
+	var max_w := 0.0
+	for line in lines:
+		max_w = maxf(max_w, font.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x)
+	# 下移让开视口左上角编辑器自带的 "[Perspective]" 视图菜单/信息角标,留出间隔。
+	var origin := Vector2(14.0, 48.0)
+	var box := Rect2(origin, Vector2(max_w + pad * 2.0, line_h * float(lines.size()) + pad * 2.0))
+	overlay.draw_rect(box, Color(0.06, 0.07, 0.09, 0.82))
+	overlay.draw_rect(box, Color(1.0, 1.0, 1.0, 0.12), false, 1.0)
+	var y := origin.y + pad + font.get_ascent(font_size)
+	for line in lines:
+		overlay.draw_string(font, Vector2(origin.x + pad, y), line, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.93, 0.95, 0.99))
+		y += line_h
 
 
 # ---- Brush toolbar button --------------------------------------------------
@@ -318,7 +299,6 @@ func _create_brush_toolbar_button() -> void:
 	_brush_btn.toggled.connect(_on_brush_btn_toggled)
 	_sync_brush_btn(true)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _brush_btn)
-	_scene_has_brush = _detect_scene_brush(get_editor_interface().get_edited_scene_root())
 	_sync_brush_btn_visibility()
 
 
@@ -331,8 +311,9 @@ func _remove_brush_toolbar_button() -> void:
 
 func _on_brush_btn_toggled(pressed: bool) -> void:
 	_sync_brush_btn(pressed)
-	if _brush:
-		_brush.set_brush_visible(pressed)
+	var spa := _scene_spa_host()
+	if spa != null:
+		spa.set_volume_display(&"BrushSV", pressed)
 
 
 func _sync_brush_btn(active: bool) -> void:
@@ -352,128 +333,59 @@ func _sync_brush_btn(active: bool) -> void:
 	_brush_btn.add_theme_stylebox_override("pressed", pressed_style)
 
 
-func _detect_scene_brush(root: Node) -> bool:
-	if root == null:
-		return false
-	if root is MeshFillBrushScript:
-		return true
-	for child in root.get_children():
-		if _detect_scene_brush(child):
-			return true
-	return false
-
-
 func _sync_brush_btn_visibility() -> void:
 	if _brush_btn == null:
 		return
-	var root := get_editor_interface().get_edited_scene_root()
-	var show_btn := _brush != null or (root != null and _scene_has_brush)
+	var show_btn := _scene_spa_host() != null
 	if _brush_btn.visible != show_btn:
 		_brush_btn.visible = show_btn
 
 
-# ---- SPA selection mode toolbar -------------------------------------------
-
-func _create_selection_mode_toolbar() -> void:
-	_selection_mode_option = OptionButton.new()
-	_selection_mode_option.tooltip_text = "SPA selection mode (Shift+0..5)"
-	_selection_mode_option.custom_minimum_size = Vector2(128, 0)
-	_selection_mode_option.add_theme_font_size_override("font_size", 13)
-	for i in range(SPA_SELECTION_MODE_NAMES.size()):
-		_selection_mode_option.add_item(SPAEditorContract.selection_mode_name(i), i)
-		_selection_mode_option.set_item_tooltip(i, _selection_mode_tooltip(i))
-	_selection_mode_option.item_selected.connect(_on_selection_mode_selected)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _selection_mode_option)
-	_sync_selection_mode_option_from_scene()
-
-
-func _remove_selection_mode_toolbar() -> void:
-	if _selection_mode_option != null:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _selection_mode_option)
-		_selection_mode_option.queue_free()
-		_selection_mode_option = null
-
-
-func _on_selection_mode_selected(index: int) -> void:
-	var host := _scene_selection_mode_host()
-	if host != null and host.has_method("set_spa_selection_mode"):
-		# UI -> SPA: the OptionButton index is the SelectionMode enum value.
-		host.set_spa_selection_mode(index)
-
-
-func _sync_selection_mode_option_from_scene() -> void:
-	if _selection_mode_option == null:
-		return
-	var host := _scene_selection_mode_host()
-	_selection_mode_option.visible = host != null
-	if host == null or not host.has_method("get_spa_selection_mode"):
-		_selection_mode_option.disabled = true
-		return
-	_selection_mode_option.disabled = false
-	var mode := clampi(int(host.get_spa_selection_mode()), 0, SPA_SELECTION_MODE_NAMES.size() - 1)
-	if _selection_mode_option.selected != mode:
-		_selection_mode_option.select(mode)
-
-
-func _selection_mode_tooltip(mode: int) -> String:
-	if mode == SPAEditorContract.MODE_MIXED:
-		return "Mixed: GPU AutoObject, volume-score anchors, then bound data voxel domains"
-	var binding := SPAEditorContract.binding_for_mode(mode)
-	var label := str(binding.get("mode_label", SPAEditorContract.selection_mode_name(mode)))
-	var display_key := str(binding.get("display_key", binding.get("key", "")))
-	var domain := str(binding.get("domain", ""))
-	var tooltip := str(binding.get("tooltip", ""))
-	if tooltip.is_empty():
-		return label
-	return "%s (%s / %s): %s" % [label, domain, display_key, tooltip]
-
-
-func _scene_selection_mode_host() -> Node:
-	return _scene_spa_host()
-
-
-func _scene_spa_host() -> Node:
+func _scene_spa_host() -> ScenePlacementActor:
 	var root := get_editor_interface().get_edited_scene_root()
 	if root == null:
 		return null
-	if root.name == "CoreSPADemo" and root.has_method("set_spa_selection_mode"):
-		return root
-	var core := root.find_child("CoreSPADemo", true, false)
-	if core != null and core.has_method("set_spa_selection_mode"):
-		return core
+	var matches: Array[ScenePlacementActor] = []
+	_collect_scene_placement_actors(root, matches)
+	if matches.size() == 1:
+		return matches[0]
+	if matches.size() > 1:
+		push_error("[MeshFill Plugin] placement scene must contain exactly one ScenePlacementActor")
 	return null
+
+
+func _collect_scene_placement_actors(node: Node, result: Array[ScenePlacementActor]) -> void:
+	if node is ScenePlacementActor:
+		result.append(node as ScenePlacementActor)
+	for child in node.get_children():
+		_collect_scene_placement_actors(child, result)
 
 
 # ---- Asset descriptor geo scan toolbar ------------------------------------
 
 func _create_geo_scan_toolbar() -> void:
-	_geo_scan_btn = _make_toolbar_action_button(
-		" Geo FBX ",
-		"Full rescan res://geo FBX files and arrange AssetDescriptorDemo geo assets by bounds"
+	_import_all_fbx_btn = _make_toolbar_action_button(
+		" Import All ",
+		"Full rescan res://geo FBX files into the AssetOverview processing workbench"
 	)
-	_geo_scan_btn.name = "MeshFillGeoFbxScanButton"
-	_geo_scan_btn.pressed.connect(_on_geo_scan_pressed)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _geo_scan_btn)
-
-	_geo_scan_status_label = _make_toolbar_status_label("MeshFillGeoFbxScanStatus", "", 190, 13)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _geo_scan_status_label)
+	_import_all_fbx_btn.name = "MeshFillImportAllFbxButton"
+	_import_all_fbx_btn.custom_minimum_size = Vector2(96, 0)
+	_import_all_fbx_btn.pressed.connect(_on_import_all_fbx_pressed)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _import_all_fbx_btn)
 
 	_sync_geo_scan_toolbar_from_scene()
 
 
 func _remove_geo_scan_toolbar() -> void:
-	if _geo_scan_btn != null:
-		_free_toolbar_control(_geo_scan_btn)
-		_geo_scan_btn = null
-	if _geo_scan_status_label != null:
-		_free_toolbar_control(_geo_scan_status_label)
-		_geo_scan_status_label = null
+	if _import_all_fbx_btn != null:
+		_free_toolbar_control(_import_all_fbx_btn)
+		_import_all_fbx_btn = null
 
 
-func _on_geo_scan_pressed() -> void:
+func _on_import_all_fbx_pressed() -> void:
 	var host := _scene_geo_scan_host()
 	if host == null:
-		push_warning("[MeshFill Editor] Current scene has no AssetDescriptorDemo geo scan entry.")
+		push_warning("[MeshFill Editor] Current scene has no AssetOverview geo scan entry.")
 		_sync_geo_scan_toolbar_from_scene()
 		return
 	var result = host.call(GEO_SCAN_METHOD, true)
@@ -481,35 +393,15 @@ func _on_geo_scan_pressed() -> void:
 		var scene_summary := _format_geo_scan_toolbar_result(result)
 		if host.has_method(GEO_SCAN_FORMAT_METHOD):
 			scene_summary = str(host.call(GEO_SCAN_FORMAT_METHOD, result))
-		if host.has_method(GEO_SCAN_STATUS_METHOD):
-			host.call(GEO_SCAN_STATUS_METHOD, scene_summary)
-		_set_geo_scan_status(_format_geo_scan_toolbar_result(result))
-		print("[MeshFill Editor] Geo FBX scan -> %s" % scene_summary)
-	else:
-		_set_geo_scan_status("Geo: scan done")
+		print("[MeshFill Editor] Import All -> %s" % scene_summary)
 
 
 func _sync_geo_scan_toolbar_from_scene() -> void:
 	var host := _scene_geo_scan_host()
 	var has_geo_scan := host != null
-	if _geo_scan_btn != null:
-		_geo_scan_btn.visible = has_geo_scan
-		_geo_scan_btn.disabled = not has_geo_scan
-	if _geo_scan_status_label == null:
-		return
-	_geo_scan_status_label.visible = has_geo_scan
-	if not has_geo_scan:
-		_set_geo_scan_status("")
-		return
-	var scene_status := host.get_node_or_null("GeoTools/Panel/VBox/GeoScanStatus") as Label
-	if scene_status != null:
-		_set_geo_scan_status(str(scene_status.text))
-	elif _geo_scan_status_label.text.strip_edges().is_empty():
-		_set_geo_scan_status("Geo: ready")
-
-
-func _set_geo_scan_status(text: String) -> void:
-	_set_status_label(_geo_scan_status_label, text, text)
+	if _import_all_fbx_btn != null:
+		_import_all_fbx_btn.visible = has_geo_scan
+		_import_all_fbx_btn.disabled = not has_geo_scan
 
 
 func _format_geo_scan_toolbar_result(result: Dictionary) -> String:
@@ -527,135 +419,10 @@ func _scene_geo_scan_host() -> Node:
 
 # ---- Asset descriptor debug toolbar ---------------------------------------
 
-func _create_asset_descriptor_debug_toolbar() -> void:
-	_asset_descriptor_debug_menu = MenuButton.new()
-	_asset_descriptor_debug_menu.name = "MeshFillAssetDescriptorDebugMenu"
-	_asset_descriptor_debug_menu.flat = true
-	_asset_descriptor_debug_menu.text = " AD Debug "
-	_asset_descriptor_debug_menu.tooltip_text = "AssetDescriptorDemo debug overlays"
-	_asset_descriptor_debug_menu.custom_minimum_size = Vector2(96, 0)
-	_asset_descriptor_debug_menu.add_theme_font_size_override("font_size", 13)
-	_asset_descriptor_debug_menu.get_popup().id_pressed.connect(_on_asset_descriptor_debug_action_pressed)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _asset_descriptor_debug_menu)
-
-	_asset_descriptor_debug_status_label = _make_toolbar_status_label("MeshFillAssetDescriptorDebugStatus", "", 260, 13)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _asset_descriptor_debug_status_label)
-
-	_sync_asset_descriptor_debug_toolbar_from_scene()
-
-
-func _remove_asset_descriptor_debug_toolbar() -> void:
-	if _asset_descriptor_debug_menu != null:
-		_free_toolbar_control(_asset_descriptor_debug_menu)
-		_asset_descriptor_debug_menu = null
-	if _asset_descriptor_debug_status_label != null:
-		_free_toolbar_control(_asset_descriptor_debug_status_label)
-		_asset_descriptor_debug_status_label = null
-	_asset_descriptor_debug_action_ids.clear()
-	_asset_descriptor_debug_host_instance_id = 0
-
-
-func _on_asset_descriptor_debug_action_pressed(id: int) -> void:
-	if id < 0 or id >= _asset_descriptor_debug_action_ids.size():
-		return
-	var host := _scene_asset_descriptor_debug_host()
-	if host == null:
-		push_warning("[MeshFill Editor] Current scene has no AssetDescriptor debug entry.")
-		_sync_asset_descriptor_debug_toolbar_from_scene()
-		return
-	var action := _asset_descriptor_debug_action_ids[id]
-	var result = host.call(ASSET_DESCRIPTOR_ACTION_METHOD, action)
-	if result is Dictionary:
-		if not bool(result.get("ok", false)):
-			push_warning("[MeshFill Editor] AssetDescriptor debug action failed: %s" % str(result.get("reason", "unknown")))
-		_set_asset_descriptor_debug_status(_format_asset_descriptor_debug_state(result))
-	print("[MeshFill Editor] AssetDescriptor debug -> %s" % str(action))
-	_sync_asset_descriptor_debug_toolbar_from_scene()
-
-
-func _sync_asset_descriptor_debug_toolbar_from_scene() -> void:
-	var host := _scene_asset_descriptor_debug_host()
-	var has_host := host != null
-	if _asset_descriptor_debug_menu != null:
-		_asset_descriptor_debug_menu.visible = has_host
-		_asset_descriptor_debug_menu.disabled = not has_host
-	if _asset_descriptor_debug_status_label != null:
-		_asset_descriptor_debug_status_label.visible = has_host
-	if not has_host:
-		_asset_descriptor_debug_host_instance_id = 0
-		_asset_descriptor_debug_action_ids.clear()
-		_set_asset_descriptor_debug_status("")
-		return
-	_ensure_asset_descriptor_debug_menu_items(host)
-	if host.has_method(ASSET_DESCRIPTOR_STATE_METHOD):
-		var state = host.call(ASSET_DESCRIPTOR_STATE_METHOD)
-		if state is Dictionary:
-			_set_asset_descriptor_debug_status(_format_asset_descriptor_debug_state(state))
-
-
-func _ensure_asset_descriptor_debug_menu_items(host: Node) -> void:
-	if _asset_descriptor_debug_menu == null:
-		return
-	var host_id := host.get_instance_id()
-	if _asset_descriptor_debug_host_instance_id == host_id and not _asset_descriptor_debug_action_ids.is_empty():
-		return
-	_asset_descriptor_debug_host_instance_id = host_id
-	_asset_descriptor_debug_action_ids.clear()
-	var popup := _asset_descriptor_debug_menu.get_popup()
-	popup.clear()
-	var actions: Array = []
-	if host.has_method(ASSET_DESCRIPTOR_ACTIONS_METHOD):
-		actions = host.call(ASSET_DESCRIPTOR_ACTIONS_METHOD)
-	if actions.is_empty():
-		actions = _default_asset_descriptor_debug_actions()
-	for action_info in actions:
-		if not action_info is Dictionary:
-			continue
-		var action_id := StringName(str(action_info.get("id", "")))
-		if String(action_id).is_empty():
-			continue
-		var label := str(action_info.get("label", action_id))
-		var shortcut := str(action_info.get("shortcut", ""))
-		if not shortcut.is_empty():
-			label = "%s (%s)" % [label, shortcut]
-		var item_id := _asset_descriptor_debug_action_ids.size()
-		popup.add_item(label, item_id)
-		_asset_descriptor_debug_action_ids.append(action_id)
-
-
-func _default_asset_descriptor_debug_actions() -> Array[Dictionary]:
-	return [
-		{"id": &"probes", "label": "Probes (selected)", "shortcut": "Ctrl+Alt+Shift+1"},
-		{"id": &"voxel_color", "label": "Voxel color (selected)", "shortcut": "Ctrl+Alt+Shift+2"},
-		{"id": &"voxel_complexity", "label": "Voxel complexity (selected)", "shortcut": "Ctrl+Alt+Shift+3"},
-		{"id": &"voxel_collision", "label": "Voxel collision (selected)", "shortcut": "Ctrl+Alt+Shift+4"},
-		{"id": &"clear_debug", "label": "Clear debug", "shortcut": "Ctrl+Alt+Shift+C"},
-	]
-
-
-func _scene_asset_descriptor_debug_host() -> Node:
-	return _scene_root_host(ASSET_DESCRIPTOR_ACTION_METHOD)
-
-
-func _set_asset_descriptor_debug_status(text: String) -> void:
-	_set_status_label(_asset_descriptor_debug_status_label, text, text)
-
-
-func _format_asset_descriptor_debug_state(state: Dictionary) -> String:
-	var probes := "on" if bool(state.get("probes_visible", false)) else "off"
-	var voxel := str(state.get("voxel_channel", ""))
-	if voxel.is_empty():
-		voxel = "none"
-	var sel := str(state.get("selected", ""))
-	if sel.is_empty():
-		sel = "none"
-	return "AD: selected=%s  probes=%s  voxel=%s" % [sel, probes, voxel]
-
-
 # ---- Asset descriptor bake toolbar ----------------------------------------
 #
 # One-click bake of the AssetDescriptor data for every mesh shown in the
-# AssetDescriptorDemo scene. Only visible when the edited scene exposes the
+# AssetOverview scene. Only visible when the edited scene exposes the
 # bake entry (bake_scene_descriptors).
 
 func _create_asset_descriptor_bake_toolbar() -> void:
@@ -668,8 +435,15 @@ func _create_asset_descriptor_bake_toolbar() -> void:
 	_bake_descriptor_btn.pressed.connect(_on_bake_descriptor_pressed)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _bake_descriptor_btn)
 
-	_bake_descriptor_status_label = _make_toolbar_status_label("MeshFillAssetDescriptorBakeStatus", "", 220, 13)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _bake_descriptor_status_label)
+	# Single-file FBX import uses the same Asset Overview service path as Import All.
+	_import_fbx_btn = _make_toolbar_action_button(
+		" Import FBX ",
+		"Import one project FBX into the AssetOverview processing workbench"
+	)
+	_import_fbx_btn.name = "MeshFillImportFbxButton"
+	_import_fbx_btn.custom_minimum_size = Vector2(96, 0)
+	_import_fbx_btn.pressed.connect(_on_import_fbx_pressed)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _import_fbx_btn)
 
 	_sync_asset_descriptor_bake_toolbar_from_scene()
 
@@ -678,9 +452,9 @@ func _remove_asset_descriptor_bake_toolbar() -> void:
 	if _bake_descriptor_btn != null:
 		_free_toolbar_control(_bake_descriptor_btn)
 		_bake_descriptor_btn = null
-	if _bake_descriptor_status_label != null:
-		_free_toolbar_control(_bake_descriptor_status_label)
-		_bake_descriptor_status_label = null
+	if _import_fbx_btn != null:
+		_free_toolbar_control(_import_fbx_btn)
+		_import_fbx_btn = null
 
 
 func _on_bake_descriptor_pressed() -> void:
@@ -689,27 +463,25 @@ func _on_bake_descriptor_pressed() -> void:
 		push_warning("[MeshFill Editor] Current scene has no AssetDescriptor bake entry.")
 		_sync_asset_descriptor_bake_toolbar_from_scene()
 		return
-	_set_bake_descriptor_status("Baking…")
 	var result = host.call(ASSET_DESCRIPTOR_BAKE_METHOD)
 	if result is Dictionary:
 		if not bool(result.get("ok", false)):
 			push_warning("[MeshFill Editor] Bake AD: %s" % str(result.get("reason", "no descriptors baked")))
-		_set_bake_descriptor_status(_format_asset_descriptor_bake_result(result))
 		print("[MeshFill Editor] Bake AD -> %s" % _format_asset_descriptor_bake_result(result))
-	else:
-		_set_bake_descriptor_status("Bake done")
 	_refresh_volume_score_after_bake(result)
 
 
-## After an AssetDescriptor bake, refresh any live placement-score VolumeScore provider so its
-## anchor candidates reflect the freshly-baked descriptors. The provider may live in a background
-## scene tab, so we reach it through its static registry rather than the edited scene root.
+## After a descriptor bake, ask the edited scene's SPA to refresh its owned provider.
+## Background scenes are intentionally not reached through a global registry.
 func _refresh_volume_score_after_bake(result) -> void:
 	if result is Dictionary and not bool(result.get("ok", false)):
 		return
-	var refreshed := VolumeScoreProviderRegistry.refresh_all_after_descriptor_bake()
-	if refreshed > 0:
-		print("[MeshFill Editor] Bake AD -> refreshed %d volume-score provider(s)" % refreshed)
+	var spa := _scene_spa_host()
+	if spa == null:
+		return
+	var refresh_result := spa.refresh_volume_provider(&"VolumeScore")
+	if bool(refresh_result.get("ok", false)):
+		print("[MeshFill Editor] Bake AD -> refreshed SPA-owned volume-score provider")
 
 
 func _sync_asset_descriptor_bake_toolbar_from_scene() -> void:
@@ -718,27 +490,32 @@ func _sync_asset_descriptor_bake_toolbar_from_scene() -> void:
 	if _bake_descriptor_btn != null:
 		_bake_descriptor_btn.visible = has_host
 		_bake_descriptor_btn.disabled = not has_host
-	if _bake_descriptor_status_label == null:
-		return
-	_bake_descriptor_status_label.visible = has_host
-	if not has_host:
-		_set_bake_descriptor_status("")
-		return
-	if _bake_descriptor_status_label.text.strip_edges().is_empty():
-		var count := 0
-		if host.has_method(ASSET_DESCRIPTOR_BAKE_STATE_METHOD):
-			var state = host.call(ASSET_DESCRIPTOR_BAKE_STATE_METHOD)
-			if state is Dictionary:
-				count = int(state.get("asset_count", 0))
-		_set_bake_descriptor_status("Bake AD: %d asset(s)" % count)
+	if _import_fbx_btn != null:
+		var fbx_host := _scene_import_fbx_host()
+		_import_fbx_btn.visible = fbx_host != null
+		_import_fbx_btn.disabled = fbx_host == null
 
 
 func _scene_asset_descriptor_bake_host() -> Node:
 	return _scene_root_host(ASSET_DESCRIPTOR_BAKE_METHOD)
 
 
-func _set_bake_descriptor_status(text: String) -> void:
-	_set_status_label(_bake_descriptor_status_label, text, text)
+func _scene_import_fbx_host() -> Node:
+	return _scene_root_host(IMPORT_FBX_METHOD)
+
+
+# Import FBX asks Asset Overview to open its project-resource file dialog. The
+# selected file is processed by the same GeoAssetScanService path as Import All.
+func _on_import_fbx_pressed() -> void:
+	var host := _scene_import_fbx_host()
+	if host == null:
+		push_warning("[MeshFill Editor] Current scene has no single FBX import entry.")
+		_sync_asset_descriptor_bake_toolbar_from_scene()
+		return
+	var result = host.call(IMPORT_FBX_METHOD)
+	if result is Dictionary and not bool(result.get("ok", false)):
+		push_warning("[MeshFill Editor] Import FBX: %s" % str(result.get("reason", "unavailable")))
+	print("[MeshFill Editor] Import FBX -> %s" % host.name)
 
 
 func _format_asset_descriptor_bake_result(result: Dictionary) -> String:
@@ -749,39 +526,185 @@ func _format_asset_descriptor_bake_result(result: Dictionary) -> String:
 	]
 
 
-# ---- Volume score toolbar --------------------------------------------------
+# ---- TargetSV reimport toolbar --------------------------------------------
+#
+# 外部烘焙器（Houdini）重新导出 res://assets/target_sv/ 之后，让当前场景的 SPA 把
+# TargetSV 整块重读。按钮而不是 Inspector 项，是因为 Volumes/TargetSV 是 SPA 在
+# _ensure_owned_tree() 里 add_child 出来的、没设 owner——场景面板里选不中它。
+# 可见性因此跟 Brush 按钮一样挂在 _scene_spa_host() 上，而不是 _scene_root_host()。
 
-func _create_volume_score_toolbar() -> void:
-	_generate_anchor_btn = _make_toolbar_action_button(
-		" Anchors ",
-		"Generate volume-score anchors for the current scene"
+func _create_targetsv_toolbar() -> void:
+	_reimport_targetsv_btn = _make_toolbar_action_button(
+		" Reimport TargetSV ",
+		"Reload TargetSV from res://assets/target_sv/ (after an external re-export).\nRebuilds the brush and clears BrushSV."
 	)
-	_generate_anchor_btn.pressed.connect(_on_generate_anchor_pressed)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _generate_anchor_btn)
+	_reimport_targetsv_btn.name = "MeshFillReimportTargetSVButton"
+	_reimport_targetsv_btn.custom_minimum_size = Vector2(132, 0)
+	_reimport_targetsv_btn.pressed.connect(_on_reimport_targetsv_pressed)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _reimport_targetsv_btn)
 
-	_voxel_score_btn = _make_toolbar_action_button(
-		" Score ",
-		"Run voxel volume-score calculation for the current scene"
-	)
-	_voxel_score_btn.pressed.connect(_on_voxel_score_pressed)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _voxel_score_btn)
-
-	_anchor_score_status_label = _make_toolbar_status_label("", "Selected anchor top-k asset scores", 520, 13)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _anchor_score_status_label)
-
-	_sync_volume_score_toolbar_from_scene()
+	_sync_targetsv_toolbar_from_scene()
 
 
-func _remove_volume_score_toolbar() -> void:
-	if _generate_anchor_btn != null:
-		_free_toolbar_control(_generate_anchor_btn)
-		_generate_anchor_btn = null
-	if _voxel_score_btn != null:
-		_free_toolbar_control(_voxel_score_btn)
-		_voxel_score_btn = null
-	if _anchor_score_status_label != null:
-		_free_toolbar_control(_anchor_score_status_label)
-		_anchor_score_status_label = null
+func _remove_targetsv_toolbar() -> void:
+	if _reimport_targetsv_btn != null:
+		_free_toolbar_control(_reimport_targetsv_btn)
+		_reimport_targetsv_btn = null
+	if _targetsv_import_dialog != null and is_instance_valid(_targetsv_import_dialog):
+		_targetsv_import_dialog.queue_free()
+	_targetsv_import_dialog = null
+
+
+## 弹文件对话框选一份 TargetSV 元数据 json。选中当前这一份（assets/target_sv 里的那个）
+## 等价于"就地重新加载"——import_dataset 的 same_dataset 分支会跳过自我复制。
+func _on_reimport_targetsv_pressed() -> void:
+	if _scene_spa_host() == null:
+		push_warning("[MeshFill Editor] Current scene has no ScenePlacementActor.")
+		_sync_targetsv_toolbar_from_scene()
+		return
+	_ensure_targetsv_import_dialog()
+	if _targetsv_import_dialog == null:
+		push_warning("[MeshFill Editor] Reimport TargetSV: editor file dialog unavailable")
+		return
+	_targetsv_import_dialog.current_dir = TargetSVLoader.SHARED_DIR
+	_targetsv_import_dialog.popup_file_dialog()
+
+
+func _ensure_targetsv_import_dialog() -> void:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if _targetsv_import_dialog != null and is_instance_valid(_targetsv_import_dialog):
+		return
+	var base := EditorInterface.get_base_control()
+	if base == null:
+		_targetsv_import_dialog = null
+		return
+	# 软重载会丢引用但对话框结点还挂在 base 下，按名字先认领回来，别越堆越多。
+	var existing := base.get_node_or_null(NodePath(TARGETSV_DIALOG_NAME)) as EditorFileDialog
+	if existing != null:
+		_targetsv_import_dialog = existing
+		if not existing.file_selected.is_connected(_on_targetsv_metadata_selected):
+			existing.file_selected.connect(_on_targetsv_metadata_selected)
+		return
+	var dialog := EditorFileDialog.new()
+	dialog.name = TARGETSV_DIALOG_NAME
+	# 标题与确认按钮就是这次导入的"确认关"——它会覆盖 assets/target_sv 里现有的数据集。
+	dialog.title = "Import TargetSV — overwrites %s" % TargetSVLoader.SHARED_DIR
+	dialog.ok_button_text = "Import & Overwrite"
+	dialog.file_mode = EditorFileDialog.FILE_MODE_OPEN_FILE
+	dialog.access = EditorFileDialog.ACCESS_RESOURCES
+	dialog.clear_filters()
+	dialog.add_filter("*.fbx, *.FBX", "TargetSV voxel FBX (one triangle per voxel)")
+	dialog.add_filter("*.json", "TargetSV metadata (already-converted dataset)")
+	dialog.file_selected.connect(_on_targetsv_metadata_selected)
+	base.add_child(dialog)
+	_targetsv_import_dialog = dialog
+
+
+## 按扩展名分路：FBX 走三角形体素化（每个三角形一个体素，通道规则同 asset overview），
+## json 走"换一份已经转换好的数据集"。两条最后都汇到同一次 TargetSV 重导入。
+func _on_targetsv_metadata_selected(metadata_path: String) -> void:
+	# 对话框是非模态的，选文件期间场景可能已经换掉，宿主要重新解析一次。
+	var spa := _scene_spa_host()
+	if spa == null:
+		push_warning("[MeshFill Editor] Reimport TargetSV: scene no longer has a ScenePlacementActor.")
+		return
+	var extension := metadata_path.get_extension().to_lower()
+	var result: Dictionary
+	if extension == "fbx":
+		result = spa.import_target_sv_from_fbx(metadata_path)
+		# written 是 FBX 那条路自己写出的四个文件，与 json 路的 copied 同样要交还资源系统。
+		_reimport_copied_resources(result.get("written", PackedStringArray()))
+	else:
+		result = spa.import_target_sv_dataset(metadata_path)
+	# copied 只有搬运真的发生过才有：失败在搬运之前时它是 null，这里照样要报警不要静默。
+	_reimport_copied_resources(result.get("copied", PackedStringArray()))
+	if not bool(result.get("ok", false)):
+		push_warning("[MeshFill Editor] Reimport TargetSV: %s (%s)" % [
+			str(result.get("reason", "unknown")), metadata_path])
+		return
+	var route_summary := _format_targetsv_bake_result(result) if extension == "fbx" \
+		else "replaced: %s" % _format_replaced_dataset(result.get("replaced", []))
+	print("[MeshFill Editor] Reimport TargetSV <- %s%s\n  %s\n  %s" % [
+		metadata_path,
+		"  (same dataset, reloaded in place)" if bool(result.get("same_dataset", false)) else "",
+		route_summary,
+		_format_targetsv_reimport_result(result),
+	])
+
+
+## FBX 那条路的验收数字。第一行是**三角形去哪了**这条链：读到多少 → 落格多少 → 占了多少个
+## **不同**体素。源是"一面一格"，所以 binned 与 distinct 的差就是被合并掉的量，网格分辨率够
+## 不够只看这一个比值。第二行那几道原来的门禁现在只计数不丢弃，留着是给"这份 FBX 烘对没有"
+## 当第一现场。第三行的 capture/span/flip_z 判尺度与轴向。
+func _format_targetsv_bake_result(result: Dictionary) -> String:
+	var timings: Dictionary = result.get("timings_ms", {})
+	var binned := int(result.get("used_triangle_count", 0))
+	var distinct := int(result.get("distinct_voxel_count", 0))
+	var merge_ratio := float(binned) / float(distinct) if distinct > 0 else 0.0
+	return "baked: read %d tris -> %d binned -> %d distinct voxels (%.2f tris/voxel merged), non-empty %d\n  counted (not filtered): fine-gate %d, degenerate %d, no-Cd %d, uv-uncovered %d, below-terrain %d, height-clipped %d | dropped (unbinnable): %d\n  frame: capture %.3f, vertical_span %.3f, flip_z %s, source_bounds %s\n  time: read %d ms + bin %d ms + write %d ms" % [
+		int(result.get("read_triangle_count", 0)),
+		binned,
+		distinct,
+		merge_ratio,
+		int(result.get("non_empty_voxel_count", 0)),
+		int(result.get("triangle_count", 0)),
+		int(result.get("degenerate_triangle_count", 0)),
+		int(result.get("missing_payload_count", 0)),
+		int(result.get("rejected_triangle_count", 0)),
+		int(result.get("below_terrain_count", 0)),
+		int(result.get("clipped_height_count", 0)),
+		int(result.get("dropped_out_of_bounds", 0)),
+		float(result.get("capture_size", 0.0)),
+		float(result.get("vertical_span", 0.0)),
+		str(result.get("flip_z", true)),
+		str(result.get("source_bounds", [])),
+		int(timings.get("read", 0)),
+		int(timings.get("bin", 0)),
+		int(timings.get("write", 0)),
+	]
+
+
+## 复制进来的 preview png 是**已导入资源**：不告诉资源系统，它的 .import 仍指向旧 .ctex。
+## .json/.rgba8/.r8 是 FileAccess 直读、不经导入，update_file 只为让文件系统面板同步。
+func _reimport_copied_resources(copied) -> void:
+	var fs := EditorInterface.get_resource_filesystem()
+	if fs == null or not (copied is PackedStringArray or copied is Array):
+		return
+	var needs_reimport := PackedStringArray()
+	for path in copied:
+		fs.update_file(str(path))
+		if str(path).get_extension().to_lower() == "png":
+			needs_reimport.append(str(path))
+	if not needs_reimport.is_empty():
+		fs.reimport_files(needs_reimport)
+
+
+func _format_replaced_dataset(replaced) -> String:
+	if not (replaced is Array) or (replaced as Array).is_empty():
+		return "(nothing — target folder was empty)"
+	var parts := PackedStringArray()
+	for entry in replaced:
+		parts.append("%s %d B" % [str(entry.get("path", "?")).get_file(), int(entry.get("bytes", 0))])
+	return ", ".join(parts)
+
+
+func _format_targetsv_reimport_result(result: Dictionary) -> String:
+	return "grid=%s voxels=%d rev=%d display=%s brush_sv_cleared=%s" % [
+		str(result.get("grid_size", Vector3i.ZERO)),
+		int(result.get("voxel_count", 0)),
+		int(result.get("content_revision", 0)),
+		str(result.get("display_reason", "?")),
+		str(result.get("brush_sv_cleared", false)),
+	]
+
+
+func _sync_targetsv_toolbar_from_scene() -> void:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	if _reimport_targetsv_btn == null:
+		return
+	var has_spa := _scene_spa_host() != null
+	_reimport_targetsv_btn.visible = has_spa
+	_reimport_targetsv_btn.disabled = not has_spa
 
 
 func _make_toolbar_action_button(label: String, tooltip: String) -> Button:
@@ -794,23 +717,6 @@ func _make_toolbar_action_button(label: String, tooltip: String) -> Button:
 	return btn
 
 
-# Shared clip-and-ellipsis status Label used by the geo-scan / AD-debug / bake /
-# volume-score toolbars. Only assigns node_name / tooltip when non-empty so the
-# volume-score label (unnamed, custom tooltip) stays byte-identical to its old
-# inline construction.
-func _make_toolbar_status_label(node_name: String, tooltip: String, min_width: float, font_size: int) -> Label:
-	var status := Label.new()
-	if not node_name.is_empty():
-		status.name = node_name
-	if not tooltip.is_empty():
-		status.tooltip_text = tooltip
-	status.custom_minimum_size = Vector2(min_width, 0)
-	status.clip_text = true
-	status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	status.add_theme_font_size_override("font_size", font_size)
-	return status
-
-
 # Shared toolbar teardown: detach the control from the spatial-editor menu and
 # free it. Callers null out their own member reference afterward.
 func _free_toolbar_control(control: Control) -> void:
@@ -818,9 +724,7 @@ func _free_toolbar_control(control: Control) -> void:
 	control.queue_free()
 
 
-# Shared StyleBoxFlat factory (brush toggle / voxel-visibility panel + buttons).
-# border_width 0 keeps the default border-less style, matching the brush
-# toggle's original inline construction.
+# Shared StyleBoxFlat factory for the brush toggle.
 func _make_flat_stylebox(bg: Color, corner: int, margin_h: float, margin_v: float, border_color := Color(), border_width := 0) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
 	style.bg_color = bg
@@ -835,214 +739,14 @@ func _make_flat_stylebox(bg: Color, corner: int, margin_h: float, margin_v: floa
 	return style
 
 
-# Shared null-guarded setter for the toolbar status labels.
-func _set_status_label(label: Label, text: String, tooltip: String) -> void:
-	if label == null:
-		return
-	label.text = text
-	label.tooltip_text = tooltip
-
-
 # Shared edited-scene-root host lookup: the root is the host iff it exposes the
-# toolbar's entry method. _scene_spa_host (find_child variant) is intentionally
+# requested entry method. _scene_spa_host (find_child variant) is intentionally
 # different — do not fold it in.
 func _scene_root_host(method_name: StringName) -> Node:
 	var root := get_editor_interface().get_edited_scene_root()
 	if root != null and root.has_method(method_name):
 		return root
 	return null
-
-
-func _on_generate_anchor_pressed() -> void:
-	_call_spa_volume_score_method(SPA_VOLUME_SCORE_ANCHOR_METHOD, "Generate Anchors")
-	_sync_volume_score_toolbar_from_scene()
-
-
-func _on_voxel_score_pressed() -> void:
-	_call_spa_volume_score_method(SPA_VOLUME_SCORE_METHOD, "Voxel Score")
-	_sync_volume_score_toolbar_from_scene()
-
-
-func _sync_volume_score_toolbar_from_scene() -> void:
-	var host := _scene_spa_host()
-	var has_spa := host != null
-	var has_provider := _spa_has_volume_score_provider(host)
-	if _generate_anchor_btn != null:
-		_generate_anchor_btn.visible = has_spa
-		_generate_anchor_btn.disabled = not has_spa or not has_provider or not host.has_method(SPA_VOLUME_SCORE_ANCHOR_METHOD)
-	if _voxel_score_btn != null:
-		_voxel_score_btn.visible = has_spa
-		_voxel_score_btn.disabled = not has_spa or not has_provider or not host.has_method(SPA_VOLUME_SCORE_METHOD)
-	if _anchor_score_status_label != null:
-		_anchor_score_status_label.visible = has_spa
-		if not has_spa:
-			_anchor_score_status_label.text = ""
-			_anchor_score_status_label.tooltip_text = ""
-			return
-		if not has_provider:
-			_anchor_score_status_label.text = ""
-			_anchor_score_status_label.tooltip_text = ""
-		else:
-			if host.has_method("get_selected_anchor_summary_text"):
-				_anchor_score_status_label.text = str(host.call("get_selected_anchor_summary_text"))
-			if host.has_method("get_selected_anchor_tooltip_text"):
-				_anchor_score_status_label.tooltip_text = str(host.call("get_selected_anchor_tooltip_text"))
-
-
-func _spa_has_volume_score_provider(host: Node) -> bool:
-	if host == null or not host.has_method(SPA_VOLUME_SCORE_PROVIDER_METHOD):
-		return false
-	return bool(host.call(SPA_VOLUME_SCORE_PROVIDER_METHOD))
-
-
-func _call_spa_volume_score_method(method_name: String, action_name: String) -> void:
-	var host := _scene_spa_host()
-	if not _spa_has_volume_score_provider(host):
-		push_warning("[MeshFill Editor] No SPA volume-score provider in the current scene.")
-		return
-	if not host.has_method(method_name):
-		push_warning("[MeshFill Editor] SPA has no callable %s entry." % method_name)
-		return
-	var result = host.call(method_name)
-	if result is Dictionary and result.has("ok") and not bool(result.get("ok", false)):
-		push_warning("[MeshFill Editor] %s returned: %s" % [
-			action_name,
-			str(result.get("reason", "not ok")),
-		])
-	print("[MeshFill Editor] %s -> %s.%s" % [action_name, host.name, method_name])
-
-
-# ---- Voxel display visibility panel ---------------------------------------
-
-func _create_voxel_visibility_panel() -> void:
-	_remove_voxel_visibility_panel()
-	_voxel_visibility_panel = PanelContainer.new()
-	_voxel_visibility_panel.name = VOXEL_VISIBILITY_PANEL_NAME
-	_voxel_visibility_panel.tooltip_text = "Voxel Display visibility"
-	_voxel_visibility_panel.custom_minimum_size = Vector2(168.0, 34.0)
-	_voxel_visibility_panel.mouse_filter = Control.MOUSE_FILTER_PASS
-	var style := _make_flat_stylebox(Color(0.055, 0.07, 0.09, 0.58), 3, 4.0, 2.0, Color(0.28, 0.66, 0.95, 0.35), 1)
-	_voxel_visibility_panel.add_theme_stylebox_override("panel", style)
-	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _voxel_visibility_panel)
-
-	var columns := HBoxContainer.new()
-	columns.name = "VoxelVisibilityToolbar"
-	columns.add_theme_constant_override("separation", 4)
-	_voxel_visibility_panel.add_child(columns)
-
-	var title := Label.new()
-	title.text = "VD"
-	title.tooltip_text = "Voxel Display"
-	title.custom_minimum_size = Vector2(22.0, 30.0)
-	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 11)
-	title.add_theme_color_override("font_color", Color(0.88, 0.94, 1.0, 1.0))
-	columns.add_child(title)
-
-	var rows := VBoxContainer.new()
-	rows.name = "VoxelVisibilityRows"
-	rows.add_theme_constant_override("separation", 1)
-	columns.add_child(rows)
-
-	var row_top := HBoxContainer.new()
-	row_top.name = "VoxelVisibilityRowTop"
-	row_top.add_theme_constant_override("separation", 2)
-	rows.add_child(row_top)
-
-	var row_bottom := HBoxContainer.new()
-	row_bottom.name = "VoxelVisibilityRowBottom"
-	row_bottom.add_theme_constant_override("separation", 2)
-	rows.add_child(row_bottom)
-
-	_voxel_visibility_buttons.clear()
-	for i in range(VOXEL_DISPLAY_DEFINITIONS.size()):
-		var definition: Dictionary = VOXEL_DISPLAY_DEFINITIONS[i]
-		var key := str(definition.get("key", ""))
-		var button := Button.new()
-		button.name = "Toggle_%s" % key
-		button.text = str(definition.get("label", key))
-		button.tooltip_text = str(definition.get("tooltip", ""))
-		button.toggle_mode = true
-		button.flat = false
-		button.custom_minimum_size = Vector2(30.0, 14.0)
-		button.add_theme_font_size_override("font_size", 10)
-		button.toggled.connect(_on_voxel_visibility_toggled.bind(key))
-		if i < 3:
-			row_top.add_child(button)
-		else:
-			row_bottom.add_child(button)
-		_voxel_visibility_buttons[key] = button
-	_sync_voxel_visibility_panel_from_scene()
-
-
-func _remove_voxel_visibility_panel() -> void:
-	var base := get_editor_interface().get_base_control()
-	if base != null:
-		var existing := base.get_node_or_null(NodePath(VOXEL_VISIBILITY_PANEL_NAME))
-		if existing != null:
-			base.remove_child(existing)
-			existing.queue_free()
-	if _voxel_visibility_panel != null:
-		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, _voxel_visibility_panel)
-		_voxel_visibility_panel.queue_free()
-	_voxel_visibility_panel = null
-	_voxel_visibility_buttons.clear()
-
-
-func _on_voxel_visibility_toggled(pressed: bool, key: String) -> void:
-	var host := _scene_voxel_display_host()
-	if host == null or not host.has_method("set_voxel_display_visible"):
-		return
-	host.call("set_voxel_display_visible", key, pressed)
-	_sync_voxel_visibility_panel_from_scene()
-
-
-func _sync_voxel_visibility_panel_from_scene() -> void:
-	if _voxel_visibility_panel == null:
-		return
-	var host := _scene_voxel_display_host()
-	_voxel_visibility_panel.visible = host != null
-	if host == null:
-		return
-	var state := {}
-	if host.has_method("get_voxel_display_state"):
-		var value = host.call("get_voxel_display_state")
-		if value is Dictionary:
-			state = value
-	for key in _voxel_visibility_buttons.keys():
-		var button := _voxel_visibility_buttons[key] as BaseButton
-		if button == null:
-			continue
-		button.disabled = not host.has_method("set_voxel_display_visible")
-		var visible := bool(state.get(str(key), true))
-		if button.button_pressed != visible:
-			button.set_pressed_no_signal(visible)
-		_apply_voxel_visibility_button_style(button, visible, button.disabled)
-
-
-func _apply_voxel_visibility_button_style(button: BaseButton, active: bool, disabled: bool) -> void:
-	var bg := Color(0.17, 0.46, 0.70, 0.95) if active else Color(0.10, 0.12, 0.15, 0.92)
-	var border := Color(0.48, 0.78, 1.0, 0.85) if active else Color(0.24, 0.32, 0.40, 0.82)
-	if disabled:
-		bg = Color(0.09, 0.10, 0.11, 0.45)
-		border = Color(0.20, 0.22, 0.24, 0.45)
-	var normal := _make_flat_stylebox(bg, 2, 3.0, 0.0, border, 1)
-	button.add_theme_stylebox_override("normal", normal)
-	var hover := normal.duplicate() as StyleBoxFlat
-	hover.bg_color = bg.lightened(0.14)
-	button.add_theme_stylebox_override("hover", hover)
-	var pressed := normal.duplicate() as StyleBoxFlat
-	pressed.bg_color = bg.lightened(0.22) if active else Color(0.15, 0.22, 0.28, 0.95)
-	button.add_theme_stylebox_override("pressed", pressed)
-	button.add_theme_stylebox_override("hover_pressed", pressed)
-	button.add_theme_stylebox_override("disabled", normal)
-	button.add_theme_color_override("font_color", Color(0.95, 0.98, 1.0, 1.0) if active else Color(0.62, 0.76, 0.88, 1.0))
-	button.add_theme_color_override("font_disabled_color", Color(0.46, 0.50, 0.54, 1.0))
-
-
-func _scene_voxel_display_host() -> Node:
-	return _scene_spa_host()
 
 
 # ---- TCP Server ------------------------------------------------------------
@@ -1187,6 +891,8 @@ func _dispatch(req: Dictionary) -> Dictionary:
 			result = _cmd_open_scene(params)
 		"screenshot":
 			result = _cmd_screenshot(params)
+		"capture_camera":
+			result = _cmd_capture_camera(params)
 		_:
 			return {"id": rid, "error": "unknown method: %s" % method}
 
@@ -1260,6 +966,10 @@ func _cmd_select_node(params: Dictionary) -> Dictionary:
 	var root := get_editor_interface().get_edited_scene_root()
 	if root == null:
 		return {"error": "no scene open"}
+	# An editor scene root becomes observable one frame before every @tool child
+	# has necessarily finished its deferred setup. The validation is idempotent
+	# and guarantees bridge-driven placement commands see the resident SPA.
+	_validate_scene(root)
 	var node := _resolve_edited_scene_node(path)
 	if node == null:
 		return {"error": "node not found: %s" % path}
@@ -1441,6 +1151,69 @@ func _cmd_screenshot(params: Dictionary) -> Dictionary:
 		"width": img.get_width(),
 		"height": img.get_height(),
 	}
+
+
+## Render the edited scene from an arbitrary camera pose into an off-screen
+## SubViewport (sharing the editor's World3D) and save a PNG. Lets external
+## tooling frame a specific spot the editor viewport camera can't be aimed at.
+## params: pos [x,y,z], look_at [x,y,z], fov, width, height, path.
+func _cmd_capture_camera(params: Dictionary) -> Dictionary:
+	var root := get_editor_interface().get_edited_scene_root()
+	if root == null:
+		return {"error": "no scene open"}
+	# Prefer the EDITED SCENE's own world: the 3D editor viewport's world_3d can
+	# belong to another scene tab (whichever last owned the 3D main screen), which
+	# silently renders the wrong scene from a stale camera pose.
+	var world: World3D = (root as Node3D).get_world_3d() if root is Node3D else null
+	if world == null:
+		var evp: Viewport = get_editor_interface().get_editor_viewport_3d(0)
+		world = evp.world_3d if evp != null else null
+	if world == null:
+		return {"error": "no world3d"}
+	var w: int = int(params.get("width", 1440))
+	var h: int = int(params.get("height", 900))
+	var sub := SubViewport.new()
+	sub.size = Vector2i(w, h)
+	sub.world_3d = world
+	sub.own_world_3d = false
+	sub.transparent_bg = false
+	sub.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	sub.msaa_3d = Viewport.MSAA_4X
+	# Pose the camera with an explicit transform BEFORE it enters the tree:
+	# post-add global_position + look_at proved unreliable here (captures came
+	# back byte-identical from a stale/recycled render target regardless of the
+	# requested pose), and look_at is a silent no-op for straight-down poses.
+	var p: Array = params.get("pos", [0, 400, 600])
+	var l: Array = params.get("look_at", [0, 40, 0])
+	var cam_origin := Vector3(float(p[0]), float(p[1]), float(p[2]))
+	var look_target := Vector3(float(l[0]), float(l[1]), float(l[2]))
+	var look_dir := look_target - cam_origin
+	if look_dir.length_squared() < 0.000001:
+		look_dir = Vector3(0.0, 0.0, -1.0)
+	var look_up := Vector3.UP if absf(look_dir.normalized().dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
+	var cam := Camera3D.new()
+	cam.transform = Transform3D(Basis.looking_at(look_dir, look_up), cam_origin)
+	cam.fov = float(params.get("fov", 60.0))
+	cam.far = 8000.0
+	sub.add_child(cam)
+	get_editor_interface().get_base_control().add_child(sub)
+	cam.make_current()
+	# Synchronous render: force full draws so the fresh SubViewport rasterizes.
+	for _i in range(4):
+		RenderingServer.force_draw(false)
+	var tex := sub.get_texture()
+	var img: Image = tex.get_image() if tex != null else null
+	var out: Dictionary
+	if img == null:
+		out = {"error": "no image from subviewport"}
+	else:
+		var req_path: String = str(params.get("path", "res://_shots/cam_capture.png"))
+		var abs_path := ProjectSettings.globalize_path(req_path) if req_path.begins_with("res://") or req_path.begins_with("user://") else req_path
+		DirAccess.make_dir_recursive_absolute(abs_path.get_base_dir())
+		var err := img.save_png(abs_path)
+		out = {"ok": true, "path": abs_path, "width": img.get_width(), "height": img.get_height()} if err == OK else {"error": "save_png failed: %d" % err}
+	sub.queue_free()
+	return out
 
 
 # ---- Single-instance guard ----
@@ -1708,9 +1481,11 @@ func _validate_current_scene() -> void:
 
 
 func _validate_scene(root: Node) -> void:
-	_scene_has_brush = _detect_scene_brush(root)
 	if root == null:
 		return
+	var spa := _scene_spa_host()
+	if spa != null and not spa.is_ready():
+		spa.initialize_runtime()
 	_validate_terrain(root)
 	_validate_targetsv(root)
 	_enforce_headless_guard()
@@ -1729,7 +1504,8 @@ func _validate_terrain(root: Node) -> void:
 
 
 func _validate_targetsv(root: Node) -> void:
-	var tsv := root.find_child("TargetSVSetup", true, false)
+	var spa := _scene_spa_host()
+	var tsv := spa.get_volume(&"TargetSV") if spa != null else null
 	if tsv == null:
 		return
 	if tsv.has_method("is_targetsv_ready"):

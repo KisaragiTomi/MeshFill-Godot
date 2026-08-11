@@ -148,19 +148,35 @@ static func terrain_relative_voxel_center_to_world(
 	return world
 
 
+## 规范框架 × 显示尺度：原点与格距同乘，网格尺寸不变。
+##
+## display_scale 是显示侧的整体缩放（TargetSVSetup / MeshFillBrush 各有自己的 @export）。
+## 位置类量必须同乘同一个因子，否则「体素中心」与「网格原点」会按不同尺度铺开。
+## 地形相对的那一段不在这里：它逐列变化，由 terrain_relative_voxel_center_to_world 的
+## height_scale 承担（与本函数取同一个 display_scale）。
+static func scaled_grid_frame(
+	grid_size: Vector3i,
+	grid_origin: Vector3,
+	voxel_size: Vector3,
+	display_scale: float = 1.0
+) -> Dictionary:
+	var scale := display_scale
+	return {
+		"grid_size": Vector3i(maxi(grid_size.x, 1), maxi(grid_size.y, 1), maxi(grid_size.z, 1)),
+		"voxel_size": safe_voxel_size(voxel_size * scale),
+		"grid_origin": grid_origin * scale,
+	}
+
+
 ## 「体素中心端点铺满 capture」的铺开式 → 规范坐标框架 (grid_origin, voxel_size)。
 ##
-## TargetSV 磁盘资产用的是端点式：首末体素的**中心**正好落在 ±capture/2，故格距是
-## capture/(N-1) 而不是 capture/N（后者是 voxel_size_for_resolution，SPA 场那套）。
-## 两者换算后落在同一套词汇里：
+## ⚠ **仅测试夹具在用**：生产路径的框架一律来自 ScenePlacementActor 的导出网格
+## （TargetSV 走 get_grid_frame → scaled_grid_frame）。端点式与 SPA 那套只在 capture
+## 恰好差一格时才等价（当前资产 1020/255 == 1024/256 == 4.0 纯属参数凑巧），
+## 让任何生产代码再从 capture 推框架都会把「两套推导式」养回来。
 ##   voxel_size  = (capture*s/(N-1), vertical_span*s/N_y, capture*s/(N-1))
-##   grid_origin = -capture*s/2 - voxel_size/2   （XZ；Y 见下）
-##   voxel_center_to_world(v) ≡ (v.xz/(N-1) - 0.5) * capture * s   ——逐点相等（计划 §6.2）
-## 于是 world_to_voxel 成为它构造上的精确逆；旧式的反解必须乘 (N-1)，漏乘就是
-## meshfill_brush.screen_to_voxel_xz 那个 off-by-one（计划 §4.4 / §6.2）。
-##
-## Y 只给出体素带自身（自带高度 0 起算）；地形相对的那一段由
-## terrain_relative_voxel_center_to_world 的 height_scale 承担。
+##   grid_origin = -capture*s/2 - voxel_size/2   （XZ；Y 只给体素带自身，地形相对段由
+##                 terrain_relative_voxel_center_to_world 的 height_scale 承担）
 static func grid_frame_from_capture_endpoints(
 	grid_size: Vector3i,
 	capture_size: float,

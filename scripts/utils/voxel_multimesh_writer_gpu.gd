@@ -14,6 +14,42 @@ extends RefCounted
 
 const LOCAL_SIZE := 64
 
+## 一个 MultiMesh 实例在 GPU 缓冲里占多少个 float。三条 writer 通路**共用**这一个值，
+## 且必须与三个着色器里的字面量逐字一致：
+##   shaders/voxel_field_instances.glsl:61   `const int FLOATS_PER_INSTANCE = 16;`
+##   shaders/brush_voxel_instances.glsl:49   同名同值
+##   shaders/voxel_instance_copy.glsl:25-27  TRANSFORM_FLOATS 12 + COLOR_FLOATS 4
+## 布局：f[0..11] = 变换（三行，每行 3 个 basis 分量 + 1 个 origin 分量），f[12..15] = RGBA。
+##
+## 值 16 不是随便定的，它由引擎按 MultiMesh 的两个开关算出
+## （servers/rendering/renderer_rd/storage_rd/mesh_storage.cpp:1573-1576）：
+##   color_offset  = 12（TRANSFORM_3D；2D 是 8）
+##   custom_offset = color_offset + (use_colors ? 4 : 0)
+##   stride        = custom_offset + (use_custom_data ? 4 : 0)
+## 本通路恒为 use_colors = true、use_custom_data = false ⇒ 12 + 4 + 0 = 16。
+##
+## ⚠ 别把它改成 20。20 是 AutoObject 那条通路的 stride（PlacedInstanceDisplay 开了
+## use_custom_data，CUSTOM 落 [16..19] 装 object_id/profile_id/asset_index/flags），它走的是
+## `multimesh.set_buffer()` 整块搬运，**不经过本类**。两条通路的 stride 本来就不同，
+## 把 20 写进这里而不同步改三个 .glsl，结果是「compute 按 16 步进写、引擎按 20 步进读」的
+## 整体错位——而且是纯静默的：compute 直写 multimesh_get_buffer_rd_rid，引擎侧无任何尺寸校验
+## （set_buffer 那条反而有 ERR_FAIL_COND 会拦）。
+##
+## ⚠ 也别为了「给 pick_id 腾 CUSTOM_DATA 槽位」而改。pick_id 的载体已定案为
+## `INSTANCE_ID + 逐 drawable 基址 uniform`（shaders/pick_id.gdshader:27/:43），全仓 .gdshader
+## 对 INSTANCE_CUSTOM 的引用数为 0 —— 该方案对 MultiMesh 布局的改动面就是零。
+const MULTIMESH_INSTANCE_FLOATS := 16
+
+## 主设备上的 shader/pipeline 缓存：path → {"shader": RID, "pipeline": RID, "mtime": int}。
+## 三个 writer 都是每次显示重建 new() 一个实例又 dispose()，实例成员缓存不了任何东西，
+## 于是每次重建都要重跑 shader_create_from_spirv（SPIR-V 反射 + zstd 压缩/解压 + module）
+## 与 compute_pipeline_create。这里的设备是**主** RenderingDevice，随进程存活，所以缓存
+## 挂 static 是安全的；相应地 dispose() 不再释放 shader/pipeline（见 _release），它们的
+## 生命周期改为进程级，总量固定为三个 writer shader。
+## RID 不是 Object，类型化 static Dictionary 不受编辑器脚本重载把 static Object 置 null 的影响。
+## 源文件 mtime 变化时重建，保留改 .glsl 后无需重启即时生效（原每次重编译白拿到的行为）。
+static var _kernel_cache: Dictionary = {}
+
 var _rd: RenderingDevice
 var _shader := RID()
 var _pipeline := RID()
@@ -75,7 +111,23 @@ func _shader_path() -> String:
 func _ensure_pipeline() -> bool:
 	if _pipeline.is_valid():
 		return true
-	var shader_file := load(_shader_path()) as RDShaderFile
+
+	var path := _shader_path()
+	var mtime := FileAccess.get_modified_time(ProjectSettings.globalize_path(path))
+	var cached: Dictionary = _kernel_cache.get(path, {})
+	if not cached.is_empty():
+		var cached_shader: RID = cached.get("shader", RID())
+		var cached_pipeline: RID = cached.get("pipeline", RID())
+		if cached_shader.is_valid() and cached_pipeline.is_valid() \
+				and (mtime == 0 or int(cached.get("mtime", -1)) == mtime):
+			_shader = cached_shader
+			_pipeline = cached_pipeline
+			return true
+		# 源文件已改动：旧的进程级 RID 无人再引用，这里显式回收后重建。
+		_release(_rd, cached_shader, cached_pipeline, RID(), [])
+		_kernel_cache.erase(path)
+
+	var shader_file := load(path) as RDShaderFile
 	if shader_file == null:
 		_last_reason = "shader_load_failed"
 		return false
@@ -87,6 +139,7 @@ func _ensure_pipeline() -> bool:
 	if not _pipeline.is_valid():
 		_last_reason = "pipeline_create_failed"
 		return false
+	_kernel_cache[path] = {"shader": _shader, "pipeline": _pipeline, "mtime": mtime}
 	return true
 
 
@@ -120,7 +173,9 @@ func dispose() -> void:
 	if _disposed:
 		return
 	_disposed = true
-	_release(_rd, _shader, _pipeline, _uniform_set, _scratch)
+	# shader/pipeline 归 _kernel_cache 所有（进程级、跨 writer 实例复用），这里只回收
+	# 本实例自有的 per-write 资源；传 RID() 占位而非 _shader/_pipeline。
+	_release(_rd, RID(), RID(), _uniform_set, _scratch)
 	_rd = null
 	_shader = RID()
 	_pipeline = RID()
@@ -128,7 +183,9 @@ func dispose() -> void:
 	_scratch = []
 
 
-# Frees every GPU resource the writer owns. Static on purpose: it is also driven
+# Frees the GPU resources handed to it. Callers pass RID() for shader/pipeline on the
+# dispose path -- those live in the process-lifetime _kernel_cache and are only freed
+# here when _ensure_pipeline invalidates a stale entry. Static on purpose: it is also driven
 # from NOTIFICATION_PREDELETE, where the writer is an already-unreferenced
 # RefCounted. Calling an instance method there -- or binding `self` into a
 # render-thread callable -- fails with "call function on a null instance" and
@@ -175,4 +232,4 @@ func _notification(what: int) -> void:
 	# method here would fail with "null instance" on the dying RefCounted.
 	if what == NOTIFICATION_PREDELETE and not _disposed:
 		_disposed = true
-		_release(_rd, _shader, _pipeline, _uniform_set, _scratch)
+		_release(_rd, RID(), RID(), _uniform_set, _scratch)

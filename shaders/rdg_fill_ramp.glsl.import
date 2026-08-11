@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cvf7t5oeppu1"
+path="res://.godot/imported/rdg_fill_ramp.glsl-8fc3719e62c2400af39b0482bf31d5b8.res"
+
+[deps]
+
+source_file="res://shaders/rdg_fill_ramp.glsl"
+dest_files=["res://.godot/imported/rdg_fill_ramp.glsl-8fc3719e62c2400af39b0482bf31d5b8.res"]
+
+[params]
+

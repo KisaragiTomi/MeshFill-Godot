@@ -2,15 +2,32 @@
 class_name SemanticProbeGenerator
 extends Resource
 # @tool: @tool demo（placement-score-3d 等）在编辑器内经 profile 容器 register_descriptor →
-# normalize_descriptor → get_semantic_probes 调 get_probes()。无 @tool 时编辑器给 placeholder
+# normalize_descriptor → get_profile_samples →（descriptor 内）get_semantic_probes 调 get_probes()。
+# 无 @tool 时编辑器给 placeholder
 # 实例，方法调用报 "Attempt to call a method on a placeholder instance"（见 CLAUDE.md
 # 「Editor gotcha — descriptor methods need @tool」）。运行时行为不变。
 
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+const ProfileRecordSchemaScript := preload("res://scripts/utils/profile_record_schema.gd")
 const VariantUtils := preload("res://scripts/utils/variant_utils.gd")
 
 const PROBE_LAYER_COUNT := 5
 const PROBE_WORLD_MIN_DISTANCE := 0.35
+
+# --- Size-driven probe budget -------------------------------------------------
+# Probe count scales with object size: an object whose largest AABB axis is
+# PROBE_UNIT_MAX_AXIS metres collapses to a single probe (grass scale — a grass
+# tuft is semantically uniform, so one sample suffices). Larger meshes grow by a
+# sub-linear power (PROBE_SIZE_GROWTH < 1) so cliffs get proportionally more
+# probes without exploding. Reference counts @ density 1.0:
+#     max-axis  1.7 m (grass)  ->  1 probe
+#     max-axis 20.3 m (leaf)   ->  9 probes
+#     max-axis 61   m (cliff)  -> 25 probes
+# Density multiplies the result linearly. Raise PROBE_SIZE_GROWTH toward 1.0 for
+# strictly size-proportional counts; lower PROBE_UNIT_MAX_AXIS to give small
+# props more probes.
+const PROBE_UNIT_MAX_AXIS := 1.7   # object max-axis (m) that maps to a single probe
+const PROBE_SIZE_GROWTH := 0.9     # <1 sub-linear; 1.0 = strictly proportional to size
 
 @export var probes: Array[Dictionary] = []                 # descriptor-backed semantic probe records
 @export_range(0.1, 8.0, 0.1) var density: float = 1.0       # automatic probe generation density
@@ -55,11 +72,16 @@ static func generate_from_mesh(
 	context_sensing_radius: float = 0.0
 ) -> Array[Dictionary]:
 	if mesh == null:
-		return [make_probe(Vector3.ZERO, fallback_color, 0.0, 1.0, 1.0, 1.0, "fallback")]
+		push_error("[SemanticProbeGenerator] generate_from_mesh(): mesh 为 null —— 原行为在原点顶一个 \"fallback\" 探针，那是假数据；改为不产出任何探针")
+		assert(false, "SemanticProbeGenerator.generate_from_mesh: null mesh")
+		return ([] as Array[Dictionary])
 
 	var aabb := mesh.get_aabb()
 	if aabb.size.length_squared() < 0.0001:
-		return [make_probe(Vector3.ZERO, fallback_color, 0.0, 1.0, 1.0, 1.0, "fallback")]
+		push_error("[SemanticProbeGenerator] generate_from_mesh(): mesh AABB 退化（size=%s，surface_count=%d）—— 无法采样探针" % [
+			str(aabb.size), mesh.get_surface_count()])
+		assert(false, "SemanticProbeGenerator.generate_from_mesh: degenerate mesh AABB")
+		return ([] as Array[Dictionary])
 
 	var fallback := fallback_color
 	fallback.a = clampf(fallback_complexity, 0.0, 1.0)
@@ -92,26 +114,19 @@ static func generate_from_mesh(
 	candidates.append_array(_make_exclusion_zone_candidates(aabb, density_value))
 
 	if candidates.is_empty():
-		return [make_probe(aabb.get_center(), fallback, 0.0, 1.0, 1.0, 1.0, "fallback")]
+		push_error("[SemanticProbeGenerator] generate_from_mesh(): 五级候选源全空（convex=%d, collision=%d, triangles=%d）—— 原行为在 AABB 中心顶一个 \"fallback\" 探针，那是假数据" % [
+			convex_points.size(), collision.size(), triangles.size()])
+		assert(false, "SemanticProbeGenerator.generate_from_mesh: no probe candidates")
+		return ([] as Array[Dictionary])
 
 	_apply_candidate_world_offsets(candidates, world_scale)
 	var selected := select_layered_topk(candidates, target_count, max_count, density_value, PROBE_WORLD_MIN_DISTANCE)
 	if selected.is_empty():
-		return [make_probe(aabb.get_center(), fallback, 0.0, 1.0, 1.0, 1.0, "fallback")]
+		push_error("[SemanticProbeGenerator] generate_from_mesh(): %d 条候选经分层 top-k 后一条没选出来（target=%d, max=%d）—— 选点逻辑失效" % [
+			candidates.size(), target_count, max_count])
+		assert(false, "SemanticProbeGenerator.generate_from_mesh: layered top-k selected nothing")
+		return ([] as Array[Dictionary])
 	return selected
-
-
-static func collect_mesh_vertices(mesh: Mesh) -> PackedVector3Array:
-	var result := PackedVector3Array()
-	if mesh == null:
-		return result
-	for surface_index in range(mesh.get_surface_count()):
-		var arrays := mesh.surface_get_arrays(surface_index)
-		if arrays.is_empty() or arrays[Mesh.ARRAY_VERTEX] == null:
-			continue
-		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-		result.append_array(vertices)
-	return result
 
 
 static func collect_mesh_convex_points(mesh: Mesh) -> PackedVector3Array:
@@ -132,8 +147,12 @@ static func mesh_probe_target_count(mesh: Mesh, density_value: float, max_count:
 	var aabb := mesh.get_aabb()
 	var max_axis := maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
 	var d := clampf(density_value, 0.1, 8.0)
-	var target := ceili((6.0 + sqrt(maxf(max_axis, 0.1)) * 2.5) * d)
-	return clampi(target, 4, max_count)
+	# Number of probes tracks object size: a grass-scale mesh (~PROBE_UNIT_MAX_AXIS)
+	# rounds to a single probe; larger meshes grow sub-linearly. Floor of 1 so every
+	# asset keeps at least one scorable probe.
+	var size_units := maxf(max_axis, 0.001) / PROBE_UNIT_MAX_AXIS
+	var target := roundi(pow(size_units, PROBE_SIZE_GROWTH) * d)
+	return clampi(target, 1, max_count)
 
 
 static func collect_mesh_triangles(mesh: Mesh) -> Array[PackedVector3Array]:
@@ -205,7 +224,7 @@ static func _make_voxel_interior_candidates(
 	var min_y := INF
 	for raw_voxel in collision:
 		if raw_voxel is Dictionary:
-			var pos := VariantUtils.vector3_from_value((raw_voxel as Dictionary).get("local_pos", (raw_voxel as Dictionary).get("voxel", (raw_voxel as Dictionary).get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
+			var pos := VariantUtils.vector3_from_value(ProfileRecordSchemaScript.local_position_value(raw_voxel as Dictionary, Vector3.ZERO), Vector3.ZERO)
 			min_y = minf(min_y, pos.y)
 
 	for raw_voxel in collision:
@@ -214,11 +233,11 @@ static func _make_voxel_interior_candidates(
 		var voxel_entry := raw_voxel as Dictionary
 		if not bool(voxel_entry.get("enabled", true)):
 			continue
-		var point := VariantUtils.vector3_from_value(voxel_entry.get("local_pos", voxel_entry.get("voxel", voxel_entry.get("voxel_offset", Vector3.ZERO))), Vector3.ZERO)
+		var point := VariantUtils.vector3_from_value(ProfileRecordSchemaScript.local_position_value(voxel_entry, Vector3.ZERO), Vector3.ZERO)
 		var color := VariantUtils.color_from_value(voxel_entry.get("color", fallback_color), fallback_color) if voxel_entry.has("color") else fallback_color
 		var complexity := clampf(float(voxel_entry.get("complexity", fallback_complexity)), 0.0, 1.0)
 		color.a = complexity
-		var collision_strength := clampf(float(voxel_entry.get("collision", 1.0)), 0.0, 1.0)
+		var collision_strength := ProfileRecordSchemaScript.collision_strength(voxel_entry)
 		var is_support := absf(point.y - min_y) < 0.01
 		var wc := 1.0
 		var wcx := 1.0
@@ -596,7 +615,7 @@ static func normalize_probe(raw_probe: Dictionary) -> Dictionary:
 	probe["expected_color"] = color
 	probe["expected_complexity"] = complexity
 	probe["expected_rgba8"] = int(probe.get("expected_rgba8", BufferUtils.pack_semantic_rgba8_word(color)))
-	probe["expected_collision"] = clampf(float(probe.get("expected_collision", probe.get("collision", 0.0))), 0.0, 1.0)
+	probe["expected_collision"] = ProfileRecordSchemaScript.probe_expected_collision(probe)
 	probe["source"] = str(probe.get("source", "manual"))
 
 	probe["w_color"] = float(probe.get("w_color", 1.0))
@@ -619,25 +638,6 @@ static func make_probe(offset: Vector3, color: Color, collision: float, w_color:
 		"w_collision": w_collision,
 		"source": source,
 	}
-
-
-## 从探针字典推导 shader 用的 rgba8 word——探针 schema 的单一权威版本，供
-## prefilter/container 两条打包链共用（各自留薄委托）。优先走颜色路径：四键
-## expected_color/color/expected_complexity/complexity 任一命中即以颜色打包
-## （complexity 写入 alpha），保住 complexity-only 探针的 alpha；否则回退由
-## expected_rgba8 解出的语义色，缺省 pack_semantic(WHITE)（不产出"黑透明负票"
-## 探针）。规范化探针恒带 expected_color+expected_complexity+expected_rgba8 三键，
-## 逐位落颜色路径——两条缺省仅在绕过 normalize 的手写探针上可观测。
-static func shader_rgba8_from_probe(probe: Dictionary) -> int:
-	if probe.has("expected_color") or probe.has("color") or probe.has("expected_complexity") or probe.has("complexity"):
-		var color := VariantUtils.color_from_value(
-			probe.get("expected_color", probe.get("color", Color.WHITE)),
-			Color.WHITE
-		)
-		color.a = clampf(float(probe.get("expected_complexity", probe.get("complexity", color.a))), 0.0, 1.0)
-		return BufferUtils.pack_shader_rgba8_word(color)
-	var semantic_packed := int(probe.get("expected_rgba8", BufferUtils.pack_semantic_rgba8_word(Color.WHITE)))
-	return BufferUtils.semantic_to_shader_rgba8_word(semantic_packed)
 
 
 ## 从探针字典取出度量权重，组成 Vector3(w_color, w_complexity, w_collision)，缺省均 1.0。

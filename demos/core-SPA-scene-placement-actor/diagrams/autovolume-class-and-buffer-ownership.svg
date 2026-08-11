@@ -1,0 +1,250 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1660" height="1150" viewBox="0 0 1660 1150" role="img" aria-labelledby="title desc">
+  <title id="title">AutoVolume 公用体积基类：类关系与 Buffer 归属</title>
+  <desc id="desc">PickableDomain 是 SPA 下所有可点选元素的共同根；体积元素按元素空间分为 AutoVolumeField / AutoVolumeTile / AutoVolumeAnchor 三层。卷节点只转发 Buffer RID，事实源持有者是 GPU 侧的非节点对象。</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-indigo" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#4f46e5"/>
+    </marker>
+    <marker id="arrow-slate" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#64748b"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+
+    <!-- 核心根类：indigo 十字交叉。base #e0e7ff / texture #4f46e5 / opacity 51/161 -->
+    <pattern id="pickable-domain-cross-bg" patternUnits="userSpaceOnUse" width="12" height="12">
+      <rect width="12" height="12" fill="#e0e7ff"/>
+      <path d="M0 6H12" stroke="#4f46e5" stroke-width="1" opacity="0.316770"/>
+      <path d="M6 0V12" stroke="#4f46e5" stroke-width="1" opacity="0.316770"/>
+    </pattern>
+    <!-- Buffer 事实源持有者：slate 横条。base #e2e8f0 / texture #334155 / opacity 51/175 -->
+    <pattern id="buffer-owner-stripe-bg" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#e2e8f0"/>
+      <rect y="1" width="10" height="2" fill="#334155" opacity="0.291429"/>
+      <rect y="6" width="10" height="1.5" fill="#334155" opacity="0.291429"/>
+    </pattern>
+  </defs>
+
+  <style>
+    :root { color-scheme: light; }
+    .bg { fill: #f8fafc; }
+    .title { fill: #0f172a; font: 700 30px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .subtitle { fill: #475569; font: 500 14px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .lane { fill: #ffffff; stroke: #dbe3ef; stroke-width: 1.2; filter: url(#shadow); }
+    .lane-title { fill: #334155; font: 700 14px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .lane-sub { fill: #64748b; font: 500 11px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .node { stroke-width: 1.5; filter: url(#shadow); }
+    .node-title { fill: #0f172a; font: 700 15px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .node-title-sm { fill: #0f172a; font: 700 13px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .small { fill: #475569; font: 500 11.5px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .mono { fill: #334155; font: 600 11px Consolas, "Cascadia Mono", monospace; }
+    .mono-sm { fill: #475569; font: 600 10px Consolas, "Cascadia Mono", monospace; }
+    .edge { stroke: #334155; stroke-width: 1.6; fill: none; }
+    .edge-indigo { stroke: #4f46e5; stroke-width: 1.8; fill: none; }
+    .edge-forward { stroke: #64748b; stroke-width: 1.5; fill: none; stroke-dasharray: 6 4; }
+    .edge-label { fill: #64748b; font: 600 10.5px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+
+    /* 核心根类 */
+    .core { fill: url(#pickable-domain-cross-bg); stroke: #4f46e5; }
+    /* 体积抽象层：同族、降一级，不加纹理 */
+    .abstract { fill: #eef2ff; stroke: #6366f1; }
+    /* 具体卷节点：按元素空间着色 */
+    .space-voxel  { fill: #dbeafe; stroke: #2563eb; }
+    .space-tile   { fill: #dcfce7; stroke: #16a34a; }
+    .space-slot   { fill: #fef3c7; stroke: #d97706; }
+    .space-inst   { fill: #fae8ff; stroke: #a21caf; }
+    /* 未落地 */
+    .pending { stroke-dasharray: 7 4; }
+    /* Buffer 事实源持有者 */
+    .owner { fill: url(#buffer-owner-stripe-bg); stroke: #475569; }
+    /* 说明条 */
+    .note { fill: #fffbeb; stroke: #f59e0b; stroke-width: 1.4; }
+    .note-text { fill: #0f172a; font: 600 12px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .note-body { fill: #475569; font: 500 11.5px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+    .badge { font: 700 10px "Segoe UI", "Microsoft YaHei", Arial, sans-serif; fill: #ffffff; }
+  </style>
+
+  <rect class="bg" width="1660" height="1150"/>
+
+  <text class="title" x="40" y="54">AutoVolume 公用体积基类：类关系与 Buffer 归属</text>
+  <text class="subtitle" x="40" y="84">PickableDomain 是 SPA 下所有可点选元素的共同根。体积元素以「元素空间」为唯一抽象轴分三层；⚠ 卷节点是 Buffer 的<tspan font-weight="700" fill="#b45309">转发者</tspan>，不是所有者。</text>
+
+  <!-- ── 泳道 ───────────────────────────────────────────────────────── -->
+  <rect class="lane" x="40" y="118" width="400" height="762" rx="10"/>
+  <text class="lane-title" x="64" y="146">① 基类层</text>
+  <text class="lane-sub" x="64" y="164">scripts/pickable_domain.gd · auto_volume_*.gd</text>
+
+  <rect class="lane" x="460" y="118" width="450" height="762" rx="10"/>
+  <text class="lane-title" x="484" y="146">② 卷节点（场景树 SPA/Volumes/*）</text>
+  <text class="lane-sub" x="484" y="164">域身份 · 修订号 · 显示 · 点选载荷解码</text>
+
+  <rect class="lane" x="930" y="118" width="690" height="762" rx="10"/>
+  <text class="lane-title" x="954" y="146">③ Buffer 事实源持有者（非节点，GPU 侧）</text>
+  <text class="lane-sub" x="954" y="164">分配 / 释放 / 持有 RenderingDevice 与 RID</text>
+
+  <!-- ── ① 核心根类 ─────────────────────────────────────────────────── -->
+  <rect class="node core" x="64" y="182" width="328" height="106" rx="9"/>
+  <text class="node-title" x="82" y="208">PickableDomain</text>
+  <text class="mono" x="82" y="228">extends Node3D</text>
+  <text class="small" x="82" y="250">点选登记 · 域身份 · 内容修订号</text>
+  <text class="small" x="82" y="268">SPA 解析 · 显示节点生命周期 · 软重载自愈</text>
+
+  <!-- 竖脊 -->
+  <path class="edge-indigo" d="M80 288 V 842"/>
+
+  <!-- ── ① 体积抽象层 ───────────────────────────────────────────────── -->
+  <path class="edge-indigo" d="M80 448 H 106" marker-end="url(#arrow-indigo)"/>
+  <rect class="node abstract" x="112" y="396" width="280" height="104" rx="8"/>
+  <rect x="112" y="396" width="280" height="22" rx="8" fill="#6366f1"/>
+  <rect x="112" y="408" width="280" height="10" fill="#6366f1"/>
+  <text class="badge" x="124" y="412">元素空间：体素 grid</text>
+  <text class="node-title-sm" x="124" y="442">AutoVolumeField</text>
+  <text class="small" x="124" y="462">场对 Buffer · 显示几何推导</text>
+  <text class="small" x="124" y="480">紧凑实例表 · 稀疏载荷 / 稠密视图</text>
+
+  <path class="edge-indigo" d="M80 646 H 106" marker-end="url(#arrow-indigo)"/>
+  <rect class="node abstract" x="112" y="610" width="280" height="72" rx="8"/>
+  <rect x="112" y="610" width="280" height="22" rx="8" fill="#6366f1"/>
+  <rect x="112" y="622" width="280" height="10" fill="#6366f1"/>
+  <text class="badge" x="124" y="626">元素空间：瓦片 grid/8</text>
+  <text class="node-title-sm" x="124" y="656">AutoVolumeTile</text>
+  <text class="small" x="124" y="674">按自身瓦片坐标现算覆盖的 SV 体素</text>
+
+  <path class="edge-indigo" d="M80 742 H 106" marker-end="url(#arrow-indigo)"/>
+  <rect class="node abstract" x="112" y="706" width="280" height="72" rx="8"/>
+  <rect x="112" y="706" width="280" height="22" rx="8" fill="#6366f1"/>
+  <rect x="112" y="718" width="280" height="10" fill="#6366f1"/>
+  <text class="badge" x="124" y="722">元素空间：稀疏槽</text>
+  <text class="node-title-sm" x="124" y="752">AutoVolumeAnchor</text>
+  <text class="small" x="124" y="770">活跃数需回读原子计数</text>
+
+  <!-- AutoObject 不经体积抽象层，直连根类 -->
+  <path class="edge-indigo" d="M80 842 H 478" marker-end="url(#arrow-indigo)"/>
+  <text class="edge-label" x="150" y="836">实例域：不实现 element_* 那批</text>
+
+  <!-- ── ② 卷节点 ───────────────────────────────────────────────────── -->
+  <rect class="node space-voxel" x="484" y="316" width="402" height="60" rx="8"/>
+  <text class="node-title-sm" x="500" y="340">SceneSVVolume</text>
+  <text class="mono-sm" x="500" y="358">SPA/Volumes/SceneSV · 正四面体（紧凑，只画非空砖）</text>
+  <rect x="806" y="326" width="66" height="18" rx="9" fill="#16a34a"/>
+  <text class="badge" x="818" y="339">ID pass</text>
+
+  <rect class="node space-voxel" x="484" y="384" width="402" height="60" rx="8"/>
+  <text class="node-title-sm" x="500" y="408">TargetSVSetup</text>
+  <text class="mono-sm" x="500" y="426">SPA/Volumes/TargetSV · 方盒（全网格，恒等映射）</text>
+  <rect x="806" y="394" width="66" height="18" rx="9" fill="#16a34a"/>
+  <text class="badge" x="818" y="407">ID pass</text>
+
+  <rect class="node space-voxel" x="484" y="452" width="402" height="60" rx="8"/>
+  <text class="node-title-sm" x="500" y="476">BrushSVVolume</text>
+  <text class="mono-sm" x="500" y="494">SPA/Volumes/BrushSV · 显示仍在 addon（V1 缺口）</text>
+  <rect x="806" y="462" width="66" height="18" rx="9" fill="#94a3b8"/>
+  <text class="badge" x="824" y="475">不可选</text>
+
+  <rect class="node space-voxel" x="484" y="520" width="402" height="60" rx="8"/>
+  <text class="node-title-sm" x="500" y="544">BlendSVVolume</text>
+  <text class="mono-sm" x="500" y="562">SPA/Volumes/BlendSV · 无可视化（一次性混合暂存）</text>
+  <rect x="806" y="530" width="66" height="18" rx="9" fill="#94a3b8"/>
+  <text class="badge" x="824" y="543">不可选</text>
+
+  <rect class="node space-tile" x="484" y="616" width="402" height="60" rx="8"/>
+  <text class="node-title-sm" x="500" y="640">SVTileVolume</text>
+  <text class="mono-sm" x="500" y="658">SPA/Volumes/SVTile · 八面体（只画非空砖，默认关）</text>
+  <rect x="806" y="626" width="66" height="18" rx="9" fill="#16a34a"/>
+  <text class="badge" x="818" y="639">ID pass</text>
+
+  <rect class="node space-slot" x="484" y="712" width="402" height="60" rx="8"/>
+  <text class="node-title-sm" x="500" y="736">AnchorVolume</text>
+  <text class="mono-sm" x="500" y="754">SPA/Volumes/Anchor · 三条显示通路仍在 VolumeScore（V4 缺口）</text>
+  <rect x="806" y="722" width="66" height="18" rx="9" fill="#16a34a"/>
+  <text class="badge" x="818" y="735">ID pass</text>
+
+  <rect class="node space-inst pending" x="484" y="812" width="402" height="60" rx="8"/>
+  <text class="node-title-sm" x="500" y="836">AutoObject</text>
+  <text class="mono-sm" x="500" y="854">实例池 SoA + alive[] · 显示 PlacedBatch* 仍在 demo 侧</text>
+  <rect x="796" y="822" width="76" height="18" rx="9" fill="#a21caf"/>
+  <text class="badge" x="806" y="835">V5 未落地</text>
+
+  <!-- ① → ② 继承边 -->
+  <path class="edge" d="M392 346 H 478" marker-end="url(#arrow)"/>
+  <path class="edge" d="M392 414 H 478" marker-end="url(#arrow)"/>
+  <path class="edge" d="M392 448 H 430 V 482 H 478" marker-end="url(#arrow)"/>
+  <path class="edge" d="M392 470 H 424 V 550 H 478" marker-end="url(#arrow)"/>
+  <path class="edge" d="M392 646 H 478" marker-end="url(#arrow)"/>
+  <path class="edge" d="M392 742 H 478" marker-end="url(#arrow)"/>
+
+  <!-- ── ③ Buffer 事实源持有者 ──────────────────────────────────────── -->
+  <rect class="node owner" x="954" y="316" width="642" height="60" rx="8"/>
+  <text class="node-title-sm" x="972" y="340">SceneSVFieldStore</text>
+  <text class="mono-sm" x="972" y="358">SV 场对 ×2（complexity rgba8_unorm / collision unorm8_u32）· V3 从 store 劈出</text>
+
+  <rect class="node owner" x="954" y="384" width="642" height="60" rx="8"/>
+  <text class="node-title-sm" x="972" y="408">TargetSVSetup + TargetSVLoader</text>
+  <text class="mono-sm" x="972" y="426">TargetSV 场对 ×2 · ⚠ 唯一「节点自己就是持有者」的域</text>
+
+  <rect class="node owner" x="954" y="452" width="642" height="128" rx="8"/>
+  <text class="node-title-sm" x="972" y="478">ScenePlacementRuntime</text>
+  <text class="mono-sm" x="972" y="498">BrushSV 场对 ×2 + BlendSV 场对 ×2</text>
+  <text class="small" x="972" y="520">它才是 RenderingDevice 的持有者：写入（散射 shader）与合成都在这里。</text>
+  <text class="small" x="972" y="540">分配逻辑已与卷侧收敛进 utils/volume_field_buffers.gd —— 两侧走同一段代码，</text>
+  <text class="small" x="972" y="560">但<tspan font-weight="700" fill="#b45309">所有权是另一件事</tspan>，搬进节点会让 GPU 管线反过来依赖场景树。</text>
+
+  <rect class="node owner" x="954" y="616" width="642" height="60" rx="8"/>
+  <text class="node-title-sm" x="972" y="640">SceneVoxelTileStore</text>
+  <text class="mono-sm" x="972" y="658">瓦片 6 buffer（记录 / 摘要 / object-ref / dirty）· 场对已劈走，退化为归约算子</text>
+
+  <rect class="node owner" x="954" y="712" width="642" height="60" rx="8"/>
+  <text class="node-title-sm" x="972" y="736">AutoObjectProbePrefilterGPU</text>
+  <text class="mono-sm" x="972" y="754">uvec4[] 稀疏槽 + 原子计数 · ANCHOR_CAPACITY = 65536 · V4 待移出</text>
+
+  <rect class="node owner" x="954" y="812" width="642" height="60" rx="8"/>
+  <text class="node-title-sm" x="972" y="836">GPUAutoObjectRuntime</text>
+  <text class="mono-sm" x="972" y="854">实例 SoA + alive[] · 显示走 PlacedInstanceDisplay（stride 20 float）</text>
+
+  <!-- ② → ③ 转发边 -->
+  <path class="edge-forward" d="M886 346 H 948" marker-end="url(#arrow-slate)"/>
+  <path class="edge-forward" d="M886 414 H 948" marker-end="url(#arrow-slate)"/>
+  <path class="edge-forward" d="M886 482 H 920 V 500 H 948" marker-end="url(#arrow-slate)"/>
+  <path class="edge-forward" d="M886 550 H 920 V 532 H 948" marker-end="url(#arrow-slate)"/>
+  <path class="edge-forward" d="M886 646 H 948" marker-end="url(#arrow-slate)"/>
+  <path class="edge-forward" d="M886 742 H 948" marker-end="url(#arrow-slate)"/>
+  <path class="edge-forward" d="M886 842 H 948" marker-end="url(#arrow-slate)"/>
+  <text class="edge-label" x="892" y="300">转发 RID（虚线）</text>
+  <text class="edge-label" x="396" y="300">继承（实线）</text>
+
+  <!-- ── 底部说明 ───────────────────────────────────────────────────── -->
+  <rect class="note" x="40" y="908" width="510" height="212" rx="9"/>
+  <text class="note-text" x="62" y="936">⚠ 卷节点是转发者，不是 Buffer 所有者</text>
+  <text class="note-body" x="62" y="960">把所有权搬进节点，会让 GPU 管线反过来依赖场景树节点</text>
+  <text class="note-body" x="62" y="980">—— 依赖方向拧反。分配<tspan font-weight="700" fill="#b45309">逻辑</tspan>已经收敛，所有权没有动。</text>
+  <text class="note-text" x="62" y="1012">⚠ 基类不持有坐标框架</text>
+  <text class="note-body" x="62" y="1036">grid_size / voxel_size / grid_origin 的事实源是</text>
+  <text class="mono-sm" x="62" y="1056">ScenePlacementActor.get_grid_frame()</text>
+  <text class="note-body" x="62" y="1076">PickableDomain.grid_frame() 只转发，不复制。</text>
+  <text class="note-body" x="62" y="1098">格式权威留在 BufferDescriptor / SceneVoxelTileCodec。</text>
+
+  <rect class="note" x="570" y="908" width="510" height="212" rx="9"/>
+  <text class="note-text" x="592" y="936">ID pass：五个可点选域全部已接管</text>
+  <text class="note-body" x="592" y="960">AutoObject · Anchor · TargetSV · SV · SVTile</text>
+  <text class="note-body" x="592" y="982">「可视化即拾取几何」：画不出像素就没有 pick_id ⇒</text>
+  <text class="note-body" x="592" y="1002">visible = false 自动不参与点选，无需逐处检查。</text>
+  <text class="note-body" x="592" y="1030">⚠ BrushSV 不是可选域（合同表 MODE_DISPLAY_ONLY），</text>
+  <text class="note-body" x="592" y="1050">BlendSV 显式 participates_in_picking() == false。</text>
+  <text class="note-body" x="592" y="1078">⚠ 域已切换 ≠ drawable 已归位：anchor / autoobject 的</text>
+  <text class="note-body" x="592" y="1098">显示节点仍在 demo 侧，卷节点只有域身份（V4 / V5 缺口）。</text>
+
+  <rect class="note" x="1100" y="908" width="520" height="212" rx="9"/>
+  <text class="note-text" x="1122" y="936">元素空间是唯一抽象轴</text>
+  <text class="note-body" x="1122" y="962">5 个体积元素分属三种元素空间，体积层按此分三个并列</text>
+  <text class="note-body" x="1122" y="982">基类；子类差异不新增枚举，直接引用 BufferDescriptor 的</text>
+  <text class="mono-sm" x="1122" y="1002">KIND_* / DENSITY_* 二元组。</text>
+  <text class="note-text" x="1122" y="1034">⚠ 并列 ≠ 参赛</text>
+  <text class="note-body" x="1122" y="1058">AutoVolumeTile 继承 PickableDomain 不改</text>
+  <text class="mono-sm" x="1122" y="1078">COMPETING_DOMAIN_MASK</text>
+  <text class="note-body" x="1122" y="1098">—— SVTILE 是 SV 的一个视图，不是独立卷。</text>
+</svg>

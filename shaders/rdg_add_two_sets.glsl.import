@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dnxh1pngifnmm"
+path="res://.godot/imported/rdg_add_two_sets.glsl-d4ee185640163fe1b93ac03b6c559cd3.res"
+
+[deps]
+
+source_file="res://shaders/rdg_add_two_sets.glsl"
+dest_files=["res://.godot/imported/rdg_add_two_sets.glsl-d4ee185640163fe1b93ac03b6c559cd3.res"]
+
+[params]
+

@@ -1,6 +1,6 @@
 // Golden-master consumer for the volume-score pipeline (统一Debug承载方案 step 6 consumer chain).
 // Talks to the MeshFill editor bridge (127.0.0.1:6800), runs the deterministic scoring pass
-// PlacementScore3DScene/VolumeScore.run_golden_snapshot() (debug_read_golden_snapshot=true,
+// PlacementScore3DScene/SPA/Volumes/VolumeScore.run_golden_snapshot() (debug_read_golden_snapshot=true,
 // voxel channel section included via the demo's existing debug_read_voxel_channels=true),
 // normalizes the returned text and compares it against the git-committed baseline
 // goldens/volume_score_golden.approved.txt.
@@ -20,7 +20,7 @@ const path = require('path');
 
 const SCENE_PATH = 'res://demos/placement-score-3d/placement-score-3d.tscn';
 const SCENE_ROOT = 'PlacementScore3DScene';
-const RUNNER_NODE = 'VolumeScore';
+const RUNNER_NODE = 'SPA/Volumes/VolumeScore';
 const RUNNER_SCRIPT = 'volume_score_demo.gd';
 const RUNNER_METHOD = 'run_golden_snapshot';
 const GOLDEN_FILE = path.join(__dirname, '..', 'goldens', 'volume_score_golden.approved.txt');
@@ -58,10 +58,30 @@ function normalize(text) {
 }
 
 // Minimal unified diff (LCS over lines, 3 lines of context).
+// Guard: the LCS table is O(n*m) Int32 — with full-anchor snapshots (>100k
+// lines per side) that is tens of GB. Above the cell budget, fall back to a
+// first-difference summary instead of a full diff.
+const LCS_CELL_BUDGET = 64e6;
+function firstDiffSummary(a, b) {
+  const upto = Math.min(a.length, b.length);
+  let k = 0;
+  while (k < upto && a[k] === b[k]) k++;
+  const out = ['--- ' + path.relative(process.cwd(), GOLDEN_FILE), '+++ current',
+    '(diff too large for LCS: ' + a.length + ' vs ' + b.length + ' lines; first difference at line ' + (k + 1) + ')'];
+  for (let p = Math.max(0, k - 3); p < Math.min(upto, k + 4); p++) {
+    if (p < a.length && p !== k) out.push(' ' + a[p]);
+    if (p === k) {
+      if (k < a.length) out.push('-' + a[k]);
+      if (k < b.length) out.push('+' + b[k]);
+    }
+  }
+  return out.join('\n') + '\n';
+}
 function unifiedDiff(aText, bText) {
   const a = aText.split('\n'); if (a[a.length - 1] === '') a.pop();
   const b = bText.split('\n'); if (b[b.length - 1] === '') b.pop();
   const n = a.length, m = b.length;
+  if ((n + 1) * (m + 1) > LCS_CELL_BUDGET) return firstDiffSummary(a, b);
   const lcs = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
   for (let i = n - 1; i >= 0; i--)
     for (let j = m - 1; j >= 0; j--)
