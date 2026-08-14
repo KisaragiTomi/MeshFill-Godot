@@ -21,7 +21,20 @@ const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_FORMAT := COMPLEXITY_FIELD_FORMAT_RGBA8
 const SCENE_VOXEL_TILE_COLLISION_FIELD_FORMAT := COLLISION_FIELD_FORMAT_UNORM8_U32
 const SCENE_VOXEL_TILE_COMPLEXITY_FIELD_STRIDE_BYTES := COMPLEXITY_FIELD_STRIDE_BYTES
 const SCENE_VOXEL_TILE_COLLISION_FIELD_STRIDE_BYTES := COLLISION_FIELD_U32_STRIDE_BYTES
-const SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT := 8
+## 每个 tile 记录「哪些对象占了我」的固定槽位数。
+##
+## ⚠ 8 太小，实测会静默丢引用：1511 个对象铺在 3072 个 tile 上时
+## `object_ref_overflow_count = 444`，`object_ref_update_reason = "object_ref_overflow"`，
+## 于是 tile 的对象引用表残缺——症状是「放了几千个 autoobject，SVTile 热力图 0 occupied tile」
+## （scene_placement_actor.gd 的逐批报告里也会把 pass 标成 blocked）。
+##
+## 抬到 32 的代价可以忽略：缓冲是 `tile_count * refs_per_tile * 4 B`，
+## 3072 tile 下 98 KB → 393 KB。shader 侧不需要跟着改——
+## `scene_voxel_tile_object_ref_update.glsl` 经 push constant `tile_size.w` 收这个值，
+## 没有硬编码；GD 侧其余位置全部派生自本常量。
+##
+## 还溢出就继续抬（先看 get_svtile_gpu_status() 的 object_ref_overflow_count）。
+const SCENE_VOXEL_TILE_OBJECT_REFS_PER_TILE_DEFAULT := 32
 
 const FLAG_SCENE := 1
 const FLAG_COLLISION := 2

@@ -139,10 +139,20 @@ enum LifecycleState {
 ## 恢复方法见该 shader 文件头。
 @export_range(0.0, 1.0, 0.001) var min_prefilter_score := 0.35
 ## Place 每批 Reduce 的输出上限。达到上限时只截断输出，不触发补放。
-@export_range(64, 1024, 64) var place_result_capacity := 1024
+## ⚠ 这不是「最多放几个」的策略帽，而是**每批 GPU 结果缓冲的尺寸**：
+## `placement_results = result_capacity * RECORD_STRIDE(4) * 16` 字节，
+## 另有 `stamp_bounds = result_capacity * 2 * 16`、`stamp_capacity = result_capacity * 资产数`。
+## 所以它没法「去掉」，只能抬——4096 时结果缓冲 256 KB + 边界缓冲 128 KB，可忽略。
+## 批循环耗尽后自然收敛（见 run_place 的 `batch_spawned <= 0`），它只决定**分批粒度**：
+## 调大 = 每批装得下更多、批数更少、总墙钟更短；不影响最终放置总数。
+@export_range(64, 16384, 64) var place_result_capacity := 4096
 ## Place 单次命令最多自动跑的批数（每批整链 S5→S9）。上一批盖章 collision 使下一批
-## 自然避开已放置足迹；某批 spawned < 每批容量即判定"放满"提前停。
-@export_range(1, 64, 1) var place_max_batches := 24
+## 自然避开已放置足迹；**某批 spawned == 0 即判定放满**，正常情况下轮不到本上限。
+##
+## ⚠ 保留它不是为了限流，是**跑飞兜底**：退出条件依赖管线单调收敛（每批盖章都缩小候选池），
+## 而那是观测到的性质、不是被证明的不变量。去掉就等于 `while true`，管线一旦不收敛就把
+## 编辑器挂死。真被顶到时会 push_warning，绝不静默截断。
+@export_range(1, 1024, 1) var place_max_batches := 256
 ## 放置最小间距（体素；reduce min-distance 冲突门）。
 @export_range(0.0, 16.0, 0.5) var place_min_distance_voxels := 2.0
 ## 评分观察 tile 子区域（XZ tile 坐标，tile=8³；全 Y 层）。
@@ -2394,6 +2404,9 @@ func run_place(_settings := {}) -> Dictionary:
 	var spawned_total := 0
 	var batches := 0
 	var batch_reports: Array = []
+	# 循环是靠 `batch_spawned <= 0` 自然收敛的；跑满 place_max_batches 属于**没收敛**，
+	# 必须报出来——静默截断正是「点一次 Place 只铺一部分」那类问题的温床。
+	var converged := false
 	for batch in range(maxi(place_max_batches, 1)):
 		if _placed_object_ids.size() + place_result_capacity > autoobject_capacity:
 			push_warning("[ScenePlacementActor] Place 停在容量帽：累计 %d 接近 runtime 容量 %d" % [
@@ -2503,8 +2516,18 @@ func run_place(_settings := {}) -> Dictionary:
 			"placement_result_has_ok": placement_result.has("ok"),
 			"timing": placement_result.get("score_timing_profile", {}),
 		})
-		if batch_spawned < place_result_capacity:
+		# ⚠ 这里曾是 `batch_spawned < place_result_capacity`，即拿「这批少于容量」当
+		# 「没东西可放了」的代理指标。它成立的前提是每批的产出只受容量限制——而实际每轮的
+		# 候选供给受脏清单覆盖、间距种子、冲突消解共同限制，实测一批只出 82 个（容量 1024）。
+		# 于是循环恒定跑一批就退出，`place_max_batches` 那个上限从来没机会生效，
+		# 表现是「点一次 Place 只铺出一小片，得点很多次」。
+		# 唯一诚实的耗尽判据是**这批一个都没产出**。
+		if batch_spawned <= 0:
+			converged = true
 			break
+	if not converged and batches >= maxi(place_max_batches, 1):
+		push_warning("[ScenePlacementActor] Place 跑满 %d 批仍未收敛（本次 spawned=%d）——还有候选没放完，调大 place_max_batches 再点一次。" % [
+			maxi(place_max_batches, 1), spawned_total])
 	_placement_env.end_place_session()
 	# Place 改了 SceneSV ⇒ 上一轮评分的输入没了，cache key 与模型一起作废。
 	_score_cache_key = {}
