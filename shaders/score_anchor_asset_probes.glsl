@@ -157,7 +157,7 @@ float profile_sample_weighted_loss(vec4 loss, ProfileSample profile_sample, vec3
 // --- Buffers ---
 
 layout(set = 0, binding = 0, std430) restrict readonly buffer AnchorBuf {
-    uvec4 anchors[];    // (x, y, z, reserved)
+    uvec4 anchors[];    // (x, y, z, .w = floatBitsToUint(离地表垂直距离))；本 pass 只用 .xyz
 };
 
 // Per-asset probe range: asset_probe_range[asset_id] = (start, count)

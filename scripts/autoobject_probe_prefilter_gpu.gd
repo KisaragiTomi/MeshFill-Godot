@@ -65,7 +65,7 @@ const EMPTY_ASSET_ID := 0xffffffff
 const COLLECT_PUSH := [
 	["grid_x", "int"], ["grid_y", "int"], ["grid_z", "int"], ["dirty_count", "int"],
 	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["anchor_capacity", "int"],
-	["reserved0", "float"], ["reserved1", "float"], ["reserved2", "float"], ["min_target_interest", "float"],
+	["anchor_voxel_size_y", "float"], ["reserved1", "float"], ["reserved2", "float"], ["min_target_interest", "float"],
 	["collect_groups_x", "int"], ["collect_groups_y", "int"], ["anchor_vertical_stride", "int"], ["anchor_terrain_slice", "int"],
 ]
 const ANCHOR_FINALIZE_PUSH := [
@@ -436,7 +436,7 @@ func _run_gpu_pipeline(
 		if not _dispatch_collect(
 			target_field_buf, target_collision_buf, dirty_worklist_buf, dirty_count_buf,
 			anchor_buf, anchor_count_buf,
-			grid_size, tile_grid, dirty_capacity, terrain_slice
+			grid_size, tile_grid, dirty_capacity, terrain_slice, voxel_size.y
 		):
 			var pipeline_status := _pipeline_readiness()
 			assert(false, "AutoObjectProbePrefilterGPU: collect anchor dispatch failed")
@@ -525,7 +525,8 @@ func _dispatch_collect(
 	grid_size: Vector3i,
 	tile_grid: Vector3i,
 	dirty_capacity: int,
-	terrain_slice: int
+	terrain_slice: int,
+	voxel_size_y: float
 ) -> bool:
 	var collect_groups := _linear_dispatch_groups(dirty_capacity)
 	if collect_groups == Vector3i.ZERO:
@@ -551,6 +552,9 @@ func _dispatch_collect(
 		tile_grid_y = tile_grid.y,
 		tile_grid_z = tile_grid.z,
 		anchor_capacity = ANCHOR_CAPACITY,
+		# anchor 记录 .w = 该锚点中心离地表的垂直距离（世界单位）。网格 Y 是地形相对的，
+		# 所以这只是层数 × 层高，不需要地形高度场（本 pass 刻意不依赖它，见文件头）。
+		anchor_voxel_size_y = voxel_size_y,
 		min_target_interest = min_target_interest,
 		collect_groups_x = collect_groups.x,
 		collect_groups_y = collect_groups.y,

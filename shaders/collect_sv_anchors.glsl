@@ -50,7 +50,8 @@ layout(set = 0, binding = 2, std430) restrict readonly buffer DirtyTiles {
     uint dirty_tile_ids[];
 };
 
-// Output: packed anchors (x, y, z, reserved) as uvec4
+// Output: packed anchors (x, y, z, height_above_terrain_bits) as uvec4.
+// .w = floatBitsToUint(该锚点中心离**地表**的垂直距离, 世界单位)。消费端 uintBitsToFloat 解。
 layout(set = 0, binding = 3, std430) restrict buffer AnchorOut {
     uvec4 anchors[];
 };
@@ -67,7 +68,7 @@ layout(set = 0, binding = 5, std430) restrict readonly buffer DirtyTileCount {
 layout(push_constant, std430) uniform Params {
     ivec4 grid_size_pad;          // xyz = grid dims, w = dirty_tile_count
     ivec4 tile_grid_size_pad;     // xyz = tile grid dims, w = anchor_capacity
-    vec4  thresholds;             // w = min_target_interest (x/y/z retired: scene/collision/support gates dropped)
+    vec4  thresholds;             // x = voxel_size.y（写 anchor .w 用）, w = min_target_interest (y/z retired)
     ivec4 dispatch_shape_pad;     // x = dirty dispatch groups_x, z = vertical_stride, w = terrain_slice
 };
 
@@ -107,11 +108,24 @@ ivec3 tile_id_to_origin(uint tile_id) {
     return ivec3(tx, ty, tz) * int(TILE_SIZE);
 }
 
-void try_emit_anchor(ivec3 p) {
+// layers_above_terrain = p.y - terrain_slice（调用点已算好，别在这里重算）。
+//
+// 为什么这是**精确**的地表垂直距离而不是近似：网格 Y 轴是地形相对的
+// （world.y = terrain_height * height_scale + grid_origin.y + (slice + 0.5) * voxel_size.y），
+// terrain_slice 是相对高度从 0 起算的那个 cell ⇒ 地表恰好落在它的下表面。所以任意列上
+// 「锚点中心 - 地表」都等于 (layers + 0.5) * voxel_size.y，与该列的实际地形高度无关。
+// 这也是本 pass 不需要地形高度场的原因（见文件头）。
+//
+// ⚠ 这是**垂直**距离，不是三维最近表面距离。陡坡上最近的地表点不在正下方，
+// 两者相差 cos(坡度)：15° 差 3.4%、30° 差 13.4%、45° 差 29.3%。需要坡度相关的语义时
+// 要另接地形高度场做邻域搜索（高度场支持 O(1) 随机访问，用不着 BVH）。
+void try_emit_anchor(ivec3 p, int layers_above_terrain) {
     uint cap = uint(tile_grid_size_pad.w);
     uint idx = atomicAdd(anchor_count, 1u);
     if (idx < cap) {
-        anchors[idx] = uvec4(uint(p.x), uint(p.y), uint(p.z), 0u);
+        float height_above_terrain = (float(layers_above_terrain) + 0.5) * thresholds.x;
+        anchors[idx] = uvec4(
+            uint(p.x), uint(p.y), uint(p.z), floatBitsToUint(height_above_terrain));
     }
 }
 
@@ -141,5 +155,5 @@ void main() {
     }
 
     // "能采样到就生成" — the sample at this height decides it.
-    if (in_target(voxel_index(p))) try_emit_anchor(p);
+    if (in_target(voxel_index(p))) try_emit_anchor(p, height_above_terrain);
 }

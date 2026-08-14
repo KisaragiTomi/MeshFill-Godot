@@ -231,7 +231,7 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer TgtSamplePair {
 };
 
 layout(set = 0, binding = 4, std430) restrict readonly buffer AnchorRecords {
-    uvec4 anchors[];
+    uvec4 anchors[];    // (x, y, z, .w = floatBitsToUint(离地表垂直距离))；本 pass 只用 .xyz
 };
 
 layout(set = 0, binding = 5, std430) restrict readonly buffer AnchorCountBuf {

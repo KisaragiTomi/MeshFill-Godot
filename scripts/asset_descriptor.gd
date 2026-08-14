@@ -89,8 +89,16 @@ func _init() -> void:
 @export var object_type: String = ""                            # runtime grouping，不替代 descriptor 语义
 @export var voxel_profile: AutoVoxelProfile                     # import-time profile source
 @export var mesh: Mesh                                          # 显示 mesh
-@export var source_mesh: Mesh                                   # source mesh，用于导入/重建
-@export var source_mesh_path: String = ""                       # source mesh 资源路径
+## ⚠ 刻意**不导出**：这是 `get_source_mesh()` 的运行期解析缓存，不是持久化字段。
+## 持久化的真相只有下面的 `source_mesh_path`。
+##
+## 导出过一次的代价（实测）：`resolve_cached_source_mesh()` 命中路径后会把加载到的 Mesh
+## 写回本字段，而 FBX 里的 ArrayMesh 是被导入场景的子资源、存不成 ext_resource 引用
+## ⇒ `ResourceSaver.save()` 只能把整份网格**内嵌**进 .tres。于是同一份 descriptor 的体积
+## 在「有没有人调过 get_source_mesh()」之间摇摆：0.92 MB ↔ 2.22 MB，每次烘焙都弄脏 git，
+## 而几何一个字节没变。
+var source_mesh: Mesh                                           # 运行期缓存，见上
+@export var source_mesh_path: String = ""                       # source mesh 资源路径（持久化真相）
 @export var mesh_create_method: String = ""                     # 程序化 mesh 创建方法名
 @export var visual_layer: int = 0                               # 实例化时启用的显示层
 @export var group: String = ""                                  # 实例化时加入的分组
