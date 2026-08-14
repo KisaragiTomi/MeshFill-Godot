@@ -85,6 +85,14 @@ func _init() -> void:
 @export var semantic_probe_generator: Resource                    # 保存或生成 semantic_probes 的 profile
 @export_range(0.1, 8.0, 0.1) var semantic_probe_density: float = 1.0 # 自动 probe 生成密度
 @export_range(0.0, 8.0, 0.1) var context_sensing_radius: float = 0.0 # 外围 context probes 半径；0 禁用
+## 互斥半径乘数（放置期成对间距）。reduce（`shaders/invalidate_anchor_conflicts.glsl`）按
+## `dist < max(min_distance_voxels, (r_a + r_b) * asset_spacing_factor)` 淘汰低优先级一端，
+## 其中 `r = mesh AABB 的 XZ 半长 × 本乘数`（`ScenePlacementActor._build_placement_asset_defs()`）。
+## 1.0 = 恰好外接网格；<1 让同类挨得更密，>1 拉开；0 = 取消该资产的成对项，只剩全局
+## `min_distance_voxels` 下界。Asset Overview 的「exclusion radius ×」写的就是它，
+## 同一个值同时驱动那里的互斥球可视化 —— 可视化与 SPA 放置是同一个数，不存在两套。
+## ⚠ 旧 .tres 没有本字段 → 加载后取默认 1.0 → 行为与引入前一致（迁移安全）。
+@export_range(0.0, 8.0, 0.05, "or_greater") var spacing_radius_scale: float = 1.0
 @export var asset_id: String = ""                               # 植被资产 id / debug metadata
 @export var object_type: String = ""                            # runtime grouping，不替代 descriptor 语义
 @export var voxel_profile: AutoVoxelProfile                     # import-time profile source

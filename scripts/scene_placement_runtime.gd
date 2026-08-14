@@ -2171,6 +2171,10 @@ func _apply_prefilter_settings(prefilter: AutoObjectProbePrefilterGPU, settings:
 	prefilter.decode_anchor_dictionaries = bool(settings.get("decode_anchor_dictionaries", true))
 	# Profiling inserts submit+sync boundaries and must never leak into a later normal run.
 	prefilter.profile_timing = bool(settings.get("profile_timing", false))
+	# 会话作用域的锚点复用开关（Place 会话的非首批才带）。⚠ 与上面那批阈值不同，这个
+	# **无条件**按缺省 false 写回：它是"本次调用要不要跳过 collect"的一次性指令，粘住成
+	# true 会让之后的 Anchors/Score 在场景已变的情况下继续吃上一次的锚点池。
+	prefilter.reuse_resident_anchors = bool(settings.get("reuse_resident_anchors", false))
 
 
 # ---------------------------------------------------------------------------
@@ -2694,10 +2698,14 @@ func _build_placement_asset_defs() -> Array:
 		}
 		# Pairwise spacing radius for the reduce (world units, XZ half-extent of
 		# the mesh AABB): trees keep crown distance while grass stays dense.
+		# `spacing_radius_scale` 是 descriptor 上的逐资产手调乘数（Asset Overview 面板的
+		# 「exclusion radius ×」），同一个值也是那里互斥球的半径 —— 面板改完存盘即时生效：
+		# 本函数每次 run_placement_pipeline 都重建 def，读的是常驻 descriptor 实例。
 		var mesh: Mesh = d.get_mesh()
 		if mesh != null:
 			var aabb_size := mesh.get_aabb().size
-			entry["spacing_radius_world"] = maxf(aabb_size.x, aabb_size.z) * 0.5
+			var spacing_scale := maxf(d.spacing_radius_scale, 0.0)
+			entry["spacing_radius_world"] = maxf(aabb_size.x, aabb_size.z) * 0.5 * spacing_scale
 		asset_defs.append(entry)
 	return asset_defs
 

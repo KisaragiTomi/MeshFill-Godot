@@ -149,6 +149,18 @@ var profile_timing: bool = false
 ## GPU 输出）。本类的四个绑定全是外部既有 RID，图不会剔除任何 pass、瞬态池也不参与分配，
 ## 所以这条路目前拿到的是"依赖/切段自动推导"，不是内存复用。
 var use_rdg_dispatch: bool = false
+## 会话作用域的锚点复用指令：为 true 且常驻锚点缓冲有效时，本次 run **跳过 collect
+## 与 collect 缓存键比对**，直接沿用 `_resident_anchor_buf` / `_resident_anchor_count_buf`。
+##
+## ⚠ 存在的理由：collect 只在**脏 tile** 上生成锚点（dispatch 组数 = dirty_capacity），
+## 而 collect 缓存键里含 `dirty_epoch`。Place 每批盖章都会推进 dirty_epoch ⇒ 键失效 ⇒
+## 在已被上一批消费清空的脏清单上重采 ⇒ 锚点池逐批塌缩。锚点缓冲本身是常驻的，逼它
+## 重采的是缓存键。Anchors/Score 需要 dirty_epoch 在场景变化时刷新，所以不能把它从键里
+## 删掉，只能让 Place 会话的非首批显式声明"我要沿用"。
+##
+## ⚠ 由 ScenePlacementRuntime._apply_prefilter_settings 每次调用无条件写回（缺省 false），
+## 不要在本类里让它粘住：粘成 true 的话，之后任何 Anchors/Score 都会吃着陈旧锚点池跑。
+var reuse_resident_anchors: bool = false
 
 # Compute kernels (shader + pipeline + push layout), all SCOPE_PERSISTENT: the
 # pipeline set survives across runs and is only torn down by _free_gpu()/dispose().
@@ -259,6 +271,9 @@ func _repair_soft_reloaded_members() -> void:
 	# 本轮重载**新增**的成员槽是 Nil：调度开关必须回到声明初值（= 旧路径），否则
 	# `if use_rdg_dispatch` 拿 Nil 求值，重载后第一次 run 的调度路径由运气决定。
 	if not (use_rdg_dispatch is bool): use_rdg_dispatch = false
+	# 复用指令必须回到"不复用"：nil 会让 `if reuse_resident_anchors` 的取值由运气决定，
+	# 猜中 true 就是拿一块内容未知的常驻锚点缓冲当本轮结果。
+	if not (reuse_resident_anchors is bool): reuse_resident_anchors = false
 	# 池句柄归零 ⇒ _ensure_rdg_pool 重建。丢掉的旧池是空的（本类不向池 acquire），
 	# 不存在"漏掉一批物理资源"的问题。
 	if not (_rdg_pool is RDGPool): _rdg_pool = null
@@ -396,8 +411,20 @@ func _run_gpu_pipeline(
 		target_buffer_pack,
 		terrain_slice
 	)
-	var collect_cache_hit := _resident_collect_cache_ready(collect_cache_key)
+	# 会话作用域的显式复用优先于缓存键：Place 批间的 dirty_epoch 必然在变，按键比对必然
+	# 未命中，而重采只会在已被清空的脏清单上跑出一个残缺的锚点池（见成员声明处）。
+	# 复用时**不更新** `_resident_collect_cache_key`：会话结束后 Anchors/Score 仍按原键
+	# 判定，该重采时照样重采。
+	var reuse_resident := reuse_resident_anchors \
+		and _resident_anchor_buf.is_valid() \
+		and _resident_anchor_count_buf.is_valid()
+	var collect_cache_hit := reuse_resident or _resident_collect_cache_ready(collect_cache_key)
 	_timing_collect_cache_hit = collect_cache_hit
+	if reuse_resident_anchors and not reuse_resident:
+		# 声明了要复用却没有常驻缓冲可用 = 会话生命周期被破坏（首批没跑成 / 中途 dispose）。
+		# 静默退回重采会在脏清单已空的情况下产出近乎空的锚点池，表现是"这批一个都没放"。
+		push_warning("[AutoObjectProbePrefilterGPU] 声明了 reuse_resident_anchors 但常驻锚点缓冲不可用（anchor=%s count=%s）——退回按缓存键判定，本批锚点池可能残缺。" % [
+			_resident_anchor_buf.is_valid(), _resident_anchor_count_buf.is_valid()])
 	if not collect_cache_hit:
 		_release_resident_collect_cache()
 		_resident_anchor_buf = storage_buffer_uninitialized(

@@ -2,7 +2,7 @@
 class_name DemoDebugVisuals
 extends RefCounted
 
-## Demo 侧 debug 可视化共享工厂：无光照透明调试材质 + 单位线框盒 + 探针小球标记。
+## Demo 侧 debug 可视化共享工厂：无光照透明调试材质 + 单位线框盒 / 线框球 + 探针小球标记。
 ## 之前在 SPA / asset-descriptor / probe-prefilter / volume-score / scenevoxeltile
 ## 各 demo 内联重复；站点特有属性（emission 等）由调用方拿到返回值后再补赋。
 
@@ -44,6 +44,32 @@ static func make_unit_wire_box_mesh() -> ImmediateMesh:
 		mesh.surface_add_vertex(corners[int(edge[1])])
 	mesh.surface_end()
 	return mesh
+
+
+## 创建单位线框球 Mesh（半径 0.5 的三个大圆：XZ / XY / YZ）；与单位线框盒同一约定——
+## 调用方通过 MeshInstance scale 控制实际尺寸，即 `scale = 直径`。
+static func make_unit_wire_sphere_mesh(segments: int = 48) -> ImmediateMesh:
+	var count := maxi(segments, 8)
+	var mesh := ImmediateMesh.new()
+	mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	for axis in range(3):
+		for i in range(count):
+			mesh.surface_add_vertex(_wire_sphere_point(axis, TAU * float(i) / float(count)))
+			mesh.surface_add_vertex(_wire_sphere_point(axis, TAU * float(i + 1) / float(count)))
+	mesh.surface_end()
+	return mesh
+
+
+static func _wire_sphere_point(axis: int, angle: float) -> Vector3:
+	var c := cos(angle) * 0.5
+	var s := sin(angle) * 0.5
+	match axis:
+		0:
+			return Vector3(c, 0.0, s)
+		1:
+			return Vector3(c, s, 0.0)
+		_:
+			return Vector3(0.0, c, s)
 
 
 ## 探针小球标记（probe-prefilter / asset-descriptor 两处探针可视化共用形态）：

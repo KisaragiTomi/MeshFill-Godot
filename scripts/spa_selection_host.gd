@@ -40,7 +40,9 @@ const SELECTION_DOMAIN_BRUSH := SPAEditorContract.SELECTION_DOMAIN_BRUSH
 const SELECTION_GEOMETRY_VOXEL := SPAEditorContract.SELECTION_GEOMETRY_VOXEL
 const SELECTION_GEOMETRY_AUTOOBJECT := SPAEditorContract.SELECTION_GEOMETRY_AUTOOBJECT
 const SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR := SPAEditorContract.SELECTION_GEOMETRY_VOLUME_SCORE_ANCHOR
-const SELECTION_FADED_TRANSPARENCY := 0.76
+# ⚠ 这里曾有 `SELECTION_FADED_TRANSPARENCY := 0.76`：「非聚焦域淡化」的透明度。唯一读者是
+# `_apply_targetsv_visuals()` 里那句三元表达式，而它的 `target_focus` 形参**唯一调用点恒传
+# true** —— 淡化分支自选择模式退役（2026-08-10）起就是死代码。随该函数一并删除（2026-08-14）。
 const ANCHOR_SAMPLE_BOUNDS_COLOR := Color(1.0, 0.08, 0.04, 0.95)
 const EXTERNAL_VOXEL_DISPLAY_ROOT_NAME := SPAEditorContract.EXTERNAL_VOXEL_DISPLAY_ROOT_NAME
 const PICK_ID_PASS_NODE_NAME := "PickIdPass"
@@ -325,7 +327,7 @@ static func format_tile_dirty_flags(tile_record: Dictionary) -> String:
 
 # ⚠ 这里曾有 `voxel_display_effective_visible()` 与 `apply_selection_mode_visuals()` 两个薄包装。
 # 前者转发给 `_voxel_display_effective_visible()`，而那一层同样只是转发（一并删除，见下）；
-# 后者转发给 `_apply_selection_mode_visuals()` 且**全仓零调用点**。
+# 后者转发给 `_apply_selection_mode_visuals()`（今 `_refresh_selection_markers()`）且**全仓零调用点**。
 #
 # 「effective」这个名字曾经有意义：它是「显示开关 AND 模式聚焦」的与值。选择模式整体退役
 # （2026-08-10）后与值塌成单边，于是三个名字指向同一个 `_voxel_display_is_visible()`。
@@ -794,8 +796,10 @@ func set_voxel_display_visible(display_key: String, visible: bool) -> void:
 		assert(false, "SPASelectionHost: unknown voxel display key")
 		return
 	_voxel_display_visible[display_key] = visible
+	# ⚠ 只推**被改的这一个键**。别在这里补一发全量重推：那正是「翻 Anchors 连带重驱
+	# TargetSV」的老路（见 `_refresh_selection_markers()` 的注释）。
 	_apply_external_voxel_display_visibility(display_key)
-	_apply_selection_mode_visuals()
+	_refresh_selection_markers()
 	_notify_hud()
 
 
@@ -810,10 +814,11 @@ func get_voxel_display_state() -> Dictionary:
 	return _voxel_display_visible.duplicate(true)
 
 
-## 重建体素显示开关，供编辑器MCP/热重载后刷新
+## 重建体素显示开关，供编辑器MCP/热重载后刷新。
+## 这里**才是**全量重推的语义所在：六个键各自把自己的记账位推给自己那一组节点。
 func refresh_voxel_display_controls() -> void:
 	_apply_all_external_voxel_display_visibility()
-	_apply_selection_mode_visuals()
+	_refresh_selection_markers()
 
 
 ## 返回外部 voxel 显示节点的 SPA 容器。
@@ -1168,7 +1173,7 @@ func set_active_selection(record: Dictionary) -> void:
 	_apply_selection_visual(_active_selection)
 	_sync_editor_selection()
 	_print_active_selection(_active_selection)
-	_apply_selection_mode_visuals()
+	_refresh_selection_markers()
 	_notify_hud()
 
 
@@ -1392,38 +1397,33 @@ func select_autoobject_by_index(object_index: int = -1) -> Dictionary:
 	}
 
 
-## 按显示开关刷新全部选择相关的可见性。
-func _apply_selection_mode_visuals() -> void:
+## 刷新**选中反馈**的可见性（选中框 + anchor 采样框 + demo overlay 钩子）。
+##
+## ⚠ 本函数**不碰任何域的显示开关**。这里曾额外做两件事，两件都是「翻一个域的开关会连带
+## 重驱别的域」的来源——用户 2026-08-14 报的就是「点 Anchors 显示，TargetSV 跟着变」：
+##
+##   * `_apply_targetsv_visuals()`：无条件把记账位 `_voxel_display_visible["targetsv"]`
+##     推给 TargetSV。而两边的默认值**从一开场就相反**——记账位由
+##     `SPAEditorContract.default_voxel_display_state()` 播种成恒 true，TargetSV 自己的
+##     `default_display_visible()` 却是 false。再加上隐藏域没有显示节点
+##     （`rebuild_display()` 首句 `if not display_visible: _discard_display()`），
+##     `set_display_visible(true)` 在节点为空时会**走进 `rebuild_display()`**：于是新场景里
+##     第一次翻任意一个别的域开关，就把 TargetSV 整个建出来并点亮。
+##     TargetSV（以及其余五个卷）的显示只有一个入口：
+##     `ScenePlacementActor.set_volume_display()`——它同时写卷与记账位，两边不会分家。
+##     `pickable_domain.gd` 的 `display_node()` 注释已经点名过这个多写入方，别再加回来。
+##   * `_apply_all_external_voxel_display_visibility()`：把六个键的记账位全量重推一遍。
+##     单键推送已经在 `set_voxel_display_visible()` 里按被改的那个键做过，这里是纯冗余的
+##     全量扇出；新注册的外部节点也在 `register_voxel_display_node()` 里就取过当前值。
+##     要显式全量重推走 `refresh_voxel_display_controls()`，那才是它的语义。
+func _refresh_selection_markers() -> void:
 	if _extra_visuals_refresh.is_valid():
 		_extra_visuals_refresh.call()
-	_apply_targetsv_visuals(
-		true,
-		SPAEditorContract.voxel_display_key_for_domain(SELECTION_DOMAIN_TARGETSV)
-	)
 	var box_visible := _active_selection_box_visible()
 	if _selection_marker != null:
 		_selection_marker.visible = box_visible
 		_selection_marker.transparency = 0.0
 	_update_anchor_sample_bounds_marker()
-	_apply_all_external_voxel_display_visibility()
-
-
-
-
-## 应用 TargetSV 显示状态。
-func _apply_targetsv_visuals(target_focus: bool, target_key: String = "") -> void:
-	var targetsv := _find_targetsv_setup()
-	if targetsv == null:
-		return
-	if target_key.is_empty():
-		target_key = SPAEditorContract.voxel_display_key_for_domain(SELECTION_DOMAIN_TARGETSV)
-	var target_visible := _voxel_display_is_visible(target_key)
-	# 统一通过 TargetSVSetup 写入可见性。
-	if targetsv.has_method("set_display_visible"):
-		targetsv.set_display_visible(target_visible)
-	var display: Node3D = targetsv.display_node() if targetsv.has_method("display_node") else null
-	if display is GeometryInstance3D:
-		(display as GeometryInstance3D).transparency = 0.0 if target_focus else SELECTION_FADED_TRANSPARENCY
 
 
 ## 取对象的资产索引。

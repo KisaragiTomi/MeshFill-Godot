@@ -81,8 +81,9 @@ static func bake_and_save_batch(requests: Array, output_dir: String) -> Dictiona
 			assert(false, "AssetDescriptorBaker: bake request produced no descriptor")
 			continue
 		var path := "%s/%s_descriptor.tres" % [output_dir, request_name]
-		# Preserve per-asset score-param overrides across re-bakes: a fresh bake rebuilds
-		# the descriptor from canonical samples/config and would reset these to -1 (inherit).
+		# Preserve per-asset authored overrides across re-bakes: a fresh bake rebuilds
+		# the descriptor from canonical samples/config and would reset these to their
+		# defaults（score 覆盖 → -1 继承全局；spacing_radius_scale → 1.0 无缩放）。
 		if ResourceLoader.exists(path):
 			var old_descriptor: Resource = load(path)
 			if old_descriptor == null:
@@ -90,12 +91,15 @@ static func bake_and_save_batch(requests: Array, output_dir: String) -> Dictiona
 				push_error("[AssetDescriptorBaker] bake_and_save_batch(): 既有 descriptor %s 存在但加载失败 —— 无法继承 per-asset score 覆盖，拒绝用一份丢失覆盖的新 descriptor 覆写它" % path)
 				assert(false, "AssetDescriptorBaker: existing descriptor load failed")
 				continue
-			# 旧 .tres 无 score 覆盖字段时 get() 返回 null → 跳过 → 留 -1（继承全局）。
+			# 旧 .tres 无该字段时 get() 返回 null → 跳过 → 留新 descriptor 的默认值。
 			# 这是 legacy 迁移契约（见 asset_descriptor.gd 的 Score Params 注释），不是兜底。
+			# ⚠ spacing_radius_scale 也在列：它是**手调**值（Asset Overview 面板写入），
+			# 不在 bake 请求的 config 里重建 —— 漏掉这一项，每次重扫烘焙都会把用户调好的
+			# 互斥半径悄悄打回 1.0。
 			for prop in ["score_min_match_fraction", "score_dim_weight_collision",
 					"score_dim_weight_complexity", "score_dim_weight_color",
 					"score_color_match_max_l1", "score_collision_match_max",
-					"score_complexity_overfill_percent"]:
+					"score_complexity_overfill_percent", "spacing_radius_scale"]:
 				var carried = old_descriptor.get(prop)
 				if carried != null:
 					descriptor.set(prop, carried)

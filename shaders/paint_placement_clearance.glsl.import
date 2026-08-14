@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://okjimqccms6q"
+path="res://.godot/imported/paint_placement_clearance.glsl-b3368395f46490a878a208914b4beaa5.res"
+
+[deps]
+
+source_file="res://shaders/paint_placement_clearance.glsl"
+dest_files=["res://.godot/imported/paint_placement_clearance.glsl-b3368395f46490a878a208914b4beaa5.res"]
+
+[params]
+

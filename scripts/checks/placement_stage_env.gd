@@ -477,6 +477,30 @@ func run_place_session_batch(reduce_seed_placements := PackedFloat32Array()) -> 
 	var settings := _place_session_common.duplicate()
 	settings["reduce_seed_placements"] = reduce_seed_placements
 	settings["incremental_fine_reset"] = _place_session_batch_index == 0
+	# ── 会话作用域的两个显式开关（都只在首批为「重来」，之后为「沿用」）──────────
+	# 1. 余隙场：首批重建成零场并把传进来的种子（= 上一次 Place 留下的物件）烘进去；
+	#    之后各批复用同一张场，本批被接受的放置由 GPU 侧的 paint pass 直接累积上去。
+	settings["clearance_field_reset"] = _place_session_batch_index == 0
+	# 2. 锚点池：首批正常采集，之后**显式复用常驻锚点缓冲**。
+	#    ⚠ 别改成"把 dirty_epoch 从 collect 缓存键里删掉"。锚点缓冲本身是常驻的，逼它
+	#    逐批重采的是缓存键：每批盖章推进 dirty_epoch ⇒ 键变 ⇒ collect 在**已被上一批
+	#    消费清空**的脏清单上重跑 ⇒ 锚点池逐批塌缩（实测格点门开着时 3878/7 批塌到
+	#    365/36 批）。而 Anchors/Score 路径要靠这个 epoch 在场景变化时刷新，不能删。
+	#    所以复用做成会话作用域的显式开关：只有 Place 会话的非首批会带上它。
+	settings["reuse_resident_anchors"] = _place_session_batch_index > 0
+	# 格点门的相位逐批推进。相位空间是 interval² 个格位，走法必须同时满足两条：
+	#   1. **相邻批次的相位要远** —— 否则本批格点落在上批物体的碰撞足迹内，整批被
+	#      seed 冲突挡光。实测教训：光栅走位（phase_x 每批 +1）让批 1 只离批 0 一个体素，
+	#      产出直接归零，还会被"零产出即收敛"误判成放满。
+	#   2. **不重复、不遗漏** —— interval² 轮之内正好走完全部格位。
+	# 用「与 interval² 互质的步长做模乘」即可：模乘是完全置换（保证 2），步长取黄金比例
+	# 附近的互质数（保证 1）。比低差异序列简单，且覆盖性是可证的而不是统计的。
+	var anchor_interval := maxi(int(settings.get("anchor_interval_voxels", 0)), 0)
+	if anchor_interval > 0:
+		var phase_space := anchor_interval * anchor_interval
+		var idx := (_place_session_batch_index * _phase_stride(phase_space)) % phase_space
+		settings["anchor_phase_x"] = idx % anchor_interval
+		settings["anchor_phase_z"] = int(idx / anchor_interval)
 	orchestration_phases_ms["settings"] = float(Time.get_ticks_usec() - phase_t0_usec) / 1000.0
 	var t0_usec := Time.get_ticks_usec()
 	var result: Dictionary = _spa.run_placement_pipeline(_sv_cache, settings)
@@ -784,3 +808,24 @@ func _make_fail(reason: String) -> RefCounted:
 func _stage_fail(reason: String) -> Dictionary:
 	push_error("[PlacementStageEnv] %s" % reason)
 	return {"ok": false, "reason": reason, "gpu_first": true, "cpu_fallback": false}
+
+
+## 相位置换的步长：取 ≈0.618 * phase_space 且与之互质的最大值。
+## 互质 ⇒ 模乘是完全置换（interval² 轮走完全部相位，不重不漏）；
+## 靠近黄金比例 ⇒ 连续几批的相位在空间上尽量分散（避免被上一批的足迹挡光）。
+static func _phase_stride(phase_space: int) -> int:
+	if phase_space <= 2:
+		return 1
+	var candidate := int(round(float(phase_space) * 0.6180339887498949))
+	candidate = clampi(candidate, 1, phase_space - 1)
+	while candidate > 1 and _gcd(candidate, phase_space) != 1:
+		candidate -= 1
+	return maxi(candidate, 1)
+
+
+static func _gcd(a: int, b: int) -> int:
+	while b != 0:
+		var t := b
+		b = a % b
+		a = t
+	return absi(a)

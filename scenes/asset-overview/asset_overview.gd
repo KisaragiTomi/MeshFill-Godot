@@ -36,6 +36,17 @@ const SCORE_PARAM_ROWS: Array[Dictionary] = [
 	{"prop": "score_complexity_overfill_percent", "label": "complexity overfill %", "min": 0.0, "max": 500.0, "step": 1.0},
 ]
 
+# 互斥半径乘数在 descriptor 上的属性名与面板行定义。与 SCORE_PARAM_ROWS 同形，但**没有**
+# 「继承全局」语义（没有对应的全局配置项），所以面板上不带 override 勾选框，默认 1.0。
+const SPACING_SCALE_PROP := "spacing_radius_scale"
+const SPACING_SCALE_ROW := {
+	"prop": SPACING_SCALE_PROP,
+	"label": "exclusion radius ×",
+	"min": 0.0,
+	"max": 8.0,
+	"step": 0.05,
+}
+
 var _bake_status_label: Label
 var _bake_info_label: Label
 var _bake_dialog: ConfirmationDialog
@@ -52,12 +63,14 @@ const VOXEL_CHANNEL_COLLISION := "collision"
 
 const PROBE_DEBUG_NODE := "ProbeDebugGroup"
 const PIVOT_DEBUG_NODE := "PivotDebugGroup"
+const EXCLUSION_DEBUG_NODE := "ExclusionDebugGroup"
 
 const EDITOR_ACTION_PROBES := &"probes"
 const EDITOR_ACTION_VOXEL_COLOR := &"voxel_color"
 const EDITOR_ACTION_VOXEL_COMPLEXITY := &"voxel_complexity"
 const EDITOR_ACTION_VOXEL_COLLISION := &"voxel_collision"
 const EDITOR_ACTION_PIVOTS := &"pivots"
+const EDITOR_ACTION_EXCLUSION := &"exclusion"
 const EDITOR_ACTION_TOGGLE_ASSETS := &"toggle_assets"
 const EDITOR_ACTION_CLEAR_DEBUG := &"clear_debug"
 
@@ -85,6 +98,11 @@ var _probe_source := ""
 var _pivots_visible := false
 var _pivot_target_node: Node3D = null
 var _pivot_last_count := 0
+
+# 资产互斥球：与上面几档「选中才画」的覆盖显示不同，这一档**默认开**且覆盖全部资产，
+# 场景一加载就建（见 _ready）——互斥半径是资产的固有属性，用户要求每次打开场景就能看见。
+var _exclusion_visible := true
+var _exclusion_last_count := 0
 
 # Import FBX file dialog. It is parented to the editor base control because this
 # @tool scene lives in the 3D SubViewport and cannot host native editor popups.
@@ -118,8 +136,10 @@ func _ready() -> void:
 	_connect_geo_scan_buttons()
 	_ensure_bake_ui()
 	_ensure_pivot_ui()
+	_ensure_exclusion_ui()
 	_collect_static_assets()
 	_apply_asset_visibility(false)
+	_rebuild_exclusion_display()
 
 
 # Debug shortcuts are driven by the editor 3D viewport, not runtime input. The
@@ -161,6 +181,9 @@ func _editor_viewport_input(_viewport_camera: Camera3D, event: InputEvent) -> bo
 		KEY_5:
 			asset_descriptor_editor_action(EDITOR_ACTION_PIVOTS)
 			return true
+		KEY_6:
+			asset_descriptor_editor_action(EDITOR_ACTION_EXCLUSION)
+			return true
 		KEY_G:
 			asset_descriptor_editor_action(EDITOR_ACTION_TOGGLE_ASSETS)
 			return true
@@ -182,6 +205,8 @@ func asset_descriptor_editor_action(action: StringName) -> Dictionary:
 			_show_voxel_channel(VOXEL_CHANNEL_COLLISION)
 		EDITOR_ACTION_PIVOTS:
 			_toggle_pivots()
+		EDITOR_ACTION_EXCLUSION:
+			_toggle_exclusion_spheres()
 		EDITOR_ACTION_TOGGLE_ASSETS:
 			_toggle_asset_visibility()
 		EDITOR_ACTION_CLEAR_DEBUG:
@@ -207,6 +232,9 @@ func _asset_descriptor_debug_state(action: StringName = &"") -> Dictionary:
 		"pivots_visible": _pivots_visible,
 		"pivot_count": _pivot_last_count,
 		"has_pivot_debug": get_node_or_null(PIVOT_DEBUG_NODE) != null,
+		"exclusion_visible": _exclusion_visible,
+		"exclusion_count": _exclusion_last_count,
+		"has_exclusion_debug": get_node_or_null(EXCLUSION_DEBUG_NODE) != null,
 		"assets_hidden": _assets_hidden,
 	}
 
@@ -289,6 +317,14 @@ func _finish_geo_import(result: Dictionary) -> Dictionary:
 	# （它只动本次导入碰过的那些），这样单文件导入不会顺手把你手动隐藏的其它资产也翻出来。
 	_assets_hidden = false
 	_reset_voxel_cache()
+	# 互斥球同理：导入结果必须**连带互斥现况**一起看得见。这条收口的是两个工具栏入口
+	# （Import All → `_scan_geo_assets(true)`、Import FBX → `_import_geo_files()`）和
+	# 面板的 Scan / Full Rescan——四条路都在这里汇合。
+	# 与上面 `_assets_hidden` 同一条理由，所以也一并**清掉关闭态**：新导入的资产必须
+	# 带球出现，而不是"上次按过 6 关掉了，于是这次导入完什么都没画"。
+	# 重建本身也是必需的：节点是新建 / 重排过的，旧球还钉在旧位置上。
+	_exclusion_visible = true
+	_rebuild_exclusion_display()
 	return result
 
 
@@ -492,6 +528,26 @@ func _ensure_pivot_ui() -> void:
 		show_btn.tooltip_text = "对编辑器选中的资产显示 pivot 标记（走生产生成函数，恒为单条零偏移 bottom）；再按一次清除。"
 		vbox.add_child(show_btn)
 		show_btn.pressed.connect(_toggle_pivots)
+	var panel := get_node_or_null("GeoTools/Panel") as Control
+	if panel != null:
+		panel.reset_size()
+
+
+## 互斥球开关按钮（同 GeoTools 面板；与视口 `6` 同一个动作）。
+func _ensure_exclusion_ui() -> void:
+	if not Engine.is_editor_hint():
+		return
+	var vbox := get_node_or_null("GeoTools/Panel/VBox") as VBoxContainer
+	if vbox == null:
+		return
+	var btn := vbox.get_node_or_null("ExclusionShowButton") as Button
+	if btn == null:
+		btn = Button.new()
+		btn.name = "ExclusionShowButton"
+		btn.text = "Exclusion spheres  [6]"
+		btn.tooltip_text = "全部资产的互斥球开关（默认开，场景一加载就画）。半径 = 网格 AABB 的 XZ 半长，与放置 reduce 的成对间距同口径：两球相交即这一对互斥。移动过资产或重新导入后按两次即按当前位置重建。"
+		vbox.add_child(btn)
+		btn.pressed.connect(_toggle_exclusion_spheres)
 	var panel := get_node_or_null("GeoTools/Panel") as Control
 	if panel != null:
 		panel.reset_size()
@@ -831,6 +887,177 @@ func _make_pivot_marker(pivot_name: String, index: int) -> MeshInstance3D:
 	return marker
 
 
+# ─── 资产互斥球（放置期成对间距的现况可视化；场景一加载就画） ──
+#
+# 生产口径来自 `ScenePlacementActor._build_placement_asset_defs()`：
+#   spacing_radius_world = max(mesh_aabb.size.x, mesh_aabb.size.z) * 0.5
+# reduce（`shaders/invalidate_anchor_conflicts.glsl`）据此做成对判定——
+#   dist(a, b) < max(min_distance_voxels, (r_a + r_b) * asset_spacing_factor)
+# 时淘汰低优先级的一端。两端各画一个半径 r 的球 ⇒ **两球相交即这一对互斥**
+# （`asset_spacing_factor` 默认 1.0；下界 `min_distance_voxels` 是 SPA 侧的全局
+# 兜底，与资产无关，本场景没有 SV 网格也就没有体素尺寸可换算，故不画）。
+#
+# 球心取资产节点原点：判定比的是候选**原点**间距，而烘焙恒写单条零偏移 bottom pivot，
+# 所以放置原点就是节点原点——网格 AABB 在 XZ 上不居中时球会看着偏，那正是现况。
+#
+# ⚠ 半径按 mesh AABB 算且**不乘节点 scale**：放置端读的是烘进 descriptor 的那份原始
+# mesh（`AssetDescriptor.get_mesh()`），节点 scale 不参与。geo 资产的 scale 由
+# 「Bake → FBX」冻结进源文件，本场景里两者本就一致。
+
+## 网格给出的基础互斥半径（米，世界单位，**未乘**逐资产乘数）；无 Mesh 子节点或
+## 无网格时返回 0（不画球）。
+static func exclusion_base_radius_for_node(node: Node3D) -> float:
+	if node == null:
+		return 0.0
+	var mi := node.get_node_or_null("Mesh") as MeshInstance3D
+	if mi == null or mi.mesh == null:
+		return 0.0
+	var aabb_size := mi.mesh.get_aabb().size
+	return maxf(aabb_size.x, aabb_size.z) * 0.5
+
+
+## 逐资产互斥半径乘数，取自**已烘焙 descriptor**（`spacing_radius_scale`）——那正是
+## SPA 放置读的同一份资源，所以面板改完存盘，球和 reduce 的间距一起变。
+## 没烘过 descriptor 的资产没有可调值，返回 1.0。
+static func exclusion_radius_scale_for_node(node: Node3D) -> float:
+	if node == null:
+		return 1.0
+	var path := "%s/%s_descriptor.tres" % [BAKED_DESCRIPTOR_DIR, node.name]
+	if not ResourceLoader.exists(path):
+		return 1.0
+	var descriptor: Resource = load(path)
+	if descriptor == null:
+		return 1.0
+	# 属性直读：编辑器把资源脚本当 placeholder 时方法不执行、属性照样可读。
+	var raw = descriptor.get("spacing_radius_scale")
+	if raw == null:
+		return 1.0
+	return maxf(float(raw), 0.0)
+
+
+## 生效互斥半径 = 网格基础半径 × 逐资产乘数。球画的是它，reduce 用的也是它。
+static func exclusion_radius_for_node(node: Node3D) -> float:
+	return exclusion_base_radius_for_node(node) * exclusion_radius_scale_for_node(node)
+
+
+func _toggle_exclusion_spheres() -> void:
+	_exclusion_visible = not _exclusion_visible
+	_rebuild_exclusion_display()
+
+
+## 全量重建：整组丢弃再按当前资产表重画（球不跟随节点，手动挪过资产后按两次 6 即刷新）。
+func _rebuild_exclusion_display() -> void:
+	_clear_node(EXCLUSION_DEBUG_NODE)
+	_exclusion_last_count = 0
+	if not Engine.is_editor_hint() or not _exclusion_visible:
+		return
+	_collect_static_assets()
+	if _asset_nodes.is_empty():
+		return
+	var root := Node3D.new()
+	root.name = EXCLUSION_DEBUG_NODE
+	add_child(root)
+	for i in range(_asset_nodes.size()):
+		var node := _asset_nodes[i]
+		if node == null:
+			continue
+		var radius := exclusion_radius_for_node(node)
+		if radius <= 0.0:
+			continue
+		# 逐资产换色：总览里球体尺寸差一个量级（cliff ~10 m vs grass ~1 m），
+		# 相交时同色会糊成一团，看不出是哪两个在互斥。
+		var color := Color.from_hsv(fmod(float(i) * 0.137, 1.0), 0.55, 1.0)
+		var center := node.global_position if node.is_inside_tree() else node.position
+		_watch_descriptor_changes(node)
+		root.add_child(_make_exclusion_sphere(str(node.name), center, radius, color))
+		# 贴标随半径缩放：本场景的球差一个量级（grass 0.85 m ↔ cliff 23 m），
+		# 固定 pixel_size 的话不是大球边上小得看不见，就是小球被字糊住。
+		var tag := VoxelDebugLabel.make(
+			"%s\nexclusion r=%.2f m" % [node.name, radius],
+			color, 16, 0.0, clampf(radius * 0.012, 0.01, 0.06), 3)
+		tag.name = "ExclusionLabel_%s" % node.name
+		tag.position = center + Vector3(0.0, radius + 0.35, 0.0)
+		root.add_child(tag)
+		_exclusion_last_count += 1
+
+
+## Godot 里没有 UE ConstructionScript 那种「任何属性一改就整体重跑」的单一钩子，最接近的
+## 是 `@tool` + 属性 setter / `Resource.changed`：Resource 在 Inspector 里被改动会发
+## `changed`，挂上去重建就等价于 construction script 的即时反馈。
+##
+## 挂在 descriptor 上（而不是场景节点）是因为半径乘数存在 descriptor 里：无论改动来自
+## Asset Info 面板的 SpinBox（走 preview_exclusion_radius_scale）还是直接在 Inspector
+## 里选中 .tres 改 `spacing_radius_scale`，都会经过这里 ⇒ 球立刻跟着变。
+## 连接幂等（重建会重复调用本函数），descriptor 是常驻缓存资源、本场景被释放时 Godot
+## 自动断开。
+func _watch_descriptor_changes(node: Node3D) -> void:
+	var path := "%s/%s_descriptor.tres" % [BAKED_DESCRIPTOR_DIR, node.name]
+	if not ResourceLoader.exists(path):
+		return
+	var descriptor: Resource = load(path)
+	if descriptor == null:
+		return
+	var callable := Callable(self, "_on_descriptor_changed")
+	if not descriptor.changed.is_connected(callable):
+		descriptor.changed.connect(callable)
+
+
+func _on_descriptor_changed() -> void:
+	if not _exclusion_visible:
+		return
+	# 延后一帧：`changed` 可能在 Inspector 写属性的中途发出，此刻直接 free 掉整组显示节点
+	# 不安全；而且一次编辑可能连发多下，合并成一次重建。
+	_rebuild_exclusion_display.call_deferred()
+
+
+## 面板 SpinBox 拖动时的即时预览：只改**内存里**那份 descriptor，不写盘（Save 才落 .tres）。
+## SPA 读的是同一个常驻实例 ⇒ 本编辑器会话内的放置也会用这个新值；重开编辑器则回到盘上的值。
+## 改完发 `changed`，重建交给上面那条统一路径。
+func preview_exclusion_radius_scale(descriptor_path: String, scale: float) -> Dictionary:
+	if not ResourceLoader.exists(descriptor_path):
+		return {"ok": false, "reason": "no_descriptor"}
+	var descriptor: Resource = load(descriptor_path)
+	if descriptor == null:
+		return {"ok": false, "reason": "load_failed"}
+	var clamped := maxf(scale, 0.0)
+	descriptor.set(SPACING_SCALE_PROP, clamped)
+	descriptor.emit_changed()
+	return {"ok": true, "scale": clamped}
+
+
+func _make_exclusion_sphere(asset_name: String, center: Vector3, radius: float, color: Color) -> Node3D:
+	var group := Node3D.new()
+	group.name = "Exclusion_%s" % asset_name
+	group.position = center
+
+	# 极淡的实心壳给出体积感，双面 + 透明（不写深度）⇒ 资产本体不会被它糊住，
+	# 相机进到球里也还看得见边界。
+	# ⚠ alpha 取到 0.045 这么低是因为双面：前后两个半球各画一次，屏幕上是叠加后的
+	# 约 0.09。再高一档（实测 0.07 → 叠出 0.14）就会给资产本体染色，和 [2] 的
+	# color 通道检查打架——这个场景就是用来看资产原色的。
+	var shell_mesh := SphereMesh.new()
+	shell_mesh.radius = radius
+	shell_mesh.height = radius * 2.0
+	shell_mesh.radial_segments = 32
+	shell_mesh.rings = 16
+	var shell := MeshInstance3D.new()
+	shell.name = "Shell"
+	shell.mesh = shell_mesh
+	shell.material_override = DemoDebugVisuals.make_unshaded_material(
+		Color(color.r, color.g, color.b, 0.045), false, false, true)
+	group.add_child(shell)
+
+	# 三个大圆是"球有多大"的实际读数来源（单位线框球半径 0.5 ⇒ scale = 直径）。
+	var wire := MeshInstance3D.new()
+	wire.name = "Wire"
+	wire.mesh = DemoDebugVisuals.make_unit_wire_sphere_mesh()
+	wire.scale = Vector3.ONE * (radius * 2.0)
+	wire.material_override = DemoDebugVisuals.make_unshaded_material(
+		Color(color.r, color.g, color.b, 0.75), false, false, true)
+	group.add_child(wire)
+	return group
+
+
 # ─── Embedded FBX ProfileSample channel display ───────────────
 
 func _show_voxel_channel(channel: String) -> void:
@@ -1064,9 +1291,10 @@ func resolve_asset_node(node: Node) -> Node3D:
 	return null
 
 
-# Read-only text + per-asset score-param state for the Inspector panel.
+# Read-only text + per-asset editable state for the Inspector panel.
 # params[*] = {prop,label,min,max,step,overridden,value}; unchecked rows carry the
 # inherited global value so you can see what you'd inherit (Save still writes -1).
+# spacing = 互斥半径乘数那一行（无 override 语义）+ 供面板算「× 后是多少米」的基础半径。
 func get_asset_inspector_payload(asset_node: Node3D) -> Dictionary:
 	if not Engine.is_editor_hint() or asset_node == null:
 		return {"ok": false, "reason": "invalid"}
@@ -1091,19 +1319,27 @@ func get_asset_inspector_payload(asset_node: Node3D) -> Dictionary:
 			"overridden": overridden,
 			"value": val if overridden else float(defaults.get(prop, 0.0)),
 		})
+	var spacing := SPACING_SCALE_ROW.duplicate()
+	spacing["value"] = exclusion_radius_scale_for_node(asset_node)
+	spacing["base_radius"] = exclusion_base_radius_for_node(asset_node)
+	spacing["has_descriptor"] = descriptor != null
 	return {
 		"ok": true,
 		"name": str(asset_node.name),
 		"text": _build_asset_properties_text(asset_node),
 		"descriptor_path": descriptor_path,
 		"params": params,
+		"spacing": spacing,
 	}
 
 
-# Write per-asset score params onto the descriptor .tres (values[prop] = value, or
-# -1 to inherit). Mutates the cached resource instance (shared with placement
-# scenes) + writes disk; scoring picks it up on its next env rebuild.
-func save_asset_score_params(descriptor_path: String, values: Dictionary) -> Dictionary:
+# Write the per-asset authored overrides onto the descriptor .tres：
+#   * SCORE_PARAM_ROWS —— values[prop] = 值，或 -1 表示继承全局；
+#   * SPACING_SCALE_PROP —— 互斥半径乘数（clamp 到 >= 0）。
+# Mutates the cached resource instance (shared with placement scenes) + writes disk:
+# 打分在下一次 env 重建读到，reduce 的成对间距在下一次 run_placement_pipeline 读到
+# （`_build_placement_asset_defs()` 每轮重建 def，读的就是这个常驻实例）。
+func save_asset_params(descriptor_path: String, values: Dictionary) -> Dictionary:
 	if not ResourceLoader.exists(descriptor_path):
 		push_warning("[AssetOverview] No baked descriptor at %s — press Bake AD first." % descriptor_path)
 		return {"ok": false, "reason": "no_descriptor"}
@@ -1115,11 +1351,15 @@ func save_asset_score_params(descriptor_path: String, values: Dictionary) -> Dic
 		var prop := str(row.get("prop", ""))
 		if values.has(prop):
 			descriptor.set(prop, float(values[prop]))
+	if values.has(SPACING_SCALE_PROP):
+		descriptor.set(SPACING_SCALE_PROP, maxf(float(values[SPACING_SCALE_PROP]), 0.0))
 	var err := ResourceSaver.save(descriptor, descriptor_path)
 	if err != OK:
-		push_warning("[AssetOverview] Save score params failed (err=%d): %s" % [err, descriptor_path])
+		push_warning("[AssetOverview] Save asset params failed (err=%d): %s" % [err, descriptor_path])
 		return {"ok": false, "reason": "save_failed", "err": err}
-	print("[AssetOverview] Saved per-asset score params → %s" % descriptor_path)
+	print("[AssetOverview] Saved per-asset params → %s" % descriptor_path)
+	# 半径乘数改了就得立刻重画：面板上的数与视口里的球必须是同一个现况。
+	_rebuild_exclusion_display()
 	return {"ok": true}
 
 
@@ -1248,6 +1488,12 @@ func _build_asset_properties_text(node: Node3D) -> String:
 		var aabb := mi.mesh.get_aabb()
 		lines.append("Mesh AABB size: (%.3f, %.3f, %.3f) m" % [aabb.size.x, aabb.size.y, aabb.size.z])
 		lines.append("Mesh surfaces: %d" % mi.mesh.get_surface_count())
+		# 互斥半径：与视口里那个球、与 reduce 的成对间距同一个值（见 exclusion_radius_for_node）。
+		var base_radius := exclusion_base_radius_for_node(node)
+		var radius_scale := exclusion_radius_scale_for_node(node)
+		lines.append("Exclusion radius: %.3f m = %.3f m (XZ half-extent) × %.2f" % [
+			base_radius * radius_scale, base_radius, radius_scale])
+		lines.append("  pair rejected when spheres cross (same value drives SPA spacing)")
 	else:
 		lines.append("Mesh: (missing)")
 
@@ -1323,6 +1569,10 @@ func _clear_all_debug() -> void:
 	_clear_node(PROBE_DEBUG_NODE)
 	_clear_node(VOXEL_DEBUG_NODE)
 	_clear_node(PIVOT_DEBUG_NODE)
+	# C 是「清空全部调试显示」，互斥球虽然默认开也一并关掉——按 6 或重开场景即回来。
+	_clear_node(EXCLUSION_DEBUG_NODE)
+	_exclusion_visible = false
+	_exclusion_last_count = 0
 	_probes.clear()
 	_probes_visible = false
 	_probe_target_node = null

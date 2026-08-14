@@ -139,14 +139,14 @@ const REDUCE_INIT_PUSH := [
 	["seed_count", "int"],       # 8
 	["grid_x", "int"],           # 12
 	["grid_z", "int"],           # 16
-	["_pad0", "int"],            # 20
-	["_pad1", "int"],            # 24
-	["_pad2", "int"],            # 28
+	["anchor_interval", "int"],  # 20  格点门间隔（体素）；<=0 关闭
+	["anchor_phase_x", "int"],   # 24  本轮相位，[0, interval)
+	["anchor_phase_z", "int"],   # 28
 ]
 const REDUCE_INVALIDATE_PUSH := [
 	["anchor_capacity", "int"],         # 0
 	["asset_count", "int"],             # 4
-	["seed_count", "int"],              # 8
+	["_pad_seed_count", "int"],         # 8   （跨批间距已改走余隙场，槽位保留不再有语义）
 	["grid_x", "int"],                  # 12
 	["grid_z", "uint"],                 # 16
 	["random_seed", "uint"],            # 20
@@ -162,6 +162,29 @@ const REDUCE_COMPACT_PUSH := [
 	["result_capacity", "int"],  # 4
 	["asset_count", "int"],      # 8
 	["_pad0", "int"],            # 12
+]
+## 有符号余隙场的定点编码常量。⚠ 必须与 shaders/paint_placement_clearance.glsl 与
+## shaders/invalidate_anchor_conflicts.glsl 里的同名 GLSL 常量逐位一致（那两处是画/查
+## 两侧，这里只用于宿主侧的量程守卫）。
+const CLEARANCE_FIXED_SCALE := 256.0
+const CLEARANCE_BIAS_VOXELS := 64.0
+## 有符号余隙场的**画**侧 push（shaders/paint_placement_clearance.glsl）。
+## 一套 layout 服务两个记录源：compact 出的 placement_results（stride=4，资产号在
+## [base+1].y，条数来自 GPU 的 result_count）与 CPU 种子表（stride=1，资产号在 .w，
+## 条数由 push 直接给）。
+const PAINT_CLEARANCE_PUSH := [
+	["record_capacity", "int"],         # 0
+	["record_stride", "int"],           # 4   以 vec4 为单位
+	["grid_x", "int"],                  # 8
+	["grid_z", "int"],                  # 12
+	["asset_count", "int"],             # 16
+	["count_source", "int"],            # 20  0 = 读 count 缓冲；1 = 用 push_count
+	["push_count", "int"],              # 24
+	["asset_field", "int"],             # 28  0 = records[base+1].y；1 = records[base].w
+	["min_distance_voxels", "float"],   # 32
+	["asset_spacing_factor", "float"],  # 36
+	["max_spacing_radius", "float"],    # 40
+	["_padf0", "float"],                # 44
 ]
 const STAMP_PUSH := [
 	["grid_x", "int"],                  # 0
@@ -233,6 +256,11 @@ var solid_threshold: float = 192.0 / 255.0
 var collision_limit: float = -1.0
 var clearance_limit: float = -1.0
 var min_distance_voxels: float = 2.0
+## 格点门：每轮只放间隔为本值（体素）的 anchor，同轮候选因此天然互不冲突。
+## 0 = 关闭，退回「全体候选 + 一趟保守仲裁」的旧行为。
+var anchor_interval_voxels: int = 0
+var anchor_phase_x: int = 0
+var anchor_phase_z: int = 0
 # Pairwise asset-size-aware spacing: reduce rejects a candidate when its
 # distance to any seed/selected placement is below
 # max(min_distance_voxels, (r_a + r_b) * asset_spacing_factor), r_* being the
@@ -287,6 +315,7 @@ var _shader_init_stamp_bounds: RID
 var _shader_stamp: RID
 var _shader_pack_field_pair: RID
 var _shader_pack_sample_pairs: RID
+var _shader_paint_clearance: RID
 var _shader_score_sum: RID
 var _pipeline_fine_finalize: RID
 var _pipeline_fine_score: RID
@@ -298,7 +327,16 @@ var _pipeline_init_stamp_bounds: RID
 var _pipeline_stamp: RID
 var _pipeline_pack_field_pair: RID
 var _pipeline_pack_sample_pairs: RID
+var _pipeline_paint_clearance: RID
 var _pipeline_score_sum: RID
+## 有符号余隙场（signed clearance field）：grid_x * grid_z 个 uint 的常驻 XZ 场。
+## 每个被接受的放置在自己周围画一个圆锥（paint_placement_clearance.glsl），后续 anchor
+## 只在自己那一格 O(1) 读一次即可判跨批互斥（invalidate_anchor_conflicts.glsl）。
+## 编码 0 = 未画 = 无约束，所以**零填充即合法初值**：会话首批直接重新分配一块零缓冲
+## 就等于清场，不需要单独的 clear pass、也不需要任何 buffer_update。
+## 生命周期：`clearance_field_reset`（会话首批 / 未声明会话的单发调用）重建，批间累积不清。
+var _resident_clearance_field_buffer: RID
+var _resident_clearance_field_bytes := 0
 var _resident_place_candidate_buffer: RID
 var _resident_place_candidate_buffer_bytes := 0
 var _resident_place_candidate_cache_key: Dictionary = {}
@@ -351,6 +389,7 @@ func _repair_soft_reloaded_members() -> void:
 	if not (_shader_reduce_compact is RID): _shader_reduce_compact = RID()
 	if not (_shader_pack_field_pair is RID): _shader_pack_field_pair = RID()
 	if not (_shader_pack_sample_pairs is RID): _shader_pack_sample_pairs = RID()
+	if not (_shader_paint_clearance is RID): _shader_paint_clearance = RID()
 	if not (_shader_score_sum is RID): _shader_score_sum = RID()
 	if not (_pipeline_fine_winner is RID): _pipeline_fine_winner = RID()
 	if not (_pipeline_reduce_init is RID): _pipeline_reduce_init = RID()
@@ -358,7 +397,12 @@ func _repair_soft_reloaded_members() -> void:
 	if not (_pipeline_reduce_compact is RID): _pipeline_reduce_compact = RID()
 	if not (_pipeline_pack_field_pair is RID): _pipeline_pack_field_pair = RID()
 	if not (_pipeline_pack_sample_pairs is RID): _pipeline_pack_sample_pairs = RID()
+	if not (_pipeline_paint_clearance is RID): _pipeline_paint_clearance = RID()
 	if not (_pipeline_score_sum is RID): _pipeline_score_sum = RID()
+	# 场句柄归零 ⇒ _ensure_resident_clearance_field_buffer 重建一块零缓冲 = 一次清场。
+	# 语义上等于"重载后这一批当会话首批"，不会读到半张旧场。
+	if not (_resident_clearance_field_buffer is RID): _resident_clearance_field_buffer = RID()
+	if not (_resident_clearance_field_bytes is int): _resident_clearance_field_bytes = 0
 	if not (_resident_place_candidate_buffer is RID): _resident_place_candidate_buffer = RID()
 	if not (_resident_place_candidate_buffer_bytes is int): _resident_place_candidate_buffer_bytes = 0
 	if not (_resident_place_candidate_cache_key is Dictionary): _resident_place_candidate_cache_key = {}
@@ -937,7 +981,7 @@ func _run_anchor_fine_pipeline(
 			_prof, score_resource_profile)
 
 	# One-pass atomic Reduce working buffers. Fine Score keeps top-K records;
-	# init chooses one per Anchor and writes direct XZ maps. The invalidation pass
+	# init chooses one per Anchor and writes the direct XZ map. The invalidation pass
 	# only changes one uint per Anchor from 1 to 0, then compact applies quotas.
 	var seed_value = common_settings.get("reduce_seed_placements", PackedFloat32Array())
 	# 类型不符不再静默换成空数组：种子丢失会让 reduce 少掉全部既有放置的冲突约束，
@@ -950,8 +994,13 @@ func _run_anchor_fine_pipeline(
 			_gpu_contract_result(false, "reduce_seed_placements_type_invalid"), common_settings)
 	var seed_floats: PackedFloat32Array = seed_value
 	var seed_count := seed_floats.size() / 4
+	# 种子表现在只有一个消费者：会话首批把**上一次 Place 留下的**已放置物烘进新的余隙场。
+	# 之后各批的跨批约束全部由 GPU 侧的 paint pass 就地累积，种子表一个字节都用不上——
+	# 逐批照传的话，一次 Place 会白上传 seed_count × 16 B × 批数（实测量级 10 MB）。
+	var clearance_field_reset := bool(common_settings.get("clearance_field_reset", true))
+	var paint_seeds_needed := clearance_field_reset and seed_count > 0
 	var seed_buffer := storage_buffer_from_floats(seed_floats, SCOPE_FRAME, "reduce_seed_placements") \
-		if seed_count > 0 else storage_buffer_zero(16, SCOPE_FRAME, "reduce_seed_placements_empty")
+		if paint_seeds_needed else storage_buffer_zero(16, SCOPE_FRAME, "reduce_seed_placements_unused")
 	var spacing_floats: PackedFloat32Array = asset_lookup.get("spacing_floats", PackedFloat32Array())
 	if spacing_floats.is_empty():
 		spacing_floats.resize(1)
@@ -960,7 +1009,29 @@ func _run_anchor_fine_pipeline(
 	var anchor_valid_buffer := storage_buffer_zero(maxi(anchor_capacity, 1) * 4, SCOPE_FRAME, "reduce_anchor_valid")
 	var pixel_count := maxi(grid_size.x * grid_size.z, 1)
 	var anchor_at_pixel_buffer := storage_buffer_zero(pixel_count * 4, SCOPE_FRAME, "reduce_anchor_at_pixel")
-	var seed_at_pixel_buffer := storage_buffer_zero(pixel_count * 4, SCOPE_FRAME, "reduce_seed_at_pixel")
+
+	# ── 有符号余隙场：跨批互斥的常驻载体 ────────────────────────────────────────
+	# `clearance_field_reset` 缺省 true = 每次调用都当"新会话"（重建零场 + 把传进来的种子
+	# 烘一遍）。Place 会话只在首批传 true，之后各批 false 让场跨批累积——累积的内容全部
+	# 来自 GPU 侧的 paint pass，不再需要任何 CPU 回传。
+	var clearance_field_buffer := _ensure_resident_clearance_field_buffer(
+		pixel_count, clearance_field_reset)
+	if not clearance_field_buffer.is_valid():
+		push_error("VoxelPlacementGenerator: 余隙场分配失败 pixel_count=%d —— 跨批互斥会整条失效（每批都会把物件叠在上一批头上）" % pixel_count)
+		assert(false, "VoxelPlacementGenerator: clearance field allocation failed")
+		return _gpu_contract_blocked_multi_asset_output(
+			complexity_field, collision_field, asset_defs,
+			_gpu_contract_result(false, "clearance_field_allocation_failed"), common_settings)
+	var max_spacing_radius_voxels := float(asset_lookup.get("max_spacing_radius_voxels", 0.0))
+	# 偏置量程守卫：场把 clearance 存成 (clearance + 64) * 256 的 uint，查询方最大的半边
+	# 半径超过偏置就会有格子被"截成无约束"，表现是间距在大资产附近静默失效。
+	var max_half_radius := maxf(
+		max_spacing_radius_voxels * asset_spacing_factor,
+		maxf(min_distance_voxels * 0.5, 0.25))
+	if max_half_radius >= CLEARANCE_BIAS_VOXELS:
+		push_error("VoxelPlacementGenerator: 半边间距半径 %.3f 体素超出余隙场偏置量程 %.1f —— 大资产附近的跨批间距会静默失效" % [
+			max_half_radius, CLEARANCE_BIAS_VOXELS])
+		assert(false, "VoxelPlacementGenerator: clearance field bias exceeded")
 
 	var reduce_init_set0 := create_uniform_set([
 		make_storage_uniform(0, candidate_buffer),
@@ -968,8 +1039,6 @@ func _run_anchor_fine_pipeline(
 		make_storage_uniform(2, anchor_candidate_ref_buffer),
 		make_storage_uniform(3, anchor_valid_buffer),
 		make_storage_uniform(4, anchor_at_pixel_buffer),
-		make_storage_uniform(5, seed_buffer),
-		make_storage_uniform(6, seed_at_pixel_buffer),
 	], _shader_reduce_init, 0)
 	var reduce_invalidate_set0 := create_uniform_set([
 		make_storage_uniform(0, candidate_buffer),
@@ -977,9 +1046,8 @@ func _run_anchor_fine_pipeline(
 		make_storage_uniform(2, anchor_candidate_ref_buffer),
 		make_storage_uniform(3, anchor_valid_buffer),
 		make_storage_uniform(4, anchor_at_pixel_buffer),
-		make_storage_uniform(5, seed_buffer),
-		make_storage_uniform(6, seed_at_pixel_buffer),
 		make_storage_uniform(7, asset_spacing_buffer),
+		make_storage_uniform(8, clearance_field_buffer),
 	], _shader_reduce_invalidate, 0)
 	var reduce_compact_set0 := create_uniform_set([
 		make_storage_uniform(0, candidate_buffer),
@@ -990,6 +1058,23 @@ func _run_anchor_fine_pipeline(
 		make_storage_uniform(5, result_buffer),
 		make_storage_uniform(6, result_count_buffer),
 	], _shader_reduce_compact, 0)
+	# 画侧的两个记录源共用一个 shader，只在 binding 0/1 与 push 上分叉：
+	#   * results：compact 刚写完的本批 survivor（条数在 GPU 的 result_count 里）
+	#   * seeds  ：会话首批用来把**上一轮 Place 留下的**已放置物烘进新场（条数在 push 里）
+	var paint_results_set0 := create_uniform_set([
+		make_storage_uniform(0, result_buffer),
+		make_storage_uniform(1, result_count_buffer),
+		make_storage_uniform(2, clearance_field_buffer),
+		make_storage_uniform(3, asset_spacing_buffer),
+	], _shader_paint_clearance, 0)
+	var paint_seeds_set0 := RID()
+	if paint_seeds_needed:
+		paint_seeds_set0 = create_uniform_set([
+			make_storage_uniform(0, seed_buffer),
+			make_storage_uniform(1, result_count_buffer),
+			make_storage_uniform(2, clearance_field_buffer),
+			make_storage_uniform(3, asset_spacing_buffer),
+		], _shader_paint_clearance, 0)
 
 	var init_set0 := create_uniform_set([
 		make_storage_uniform(0, stamp_bounds_buffer),
@@ -1099,39 +1184,66 @@ func _run_anchor_fine_pipeline(
 				_gpu_contract_result(false, "incremental_fine_winner_validation_dispatch_failed"),
 				common_settings)
 
-	# Fixed three-pass Reduce: select one Fine candidate and build XZ maps;
-	# discover every conflict and atomically clear its stable-priority loser;
-	# barrier; compact survivors. No relationship buffer, sorting, rounds,
-	# convergence readback, or size-tier staging remains.
+	# Fixed Reduce chain: [首批：把旧种子烘进新场] → select one Fine candidate and build
+	# the XZ map; discover every conflict and atomically clear its stable-priority
+	# loser; barrier; compact survivors; 把本批 survivor 画进余隙场供下一批 O(1) 查。
+	# No relationship buffer, sorting, rounds, convergence readback, or size-tier
+	# staging remains.
 	var asset_count_push := mini(asset_defs.size(), MAX_ASSETS)
-	var reduce_groups := Vector3i(ceil_div(maxi(anchor_capacity, seed_count), 256), 1, 1)
-	var reduce_passes: Array = [{
+	var paint_clearance_common := {
+		grid_x = grid_size.x,
+		grid_z = grid_size.z,
+		asset_count = asset_count_push,
+		min_distance_voxels = min_distance_voxels,
+		asset_spacing_factor = asset_spacing_factor,
+		max_spacing_radius = max_spacing_radius_voxels,
+	}
+	var reduce_passes: Array = []
+	if paint_seeds_set0.is_valid():
+		var paint_seeds_push := paint_clearance_common.duplicate()
+		paint_seeds_push["record_capacity"] = seed_count
+		paint_seeds_push["record_stride"] = 1     # 种子表一条 = 一个 vec4
+		paint_seeds_push["count_source"] = 1      # 条数由 push 给（CPU 已知）
+		paint_seeds_push["push_count"] = seed_count
+		paint_seeds_push["asset_field"] = 1       # 资产号在 .w
+		reduce_passes.append({
+			pipeline = _pipeline_paint_clearance,
+			uniform_sets = [paint_seeds_set0],
+			push = PushConstantLayout.new(PAINT_CLEARANCE_PUSH).pack(paint_seeds_push),
+			groups = _record_group_layout(seed_count),
+		})
+	reduce_passes.append({
 		pipeline = _pipeline_reduce_init,
 		uniform_sets = [reduce_init_set0],
 		push = PushConstantLayout.new(REDUCE_INIT_PUSH).pack({
 			topk = topk,
 			anchor_capacity = anchor_capacity,
-			seed_count = seed_count,
+			seed_count = 0,   # 已退役：跨批间距走余隙场，init 不再建 seed_at_pixel
 			grid_x = grid_size.x,
 			grid_z = grid_size.z,
+			anchor_interval = anchor_interval_voxels,
+			anchor_phase_x = posmod(anchor_phase_x, maxi(anchor_interval_voxels, 1)),
+			anchor_phase_z = posmod(anchor_phase_z, maxi(anchor_interval_voxels, 1)),
 		}),
-		groups = reduce_groups,
-	}, {
+		groups = Vector3i(ceil_div(maxi(anchor_capacity, 1), 256), 1, 1),
+	})
+	reduce_passes.append({
 		pipeline = _pipeline_reduce_invalidate,
 		uniform_sets = [reduce_invalidate_set0],
 		push = PushConstantLayout.new(REDUCE_INVALIDATE_PUSH).pack({
 			anchor_capacity = anchor_capacity,
 			asset_count = asset_count_push,
-			seed_count = seed_count,
+			_pad_seed_count = 0,
 			grid_x = grid_size.x,
 			grid_z = grid_size.z,
 			random_seed = reduce_random_seed,
 			min_distance_voxels = min_distance_voxels,
 			asset_spacing_factor = asset_spacing_factor,
-			max_spacing_radius = float(asset_lookup.get("max_spacing_radius_voxels", 0.0)),
+			max_spacing_radius = max_spacing_radius_voxels,
 		}),
 		groups = Vector3i(ceil_div(maxi(anchor_capacity, 1), 256), 1, 1),
-	}, {
+	})
+	reduce_passes.append({
 		pipeline = _pipeline_reduce_compact,
 		uniform_sets = [reduce_compact_set0],
 		push = PushConstantLayout.new(REDUCE_COMPACT_PUSH).pack({
@@ -1140,15 +1252,34 @@ func _run_anchor_fine_pipeline(
 			asset_count = asset_count_push,
 		}),
 		groups = Vector3i(1, 1, 1),
-	}]
+	})
+	# 画侧必须排在 compact **之后**：本批 survivor 只有在配额/容量裁决完成后才算被接受，
+	# 提前画会把被 compact 砍掉的候选也算进互斥关系。同批内部的互斥仍归上面那趟逐对仲裁，
+	# 本 pass 服务的是**下一批**。
+	var paint_results_push := paint_clearance_common.duplicate()
+	paint_results_push["record_capacity"] = maxi(result_capacity, 1)
+	paint_results_push["record_stride"] = RECORD_STRIDE   # placement_results 一条 = 4 个 vec4
+	paint_results_push["count_source"] = 0                # 条数读 GPU 的 result_count
+	paint_results_push["push_count"] = 0
+	paint_results_push["asset_field"] = 0                 # 资产号在 [base+1].y
+	reduce_passes.append({
+		pipeline = _pipeline_paint_clearance,
+		uniform_sets = [paint_results_set0],
+		push = PushConstantLayout.new(PAINT_CLEARANCE_PUSH).pack(paint_results_push),
+		groups = _record_group_layout(result_capacity),
+	})
+	# 上面 score_resource_profile 里的 dispatch_count 是按"reduce 恒三段"写死的；余隙场
+	# 让这条链变成 3~5 段（首批多一趟种子烘焙、每批多一趟结果画入），据实补差。
+	score_resource_profile["dispatch_count"] = int(
+		score_resource_profile.get("dispatch_count", 0)) + reduce_passes.size() - 3
 	# Keep the storage-buffer barrier contract explicit even though the helper's
 	# default is true: init -> invalidate -> compact must never be fused without it.
 	# 三段 reduce / init_bounds / stamp 的派发返回值不得再吞掉：任一段没派发，
 	# 后面的回读拿到的都是未初始化显存（result/bounds 都是 uninitialized 分配），
 	# 会被当成"有效放置"报出去并写进场。
 	if not ComputePassChain.run(self, reduce_passes, false, true):
-		push_error("VoxelPlacementGenerator: reduce 三段派发失败 anchor_capacity=%d asset_count=%d seed_count=%d —— 结果缓冲仍是未初始化显存" % [
-			anchor_capacity, asset_count_push, seed_count])
+		push_error("VoxelPlacementGenerator: reduce 链派发失败 passes=%d anchor_capacity=%d asset_count=%d seed_count=%d —— 结果缓冲仍是未初始化显存" % [
+			reduce_passes.size(), anchor_capacity, asset_count_push, seed_count])
 		assert(false, "VoxelPlacementGenerator: reduce dispatch failed")
 		return _gpu_contract_blocked_multi_asset_output(
 			complexity_field, collision_field, asset_defs,
@@ -2035,6 +2166,9 @@ func _apply_settings(settings: Dictionary) -> void:
 	collision_limit = float(settings.get("collision_limit", collision_limit))
 	clearance_limit = float(settings.get("clearance_limit", clearance_limit))
 	min_distance_voxels = float(settings.get("min_distance_voxels", min_distance_voxels))
+	anchor_interval_voxels = maxi(int(settings.get("anchor_interval_voxels", anchor_interval_voxels)), 0)
+	anchor_phase_x = int(settings.get("anchor_phase_x", anchor_phase_x))
+	anchor_phase_z = int(settings.get("anchor_phase_z", anchor_phase_z))
 	asset_spacing_factor = maxf(float(settings.get("asset_spacing_factor", asset_spacing_factor)), 0.0)
 	reduce_random_seed = int(settings.get("reduce_random_seed", settings.get("global_seed", reduce_random_seed)))
 	scene_write_scale = float(settings.get("scene_write_scale", scene_write_scale))
@@ -2237,6 +2371,45 @@ func _release_resident_place_candidate_buffer() -> void:
 	_resident_place_candidate_initialized = false
 
 
+## 有符号余隙场的常驻缓冲（grid_x * grid_z 个 uint）。
+##
+## `reset` = true（会话首批 / 未声明会话的单发调用）或尺寸变化时**整块重建成零缓冲**。
+## 这里刻意不用 buffer_clear / buffer_update：场的编码把 0 定义成"未画 = 无约束"，
+## 所以一块新的零缓冲本身就是合法初值，重建即清场。上一批的 dispatch 早已在
+## run_multi_asset 收尾的 submit_and_sync 之后完成，重建不存在跨提交的写后读冒险。
+## 256×256 网格 = 256 KB / 会话，重建成本可以忽略。
+func _ensure_resident_clearance_field_buffer(pixel_count: int, reset: bool) -> RID:
+	var safe_bytes := maxi(pixel_count, 1) * 4
+	if _resident_clearance_field_buffer.is_valid() \
+			and _resident_clearance_field_bytes == safe_bytes \
+			and not reset:
+		return _resident_clearance_field_buffer
+	_release_resident_clearance_field_buffer()
+	_resident_clearance_field_buffer = storage_buffer_zero(
+		safe_bytes, SCOPE_PERSISTENT, "placement_clearance_field")
+	_resident_clearance_field_bytes = safe_bytes if _resident_clearance_field_buffer.is_valid() else 0
+	return _resident_clearance_field_buffer
+
+
+## 「一条记录 = 一个工作组」的组数铺法。paint_placement_clearance 按
+## `wg.x + wg.y * gl_NumWorkGroups.x` 还原记录下标，所以这里可以随意折行——折行只是为了
+## 不撞单维组数上限（Vulkan 常见 65535），种子表是跨轮累积的，迟早会超。
+const RECORD_GROUP_ROW_LENGTH := 32768
+
+func _record_group_layout(record_count: int) -> Vector3i:
+	var count := maxi(record_count, 1)
+	if count <= RECORD_GROUP_ROW_LENGTH:
+		return Vector3i(count, 1, 1)
+	return Vector3i(RECORD_GROUP_ROW_LENGTH, ceil_div(count, RECORD_GROUP_ROW_LENGTH), 1)
+
+
+func _release_resident_clearance_field_buffer() -> void:
+	if _resident_clearance_field_buffer.is_valid():
+		release_rid(_resident_clearance_field_buffer)
+	_resident_clearance_field_buffer = RID()
+	_resident_clearance_field_bytes = 0
+
+
 ## Score 常驻候选/胜出对：形状一致就整对复用，形状变了就整对重建（不做半新半旧）。
 ## 返回是否两块都可用；false 时调用方必须判死本轮 Score，不得带着半块常驻继续派发。
 ## ⚠ 只按形状复用、不按内容复用：Score 每轮把全部候选整批重写，故无需内容级 cache key。
@@ -2320,6 +2493,7 @@ func _load_shaders() -> void:
 	_shader_stamp = load_compute_shader("res://shaders/stamp_asset_voxels.glsl")
 	_shader_pack_field_pair = load_compute_shader("res://shaders/pack_placement_field_pair.glsl")
 	_shader_pack_sample_pairs = load_compute_shader("res://shaders/pack_fine_sample_pairs.glsl")
+	_shader_paint_clearance = load_compute_shader("res://shaders/paint_placement_clearance.glsl")
 	if _shader_fine_finalize.is_valid():
 		_pipeline_fine_finalize = create_compute_pipeline(_shader_fine_finalize)
 	if _shader_fine_score.is_valid():
@@ -2340,6 +2514,8 @@ func _load_shaders() -> void:
 		_pipeline_pack_field_pair = create_compute_pipeline(_shader_pack_field_pair)
 	if _shader_pack_sample_pairs.is_valid():
 		_pipeline_pack_sample_pairs = create_compute_pipeline(_shader_pack_sample_pairs)
+	if _shader_paint_clearance.is_valid():
+		_pipeline_paint_clearance = create_compute_pipeline(_shader_paint_clearance)
 
 
 ## Score observation only needs the field/sample preparation and Fine family.
@@ -2369,6 +2545,7 @@ func _placement_pipeline_ready() -> bool:
 		and _shader_init_stamp_bounds.is_valid() \
 		and _shader_stamp.is_valid() \
 		and _shader_pack_sample_pairs.is_valid() \
+		and _shader_paint_clearance.is_valid() \
 		and _pipeline_fine_finalize.is_valid() \
 		and _pipeline_fine_score.is_valid() \
 		and _pipeline_fine_winner.is_valid() \
@@ -2377,7 +2554,8 @@ func _placement_pipeline_ready() -> bool:
 		and _pipeline_reduce_compact.is_valid() \
 		and _pipeline_init_stamp_bounds.is_valid() \
 		and _pipeline_stamp.is_valid() \
-		and _pipeline_pack_sample_pairs.is_valid()
+		and _pipeline_pack_sample_pairs.is_valid() \
+		and _pipeline_paint_clearance.is_valid()
 
 
 ## 在常驻 result 记录上调度分数求和 pass，输出 8 字节控制标量（residual gain
@@ -2439,6 +2617,8 @@ func _release_placement_result_buffers(gpu_out: Dictionary) -> void:
 ## 必须同步清空——否则 dispose 后再 run 时 ready 守卫会拿非零旧句柄误判已就绪。
 ## 中文说明：负责 _on_after_dispose 函数的相关处理。
 func _on_after_dispose() -> void:
+	_resident_clearance_field_buffer = RID()
+	_resident_clearance_field_bytes = 0
 	_resident_place_candidate_buffer = RID()
 	_resident_place_candidate_buffer_bytes = 0
 	_resident_place_candidate_cache_key = {}
@@ -2460,6 +2640,7 @@ func _on_after_dispose() -> void:
 	_pipeline_stamp = RID()
 	_pipeline_pack_field_pair = RID()
 	_pipeline_pack_sample_pairs = RID()
+	_pipeline_paint_clearance = RID()
 	_pipeline_score_sum = RID()
 	_shader_fine_finalize = RID()
 	_shader_fine_score = RID()
@@ -2471,6 +2652,7 @@ func _on_after_dispose() -> void:
 	_shader_stamp = RID()
 	_shader_pack_field_pair = RID()
 	_shader_pack_sample_pairs = RID()
+	_shader_paint_clearance = RID()
 	_shader_score_sum = RID()
 
 

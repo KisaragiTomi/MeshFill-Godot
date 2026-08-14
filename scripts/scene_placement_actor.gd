@@ -143,18 +143,37 @@ enum LifecycleState {
 ## `placement_results = result_capacity * RECORD_STRIDE(4) * 16` 字节，
 ## 另有 `stamp_bounds = result_capacity * 2 * 16`、`stamp_capacity = result_capacity * 资产数`。
 ## 所以它没法「去掉」，只能抬——4096 时结果缓冲 256 KB + 边界缓冲 128 KB，可忽略。
-## 批循环耗尽后自然收敛（见 run_place 的 `batch_spawned <= 0`），它只决定**分批粒度**：
+## 批循环耗尽后自然收敛（判据见 run_place 循环末尾），它只决定**分批粒度**：
 ## 调大 = 每批装得下更多、批数更少、总墙钟更短；不影响最终放置总数。
 @export_range(64, 16384, 64) var place_result_capacity := 4096
 ## Place 单次命令最多自动跑的批数（每批整链 S5→S9）。上一批盖章 collision 使下一批
-## 自然避开已放置足迹；**某批 spawned == 0 即判定放满**，正常情况下轮不到本上限。
+## 自然避开已放置足迹；收敛判据见 run_place 循环末尾（格点门关 = 某批 spawned == 0 即
+## 判定放满；格点门开 = 连续零产出计数 或 相位空间走完），正常情况下轮不到本上限。
+## ⚠ 本上限**小于**相位空间（`place_anchor_interval_voxels²` = 144）是刻意的（用户 2026-08-14
+## 定 32）：相位不走满，就意味着格点覆盖不完整。只有在「每批都能拿到完整锚点池」的前提下
+## 这才可接受——那时单批产出足够大，32 批已远超需要。若锚点池仍随批次塌缩（见
+## `_mark_score_region_dirty` 的注释与 collect 缓存键里的 dirty_epoch），32 批会显著少放。
 ##
 ## ⚠ 保留它不是为了限流，是**跑飞兜底**：退出条件依赖管线单调收敛（每批盖章都缩小候选池），
 ## 而那是观测到的性质、不是被证明的不变量。去掉就等于 `while true`，管线一旦不收敛就把
 ## 编辑器挂死。真被顶到时会 push_warning，绝不静默截断。
-@export_range(1, 1024, 1) var place_max_batches := 256
+@export_range(1, 1024, 1) var place_max_batches := 32
 ## 放置最小间距（体素；reduce min-distance 冲突门）。
 @export_range(0.0, 16.0, 0.5) var place_min_distance_voxels := 2.0
+## 格点门间隔（体素）：每轮只放落在 `phase + k * interval` 格点上的 anchor，
+## 相位逐批推进。取得足够大时同轮候选在几何上不可能冲突，那趟保守仲裁就不会误杀。
+##
+## **下界怎么来的**：两个物体中心的最小安全距离 = `r_a + r_b`（各自 XZ 半长之和），
+## 最坏情况是两个最大资产 cliff_02 相邻——XZ 足迹 46.15 世界单位、半长 23.08，
+## 于是安全距离 = 46.15 世界单位 ÷ voxel_size.x(=4) = **11.5 体素 ⇒ 12 即安全**。
+## 12 是贴着下界取的最小安全值：更小会让同轮两个 cliff_02 真的重叠。
+##
+## ⚠ 别再往上调「保险起见」：这里原本写 30，比下界保守 2.6 倍，而每轮格点数按面积
+## 反比缩——interval=30 每轮只有 64 个格点，interval=12 有 455 个，**差 7 倍**。
+## 每轮候选少 7 倍就意味着要多跑 7 倍的批才铺得满，代价直接落在 Place 的总墙钟上。
+## 调大 ⇒ 每轮更稀疏、需要更多轮次覆盖。
+## 0 = 关闭，退回「全体候选 + 一趟保守仲裁 + 盖章重判」的旧行为。
+@export_range(0, 64, 1) var place_anchor_interval_voxels := 12
 ## 评分观察 tile 子区域（XZ tile 坐标，tile=8³；全 Y 层）。
 ## 空 rect（默认）= 单次全图；非空 rect = 只跑该单区域。
 @export var prefilter_tile_rect := Rect2i()
@@ -2376,8 +2395,8 @@ func _score_status(require_scored: bool, extra: Dictionary = {}) -> Dictionary:
 ## ⚠ Place 改写 committed SV：再次 Score 会在新场上重评（env 缓存已随会话失效）。
 ## 每批先保留各 Anchor 的最佳 Fine 候选，再按稳定 random 优先级原子失效 Anchor 间冲突并
 ## 提交至多 place_result_capacity 个；上一批盖章的 collision 使下一批候选在已放置足迹上
-## invalid（collision_limit 门）⇒ 批间自然互斥。spawned < 每批容量 = 候选池被间距/占用
-## 耗尽 ⇒ 放满，提前停。
+## invalid（collision_limit 门）⇒ 批间自然互斥。收敛判据分「格点门开/关」两套，
+## 写在循环末尾——⚠ 开着格点门时**单批零产出不等于放满**，别照搬旧判据。
 func run_place(_settings := {}) -> Dictionary:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	if not ensure_placement_env():
@@ -2395,6 +2414,14 @@ func run_place(_settings := {}) -> Dictionary:
 	common["min_prefilter_score"] = min_prefilter_score
 	common["result_capacity"] = place_result_capacity
 	common["min_distance_voxels"] = place_min_distance_voxels
+	common["anchor_interval_voxels"] = place_anchor_interval_voxels
+	# 会话首批的锚点池必须是全量的：collect 只在**脏 tile** 上发锚，而上一次 Anchors/Score
+	# 已经把脏清单消费清空了（prefilter 成功即 finalize_consumed_dirty_tiles）。不在这里补
+	# 一次全区标脏，首批就会在一份近乎空的脏清单上采集，整个会话都跑在残缺的池子上。
+	# ⚠ 只标**一次**，不进批循环：批间复用常驻锚点池（PlacementStageEnv 的
+	# reuse_resident_anchors），逐批标脏既没必要，还会白付一整轮全图 collect。
+	for _rect in _score_region_rects():
+		_mark_score_region_dirty(_rect)
 	var session: Dictionary = _placement_env.begin_place_session(common)
 	if not bool(session.get("ok", false)):
 		return _publish_place_result({
@@ -2404,9 +2431,12 @@ func run_place(_settings := {}) -> Dictionary:
 	var spawned_total := 0
 	var batches := 0
 	var batch_reports: Array = []
-	# 循环是靠 `batch_spawned <= 0` 自然收敛的；跑满 place_max_batches 属于**没收敛**，
-	# 必须报出来——静默截断正是「点一次 Place 只铺一部分」那类问题的温床。
+	# 循环靠收敛判据自然退出（判据分两套，见循环末尾）；跑满 place_max_batches 属于
+	# **没收敛**，必须报出来——静默截断正是「点一次 Place 只铺一部分」那类问题的温床。
 	var converged := false
+	# 格点门开启时的「连续零产出」计数：单批零产出只说明那个相位不巧，不是放满，
+	# 必须连着若干批都零产出才作数。见循环末尾的收敛判据。
+	var consecutive_empty_batches := 0
 	for batch in range(maxi(place_max_batches, 1)):
 		if _placed_object_ids.size() + place_result_capacity > autoobject_capacity:
 			push_warning("[ScenePlacementActor] Place 停在容量帽：累计 %d 接近 runtime 容量 %d" % [
@@ -2521,10 +2551,38 @@ func run_place(_settings := {}) -> Dictionary:
 		# 候选供给受脏清单覆盖、间距种子、冲突消解共同限制，实测一批只出 82 个（容量 1024）。
 		# 于是循环恒定跑一批就退出，`place_max_batches` 那个上限从来没机会生效，
 		# 表现是「点一次 Place 只铺出一小片，得点很多次」。
-		# 唯一诚实的耗尽判据是**这批一个都没产出**。
-		if batch_spawned <= 0:
-			converged = true
-			break
+		#
+		# ⚠⚠ 格点门（place_anchor_interval_voxels > 0）把「这批一个都没产出」也一起毁了：
+		# 每批只放落在 `phase + k*interval` 格点上的 anchor，某批产出 0 **只说明那一个相位
+		# 的格点恰好被已放置物挡光了**，换个相位照样有得放，跟「放满」毫无关系。
+		# 实测事故：批 1 产出 0 就退出，总数只有 42 个 / 2 批（同场关掉格点门是 3878 个 / 7 批）。
+		# 所以判据必须按门的开关分两套：
+		if place_anchor_interval_voxels <= 0:
+			# 门关闭 = 旧行为（全体候选 + 一趟保守仲裁）：候选池是全量的，
+			# 这批一个都没产出就是真被间距/占用耗尽了，可以立刻退出。
+			if batch_spawned <= 0:
+				converged = true
+				break
+		else:
+			# 门开启：两条独立的收敛判据，任一成立即算真的放满，都**不该**触发下面那条
+			# 「跑满仍未收敛」的告警（那条是给跑飞兜底的，不是给正常收敛的）。
+			#   1. 连续零产出：连着 maxi(4, interval) 批都没产出，才认为不是相位不巧。
+			#      下界取 4 是防止 interval 很小时（例如 1、2）判据退化成单批零产出。
+			if batch_spawned <= 0:
+				consecutive_empty_batches += 1
+				if consecutive_empty_batches >= maxi(4, place_anchor_interval_voxels):
+					converged = true
+					break
+			else:
+				consecutive_empty_batches = 0
+			#   2. 相位空间走完：PlacementStageEnv.run_place_session_batch 用「与 interval²
+			#      互质的步长做模乘」推进相位，是完全置换 ⇒ interval² 批之内不重不漏地走完
+			#      全部格位。走完就等于每个格点都试过了，再跑只是重复相位。
+			#      注意循环上界仍是 place_max_batches（默认 256），而 interval=12 的相位空间
+			#      只有 144 < 256，所以正常情况下是从这里收敛的，轮不到跑满 256 批。
+			if batches >= place_anchor_interval_voxels * place_anchor_interval_voxels:
+				converged = true
+				break
 	if not converged and batches >= maxi(place_max_batches, 1):
 		push_warning("[ScenePlacementActor] Place 跑满 %d 批仍未收敛（本次 spawned=%d）——还有候选没放完，调大 place_max_batches 再点一次。" % [
 			maxi(place_max_batches, 1), spawned_total])

@@ -1,13 +1,17 @@
 #[compute]
 #version 450
 
-// Select exactly one Fine Score candidate per live Anchor and build the two
-// direct XZ-pixel lookup maps used by the one-pass atomic Reduce.
+// Select exactly one Fine Score candidate per live Anchor and build the direct
+// XZ-pixel lookup map used by the one-pass atomic Reduce's same-batch pairwise
+// arbitration.
 //
-// The anchor collector guarantees at most one Anchor per (x,z) column. Seeds
-// are accepted results from earlier batches and therefore obey the same
-// unique-XZ contract. Map entries store index + 1 so zero-filled buffers are
-// already valid empty maps.
+// The anchor collector guarantees at most one Anchor per (x,z) column. Map
+// entries store index + 1 so zero-filled buffers are already valid empty maps.
+//
+// ⚠ 这里曾另建一张 `seed_at_pixel`（已放置物的 XZ 索引），供 invalidate 做跨批间距
+// 扫描。跨批互斥已改为常驻的有符号余隙场（shaders/paint_placement_clearance.glsl
+// 画、invalidate 查），那张图零读者且每格只装得下一个种子，已整条删除——种子现在
+// 只在会话首批经 paint pass 直接烘进场里。
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
@@ -31,17 +35,9 @@ layout(set = 0, binding = 4, std430) restrict writeonly buffer AnchorAtPixel {
     uint anchor_at_pixel[]; // anchor id + 1; zero = empty
 };
 
-layout(set = 0, binding = 5, std430) restrict readonly buffer SeedPlacements {
-    vec4 seed_placements[]; // xyz = voxel origin, w = asset index
-};
-
-layout(set = 0, binding = 6, std430) restrict writeonly buffer SeedAtPixel {
-    uint seed_at_pixel[]; // seed id + 1; zero = empty
-};
-
 layout(push_constant, std430) uniform Params {
-    ivec4 counts; // topk, anchor_capacity, seed_count, grid_x
-    ivec4 grid;   // grid_z, unused x3
+    ivec4 counts; // topk, anchor_capacity, unused(retired seed_count), grid_x
+    ivec4 grid;   // grid_z, anchor_interval, anchor_phase_x, anchor_phase_z
 };
 
 const uint RECORD_STRIDE = 4u;
@@ -55,7 +51,6 @@ void main() {
     uint topk = uint(max(counts.x, 1));
     uint anchor_capacity = uint(max(counts.y, 0));
     uint anchor_count = min(anchor_count_dyn[0], anchor_capacity);
-    uint seed_count = uint(max(counts.z, 0));
     int grid_x = max(counts.w, 1);
     int grid_z = max(grid.x, 1);
 
@@ -85,20 +80,25 @@ void main() {
             anchor_valid[i] = 1u;
             vec3 origin = fine_candidates[best_slot * RECORD_STRIDE + 0u].xyz;
             ivec2 pixel = ivec2(round(origin.x), round(origin.z));
-            if (in_pixel_grid(pixel, grid_x, grid_z)) {
+            // ── 格点门：本轮只让落在 (phase + k*interval) 上的 anchor 参赛 ──────
+            // interval 取得足够大（≥ 最大资产足迹 + min_distance）时，同轮候选在几何上
+            // 不可能互相冲突，后面那趟保守仲裁因此不会误杀——这正是它存在的目的。
+            // 覆盖靠逐批推进相位；已放置物的 collision 盖章负责跨轮互斥。
+            // interval <= 0 = 关闭本门，退回原行为。
+            // pixel 恒 >= 0（in_pixel_grid 会兜底），所以取模不用处理负数。
+            int anchor_interval = grid.y;
+            if (anchor_interval > 0
+                    && ((pixel.x % anchor_interval) != grid.z
+                        || (pixel.y % anchor_interval) != grid.w)) {
+                anchor_candidate_ref[i] = 0u;
+                anchor_valid[i] = 0u;
+            } else if (in_pixel_grid(pixel, grid_x, grid_z)) {
                 anchor_at_pixel[pixel.x + grid_x * pixel.y] = i + 1u;
             } else {
                 // An out-of-grid candidate cannot participate safely.
                 anchor_candidate_ref[i] = 0u;
                 anchor_valid[i] = 0u;
             }
-        }
-    }
-
-    if (i < seed_count) {
-        ivec2 pixel = ivec2(round(seed_placements[i].x), round(seed_placements[i].z));
-        if (in_pixel_grid(pixel, grid_x, grid_z)) {
-            seed_at_pixel[pixel.x + grid_x * pixel.y] = i + 1u;
         }
     }
 }

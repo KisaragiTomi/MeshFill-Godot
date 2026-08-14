@@ -443,6 +443,11 @@ func _on_display_built() -> void:
 ## （`rebuild_display()` / `set_display_visible()` / 那一处），谁最后写谁赢。
 ## ⚠ 拿到节点后**只该写显示态属性**（如 `transparency`）；`visible` 一律走
 ## `set_display_visible()`，否则又变回多写入方。
+## 2026-08-14：`_apply_targetsv_visuals()` 已整个删除（grep 不到是正常的）。它改走
+## `set_display_visible()` 之后仍是个**跨域**写入方——翻任意一个别的域的开关都会顺带把
+## host 的记账位推给 TargetSV，而隐藏域没有显示节点、`set_display_visible(true)` 会走进
+## `rebuild_display()`，于是「点 Anchors 显示 → TargetSV 自己冒出来」。域的显示只由
+## `ScenePlacementActor.set_volume_display()` 一处驱动。
 func display_node() -> Node3D:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	return _display_node()
