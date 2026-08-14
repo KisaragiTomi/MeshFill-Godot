@@ -57,14 +57,14 @@ Shader 职责：
 
 | Shader | 职责 |
 | --- | --- |
-| `collect_sv_anchors.glsl` | 从 dirty tile / voxel 收集统一 position-only anchors；两门合取（在 target 体积内 **且** 是该 `(x, z)` 列最底的 in-target 体素，见「Anchor 规则」），atomic-append 进 anchor 缓冲。 |
+| `collect_sv_anchors.glsl` | 从 dirty tile / voxel 收集统一 position-only anchors；两门合取（落在地形切片或其之上的采样层 **且** 该处能采到 target 体积，见「Anchor 规则」），atomic-append 进 anchor 缓冲。 |
 | `prefilter_anchor_dispatch_finalize.glsl` | 单线程把 GPU 常驻 `anchor_count` 转成 score / top-K 的间接派发参数（`gx = 256`，`gy = ceil(count / 256)`）；`count == 0` -> 0 组 -> 空帧自然穿过，host 永不回读。 |
 | `score_anchor_asset_probes.glsl` | 每个 anchor / asset 组合按 probes 采样 `SV` 与 `TargetSV_B` buffer，输出 asset score。 |
 | `select_anchor_topk.glsl` | 为每个 anchor 选择 top-K assets（低于 `min_prefilter_score` 的 asset 被拒绝）。 |
 
 粗筛不再做 tile 聚合或候选区域膨胀：旧的 `reduce_anchor_topk_to_voxel_regions.glsl` / `pack_candidate_route_records_from_votes.glsl`（candidate route）已随 tile 细筛管线删除。
 
-`anchor_candidate_handoff` 的 anchor / anchor_count / topk 缓冲是 SCOPE_PERSISTENT 常驻，跨 `gc_frame()` 存活并交接给细筛；`anchor_capacity = 65536`、`topk = 4`（编译期契约）、`origin_contract = "one_origin_per_anchor"`——每个 anchor 就是一个候选 origin，细筛不再枚举 tile 内 512 个候选原点。
+`anchor_candidate_handoff` 的 anchor / anchor_count / topk 缓冲是 SCOPE_PERSISTENT 常驻，跨 `gc_frame()` 存活并交接给细筛；`anchor_capacity = 131072`、`topk = 4`（编译期契约）、`origin_contract = "one_origin_per_anchor"`——每个 anchor 就是一个候选 origin，细筛不再枚举 tile 内 512 个候选原点。
 
 ## Anchor 规则
 
@@ -80,11 +80,31 @@ anchor_buffer[i] = uvec4(voxel_x, voxel_y, voxel_z, 0)   # 位置本身承载放
 1. **cell 在 target 体积内部**：`max(target_complexity[idx], target_collision[idx]) > min_target_interest`
    （completeness 与量化 collision 取 `max`，是 Houdini `Pipeline.hip` 里
    `volumesample(targetVol, 0, P) > 0` 的 GPU 孪生）。
-2. **它是该 `(x, z)` 列最底的 in-target 体素**：其下方（`-y`）不存在 in-target 体素。
+2. **它落在地形切片或其之上的竖直采样层**：采样层相位锁在 `terrain_slice`，
+   层距 = `anchor_vertical_stride`（`AutoObjectProbePrefilterGPU` 的导出参数，单位为体素层）。
+   即 `y - terrain_slice >= 0` 且（步长 `<= 0` 时）`y == terrain_slice`、
+   否则 `(y - terrain_slice) % anchor_vertical_stride == 0`。
 
-第二条使**每个 `(x, z)` 列至多发出一个 anchor**（最低的合格体素），anchor 永不垂直堆叠；
-竖直间隙 / 悬垂按设计只保留该列最底的 in-target cell。这也是 `256×256` XZ 网格锚点上限
-`65536` 的来源。
+`terrain_slice` 是**地形高度在网格里对应的切片**，由竖直框架推出：
+`floor(-grid_origin.y / voxel_size.y)`。网格 Y 是地形相对的
+（`world.y = terrain_height * height_scale + grid_origin.y + (slice + 0.5) * voxel_size.y`），
+地形起伏已经烘进这套框架，所以地表在网格里是一个与 `(x, z)` 无关的常数切片——
+**这条 pass 因此不需要地形高度场，判定是纯逐体素的局部运算，没有列扫描**。
+当前生产配置 `grid_origin.y = -36`、`voxel_size.y = 3` ⇒ `terrain_slice = 12`。
+
+第二条同时决定竖直方向的锚点密度：
+
+| `anchor_vertical_stride` | 发出位置 | 当前靶数据实测锚点数 |
+| --- | --- | --- |
+| `0`（默认） | 只采地形那一格 | 45,552（= 99.5% 的非空列） |
+| `1` | 地表及以上每个 in-target 体素 | 113,624 |
+| `n > 1` | 地形切片 + 其上每 `n` 层一格 | n=2 → 70,028；n=4 → 49,875 |
+
+**地形以下永不发锚。** 目标体积经常伸到地形以下（当前靶数据地形下一格就有 27,063 个
+in-target 格），旧的「该 `(x, z)` 列最底 in-target 体素」判定会把锚锚到那些格上、埋进地里。
+
+锚点上限不再是列数：`256×256` 网格在步长 `0` 时恰好被列数 `65536` 罩住，步长 ≥ 1 时由
+列数 × 层数决定，罩住它的是 `ANCHOR_CAPACITY = 131072`。
 
 旧的 scene-occupancy / collision / support-below 门控已删除：score 阶段已惩罚 collision/overlap 并强制物件间距，anchor 阶段再测一遍属冗余（还多一次 field 读）。最终物理约束仍由 placement collision-sample scoring 确认；`ground` / `target_top` 名称只作为配置输入同义词归一到 `anchor`。
 

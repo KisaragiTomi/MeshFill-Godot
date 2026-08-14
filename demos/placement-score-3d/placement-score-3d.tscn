@@ -1,19 +1,14 @@
-[gd_scene load_steps=17 format=3 uid="uid://cd68vsvgsln40"]
+[gd_scene format=3 uid="uid://cd68vsvgsln40"]
 
 [ext_resource type="Script" uid="uid://bu8fti8x6nruw" path="res://scripts/core_demo_contract_fixture.gd" id="2_contract"]
-[ext_resource type="Script" path="res://demos/placement-score-3d/volume_score_demo.gd" id="3_vscore"]
-[ext_resource type="Resource" path="res://scenes/asset-overview/baked_descriptors/Geo_SM_Ground_Grass_descriptor.tres" id="4_grass"]
-[ext_resource type="Resource" path="res://scenes/asset-overview/baked_descriptors/Geo_SM_TestLeaf_Test2_descriptor.tres" id="5_leaf"]
-[ext_resource type="Resource" path="res://scenes/asset-overview/baked_descriptors/Geo_cliff_01_descriptor.tres" id="6_cliff1"]
-[ext_resource type="Resource" path="res://scenes/asset-overview/baked_descriptors/Geo_cliff_02_descriptor.tres" id="7_cliff2"]
-[ext_resource type="Resource" path="res://scenes/asset-overview/baked_descriptors/Geo_stone_01_descriptor.tres" id="8_stone"]
-[ext_resource type="Script" path="res://scripts/scene_placement_actor.gd" id="10_spa"]
-[ext_resource type="Script" path="res://scripts/utils/target_sv_setup.gd" id="11_target"]
-[ext_resource type="Script" path="res://scripts/spa_selection_host.gd" id="12_selection"]
-[ext_resource type="Script" path="res://addons/meshfill_editor/meshfill_brush.gd" id="13_brush"]
-[ext_resource type="Script" path="res://scripts/fly_camera.gd" id="14_flycam"]
-[ext_resource type="Script" path="res://scripts/non_headless_scene_guard.gd" id="15_guard"]
-[ext_resource type="Mesh" path="res://assets/terrain/utils_terrain_mesh.res" id="16_terrain"]
+[ext_resource type="Script" uid="uid://bw8rtkkhbnd1h" path="res://demos/placement-score-3d/volume_score_demo.gd" id="3_vscore"]
+[ext_resource type="Script" uid="uid://f3o5wwkxfw3j" path="res://scripts/scene_placement_actor.gd" id="10_spa"]
+[ext_resource type="Script" uid="uid://dwwguoeqikivf" path="res://scripts/utils/target_sv_setup.gd" id="11_target"]
+[ext_resource type="Script" uid="uid://dc813hws1gbit" path="res://scripts/spa_selection_host.gd" id="12_selection"]
+[ext_resource type="Script" uid="uid://chko5hwlmqwyk" path="res://addons/meshfill_editor/meshfill_brush.gd" id="13_brush"]
+[ext_resource type="Script" uid="uid://hnp3skn444by" path="res://scripts/fly_camera.gd" id="14_flycam"]
+[ext_resource type="Script" uid="uid://c3pblusquha7m" path="res://scripts/non_headless_scene_guard.gd" id="15_guard"]
+[ext_resource type="ArrayMesh" path="res://assets/terrain/utils_terrain_mesh.res" id="16_terrain"]
 [ext_resource type="Material" path="res://assets/terrain/utils_terrain_material.tres" id="17_terrain_mat"]
 
 [sub_resource type="Environment" id="env"]
@@ -24,42 +19,33 @@ ambient_light_color = Color(0.42, 0.45, 0.48, 1)
 ambient_light_energy = 0.65
 tonemap_mode = 2
 ssao_enabled = true
-fog_enabled = false
 
 [node name="PlacementScore3DScene" type="Node3D" unique_id=1377448994]
 script = ExtResource("2_contract")
 
 [node name="SPA" type="Node3D" parent="." unique_id=1744730918 groups=["meshfill_scene_placement_actor"]]
 script = ExtResource("10_spa")
-grid_size = Vector3i(256, 16, 256)
-placement_assets = [ExtResource("4_grass"), ExtResource("5_leaf"), ExtResource("6_cliff1"), ExtResource("7_cliff2"), ExtResource("8_stone")]
 
-[node name="Volumes" type="Node" parent="SPA"]
+[node name="Volumes" type="Node" parent="SPA" unique_id=1240613237]
 
-[node name="TargetSV" type="Node3D" parent="SPA/Volumes"]
+[node name="TargetSV" type="Node3D" parent="SPA/Volumes" unique_id=601142868]
 script = ExtResource("11_target")
+display_visible = false
 
-[node name="SceneSV" type="Node" parent="SPA/Volumes"]
-
-[node name="BrushSV" type="Node" parent="SPA/Volumes"]
-
-[node name="BlendSV" type="Node" parent="SPA/Volumes"]
-
-[node name="VolumeScore" type="Node3D" parent="SPA/Volumes"]
+[node name="VolumeScore" type="Node3D" parent="SPA/Volumes" unique_id=139709696]
 script = ExtResource("3_vscore")
-placement_assets = [ExtResource("4_grass"), ExtResource("5_leaf"), ExtResource("6_cliff1"), ExtResource("7_cliff2"), ExtResource("8_stone")]
 auto_run_on_start = false
 golden_anchor_limit = 1024
 
-[node name="Interaction" type="Node3D" parent="SPA"]
+[node name="Interaction" type="Node3D" parent="SPA" unique_id=1665078476]
 
-[node name="SelectionHost" type="Node3D" parent="SPA/Interaction"]
+[node name="SelectionHost" type="Node3D" parent="SPA/Interaction" unique_id=2109835136]
 script = ExtResource("12_selection")
 
-[node name="MeshFillBrush" type="Node3D" parent="SPA/Interaction"]
+[node name="MeshFillBrush" type="Node3D" parent="SPA/Interaction" unique_id=35460808]
 script = ExtResource("13_brush")
 
-[node name="Displays" type="Node3D" parent="SPA"]
+[node name="Displays" type="Node3D" parent="SPA" unique_id=2140268641]
 
 [node name="DemoSetup" type="Node3D" parent="." unique_id=392346063]
 metadata/source_doc = "res://doc/placement-score-3d.md"
@@ -67,35 +53,35 @@ metadata/source_docs = "res://doc/auto-object-gpu-runtime-architecture.md; res:/
 metadata/test_doc = "res://doc/placement-score-3d.md"
 metadata/focus = "SPA GPU AutoObject placement + voxel display (SV/SVTile/TargetSV/Anchor), data-record click-select"
 
-[node name="NonHeadlessSceneGuard" type="Node" parent="DemoSetup"]
+[node name="NonHeadlessSceneGuard" type="Node" parent="DemoSetup" unique_id=1607626024]
+process_mode = 3
 script = ExtResource("15_guard")
 
-[node name="FlyCamera" type="Camera3D" parent="DemoSetup"]
-transform = Transform3D(1, 0, 0, 0, 0.8, -0.6, 0, 0.6, 0.8, 0, 300, 400)
-script = ExtResource("14_flycam")
+[node name="FlyCamera" type="Camera3D" parent="DemoSetup" unique_id=1659192007]
+transform = Transform3D(1, 0, 0, 0, 0.8, -0.6, 0, 0.6, 0.8, -318.61057, 627.65106, 137.20102)
 current = true
 fov = 55.0
 far = 3000.0
+script = ExtResource("14_flycam")
 
-[node name="SunLight" type="DirectionalLight3D" parent="DemoSetup"]
+[node name="SunLight" type="DirectionalLight3D" parent="DemoSetup" unique_id=731798571]
 transform = Transform3D(0.707107, -0.353553, 0.612372, 0, 0.866025, 0.5, -0.707107, -0.353553, 0.612372, 0, 40, 0)
 light_color = Color(1, 0.95, 0.86, 1)
 light_energy = 1.25
 shadow_enabled = true
 
-[node name="FillLight" type="DirectionalLight3D" parent="DemoSetup"]
+[node name="FillLight" type="DirectionalLight3D" parent="DemoSetup" unique_id=2058341845]
 transform = Transform3D(0.866025, 0.25, -0.433013, 0, 0.866025, 0.5, 0.5, -0.433013, 0.75, 0, 40, 0)
 light_color = Color(0.55, 0.64, 0.8, 1)
 light_energy = 0.45
-shadow_enabled = false
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="DemoSetup"]
+[node name="WorldEnvironment" type="WorldEnvironment" parent="DemoSetup" unique_id=1520146440]
 environment = SubResource("env")
 
-[node name="Terrain" type="MeshInstance3D" parent="DemoSetup" groups=["meshfill_camera_ignore"]]
-mesh = ExtResource("16_terrain")
+[node name="Terrain" type="MeshInstance3D" parent="DemoSetup" unique_id=1674443867 groups=["meshfill_camera_ignore"]]
 material_override = ExtResource("17_terrain_mat")
 cast_shadow = 0
+mesh = ExtResource("16_terrain")
 metadata/_edit_lock_ = true
 metadata/meshfill_utils_terrain_initialized = true
 metadata/terrain_capture_size = 1024.0

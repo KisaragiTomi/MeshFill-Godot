@@ -153,9 +153,9 @@ func _ensure_loaded() -> void:
 		push_error("[TargetSVSetup] TargetSV metadata not found —— TargetSV 资产未烘焙或路径错误")
 		assert(false, "[TargetSVSetup] missing TargetSV metadata")
 		return
-	# 以下字段全部由 TargetSV 烘焙器写入 json。任何一项缺失都说明资产与本读取端版本不一致；
-	# 用 256/16/32.0 之类的硬编码顶上，会按错误的网格尺寸解码整块体素场（几何全错却不报错）。
-	for required_key in ["texture_size", "slice_count", "voxel_count", "capture_size", "vertical_span", "max_height"]:
+	# 必需字段清单归 TargetSVLoader（`DATASET_FRAME_KEYS`，理由见那里）——这里曾抄了一份
+	# 同样的字面量，与 loader 的两处一共三份，没有任何东西保证它们同步。
+	for required_key in TargetSVLoaderScript.DATASET_FRAME_KEYS:
 		if not _metadata.has(required_key):
 			push_error("[TargetSVSetup] TargetSV metadata 缺少必需字段 '%s'（已有键: %s）—— 拒绝按默认值解码" % [required_key, str(_metadata.keys())])
 			assert(false, "[TargetSVSetup] missing TargetSV metadata field")
@@ -167,10 +167,74 @@ func _ensure_loaded() -> void:
 	var spa := _require_spa()
 	if spa == null:
 		return
+	_assert_target_frame_matches_bake(spa)
 	_voxel_count = int(_metadata["voxel_count"])
 	_height_span = float(_metadata["max_height"])
 	_ready_ok = true
 	bump_revision()
+
+
+## **接收端门禁**：烘焙用的世界网格必须与 SPA 的显示框架逐项吻合（XZ + Y）。
+##
+## ⚠ 这道门禁是「导入不经过 SPA」这条设计的配套（2026-08-12 用户裁定）。导入服务按
+## `TerrainConfig` 自己推网格、不问 SPA 要参数，所以两边一致**不能靠注入去保证**，
+## 只能在结果交到 TargetSV 手里时逐项验。验不过就硬失败，而不是画出一份错位的资产。
+##
+## 它拦的是一类**无声**错位：落格在导入服务、摆放在 SPA 框架，两套数各自合法、谁也不
+## 检查谁。2026-08-12 之前竖直方向就是 span=40/16=2.5 对 voxel_size.y=2.0 —— 整份
+## TargetSV 恒定压扁到 0.8×，零报错，只能靠肉眼比对源模型才看得出来。
+##
+## 老资产缺 vertical_floor / capture_size 时按各自的旧口径（0.0 / 元数据值）读，
+## 判据因此对新旧资产都成立。
+func _assert_target_frame_matches_bake(spa: Node) -> void:
+	var frame: Dictionary = spa.call("get_grid_frame")
+	if frame.is_empty():
+		return
+	var grid: Vector3i = frame["grid_size"]
+	var origin: Vector3 = frame["grid_origin"]
+	var cell: Vector3 = frame["voxel_size"]
+	if grid.x <= 0 or grid.y <= 0:
+		return
+
+	var baked_columns := int(_metadata["texture_size"])
+	var baked_slices := int(_metadata["slice_count"])
+	var baked_capture := float(_metadata["capture_size"])
+	var baked_floor := float(_metadata.get("vertical_floor", 0.0))
+	var baked_span := float(_metadata["vertical_span"])
+
+	# 烘焙口径推出来的「SPA 应该长什么样」。XZ 由 capture 居中铺开，Y 由量程切片。
+	var want_cell_xz := baked_capture / float(maxi(baked_columns, 1))
+	var want_origin_xz := -0.5 * baked_capture
+	var want_cell_y := (baked_span - baked_floor) / float(maxi(baked_slices, 1))
+
+	var problems := PackedStringArray()
+	# 容差取各自量纲的千分之一：两边本是同一串浮点运算，正常差值在 1e-6 量级，
+	# 放宽只为躲开 json 的十进制往返截断，仍远小于"少一格/少一层"这类真实错配。
+	if grid.x != baked_columns or grid.z != baked_columns:
+		problems.append("网格列数 %d×%d ≠ 烘焙 texture_size %d" % [grid.x, grid.z, baked_columns])
+	if grid.y != baked_slices:
+		problems.append("网格层数 %d ≠ 烘焙 slice_count %d" % [grid.y, baked_slices])
+	if absf(cell.x - want_cell_xz) > maxf(want_cell_xz * 0.001, 1e-5) \
+			or absf(cell.z - want_cell_xz) > maxf(want_cell_xz * 0.001, 1e-5):
+		problems.append("voxel_size.xz (%.4f, %.4f) 应为 %.4f（capture %.3f / %d 列）" % [
+			cell.x, cell.z, want_cell_xz, baked_capture, baked_columns])
+	if absf(origin.x - want_origin_xz) > maxf(absf(want_origin_xz) * 0.001, 1e-5) \
+			or absf(origin.z - want_origin_xz) > maxf(absf(want_origin_xz) * 0.001, 1e-5):
+		problems.append("grid_origin.xz (%.4f, %.4f) 应为 %.4f（capture 居中）" % [
+			origin.x, origin.z, want_origin_xz])
+	if absf(origin.y - baked_floor) > maxf(absf(want_cell_y) * 0.001, 1e-5):
+		problems.append("grid_origin.y %.4f 应为烘焙 vertical_floor %.4f" % [origin.y, baked_floor])
+	if absf(cell.y - want_cell_y) > maxf(absf(want_cell_y) * 0.001, 1e-5):
+		problems.append("voxel_size.y %.4f 应为 %.4f（量程 [%.2f, %.2f) / %d 层）" % [
+			cell.y, want_cell_y, baked_floor, baked_span, baked_slices])
+	if problems.is_empty():
+		return
+
+	push_error(("[TargetSVSetup] 烘焙网格与 SPA 显示框架不一致 —— 整份 TargetSV 会**静默错位**。\n  "
+		+ "\n  ".join(problems)
+		+ "\n  修法：改 ScenePlacementActor 的 grid_size / voxel_size / grid_origin 对齐上面的「应为」，"
+		+ "或按当前框架重烘 TargetSV。"))
+	assert(false, "[TargetSVSetup] baked grid / SPA frame mismatch")
 
 
 ## 早退守卫（基类 `rebuild_display()` 模板的钩子）恒 false = 每次调用都重建。

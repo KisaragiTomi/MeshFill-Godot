@@ -40,10 +40,11 @@ const ProfileArenaLayoutScript := preload("res://scripts/utils/profile_arena_lay
 # `shaders/pick_scene_voxel.glsl` 与 `shaders/pick_unified.glsl` —— 两个着色器连同
 # `voxel_pick_gpu.gd` / `unified_pick_gpu.gd` 已随旧点选路径整体删除（2026-08-10，
 # 三角形 ID 唯一路）⇒ 没有可比对的着色器了，守卫本身成为零次比对的空转。
-# `terrain_raycast.gd` 本体**保留**：它的 CPU 侧 `sample_height()` 仍有消费者
+# 那个文件本体**保留**：它的 CPU 侧 `sample_height()` 仍有消费者
 # （`SPASelectionHost.sample_height()`）。⚠ 同文件的 `ray_to_height_field()` 与两个迭代次数
 # 常量已于 2026-08-10 一并删除——它们的唯一调用者 `_ray_to_terrain()` 是旧点选那条地形射线的
-# 残留，随偏好表退役后已无消费者。
+# 残留，随偏好表退役后已无消费者。射线清空后旧名 `terrain_raycast.gd` 名不副实，
+# 2026-08-12 改名为 `scripts/utils/terrain_height_field.gd`（连 `.uid` 一起搬）。
 const AutoObjectInstanceRendererScript := preload("res://scripts/auto_object_instance_renderer.gd")
 const DebugBufferSet := preload("res://scripts/utils/debug_buffer_set.gd")
 

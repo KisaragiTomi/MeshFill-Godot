@@ -14,13 +14,24 @@ const VoxelPlacementGenerator := preload("res://scripts/voxel_placement_generato
 const SceneVoxelTileStoreScript := preload("res://scripts/scene_voxel_tile_store.gd")
 const ScoreTimingProfilerScript := preload("res://scripts/utils/score_timing_profiler.gd")
 
-const ANCHOR_SOURCE_INDEX_BITS := 16
+## 排序键低位放 anchor 原始下标的位宽。**不变量：`2^BITS >= ANCHOR_CAPACITY`**——
+## 低位装不下 source_index 时它会溢进高位的 linear_index，排序静默错序，
+## anchor 与 fine 记录的配对整体错位（不报错、只出错数据）。
+## 16 位是「每列至多一个锚、上限 65536」时代的值；竖直采样
+## （`AutoObjectProbePrefilterGPU.anchor_vertical_stride` > 0）把容量抬到 131072 = 2^17。
+## 这里取 18（= 262144）留一档余量，免得容量再动一次就又要连着改两处。
+## 高位够用：本仓最大网格 256×24×256 的 linear_index 占 21 位，21+18 远在 int64 之内。
+const ANCHOR_SOURCE_INDEX_BITS := 18
 const ANCHOR_SOURCE_INDEX_MASK := (1 << ANCHOR_SOURCE_INDEX_BITS) - 1
 const CANDIDATE_RECORD_BYTES := 64
 const CANDIDATE_SCORE_OFFSET := 12
 const CANDIDATE_ASSET_OFFSET := 20
 const CANDIDATE_ROTATION_OFFSET := 24
 const CANDIDATE_VALID_OFFSET := 52
+## [3].w：**未归一化**的匹配分（match_fraction 的分子）。与 shader 的 write_record 同步。
+## 最终评分 = raw * abs(frac)，所以这一位与 [0].w 合起来才能还原出占比与足迹，
+## 见 record_match_fraction() / record_total_weight()。
+const CANDIDATE_RAW_SCORE_OFFSET := 60
 
 ## VPG 实例跨 run 缓存：shader/pipeline PERSISTENT 常驻（run 末尾只清 FRAME/PASS），
 ## 复用实例即免每 run ~18ms 的 8-shader 重编（沿袭 demo 优化 _cached_vpg 的意图）。
@@ -584,8 +595,14 @@ static func _build_model(
 	var packed_winners := not winner_bytes.is_empty()
 	var packed_output := packed_candidates or packed_winners
 	var safe_anchor_count := mini(maxi(anchor_count, 0), int(anchors_packed.size() / 4))
-	# 线性体素索引放高位、原始 anchor id 放低 16 位；PackedInt64Array 原地排序
-	# 避免 45k 次 Dictionary 物化和 lambda 比较器内反复计算 voxel_index。
+	# 线性体素索引放高位、原始 anchor id 放低 ANCHOR_SOURCE_INDEX_BITS 位；PackedInt64Array
+	# 原地排序避免 45k 次 Dictionary 物化和 lambda 比较器内反复计算 voxel_index。
+	# 位宽不变量在循环外查一次：溢出是静默错序（见常量声明处），不能等它变成"分数对不上"再排查。
+	if safe_anchor_count > ANCHOR_SOURCE_INDEX_MASK + 1:
+		push_error("[VolumeScoreFineSelection] anchor 数 %d 超出排序键低位位宽（%d 位，上限 %d）—— 排序会静默错位，请同步调大 ANCHOR_SOURCE_INDEX_BITS。" % [
+			safe_anchor_count, ANCHOR_SOURCE_INDEX_BITS, ANCHOR_SOURCE_INDEX_MASK + 1])
+		assert(false, "VolumeScoreFineSelection: anchor count exceeds sort-key index bits")
+		return {"ok": false, "reason": "anchor_sort_key_index_bits_exceeded"}
 	var order_keys := PackedInt64Array()
 	order_keys.resize(safe_anchor_count)
 	for source_index in range(safe_anchor_count):
@@ -780,7 +797,32 @@ static func _decode_candidate_record(bytes: PackedByteArray, byte_base: int) -> 
 		"profile_index": int(roundf(bytes.decode_float(byte_base + 48))),
 		"valid": bytes.decode_float(byte_base + 52) > 0.5,
 		"coarse_score": bytes.decode_float(byte_base + 56),
+		# 未归一化匹配分（= pass_weight - off_target_penalty，单位是权重格数，随体积增长）。
+		# 归一化的 match_fraction / total_weight 不占记录位，按下面两个静态方法反算。
+		"raw_match_score": bytes.decode_float(byte_base + CANDIDATE_RAW_SCORE_OFFSET),
 	}
+
+
+## 从一条已解码记录还原**归一化**匹配占比。
+##
+## GPU 只入库未归一化那份（见 `score_anchor_asset_residual.glsl` 文件头 [3] 布局）。
+## 归一化那份是精确可逆的，不是估算：`score = raw * abs(frac)` ⇒ `frac = score / abs(raw)`
+## （raw 与 frac 同号，所以这一式在两个符号下都成立）。
+## raw == 0 时分数恒 0、占比不可还原，返回 0.0。
+static func record_match_fraction(record: Dictionary) -> float:
+	var raw := float(record.get("raw_match_score", 0.0))
+	if absf(raw) < 1.0e-6:
+		return 0.0
+	return float(record.get("score", 0.0)) / absf(raw)
+
+
+## 该候选落在网格内、参与评分的足迹权重（= 未归一化分 / 归一化分）。
+## match_fraction 趋近 0 时这个除法会放大浮点噪声，故此时返回 -1（"测不出"）而不是一个大数。
+static func record_total_weight(record: Dictionary) -> float:
+	var fraction := record_match_fraction(record)
+	if absf(fraction) < 1.0e-4:
+		return -1.0
+	return float(record.get("raw_match_score", 0.0)) / fraction
 
 
 ## 某锚点按 (valid 优先, 分数降序) 的 Top-K 展示条目（demo 选中面板/HUD 消费）。

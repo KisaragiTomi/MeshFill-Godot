@@ -103,7 +103,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 - **细粒度放置评分**：`score_anchor_asset_residual.glsl` 从固定槽位 `profile_arena` 单 binding 读本 slot 的 fine range 计算 residual gain；`stamp_asset_voxels.glsl` 仅写带 `SAMPLE_FLAG_STAMP_WRITE` 的样本
 - **固定槽位 Profile Arena**：Header/Samples/Pivots 同住一个定长 slot（Mesh 区保留占位不写：mesh 是每资产的），一个 RID / 一个 Binding / 一个单调 Revision；地址按 `profile_index`（稠密）直接算出，容量守卫是编译期常量。布局权威见 `ProfileArenaLayout`
 - **Stamp-only 提交**：committed `SceneVoxel` 纯 auto，stamp 即提交（`stamp_asset_voxels.glsl` / `scatter_sv_field_records.glsl`）；`BrushSV` 常驻挂 SPA，`BlendSV` = SV + BrushSV 按需合成（`compose_blend_sv_fields.glsl`），供 3D score 与 TargetSV 对比，用完即删
-- **Anchor 采集与选择**：`collect_sv_anchors.glsl`（两门合取：in-target 且为该 `(x,z)` 列最底体素）→ `select_anchor_topk.glsl`（每 anchor `TOPK = 4`）→ `select_anchor_winners.glsl`（Score-only 分支的 per-anchor 胜者）
+- **Anchor 采集与选择**：`collect_sv_anchors.glsl`（在地形高度采样目标体积，采到即发锚；`anchor_vertical_stride` 决定地表之上再叠几层）→ `select_anchor_topk.glsl`（每 anchor `TOPK = 4`）→ `select_anchor_winners.glsl`（Score-only 分支的 per-anchor 胜者）
 - **Reduce 三阶段**：`init_anchor_atomic_reduce.glsl` → `invalidate_anchor_conflicts.glsl` → `compact_anchor_atomic_reduce.glsl`
 - **点选**：生产路径只有 `pick_scene_voxel.glsl`（单 invocation 写命中记录，由 `VoxelPickGPU` 派发）；`pick_unified.glsl` 是下一代统一多域 pass，已写完但尚未接线
 - **瓦片管理**：`scene_voxel_tile_object_ref_update.glsl` dirty 追踪与 tile 级固定槽位（每 tile 8 槽）对象引用更新，配合 `init_scene_voxel_tile_summaries.glsl` / `reduce_scene_voxel_tile_summaries.glsl` / `compact_scene_voxel_tile_summaries.glsl`

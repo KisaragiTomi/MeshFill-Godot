@@ -24,6 +24,17 @@ const MESH_DESCRIPTION_FLAG_HAS_SOURCE_MESH := ScenePlacementRuntimeScript.MESH_
 const MESH_DESCRIPTION_FLAG_SOURCE_DIFFERS := ScenePlacementRuntimeScript.MESH_DESCRIPTION_FLAG_SOURCE_DIFFERS
 const MESH_DESCRIPTION_FLAG_HAS_SOURCE_PATH := ScenePlacementRuntimeScript.MESH_DESCRIPTION_FLAG_HAS_SOURCE_PATH
 
+## 第二级广播：**注册表整体换代**（资产增删、profile_id 重排、Arena 重传）。
+##
+## 与第一级 `AssetDescriptor.changed` 分工明确，两者都需要、谁也替代不了谁：
+##   - `changed`：**某一个** descriptor 的内容变了。持有该实例的缓存自愈。
+##     表达不了「多了/少了一个资产」——新增的那个没人持有，删掉的那个没人再发信号。
+##   - 本信号：注册表这一代整体作废。凡是按 asset_index / profile_id 建索引的下游
+##     （stage env、评分模型、按资产分组的显示）都必须重建，否则会拿上一代的下标去查新容器。
+##
+## 只广播「作废」，不广播「重算」：重算入口会调回 `load_baked_assets()`，接在这里就是自递归。
+signal baked_assets_reloaded(revision: int, asset_count: int)
+
 const PlacementStageEnvScript := preload("res://scripts/checks/placement_stage_env.gd")
 const VolumeScoreFineSelectionScript := preload("res://scripts/volume_score_fine_selection.gd")
 ## SPA/Volumes 下三个逻辑卷的节点脚本（《AutoVolume 公用体积基类计划》V1）。
@@ -62,16 +73,39 @@ enum LifecycleState {
 }
 
 @export_group("Grid")
-@export var grid_size := Vector3i(256, 16, 256)
-@export var voxel_size := Vector3(4.0, 2.0, 4.0)
-@export var grid_origin := Vector3(-512.0, 0.0, -512.0)
+# ── 竖直框架（Y）是**地形相对**的，且必须与 TargetSV 烘焙的量程逐位一致 ──────────
+# 空间口径：world.y = terrain_height * height_scale + grid_origin.y + (slice + 0.5) * voxel_size.y
+# （`VoxelGeneral.terrain_relative_voxel_center_to_world`；三个显示 shader 从 push constant
+# 读同一组数，不假设 grid_origin.y == 0）。SceneSV / TargetSV / BrushSV / BlendSV 共用这一套。
+#
+#   grid_origin.y == TargetSVFbxImportService 的 vertical_floor        （量程下界，地形以下）
+#   voxel_size.y  == (vertical_span - vertical_floor) / grid_size.y    （每切片的世界高度）
+#
+# ⚠ 两边对不上**不会报错**，只会让整份 TargetSV 按一个常数比例竖直错位。
+# 2026-08-12 之前这里就是错的：导入按 span=40 / 16 层 = 2.5 分箱，显示按 voxel_size.y=2.0
+# 摆放 ⇒ 恒定 0.8×；同时 grid_origin.y=0 让量程从地表起算，地下内容（实测 66858 个面、
+# 占 18.6%）全被压进 slice 0 再被地形网格挡住 —— 这就是"导入的东西在地下却看不见"。
+# 现值 = 量程 [-36, 36)、带宽 72、24 层 ⇒ 3.0/层。改任一侧都要同步改另一侧并重烘 TargetSV。
+#
+# 2026-08-12 由 [-8, 40)/16 层改到这里：层高不变（恒 3.0），下界从 -8 挪到 -36。
+# 起因是 targetsv0.fbx 的相对高度区间实测 [-34.45, +35.19]，旧量程把下面 26.4 个单位
+# 漏在外面 ⇒ 更深的面全被夹进 slice 0（该层仅 1516 格），陡坡列触底率 18.4%（平地 0.01%）
+# ⇒ 「陡坡边缘体素堆成一摞、地下的 TargetSV 不见了」。24 层是按层高 3.0 盖住 72 单位带宽
+# 得出的，不是凑的；代价是 voxel_count 1048576 → 1572864（缓冲 5.0 → 7.5 MiB）。
+@export var grid_size := Vector3i(256, 24, 256)
+@export var voxel_size := Vector3(4.0, 3.0, 4.0)
+@export var grid_origin := Vector3(-512.0, -36.0, -512.0)
 @export var base_resolution := 256
 @export var capture_size := TerrainConfigScript.CAPTURE_SIZE
 
 @export_group("Runtime")
 @export var autoobject_capacity := 65536
 @export var initialize_in_editor := true
-@export var placement_assets: Array[AssetDescriptor] = []
+## ⚠ 这里曾有 `@export var placement_assets: Array[AssetDescriptor]`。已删除：它和 Reload
+## 各自写同一份 registry 且互不写回——点 Reload 之后重开场景，init 会拿 `.tscn` 里存着的
+## 旧数组把 Reload 的结果覆盖掉，且没有任何提示。现在**唯一**入口是 `load_baked_assets()`，
+## init 自动跑一次（非 force，吃"目录未变即已加载"短路），Reload 手动强制重扫。
+## 读取已注册资产一律走 `get_registered_descriptors()`。
 @export_group("")
 
 ## 生产计算参数（Anchors / Score / Place 三条命令共用同一份门限）。
@@ -84,15 +118,22 @@ enum LifecycleState {
 ## 用来在注册进评分链时关掉 descriptor 的垂直 pivot 自动生成。三变体本身已删除
 ## （见 `AssetDescriptor.get_pivot_variants`），开关与副本层随之退役。
 ##
-## 顺带记下它当年为什么没起作用（同类结构不要再造）：`_register_exported_assets()` 在
-## SPA init 直接把**原件** `placement_assets` 交给 `register_asset_batch()`，而做 pivot
+## 顺带记下它当年为什么没起作用（同类结构不要再造）：当时 `_register_exported_assets()`
+## 在 SPA init 把**原件**（导出数组 `placement_assets`，已随本次收敛删除）交给
+## `register_asset_batch()`，而做 pivot
 ## 剥离的 `_production_descriptors()` 只喂给 `ensure_placement_env()`；stage env 的注册
 ## 循环发现该资产已有 profile_id 就复用，`register_asset(剥离副本)` 从未执行。
 ## 于是开关显示 `true`、评分链用的却是带三变体的原件——**一个看得见却不生效的开关**。
 ## 教训：注册身份的去重键（identity / resource_path）不包含被改写的字段时，
 ## "只改副本"这种做法必然被去重悄悄吃掉。
-## 真实 prefilter 门限（原样转发 _apply_prefilter_settings 支持的两键）。
+## 真实 prefilter 门限（原样转发 _apply_prefilter_settings 支持的键）。
 @export_range(0.0, 1.0, 0.001) var min_target_interest := 0.01
+## 竖直方向锚点密度（单位 = 体素层，**越小越密**）：锚点自**地形切片**起算、每这么多层
+## 采样一次，采到目标体积就发锚；地形以下永不发锚。
+## `0`（默认）= 只采地形那一格，每列至多一个锚且一定站在地面上；
+## `1` = 地表及以上每个 in-target 体素都出锚；`n > 1` = 地形切片 + 其上每 n 层一格。
+## 完整语义与实测锚点数见 `AutoObjectProbePrefilterGPU.anchor_vertical_stride`。
+@export_range(0, 32, 1) var anchor_vertical_stride := 0
 ## ⚠ **当前无效**：粗筛暂停淘汰（2026-08-10 裁决），`select_anchor_topk.glsl` 忽略这个门，
 ## 全部资产一律进候选池，由细筛独自决定。导出保留是为了恢复时不用改接线；
 ## 恢复方法见该 shader 文件头。
@@ -111,13 +152,13 @@ enum LifecycleState {
 
 @export_group("Placement")
 ## 一键加载 Asset Overview 的全部 Bake 产物到固定槽位 Arena（事务式：失败保留旧 Arena）。
-@export_tool_button("Load Baked Assets", "Load") var _load_baked_assets_action: Callable = _load_baked_assets_from_inspector
-## Bake 产物变化后重建 Arena。与 Load 同一条事务路径，只是强制重扫、不吃"已加载"短路。
+## 恒走 force 路径：强制重扫、不吃"目录未变即已加载"短路，因此重新烘焙后点它即可，
+## 不需要区分首次加载与重载。
 @export_tool_button("Reload", "Reload") var _reload_baked_assets_action: Callable = _reload_baked_assets_from_inspector
 @export_tool_button("Anchors", "Add") var _generate_anchors_action: Callable = _generate_anchors_from_inspector
 @export_tool_button("Score", "Play") var _score_action: Callable = _score_from_inspector
 @export_tool_button("Place", "MeshInstance3D") var _place_action: Callable = _place_from_inspector
-## 只读的已加载资产列表（§11.2）：不再需要手工维护 placement_assets 数组。
+## 只读的已加载资产列表（§11.2）：资产来源唯一是 Bake 目录，没有可手工维护的数组。
 @export_multiline var placement_assets_summary: String:
 	get:
 		return _placement_assets_summary_text()
@@ -231,6 +272,10 @@ var _brush_flushed_sv_revision := -1
 
 
 func _enter_tree() -> void:
+	# 自行入组而不是靠 .tscn 里写死 groups=[...]：老场景、代码 new 出来的 SPA 一样能被
+	# Bake AD 的跨场景刷新找到。add_to_group 幂等，重复进出树不会累积。
+	if not is_in_group(SPAEditorContract.SPA_GROUP):
+		add_to_group(SPAEditorContract.SPA_GROUP)
 	_ensure_owned_tree()
 
 
@@ -281,10 +326,6 @@ const ARENA_STATE_STALE := "Stale"
 const ARENA_STATE_FAILED := "Failed"
 
 
-func _load_baked_assets_from_inspector() -> void:
-	_finish_inspector_action("Load Baked Assets", load_baked_assets())
-
-
 func _reload_baked_assets_from_inspector() -> void:
 	_finish_inspector_action("Reload", load_baked_assets(true))
 
@@ -318,7 +359,7 @@ func load_baked_assets(force: bool = false) -> Dictionary:
 		_arena_load_error = errors[0] if errors.size() > 0 else "unknown"
 		# 每条失败都单独打印，用户能直接定位到 descriptor 与超限字段（§11.4）。
 		for error_text in errors:
-			push_error("[ScenePlacementActor] Load Baked Assets: %s" % error_text)
+			push_error("[ScenePlacementActor] Reload: %s" % error_text)
 		return {
 			"ok": false,
 			"reason": "validation_failed",
@@ -331,8 +372,14 @@ func load_baked_assets(force: bool = false) -> Dictionary:
 
 	var descriptors: Array[AssetDescriptor] = report.get("descriptors", [] as Array[AssetDescriptor])
 	# 目录没变且已经是 Ready 就不重复上传（Reload 用 force 跳过这条短路）。
+	#
+	# ⚠ `had_previous_arena` 这个条件不能省：`_arena_load_state` / `_arena_loaded_signature`
+	# 是 **SPA 级**成员，而资产表活在 `_runtime` 里。编辑器摘挂 scene root 会走一次
+	# `_exit_tree` → 全量 `_shutdown` → 插件再 initialize：`_runtime` 连同 registry 被整个
+	# 换掉，SPA 上这两个缓存却原样留着。只看它们，第二次 init 就会短路返回
+	# `{ok: true, reason: "already_loaded"}`，而实际资产数是 0——报告成功、Arena 空着。
 	var signature := _baked_dir_signature()
-	if not force and previous_state == ARENA_STATE_READY and signature == _arena_loaded_signature:
+	if not force and had_previous_arena and previous_state == ARENA_STATE_READY and signature == _arena_loaded_signature:
 		_arena_load_state = ARENA_STATE_READY
 		# 报 Arena 的 profile 数而不是 get_asset_count()：后者是**注册表条目数**，
 		# PlacementStageEnv 会在同一注册表上把同一批 descriptor 再注册一遍（profile 按
@@ -378,6 +425,9 @@ func load_baked_assets(force: bool = false) -> Dictionary:
 	_arena_loaded_signature = signature
 	_arena_load_state = ARENA_STATE_READY
 	var arena := get_profile_arena_summary()
+	# 广播换代（见类首 baked_assets_reloaded 的分工说明）。放在状态位落定、arena 摘要取完
+	# **之后**：订阅方回调里若反过来问 SPA 状态，读到的必须是新的一代。
+	baked_assets_reloaded.emit(int(arena.get("revision", 0)), descriptors.size())
 	return {
 		"ok": true,
 		"reason": "ok",
@@ -414,7 +464,7 @@ func get_placement_blocked_reason() -> String:
 	if not is_initialized():
 		return "SPA 未初始化"
 	if get_asset_count() <= 0:
-		return "Arena 未就绪：还没有已加载的资产 —— 先点 Load Baked Assets"
+		return "Arena 未就绪：还没有已加载的资产 —— 先点 Reload"
 	if not is_gpu_ready():
 		return "Arena 未就绪：GPU profile/Arena 缓冲未上传"
 	return ""
@@ -526,7 +576,7 @@ func _arena_status_text() -> String:
 static func _arena_state_suffix(state: String) -> String:
 	match state:
 		ARENA_STATE_NOT_LOADED:
-			return " — 点 Load Baked Assets 加载 Bake 产物"
+			return " — 点 Reload 加载 Bake 产物"
 		ARENA_STATE_STALE:
 			return " — Bake 产物已变化，当前仍在用上一版 Arena（点 Reload 提交新版本）"
 		ARENA_STATE_FAILED:
@@ -548,8 +598,8 @@ func _placement_assets_summary_text() -> String:
 			_arena_load_entries, "Loaded Assets — %s" % str(_arena_load_report.get("dir", "")))
 	var descriptors := get_registered_descriptors()
 	if descriptors.is_empty():
-		return "Loaded Assets (0)\n  <点 Load Baked Assets 从 Bake 目录一键加载>"
-	var lines: Array[String] = ["Registered Assets (%d) — 未经 Load Baked Assets 扫描" % descriptors.size()]
+		return "Loaded Assets (0)\n  <点 Reload 从 Bake 目录一键加载>"
+	var lines: Array[String] = ["Registered Assets (%d) — 未经 Reload 扫描" % descriptors.size()]
 	for i in range(descriptors.size()):
 		var descriptor := descriptors[i]
 		var branch := "└─" if i == descriptors.size() - 1 else "├─"
@@ -685,8 +735,21 @@ func initialize_runtime() -> bool:
 		_runtime.set_brush_sv_persistence_metadata(_brush_sv_control_metadata)
 	_make_count += 1
 
-	if not _register_exported_assets():
-		return _fail_initialization("exported_asset_registration_failed")
+	# 资产注册的唯一入口：扫 Bake 目录。
+	#
+	# ⚠ 恒 force：init 必须拿到磁盘上的最新版本，不能被任何短路挡住。
+	# 短路条件里的 `_arena_load_state` / `_arena_loaded_signature` 是 **SPA 级**成员，而
+	# registry 活在 `_runtime` 里；编辑器摘挂 scene root 会 `_exit_tree → _shutdown` 换掉
+	# `_runtime` 而这两个缓存留着，于是第二次 init 短路返回「成功」实则 0 资产（实测踩过）。
+	# 目录签名也只是「路径 + mtime」，同秒内重写的产物它分辨不出来。
+	# 代价是每次 init 多一次 Arena 上传（实测 ~57 ms），换的是「打开就是最新的」这个恒真前提。
+	#
+	# 加载失败不阻断 init：Arena 保持空，Anchors/Score/Place 会因 Arena 未就绪而置灰，
+	# Inspector 上给出可读原因；把它升级成 init 失败只会让整个 SPA 起不来。
+	var baked_load := load_baked_assets(true)
+	if not bool(baked_load.get("ok", false)):
+		push_warning("[ScenePlacementActor] init 期 Bake 资产加载未完成（%s）——点 Reload 重试。" % [
+			str(baked_load.get("reason", "unknown"))])
 	var commit_result := _sv_committer.commit_scene_voxels()
 	if not bool(commit_result.get("ok", false)):
 		return _fail_initialization("initial_scene_sv_commit_failed")
@@ -902,36 +965,6 @@ func _seed_terrain_collision_field() -> void:
 		values[i] = clampf(heights[i] / 100000.0, 0.0, 1.0)
 	var image := Image.create_from_data(grid_size.x, grid_size.z, false, Image.FORMAT_RF, values.to_byte_array())
 	_field_builder.set_terrain_base_collision_field(image)
-
-
-func _register_exported_assets() -> bool:
-	if _runtime == null:
-		push_error("[ScenePlacementActor] _register_exported_assets: _runtime 为 null —— 调用点在 runtime.initialize 成功之后，出现即生命周期已断。")
-		assert(false, "[ScenePlacementActor] _register_exported_assets: _runtime == null")
-		return false
-	if placement_assets.is_empty():
-		return true
-	var descriptors: Array = []
-	var meshes: Array = []
-	for asset_index in range(placement_assets.size()):
-		var descriptor: AssetDescriptor = placement_assets[asset_index]
-		if descriptor == null:
-			# 旧行为 continue：导出数组里的空槽被静默跳过，场景里少了一个资产而注册
-			# 结果一切正常，事后只能靠数数发现。
-			push_error("[ScenePlacementActor] placement_assets[%d] 为 null（导出数组长度=%d）——跳过它等于静默少注册一个资产。" % [
-				asset_index, placement_assets.size()])
-			assert(false, "[ScenePlacementActor] _register_exported_assets: null entry in placement_assets")
-			return false
-		descriptors.append(descriptor)
-		meshes.append(descriptor.get_mesh())
-	var profile_ids: Array[int] = _runtime.register_asset_batch(descriptors, meshes)
-	if profile_ids.has(-1):
-		# 旧行为丢弃返回值：注册失败的资产没有 GPU profile，评分/放置会当它不存在。
-		push_error("[ScenePlacementActor] 导出资产注册失败（asset_count=%d, profile_ids=%s）——缺 profile 的资产在 GPU 上没有形状与探针数据。" % [
-			descriptors.size(), str(profile_ids)])
-		assert(false, "[ScenePlacementActor] _register_exported_assets: register_asset_batch returned -1")
-		return false
-	return true
 
 
 func _prepare_target_read_buffers() -> void:
@@ -1279,6 +1312,14 @@ func register_volume_provider(provider: Node) -> Dictionary:
 			"same_provider": _providers[key] == provider,
 		}
 	_providers[key] = provider
+	# 注册即订阅：provider 只要实现了 invalidate_asset_caches() 就自动接上换代广播，
+	# 不需要它自己去找 SPA、也不需要 SPA 反过来记住谁实现了什么再逐个轮询。
+	if provider.has_method("invalidate_asset_caches"):
+		var cb := Callable(provider, "invalidate_asset_caches")
+		if not baked_assets_reloaded.is_connected(cb):
+			# 信号带两个参数而 invalidate_asset_caches() 无参：unbind 掉，
+			# 否则连接时就会因签名不匹配失败（且只在运行到 emit 时才报错）。
+			baked_assets_reloaded.connect(cb.unbind(2))
 	if _selection_host != null and key == &"VolumeScore":
 		_selection_host.register_volume_score_provider(provider)
 	return {"ok": true, "volume_key": key, "provider": provider}
@@ -1293,6 +1334,12 @@ func unregister_volume_provider(provider: Node) -> Dictionary:
 		if _providers[key] == provider:
 			_providers.erase(key)
 			removed = true
+	# 与 register 对称断开：provider 被摘掉后仍挂在信号上，下次换代会打到一个已不属于本 SPA
+	# 的节点（编辑器反复摘挂 scene root 时尤其容易攒出一串）。
+	if provider.has_method("invalidate_asset_caches"):
+		var cb := Callable(provider, "invalidate_asset_caches").unbind(2)
+		if baked_assets_reloaded.is_connected(cb):
+			baked_assets_reloaded.disconnect(cb)
 	if _selection_host != null:
 		_selection_host.unregister_volume_score_provider(provider)
 	return {"ok": removed, "reason": "ok" if removed else "provider_not_registered"}
@@ -1336,14 +1383,19 @@ func validate_target_sv_fbx(fbx_path: String, opts: Dictionary = {}) -> Dictiona
 
 
 ## 从一份"每个三角形 = 一个体素"的 FBX 烘出 TargetSV（覆盖 assets/target_sv）后立刻重导入。
-## 通道规则与空间契约都在 TargetSVFbxImportService，本方法只负责"烘完就换新"这条配对。
+##
+## ⚠ 本方法**不往导入里注入 SPA 的网格**（2026-08-12 用户裁定）：导入是一条离线数据转换，
+## 它按 `TerrainConfig` 自己推世界网格，不该依赖场景里有没有活的 SPA、它当时配成什么样。
+## SPA 在这条链上只剩两件事：触发烘焙，和烘完把结果交给 TargetSV（`reimport_target_sv`）。
+## 两边的框架是否真的一致，由**接收端**校验——`TargetSVSetup._assert_target_frame_matches_bake()`
+## 在加载元数据时逐项比对并硬失败，而不是靠注入去"保证"它们相等。
 func import_target_sv_from_fbx(fbx_path: String, opts: Dictionary = {}) -> Dictionary:
 	var import_result: Dictionary = TargetSVFbxImportServiceScript.import_fbx_as_target_sv(fbx_path, opts)
 	if not bool(import_result.get("ok", false)):
 		return import_result
 	var result := reimport_target_sv()
 	# 覆盖已经发生，烘焙详情无论重导入成败都要带出去。
-	for carried_key in ["source_fbx", "triangle_count", "valid_triangle_count",
+	for carried_key in ["source_fbx", "triangle_count",
 			"rejected_triangle_count", "used_triangle_count", "below_terrain_count",
 			"distinct_voxel_count",
 			"dropped_out_of_bounds", "clipped_height_count", "non_empty_voxel_count",
@@ -1866,12 +1918,13 @@ func ensure_placement_env() -> bool:
 	if not is_ready():
 		_placement_env_error = "scene_placement_actor_not_ready:%s" % lifecycle_state_name()
 		return false
-	if placement_assets.is_empty():
+	var registered := get_registered_descriptors()
+	if registered.is_empty():
 		_placement_env_error = "no_placement_assets"
 		return false
 	var env := PlacementStageEnvScript.make(self, {
 		# 直接交原件：pivot 剥离副本层已随三变体一并退役（见类头 Placement Tuning 处的说明）。
-		"descriptors": placement_assets.duplicate(),
+		"descriptors": registered.duplicate(),
 		"autoobject_capacity": autoobject_capacity,
 		"prefilter_settings": _prefilter_settings(),
 	})
@@ -1930,7 +1983,7 @@ func ensure_score_model_cpu_anchors() -> Dictionary:
 # ---- Anchor 选中记录（数据侧）------------------------------------------------
 #
 # ⚠ 职责边界：**记录内容归 SPA，交互态归 SPASelectionHost。**
-# 下面这些全部由 _score_model + placement_assets 推导，与"当前选中了谁"无关——所以
+# 下面这些全部由 _score_model + 已注册资产推导，与"当前选中了谁"无关——所以
 # 一律以 anchor_index / topk_index 入参，SPA 自己不持选中态。Host 只需要知道
 # "选中了哪个下标"和"怎么画"，不必懂 FineSelection 的结果模型结构。
 #
@@ -1938,11 +1991,11 @@ func ensure_score_model_cpu_anchors() -> Dictionary:
 # 之前定的——当时评分模型还在 provider 手里。模型归 SPA 之后照做等于让一个展示组件
 # 反过来去解析评分模型。（用户裁定，2026-08-04）
 
-## 展示用资产视图：[{name, mesh}]，顺序与 placement_assets / 模型的 asset_index 对齐。
+## 展示用资产视图：[{name, mesh}]，顺序与 registry / 模型的 asset_index 对齐。
 ## topk 文案要名字，胜出物体包围盒要 mesh AABB，两者共用这一份。
 func _anchor_asset_views() -> Array:
 	var views: Array = []
-	for descriptor in placement_assets:
+	for descriptor in get_registered_descriptors():
 		if descriptor == null:
 			views.append({"name": "Asset%d" % views.size(), "mesh": null})
 			continue
@@ -2065,11 +2118,12 @@ func get_anchor_selection_record(anchor_index: int, limit: int = 4) -> Dictionar
 	return record
 
 
-## prefilter 的四键设置。热路径不开 debug_read_anchors：GPU 细筛只吃 handoff 的常驻 RID，
+## prefilter 的五键设置。热路径不开 debug_read_anchors：GPU 细筛只吃 handoff 的常驻 RID，
 ## 需要 CPU 锚点坐标的消费方经 FineSelection.materialize_cpu_anchor_model 按需取一次。
 func _prefilter_settings() -> Dictionary:
 	return {
 		"min_target_interest": min_target_interest,
+		"anchor_vertical_stride": anchor_vertical_stride,
 		"min_prefilter_score": min_prefilter_score,
 		"debug_read_anchors": false,
 		"decode_anchor_dictionaries": false,
@@ -2083,8 +2137,10 @@ func _score_region_rects() -> Array:
 	return full_map_region_rects()
 
 
-## 全图区域（golden 与交互空导出共用口径）。collect 只发出每个 (x,z) 列最低的
-## qualifying voxel；当前 256x256 XZ 网格的严格上限正好是 ANCHOR_CAPACITY=65536。
+## 全图区域（golden 与交互空导出共用口径）。collect 在地形高度采样目标体积发锚，
+## anchor_vertical_stride 决定地表之上再叠几层（步长 0 = 只采地形那一格，此时
+## 256x256 网格上限恰为列数 65536）；步长 ≥ 1 时上限由列数 × 层数决定，
+## 罩它的是 ANCHOR_CAPACITY=131072。
 func full_map_region_rects() -> Array:
 	if _placement_env == null:
 		return []
@@ -2141,7 +2197,7 @@ func run_anchors(_settings := {}) -> Dictionary:
 		region_models.append(VolumeScoreFineSelectionScript.anchors_only_model(
 			anchors_packed,
 			int(handoff.get("topk", 4)),
-			placement_assets.size(),
+			get_asset_count(),
 			sv.get("grid_size", Vector3i.ZERO),
 			sv.get("voxel_size", Vector3.ONE),
 			sv.get("grid_origin", Vector3.ZERO),
@@ -2263,6 +2319,7 @@ func _score_cache_settings(full_candidate_diagnostics: bool) -> Dictionary:
 		"rotation_slots": rotation_slots,
 		"topk": 4,
 		"min_target_interest": min_target_interest,
+		"anchor_vertical_stride": anchor_vertical_stride,
 		"min_prefilter_score": min_prefilter_score,
 		"collision_limit": PLACE_PIPELINE_COMMON["collision_limit"],
 		"clearance_limit": PLACE_PIPELINE_COMMON["clearance_limit"],
@@ -2286,7 +2343,7 @@ func _score_status(require_scored: bool, extra: Dictionary = {}) -> Dictionary:
 		"ok": anchor_count > 0 and (scored or not require_scored),
 		"anchors": anchor_count,
 		"scored": scored,
-		"asset_count": placement_assets.size(),
+		"asset_count": get_asset_count(),
 		"score_ms": float(_score_model.get("elapsed_ms", 0.0)),
 	}
 	for key in extra:
@@ -2313,6 +2370,7 @@ func run_place(_settings := {}) -> Dictionary:
 	var common := PLACE_PIPELINE_COMMON.duplicate(true)
 	common["rotation_slots"] = rotation_slots
 	common["min_target_interest"] = min_target_interest
+	common["anchor_vertical_stride"] = anchor_vertical_stride
 	common["min_prefilter_score"] = min_prefilter_score
 	common["result_capacity"] = place_result_capacity
 	common["min_distance_voxels"] = place_min_distance_voxels

@@ -7,14 +7,31 @@
 // Atomic-appends valid positions into AnchorOut buffer.  The anchor position
 // itself carries the placement meaning; no separate anchor_kind is stored.
 //
-// Anchor gate: a voxel becomes an anchor iff it is INSIDE the target-occupied
-// volume (target completeness byte > min_target_interest, GPU twin of Houdini's
-// `volumesample(targetVol, 0, P) > 0`) AND it is the BOTTOMMOST such voxel in its
-// (x, z) column — no in-target voxel exists below it. A lower in-target cell
-// overrides (covers) higher ones, so at most one anchor is emitted per column
-// (the lowest qualifying cell) and no anchor ever stacks above another. A vertical
-// gap / overhang keeps only the column's very bottom in-target cell by design.
-// "Below" is -y (the grid's up axis is +y; the old support gate also probed p.y-1).
+// Anchor gate: SAMPLE THE TARGET VOLUME AT THE TERRAIN HEIGHT — where the sample
+// hits, emit an anchor.
+//
+// The grid's Y axis is terrain-relative (world.y = terrain_height * height_scale +
+// grid_origin.y + (slice + 0.5) * voxel_size.y), so "the terrain height" is one FIXED
+// slice for every (x, z) column: `terrain_slice` = the cell whose relative-height range
+// starts at 0, computed host-side as floor(-grid_origin.y / voxel_size.y). That is why
+// this gate needs no terrain height field — the height variation is already baked into
+// the grid's own vertical frame.
+//
+// A voxel becomes an anchor iff it is INSIDE the target-occupied volume (target
+// completeness byte > min_target_interest, GPU twin of Houdini's
+// `volumesample(targetVol, 0, P) > 0`) AND it sits on a vertical sampling layer.
+// Layers are phase-locked to `terrain_slice` and spaced `vertical_stride` apart:
+//   stride <= 0  -> the terrain slice alone. This is the plain reading of the rule:
+//                   one anchor per column, standing on the terrain, emitted only where
+//                   the target volume actually covers the ground there.
+//   stride == n  -> the terrain slice plus every n-th layer above it (stride 1 = every
+//                   in-target cell at or above the terrain), i.e. the vertical density
+//                   knob, now measured upward from the ground rather than from the
+//                   target volume's own underside.
+// Nothing BELOW the terrain slice can ever emit: the target volume routinely extends
+// under the terrain (this bake: 27063 in-target cells one slice down, thousands deeper),
+// and the previous bottom-of-column gate anchored to those, burying anchors underground.
+//
 // The former scene-occupancy / collision / support-below gates were dropped — the
 // score stage already penalizes collision/overlap and enforces object spacing, so
 // re-testing them here was redundant.
@@ -51,7 +68,7 @@ layout(push_constant, std430) uniform Params {
     ivec4 grid_size_pad;          // xyz = grid dims, w = dirty_tile_count
     ivec4 tile_grid_size_pad;     // xyz = tile grid dims, w = anchor_capacity
     vec4  thresholds;             // w = min_target_interest (x/y/z retired: scene/collision/support gates dropped)
-    ivec4 dispatch_shape_pad;     // x = dirty dispatch groups_x
+    ivec4 dispatch_shape_pad;     // x = dirty dispatch groups_x, z = vertical_stride, w = terrain_slice
 };
 
 const uint TILE_SIZE = 8u;
@@ -108,20 +125,21 @@ void main() {
     ivec3 tile_origin = tile_id_to_origin(tile_id);
     ivec3 p = tile_origin + ivec3(gl_LocalInvocationID.xyz);
 
-    // Anchor iff the cell is inside the target volume AND is the bottommost such
-    // cell in its column: a lower in-target cell overrides (covers) higher ones, so
-    // scan downward and reject if any voxel below p is also in-target. Still exactly
-    // one anchor per (x,z) column ("no anchor above an anchor"), now the lowest cell.
-    if (in_bounds(p) && in_target(voxel_index(p))) {
-        bool bottommost = true;
-        for (int y = p.y - 1; y >= 0; --y) {
-            if (in_target(voxel_index(ivec3(p.x, y, p.z)))) {
-                bottommost = false;
-                break;
-            }
-        }
-        if (bottommost) {
-            try_emit_anchor(p);
-        }
+    if (!in_bounds(p)) return;
+
+    // Vertical sampling layer test (see the gate description at the top of the file).
+    // Purely local: no column scan, because the phase is the grid-wide terrain slice
+    // rather than something this column has to be searched for.
+    int terrain_slice = dispatch_shape_pad.w;
+    int height_above_terrain = p.y - terrain_slice;
+    if (height_above_terrain < 0) return;              // below ground never anchors
+    int vertical_stride = dispatch_shape_pad.z;
+    if (vertical_stride <= 0) {
+        if (height_above_terrain != 0) return;         // terrain slice alone
+    } else if ((height_above_terrain % vertical_stride) != 0) {
+        return;
     }
+
+    // "能采样到就生成" — the sample at this height decides it.
+    if (in_target(voxel_index(p))) try_emit_anchor(p);
 }

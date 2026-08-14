@@ -3,14 +3,17 @@ extends EditorInspectorPlugin
 
 ## SPA 的 Placement 操作区（固定槽位Profile共享Buffer实施计划 §11.1）。
 ##
-##     [Load Baked Assets]  [Reload]
+##     [Reload]
 ##     [Anchors]  [Score]  [Place]
 ##
-## 加载期间两个加载按钮禁用（防重复提交）；Arena 未就绪时 Anchors/Score/Place 禁用，
+## 加载期间 Reload 禁用（防重复提交）；Arena 未就绪时 Anchors/Score/Place 禁用，
 ## 并用 Tooltip 说明原因。禁用只是防误触——真正的前置检查仍在 SPA 的 run_* 里。
+##
+## 曾有一个并列的 [Load Baked Assets]（force=false，吃"目录未变即已加载"短路）。已删除：
+## 两个按钮的差别只在短路，而重新烘焙常同名覆盖、目录签名不变，Load 会静默复用旧 Arena
+## ——留着只会让人点错。Reload 恒走 force 路径，是唯一入口。
 
 const LOAD_PROPERTIES := [
-	&"_load_baked_assets_action",
 	&"_reload_baked_assets_action",
 ]
 const ACTION_PROPERTIES := [
@@ -35,7 +38,8 @@ func _parse_property(
 ) -> bool:
 	var property := StringName(name)
 	if LOAD_PROPERTIES.has(property):
-		# 两个加载按钮合成一行，挂在第一个属性上；第二个只负责把原生按钮吞掉。
+		# 保持"挂在第一个属性上"的写法：将来若再加并列加载按钮，只需扩 LOAD_PROPERTIES
+		# 与 _build_load_row，其余属性自动被吞掉、不会冒出原生按钮。
 		if property == LOAD_PROPERTIES[0]:
 			add_custom_control(_build_load_row(object))
 		return true
@@ -51,8 +55,7 @@ func _build_load_row(spa: Object) -> Control:
 	row.add_theme_constant_override("separation", 4)
 	# 没有 Bake 产物时按钮**仍可点击**（§11.1）——由 load_baked_assets() 返回明确提示，
 	# 而不是把入口藏起来让人猜为什么点不动。
-	row.add_child(_make_action_button(spa, LOAD_PROPERTIES[0], "Load Baked Assets", "Load"))
-	row.add_child(_make_action_button(spa, LOAD_PROPERTIES[1], "Reload", "Reload"))
+	row.add_child(_make_action_button(spa, LOAD_PROPERTIES[0], "Reload", "Reload"))
 	return row
 
 

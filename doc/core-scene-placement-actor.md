@@ -55,7 +55,7 @@ descriptor 或编译 pipeline。
 > 守卫禁止，触发 `assert(false)` 强制崩溃。GPU 依赖 RenderingDevice，`--headless` 同样不可用。
 
 1. **TargetSV**（模式下拉，或 Shift+5）——查看放置目标场（`target_field` 复杂度/颜色 + `target_collision`），即"想要放成什么样"的输入。
-2. **Anchors**（Inspector，S6）——`provider.generate_anchors` → `SPA.run_autoobject_prefilter`（4-pass GPU）在目标体积内（`max(target_complexity, target_collision) > min_target_interest`，且取每 `(x,z)` 列最底的 in-target 体素）收集候选锚点体素（3D，可悬空，预期行为）。视口显示蓝色锚点小球。
+2. **Anchors**（Inspector，S6）——`provider.generate_anchors` → `SPA.run_autoobject_prefilter`（4-pass GPU）在**地形高度**采样目标体积（`max(target_complexity, target_collision) > min_target_interest`，采到即发锚；`anchor_vertical_stride > 0` 时在地表之上按步长加层）收集候选锚点体素（3D，可悬空，预期行为）。视口显示蓝色锚点小球。
 3. **Score**（Inspector，S7）——`provider.calculate_voxel_scores` → `VolumeScoreFineSelection.run` 吃真实 S6 锚点交接 + BlendSV 副本（committed SV 副本，评分幂等），对每 `(anchor × top-K asset)` 求五维 residual gain 排名；每锚点胜出资产实例化其 `AssetDescriptor.get_mesh()`（**绝不代理盒**，见 `CLAUDE.md`）。点选锚点查看 top-K 明细。
 4. **Place**（Inspector，S5→S9）——`SPA.run_place()` 用 `PlacementStageEnv` 的三段会话
    （`begin_place_session()` / `run_place_session_batch()` / `end_place_session()`，批循环住在 SPA）跑
@@ -91,8 +91,9 @@ Reduce 固定为三阶段：每个 Anchor 先选 gain 最高的有效 Fine 候�
 在该规模是几万次同步回读，调用方归零后已于 2026-08-07 删除。
 
 `Place` 走**单遍全图 prefilter**（会话每批恒 `dirty_tile_ids=[]`，与生产 SPA demo 同口径；
-不走 `Anchors`/`Score` 的四象限扫掠）。本场景 target 内锚点约 45.6k、在 `ANCHOR_CAPACITY` 65536 之下、
-集合确定；若某场景锚点超帽，单遍会被 atomicAdd 截断成非确定子集（此时改用 `Anchors`/`Score` 的扫掠口径观察）。
+不走 `Anchors`/`Score` 的四象限扫掠）。本场景 target 内锚点数随 `anchor_vertical_stride` 变化
+（步长 `0` 约 45.6k、`1` 约 113.6k），均在 `ANCHOR_CAPACITY` 131072 之下、集合确定；
+若某场景锚点超帽，单遍会被 atomicAdd 截断成非确定子集（此时调大步长，或改用 `Anchors`/`Score` 的扫掠口径观察）。
 
 **Place 改写 committed SV**：会话每批内部 commit 推进了常驻场并使 env 的
 target/prefilter 缓存失效——放置后再点 `Score`，会在**新场**上重评（coherent）。

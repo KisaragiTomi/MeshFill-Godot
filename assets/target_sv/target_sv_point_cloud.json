@@ -5,7 +5,7 @@
 		"complexity": "fbx_uv1_x",
 		"position": "triangle_centroid"
 	},
-	"capture_size": 1021.67706298828,
+	"capture_size": 1024.0,
 	"clipped_height_count": 0,
 	"collision_buffer_applied": false,
 	"collision_format": "r8_unorm",
@@ -15,9 +15,9 @@
 	"height_buffer_applied": false,
 	"height_relative": true,
 	"max_height": 120.0,
-	"non_empty_voxel_count": 130021,
+	"non_empty_voxel_count": 147426,
 	"preview_path": "res://assets/target_sv/target_sv_point_cloud_preview.png",
-	"slice_count": 16,
+	"slice_count": 24,
 	"source_bounds": [
 		-510.000030517578,
 		510.0,
@@ -33,8 +33,9 @@
 	"texture_size": 256,
 	"triangle_count": 359572,
 	"valid": true,
-	"vertical_span": 40.0,
+	"vertical_floor": -36.0,
+	"vertical_span": 36.0,
 	"visual_format": "rgba8_unorm",
 	"visual_path": "res://assets/target_sv/target_sv_point_cloud_visual.rgba8",
-	"voxel_count": 1048576
+	"voxel_count": 1572864
 }

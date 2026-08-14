@@ -101,7 +101,7 @@ var _place_session_batch_index := 0
 ##                                      不再冒充碰撞密度——旧 h/120 种子会让 collision_limit
 ##                                      硬门拒掉全部高地候选）
 ##   prefilter_settings: Dictionary   — 透传 SPA._apply_prefilter_settings（min_target_interest /
-##                                      min_prefilter_score / debug_read_anchors）
+##                                      anchor_vertical_stride / min_prefilter_score / debug_read_anchors）
 static func make(existing_spa: ScenePlacementActor, options := {}) -> RefCounted:
 	var env := PlacementStageEnv.new()
 	var make_t0_usec := Time.get_ticks_usec()
@@ -401,7 +401,7 @@ func ensure_prefilter(prefilter_settings_override := {}) -> Dictionary:
 ## 完全相同的新 anchor 缓冲，还顺带把刚发布的 Fine 常驻交接判成过期。
 static func _prefilter_cache_key_from(effective_settings: Dictionary) -> Dictionary:
 	var key := {}
-	for setting_key in ["min_target_interest", "min_prefilter_score"]:
+	for setting_key in ["min_target_interest", "anchor_vertical_stride", "min_prefilter_score"]:
 		if effective_settings.has(setting_key):
 			key[setting_key] = effective_settings[setting_key]
 	# 这两个键缺席时 _apply_prefilter_settings 会强制写回默认值（而不是沿用实例旧值），

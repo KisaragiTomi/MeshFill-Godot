@@ -28,28 +28,53 @@
 //                   (already-satisfied voxels never re-count -> multi-round safe)
 // The budgets come from res://score_match_config.cfg via the host (see
 // voxel_placement_generator.gd _load_score_match_config).
-// score = (pass_weight - off_target_collision_penalty_weight) / total_weight
-// (+ a small mean-residual-gain tiebreak so equal-score yaw/pivot combos stay
-// ordered). A matching occupied-target voxel contributes +weight; a voxel that
-// lands on empty target contributes -ad_col_val*weight, so off-target content is
-// penalised in proportion to the collision value the stamp would actually write.
-// Collision-free overshoot contributes zero. The five-dim residual gain is still
-// accumulated only over occupied-target voxels for the tiebreak and loss stats.
-// Clearance ProfileSamples
-// never enter the semantic compose; they only feed the physical clearance
-// accumulator. "Place nothing" stays the implicit baseline: a candidate is valid
-// only when match_fraction > min_match_fraction (voxel_size_threshold.w), where
-// match_fraction is the signed, full-footprint score above.
+// Two quantities come out of the accumulators, and the score is their PRODUCT
+// (2026-08-13 用户裁决：最终评分 = raw * frac)：
+//   raw_match_score = pass_weight - off_target_collision_penalty_weight
+//                     产量：净覆盖了多少加权格，随资产体积增长，无上界。
+//   match_fraction  = raw_match_score / total_weight
+//                     精度：身上有多大比例放对了，量程 [-1, 1]。
+//   score           = raw_match_score * abs(match_fraction)
+// A matching occupied-target voxel contributes +weight; a voxel that lands on empty
+// target contributes -ad_col_val*weight, so off-target content is penalised in
+// proportion to the collision value the stamp would actually write. Collision-free
+// overshoot contributes zero.
+//
+// ⚠ 为什么是 abs(match_fraction) 而不是字面的 raw * frac：total_weight 恒正 ⇒
+// sign(frac) == sign(raw)，所以字面乘积 raw*frac == raw²/total_weight **恒非负** ——
+// 一个几乎全部落在目标外的候选（raw 极负）会拿到很大的正分。取 |frac| 后，
+// raw > 0 的候选（valid 的全部都是，因为 valid 要求 frac > min_match_fraction > 0）
+// 结果与字面式子逐位相同，只有 raw < 0 的候选保持负分、排在零覆盖之后。
+//
+// 单独只用其中一个都不行，这正是本次改动的动机：
+//   只用 frac  → 只剩 2 个样本、恰好全命中的退化资产恒拿满分 1.0（实测：stone 从 70
+//                样本砍到 2，分数 1.0387 一位没变，仍赢下 18690 个锚点）。
+//   只用 raw   → 体积大就赢，精度不进决策。
+// 旧的 ±0.05 mean-residual-gain tiebreak 已随之移除：在新量程（几十）下它没有分辨力，
+// 且会破坏 frac 的精确可逆（见下面 [3] 的还原式）。mean_gain 仍用于 targetless 分支与 loss 统计。
+//
+// Clearance ProfileSamples never enter the semantic compose; they only feed the
+// physical clearance accumulator. "Place nothing" stays the implicit baseline: a
+// candidate is valid only when match_fraction > min_match_fraction
+// (voxel_size_threshold.w) —— 有效性判定仍用**归一化**那份，阈值本来就是比例口径。
 // Targetless runs (has_target == 0) fall back to the legacy mean residual-gain
 // score.
 //
 // Output: one 4-vec4 (64 B) record per (anchor, k) at
 // fine_candidates[anchor_id * topk + k]:
-//   [0] origin.xyz (anchor voxel position), score (match fraction + tiebreak)
+//   [0] origin.xyz (anchor voxel position), score (= raw_match_score * abs(match_fraction))
 //   [1] anchor_id, asset_index, yaw_slot, local_pivot_index (-1 = zero pivot；槽内局部)
 //   [2] solid_collision, loss_before_mean, loss_after_mean, clearance_overlap
-//   [3] profile_index, valid (0/1), coarse probe score, match_fraction
+//   [3] profile_index, valid (0/1), coarse probe score, raw_match_score
 //       profile_index 同时是 Arena slot 索引，消费方靠它 + [1].w 定位 pivot。
+//       [3].w 是**未归一化**的匹配分（= pass_weight - off_target_penalty，即
+//       match_fraction 的分子），单位是"权重格数"而非比例，随资产体积线性增长。
+//       归一化的 match_fraction 没有单独存位，也不需要——它可由同记录精确还原：
+//         match_fraction = [0].w / abs([3].w)        （因 score = raw * abs(frac)）
+//       进而 total_weight = [3].w / match_fraction = [3].w * abs([3].w) / [0].w。
+//       raw == 0 时 frac 不可还原（分数恒 0），消费方按"测不出"处理。
+//       ⚠ [3].w 全程只被整条 vec4 拷贝（select_anchor_winners / compact_anchor_atomic_reduce），
+//       没有任何 GPU/CPU 消费方解释它，所以换语义不影响下游；被解释的只有 [3].y (valid)。
 
 layout(local_size_x = 16, local_size_y = 1, local_size_z = 1) in;
 
@@ -493,10 +518,10 @@ const float MATCH_GAIN_EPS = 1.0e-5;
 // a thin asset on a denser target is fine, only a denser-than-wanted asset is rejected.
 // The ratio (1 + N/100) arrives as match_limits.z, tuned via score_match_config.cfg
 // `complexity_overfill_percent` (default 20 → ratio 1.2). No absolute slack term.
-// Mean residual gain (~[-1,1]) contributes at most +-this much on top of the
-// signed match score — orders equal-score combos without overpowering a
-// material score difference.
-const float TIEBREAK_GAIN_SCALE = 0.05;
+// ⚠ 这里曾有 `TIEBREAK_GAIN_SCALE = 0.05`（mean-residual-gain 微调项，加在 score 上给
+// 同分的 yaw/pivot 组合排序）。评分改成 raw * abs(frac) 后已移除：新量程是几十，0.05
+// 的微调没有分辨力，且它会让 match_fraction 无法从 score 精确反算（见文件头 [3]）。
+// mean_gain 本身仍在用——targetless 分支的评分与 loss_before/after 统计。
 // @@GEN debug_set voxel_debug_channels consts
 const uint NUM_DEBUG_CHANNELS = 8u;
 const uint DEBUG_CH_TARGET_COVERAGE = 0u;
@@ -546,7 +571,8 @@ shared float s_combo_score[WORKGROUP_SIZE];
 shared float s_combo_valid[WORKGROUP_SIZE];
 shared vec4 s_combo_stats0[WORKGROUP_SIZE];   // solid_collision, loss_before_mean, loss_after_mean, clearance
 shared float s_combo_coverage[WORKGROUP_SIZE];
-shared float s_combo_fraction[WORKGROUP_SIZE];
+// 未归一化的匹配分（match_fraction 的分子）。归一化那份不入库，见文件头 [3] 的还原式。
+shared float s_combo_raw_score[WORKGROUP_SIZE];
 
 // Candidate accumulators — one per thread (= one per (pivot, yaw) combo in the
 // current chunk); ALL AD batches of the asset accumulate into the same struct.
@@ -632,12 +658,12 @@ float load_r8(uint value) {
 
 void write_record(uint slot, ivec3 origin, float score, uint anchor_id, uint asset_id,
         int yaw_slot, int global_pivot_index, vec4 stats0, int profile_index,
-        bool valid, float coarse_score, float match_fraction) {
+        bool valid, float coarse_score, float raw_match_score) {
     uint base = slot * RECORD_STRIDE;
     fine_candidates[base + 0u] = vec4(vec3(origin), score);
     fine_candidates[base + 1u] = vec4(float(anchor_id), float(asset_id), float(yaw_slot), float(global_pivot_index));
     fine_candidates[base + 2u] = stats0;
-    fine_candidates[base + 3u] = vec4(float(profile_index), valid ? 1.0 : 0.0, coarse_score, match_fraction);
+    fine_candidates[base + 3u] = vec4(float(profile_index), valid ? 1.0 : 0.0, coarse_score, raw_match_score);
 }
 
 void write_invalid_record(uint slot, ivec3 origin, uint anchor_id, uint asset_id) {
@@ -786,7 +812,7 @@ void main() {
     int best_combo = -1;
     vec4 best_stats0 = vec4(0.0);
     float best_coverage = 0.0;
-    float best_fraction = 0.0;
+    float best_raw_score = 0.0;
 
     for (uint combo_base = 0u; combo_base < combo_count; combo_base += WORKGROUP_SIZE) {
         uint combo = combo_base + tid;
@@ -940,6 +966,9 @@ void main() {
         float loss_before_mean = 0.0;
         float loss_after_mean = 0.0;
         float match_fraction = 0.0;
+        // 未归一化匹配分 = match_fraction 的分子。有效性判定仍用归一化那份（阈值是比例），
+        // 入库的是这份原始量：比例把体积信息除掉了，而"这个候选到底净覆盖了多少格"要靠它。
+        float raw_match_score = 0.0;
         bool combo_valid = false;
         bool has_score_samples = has_target ? acc.total_weight > 0.0 : acc.weight_sum > 0.0;
         if (combo_active && has_score_samples) {
@@ -968,12 +997,13 @@ void main() {
                 // Dividing by total_weight makes every sampled body voxel take part
                 // in the decision and yields a real negative score for a candidate
                 // that only writes collision outside TargetSV.
+                raw_match_score = acc.pass_weight - acc.off_target_collision_penalty_weight;
                 match_fraction = acc.total_weight > 0.0
-                    ? (acc.pass_weight - acc.off_target_collision_penalty_weight)
-                        / acc.total_weight
+                    ? raw_match_score / acc.total_weight
                     : 0.0;
-                combo_score = match_fraction
-                    + TIEBREAK_GAIN_SCALE * clamp(mean_gain, -1.0, 1.0);
+                // 产量 × 精度。abs() 的理由见文件头：字面 raw*frac 恒非负，会把
+                // "几乎全在目标外"的候选捧成高分。
+                combo_score = raw_match_score * abs(match_fraction);
                 combo_valid = collision_ok && clearance_ok
                     && match_fraction > min_match_fraction;
             } else {
@@ -989,7 +1019,8 @@ void main() {
         s_combo_valid[tid] = combo_valid ? 1.0 : 0.0;
         s_combo_stats0[tid] = vec4(acc.solid_collision, loss_before_mean, loss_after_mean, acc.clearance_overlap);
         s_combo_coverage[tid] = acc.total_weight > 0.0 ? acc.coverage_weight / acc.total_weight : 0.0;
-        s_combo_fraction[tid] = match_fraction;
+        // 入库未归一化那份；归一化的 match_fraction 由消费方按文件头的还原式反算。
+        s_combo_raw_score[tid] = raw_match_score;
         barrier();
 
         if (tid == 0u) {
@@ -1008,7 +1039,7 @@ void main() {
                     best_combo = int(t_combo);
                     best_stats0 = s_combo_stats0[t];
                     best_coverage = s_combo_coverage[t];
-                    best_fraction = s_combo_fraction[t];
+                    best_raw_score = s_combo_raw_score[t];
                 }
             }
         }
@@ -1027,7 +1058,7 @@ void main() {
         int global_pivot_index = pivot_count > 0u ? int(pivot_start + best_pivot_slot) : -1;
         write_record(slot, origin, best_score, anchor_id, asset_id, best_yaw_slot,
             global_pivot_index, best_stats0, profile_index, best_valid, coarse_score,
-            best_fraction);
+            best_raw_score);
         write_debug_voxel_channels(origin, best_coverage, best_stats0.y, best_stats0.z,
             best_valid ? best_score : 0.0, best_valid ? float(best_yaw_slot) : 0.0,
             best_stats0.x, best_stats0.w);

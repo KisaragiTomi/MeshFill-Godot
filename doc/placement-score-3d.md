@@ -40,11 +40,14 @@ asset 的 Fine `ProfileSample` 集，对 CurrentSV 与 TargetSV 求五维 residu
   `register_volume_provider` 注册，响应 `SPA` Inspector 的「Anchors」「Score」「Place」按钮与
   Anchor 模式点选。SPA 在 ready 期间一次构建真实上游；`PlacementStageEnv`
   （`scripts/checks/placement_stage_env.gd`）只验证并借用 READY SPA，不创建 runtime、RD 或 committer：
-  - **Anchors（S6）**：`SPA.run_autoobject_prefilter`（4-pass GPU）在 target 体积内
-    （`max(target_complexity, target_collision) > min_target_interest`）收集锚点体素——3D 体素锚点可悬空（预期行为，
-    非贴地表面；世界坐标按 TargetSV `height_relative` 口径加地形高度）。collect 对每个 `(x,z)`
-    列只发出最低 qualifying voxel，因此 `256×256` XZ 网格的严格上限为 `65536`；
-    `raw_anchor_count > 65536` 属于不变量错误并终止，不做分区兜底。`prefilter_tile_rect` 空（默认）
+  - **Anchors（S6）**：`SPA.run_autoobject_prefilter`（4-pass GPU）**在地形高度采样 target 体积**
+    （`max(target_complexity, target_collision) > min_target_interest`，采到就发锚）收集锚点体素。
+    网格 Y 是地形相对的，地表因此是一个常数切片 `terrain_slice = floor(-grid_origin.y / voxel_size.y)`
+    （生产配置 = `12`），这条 pass 不需要地形高度场。`anchor_vertical_stride` 决定地表**之上**再叠几层
+    （`0` = 只采地形那一格，此时 `256×256` XZ 网格上限恰为列数 `65536`；`1` = 地表及以上每个
+    qualifying voxel）；地形以下一律不发锚。锚点仍是 3D 体素、可悬空（预期行为；世界坐标按 TargetSV
+    `height_relative` 口径加地形高度）。`raw_anchor_count > ANCHOR_CAPACITY`（`131072`）
+    属于不变量错误并终止，不做分区兜底。`prefilter_tile_rect` 空（默认）
     表示单次全图，非空表示指定单区域。golden 入口通过 `_full_map_region_rects` 强制单次全图
     （不读交互导出）——测试口径 = 全量计算。旧 `VolumeScore3D` CPU 地表锚点（`anchor_spacing` 网格）
     已随文件删除退役。
@@ -65,12 +68,13 @@ asset 的 Fine `ProfileSample` 集，对 CurrentSV 与 TargetSV 求五维 residu
     （`rotation_slots` / `min_target_interest` / `min_prefilter_score`）与 Anchors/Score 同导出、评分
     shader 同源。Score 展示每个 Anchor 的 Fine 胜者；Place 再按稳定 random 优先级清除 Anchor 间
     冲突，并按 quota / `result_capacity` 紧凑写出，且与 Anchors/Score 一样走**单次全图
-    prefilter**（`dirty_tile_ids=[]`）；超出 `65536` 时按同一不变量错误终止。
+    prefilter**（`dirty_tile_ids=[]`）；超出 `131072` 时按同一不变量错误终止。
     Place 后 committed SV 已变，再 Score 在新场上重评。整条流程的端到端测试场景见
     [`core-scene-placement-actor.md`](core-scene-placement-actor.md)。
 - **放置物体一律实例真实 mesh**：每锚点胜出资产实例化 `AssetDescriptor.get_mesh()`，绝不用占位
-  方盒子（见 `CLAUDE.md`「Placement / Score Demos」）。资产在 `.tscn` 以 `ext_resource` 挂到
-  `@export Array[AssetDescriptor] placement_assets`；评分形状取自 descriptor collision 剖面（注册进
+  方盒子（见 `CLAUDE.md`「Placement / Score Demos」）。资产由 SPA 的 `load_baked_assets()`
+  扫 `res://scenes/asset-overview/baked_descriptors/` 注册，本 demo 直读
+  `SPA.get_registered_descriptors()`，自己不持有数组也不扫盘；评分形状取自 descriptor collision 剖面（注册进
   profile 容器），展示时按最优 yaw 旋转、原生 FBX 轴心贴地。`AssetDescriptor` 已标 `@tool`，其
   `get_mesh()` 等方法方能在编辑器 @tool demo 里运行。
 - `SPA/Interaction/DemoHost`（`SPAInteractionHost`，脚本 `scripts/spa_interaction_host.gd`
@@ -93,6 +97,7 @@ asset 的 Fine `ProfileSample` 集，对 CurrentSV 与 TargetSV 求五维 residu
 | --- | --- | --- | --- |
 | `rotation_slots` | SPA | `12` | 每候选原点扫描的 yaw 档数。 |
 | `min_target_interest` | SPA | `0.01` | S6 锚点门控：`max(target_complexity, target_collision)` 超过该值 = "在目标体积内"。 |
+| `anchor_vertical_stride` | SPA | `0` | S6 竖直锚点密度（体素层，越小越密）：锚点自**地形切片**起每这么多层采样一次。`0` = 只采地形那一格（每列至多一个锚，且一定站在地面上）；`1` = 地表及以上每个 in-target 体素；`n > 1` = 地形切片 + 其上每 n 层。地形以下永不发锚。 |
 | `min_prefilter_score` | SPA | `0.35` | S6 探针分数门：低于门的资产不进该锚点 topk（细筛自然缺席该资产）。 |
 | `prefilter_tile_rect` | SPA | `Rect2i()`（空） | prefilter 观察 tile 子区域（XZ tile 坐标，tile=8³，全 Y 层）。空 = 单次全图；非空 = 单区域。golden 强制单次全图，不受本导出影响。 |
 | `place_result_capacity` / `place_max_batches` / `place_min_distance_voxels` | SPA | `1024` / `24` / `2.0` | Place 每批输出上限、单次命令最多批数、reduce 最小间距。 |
@@ -106,7 +111,7 @@ asset 的 Fine `ProfileSample` 集，对 CurrentSV 与 TargetSV 求五维 residu
 | --- | --- |
 | `volume` | 整个 voxel 数据 buffer；不是单个元素。 |
 | `voxel` | `volume` 中的单个 `(x, y, z)` cell。 |
-| `anchor` | 候选放置原点体素：`max(target_complexity, target_collision) > min_target_interest` **且**是所在 `(x, z)` 列最底的 in-target 体素（两门合取，见 `shaders/collect_sv_anchors.glsl`）；经 `anchor_candidate_handoff` 常驻交接，一个 anchor 就是一个候选 origin。 |
+| `anchor` | 候选放置原点体素：`max(target_complexity, target_collision) > min_target_interest` **且**落在地形切片或其之上的采样层（相位锁 `terrain_slice`、层距 `anchor_vertical_stride`，步长 `0` 即只有地形切片；两门合取，见 `shaders/collect_sv_anchors.glsl`）；经 `anchor_candidate_handoff` 常驻交接，一个 anchor 就是一个候选 origin。 |
 | `profile sample` | 统一 32 B `ProfileSample`：米制 local offset、`sample_weight`、rgba8、collision/语义权重、flags；同一槽位内 coarse/Fine 通过连续 range 区分。 |
 | `dimension` | 固定五维 `[collision, complexity, R, G, B]`；residual gain 按维加权（push `dim_w_*`），资产侧值来自每条 `ProfileSample` 自身，不再是 per-asset 单值画像。 |
 | `rotation slot` | `rotation_slots` 个待评测 yaw 之一；绕 Y 轴，步进 `360 / rotation_slots` 度。 |
@@ -277,8 +282,10 @@ anchor %d voxel=%s valid=%d yaw=%d gain_q1000=%d
 
 确定性三件套（缺一 golden 复跑必 DIFF）：
 
-- **单次全图**：collect 每个 XZ 列只保留最低锚点，`256×256` 网格最多 `65536` 个；
-  `raw_anchor_count > 65536` 直接作为不变量错误。meta `tile_rect=0,0,0x0` 表示全图口径（可审计）。
+- **单次全图**：collect 在地形高度采样发锚，`anchor_vertical_stride` 决定地表之上再叠几层
+  （步长 `0` = 每列至多一个、`256×256` 网格最多 `65536` 个）；`raw_anchor_count > 131072`
+  直接作为不变量错误。meta `tile_rect=0,0,0x0` 表示全图口径（可审计）。
+  **改步长会换掉整份锚点集合，golden 必须重录。**
 - **体素排序**：锚点按线性体素索引升序重排（GPU atomicAdd 追加序不进快照）；`anchor N` =
   排序后下标。
 - **截断**：锚点段按排序序截前 `golden_anchor_limit` 个（`0` = 全量，默认）——观察侧截断、

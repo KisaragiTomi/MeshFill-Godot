@@ -18,6 +18,10 @@ extends RefCounted
 ##
 ## 将来若要恢复 CPU 侧地形射线（例如给不进 ID pass 的域做落点），照 git 历史取回即可；
 ## 若同时需要 GLSL 侧共享常量，照 `PlacementSharedGLSL` 的形状重建区块 SSOT。
+##
+## ⚠ 本文件旧名 `terrain_raycast.gd`（2026-08-12 改名）：射线本体删干净之后，旧名会让读者
+## 以为这里还有一条 CPU 地形射线——而它现在只有一个高度场查表。改名连同 `.uid` 一起搬，
+## 文件无 `class_name`、仅被 preload 按路径引用，故只有一个引入点需要跟着改。
 
 
 ## 采样世界 XZ 位置的地形高度。
@@ -38,7 +42,7 @@ static func sample_height(
 	# px/pz 已按 field_res 双向 clamp，idx 必落在 [0, field_res²)。越界 ⟹ 高度场长度与
 	# field_res 不一致（生产端与消费端分辨率不匹配），返回 0.0 会把这一点伪装成「地面在原点高度」。
 	if idx >= height_field.size():
-		push_error("TerrainRaycast.sample_height: 高度场长度与分辨率不符 field_res=%d 需要 %d 元素 实际 %d（idx=%d）" % [field_res, field_res * field_res, height_field.size(), idx])
-		assert(false, "TerrainRaycast.sample_height: height_field/field_res mismatch")
+		push_error("TerrainHeightField.sample_height: 高度场长度与分辨率不符 field_res=%d 需要 %d 元素 实际 %d（idx=%d）" % [field_res, field_res * field_res, height_field.size(), idx])
+		assert(false, "TerrainHeightField.sample_height: height_field/field_res mismatch")
 		return 0.0
 	return height_field[idx]

@@ -9,11 +9,11 @@ extends "res://scripts/core_demo_contract_fixture.gd"
 ## 副本，评分幂等）打分，每 (anchor x topk-asset) residual gain 排名，胜者放真实
 ## descriptor mesh（CLAUDE.md 规则，永不代理盒）。
 ## 锚点 = collect_sv_anchors 的 target-inside 体素（3D，可悬空，预期行为）；
-## collect 每个 (x,z) 列只保留最低 qualifying voxel；当前 256x256 XZ 网格严格上限为
-## ANCHOR_CAPACITY=65536。prefilter_tile_rect 空时单次处理全图，非空时处理指定 tile 区域。
+## collect 在**地形高度**采样目标体积，采到就发锚（步长 0 = 只采地形那一格，
+## ≥1 = 地形切片及其以上每 n 层再采一次）；上限为 ANCHOR_CAPACITY=131072。
+## prefilter_tile_rect 空时单次处理全图，非空时处理指定 tile 区域。
 
 const DemoUI := preload("res://scripts/utils/demo_ui.gd")
-const DemoAssets := preload("res://scripts/utils/demo_assets.gd")
 const DemoDebugVisuals := preload("res://scripts/utils/demo_debug_visuals.gd")
 const TargetSVLoaderScript := preload("res://scripts/target_sv_loader.gd")
 const SPAEditorContract := preload("res://scripts/spa_editor_contract.gd")
@@ -51,7 +51,7 @@ const CULL_MIN_INTERVAL_MS := 33
 @export_range(1, 8, 1) var selected_anchor_top_k: int = 4      # 选中锚点显示的 Top-K 资产数
 # ---- 生产参数转发（SSOT = SPA 的 "Placement Tuning" 导出组）------------------
 #
-# 这 8 个参数直接决定评分与放置结果，存储已归 SPA。这里保留同名转发，只是让 demo 的
+# 这 9 个参数直接决定评分与放置结果，存储已归 SPA。这里保留同名转发，只是让 demo 的
 # benchmark / HUD / golden 读取点不必逐个改写——**没有第二份存储**，也就没有"两边默认值
 # 一样、改了一边才发现对不上"的漂移。
 # ⚠ 别把它们改回 @export：那会重新引入第二份存储，正是本次要消灭的东西。
@@ -70,6 +70,13 @@ var min_target_interest: float:
 	set(value):
 		var spa := _spa_display_host()
 		if spa != null: spa.min_target_interest = value
+var anchor_vertical_stride: int:
+	get:
+		var spa := _spa_display_host()
+		return spa.anchor_vertical_stride if spa != null else 0
+	set(value):
+		var spa := _spa_display_host()
+		if spa != null: spa.anchor_vertical_stride = value
 var min_prefilter_score: float:
 	get:
 		var spa := _spa_display_host()
@@ -106,16 +113,18 @@ var prefilter_tile_rect: Rect2i:
 		var spa := _spa_display_host()
 		if spa != null: spa.prefilter_tile_rect = value
 
-## 要评分/放置的真实资产（AssetDescriptor `.tres`）。场景显式声明为首选来源。
-@export var placement_assets: Array[AssetDescriptor] = []
-@export_dir var asset_descriptor_dir: String = "res://assets"  # 回退扫描目录
+## ⚠ 这里曾有 `@export var placement_assets: Array[AssetDescriptor]` 与一个默认指向
+## `res://assets` 的 `@export_dir asset_descriptor_dir` 回退扫描。两者已删除：本类不再
+## 持有任何资产列表，也不扫盘——AD 的加载逻辑只此一份，在 SPA
+## （`ScenePlacementActor.load_baked_assets()` 扫 `baked_descriptors/`）。
+## 需要资产时一律现取 `_load_descriptors()`，它直读 SPA registry，不留副本。
 @export var auto_run_on_start := true
 ## 开:每次 run 打印 score→reduce→stamp→readback 分阶段耗时——用于定位 GPU 打分管线
 ## 性能瓶颈。见 [ScoreTimingProfiler]。默认关(零开销)。
 @export var profile_score_timing := false
 ## golden 快照锚点段上限（排序序前 N；0=全量）。Golden 场景显式设为 1024；js diff 侧已有大文件
 ## 护栏（超限退化为首个差异行摘要），全量快照不再受 O(n²) LCS 约束。
-@export_range(0, 65536, 1) var golden_anchor_limit := 0
+@export_range(0, 131072, 1) var golden_anchor_limit := 0
 
 # ---- View-Distance Culling（放置/胜出模型逐实例视距剔除）--------------------
 ## 开:放置/胜出的资产模型按到相机的距离逐实例剔除——超出 model_cull_distance 的实例
@@ -176,8 +185,9 @@ var _diag_target_color := PackedColorArray()
 ## 调试可视化用的 descriptor fine 体素缓存：instance_id -> Array[Dictionary]{voxel, color}。
 ## get_profile_samples() 每次调用都全量 normalize + 深拷贝（五资产合计约 5 万条采样），
 ## 而 _rebuild_winner_voxel_profile_node（每次点选锚点）与 pivot sweep（pivot×yaw 双重循环）
-## 都在热路径上——按 descriptor 实例缓存一次转换结果。资产重载（_reload_placement_descriptors，
-## CACHE_MODE_REPLACE 后同路径新内容）时整体清空。
+## 都在热路径上——按 descriptor 实例缓存一次转换结果。资产重载（_reload_placement_descriptors
+## → SPA 重扫，BakedAssetLoader 以 CACHE_MODE_REPLACE 就地覆盖同一实例）时整体清空：
+## 实例地址不变而内容已换，不清就会拿旧采样。
 var _descriptor_fine_voxel_cache: Dictionary = {}
 
 # ---- Display Nodes ---------------------------------------------------------
@@ -412,36 +422,49 @@ func _asset_names() -> Array:
 # ---- Public API — SPA provider interface -----------------------------------
 
 ## 每次 AD bake 之后刷新：meshfill 插件的 "Bake AD" 按钮在烘焙成功后经
-## SPA 在 descriptor bake 后调到这里。重扫 baked_descriptors 目录重建 placement_assets
+## SPA 在 descriptor bake 后调到这里。令 SPA 重扫 baked_descriptors 目录刷新 registry
 ## (新烘焙的自动出现、重烘焙的刷新、删除的消失)、清 _assets 缓存；描述符变了——probes/collision 全过期 →
 ## env（含 SPA 注册 + prefilter 常驻 handoff）与 runner（VPG 缓存）整体失效重建。
 func reload_and_rescore() -> Dictionary:
 	if not Engine.is_editor_hint():
 		return {"ok": false, "reason": "not_editor_hint"}
-	_reload_placement_descriptors()
-	_assets.clear()   # 让 _ensure_assets_ready 用重载后的描述符重建 mesh/color/aabb
-	_dispose_pipeline()
-	_diag_target_completeness = PackedFloat32Array()
-	_diag_target_collision = PackedFloat32Array()
-	_diag_target_color = PackedColorArray()
+	_reload_placement_descriptors()   # 内部经 SPA 的 baked_assets_reloaded 广播回到本类
 	return calculate_voxel_scores()
 
 
-## Re-scan the bake-output folder (asset_descriptor_dir) so a Bake AD is reflected
-## immediately: newly baked descriptors appear, re-baked .tres reload fresh
-## (CACHE_MODE_REPLACE), deleted ones drop out. The folder — not a hardcoded
-## placement_assets list — is the source of truth for what gets scored/placed.
+## 作废一切从 descriptor 派生的东西。
+##
+## 接线方式是**订阅**而不是被点名：SPA 在 `register_volume_provider()` 时发现本类实现了
+## 本方法，就把它挂到 `baked_assets_reloaded` 信号上（注销时对称断开）。所以无论换代由
+## 谁触发——SPA 的 Reload、init、Bake AD 后的插件刷新——都会走到这里，本类不需要知道是谁。
+##
+## ⚠ 为什么不能靠"descriptor 换了新实例"来自然失效：`BakedAssetLoader` 用
+## `CACHE_MODE_REPLACE` 就地覆盖同一个 Resource 实例，实例地址不变而内容已换。
+## 下面两个缓存都以 descriptor 实例为键，不显式清就会稳稳命中旧条目——
+## 表现正是"点了 Reload 但 AD 没更新"。
+func invalidate_asset_caches() -> void:
+	_descriptor_fine_voxel_cache.clear()   # profile_samples 变了 → 调试体素缓存整体作废
+	_assets.clear()                        # 让 _ensure_assets_ready 重建 mesh/color/aabb
+	_dispose_pipeline()                    # env + runner 里存的是上一代 profile_id
+	_diag_target_completeness = PackedFloat32Array()
+	_diag_target_collision = PackedFloat32Array()
+	_diag_target_color = PackedColorArray()
+
+
+## 让 SPA 强制重扫 Bake 目录，使一次 Bake AD 立刻生效：新烘焙的出现、重烘焙的刷新、
+## 删除的消失。本类不持有资产列表，缓存作废由 SPA 的 baked_assets_reloaded 广播完成。
 func _reload_placement_descriptors() -> void:
-	_descriptor_fine_voxel_cache.clear()   # 重烘焙/重载后 profile_samples 变了，调试体素缓存整体作废
-	var dir := asset_descriptor_dir.strip_edges()
-	if dir.is_empty():
+	var spa := _spa_display_host()
+	if spa == null:
+		push_warning("[VolumeScore] 找不到 SPA 宿主——无法重扫 Bake 目录。")
+		invalidate_asset_caches()   # 没有 SPA 就收不到广播，自己清
 		return
-	var found: Array[AssetDescriptor] = []
-	for path in DemoAssets.discover_geo_files(dir, ["tres"]):
-		var res = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REPLACE)
-		if res is AssetDescriptor and res.get_mesh() != null:
-			found.append(res)
-	placement_assets = found
+	# 强制重扫（force=true）：重烘焙常同名覆盖、目录签名不变，非 force 会被短路吃掉。
+	var report := spa.load_baked_assets(true)
+	if not bool(report.get("ok", false)):
+		push_warning("[VolumeScore] 重载资产失败（%s）——沿用上一版 registry。" % [
+			str(report.get("reason", "unknown"))])
+		invalidate_asset_caches()   # 失败路径不发广播，仍要清：内容可能已部分换代
 
 
 ## 完整管线：env（S0..S5 底座）→ 真实 S6 prefilter → S7 细筛 → 可视化
@@ -594,6 +617,7 @@ func benchmark_score_stamp_once_json(profile_stages = true, result_capacity = 64
 	var common := PLACE_PIPELINE_COMMON.duplicate()
 	common["rotation_slots"] = rotation_slots
 	common["min_target_interest"] = min_target_interest
+	common["anchor_vertical_stride"] = anchor_vertical_stride
 	common["min_prefilter_score"] = min_prefilter_score
 	common["result_capacity"] = clampi(int(result_capacity), 1, 1024)
 	common["min_distance_voxels"] = place_min_distance_voxels
@@ -783,6 +807,7 @@ func benchmark_place_resource_lifecycle_json(batch_count = 60) -> String:
 	var common := PLACE_PIPELINE_COMMON.duplicate(true)
 	common["rotation_slots"] = rotation_slots
 	common["min_target_interest"] = min_target_interest
+	common["anchor_vertical_stride"] = anchor_vertical_stride
 	common["min_prefilter_score"] = min_prefilter_score
 	common["result_capacity"] = place_result_capacity
 	common["min_distance_voxels"] = place_min_distance_voxels
@@ -877,6 +902,7 @@ func _benchmark_place_sequence_for_consistency(force_full: bool, batch_count: in
 	var common := PLACE_PIPELINE_COMMON.duplicate(true)
 	common["rotation_slots"] = rotation_slots
 	common["min_target_interest"] = min_target_interest
+	common["anchor_vertical_stride"] = anchor_vertical_stride
 	common["min_prefilter_score"] = min_prefilter_score
 	common["result_capacity"] = place_result_capacity
 	common["min_distance_voxels"] = place_min_distance_voxels
@@ -1027,6 +1053,7 @@ func _prepare_ready_place_resources() -> Dictionary:
 	var common := PLACE_PIPELINE_COMMON.duplicate(true)
 	common["rotation_slots"] = rotation_slots
 	common["min_target_interest"] = min_target_interest
+	common["anchor_vertical_stride"] = anchor_vertical_stride
 	common["min_prefilter_score"] = min_prefilter_score
 	common["result_capacity"] = place_result_capacity
 	common["min_distance_voxels"] = place_min_distance_voxels
@@ -1201,6 +1228,7 @@ func _benchmark_anchor_scenario_once(scenario: Dictionary) -> Dictionary:
 		_mark_prefilter_region_dirty(region)
 		var result: Dictionary = _env.ensure_prefilter({
 			"min_target_interest": min_target_interest,
+			"anchor_vertical_stride": anchor_vertical_stride,
 			"min_prefilter_score": min_prefilter_score,
 			"debug_read_anchors": bool(scenario.get("debug_read_anchors", false)),
 			"decode_anchor_dictionaries": false,
@@ -1317,7 +1345,8 @@ static func _usec_values_to_ms(values: Array[int]) -> Array[float]:
 ## 原子失效 Anchor 间冲突并提交至多 `place_result_capacity` 个；Score 展示的是冲突裁决前的
 ## per-Anchor Fine 胜者。单轮 Reduce 不保证把可用空间填满。
 ## 单次全图 prefilter（run_pipeline_once 恒 dirty_tile_ids=[]，与 Anchors/Score 同口径）。collect
-## 每个 XZ 列只发出最低锚点，256x256 网格最多 65536 个；raw count 超限属于不变量错误并终止。
+## 在地形高度采样目标体积发锚（anchor_vertical_stride 决定地表之上再叠几层），上限 ANCHOR_CAPACITY=131072；
+## raw count 超限属于不变量错误并终止。
 func place_final_autoobjects() -> Dictionary:
 	if not Engine.is_editor_hint():
 		return {"ok": false, "reason": "not_editor_hint"}
@@ -1591,7 +1620,7 @@ func run_golden_snapshot() -> String:
 func _run_golden_snapshot_contract() -> String:
 	if not _ensure_env_ready():
 		return "ERROR env_not_ready reason=%s" % _env_error
-	# golden 单次跑完整 256x256 XZ 图；每列只保留最低锚点，严格上限 65536。
+	# golden 单次跑完整 256x256 XZ 图；锚点按地形高度采样发出，上限 131072。
 	# GPU atomic 追加序不稳定，因此快照前仍按线性体素索引重排，保证跨会话确定。
 	# 强制 _full_map_region_rects()（不读交互导出）；meta tile_rect=0,0,0x0 表示全图。
 	# 锚点段仍按 golden_anchor_limit 截取排序序前 N（输出采样，计算是全量的）。
@@ -1900,8 +1929,8 @@ func _committed_sv_metadata() -> Dictionary:
 	return sv
 
 
-## 全图区域（golden 与交互空导出共用口径）。collect 只发出每个 (x,z) 列最低的
-## qualifying voxel；当前 256x256 XZ 网格的严格上限正好是 ANCHOR_CAPACITY=65536。
+## 全图区域（golden 与交互空导出共用口径）。collect 按 anchor_vertical_stride 在每个
+## 地形高度上采样发锚（步长 0 = 只采地形那一格）；罩住上限的是 ANCHOR_CAPACITY=131072。
 func _full_map_region_rects() -> Array:
 	var sv := _committed_sv_metadata()
 	var tile_grid: Vector3i = sv.get("tile_grid_size", Vector3i.ZERO)
@@ -2126,13 +2155,19 @@ func debug_anchor_breakdown(anchor_index: int, radius: int = 2) -> String:
 			anchor_index, str(av), str(world),
 			str(_assets[winners[anchor_index]].get("name", "?")) if anchor_index < winners.size() and winners[anchor_index] >= 0 else "NONE"],
 		"-- per-asset fine-candidate residual (gain>0 improves target-fit; valid needs gain>threshold & collision/clearance under limit) --",
+		"   raw = 未归一化匹配分（净覆盖权重格数，随体积增长）；frac = raw/footprint（有效性判定用的就是它）；",
+		"   footprint = 该候选落在网格内、地表以上的足迹权重。loss_* 的分母只算压在目标上的部分，与 frac 不同口径。",
 	]
 	for a in range(_assets.size()):
 		var rec := FineSelection.anchor_asset_record(_model, anchor_index, a)
 		var asset := _assets[a]
 		var col: Color = asset.get("color", Color.WHITE)
-		lines.append("  [%d] %-22s gain=%+.4f valid=%-5s | loss_before=%.4f loss_after=%.4f Δ=%+.4f | solid_collision=%.4f clearance=%.4f yaw=%d | asset(cplx=%.2f rgb=%.2f,%.2f,%.2f)" % [
+		var footprint := FineSelection.record_total_weight(rec)
+		lines.append("  [%d] %-22s raw=%+9.2f frac=%+.4f footprint=%s | score=%+.4f valid=%-5s | loss_before=%.4f loss_after=%.4f Δ=%+.4f | solid_collision=%.4f clearance=%.4f yaw=%d | asset(cplx=%.2f rgb=%.2f,%.2f,%.2f)" % [
 			a, str(asset.get("name", "?")),
+			float(rec.get("raw_match_score", 0.0)),
+			FineSelection.record_match_fraction(rec),
+			("%.1f" % footprint) if footprint >= 0.0 else "n/a",
 			float(rec.get("score", 0.0)), str(rec.get("valid", false)),
 			float(rec.get("loss_before", 0.0)), float(rec.get("loss_after", 0.0)),
 			float(rec.get("loss_after", 0.0)) - float(rec.get("loss_before", 0.0)),
@@ -3315,20 +3350,20 @@ func get_model_cull_stats() -> Dictionary:
 
 # ---- Descriptor loading ----------------------------------------------------
 
+## 直读 SPA registry，不留副本。
+##
+## ⚠ 无目录回退、无本地列表：拿不到就是空。旧实现先看本类的 `placement_assets`，空了才回退
+## 扫 `res://assets`——那与 SPA 的 `baked_descriptors/` 是两个不同目录，一旦触发，评分用的
+## 资产集就和 SPA registry 悄悄分叉。空的处理按 `CLAUDE.md`：调用方 push warning 且不放置，
+## **绝不**退化成代理盒。
 func _load_descriptors() -> Array:
+	var spa := _spa_display_host()
+	if spa == null:
+		return []
 	var result: Array = []
-	for d in placement_assets:
+	for d in spa.get_registered_descriptors():
 		if _is_asset_descriptor(d) and d.get_mesh() != null:
 			result.append(d)
-	if not result.is_empty():
-		return result
-	var root := asset_descriptor_dir.strip_edges()
-	if root.is_empty():
-		root = "res://assets"
-	for path in DemoAssets.discover_geo_files(root, ["tres"]):
-		var res := load(path)
-		if _is_asset_descriptor(res) and res.get_mesh() != null:
-			result.append(res)
 	return result
 
 

@@ -28,6 +28,12 @@ const SELECTION_DOMAIN_SV := "sv"
 const SELECTION_DOMAIN_TARGETSV := "targetsv"
 const SELECTION_DOMAIN_BRUSH := "brush"
 
+## 场景树里找 SPA 的唯一抓手。用组而不是全局注册表：组随节点进出树自动增删，
+## 因此「组里有谁」恒等于「当前编辑器里打开着谁」——正是 Bake AD 跨场景刷新要的范围
+## （没打开的场景不该被碰，它下次打开时 init 会自己从 Bake 目录加载）。
+## SPA 在 _enter_tree 自行入组，不依赖 .tscn 里写死 groups=[...]。
+const SPA_GROUP := &"meshfill_scene_placement_actor"
+
 const SELECTION_GEOMETRY_TRIANGLE := "triangle"
 const SELECTION_GEOMETRY_VOXEL := "voxel"
 const SELECTION_GEOMETRY_AUTOOBJECT := "autoobject"

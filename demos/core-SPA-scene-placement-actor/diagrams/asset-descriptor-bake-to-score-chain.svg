@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="1470" viewBox="0 0 1180 1470" role="img" aria-labelledby="title desc">
+  <title id="title">AssetDescriptor Bake-to-Score Chain</title>
+  <desc id="desc">FBX 源资产经 Asset Overview 扫描与烘焙产出 baked descriptor，再经 SPA 的 load_baked_assets 进入 registry 与 Profile Arena，最终由 Score 用真实 mesh 渲染胜出锚点；图中标出七个已知失效点及其修复状态。</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M1,1 L11,6 L1,11 Z" fill="#b45309"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.13"/>
+    </filter>
+    <pattern id="authoring-grid" patternUnits="userSpaceOnUse" width="10" height="10">
+      <rect width="10" height="10" fill="#ecfdf5"/>
+      <path d="M5 0H0V5" stroke="#059669" stroke-width="0.35" opacity="0.2"/>
+    </pattern>
+    <pattern id="runtime-dot" patternUnits="userSpaceOnUse" width="11" height="11">
+      <rect width="11" height="11" fill="#eff6ff"/>
+      <circle cx="3" cy="3" r="1.1" fill="#2563eb" opacity="0.2"/>
+      <circle cx="8.5" cy="8.5" r="1.1" fill="#2563eb" opacity="0.2"/>
+    </pattern>
+  </defs>
+
+  <rect width="1180" height="1470" fill="#f8fafc"/>
+
+  <text x="46" y="52" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="26" font-weight="700" fill="#0f172a">AssetDescriptor：从 FBX 到 Score 显示的完整链路</text>
+  <text x="46" y="80" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="14.5" fill="#475569">红色编号 = 这条链上已经真实踩过的失效点；⑦ 仍需人工，其余六个已修。</text>
+
+  <!-- ============ BAND A : AUTHORING ============ -->
+  <rect x="46" y="106" width="1088" height="566" rx="16" fill="url(#authoring-grid)" stroke="#a7f3d0" stroke-width="1.5"/>
+  <text x="70" y="136" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="700" fill="#047857">Authoring — Asset Overview 场景（产出磁盘产物，不碰 GPU）</text>
+
+  <!-- A1 -->
+  <rect x="196" y="152" width="760" height="80" rx="11" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" filter="url(#shadow)"/>
+  <text x="216" y="180" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="600" fill="#0f172a">源资产</text>
+  <text x="216" y="202" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1e293b">geo/*.FBX</text>
+  <text x="216" y="221" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#475569">文件 mtime 是整条链唯一的「变了没有」判据。</text>
+
+  <line x1="576" y1="232" x2="576" y2="252" stroke="#334155" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- A2 -->
+  <rect x="196" y="256" width="760" height="80" rx="11" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" filter="url(#shadow)"/>
+  <text x="216" y="284" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="600" fill="#0f172a">增量扫描：只重建变了的节点</text>
+  <text x="216" y="306" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1e293b">GeoAssetScanService.import_files()</text>
+  <text x="216" y="325" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#475569">比对节点上的 geo_modified_time 与文件实际 mtime，相同则整个跳过重建。</text>
+  <rect x="972" y="278" width="148" height="26" rx="13" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="1046" y="296" text-anchor="middle" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" font-weight="600" fill="#92400e">Scan / FullRescan</text>
+
+  <line x1="576" y1="336" x2="576" y2="356" stroke="#334155" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- A3 -->
+  <rect x="196" y="360" width="760" height="80" rx="11" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" filter="url(#shadow)"/>
+  <text x="216" y="388" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="600" fill="#0f172a">导入变换烘进几何 ← 尺寸差异的唯一来源</text>
+  <text x="216" y="410" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1e293b">load_mesh_info() → bake_mesh_xform(mesh, mesh_transform) → Assets/Geo/&lt;n&gt;/Mesh</text>
+  <text x="216" y="429" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#475569">节点上的 Mesh 含变换；descriptor 里的 source_mesh 是裸 FBX。两者本就不同。</text>
+  <circle cx="176" cy="400" r="14" fill="#dc2626"/>
+  <text x="176" y="405" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#ffffff">2</text>
+
+  <line x1="576" y1="440" x2="576" y2="460" stroke="#334155" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- A4 -->
+  <rect x="196" y="464" width="760" height="80" rx="11" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" filter="url(#shadow)"/>
+  <text x="216" y="492" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="600" fill="#0f172a">烘焙前先自动重扫</text>
+  <text x="216" y="514" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1e293b">bake_scene_descriptors(ensure_fresh = true) → _bake_request_for_node()</text>
+  <text x="216" y="533" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#475569">取的是场景节点的 Mesh.mesh + profile_samples，所以节点必须先是最新的。</text>
+  <circle cx="176" cy="504" r="14" fill="#dc2626"/>
+  <text x="176" y="509" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#ffffff">1</text>
+  <rect x="972" y="486" width="148" height="26" rx="13" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="1046" y="504" text-anchor="middle" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" font-weight="600" fill="#92400e">Bake AD</text>
+
+  <line x1="576" y1="544" x2="576" y2="564" stroke="#334155" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- A5 -->
+  <rect x="196" y="568" width="760" height="80" rx="11" fill="#ffffff" stroke="#64748b" stroke-width="2" filter="url(#shadow)"/>
+  <text x="216" y="596" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="600" fill="#0f172a">落盘：全仓唯一的 descriptor 保存点</text>
+  <text x="216" y="618" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1e293b">AssetDescriptorBaker.bake_and_save_batch() → baked_descriptors/*.tres</text>
+  <text x="216" y="637" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#475569">authoring 与 runtime 的交界：磁盘产物是两侧唯一的共享事实。</text>
+
+  <line x1="576" y1="648" x2="576" y2="700" stroke="#334155" stroke-width="2.2" marker-end="url(#arrow)"/>
+
+  <!-- ============ BAND B : RUNTIME ============ -->
+  <rect x="46" y="706" width="1088" height="566" rx="16" fill="url(#runtime-dot)" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="70" y="736" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="700" fill="#1d4ed8">Runtime — SPA（可能在另一个场景标签里）</text>
+
+  <!-- B1 -->
+  <rect x="196" y="752" width="760" height="80" rx="11" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" filter="url(#shadow)"/>
+  <text x="216" y="780" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="600" fill="#0f172a">读盘 + 显式作废采样缓存</text>
+  <text x="216" y="802" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1e293b">BakedAssetLoader：ResourceLoader.load(CACHE_MODE_REPLACE) → invalidate_profile_sample_cache()</text>
+  <text x="216" y="821" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#475569">REPLACE 就地覆盖同一实例：引用不断，但以实例为键的缓存也不会自然失效。</text>
+  <circle cx="176" cy="781" r="14" fill="#dc2626"/>
+  <text x="176" y="786" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#ffffff">3</text>
+  <circle cx="176" cy="812" r="14" fill="#dc2626"/>
+  <text x="176" y="817" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#ffffff">4</text>
+
+  <line x1="576" y1="832" x2="576" y2="852" stroke="#334155" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- B2 -->
+  <rect x="196" y="856" width="760" height="80" rx="11" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" filter="url(#shadow)"/>
+  <text x="216" y="884" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="600" fill="#0f172a">唯一加载入口（含短路）</text>
+  <text x="216" y="906" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1e293b">SPA.load_baked_assets(force)　短路 = !force &amp;&amp; 有旧 Arena &amp;&amp; Ready &amp;&amp; 目录签名未变</text>
+  <text x="216" y="925" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#475569">registry 活在 _runtime 里，而短路条件读的是 SPA 级状态——两者会脱节。</text>
+  <circle cx="176" cy="896" r="14" fill="#dc2626"/>
+  <text x="176" y="901" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#ffffff">6</text>
+  <rect x="972" y="864" width="148" height="26" rx="13" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="1046" y="882" text-anchor="middle" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" font-weight="600" fill="#92400e">Reload（force）</text>
+  <rect x="972" y="896" width="148" height="26" rx="13" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="1046" y="914" text-anchor="middle" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" font-weight="600" fill="#92400e">SPA init（非 force）</text>
+
+  <path d="M1046 486 L1160 486 L1160 852 L1052 852" fill="none" stroke="#b45309" stroke-width="1.8" stroke-dasharray="7 5" marker-end="url(#arrow-amber)"/>
+  <text x="1166" y="676" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" font-weight="600" fill="#b45309" transform="rotate(90 1166 676)">Bake AD 后插件自动刷新所有已打开 SPA</text>
+
+  <line x1="576" y1="936" x2="576" y2="956" stroke="#334155" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- B3 -->
+  <rect x="196" y="960" width="760" height="80" rx="11" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" filter="url(#shadow)"/>
+  <text x="216" y="988" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="600" fill="#0f172a">事务式换代 registry + GPU Arena</text>
+  <text x="216" y="1010" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1e293b">replace_all_assets() → asset registry + 固定槽位 Profile Arena（revision++）</text>
+  <text x="216" y="1029" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#475569">任一 descriptor 校验不过就整批拒绝，旧 Arena 一字不动。</text>
+
+  <line x1="576" y1="1040" x2="576" y2="1060" stroke="#334155" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- B4 -->
+  <rect x="196" y="1064" width="760" height="80" rx="11" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4" filter="url(#shadow)"/>
+  <text x="216" y="1092" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="600" fill="#0f172a">作废所有下游派生物</text>
+  <text x="216" y="1114" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1e293b">_placement_env / _score_model / score cache　→　provider.invalidate_asset_caches()</text>
+  <text x="216" y="1133" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#475569">只发「作废」不发「重算」——重算会调回本链，形成自递归。</text>
+  <circle cx="176" cy="1104" r="14" fill="#dc2626"/>
+  <text x="176" y="1109" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#ffffff">5</text>
+
+  <line x1="576" y1="1144" x2="576" y2="1164" stroke="#334155" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- B5 -->
+  <rect x="196" y="1168" width="760" height="80" rx="11" fill="#ffffff" stroke="#64748b" stroke-width="2" filter="url(#shadow)"/>
+  <text x="216" y="1196" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15.5" font-weight="600" fill="#0f172a">Score → 胜出锚点渲染真实 mesh</text>
+  <text x="216" y="1218" font-family="ui-monospace, Consolas, monospace" font-size="12.5" fill="#1e293b">_assets 重建 → winner → SPA/Volumes/Anchor/Winner_&lt;n&gt;_&lt;asset&gt;（MultiMesh）</text>
+  <text x="216" y="1237" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#475569">这里看到的尺寸 = A3 那个「含导入变换」的 mesh，不是裸 FBX。</text>
+
+  <!-- ============ PITFALL LEGEND ============ -->
+  <rect x="46" y="1296" width="1088" height="150" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.4"/>
+  <text x="70" y="1324" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="15" font-weight="700" fill="#0f172a">已知失效点</text>
+
+  <circle cx="82" cy="1348" r="10" fill="#dc2626"/><text x="82" y="1352" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#fff">1</text>
+  <text x="100" y="1352" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#334155">节点比 FBX 旧 → 烘出旧几何且全程不报错。已修：烘焙前自动增量重扫。</text>
+
+  <circle cx="82" cy="1374" r="10" fill="#dc2626"/><text x="82" y="1378" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#fff">2</text>
+  <text x="100" y="1378" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#334155">把 source_mesh（裸 FBX）当成 mesh（含导入变换）比对 → 看到整倍数差距，误判为缩放 bug。</text>
+
+  <circle cx="82" cy="1400" r="10" fill="#dc2626"/><text x="82" y="1404" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#fff">3</text>
+  <text x="100" y="1404" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#334155">默认 CACHE_MODE_REUSE 把旧实例原样还回 → 重烘焙同名覆盖读不到新内容。已改 REPLACE。</text>
+
+  <circle cx="82" cy="1426" r="10" fill="#dc2626"/><text x="82" y="1430" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#fff">4</text>
+  <text x="100" y="1430" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#334155">_sample_cache 令牌只看条数不看内容 → 条数不变的重烘焙不失效。已在加载处显式作废。</text>
+
+  <circle cx="622" cy="1348" r="10" fill="#dc2626"/><text x="622" y="1352" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#fff">5</text>
+  <text x="640" y="1352" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#334155">provider 缓存以 descriptor 实例为键，而 REPLACE 实例不变。已加回调。</text>
+
+  <circle cx="622" cy="1374" r="10" fill="#dc2626"/><text x="622" y="1378" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#fff">6</text>
+  <text x="640" y="1378" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" fill="#334155">短路只看 SPA 级状态，_runtime 换掉后误报 already_loaded 且资产数为 0。</text>
+
+  <circle cx="622" cy="1400" r="10" fill="#b45309"/><text x="622" y="1404" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" font-weight="700" fill="#fff">7</text>
+  <text x="640" y="1404" font-family="Segoe UI, Noto Sans SC, sans-serif" font-size="12.5" font-weight="600" fill="#b45309">仍需人工：自动重扫改的是内存节点，.tscn 不存盘则下次打开又回旧几何。</text>
+</svg>

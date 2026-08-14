@@ -2159,6 +2159,9 @@ func _apply_prefilter_settings(prefilter: AutoObjectProbePrefilterGPU, settings:
 		return
 	if settings.has("min_target_interest"):
 		prefilter.min_target_interest = clampf(float(settings.get("min_target_interest", prefilter.min_target_interest)), 0.0, 1.0)
+	# 竖直采样步长：0 = 只采地形那一格（默认），负值按 0 处理；> 0 时在地表之上按步长加层，不设上限。
+	if settings.has("anchor_vertical_stride"):
+		prefilter.anchor_vertical_stride = maxi(int(settings.get("anchor_vertical_stride", prefilter.anchor_vertical_stride)), 0)
 	if settings.has("min_prefilter_score"):
 		prefilter.min_prefilter_score = clampf(float(settings.get("min_prefilter_score", prefilter.min_prefilter_score)), 0.0, 1.0)
 	if settings.has("debug_read_anchors"):

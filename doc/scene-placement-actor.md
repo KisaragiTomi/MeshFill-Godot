@@ -44,7 +44,7 @@ _ready()
   ├── 获取唯一 RenderingDevice
   ├── 配置 256 x 16 x 256 网格并播种 terrain collision
   ├── 创建 ScenePlacementRuntime，共享同一 RD
-  ├── 注册场景 placement_assets
+  ├── 扫 Bake 目录注册资产（load_baked_assets()，失败不阻断 init）
   ├── 初始化 SceneSV / SVTile GPU 固定拓扑
   └── 创建 TargetSV resident read buffers
 
@@ -107,13 +107,25 @@ SceneVoxelTile 使用配置驱动的默认 `8 x 8 x 8` tile，因此当前网格
 
 ## 资产注册
 
-场景通过 `placement_assets: Array[AssetDescriptor]` 声明资产。SPA 在 ready
-阶段批量注册，并使固定槽位 Profile Arena 常驻。
+资产来源**只有一处**：`load_baked_assets()` 扫 Bake 目录
+（`BakedAssetLoader.BAKED_DESCRIPTOR_DIR`），事务式替换固定槽位 Profile Arena 并使其常驻。
+init 时自动跑一次（`force = false`），Inspector 的 `Reload` 按钮手动强制重扫（`force = true`）。
+
+场景侧没有可声明资产的导出项——`placement_assets` 数组已删除。它曾与 Reload 并存，
+两者写同一份 registry 且互不写回：点完 Reload 重开场景，init 会拿 `.tscn` 里存的旧数组
+静默覆盖掉 Reload 的结果。消费方一律走 `get_registered_descriptors()`。
+
+⚠ `load_baked_assets()` 的「目录未变即已加载」短路必须同时校验**当前资产数 > 0**：
+`_arena_load_state` / `_arena_loaded_signature` 是 SPA 级成员，而 registry 活在
+`_runtime` 里。编辑器摘挂 scene root 会触发 `_exit_tree` → `_shutdown` → 再 initialize，
+`_runtime` 连同 registry 被换掉而 SPA 缓存留着——只看缓存就会短路返回
+`{ok: true, reason: "already_loaded"}` 而实际是 0 个资产，且不触发任何警告。
 
 常用只读/命令入口：
 
-- `load_baked_assets(force)`：扫 Bake 目录 → 校验 → 事务式替换 Arena（Inspector 的
-  `Load Baked Assets` / `Reload` 两个按钮就是它，`force` 区分二者）。
+- `load_baked_assets(force)`：扫 Bake 目录 → 校验 → 事务式替换 Arena。Inspector 的
+  `Reload` 按钮就是它，恒传 `force = true`；`force = false`（吃"目录未变即已加载"短路）
+  只保留给程序化调用，UI 上没有入口。
 - `register_asset()` / `register_assets()`：显式增量注册。
 - `replace_all_assets()` / `clear_assets()`：完整替换或清空注册表。
 - `refresh_slot_mesh_description(asset_index)`：单槽整覆盖更新，不重传整份 Arena。
@@ -128,11 +140,11 @@ SceneVoxelTile 使用配置驱动的默认 `8 x 8 x 8` tile，因此当前网格
 `Placement` 分组的操作区分两排：
 
 ```text
-[Load Baked Assets]  [Reload]
+[Reload]
 [Anchors]  [Score]  [Place]
 ```
 
-- 用户不再需要手工维护 `placement_assets` 数组；`placement_assets_summary` 是只读的
+- 没有可手工维护的资产数组；`placement_assets_summary` 是只读的
   已加载资产列表（asset_id / slot / sample 与 pivot 用量 / mesh 是否有效 / slot 状态）。
 - `placement_status` 顶部是只读 Arena 面板：已加载 profile 数与容量、Arena 字节数、
   slot stride、sample 与 pivot 的有效量与容量、空闲比例、Revision。

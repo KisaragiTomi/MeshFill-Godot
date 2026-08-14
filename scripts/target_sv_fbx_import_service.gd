@@ -16,8 +16,21 @@ extends RefCounted
 ## **空间契约照搬点云转换器**（demos/target-sv-point-cloud-conversion-c 记录的那一份，也是
 ## 现存 assets/target_sv 的产出规则），只把载体从点换成三角形重心：
 ##   * texture_size 取自高度图宽度（必须是方图），不是随便取的常数
-##   * capture_size 缺省 = max(X 跨度, Z 跨度)
-##   * vertical_span 缺省 = max(16, ceil(max 相对高 / 8) * 8)
+##   * capture_size 缺省 = `TerrainConfig.CAPTURE_SIZE`（世界网格的固定跨度）
+##   * vertical_span 缺省 = vertical_floor + slice_count × `DEFAULT_SLICE_HEIGHT`
+##     （层高恒定 3.0；量程盖不住源时报警，见 `_warn_if_band_clips_source`，不静默夹）
+##
+## ── ⚠ 落格按**体素的世界范围**，不按源包围盒（2026-08-12 用户裁定）────────────
+## 网格是一块**固定的世界分区**：XZ 由 capture_size 居中铺开成 texture_size² 格，
+## Y 是地形相对带 [vertical_floor, vertical_span) 切成 slice_count 层。样本按自己的
+## 世界坐标被分进格子（`_prepare_samples` = `floor((P.xz - grid_origin.xz) / voxel_size.xz)`），
+## **源包围盒不参与任何换算**，只用于回报 `source_bounds`。
+## 这条保证「同一个世界位置永远落进同一格」，与资产自己多大、导了几次都无关。
+##
+## ── ⚠ 本服务**不依赖 SPA**（同上裁定）──────────────────────────────────────
+## 世界网格按 `TerrainConfig` 自己推。SPA 在这条链上只负责触发烘焙、并把结果交给
+## TargetSV；两边框架是否一致由**接收端** `TargetSVSetup._assert_target_frame_matches_bake()`
+## 逐项比对并硬失败，不是靠谁给谁注入参数来"保证"。
 ##   * P.y **是世界绝对高度**（height_mode 缺省 absolute）：落格前减掉该列地形高度
 ##     = 高度图采样 × height_scale；减完 y < 0 的压到底层切片并计数，
 ##     y >= span 计入 clipped 并压到顶层切片
@@ -37,12 +50,41 @@ extends RefCounted
 
 const FbxVoxelImportServiceScript := preload("res://scripts/fbx_voxel_import_service.gd")
 const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
+## 世界网格的上游事实源。⚠ 刻意取 `TerrainConfig` 而**不是**问 SPA 要：
+## 导入是一条离线数据转换，不该依赖场景里有没有活的 SPA 节点、它当时配成什么样。
+## SPA 的 `capture_size` 导出本来也是 `TerrainConfigScript.CAPTURE_SIZE`，两者同源，
+## 所以"不经过 SPA"并不会让两边的框架分家——真分家了由 TargetSVSetup 的接收门禁拦。
+const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 
 const DEFAULT_HEIGHT_TEXTURE := "res://textures/scene_height_0_1.png"
-const DEFAULT_SLICE_COUNT := 16
+const DEFAULT_SLICE_COUNT := 24
 const DEFAULT_HEIGHT_SCALE := 120.0
-const MIN_VERTICAL_SPAN := 16.0
-const VERTICAL_SPAN_QUANTUM := 8.0
+
+## 每切片的世界高度。2026-08-12 起量程改成「层高恒定、上界由层数推」，本值才是这条链上
+## 真正不变的量：`vertical_span = vertical_floor + slice_count * 本值`。
+##
+## ⚠ 旧口径是反过来的——量程按**源的最高相对高度**推
+## （`max(16, ceil(max / 8) * 8)`，常量 MIN_VERTICAL_SPAN / VERTICAL_SPAN_QUANTUM 已随之删除），
+## 层数固定 16 ⇒ 层高 = 量程 / 16 每换一份 FBX 都可能变，SPA 的 `voxel_size.y` 得跟着改，
+## 忘了改就是一份按常数比例竖直错位的 TargetSV。现在层高钉死，只有层数/下界变时才要动 SPA。
+const DEFAULT_SLICE_HEIGHT := 3.0
+
+## 竖直量程的**下界**（地形相对，≤ 0）。地形以下这一段此前根本不存在：量程只按
+## `relative["max_value"]` 往上推，负的相对高度被压进 slice 0（`below_terrain_count`），
+## 于是「地下内容」既没被丢弃、也永远画在地表那一层、被地形网格挡住。
+##
+## ⚠ 它必须与 SPA 的 `grid_origin.y` 逐位相等，且
+## `voxel_size.y == (vertical_span - vertical_floor) / slice_count`——
+## 落格用的是本文件这套数，摆放用的是 SPA 那套框架，两边对不上不会报错，
+## 只会让整份 TargetSV 按一个常数比例竖直错位（本值引入前实测 40/16 vs 2.0 = 0.8×）。
+## 改这里就要同步改 `ScenePlacementActor` 的两个 @export，反之亦然。
+##
+## ⚠ 取值必须**盖住源自己的最深面**，否则更深的内容会被 `_bin_samples` 夹进最底层切片——
+## 那不是「压平一点」而是整段深度塌成一片、再被地形网格挡住，肉眼就是「导入的东西不见了」。
+## 2026-08-12 把 -8 改成 -36：targetsv0.fbx 实测相对高度区间 [-34.45, +35.19]，
+## 旧值把下面整整 26.4 个单位漏在量程外，65650 个地形以下的面（18.3%）里更深的那批
+## 全塌进 slice 0（实测该层仅 1516 格，陡坡列触底率 18.4% vs 平地 0.01%）。
+const DEFAULT_VERTICAL_FLOOR := -36.0
 const WEIGHT_FLOOR := 0.001
 const DEFAULT_OCCUPANCY_EPSILON := 0.001
 const EXTENT_EPSILON := 0.0001
@@ -204,88 +246,89 @@ static func import_fbx_as_target_sv(fbx_path: String, opts: Dictionary = {}) -> 
 	var read_ms := Time.get_ticks_msec() - read_started
 
 	var bin_started := Time.get_ticks_msec()
-	var bounds := _sample_bounds(positions)
-	var span_x: float = maxf(bounds["max"].x - bounds["min"].x, EXTENT_EPSILON)
-	var span_z: float = maxf(bounds["max"].z - bounds["min"].z, EXTENT_EPSILON)
-	var capture_size: float = float(settings["capture_size"])
-	if capture_size <= 0.0:
-		capture_size = maxf(span_x, span_z)
-
 	var height_mode := str(settings["height_mode"])
 	if height_mode != HEIGHT_MODE_RELATIVE and height_mode != HEIGHT_MODE_ABSOLUTE:
 		return {"ok": false, "reason": "invalid_height_mode", "height_mode": height_mode}
 
-	var grid_columns := {
-		"texture_size": texture_size,
-		"flip_z": bool(settings["flip_z"]),
-		"min": bounds["min"],
-		"span_x": span_x,
-		"span_z": span_z,
-	}
-	# 相对高度先算出来：absolute 模式下 vertical_span 必须由**减掉地形之后**的高度推，
-	# 拿原始世界 Y 推会得到整个地形量程那么高的跨度，切片全部浪费在地形起伏上。
-	var relative := _relative_heights(positions, grid_columns, height_image,
-		height_mode, float(settings["height_scale"]))
-	var vertical_span: float = float(settings["vertical_span"])
-	if vertical_span <= 0.0:
-		vertical_span = maxf(MIN_VERTICAL_SPAN,
-			ceilf(float(relative["max_value"]) / VERTICAL_SPAN_QUANTUM) * VERTICAL_SPAN_QUANTUM)
-
 	var slice_count := int(settings["slice_count"])
 	if slice_count <= 0:
 		return {"ok": false, "reason": "invalid_slice_count", "slice_count": slice_count}
+
+	# ── 世界网格：本服务自己按 TerrainConfig 推，不问 SPA ──────────────────────
+	# 网格是**固定的世界分区**（XZ 由 capture_size 居中铺开，Y 是地形相对带
+	# [vertical_floor, vertical_span)），样本按自己的世界坐标被分进格子。
+	# 源包围盒不再参与任何换算——它只用于回报 source_bounds。
+	var capture_size: float = float(settings["capture_size"])
+	if capture_size <= 0.0:
+		capture_size = TerrainConfigScript.CAPTURE_SIZE
+	var vertical_floor: float = minf(float(settings["vertical_floor"]), 0.0)
+	var vertical_span: float = float(settings["vertical_span"])
+	if vertical_span <= 0.0:
+		# 层高恒定 ⇒ 上界由「下界 + 层数 × 层高」推，不再按源的最高面推。
+		# ⚠ 这里曾先跑一趟 `_relative_heights` 探针只为拿源的 max —— 三十万样本上白付一遍
+		# 逐样本的落格换算与高度图采样。现在量程与源无关，那趟探针整个不需要了；
+		# 量程盖不盖得住源改由下面 `_warn_if_band_clips_source` 按真正那一趟的极值判定。
+		vertical_span = vertical_floor + float(slice_count) * DEFAULT_SLICE_HEIGHT
+
+	var cell_xz := capture_size / float(texture_size)
+	var grid_origin := Vector3(-0.5 * capture_size, vertical_floor, -0.5 * capture_size)
+	var voxel_size := Vector3(cell_xz, (vertical_span - vertical_floor) / float(slice_count), cell_xz)
+
+	var grid_columns := {
+		"texture_size": texture_size,
+		"flip_z": bool(settings["flip_z"]),
+		"grid_origin": grid_origin,
+		"voxel_size": voxel_size,
+	}
+	# 列下标 + 相对高度 + 源包围盒一趟算齐。absolute 模式下高度是**减掉该列地形之后**的，
+	# 拿原始世界 Y 落格会把切片全花在地形起伏上。
+	var prepared := _prepare_samples(positions, grid_columns, height_image,
+		height_mode, float(settings["height_scale"]))
+	_warn_if_band_clips_source(fbx_path, prepared, vertical_floor, vertical_span, slice_count)
+
 	var voxel_count := texture_size * texture_size * slice_count
 
 	var frame := grid_columns.duplicate()
 	frame["slice_count"] = slice_count
 	frame["voxel_count"] = voxel_count
 	frame["vertical_span"] = vertical_span
-	var binned := _bin_samples(positions, colors, collisions, relative["values"], frame)
-	binned["relative_height_max"] = relative["max_value"]
+	frame["vertical_floor"] = vertical_floor
+	var binned := _bin_samples(prepared, colors, collisions, frame)
+	binned["relative_height_max"] = prepared["max_value"]
+	binned["relative_height_min"] = prepared["min_value"]
 	binned["height_mode"] = height_mode
 	var bin_ms := Time.get_ticks_msec() - bin_started
 
+	# ⚠ 这一份描述以前在三个地方各写一遍字面量（dry_run 分支的报告、`_write_dataset` 的 info、
+	# 写盘后的报告），十来个键逐字重复 —— 正是三份之间悄悄漂移的来源。现在只构造一次：
+	# 写盘那条路只往副本里补三个它独有的键，写完回填耗时。
+	var report_frame := {
+		"texture_size": texture_size, "slice_count": slice_count, "voxel_count": voxel_count,
+		"capture_size": capture_size, "vertical_span": vertical_span,
+		"vertical_floor": vertical_floor,
+		"flip_z": bool(settings["flip_z"]), "height_texture": str(settings["height_texture"]),
+		"position_scale": float(settings["position_scale"]),
+		"height_mode": height_mode,
+		"bounds": prepared["bounds"],
+		"timings_ms": {"read": read_ms, "bin": bin_ms, "write": 0},
+	}
+
 	# dry_run 在写盘之前收尾：落格统计与推出来的框架参数已经齐了，那正是校验要的东西。
 	if bool(settings["dry_run"]):
-		return _binning_report(fbx_path, columns, binned, {
-			"texture_size": texture_size, "slice_count": slice_count, "voxel_count": voxel_count,
-			"capture_size": capture_size, "vertical_span": vertical_span,
-			"flip_z": bool(settings["flip_z"]), "height_texture": settings["height_texture"],
-			"position_scale": float(settings["position_scale"]),
-			"height_mode": height_mode,
-			"bounds": bounds,
-			"timings_ms": {"read": read_ms, "bin": bin_ms, "write": 0},
-		}, {"ok": true, "written": PackedStringArray(), "non_empty_voxel_count": -1, "dry_run": true})
+		return _binning_report(fbx_path, columns, binned, report_frame,
+			{"ok": true, "written": PackedStringArray(), "non_empty_voxel_count": -1, "dry_run": true})
 
 	var write_started := Time.get_ticks_msec()
-	var write_result := _write_dataset(binned, height_image, {
-		"fbx": fbx_path,
-		"texture_size": texture_size,
-		"slice_count": slice_count,
-		"voxel_count": voxel_count,
-		"capture_size": capture_size,
-		"vertical_span": vertical_span,
-		"height_scale": float(settings["height_scale"]),
-		"height_texture": str(settings["height_texture"]),
-		"flip_z": bool(settings["flip_z"]),
-		"occupancy_epsilon": float(settings["occupancy_epsilon"]),
-		"bounds": bounds,
-	})
+	var write_info := report_frame.duplicate()
+	write_info["fbx"] = fbx_path
+	write_info["height_scale"] = float(settings["height_scale"])
+	write_info["occupancy_epsilon"] = float(settings["occupancy_epsilon"])
+	var write_result := _write_dataset(binned, write_info)
 	if not bool(write_result.get("ok", false)):
 		return write_result
 
-	return _binning_report(fbx_path, columns, binned, {
-		"texture_size": texture_size, "slice_count": slice_count, "voxel_count": voxel_count,
-		"capture_size": capture_size, "vertical_span": vertical_span,
-		"flip_z": bool(settings["flip_z"]), "height_texture": settings["height_texture"],
-		"position_scale": float(settings["position_scale"]),
-		"height_mode": height_mode,
-		"bounds": bounds,
-		"timings_ms": {
-			"read": read_ms, "bin": bin_ms,
-			"write": Time.get_ticks_msec() - write_started,
-		},
-	}, write_result)
+	report_frame["timings_ms"]["write"] = Time.get_ticks_msec() - write_started
+	return _binning_report(fbx_path, columns, binned, report_frame, write_result)
 
 
 ## dry_run 与真正写盘两条路共用一份报告，免得校验看到的数字和导入时的对不上。
@@ -302,7 +345,9 @@ static func _binning_report(
 		"dry_run": bool(write_result.get("dry_run", false)),
 		"source_fbx": fbx_path,
 		"triangle_count": int(columns["gated_triangle_count"]),
-		"valid_triangle_count": (columns["positions"] as PackedVector3Array).size(),
+		# ⚠ 这里曾另有 `valid_triangle_count`（= positions.size()）。读取器改成「不过滤任何
+		# 三角形」之后它恒等于 read_triangle_count 减去索引越界那几条（实际恒为 0），
+		# 而"落进网格多少"由 used_triangle_count 说了 —— 全仓零消费方，2026-08-12 删除。
 		"rejected_triangle_count": int(columns["rejected_triangle_count"]),
 		# 读取器整趟看到的三角形数（含没过 fine 门的），与退化面数一起报出来：
 		# "读了三十万面只有几千面过门"是通道没烘对的第一现场，以前这两个数字断在读取器里。
@@ -314,7 +359,8 @@ static func _binning_report(
 		# 落进了多少个**不同**的体素。used 与它的比值 = 平均几个三角形挤一格，
 		# 那是"源里一面一格、烘出来却少了很多"的唯一成因（门禁只计数不丢弃了）。
 		"distinct_voxel_count": int(binned["distinct_voxel_count"]),
-		# 压到最底层切片的数量（以前是丢弃，现在只计数）。
+		# 地表以下的样本数。2026-08-12 量程带上 vertical_floor 之后，它们**按真实深度落格**，
+		# 本数字自此只是信息量，不再意味着精度损失。
 		"below_terrain_count": int(binned["below_terrain_count"]),
 		"dropped_out_of_bounds": int(binned["dropped_out_of_bounds"]),
 		"clipped_height_count": int(binned["clipped_height_count"]),
@@ -325,12 +371,16 @@ static func _binning_report(
 		"voxel_count": int(frame["voxel_count"]),
 		"capture_size": frame["capture_size"],
 		"vertical_span": frame["vertical_span"],
+		"vertical_floor": frame.get("vertical_floor", 0.0),
 		# 用到的假设一律回报，别让调用方去猜生效的是哪套默认。
 		"flip_z": frame["flip_z"],
 		"position_scale": frame["position_scale"],
 		"height_mode": frame["height_mode"],
 		# absolute 模式下这是**减掉地形之后**的最大高度，vertical_span 就是按它推的。
 		"relative_height_max": binned.get("relative_height_max", 0.0),
+		# 负值 = 源里最深的那个面在地形以下多远。竖直量程只按 max 推 ⇒ 这一头**没有被任何
+		# 参数吸收**，全部被压进 slice 0（数量见 below_terrain_count）。要往下扩多少就看它。
+		"relative_height_min": binned.get("relative_height_min", 0.0),
 		"height_texture": frame["height_texture"],
 		"source_bounds": [bounds["min"].x, bounds["max"].x,
 			bounds["min"].y, bounds["max"].y, bounds["min"].z, bounds["max"].z],
@@ -349,8 +399,13 @@ static func _resolved_options(opts: Dictionary) -> Dictionary:
 	return {
 		"height_texture": opts.get("height_texture", DEFAULT_HEIGHT_TEXTURE),
 		"slice_count": opts.get("slice_count", DEFAULT_SLICE_COUNT),
-		"capture_size": opts.get("capture_size", 0.0),      # <= 0 ⇒ 由源包围盒推
-		"vertical_span": opts.get("vertical_span", 0.0),    # <= 0 ⇒ 由源最大相对高推
+		"capture_size": opts.get("capture_size", 0.0),      # <= 0 ⇒ 取 TerrainConfig.CAPTURE_SIZE
+		# <= 0 ⇒ 由 vertical_floor + slice_count × DEFAULT_SLICE_HEIGHT 推（层高恒定）
+		"vertical_span": opts.get("vertical_span", 0.0),
+		# 地形以下要覆盖多深（≤ 0）。缺省 -36 = 盖住 targetsv0.fbx 的最深面（-34.45）；
+		# 配 24 层 × 3.0 得量程 [-36, 36)，两头都盖得住 [-34.45, +35.19]。
+		# 取 0 即回到"地下全部压进 slice 0"的旧行为（那正是「地下内容看不见」的成因）。
+		"vertical_floor": minf(float(opts.get("vertical_floor", DEFAULT_VERTICAL_FLOOR)), 0.0),
 		"height_scale": opts.get("height_scale", DEFAULT_HEIGHT_SCALE),
 		"flip_z": opts.get("flip_z", true),
 		"occupancy_epsilon": opts.get("occupancy_epsilon", DEFAULT_OCCUPANCY_EPSILON),
@@ -373,8 +428,9 @@ static func _resolved_options(opts: Dictionary) -> Dictionary:
 	}
 
 
-## 高度图是已导入资源，必须经资源加载器读（直接 Image.load_from_file 对 res:// 会警告，
-## 且导出版本读不到）——同 TargetSVLoader._read_image 的理由。
+## 高度图是已导入资源，必须经资源加载器读：res:// 导出后只保留被导入的纹理（.ctex），
+## 原始 PNG 不随包发布 —— 直接对 res:// 调 `Image.load_from_file` 会打印
+## "will not work on export" 警告，且导出版本会加载失败。
 static func _load_height_image(path: String) -> Image:
 	var texture := load(path) as Texture2D
 	if texture == null:
@@ -405,79 +461,143 @@ static func _scaled_positions(
 	return scaled
 
 
-static func _sample_bounds(positions: PackedVector3Array) -> Dictionary:
-	var min_v := Vector3(INF, INF, INF)
-	var max_v := Vector3(-INF, -INF, -INF)
-	for p in positions:
-		min_v = Vector3(minf(min_v.x, p.x), minf(min_v.y, p.y), minf(min_v.z, p.z))
-		max_v = Vector3(maxf(max_v.x, p.x), maxf(max_v.y, p.y), maxf(max_v.z, p.z))
-	return {"min": min_v, "max": max_v}
-
-
-## 样本 → 网格列 (x, z)。越界返回 (-1, -1)。落格与地形高度采样共用这一处换算，
-## 免得两边各写一份、日后只改了一边（尤其 flip_z 这种改一处就整体镜像的量）。
-static func _column_of(position: Vector3, columns: Dictionary) -> Vector2i:
-	var texture_size := int(columns["texture_size"])
-	var origin: Vector3 = columns["min"]
-	var x := int(roundf((position.x - origin.x) / float(columns["span_x"]) * float(texture_size - 1)))
-	var z := int(roundf((position.z - origin.z) / float(columns["span_z"]) * float(texture_size - 1)))
-	if bool(columns["flip_z"]):
-		z = texture_size - 1 - z
-	if x < 0 or x >= texture_size or z < 0 or z >= texture_size:
-		return Vector2i(-1, -1)
-	return Vector2i(x, z)
-
-
-## 每个样本的**地形相对高度**。
-##   relative 模式：P.y 原样（点云链路口径）。
-##   absolute 模式：P.y − 该列地形高度，地形高度 = 高度图采样(0..1) × height_scale。
-## 采样点用的是**翻转之后**的列坐标——高度图行序与体素网格 z 序必须同口径，
-## 这也是点云转换器当年的做法（先翻 z 再拿它去查高度图）。
-## 越界样本给 -INF，落格阶段照常按"低于地形/越界"丢弃。
-static func _relative_heights(
+## 单趟过一遍样本，一次产出落格要的三样东西：**扁平列下标**、**地形相对高度**、**源包围盒**。
+##
+## ⚠ 这三样以前是三个函数、两趟遍历，而且**列坐标每个样本算两次**——`_relative_heights`
+## 为了采样高度图算一次，`_bin_samples` 落格再算一次，同一串除法/floor/翻转/边界判定在
+## 三十万样本上跑两遍。合并后列下标存成扁平式 `z * texture_size + x`（越界 -1），
+## 落格时体素下标就是 `slice * texture_size² + column`，`_bin_samples` 不必再碰位置。
+##
+## 列的语义：**样本落在哪个体素的世界范围里就归哪一格**，
+## `floor((P.xz - grid_origin.xz) / voxel_size.xz)`，与 `VoxelGeneral.world_to_voxel` 的
+## XZ 半段逐位相同。网格格子是固定的世界分区，资产自己的跨度不参与任何换算。
+## ⚠ 这里曾有一条**源包围盒归一化**的路（`round((P.xz - bounds.min.xz) / span * (ts - 1))`），
+## 把 FBX 的包围盒拉伸铺满整张网格 ⇒ 落点取决于资产跨度而非世界坐标，换一份 FBX 就整体缩放；
+## 本资产 bbox 恰好 ±510 与 256×4.0 的格心范围几乎相等才看着像 1:1，纯属凑巧
+## （同款警告见 `VoxelGeneral.grid_frame_from_capture_endpoints`）。2026-08-12 整条删除，
+## **不留兜底**——留着就是一条会静默改变落点的回退路径。
+##
+## 相对高度：relative 模式取 P.y 原样（点云链路口径）；absolute 模式减掉该列地形高度
+## （高度图采样 0..1 × height_scale，与显示端 `terrain_height * display_scale` 同一套换算）。
+## 采样点用**翻转之后**的列坐标——高度图行序与体素网格 z 序必须同口径。
+##
+## ⚠ 极值只统计**落进网格的**样本。以前 absolute 模式就是这样（越界即 continue），
+## relative 模式却把越界样本也算进极值——两种模式判据不同是无意的，这里统一成前者：
+## 越界样本根本不进烘焙，不该把量程覆盖判定（`_warn_if_band_clips_source`）带偏。
+## `bounds` 反过来统计**全部**样本：它回报的就是源自己的包围盒，与落不落格无关。
+static func _prepare_samples(
 	positions: PackedVector3Array,
-	columns: Dictionary,
+	frame: Dictionary,
 	height_image: Image,
 	height_mode: String,
 	height_scale: float
 ) -> Dictionary:
-	var values := PackedFloat32Array()
-	values.resize(positions.size())
-	var max_value := -INF
+	var texture_size := int(frame["texture_size"])
+	var grid_origin: Vector3 = frame["grid_origin"]
+	var voxel_size: Vector3 = frame["voxel_size"]
+	var flip_z := bool(frame["flip_z"])
 	var absolute := height_mode == HEIGHT_MODE_ABSOLUTE
-	for index in range(positions.size()):
-		var position := positions[index]
-		var relative := position.y
+	# 倒数预乘：逐样本两次除法在三十万样本上是白付的。
+	var inv_cell_x := 1.0 / maxf(voxel_size.x, EXTENT_EPSILON)
+	var inv_cell_z := 1.0 / maxf(voxel_size.z, EXTENT_EPSILON)
+
+	var sample_count := positions.size()
+	var columns := PackedInt32Array(); columns.resize(sample_count)
+	var heights := PackedFloat32Array(); heights.resize(sample_count)
+	var min_value := INF
+	var max_value := -INF
+	var bounds_min := Vector3(INF, INF, INF)
+	var bounds_max := Vector3(-INF, -INF, -INF)
+
+	for index in range(sample_count):
+		var p := positions[index]
+		bounds_min = Vector3(minf(bounds_min.x, p.x), minf(bounds_min.y, p.y), minf(bounds_min.z, p.z))
+		bounds_max = Vector3(maxf(bounds_max.x, p.x), maxf(bounds_max.y, p.y), maxf(bounds_max.z, p.z))
+		columns[index] = -1
+		heights[index] = 0.0
+		# 坐标非有限 = 读不出位置，算不出下标。这不是门禁，落格阶段按越界计数。
+		if not (is_finite(p.x) and is_finite(p.z)):
+			continue
+		var x := int(floorf((p.x - grid_origin.x) * inv_cell_x))
+		var z := int(floorf((p.z - grid_origin.z) * inv_cell_z))
+		if flip_z:
+			z = texture_size - 1 - z
+		if x < 0 or x >= texture_size or z < 0 or z >= texture_size:
+			continue
+		var relative := p.y
 		if absolute:
-			var column := _column_of(position, columns)
-			if column.x < 0:
-				values[index] = -INF
-				continue
-			# 高度图是 0..1 的相对量程，乘 height_scale 还原成世界高度——与
-			# TargetSVSetup 显示端 (terrain_height * display_scale) 同一套换算。
-			relative = position.y - height_image.get_pixel(column.x, column.y).r * height_scale
-		values[index] = relative
+			relative = p.y - height_image.get_pixel(x, z).r * height_scale
+		if not is_finite(relative):
+			continue
+		columns[index] = z * texture_size + x
+		heights[index] = relative
 		if relative > max_value:
 			max_value = relative
+		if relative < min_value:
+			min_value = relative
+
+	# 一个样本都没落进网格时 ±INF 会污染下游的量程判定与报告，归零。
 	if max_value == -INF:
 		max_value = 0.0
-	return {"values": values, "max_value": max_value}
+	if min_value == INF:
+		min_value = 0.0
+	return {
+		"columns": columns,
+		"heights": heights,
+		# ⚠ min 与 max 一样必须回报：只有 max 时，**负的那一头没有任何数字能说明它有多深**，
+		# "地形以下有多少内容、量程要往下扩多少"就在报告里查不到
+		# （`below_terrain_count` 只说了有多少个面在地下，说不出有多深）。
+		"max_value": max_value,
+		"min_value": min_value,
+		"bounds": {"min": bounds_min, "max": bounds_max},
+	}
+
+
+## 量程盖不住源时**喊出来**。夹取本身仍在（`_bin_samples` 两头各有兜底），但它是静默的：
+## 底下那一头把整段深度塌成最底层一片、再被地形网格挡住 ⇒ 看起来就是「导入的东西不见了」，
+## 且陡坡列受害最重（那里同一列的几何竖直跨度最大）。顶上那一头有 clipped_height_count 记数，
+## 但那个数字要等报告出来才看得到，来不及提醒正在烘的人。
+##
+## 判据用源自己的相对高度极值，顺带把「按当前层高要几层才盖得住」算好——盖不住时调用方
+## 需要的正是这个数（改 slice_count 就要同步改 SPA 的 grid_size.y，别让人自己反推）。
+static func _warn_if_band_clips_source(
+	fbx_path: String,
+	prepared: Dictionary,
+	vertical_floor: float,
+	vertical_span: float,
+	slice_count: int
+) -> void:
+	var source_min := float(prepared["min_value"])
+	var source_max := float(prepared["max_value"])
+	if source_min >= vertical_floor and source_max < vertical_span:
+		return
+	var cell_y := (vertical_span - vertical_floor) / float(maxi(slice_count, 1))
+	var needed_floor := -ceilf(maxf(-source_min, 0.0) / cell_y) * cell_y
+	var needed_slices := ceili((source_max - needed_floor) / cell_y)
+	push_warning(("[TargetSVFbxImport] %s 的相对高度区间 [%.2f, %.2f] 超出量程 [%.2f, %.2f)"
+		+ " —— 超出的部分会被夹进最底/最顶层切片（整段塌成一片，地下那头还会被地形挡住）。\n"
+		+ "  按当前层高 %.2f 盖住它需要 vertical_floor=%.1f、slice_count=%d"
+		+ "（并同步 ScenePlacementActor 的 grid_origin.y / grid_size.y）。") % [
+			fbx_path, source_min, source_max, vertical_floor, vertical_span,
+			cell_y, needed_floor, needed_slices])
 
 
 ## 逐三角形落格。complexity / collision 取 max，颜色按 max(complexity, collision, 0.001)
 ## 加权平均 —— 与点云转换器同一套聚合，换载体不换规则。
-## relative_heights 由 _relative_heights 预先算好（两种高度语义的差异只体现在那里）。
+## 列下标与相对高度由 `_prepare_samples` 一趟算好（越界样本的列下标为 -1），本函数不再碰位置，
+## 也不再重算一遍列坐标——两种高度语义的差异同样只体现在那一趟里。
 static func _bin_samples(
-	positions: PackedVector3Array,
+	prepared: Dictionary,
 	colors: PackedColorArray,
 	collisions: PackedFloat32Array,
-	relative_heights: PackedFloat32Array,
 	frame: Dictionary
 ) -> Dictionary:
 	var texture_size := int(frame["texture_size"])
 	var slice_count := int(frame["slice_count"])
 	var voxel_count := int(frame["voxel_count"])
 	var vertical_span: float = frame["vertical_span"]
+	# 缺席 = 老调用方（量程只有地上那半段）。取 0.0 即逐位退回旧行为。
+	var vertical_floor: float = minf(float(frame.get("vertical_floor", 0.0)), 0.0)
 
 	var complexity_field := PackedFloat32Array(); complexity_field.resize(voxel_count)
 	var collision_field := PackedFloat32Array(); collision_field.resize(voxel_count)
@@ -491,31 +611,39 @@ static func _bin_samples(
 	var below_terrain_count := 0
 	var dropped_out_of_bounds := 0
 	var clipped_height_count := 0
-	var slice_scale := float(slice_count) / maxf(vertical_span, EXTENT_EPSILON)
-	var span_ceiling := vertical_span - EXTENT_EPSILON
+	# 量程是 [vertical_floor, vertical_span)，落格前先把相对高度平移到 [0, band)。
+	# ⚠ 分母是**带宽**而不是 vertical_span：写成后者会让地板以下的那一段白占刻度，
+	# 表现是整份 TargetSV 竖直被压扁一个 band/span 的比例（且不报错）。
+	var band := maxf(vertical_span - vertical_floor, EXTENT_EPSILON)
+	var slice_scale := float(slice_count) / band
+	var band_ceiling := band - EXTENT_EPSILON
+	# 缓冲下标 = slice * texture_size² + column，即 VoxelGeneral.voxel_index 在网格
+	# (ts, slices, ts) 下的式子——列下标已是扁平的 z * ts + x，这里只补上切片那一维。
+	var plane := texture_size * texture_size
 
-	for sample_index in range(positions.size()):
-		var p := positions[sample_index]
-		var relative_height := relative_heights[sample_index]
-		# 坐标非有限 = 读不出位置，落不了格。这不是门禁，是算不出下标。
-		if not (is_finite(p.x) and is_finite(p.z) and is_finite(relative_height)):
+	var sample_columns: PackedInt32Array = prepared["columns"]
+	var relative_heights: PackedFloat32Array = prepared["heights"]
+	for sample_index in range(sample_columns.size()):
+		# 列下标 -1 = 坐标非有限、或落在网格外。判定归 `_prepare_samples`，这里只计数。
+		var column := sample_columns[sample_index]
+		if column < 0:
 			dropped_out_of_bounds += 1
 			continue
-		# 相对高度为负 = 钻进地形以下。点云链路当年直接丢弃，现在**压到最底层切片**并计数
-		# ——"有三角形就要转成 TargetSV"，地形下那一层同样是源里烘出来的内容。
+		var relative_height := relative_heights[sample_index]
+		# 相对高度为负 = 钻进地形以下。**只要还在地板以上就按真实深度落格**（2026-08-12
+		# 起量程带上了 vertical_floor）；本计数从此只是"有多少内容在地表以下"的信息量，
+		# 不再意味着丢失精度。⚠ 越界样本不计入——它们根本没进烘焙。
 		if relative_height < 0.0:
 			below_terrain_count += 1
-			relative_height = 0.0
-		var column := _column_of(p, frame)
-		if column.x < 0:
-			dropped_out_of_bounds += 1
-			continue
-		var x := column.x
-		var z := column.y
+		# 比地板还深的那部分仍然压到最底层切片——地板是有限的，总得有个兜底。
+		if relative_height < vertical_floor:
+			relative_height = vertical_floor
 		if relative_height >= vertical_span:
 			clipped_height_count += 1
-		var slice_index := clampi(int(floorf(minf(relative_height, span_ceiling) * slice_scale)), 0, slice_count - 1)
-		var index := (slice_index * texture_size + z) * texture_size + x
+		# 平移到 [0, band) 再落格：band_ceiling 挡住上界，clampi 挡住浮点边界。
+		var banded_height := minf(relative_height - vertical_floor, band_ceiling)
+		var slice_index := clampi(int(floorf(banded_height * slice_scale)), 0, slice_count - 1)
+		var index := slice_index * plane + column
 
 		# color.a 就是 complexity（读取器按 decode_fine_triangle 的口径写进 a），
 		# collision 单独成列。两者在这里才 clamp——与逐三角形那条路在 make_profile_sample
@@ -557,7 +685,8 @@ static func _bin_samples(
 	}
 
 
-static func _write_dataset(binned: Dictionary, height_image: Image, info: Dictionary) -> Dictionary:
+## ⚠ 曾多收一个 `height_image` 形参，函数体一次都没用过（高度图只在落格阶段被采样）。
+static func _write_dataset(binned: Dictionary, info: Dictionary) -> Dictionary:
 	var texture_size := int(info["texture_size"])
 	var slice_count := int(info["slice_count"])
 	var voxel_count := int(info["voxel_count"])
@@ -669,6 +798,9 @@ static func _write_dataset(binned: Dictionary, height_image: Image, info: Dictio
 		"max_height": info["height_scale"],
 		"capture_size": info["capture_size"],
 		"vertical_span": info["vertical_span"],
+		# 竖直量程的下界（地形相对，≤ 0）。消费端据它推 grid_origin.y 与 voxel_size.y；
+		# 缺席 = 2026-08-12 之前烘的资产，按 0.0 读（那时地下内容全压在 slice 0）。
+		"vertical_floor": info.get("vertical_floor", 0.0),
 		"visual_format": "rgba8_unorm",
 		"collision_format": "r8_unorm",
 		"flip_z": info["flip_z"],

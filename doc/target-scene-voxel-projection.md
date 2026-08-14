@@ -68,7 +68,7 @@ GPU prefilter 从多个位置来源提取 anchors，但写入同一个 position-
 
 | 位置来源 | 当前定义 |
 | --- | --- |
-| Target-inside candidate position | 两门合取：voxel 在 target 体积内部（`max(target_complexity, target_collision) > min_target_interest`）**且**它是所在 `(x, z)` 列最底的 in-target 体素（每列至多一个 anchor，`shaders/collect_sv_anchors.glsl`）；旧 scene/collision/support 门控已删除。 |
+| Target-inside candidate position | 两门合取：voxel 在 target 体积内部（`max(target_complexity, target_collision) > min_target_interest`）**且**它落在地形切片或其之上的采样层（相位锁 `terrain_slice`、层距 `anchor_vertical_stride`，`shaders/collect_sv_anchors.glsl`）；旧 scene/collision/support 门控已删除。 |
 
 `ground` / `target_top` 配置名会归一到单一 `anchor`。
 

@@ -20,10 +20,21 @@ const COLLISION_NAME := "target_sv_point_cloud_collision.r8"
 const PREVIEW_NAME := "target_sv_point_cloud_preview.png"
 const SceneVoxelTileCodecScript := preload("res://scripts/scene_voxel_tile_codec.gd")
 
+## 数据集自描述的三个缓冲路径键。⚠ 必须由元数据显式声明：以前用 `get(默认文件名)` 兜底，
+## 元数据指向别处的数据集时会静默读回目录里的同名旧文件。
+const DATASET_PATH_KEYS := ["visual_path", "collision_path", "preview_path"]
+## 解码整块体素场所需的框架键。任一项缺失都说明资产与读取端版本不一致；用 256/16/32.0
+## 之类的硬编码顶上，会按错误的网格尺寸解码整块体素场（几何全错却不报错）。
+##
+## ⚠ 这两份清单曾在**三处**各写一遍字面量（本文件的 `_ensure_loaded` 与 `import_dataset`、
+## 以及 `TargetSVSetup._ensure_loaded`），而 `import_dataset` 那份恰好等于两者相加 ——
+## 三份之间没有任何东西保证同步。2026-08-12 收敛到这里，消费方一律引用常量。
+const DATASET_FRAME_KEYS := ["texture_size", "slice_count", "voxel_count",
+	"capture_size", "vertical_span", "max_height"]
+
 static var _metadata: Dictionary
 static var _visual_bytes: PackedByteArray
 static var _collision_bytes: PackedByteArray
-static var _preview_image: Image
 static var _decoded: Dictionary
 static var _loaded := false
 ## 静态字节内容的代号：每次真正从磁盘装载（首次或 reload()）都取一个新值。
@@ -63,17 +74,18 @@ static func _ensure_loaded() -> bool:
 		assert(false, "TargetSVLoader: target_sv metadata JSON invalid")
 		return false
 
-	# 路径键必须在元数据里显式声明：以前用 get(默认文件名) 兜底，
-	# 元数据指向别处的数据集时会静默读回目录里的同名旧文件。
-	for path_key in ["visual_path", "collision_path", "preview_path"]:
+	for path_key in DATASET_PATH_KEYS:
 		if not _metadata.has(path_key):
 			push_error("[TargetSVLoader] 元数据缺少 '%s'（%s）—— 以前会静默回退到默认文件名，可能读到与元数据不匹配的旧缓冲" % [path_key, meta_path])
 			assert(false, "TargetSVLoader: target_sv metadata missing path key")
 			return false
 
+	# ⚠ 这里曾还有 `_preview_image = _read_image(preview_path)`（连同 `_read_image()` 与
+	# 公开的 `preview_image()` 访问器）。preview.png 是给人看的产物，**全仓零消费方**——
+	# 每次加载/reload 白解一张 256² PNG。2026-08-12 三者一并删除；文件本身照写照拷，
+	# `preview_path` 也仍是必需键（`import_dataset` 要按它搬运）。
 	_visual_bytes = _read_file_bytes(str(_metadata["visual_path"]))
 	_collision_bytes = _read_file_bytes(str(_metadata["collision_path"]))
-	_preview_image = _read_image(str(_metadata["preview_path"]))
 	return not _metadata.is_empty()
 
 
@@ -90,27 +102,6 @@ static func _read_file_bytes(path: String) -> PackedByteArray:
 	return f.get_buffer(f.get_length())
 
 
-static func _read_image(path: String) -> Image:
-	if path.is_empty():
-		return null
-	# res:// 资源导出后只保留被导入的纹理（.ctex），原始 PNG 不随包发布：
-	# 必须经资源加载器读取。直接对 res:// 调 Image.load_from_file 会打印
-	# "will not work on export" 警告，且导出版本会加载失败。
-	if path.begins_with("res://"):
-		var texture := load(path) as Texture2D
-		if texture != null:
-			return texture.get_image()
-		push_error("[TargetSVLoader] 无法加载预览图: %s" % path)
-		assert(false, "TargetSVLoader: preview image load failed")
-		return null
-	# user:// / 绝对路径：运行时生成、未被导入的图像文件，按文件直接读取。
-	var img := Image.load_from_file(path)
-	if img != null:
-		return img
-	push_error("[TargetSVLoader] 无法加载预览图: %s" % path)
-	return null
-
-
 static func metadata() -> Dictionary:
 	if _ensure_loaded():
 		return _metadata.duplicate(true)
@@ -125,11 +116,6 @@ static func visual_bytes() -> PackedByteArray:
 static func collision_bytes() -> PackedByteArray:
 	_ensure_loaded()
 	return _collision_bytes
-
-
-static func preview_image() -> Image:
-	_ensure_loaded()
-	return _preview_image
 
 
 ## 缺 texture_size/slice_count 时硬失败返回 0：以前静默返回 1，
@@ -208,7 +194,6 @@ static func reload() -> void:
 	_metadata = {}
 	_visual_bytes = PackedByteArray()
 	_collision_bytes = PackedByteArray()
-	_preview_image = null
 	_decoded = {}
 	_loaded = false
 	_ensure_loaded()
@@ -239,8 +224,7 @@ static func import_dataset(src_meta_path: String) -> Dictionary:
 	var meta: Dictionary = parsed
 	# 与 _ensure_loaded / TargetSVSetup._ensure_loaded 同一套必需字段，在**动手覆盖之前**先拦：
 	# 否则一份缺字段的 json 会先把原数据集盖掉，之后才在加载期报错，原数据已经找不回来了。
-	for required_key in ["texture_size", "slice_count", "voxel_count", "capture_size",
-			"vertical_span", "max_height", "visual_path", "collision_path", "preview_path"]:
+	for required_key in DATASET_FRAME_KEYS + DATASET_PATH_KEYS:
 		if not meta.has(required_key):
 			return {"ok": false, "reason": "source_metadata_missing_key", "key": required_key,
 				"path": src_meta_path, "source_keys": meta.keys()}

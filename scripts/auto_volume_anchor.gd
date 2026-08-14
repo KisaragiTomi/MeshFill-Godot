@@ -41,7 +41,9 @@ const BufferDescriptorScript := preload("res://scripts/utils/buffer_descriptor.g
 ## 槽位容量与记录 stride。与 `autoobject_probe_prefilter_gpu.gd` 的同名常量**必须同步**：
 ## 那边的 shader 用 `anchor_buf_capacity` push 常量做越界判定，两侧不一致的表现是
 ## 回读到的 anchor 数超出容量却仍被当成合法记录。
-const ANCHOR_CAPACITY := 65536
+## 旧值 65536 是「每列至多一个锚」时代的列数上限；竖直采样
+## （`AutoObjectProbePrefilterGPU.anchor_vertical_stride` > 0）让一列能出多个锚后已不成立。
+const ANCHOR_CAPACITY := 131072
 const ANCHOR_RECORD_STRIDE_BYTES := 16
 
 

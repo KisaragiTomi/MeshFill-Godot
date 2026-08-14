@@ -18,7 +18,7 @@ const VOXEL_DEBUG_NODE := "VoxelDebugGroup"
 # clobbers hand-authored assets.
 #
 # ⚠ 路径的单一真值来源是 BakedAssetLoader.BAKED_DESCRIPTOR_DIR（固定槽位Profile共享
-# Buffer实施计划 §6「Bake 输出目录必须有单一真值来源」）：SPA 的 Load Baked Assets 只扫
+# Buffer实施计划 §6「Bake 输出目录必须有单一真值来源」）：SPA 的 Reload 只扫
 # 那一个目录，这里必须写同一个值，否则烘出来的产物加载器根本看不见。此处只转发。
 const BakedAssetLoaderScript := preload("res://scripts/baked_asset_loader.gd")
 const BAKED_DESCRIPTOR_DIR := BakedAssetLoaderScript.BAKED_DESCRIPTOR_DIR
@@ -273,7 +273,7 @@ func _on_full_rescan_geo_pressed() -> void:
 # Keep imported meshes and on-disk descriptors synchronized. Bake AD logs its
 # own summary; the removed Geo status label no longer mirrors it in the scene.
 func _auto_bake_descriptors_after_scan() -> void:
-	bake_scene_descriptors()
+	bake_scene_descriptors(false)   # 刚扫完，不必再扫一遍
 
 
 # 冻结名（插件 GEO_SCAN_METHOD 字符串调用）：扫描本体已下沉 GeoAssetScanService，
@@ -954,9 +954,20 @@ func _voxel_channel_color(sample: Dictionary, channel: String) -> Color:
 # Toolbar entry point: decode each FBX asset's embedded canonical ProfileSamples
 # and save one AssetDescriptor .tres per mesh under BAKED_DESCRIPTOR_DIR.
 
-func bake_scene_descriptors() -> Dictionary:
+## `ensure_fresh` = 烘焙前先跑一次增量扫描，把源 FBX 已变而节点没跟上的那些重建。
+##
+## ⚠ 为什么必须有这一步：`_bake_request_for_node()` 取的是场景节点的 `Mesh.mesh`。FBX 改了
+## 而没重扫时，那份几何还是上一版，于是 Bake 会**烘出一个过期 descriptor 且全程不报错**。
+## 实测事故（2026-08-13 stone_01）：场景停在 16:26 那版、FBX 16:59 换成 1/3 尺寸，
+## 两边差出精确 3.0 倍，只能靠比对 AABB 才发现。
+## 增量扫描自身按 `GEO_MTIME_META` 比对，未变的节点原样跳过，代价接近零。
+##
+## 只有 Scan/FullRescan 之后的自动烘焙传 false —— 那条路刚扫过，再扫是白跑一趟。
+func bake_scene_descriptors(ensure_fresh: bool = true) -> Dictionary:
 	if not Engine.is_editor_hint():
 		return {"ok": false, "reason": "editor_only", "baked": 0, "failed": 0, "total": 0}
+	if ensure_fresh:
+		_scan_geo_assets(false)
 	_collect_static_assets()
 	var nodes: Array[Node3D] = []
 	nodes.append_array(_asset_nodes)
@@ -968,18 +979,46 @@ func bake_scene_descriptors() -> Dictionary:
 		requests.append(_bake_request_for_node(node))
 	var summary := AssetDescriptorBaker.bake_and_save_batch(requests, BAKED_DESCRIPTOR_DIR)
 	GeoAssetScanService.refresh_editor_filesystem()
-	# Bake 只产出 Authoring 产物，**不**隐式改写 SPA 正在用的 GPU Arena（计划 §11.5）：
-	# 中途替换会让运行时进入部分更新状态，新版本一律由用户在 SPA 上点 Reload 显式提交。
+	# ⚠ 原策略（计划 §11.5）是「Bake 只产出 Authoring 产物，不隐式改写 SPA 的 GPU Arena，
+	# 新版本一律由用户点 Reload 显式提交」。用户 2026-08-13 决定改为自动提交：
+	# 插件的 `_refresh_volume_score_after_bake()` 会刷新**所有已打开场景**里的 SPA。
+	# 本方法自身仍然只落盘、不碰 Arena——推送归插件那一侧，保持 authoring 与 runtime 分层。
 	summary["output_dir"] = BAKED_DESCRIPTOR_DIR
-	summary["spa_arena_status"] = "Reload required"
-	var bake_report := "Baked descriptors: %d\nOutput directory: %s\nSPA Arena status: Reload required" % [
+	summary["spa_arena_status"] = "Auto-refreshed (open SPA scenes)"
+	var bake_report := "Baked descriptors: %d\nOutput directory: %s\nSPA Arena: auto-refreshed in open scenes" % [
 		int(summary.get("baked", 0)), BAKED_DESCRIPTOR_DIR]
 	summary["report_text"] = bake_report
 	print("[AssetOverview] Baked %d/%d descriptors (failed %d) -> %s" % [
 		int(summary.get("baked", 0)), nodes.size(), int(summary.get("failed", 0)), BAKED_DESCRIPTOR_DIR])
 	# 走非阻塞的状态位而不是 AcceptDialog：Bake 是常规操作，不该每次都要人点确认。
 	_set_bake_status(bake_report)
+	_autosave_after_bake()
 	return summary
+
+
+## 烘焙后自动存盘。
+##
+## ⚠ 为什么必须自动：`ensure_fresh` 的重扫改的是**内存里的**场景节点，不存盘的话 `.tscn`
+## 仍停在旧几何，下次打开编辑器又回到烘焙前的状态——磁盘上的 descriptor 是新的、场景是旧的，
+## 两边再次脱节。实测事故（2026-08-13 stone_01）就是这么来的：场景停在 16:26 那版，
+## 烘焙用的是重扫后的内存节点，编辑器一退出内存改动全丢。
+##
+## 只在本节点确实是当前编辑场景根时保存：`EditorInterface.save_scene()` 存的是**当前**场景，
+## 若从别处（桥调用、其它场景为当前）触发烘焙，无条件调用就会把不相干的场景一起存了。
+func _autosave_after_bake() -> void:
+	if not Engine.is_editor_hint():
+		return
+	if EditorInterface.get_edited_scene_root() != self:
+		push_warning("[AssetOverview] 烘焙后未自动存盘：当前编辑场景不是 Asset Overview。重扫改的是内存节点，请切回该场景手动保存。")
+		return
+	if scene_file_path.is_empty():
+		push_warning("[AssetOverview] 烘焙后未自动存盘：场景还没有磁盘路径（未保存过的新场景）。")
+		return
+	var err := EditorInterface.save_scene()
+	if err != OK:
+		push_warning("[AssetOverview] 烘焙后自动存盘失败（err=%d）——请手动 Ctrl+S，否则重扫结果会丢。" % err)
+		return
+	print("[AssetOverview] 场景已自动保存：%s" % scene_file_path)
 
 
 # 组装 canonical ProfileSample bake 请求；mesh 缺失时只带 name，由 baker 计 failed。

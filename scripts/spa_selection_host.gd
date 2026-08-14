@@ -12,13 +12,16 @@ const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 const TerrainInitializerScript := preload("res://scripts/terrain_initializer.gd")
 # ⚠ 别名刻意**不叫** `TerrainRaycast`：那个文件里已经没有任何射线了（`ray_to_height_field()`
 # 与两个迭代常量随旧点选一并删除，2026-08-10），只剩一个高度场双线性查表 `sample_height()`。
-# 顶着旧名字会让读者以为本类还有一条 CPU 地形射线。文件本体改名待办，见文件头注释。
-const TerrainHeightFieldScript := preload("res://scripts/utils/terrain_raycast.gd")
+# 顶着旧名字会让读者以为本类还有一条 CPU 地形射线，文件本体已随之改名（2026-08-12）。
+const TerrainHeightFieldScript := preload("res://scripts/utils/terrain_height_field.gd")
 # ⚠ 这里曾有 `TargetSVLoaderScript` 的 preload：唯一消费方是已删除的 `_targetsv_content_key()`
 # （旧 VoxelPickGPU 的常驻缓冲内容代号）。2026-08-11 随它一并去掉。
 const DemoDebugVisuals := preload("res://scripts/utils/demo_debug_visuals.gd")
-const DemoUI := preload("res://scripts/utils/demo_ui.gd")
-const VoxelDebugLabel := preload("res://scripts/utils/voxel_debug_label.gd")
+# ⚠ 这里曾有 `DemoUI` 与 `VoxelDebugLabel` 两个 preload：
+#   * `DemoUI` 的唯一消费方是已删除的 `_get_camera()`（见文件末尾那条墓碑）；
+#   * `VoxelDebugLabel` 在本类里从来没有被引用过——标签由 `DemoDebugVisuals` 建，
+#     它自己去 preload，本类不经手。
+# 两者在别处仍有消费者，删的只是本文件这两条无人使用的引入（2026-08-12）。
 const PickIdPassScript := preload("res://scripts/utils/pick_id_pass.gd")
 ## 选中框与域显示共用相同的中心坐标换算。
 const SceneSVVolumeScript := preload("res://scripts/scene_sv_volume.gd")
@@ -142,8 +145,11 @@ var _pick_id_probe_camera: Camera3D = null
 # `_anchor_winner_aabb_hit()`，随射线辨别退役一并删除（2026-08-11）。
 ## 最近一次 ID 点击的诊断快照。
 var _last_pick_id_click: Dictionary = {}
-## 数据域 → 拾取/记录构建器。
-var _data_pick_callables: Dictionary = {}
+# ⚠ 这里曾有 `_data_pick_callables`（数据域 → **拾取**构建器）：它是旧路"每个域各带一条
+# 命中算法、由偏好顺序仲裁"的派发表。三角形 ID 成为唯一命中方式后没有可派发的拾取器了
+# （命中由 ID pass 一次算出，深度即仲裁），此表自那时起就是空字典 —— 全仓零读零写，
+# 只剩声明还立在这里让人以为拾取仍有第二条路。已删除（2026-08-12）。
+## 数据域 → **记录**构建器（命中之后拿域坐标去取那一格的内容，与"怎么命中"无关，故保留）。
 var _data_record_callables: Dictionary = {}
 var _target_sv: TargetSVSetup = null
 ## 祖先 SPA 缓存，不表示所有权。
@@ -625,27 +631,14 @@ func _free_pick_id_probe_camera() -> void:
 		_pick_id_probe_viewport.queue_free()
 	_pick_id_probe_viewport = null
 	_pick_id_probe_camera = null
-func _pick_probe_payload(result: Dictionary) -> Dictionary:
-	# ⚠ 载荷里曾有 `anchors` / `autoobjects` 两个键（旧路一次 dispatch 顺带算出的**未仲裁**
-	# 两层原始命中）。它们存在的理由是"从外部区分锚点到底是 GPU 求交选中的还是 CPU 遍历兜底的"
-	# —— 旧路退役后两条路都没有了，键恒为空字典。已删除。
-	if result.is_empty():
-		return {"ok": false, "reason": "no_hit"}
-	var record: Dictionary = result.get("record", {})
-	return {
-		"ok": true,
-		"reason": "ok",
-		"domain": str(result.get("domain", "")),
-		"geometry": str(result.get("geometry", "")),
-		"id": str(record.get("id", "")),
-		"pick_backend": str(record.get("pick_backend", "")),
-		"voxel_coord": _vec3i_to_array(record.get("voxel_coord", Vector3i.ZERO)),
-		"tile_coord": _vec3i_to_array(record.get("tile_coord", Vector3i.ZERO)),
-		"world_position": _vec3_to_array(record.get("world_position", Vector3.ZERO)),
-		"complexity": float(record.get("complexity", 0.0)),
-		"collision": float(record.get("collision", 0.0)),
-		"buffer_index": int(record.get("buffer_index", -1)),
-	}
+
+
+# ⚠ 这里曾有 `_pick_probe_payload(result)`：把一次命中拍平成可 JSON 序列化的探针载荷
+# （domain / geometry / id / pick_backend / voxel_coord / … 12 个键）。它的调用方是旧路
+# 那条"点一下、把两条命中算法的结果并排导出来对照"的探针出口；旧路退役后对照物没有了，
+# 探针改为直接导 ID pass 的结果 + 独立几何校验，本函数自此零调用方。已删除（2026-08-12）。
+# ⚠ 它读的 `record["pick_backend"]` 也是旧路遗留（值域是"GPU 求交 / CPU 遍历"二选一），
+# 想恢复导出请从当前 record 的真实键集重写，别照这份键表取回。
 
 
 ## 将 Vector3 转为可 JSON 序列化的数组。
@@ -1531,6 +1524,8 @@ func _svtile_record_for_voxel(voxel: Vector3i) -> Dictionary:
 		"object_ref_count": object_refs,
 		"payload": tile_record,
 	}
+
+
 func _sv_record_for_voxel(voxel: Vector3i) -> Dictionary:
 	# SV 域必须具备 SceneVoxelCommitter。
 	if _sv_committer == null:
@@ -1573,6 +1568,8 @@ func _sv_record_for_voxel(voxel: Vector3i) -> Dictionary:
 		"collision": collision,
 		"payload": payload,
 	}
+
+
 func _anchor_record_for_voxel(voxel: Vector3i) -> Dictionary:
 	# Anchor 域必须具备 SceneVoxelCommitter。
 	if _sv_committer == null:
@@ -1599,6 +1596,8 @@ func _anchor_record_for_voxel(voxel: Vector3i) -> Dictionary:
 		"complexity": complexity,
 		"payload": query,
 	}
+
+
 func _targetsv_marker_size(geometry: Dictionary) -> Vector3:
 	var voxel_size: Vector3 = geometry["voxel_size"]
 	return Vector3(
@@ -1640,6 +1639,8 @@ func _targetsv_record_for_indices(x: int, slice_index: int, z: int) -> Dictionar
 		return {}
 	record["marker_size"] = _targetsv_marker_size(geometry)
 	return record
+
+
 func _targetsv_record_for_voxel(
 	targetsv: Node,
 	cam: Camera3D,
@@ -1863,21 +1864,13 @@ func _make_autoobject_selection_record(object_index: int, screen_score: float) -
 		"tile_index": int(tile.get("index", -1)),
 		"screen_score": screen_score,
 	}
-func _voxel_float_center_to_world(voxel_center: Vector3, y: float) -> Vector3:
-	if _sv_committer == null:
-		var res := maxi(autoobject_grid_resolution, 1)
-		return VoxelGeneral.voxel_float_center_to_world_xz(
-			voxel_center,
-			VoxelGeneral.default_grid_origin(TerrainConfigScript.CAPTURE_SIZE),
-			VoxelGeneral.voxel_size_for_resolution(TerrainConfigScript.CAPTURE_SIZE, res, 1.0),
-			y
-		)
-	return VoxelGeneral.voxel_float_center_to_world_xz(
-		voxel_center,
-		_spa_grid_origin(),
-		_spa_voxel_size(),
-		y
-	)
+
+
+# ⚠ 这里曾有 `_voxel_float_center_to_world(voxel_center, y)`：把**浮点**体素中心换算到世界。
+# 它服务的是旧路的屏幕距离仲裁——那条路要把候选体素的连续中心投影回屏幕比距离，才需要
+# 亚格精度的换算。ID pass 直接给出被点中的**整数**格坐标，换算走
+# `VoxelGeneral.voxel_center_to_world()` / 域自己的 `voxel_to_world()`，没有浮点中心这一步了，
+# 本函数自此零调用方。已删除（2026-08-12）。
 
 
 ## 检查是否有任何类型的选中状态

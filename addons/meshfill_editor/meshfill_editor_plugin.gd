@@ -471,17 +471,33 @@ func _on_bake_descriptor_pressed() -> void:
 	_refresh_volume_score_after_bake(result)
 
 
-## After a descriptor bake, ask the edited scene's SPA to refresh its owned provider.
-## Background scenes are intentionally not reached through a global registry.
+## Bake 之后刷新**所有已打开场景**里的 SPA，让新 descriptor 立刻进 registry / Arena。
+##
+## ⚠ 这推翻了原先「Bake 只产出 Authoring 产物，新版本一律由用户点 Reload 显式提交」的策略
+## （用户 2026-08-13 决定）。范围仍然收得住：用组而不是全局注册表——组成员随节点进出树
+## 自动增删，所以「组里有谁」恒等于「现在开着谁」。没打开的场景不碰，它下次打开时 SPA init
+## 会自己从 Bake 目录加载。
+##
+## 之前这里只看 `_scene_spa_host()`（**当前编辑场景**里的 SPA），而 Bake AD 是在 Asset
+## Overview 里点的，那个场景按项目规则不能挂 SPA ⇒ 这条刷新一直在空转。
 func _refresh_volume_score_after_bake(result) -> void:
 	if result is Dictionary and not bool(result.get("ok", false)):
 		return
-	var spa := _scene_spa_host()
-	if spa == null:
+	var actors: Array = get_tree().get_nodes_in_group(SPAEditorContract.SPA_GROUP)
+	# 兜底：当前编辑场景的 SPA 若因故不在组里（如尚未进树），显式并入，避免漏刷最相关的那个。
+	var edited := _scene_spa_host()
+	if edited != null and not actors.has(edited):
+		actors.append(edited)
+	if actors.is_empty():
 		return
-	var refresh_result := spa.refresh_volume_provider(&"VolumeScore")
-	if bool(refresh_result.get("ok", false)):
-		print("[MeshFill Editor] Bake AD -> refreshed SPA-owned volume-score provider")
+	var refreshed := 0
+	for actor in actors:
+		if actor == null or not is_instance_valid(actor) or not actor.has_method("refresh_volume_provider"):
+			continue
+		if bool(actor.call("refresh_volume_provider", &"VolumeScore").get("ok", false)):
+			refreshed += 1
+	if refreshed > 0:
+		print("[MeshFill Editor] Bake AD -> refreshed %d open SPA volume-score provider(s)" % refreshed)
 
 
 func _sync_asset_descriptor_bake_toolbar_from_scene() -> void:

@@ -31,14 +31,28 @@ const MAX_ASSETS := 256
 ## 由细筛独自决定；coarse score 的重做另行安排。
 ## ⚠ 它是端到端的编译期契约：`_resident_topk_buf`（ANCHOR_CAPACITY × TOPK × 8 B）、
 ## VPG 的候选池（anchor_capacity × topk × 64 B）与细筛派发的 workgroup 数都按它线性放大。
-## 当前配置下候选池 65536 × 16 × 64 B ≈ 67 MiB（TOPK=4 时约 17 MiB）。
+## 当前配置下候选池 131072 × 16 × 64 B ≈ 128 MiB（TOPK=4 时约 32 MiB）。
 ## 恢复淘汰时把这里与 shader 的 `const uint TOPK` 一起调回。
 const TOPK := 16
-const ANCHOR_CAPACITY := 65536
+## ⚠ 容量与 [member anchor_vertical_stride] 是一对：竖直步长决定地形切片之上还能叠几层锚点，
+## 而本常量必须罩得住**最密**那一档（stride = 1 = 地表及以上每个 in-target 体素都出锚）。
+## 旧值 65536 是「每列至多一个锚」时代的严格上限（= 256×256 的列数）；默认档
+## （stride 0，只采地形那一格）确实仍在它之下（实测 45,552），但步长一调到 1 就顶破。
+## 现值按当前靶数据的最密档定：256×24×256 网格实测**地形切片及以上** in-target 体素 113,624 个，
+## 131072 = 256 × 512（保持 ANCHOR_GRID_X 整除）留了约 15% 余量。
+## ⚠ 代价是**无条件**的：常驻缓冲按容量而非实际锚点数分配，一直用默认步长也不会退回去。
+## 大头是 VPG 的 Score 常驻候选池（容量 × TOPK × 64 B）：64 MiB → 128 MiB；
+## 其余按容量线性放大的还有 winners（容量 × 64 B）4 → 8 MiB、topk 8 → 16 MiB、
+## anchors 1 → 2 MiB，以及随资产数走的 asset_scores（容量 × asset_stride × 4 B）。
+## 只跑 stride = 0 的话可以把这里调回 65536。
+## 换更密的靶数据后若命中 anchor_count_invariant_violated，按报错文案调大本值或调大步长。
+## 与 `auto_volume_anchor.gd` 的同名常量必须同步（见那边的注释）。
+const ANCHOR_CAPACITY := 131072
 ## Fixed anchor grid width for score/top-K dispatch. Kept constant (not derived from
 ## the anchor count) so the GPU finalize pass and the shaders agree on the anchor_id
-## decode without a CPU/GPU formula. 256 * 256 == ANCHOR_CAPACITY, so it always covers
-## the full capacity; only group_count_y scales with the actual anchor count.
+## decode without a CPU/GPU formula. ANCHOR_CAPACITY is a multiple of it
+## (256 * 512 == 131072), so it always covers the full capacity; only group_count_y
+## scales with the actual anchor count.
 const ANCHOR_GRID_X := 256
 const SCORE_ASSET_LANES := 16
 const PREFILTER_DISPATCH_AXIS_LIMIT := 65535
@@ -52,7 +66,7 @@ const COLLECT_PUSH := [
 	["grid_x", "int"], ["grid_y", "int"], ["grid_z", "int"], ["dirty_count", "int"],
 	["tile_grid_x", "int"], ["tile_grid_y", "int"], ["tile_grid_z", "int"], ["anchor_capacity", "int"],
 	["reserved0", "float"], ["reserved1", "float"], ["reserved2", "float"], ["min_target_interest", "float"],
-	["collect_groups_x", "int"], ["collect_groups_y", "int"], ["_pad0", "int"], ["_pad1", "int"],
+	["collect_groups_x", "int"], ["collect_groups_y", "int"], ["anchor_vertical_stride", "int"], ["anchor_terrain_slice", "int"],
 ]
 const ANCHOR_FINALIZE_PUSH := [
 	["anchor_grid_x", "uint"], ["asset_blocks", "uint"], ["anchor_capacity", "uint"], ["_pad0", "uint"],
@@ -79,19 +93,34 @@ const TOPK_PUSH := [
 # Per-anchor asset top-K is the compile-time TOPK contract (buffer strides, the
 # select shader and the fine-score dispatch are sized by it end-to-end); the old
 # public anchor_topk knob was inert and has been removed.
-# Anchor gate: collect_sv_anchors emits an anchor at a cell inside the target volume
-# (target_field.a > min_target_interest, matching Houdini's volumesample(targetVol,0,P) > 0)
-# that is also the BOTTOMMOST in-target cell in its column — a lower in-target cell
-# overrides (covers) higher ones, so at most one anchor per (x,z) column (the lowest)
-# and no anchor stacks above another. The former scene-occupancy / collision / support
-# caps are gone; their COLLECT_PUSH slots (reserved0/1/2) are now zero-filled for layout stability.
-var min_target_interest: float = 0.01       # anchor gate: cell counts as "inside target" (bottommost-in-column) when target_field.a exceeds this
+# Anchor gate: collect_sv_anchors 在**地形高度**采样目标体积，采到就发锚
+# （target_field.a > min_target_interest，即 Houdini volumesample(targetVol,0,P) > 0 的 GPU 孪生）。
+# 网格 Y 是地形相对的，所以"地形高度"对每一列都是同一个固定切片 anchor_terrain_slice
+# （见 _terrain_slice_from_grid）——本 pass 因此不需要地形高度场。anchor_vertical_stride > 0
+# 时在该切片之上按步长加层。The former scene-occupancy / collision / support caps are gone;
+# their COLLECT_PUSH slots (reserved0/1/2) are now zero-filled for layout stability.
+var min_target_interest: float = 0.01       # anchor gate: cell counts as "inside target" when target_field.a exceeds this
+## 竖直方向锚点密度（单位 = 体素层，**越小越密**）。锚点自**地形切片**起算，每
+## `anchor_vertical_stride` 层采样一次，采到 in-target 就发锚；地形以下永不发锚。
+##
+## * `0`（默认）= 只采地形那一格 —— 「在地形高度采样 targetsv，能采样到就生成」的字面实现，
+##   每列至多一个锚，且锚一定站在地面上。
+## * `1` = 地形切片及其以上每个 in-target 体素都出锚。
+## * `n > 1` = 地形切片 + 其上每 n 层一格。
+##
+## ⚠ 相位锁在**地形切片**而不是该列目标体积的底面：目标体积经常伸到地形以下
+## （当前靶数据地形下一格就有 27,063 个 in-target 格），按列底打相位会把锚点埋进地里。
+##
+## ⚠ 它直接乘进锚点数，进而乘进细筛候选池（anchor_count × TOPK）。当前靶数据实测：
+## stride=0 → 45,552 锚点（= 99.5% 的非空列），1 → 113,624，2 → 69,799，4 → 49,800。
+## 调密不改显存（缓冲按 ANCHOR_CAPACITY 分配），但线性抬高评分耗时。
+var anchor_vertical_stride: int = 0
 var min_prefilter_score: float = 0.35       # minimum probe score accepted by shader
 ## Opt-in only: CPU readback of the anchor position array into result["anchors"].
 ## The anchors array is purely for debug/visualization; resident buffers drive placement.
 ##
 ## ⚠ 不要为了"点选/显示要坐标"而把这个开关打开当生产路径用。它的语义是**每次
-## prefilter 运行都顺带回读**（最多 65536 × 16 B ≈ 1 MB），默认 false = 不回读。
+## prefilter 运行都顺带回读**（最多 131072 × 16 B ≈ 2 MB），默认 false = 不回读。
 ## 需要 CPU 锚点坐标的消费方走按需取数：借用 anchor_candidate_handoff 的只读
 ## anchor/count 缓冲，在真正要用的那一刻读一次并缓存——见
 ## VolumeScoreFineSelection.read_resident_anchors_packed / materialize_cpu_anchor_model。
@@ -221,6 +250,8 @@ func run_probe_prefilter(
 # _timing_* 的其余标量由 _timing_begin() 无条件赋值，无需在此修复。
 func _repair_soft_reloaded_members() -> void:
 	if not (min_target_interest is float): min_target_interest = 0.01
+	# 本轮重载新增的成员槽是 Nil：Nil 会被 maxi 当 0 吃掉——恰好等于默认值，但别依赖这个巧合。
+	if not (anchor_vertical_stride is int): anchor_vertical_stride = 0
 	if not (_resident_asset_scores_buf is RID): _resident_asset_scores_buf = RID()
 	if not (_resident_asset_stride is int): _resident_asset_stride = 0
 	if not (_resident_collect_cache_key is Dictionary): _resident_collect_cache_key = {}
@@ -294,6 +325,8 @@ func _run_gpu_pipeline(
 ) -> Dictionary:
 	var grid_size: Vector3i = sv.get("grid_size", Vector3i.ZERO)
 	var voxel_size: Vector3 = sv.get("voxel_size", Vector3.ONE)
+	var grid_origin: Vector3 = sv.get("grid_origin", Vector3.ZERO)
+	var terrain_slice := _terrain_slice_from_grid(grid_size, voxel_size, grid_origin)
 	var voxel_count: int = VoxelGeneral.voxel_count(grid_size)
 	var tile_grid := Vector3i(
 		_ceil_div_positive(grid_size.x, TILE_SIZE),
@@ -360,7 +393,8 @@ func _run_gpu_pipeline(
 		grid_size,
 		tile_grid,
 		int(dirty_handoff.get("dirty_epoch", -1)),
-		target_buffer_pack
+		target_buffer_pack,
+		terrain_slice
 	)
 	var collect_cache_hit := _resident_collect_cache_ready(collect_cache_key)
 	_timing_collect_cache_hit = collect_cache_hit
@@ -402,7 +436,7 @@ func _run_gpu_pipeline(
 		if not _dispatch_collect(
 			target_field_buf, target_collision_buf, dirty_worklist_buf, dirty_count_buf,
 			anchor_buf, anchor_count_buf,
-			grid_size, tile_grid, dirty_capacity
+			grid_size, tile_grid, dirty_capacity, terrain_slice
 		):
 			var pipeline_status := _pipeline_readiness()
 			assert(false, "AutoObjectProbePrefilterGPU: collect anchor dispatch failed")
@@ -437,8 +471,10 @@ func _run_gpu_pipeline(
 		var anchor_count_bytes := _rd.buffer_get_data(anchor_count_buf, 0, 4)
 		raw_anchor_count = BufferUtils.decode_u32_count(anchor_count_bytes)
 		if not raw_anchor_count_within_capacity(raw_anchor_count):
-			push_error("[AutoObjectProbePrefilterGPU] anchor invariant violated: raw_count=%d capacity=%d" % [
-				raw_anchor_count, ANCHOR_CAPACITY])
+			# 竖直采样打开后，这条最常见的成因是"步长太小 × 目标体积太厚"，所以把步长一并报出来：
+			# 没有它，读者只看得到一个超限的数字，看不出该调哪个旋钮。
+			push_error("[AutoObjectProbePrefilterGPU] anchor invariant violated: raw_count=%d capacity=%d anchor_vertical_stride=%d（步长越小锚点越多，调大它或提高 ANCHOR_CAPACITY）" % [
+				raw_anchor_count, ANCHOR_CAPACITY, _effective_vertical_stride()])
 			assert(false, "AutoObjectProbePrefilterGPU: anchor count invariant violated")
 			_resident_collect_cache_key = {}
 			return _empty_result("anchor_count_invariant_violated", sample_pack, _pipeline_readiness())
@@ -474,10 +510,11 @@ func _run_gpu_pipeline(
 # Dispatch helpers
 # ---------------------------------------------------------------------------
 
-## 调度 Pass 1：在脏 Tile 内收集落在目标体积内（target_field.a > min_target_interest）
-## 且为所在竖直列最低一个的锚点体素，写入 anchor_buf。门控 = Houdini
-## `volumesample(targetVol,0,P) > 0` 的 GPU 实现 + bottommost-in-column（较低的 in-target
-## 覆盖较高的：下方存在 in-target 体素则不发锚，每列至多一个锚且取最低）；场景占用/碰撞/支撑门控已交后续评分。
+## 调度 Pass 1：在脏 Tile 内**于地形高度采样目标体积**，采到（target_field.a >
+## min_target_interest）就把该体素写进 anchor_buf。门控 = Houdini
+## `volumesample(targetVol,0,P) > 0` 的 GPU 实现，采样高度 = `terrain_slice`
+## （网格 Y 地形相对 ⇒ 每列同一切片）；[member anchor_vertical_stride] > 0 时在其上按步长加层。
+## 场景占用/碰撞/支撑门控已交后续评分。
 func _dispatch_collect(
 	target_field_buf: RID,
 	target_collision_buf: RID,
@@ -487,7 +524,8 @@ func _dispatch_collect(
 	anchor_count_buf: RID,
 	grid_size: Vector3i,
 	tile_grid: Vector3i,
-	dirty_capacity: int
+	dirty_capacity: int,
+	terrain_slice: int
 ) -> bool:
 	var collect_groups := _linear_dispatch_groups(dirty_capacity)
 	if collect_groups == Vector3i.ZERO:
@@ -516,6 +554,8 @@ func _dispatch_collect(
 		min_target_interest = min_target_interest,
 		collect_groups_x = collect_groups.x,
 		collect_groups_y = collect_groups.y,
+		anchor_vertical_stride = _effective_vertical_stride(),
+		anchor_terrain_slice = terrain_slice,
 	}
 
 	# ---- 调度分叉：两条路径表达的是同一批 pass，差别只在如何送进 compute list ----
@@ -812,13 +852,51 @@ func _rdg_build_score_topk(
 	], topk_push, _rdg_external(g, seen, "topk_indirect_args", topk_indirect_args_buf))
 
 
-## collect 只依赖 target、grid、tile 集和 min_target_interest。target_revision 可用时
-## 跨目标缓冲重建复用；缺失时退回 RID 身份，保证不会把未知新目标误判成缓存命中。
+## 送进 shader（以及 collect 缓存键）的竖直步长。所有 <= 0 的取值在 shader 里是同一种
+## 行为（只采地形那一格），这里统一折到 0：否则 -1 与 0 会各占一个缓存键，白重跑一次 collect。
+func _effective_vertical_stride() -> int:
+	return maxi(anchor_vertical_stride, 0)
+
+
+## 地形高度在网格里对应的切片下标 —— anchor 采样高度的唯一来源。
+##
+## 网格的 Y 是**地形相对**的：
+## `world.y = terrain_height * height_scale + grid_origin.y + (slice + 0.5) * voxel_size.y`
+## （`VoxelGeneral.terrain_relative_voxel_center_to_world`，见 ScenePlacementActor 的 Grid 组注释）。
+## 地形起伏已经烘进这套竖直框架，所以「地表」在网格里是一个**与 (x, z) 无关的常数切片**：
+## 相对高度 0 落在 `floor(-grid_origin.y / voxel_size.y)` 那一格。
+## 这正是本 pass 不需要地形高度场、也不需要逐列扫描的原因。
+## 当前生产配置：grid_origin.y = -36、voxel_size.y = 3 ⇒ 切片 12（其世界区间恰为地表上方 [0, 3)）。
+##
+## ⚠ 越界要夹紧并**明说**：`grid_origin.y` / `voxel_size.y` 与 TargetSV 烘焙量程对不上时
+## 两边都不会报错（SPA 文件头写明了这条），夹紧后锚点会整片贴到网格顶或底 ——
+## 「锚点全挤在一层」这类现象里最难查的一种成因，静默夹只会把它藏起来。
+static func _terrain_slice_from_grid(
+	grid_size: Vector3i,
+	voxel_size: Vector3,
+	grid_origin: Vector3
+) -> int:
+	if grid_size.y <= 0 or voxel_size.y <= 0.0:
+		push_error("[AutoObjectProbePrefilterGPU] 竖直框架非法（grid_size.y=%d, voxel_size.y=%f）——无法定位地形切片。" % [
+			grid_size.y, voxel_size.y])
+		assert(false, "AutoObjectProbePrefilterGPU._terrain_slice_from_grid: invalid vertical frame")
+		return 0
+	var slice := int(floor(-grid_origin.y / voxel_size.y))
+	var clamped := clampi(slice, 0, grid_size.y - 1)
+	if clamped != slice:
+		push_error("[AutoObjectProbePrefilterGPU] 地形高度落在网格竖直量程之外（推出切片 %d，量程 0..%d；grid_origin.y=%f, voxel_size.y=%f）——已夹到 %d，锚点会整片贴在该层。" % [
+			slice, grid_size.y - 1, grid_origin.y, voxel_size.y, clamped])
+	return clamped
+
+
+## collect 只依赖 target、grid、tile 集、min_target_interest、竖直步长和地形切片。
+## target_revision 可用时跨目标缓冲重建复用；缺失时退回 RID 身份，保证不会把未知新目标误判成缓存命中。
 func _make_collect_cache_key(
 	grid_size: Vector3i,
 	tile_grid: Vector3i,
 	dirty_epoch: int,
-	target_buffer_pack: Dictionary
+	target_buffer_pack: Dictionary,
+	terrain_slice: int
 ) -> Dictionary:
 	var target_revision := int(target_buffer_pack.get("target_revision", -1))
 	var key := {
@@ -826,6 +904,8 @@ func _make_collect_cache_key(
 		"tile_grid": tile_grid,
 		"dirty_epoch": dirty_epoch,
 		"min_target_interest": min_target_interest,
+		"anchor_vertical_stride": _effective_vertical_stride(),
+		"anchor_terrain_slice": terrain_slice,
 		"target_revision": target_revision,
 	}
 	if target_revision < 0:
@@ -1205,7 +1285,8 @@ func _release_resident_collect_cache() -> void:
 #
 # 别照着它重建「统一释放四条」的入口——四条的生命周期本来就**不同步**：
 #   * `_resident_anchor_buf` / `_resident_anchor_count_buf` 由 **collect 缓存键**驱动
-#     （grid / tile_grid / dirty_epoch / min_target_interest / target_revision），
+#     （grid / tile_grid / dirty_epoch / min_target_interest / anchor_vertical_stride /
+#     anchor_terrain_slice / target_revision），
 #     缓存未命中时经 `_release_resident_collect_cache()` 重建；
 #   * `_resident_asset_scores_buf` / `_resident_topk_buf` 只在 dispose 时释放。
 # 把四条当一组释放会在缓存命中的正常路径上白扔掉后两条，下一次 run 重新分配。

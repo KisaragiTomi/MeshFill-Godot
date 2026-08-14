@@ -549,10 +549,18 @@ func display_aabb() -> AABB:
 	var extent := cell.x
 	var span := VoxelGeneralScript.voxel_span_to_world_size(frame["grid_size"], frame["voxel_size"])
 	var half := maxf(span.x, span.z) * 0.5 + extent
+	# ⚠ Y 下界必须跟着 `grid_origin.y` 走，**不能**写死 -extent。
+	# 实例位置是 `terrain + grid_origin.y + (slice+0.5)*voxel_size.y`（三个显示 shader 同式），
+	# 地形最低处 terrain≈0 时最深的实例就落在 grid_origin.y 附近。2026-08-12 竖直量程
+	# 带上地下段（grid_origin.y: 0 → -8）之后，写死的 -extent 已经装不下最底下两层，
+	# 而 custom_aabb 装不下实例**不报错**——只在盒子被视锥剔除时整批实例跟着消失。
+	# grid_origin.y ≥ 0 时 minf 取 0，与本行引入前逐位相同。
+	var origin_y := minf(float((frame["grid_origin"] as Vector3).y), 0.0)
+	var y_min := origin_y - extent
 	var y_max := display_height_span() * display_scale_value() + span.y + extent
 	return AABB(
-		Vector3(-half, -extent, -half),
-		Vector3(2.0 * half, y_max + 2.0 * extent, 2.0 * half))
+		Vector3(-half, y_min, -half),
+		Vector3(2.0 * half, (y_max + extent) - y_min, 2.0 * half))
 
 
 # ── 显示用地形高度场（2026-08-10 收敛自 SceneSV / SVTile / BrushSV 三份逐字重复）────
