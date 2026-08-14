@@ -202,7 +202,8 @@ var _failure_reason := ""
 # 纯控制面：Arena 的内容真值仍在容器里，这里只记"最近一次加载做到哪一步、结果如何"。
 var _arena_load_state := "Not Loaded"
 var _arena_load_error := ""
-var _arena_load_entries: Array = []       # BakedAssetLoader 的逐资产摘要（只读列表用）
+## BakedAssetLoader 的整份报告。逐资产摘要读 `.entries`——不再另存一份投影成员：
+## 两份要各自赋值、各自写软重载修复，而它们只可能同时来自同一次 load。
 var _arena_load_report: Dictionary = {}
 var _arena_loaded_signature := ""         # 加载成功时的 Bake 目录指纹，用于 Stale 判定
 var _runtime: ScenePlacementRuntime = null
@@ -337,12 +338,21 @@ func _reload_baked_assets_from_inspector() -> void:
 ## 全程事务式：任一 Descriptor 不合法就在替换**之前**整批拒绝，旧 Arena（RID / 内容 /
 ## Registry / Revision）一字不动，界面显示 `Previous Arena Still Active`。
 ## force=true 时即使目录未变也重跑（Reload 按钮）。
+## 加载失败的统一出口：置 FAILED 状态 + 记可读原因 + 拼返回字典。
+## 三个失败路径原本各写一遍，漏掉任何一半都是「Inspector 显示 Ready 但其实没加载成功」
+## 这类难查的不一致；收成一处后，新增失败路径不可能忘记置状态。
+func _fail_arena_load(reason: String, phase: String, error_text: String, extra: Dictionary = {}) -> Dictionary:
+	_arena_load_state = ARENA_STATE_FAILED
+	_arena_load_error = error_text
+	var out := {"ok": false, "reason": reason, "phase": phase}
+	out.merge(extra)
+	return out
+
+
 func load_baked_assets() -> Dictionary:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	if not is_initialized():
-		_arena_load_state = ARENA_STATE_FAILED
-		_arena_load_error = "SPA 未初始化"
-		return {"ok": false, "reason": "not_initialized", "phase": "Scanning"}
+		return _fail_arena_load("not_initialized", "Scanning", "SPA 未初始化")
 
 	var had_previous_arena := get_asset_count() > 0
 	_arena_load_state = ARENA_STATE_LOADING
@@ -350,24 +360,21 @@ func load_baked_assets() -> Dictionary:
 
 	# ── Scanning + Validating ──
 	var report: Dictionary = BakedAssetLoaderScript.load_baked_descriptors()
-	_arena_load_entries = report.get("entries", [])
 	_arena_load_report = report
 	var errors: PackedStringArray = report.get("errors", PackedStringArray())
 	if not bool(report.get("ok", false)):
-		_arena_load_state = ARENA_STATE_FAILED
-		_arena_load_error = errors[0] if errors.size() > 0 else "unknown"
 		# 每条失败都单独打印，用户能直接定位到 descriptor 与超限字段（§11.4）。
 		for error_text in errors:
 			push_error("[ScenePlacementActor] Reload: %s" % error_text)
-		return {
-			"ok": false,
-			"reason": "validation_failed",
-			"phase": "Validating",
-			"dir": report.get("dir", ""),
-			"errors": errors,
-			"failed_count": errors.size(),
-			"previous_arena_still_active": had_previous_arena,
-		}
+		return _fail_arena_load(
+			"validation_failed", "Validating",
+			errors[0] if errors.size() > 0 else "unknown",
+			{
+				"dir": report.get("dir", ""),
+				"errors": errors,
+				"failed_count": errors.size(),
+				"previous_arena_still_active": had_previous_arena,
+			})
 
 	var descriptors: Array[AssetDescriptor] = report.get("descriptors", [] as Array[AssetDescriptor])
 	# 目录没变且已经是 Ready 就不重复上传（Reload 用 force 跳过这条短路）。
@@ -385,15 +392,12 @@ func load_baked_assets() -> Dictionary:
 	# ── Packing + Uploading（replace_all_assets 内部就是事务式单次 Arena 上传）──
 	var upload_t0_usec := Time.get_ticks_usec()
 	if not replace_all_assets(descriptors):
-		_arena_load_state = ARENA_STATE_FAILED
-		_arena_load_error = "Arena 替换失败（见编辑器输出）"
-		return {
-			"ok": false,
-			"reason": "arena_replace_failed",
-			"phase": "Uploading",
-			"dir": report.get("dir", ""),
-			"previous_arena_still_active": had_previous_arena,
-		}
+		return _fail_arena_load(
+			"arena_replace_failed", "Uploading", "Arena 替换失败（见编辑器输出）",
+			{
+				"dir": report.get("dir", ""),
+				"previous_arena_still_active": had_previous_arena,
+			})
 
 	# ⚠ 资产表整体换代后，缓存的 stage env / 评分模型里存的全是**上一代** profile_id。
 	# 下一次 Anchors/Score 会拿它们去查新容器：`_build_asset_lookup` →
@@ -583,9 +587,10 @@ static func _format_mib(byte_count: int) -> String:
 ## 没扫描过就退回当前注册表，至少让人看见 Arena 里现在装着什么。
 func _placement_assets_summary_text() -> String:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
-	if not _arena_load_entries.is_empty():
+	var entries: Array = _arena_load_report.get("entries", [])
+	if not entries.is_empty():
 		return BakedAssetLoaderScript.format_asset_list(
-			_arena_load_entries, "Loaded Assets — %s" % str(_arena_load_report.get("dir", "")))
+			entries, "Loaded Assets — %s" % str(_arena_load_report.get("dir", "")))
 	var descriptors := get_registered_descriptors()
 	if descriptors.is_empty():
 		return "Loaded Assets (0)\n  <点 Reload 从 Bake 目录一键加载>"
@@ -636,7 +641,6 @@ func _repair_soft_reloaded_members() -> void:
 	if not (_failure_reason is String): _failure_reason = ""
 	if not (_arena_load_state is String): _arena_load_state = ARENA_STATE_NOT_LOADED
 	if not (_arena_load_error is String): _arena_load_error = ""
-	if not (_arena_load_entries is Array): _arena_load_entries = []
 	if not (_arena_load_report is Dictionary): _arena_load_report = {}
 	if not (_arena_loaded_signature is String): _arena_loaded_signature = ""
 	if not (_owns_committer is bool): _owns_committer = false
