@@ -109,23 +109,42 @@ SceneVoxelTile 使用配置驱动的默认 `8 x 8 x 8` tile，因此当前网格
 
 资产来源**只有一处**：`load_baked_assets()` 扫 Bake 目录
 （`BakedAssetLoader.BAKED_DESCRIPTOR_DIR`），事务式替换固定槽位 Profile Arena 并使其常驻。
-init 时自动跑一次（`force = false`），Inspector 的 `Reload` 按钮手动强制重扫（`force = true`）。
+它无参、无短路，只有一条路径：读盘 → 校验 → 换代 → 广播。SPA init、Inspector 的 `Reload`
+按钮、Bake AD 后的插件刷新都调同一个它。
 
 场景侧没有可声明资产的导出项——`placement_assets` 数组已删除。它曾与 Reload 并存，
 两者写同一份 registry 且互不写回：点完 Reload 重开场景，init 会拿 `.tscn` 里存的旧数组
 静默覆盖掉 Reload 的结果。消费方一律走 `get_registered_descriptors()`。
 
-⚠ `load_baked_assets()` 的「目录未变即已加载」短路必须同时校验**当前资产数 > 0**：
-`_arena_load_state` / `_arena_loaded_signature` 是 SPA 级成员，而 registry 活在
-`_runtime` 里。编辑器摘挂 scene root 会触发 `_exit_tree` → `_shutdown` → 再 initialize，
-`_runtime` 连同 registry 被换掉而 SPA 缓存留着——只看缓存就会短路返回
+⚠ 这里曾有一条「目录未变即已加载」的短路（配一个 `force` 参数用来跳过它），**已删除**。
+它的判据 `_arena_load_state` / `_arena_loaded_signature` 是 SPA 级成员，而 registry 活在
+`_runtime` 里：编辑器摘挂 scene root 会触发 `_exit_tree` → `_shutdown` → 再 initialize，
+`_runtime` 连同 registry 被换掉而 SPA 缓存原样留着 ⇒ 短路返回
 `{ok: true, reason: "already_loaded"}` 而实际是 0 个资产，且不触发任何警告。
+补一个「资产数 > 0」的条件能救这一种，但目录签名只是「路径 + mtime」，同秒重写照样瞒过去。
+省下的一次上传（实测 ~57 ms）不值得这类静默故障。
+`_arena_loaded_signature` 仍保留——它另有用途：Inspector 的 Stale 判定。
+
+### 换代广播
+
+`load_baked_assets()` 成功后分两级广播失效，消费方不需要被点名：
+
+- **`AssetDescriptor.changed`**（复用 Godot 内建通道）——某一个 descriptor 的内容变了。
+  `BakedAssetLoader` 在 `CACHE_MODE_REPLACE` 之后 `emit_changed()`：REPLACE 就地覆写属性、
+  实例地址不变，**不会**自动发这个信号，此前所有订阅方一起失聪。
+- **`SPA.baked_assets_reloaded(revision, asset_count)`**——注册表整代换代（资产增删、
+  profile_id 重排、Arena 重传）。单个 descriptor 的 `changed` 表达不了「多了/少了一个资产」。
+
+provider 在 `register_volume_provider()` 时若实现了 `invalidate_asset_caches()` 就自动订阅，
+注销时对称断开。**新增消费者只需实现该方法**，不必改 SPA、不必自己找 SPA、不必知道换代由谁触发。
+
+广播只发「作废」不发「重算」：重算由触发方显式发起（`refresh_volume_provider()` 在加载完成后
+直接调 `provider.calculate_voxel_scores()`）。
 
 常用只读/命令入口：
 
-- `load_baked_assets(force)`：扫 Bake 目录 → 校验 → 事务式替换 Arena。Inspector 的
-  `Reload` 按钮就是它，恒传 `force = true`；`force = false`（吃"目录未变即已加载"短路）
-  只保留给程序化调用，UI 上没有入口。
+- `load_baked_assets()`：扫 Bake 目录 → 校验 → 事务式替换 Arena → 两级广播。
+- `refresh_volume_provider(volume_key)`：Bake 之后的「换代 + 重算」一步入口。
 - `register_asset()` / `register_assets()`：显式增量注册。
 - `replace_all_assets()` / `clear_assets()`：完整替换或清空注册表。
 - `refresh_slot_mesh_description(asset_index)`：单槽整覆盖更新，不重传整份 Arena。

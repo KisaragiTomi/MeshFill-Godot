@@ -130,7 +130,7 @@ Buffer 分配/上传、满容量寻址、编译期容量守卫与单槽局部更
 
 ```text
 SPA (ScenePlacementActor)  ← 唯一 owner
-  ├── load_baked_assets(force)           → 扫 bake 目录 → 校验 → 事务式替换 Arena
+  ├── load_baked_assets()                → 扫 bake 目录 → 校验 → 事务式替换 Arena → 两级广播
   ├── replace_all_assets(descriptors)    → 事务式：新 Arena 建成前旧 Arena 全程有效
   ├── register_asset(descriptor, mesh?)  → 注册到 asset registry + upload_profiles()
   ├── refresh_slot_mesh_description(i)   → 单槽整覆盖，不重传整份 Arena
