@@ -327,7 +327,7 @@ const ARENA_STATE_FAILED := "Failed"
 
 
 func _reload_baked_assets_from_inspector() -> void:
-	_finish_inspector_action("Reload", load_baked_assets(true))
+	_finish_inspector_action("Reload", load_baked_assets())
 
 
 ## 扫描 Bake 输出目录 → 校验 → 事务式替换 Arena（计划 §7 的完整流程）。
@@ -337,14 +337,13 @@ func _reload_baked_assets_from_inspector() -> void:
 ## 全程事务式：任一 Descriptor 不合法就在替换**之前**整批拒绝，旧 Arena（RID / 内容 /
 ## Registry / Revision）一字不动，界面显示 `Previous Arena Still Active`。
 ## force=true 时即使目录未变也重跑（Reload 按钮）。
-func load_baked_assets(force: bool = false) -> Dictionary:
+func load_baked_assets() -> Dictionary:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	if not is_initialized():
 		_arena_load_state = ARENA_STATE_FAILED
 		_arena_load_error = "SPA 未初始化"
 		return {"ok": false, "reason": "not_initialized", "phase": "Scanning"}
 
-	var previous_state := _arena_load_state
 	var had_previous_arena := get_asset_count() > 0
 	_arena_load_state = ARENA_STATE_LOADING
 	_arena_load_error = ""
@@ -373,24 +372,15 @@ func load_baked_assets(force: bool = false) -> Dictionary:
 	var descriptors: Array[AssetDescriptor] = report.get("descriptors", [] as Array[AssetDescriptor])
 	# 目录没变且已经是 Ready 就不重复上传（Reload 用 force 跳过这条短路）。
 	#
-	# ⚠ `had_previous_arena` 这个条件不能省：`_arena_load_state` / `_arena_loaded_signature`
-	# 是 **SPA 级**成员，而资产表活在 `_runtime` 里。编辑器摘挂 scene root 会走一次
-	# `_exit_tree` → 全量 `_shutdown` → 插件再 initialize：`_runtime` 连同 registry 被整个
-	# 换掉，SPA 上这两个缓存却原样留着。只看它们，第二次 init 就会短路返回
-	# `{ok: true, reason: "already_loaded"}`，而实际资产数是 0——报告成功、Arena 空着。
+	# ⚠ 这里曾有一条「目录未变即已加载」的短路（连同一个 `force` 参数用来跳过它）。已删除：
+	# 它的判据 `_arena_load_state` / `_arena_loaded_signature` 是 **SPA 级**成员，而资产表活在
+	# `_runtime` 里。编辑器摘挂 scene root 会 `_exit_tree → _shutdown → 再 initialize`，
+	# `_runtime` 连同 registry 被整个换掉而这两个缓存原样留着 ⇒ 第二次 init 短路返回
+	# `{ok: true, reason: "already_loaded"}` 而实际资产数是 0：报告成功、Arena 空着、无任何警告。
+	# 补条件（再看一眼资产数）能救这一种，但目录签名只是「路径 + mtime」，同秒重写照样瞒过去。
+	# 结论：这条路径本来就该恒等于「读盘」，省下的一次上传（实测 ~57 ms）不值得这类静默故障。
+	# `_arena_loaded_signature` 仍然保留——它另有用途：Inspector 的 Stale 判定（见 :457）。
 	var signature := _baked_dir_signature()
-	if not force and had_previous_arena and previous_state == ARENA_STATE_READY and signature == _arena_loaded_signature:
-		_arena_load_state = ARENA_STATE_READY
-		# 报 Arena 的 profile 数而不是 get_asset_count()：后者是**注册表条目数**，
-		# PlacementStageEnv 会在同一注册表上把同一批 descriptor 再注册一遍（profile 按
-		# hash 去重后仍是同样几个 slot），拿它当"已加载资产数"会翻倍。
-		return {
-			"ok": true,
-			"reason": "already_loaded",
-			"phase": "Ready",
-			"dir": report.get("dir", ""),
-			"loaded_count": int(get_profile_arena_summary().get("loaded_profile_count", 0)),
-		}
 
 	# ── Packing + Uploading（replace_all_assets 内部就是事务式单次 Arena 上传）──
 	var upload_t0_usec := Time.get_ticks_usec()
@@ -746,7 +736,7 @@ func initialize_runtime() -> bool:
 	#
 	# 加载失败不阻断 init：Arena 保持空，Anchors/Score/Place 会因 Arena 未就绪而置灰，
 	# Inspector 上给出可读原因；把它升级成 init 失败只会让整个 SPA 起不来。
-	var baked_load := load_baked_assets(true)
+	var baked_load := load_baked_assets()
 	if not bool(baked_load.get("ok", false)):
 		push_warning("[ScenePlacementActor] init 期 Bake 资产加载未完成（%s）——点 Reload 重试。" % [
 			str(baked_load.get("reason", "unknown"))])
@@ -1356,14 +1346,31 @@ func get_volume_provider(volume_key: StringName) -> Node:
 		return provider
 	return null
 
+## Bake 之后的「换代 + 重算」一步入口。
+##
+## ⚠ 这里曾是 `provider.reload_and_rescore()` 一句转发，而那个方法内部又回头调
+## `SPA.load_baked_assets()`——SPA 让 provider 去让 SPA 重新加载，绕成一个环，也正是
+## 「广播只作废不重算」那条限制的由来（否则就自递归了）。现在拉直：
+##
+##   加载 → 广播作废（provider 在 register 时已订阅）→ 重算
+##
+## 两步都由 SPA 直接发起，provider 只被动收广播 + 被调重算，不再反向驱动 SPA。
 func refresh_volume_provider(volume_key: StringName = &"VolumeScore") -> Dictionary:
 	var provider := get_volume_provider(volume_key)
 	if provider == null:
 		return {"ok": false, "reason": "provider_not_registered", "volume_key": volume_key}
-	if not provider.has_method("reload_and_rescore"):
-		return {"ok": false, "reason": "refresh_command_unavailable", "volume_key": volume_key}
-	provider.call("reload_and_rescore")
-	return {"ok": true, "volume_key": volume_key}
+	var load_result := load_baked_assets()
+	if not bool(load_result.get("ok", false)):
+		return {
+			"ok": false,
+			"reason": "load_failed:%s" % str(load_result.get("reason", "unknown")),
+			"volume_key": volume_key,
+		}
+	if not provider.has_method("calculate_voxel_scores"):
+		# 加载已经成功且广播已发出，缓存该作废的都作废了；只是没人能重算。
+		return {"ok": true, "volume_key": volume_key, "rescored": false}
+	provider.call("calculate_voxel_scores")
+	return {"ok": true, "volume_key": volume_key, "rescored": true}
 
 
 ## 重新导入 TargetSV：本 SPA 的 TargetSV 节点从磁盘重读，并把持有旧解码结果的下游一起刷新。

@@ -483,11 +483,9 @@ func _on_bake_descriptor_pressed() -> void:
 func _refresh_volume_score_after_bake(result) -> void:
 	if result is Dictionary and not bool(result.get("ok", false)):
 		return
+	# 组成员资格由 SPA 在 `_enter_tree` 自行维护，凡在树里的必在组里——这里不需要再拿
+	# `_scene_spa_host()` 兜底（它找的同样只是树里的节点，永远兜不到组外的东西）。
 	var actors: Array = get_tree().get_nodes_in_group(SPAEditorContract.SPA_GROUP)
-	# 兜底：当前编辑场景的 SPA 若因故不在组里（如尚未进树），显式并入，避免漏刷最相关的那个。
-	var edited := _scene_spa_host()
-	if edited != null and not actors.has(edited):
-		actors.append(edited)
 	if actors.is_empty():
 		return
 	var refreshed := 0

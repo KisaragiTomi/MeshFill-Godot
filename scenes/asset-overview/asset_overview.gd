@@ -260,20 +260,17 @@ func _connect_geo_scan_buttons() -> void:
 			rescan_button.pressed.connect(rescan_callable)
 
 
+# 「扫描更新」= 增量扫描 + 烘焙，而 bake_scene_descriptors(ensure_fresh = true) 的第一步
+# 就是增量扫描 —— 两者是同一个操作，不必先扫一遍再叫一个「刚扫过所以别再扫」的包装。
 func _on_scan_updated_geo_pressed() -> void:
-	_scan_geo_assets(false)
-	_auto_bake_descriptors_after_scan()
+	bake_scene_descriptors()
 
 
+# 全量重扫是另一种语义（先 free 掉所有节点再重建），没有对应的 ensure_fresh 形态，
+# 所以仍显式扫一次，再以 ensure_fresh = false 烘焙，避免紧接着又跑一遍增量扫描。
 func _on_full_rescan_geo_pressed() -> void:
 	_scan_geo_assets(true)
-	_auto_bake_descriptors_after_scan()
-
-
-# Keep imported meshes and on-disk descriptors synchronized. Bake AD logs its
-# own summary; the removed Geo status label no longer mirrors it in the scene.
-func _auto_bake_descriptors_after_scan() -> void:
-	bake_scene_descriptors(false)   # 刚扫完，不必再扫一遍
+	bake_scene_descriptors(false)
 
 
 # 冻结名（插件 GEO_SCAN_METHOD 字符串调用）：扫描本体已下沉 GeoAssetScanService，

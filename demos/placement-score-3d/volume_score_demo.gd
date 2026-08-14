@@ -185,9 +185,9 @@ var _diag_target_color := PackedColorArray()
 ## 调试可视化用的 descriptor fine 体素缓存：instance_id -> Array[Dictionary]{voxel, color}。
 ## get_profile_samples() 每次调用都全量 normalize + 深拷贝（五资产合计约 5 万条采样），
 ## 而 _rebuild_winner_voxel_profile_node（每次点选锚点）与 pivot sweep（pivot×yaw 双重循环）
-## 都在热路径上——按 descriptor 实例缓存一次转换结果。资产重载（_reload_placement_descriptors
-## → SPA 重扫，BakedAssetLoader 以 CACHE_MODE_REPLACE 就地覆盖同一实例）时整体清空：
-## 实例地址不变而内容已换，不清就会拿旧采样。
+## 都在热路径上——按 descriptor 实例缓存一次转换结果。换代时经 invalidate_asset_caches()
+## 整体清空（BakedAssetLoader 用 CACHE_MODE_REPLACE 就地覆盖同一实例：地址不变而内容已换，
+## 不显式清就会稳稳拿到旧采样）。
 var _descriptor_fine_voxel_cache: Dictionary = {}
 
 # ---- Display Nodes ---------------------------------------------------------
@@ -333,7 +333,7 @@ func _dispose_pipeline(reconcile_display: bool = true) -> void:
 ##
 ## 本函数存在的直接原因——以下路径都清空了 _model 却到不了显示重建，于是锚点/胜出网格
 ## 继续渲染在一份已经不存在的数据上：
-##   reload_and_rescore()            清空后重算在 _ensure_env_ready() 失败时提前返回
+##   invalidate_asset_caches()       清空后若无人重算，显示就停在被清掉的那一代
 ##   benchmark_score_stamp_once_json / benchmark_place_once_json /
 ##   benchmark_scene_bootstrap_once_json   清空后根本不重建（桥一次调用即可复现）
 func _publish_model(next_model: Dictionary) -> void:
@@ -421,16 +421,11 @@ func _asset_names() -> Array:
 
 # ---- Public API — SPA provider interface -----------------------------------
 
-## 每次 AD bake 之后刷新：meshfill 插件的 "Bake AD" 按钮在烘焙成功后经
-## SPA 在 descriptor bake 后调到这里。令 SPA 重扫 baked_descriptors 目录刷新 registry
-## (新烘焙的自动出现、重烘焙的刷新、删除的消失)、清 _assets 缓存；描述符变了——probes/collision 全过期 →
-## env（含 SPA 注册 + prefilter 常驻 handoff）与 runner（VPG 缓存）整体失效重建。
-func reload_and_rescore() -> Dictionary:
-	if not Engine.is_editor_hint():
-		return {"ok": false, "reason": "not_editor_hint"}
-	_reload_placement_descriptors()   # 内部经 SPA 的 baked_assets_reloaded 广播回到本类
-	return calculate_voxel_scores()
-
+## ⚠ 这里曾有 `reload_and_rescore()` 与 `_reload_placement_descriptors()` 两个中转方法，
+## 由 SPA 调进来、再回头调 `SPA.load_baked_assets()`。已删除：那条环路的两端都在 SPA，
+## 本类只是中间的传声筒。现在 SPA 的 `refresh_volume_provider()` 直接「加载 → 广播 → 重算」，
+## 本类对外只剩两个被动接口：`invalidate_asset_caches()`（订阅换代）与
+## `calculate_voxel_scores()`（被调重算）。
 
 ## 作废一切从 descriptor 派生的东西。
 ##
@@ -449,22 +444,6 @@ func invalidate_asset_caches() -> void:
 	_diag_target_completeness = PackedFloat32Array()
 	_diag_target_collision = PackedFloat32Array()
 	_diag_target_color = PackedColorArray()
-
-
-## 让 SPA 强制重扫 Bake 目录，使一次 Bake AD 立刻生效：新烘焙的出现、重烘焙的刷新、
-## 删除的消失。本类不持有资产列表，缓存作废由 SPA 的 baked_assets_reloaded 广播完成。
-func _reload_placement_descriptors() -> void:
-	var spa := _spa_display_host()
-	if spa == null:
-		push_warning("[VolumeScore] 找不到 SPA 宿主——无法重扫 Bake 目录。")
-		invalidate_asset_caches()   # 没有 SPA 就收不到广播，自己清
-		return
-	# 强制重扫（force=true）：重烘焙常同名覆盖、目录签名不变，非 force 会被短路吃掉。
-	var report := spa.load_baked_assets(true)
-	if not bool(report.get("ok", false)):
-		push_warning("[VolumeScore] 重载资产失败（%s）——沿用上一版 registry。" % [
-			str(report.get("reason", "unknown"))])
-		invalidate_asset_caches()   # 失败路径不发广播，仍要清：内容可能已部分换代
 
 
 ## 完整管线：env（S0..S5 底座）→ 真实 S6 prefilter → S7 细筛 → 可视化

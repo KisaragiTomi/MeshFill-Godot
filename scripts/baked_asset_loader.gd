@@ -165,13 +165,15 @@ static func _inspect_descriptor(path: String) -> Dictionary:
 	# descriptor 级 color、complexity / collision_voxel_size」构成——重烘焙若**条数不变而
 	# 内容变了**（采样位置、逐样本期望色、权重…），令牌逐位相同，缓存不会失效，
 	# `get_profile_samples()` 继续吐上一版采样。表现就是「Reload 说成功、评分结果一模一样」。
-	# 这里显式作废，不依赖令牌完整性，也不依赖 `changed` 信号是否在 REPLACE 时触发。
-	descriptor.invalidate_profile_sample_cache()
-	# ── 第一级广播：逐 descriptor 的内容换代 ──────────────────────────────
-	# `Resource.changed` 是本仓既定的失效通道（AssetDescriptor._init 把自己的采样缓存挂上，
-	# AutoVoxelRuntimeProfileContainer:557 把归一化缓存挂上）。REPLACE 是就地覆写属性，
+	# ── 逐 descriptor 的内容换代广播 ──────────────────────────────────────
+	# `Resource.changed` 是本仓既定的失效通道：AssetDescriptor._init 把自己的采样缓存挂上，
+	# AutoVoxelRuntimeProfileContainer:557 把归一化缓存挂上。REPLACE 是就地覆写属性，
 	# 实测**不会**自动发 changed —— 于是所有订阅方一起失聪，正是「Reload 说成功、结果不变」
-	# 的根因。这里补发一次，任何持有该 descriptor 的缓存都能自愈，新增订阅方零改动接入。
+	# 的根因。补发一次即可：持有该 descriptor 的缓存全部自愈，新增订阅方零改动接入。
+	#
+	# ⚠ 不要在这里再手动调一次 `invalidate_profile_sample_cache()`：那是 descriptor 自己
+	# 订阅的槽，emit 已经会走到。发信号的人同时点名订阅者，等于把广播降级成硬编码扇出，
+	# 下一个人加订阅时又会以为需要在这里补一行。
 	descriptor.emit_changed()
 
 	var asset_id := str(descriptor.asset_id).strip_edges()
