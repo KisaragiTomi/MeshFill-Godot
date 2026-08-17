@@ -63,12 +63,16 @@ var descriptor := AutoObject.create_asset_descriptor(
 ResourceSaver.save(descriptor, "res://assets/vegetation/leaf_descriptor.tres")
 ```
 
-> 上面两段为示意用法。`assets/vegetation/` 下已有实际 descriptor `.tres`（见 [`asset-descriptor.md`](asset-descriptor.md)），新增资产时优先复制这些现成资源再调整字段。
+> 上面两段为示意用法，路径也只是示意。**生产 descriptor 不走这条手写路**：它们由 Asset Overview 场景
+> 的 bake 链产出到 `res://scenes/asset-overview/baked_descriptors/`（`BakedAssetLoader` 只扫这一个
+> 目录，见 [`asset-descriptor.md`](asset-descriptor.md)），新增资产时优先复制那里的现成资源再调整字段。
 
 ## 输入规则
 
-下表是 `AutoObject.configure_object()` / `AssetDescriptor.make_instance_config()` 实际读取的键。落盘
+下表是 `AutoObject.configure_object()` 实际读取的键。落盘
 路径由调用方自己传给 `ResourceSaver.save()`，**没有** `asset_path` / `descriptor_path` 这样的 config 键。
+（`AssetDescriptor.make_instance_config()` 这个反向入口**已不存在**：descriptor 不再自己拼一份
+config 字典，改由 `configure_object()` 收 `asset_descriptor` 键直接持有资源，见下面「Runtime Use」。）
 
 | 输入 | 规则 |
 | --- | --- |
@@ -78,7 +82,7 @@ ResourceSaver.save(descriptor, "res://assets/vegetation/leaf_descriptor.tres")
 | `channel` | 植被 scatter channel，不进入 `SharedPropertyType.SHARED_FIELD_KEYS`。 |
 | `radius` | 植被 scatter radius；物体只用作 profile fallback 默认半径。 |
 | `group` | 实例分组名；`configure_object()` 缺省填 `"placed_objects"`。 |
-| `object_type` | 粗分组；`make_instance_config()` 缺省填 `"object"`。 |
+| `object_type` | 粗分组；`configure_object()` 无条件写成 `"object"`（config 里传别的值会被覆盖）。 |
 | `mesh` | 资源 mesh 输入；物体必需，植被可选。 |
 | `mesh_height_texture` | 物体高度场 fitting 输入（`Texture2D`）。 |
 | `mesh_create_method` | 只用于植被 descriptor 内置 mesh 工厂，必须在白名单中。 |
@@ -114,7 +118,7 @@ ResourceSaver.save(descriptor, "res://assets/vegetation/leaf_descriptor.tres")
 
 ## Vegetation Config
 
-以下同为示意 config；实际已有 descriptor 见 `assets/vegetation/sm_test_leaf_test2_asset.tres`。
+以下同为示意 config；实际在用的 descriptor 见 `scenes/asset-overview/baked_descriptors/Geo_SM_TestLeaf_Test2_descriptor.tres`。
 
 ```json
 {
@@ -132,8 +136,9 @@ ResourceSaver.save(descriptor, "res://assets/vegetation/leaf_descriptor.tres")
 ```
 
 产物是一个 `AssetDescriptor` 资源（字段分组见 [`asset-descriptor.md`](asset-descriptor.md)），
-由调用方 `ResourceSaver.save()` 到任意路径，例如
-`res://assets/vegetation/sm_test_leaf_test2_asset.tres`。
+由调用方 `ResourceSaver.save()` 到任意路径。⚠ 只有落在
+`res://scenes/asset-overview/baked_descriptors/` 下的才会被 `BakedAssetLoader` 发现并注册——
+存到别处的 descriptor 不进生产链。
 
 `object_subtype` 已**不是** `AssetDescriptor` 的导出字段——它只作为 placement record 的哈希输入残留在 `scripts/scene_placement_runtime.gd`。资产身份请使用 `asset_id`、descriptor 资源路径或运行时 `profile_id`；旧脚手架 JSON 里的 `subtype` 键已从示例中移除。
 
@@ -144,13 +149,15 @@ ResourceSaver.save(descriptor, "res://assets/vegetation/leaf_descriptor.tres")
 ## Runtime Use
 
 ```gdscript
-var leaf_asset := load("res://assets/vegetation/sm_test_leaf_test2_asset.tres") as AssetDescriptor
+var leaf_asset := load("res://scenes/asset-overview/baked_descriptors/Geo_SM_TestLeaf_Test2_descriptor.tres") as AssetDescriptor
 var obj := AutoObject.new()
-obj.configure_object(leaf_asset.make_instance_config())
+obj.configure_object({"asset_descriptor": leaf_asset})
 ```
 
-（全仓没有 `register_brush_autoobject()` 这样的入口；实例化就是把 `make_instance_config()` 的结果喂给
-`AutoObject.configure_object()`。）
+（全仓没有 `register_brush_autoobject()` 这样的入口；实例化就是把 descriptor 经 `asset_descriptor`
+键喂给 `AutoObject.configure_object()`——它随即 `_sync_exported_fields_from_descriptor()`，
+用 `SharedPropertyType.from_descriptor()` 把 color / complexity / collision / pivot_variants /
+probe 参数一次性拉到实例上。descriptor 侧**没有**反向的 `make_instance_config()`。）
 
 高度场生成器直接使用 descriptor-backed `AutoObject` 原型。生成结果复制原型并落到场景，运行时从 descriptor-backed 字段派生 `instance_stamp_write_spec` / `ISWS` 并附着到实例（`set_instance_stamp_write_spec()`）。脚本侧的 CPU 构造入口（`make_instance_stamp_write_spec()` 及 `AutoAssetFactory` 上早先的同类 wrapper）已随 CPU 盖章链删除；record 由运行时 placement / writeback 生成。
 

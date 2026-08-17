@@ -114,7 +114,7 @@ PickableDomain (pickable_domain.gd, 审计时 604 行 → 落地后 707 行：�
 
 | 能力 | 实际所在 |
 | --- | --- |
-| `resolve_pick`（容器形态，一次返回 N 个批） | [`placed_instance_display.gd:257`](scripts/utils/placed_instance_display.gd:257) |
+| `resolve_pick`（容器形态，一次返回 N 个批） | [`placed_instance_display.gd`](scripts/utils/placed_instance_display.gd) `:257` |
 | 体素寻址 `_autoobject_voxel_min_from_index()` | `spa_selection_host.gd`（注入式，非基类的 `element_to_voxel`） |
 | 显示节点 | 由 demo 建，再注册进显示组 |
 | 点选数据 | host 上 9 个专属成员 + `set_autoobject_pick_data()` 外部推送 |

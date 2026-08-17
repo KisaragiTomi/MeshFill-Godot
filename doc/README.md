@@ -27,7 +27,6 @@ This folder is the single home for MeshFill architecture notes, data schemas, de
 | --- | --- |
 | [`core-scene-placement-actor.md`](core-scene-placement-actor.md) | SPA + AutoObject end-to-end placement test-scene contract |
 | [`placement-score-3d.md`](placement-score-3d.md) | 3D residual-gain volume-score contract |
-| [`ui-click-test-plan.md`](ui-click-test-plan.md) | Core SPA click-selection UI test plan |
 
 The two live scene files remain with their runtime assets:
 [`placement-score-3d.tscn`](../demos/placement-score-3d/placement-score-3d.tscn) and
@@ -38,10 +37,13 @@ The two live scene files remain with their runtime assets:
 | File | Purpose |
 | --- | --- |
 | [`auto-volume-base-class-plan.md`](auto-volume-base-class-plan.md) | Shared `AutoVolume` base-class plan |
-| [`gpu-direct-rendering-plan.md`](gpu-direct-rendering-plan.md) | GPU direct-rendering implementation plan |
 | [`volume-display-domain-audit.md`](../volume-display-domain-audit.md) | Per-domain audit of the five Voxel Display domains: what each still implements for itself vs what belongs in the AutoVolume base chain (kept at repo root) |
-| [`project-simplification-plan.md`](project-simplification-plan.md) | Project simplification and cleanup plan |
-| [`unified-picking-plan.md`](unified-picking-plan.md) | Voxel-format and picking unification plan |
+| [`项目优化方案去冗余清理的计划.md`](../项目优化方案去冗余清理的计划.md) | Repo-wide redundancy-cleanup plan (2026-08-14 scan): orphan files, dead code, stale doc references, and the per-batch validation protocol (kept at repo root) |
+
+Four plans previously listed here were deleted along with the work they described and are
+**not** being recreated: `ui-click-test-plan.md`, `gpu-direct-rendering-plan.md`,
+`project-simplification-plan.md`, `unified-picking-plan.md`. Prose that used to cite them has
+been rewritten to be self-contained.
 
 ## Diagrams
 
@@ -52,6 +54,7 @@ The two live scene files remain with their runtime assets:
 | [`core-SPA-scene-placement-actor/diagrams/autoobject_gpu_runtime_architecture.svg`](../demos/core-SPA-scene-placement-actor/diagrams/autoobject_gpu_runtime_architecture.svg) | GPU-owned million-scale `AutoObject` runtime, CPU command/debug control plane, profile container, tile-level object refs, and SV commit boundary |
 | [`../scenes/asset-overview/diagrams/autoassetfactory_relationships.svg`](../scenes/asset-overview/diagrams/autoassetfactory_relationships.svg) | Scaffold JSON, `AutoAssetFactory` normalization, saved object/vegetation assets, and runtime write path |
 | [`core-SPA-scene-placement-actor/diagrams/scene-placement-actor.svg`](../demos/core-SPA-scene-placement-actor/diagrams/scene-placement-actor.svg) | SPA-owned asset registry and runtime profile container with borrowed SV/runtime owners and the placement pipeline |
+| [`core-SPA-scene-placement-actor/diagrams/asset-descriptor-bake-to-score-chain.svg`](../demos/core-SPA-scene-placement-actor/diagrams/asset-descriptor-bake-to-score-chain.svg) | End-to-end `AssetDescriptor` chain from `geo/*.FBX` through authoring-side scan/bake to the runtime load, profile-arena upload, and score display, annotated with the failure points that were hit and fixed along it |
 | [`placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg`](../demos/placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter, dirty-region anchor collection, per-anchor top-K, and the resident anchor_candidate_handoff |
 | [`placement-autoobject-probe-prefilter/diagrams/autoobject_probe_scoring_logic.svg`](../demos/placement-autoobject-probe-prefilter/diagrams/autoobject_probe_scoring_logic.svg) | Descriptor probe generation, profile-arena packing, SV/TargetSV_B sampling, weighted fit, and candidate-only top-K boundary |
 | [`core-scene-voxel-field-system/diagrams/scene-voxel-flow.svg`](../demos/core-scene-voxel-field-system/diagrams/scene-voxel-flow.svg) | `instance_stamp_write_spec` / `ISWS`, stamp-only commit (`commit_scene_voxels()`), BrushSV overlay / BlendSV compose, accepted `SceneVoxel` fields, feedback, and SV resident fields |

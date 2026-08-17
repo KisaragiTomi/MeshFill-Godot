@@ -29,7 +29,7 @@ anchor 是一组「只有位置、没有类型」的候选放置点，GPU 记录
 
 | 阶段 | 生产入口 | 下游消费 |
 | --- | --- | --- |
-| S1 TargetSV | `TargetSVSetup` 节点 | `get_display_snapshot()` 出网格几何/地形高度；`decode_gpu()` 的 `target_visual_rgba8_bytes`（packed rgba8，每体素 1 个 u32：rgb + 低字节 completeness）直接作目标场，无 CPU 重打包 |
+| S1 TargetSV | `TargetSVSetup` 节点 | `get_base_grid_frame()` / `get_grid_frame()` 出网格几何，`voxel_to_world()` 出体素→世界换算；`get_visual_bytes()`（packed rgba8，每体素 1 个 u32：rgb + 低字节 completeness）直接作目标场，无 CPU 重打包。`PlacementStageEnv.target_common_bytes()` 把它与 `get_collision_bytes()` 打成 `target_visual_rgba8_bytes` / `target_collision_r8_bytes` 键对（后者是历史键名，内容已是 unorm8-in-u32） |
 | S0+S3+S4 底座 | 场景常驻 SPA；`PlacementStageEnv.make(existing_spa, options)` 只借用 | SPA 播种 terrain collision、注册 baked `.tres` 并按 TargetSV 网格配置 committer；adapter 不重新配置或持有这些资源 |
 | S5+S6 采集 | `PlacementStageEnv.ensure_prefilter` | 内部串 `ensure_sv_committed`（真实 SV + 常驻 complexity/collision 场 RID 注入）→ `prepare_target_read_buffers_from_common_gpu`（常驻 vec4 field + unorm8_u32 collision 双缓冲）→ `run_autoobject_prefilter` |
 
@@ -37,7 +37,7 @@ anchor 是一组「只有位置、没有类型」的候选放置点，GPU 记录
 
 ```text
 TargetSVSetup (S1)                 ScenePlacementActor (S0+S3+S4)
-  snapshot/decode_gpu                terrain seed + baked .tres + committer
+  grid_frame/get_visual_bytes        terrain seed + baked .tres + committer
         │                                   │
         ▼                                   ▼
   目标场 (CPU 侧解码)             ensure_prefilter (S5 常驻 target 双缓冲 + S6)

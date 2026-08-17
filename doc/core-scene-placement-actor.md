@@ -140,9 +140,23 @@ target/prefilter 缓存失效——放置后再点 `Score`，会在**新场**上
 
 ![GPU 体素拾取全链路](../demos/core-SPA-scene-placement-actor/diagrams/voxel-pick-flow.svg)
 
-- 视口点击与桥调用 `pick_at_camera_pose()` 汇到同一条路：`SPASelectionHost` 构造世界射线 → `VoxelPickGPU` 按内容代号复用常驻 GPU 缓冲 → `shaders/pick_scene_voxel.glsl` 单 invocation 写命中记录 → 回读解码。
-- 常驻缓冲的复用判据是三个内容代号：`content_key`（TargetSV 体素）、`terrain_key`（地形高度场）、uniform set 的四 RID 快照。代号命中即跳过上传，空串代号表示内容未知、一律重传。
-- 输出缓冲跨次复用，正确性由回读侧的 `pick_serial` 完成戳保证：shader 在 `main()` 末句无条件写 `out_words[12]`，CPU 先比对再看命中标志。序列号失配是 `pick_dispatch_not_completed`（没跑完或读到残留），与射线确实没打中的 `no_gpu_hit` 是两种不同出口。
+> ⚠ **上图是历史产物**：它画的是已于 2026-08-10 删除的 GPU 射线求交路径
+> （`VoxelPickGPU` + `shaders/pick_scene_voxel.glsl`，按 `content_key` / `terrain_key`
+> 复用常驻缓冲、靠 `pick_serial` 完成戳判回读有效性）。现行链路见下。
+
+- 现行路径是**「可视化即拾取几何」的 ID 拾取**，没有射线求交：各域在自己的显示节点建好后调
+  `PickableDomain.register_pick_drawable(node, key)` 登记那个 `MultiMeshInstance3D`，
+  `PickIdPass`（`scripts/utils/pick_id_pass.gd`，由 `SPASelectionHost` 独占持有）把它们**镜像**
+  进一个 `own_world_3d = true` 的 SubViewport，用 `shaders/pick_id.gdshader` 再画一遍，
+  片元写 24 位 `pick_id`；点击时只回读该 SubViewport 上点击处的**一个像素**。
+- 镜像节点与真节点**共享同一个 `MultiMesh` 资源**（因而共享同一块 RD 实例缓冲），所以「再画一遍」
+  画的确实是同一份实例变换，原节点全程不动；`own_world_3d` 是物理隔离，不依赖任一方 cull_mask
+  设置正确。
+- ID **不跨趟存活**：`begin_pass()` 每趟把 `_next_pick_id` 归 1、清空解码表，按每个 drawable 的
+  `mm.instance_count`（**容量**，不是存活数）整段分配区间。命中后按区间反查 `{domain, key,
+  local_index}`，再交给该域的 `resolve_pick()` 解出载荷。
+- **可见性即点选准入**——这是 ID pass 的物理保证而非一条要各处遵守的约定：域的显示节点没画出来
+  就没有 `pick_id`，点不中。`0` 保留为「无命中」（ID 目标清成黑色即空，分配从 1 起）。
 
 ## GPU 验证策略
 

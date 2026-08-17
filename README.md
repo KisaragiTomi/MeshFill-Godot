@@ -43,9 +43,9 @@ TargetSceneVoxel（目标画布）            Placement Pipeline（生成管线�
 | --- | --- | --- |
 | **SPA**（ScenePlacementActor） | `scripts/scene_placement_actor.gd` | 场景侧 facade / 唯一生命周期与 RD 所有者：导出生产门限、发布 Anchor / Fine 常驻交接、驱动 `run_anchors` / `run_score` / `run_place` |
 | **ScenePlacementRuntime** | `scripts/scene_placement_runtime.gd` | 编排主体：资产注册、GPU buffer 生命周期、prefilter→placement→commit 三阶段流水线 |
-| **SPASelectionHost** | `scripts/spa_selection_host.gd` | 选择模式状态机、点选路由、记录构建；独占持有 `VoxelPickGPU`（生产路径唯一的 GPU 点选后端） |
-| **VoxelPickGPU** | `scripts/voxel_pick_gpu.gd` | GPU 射线求交后端（`shaders/pick_scene_voxel.glsl`），只出坐标不含选择语义：`pick_scene_voxel()` / `pick_targetsv()` + anchor / AutoObject 常驻缓冲灌注 |
-| **UnifiedPickGPU** | `scripts/unified_pick_gpu.gd` | 下一代统一多域 GPU 点选（`shaders/pick_unified.glsl`）。**尚未接线**：无任何生产调用方，仅 `scripts/checks/glsl_gen_block_checks.gd` 引用其 GLSL 布局 SSOT |
+| **SPASelectionHost** | `scripts/spa_selection_host.gd` | 点选路由、选中状态与反馈可视化宿主；独占持有 `PickIdPass`（生产路径唯一的点选后端） |
+| **PickIdPass** | `scripts/utils/pick_id_pass.gd` | 「可视化即拾取几何」的 ID 拾取渲染半边（`shaders/pick_id.gdshader`）：把正在显示的 `MultiMesh` 镜像进 `own_world_3d` 的 SubViewport 再画一遍，片元写 24 位 `pick_id`，回读点击处一个像素。ID 不跨趟存活，每趟 `begin_pass()` 重分配 |
+| **PickableDomain** | `scripts/pickable_domain.gd` | SPA 下所有可点选元素的共同基类：归属、域标识、内容 revision、显示节点、`register_pick_drawable()` 登记与 `resolve_pick()` 载荷解码。可见性即点选准入（画不出像素就没有 `pick_id`） |
 | **VolumeScoreFineSelection** | `scripts/volume_score_fine_selection.gd` | Score 步的结果模型装配与 golden 快照格式化 |
 | **TargetSV** | `scripts/target_scene_voxel_generator.gd` | 目标体素画布，GPU 生成/持久化/解码，对外提供 `target_completeness`/`target_collision` + `target_color` |
 | **AssetDescriptor** | `scripts/asset_descriptor.gd` | 资产语义描述符，持久化 canonical `profile_samples`、pivot 与默认 color/complexity/collision；旧资源字段只在读取边界归一化 |
@@ -105,7 +105,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 - **Stamp-only 提交**：committed `SceneVoxel` 纯 auto，stamp 即提交（`stamp_asset_voxels.glsl` / `scatter_sv_field_records.glsl`）；`BrushSV` 常驻挂 SPA，`BlendSV` = SV + BrushSV 按需合成（`compose_blend_sv_fields.glsl`），供 3D score 与 TargetSV 对比，用完即删
 - **Anchor 采集与选择**：`collect_sv_anchors.glsl`（在地形高度采样目标体积，采到即发锚；`anchor_vertical_stride` 决定地表之上再叠几层）→ `select_anchor_topk.glsl`（每 anchor `TOPK = 4`）→ `select_anchor_winners.glsl`（Score-only 分支的 per-anchor 胜者）
 - **Reduce 三阶段**：`init_anchor_atomic_reduce.glsl` → `invalidate_anchor_conflicts.glsl` → `compact_anchor_atomic_reduce.glsl`
-- **点选**：生产路径只有 `pick_scene_voxel.glsl`（单 invocation 写命中记录，由 `VoxelPickGPU` 派发）；`pick_unified.glsl` 是下一代统一多域 pass，已写完但尚未接线
+- **点选**：生产路径只有 ID 拾取——各域经 `PickableDomain.register_pick_drawable()` 登记显示用的 `MultiMeshInstance3D`，`PickIdPass` 镜像它们到独立 World3D 的 SubViewport 用 `pick_id.gdshader` 重画一遍，回读点击像素得 `pick_id`，再按分配区间反查域与实例下标（`resolve_pick()`）。旧的 GPU 射线求交路径（`pick_scene_voxel.glsl` / `pick_unified.glsl`）已于 2026-08-10 删除
 - **瓦片管理**：`scene_voxel_tile_object_ref_update.glsl` dirty 追踪与 tile 级固定槽位（每 tile 8 槽）对象引用更新，配合 `init_scene_voxel_tile_summaries.glsl` / `reduce_scene_voxel_tile_summaries.glsl` / `compact_scene_voxel_tile_summaries.glsl`
 
 ### 调度基础设施（compute-pass toolkit）

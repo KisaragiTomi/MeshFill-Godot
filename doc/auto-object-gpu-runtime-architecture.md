@@ -36,6 +36,10 @@
 
 ## Debug Ownership: BrushSV / AutoSV
 
+> ⚠ `BrushSV` / `AutoSV` 是**内容面标签**，不是类名——全仓没有叫这两个名字的脚本或 `class_name`。
+> `BrushSV` 的实现是 SPA 常驻的 brush field 对（域节点 `BrushSVVolume`），`AutoSV` 就是 committed
+> `SceneVoxel` 常驻 field 本身。
+
 `BrushSV` 常驻于 SPA 编排生命周期内（内容面即 SPA 常驻 brush field 对：`write_brush_sv_records()` 写入、`clear_brush_sv()` 清除），并作为 SPA 持久化 / 序列化内容的一部分保存；它不进 committed `SceneVoxel`，只在 `BlendSV` 读取合成时参与。`AutoSV` 即 committed SV 常驻 field（纯 auto），可经 debug readback 作为调试观察面。
 
 因此，调试能力不再依赖 CPU 侧保留一份 `BrushSV` / `AutoSV` 的完整内容镜像。内容型 source of truth 以 SPA 常驻数据、source write / commit 输出和 GPU debug buffer 为准。
@@ -78,8 +82,7 @@ object_flags           visible, selected, locked, dirty, source, collision flags
 
 ```text
 AssetDescriptor
-  -> AutoVoxelRuntimeProfile
-  -> AutoVoxelRuntimeProfileContainer
+  -> AutoVoxelRuntimeProfileContainer.register_descriptor()   # 归一化与打包就在容器内，无中间 profile 资源
        profile_arena_buffer            # 固定槽位单一 Arena：一个 RID / 一个 Binding / 一个 Revision
        descriptor_hash_to_profile_id
 ```

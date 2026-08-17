@@ -179,9 +179,7 @@ Metadata 只保留索引、回查和调试入口。当前 `AutoObject._sync_auto
 
 ```text
 AssetDescriptor
-  -> build / normalize
-AutoVoxelRuntimeProfile
-  -> register / pack
+  -> AutoVoxelRuntimeProfileContainer.register_descriptor()   # 归一化 + 打包，无中间 profile 资源
 AutoVoxelRuntimeProfileContainer
   -> GPU storage buffer upload / readback debug snapshot
 shader / SV 通过 profile_id 采样资产 profile

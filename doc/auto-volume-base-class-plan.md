@@ -12,6 +12,12 @@
 
 > **上游文档**：本文多处引用《体素格式统一与点选统一计划》（`unified-picking-plan.md`），下文一律简称
 > **《点选统一》**。凡标 §x.y 而未注明文档者，均指本文自身章节。
+>
+> ⚠ **该上游文档已删除，不重建**（随其描述的工作一并退役）。文中所有「《点选统一》§x.y」因此是
+> **悬空的历史指针**：它们记录某条决定当初出自哪里，但那份原文已不可读，别去 `doc/` 里找。
+> 已落地的部分以代码为准——ID 拾取机制看 `scripts/utils/pick_id_pass.gd` 与
+> `scripts/pickable_domain.gd` 的头注释，逐域现状看
+> [`volume-display-domain-audit.md`](../volume-display-domain-audit.md)。
 
 ## 实施进度（2026-08-07）
 

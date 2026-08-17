@@ -183,9 +183,11 @@ CPU 取源的原因，不是缺功能**」。两条链因此**无法合并成一
 2. 都受同一套 MultiMesh 陷阱约束（见下一节）：`custom_aabb` 强制、绝不碰 `set_instance_*`、
    `instance_count` 变更会重建底层 RD buffer。
 
-体素侧的细节见 [`target-sv-brush-overlay.md`](target-sv-brush-overlay.md)；
-全部 6 个 drawable 的横向盘点与「要不要统一成一套契约」的收敛记录见
-[`unified-picking-plan.md` 的「第六组：可视化合并后的旧入口」](unified-picking-plan.md#第六组可视化合并后的旧入口)。
+体素侧的细节见 [`target-sv-brush-overlay.md`](target-sv-brush-overlay.md)。
+全部 6 个 drawable 的横向盘点原先记在 `unified-picking-plan.md`「第六组：可视化合并后的旧入口」，
+该文档已删除、不重建；其结论已落进代码：6 个 drawable 统一经
+`PickableDomain.register_pick_drawable()` 进 ID pass，命中后各域用自己的 `resolve_pick()`
+解载荷（逐域现状盘点见 [`volume-display-domain-audit.md`](../volume-display-domain-audit.md)）。
 
 ## 三个静默失败陷阱
 
