@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Claude Code UserPromptSubmit hook: MeshFill-Godot semantic gate.
 
-Port of the codex-side ``.codex/hooks/semantic_gate_user_prompt.py``. When a
+Originally ported from a codex-side twin at ``.codex/hooks/semantic_gate_user_prompt.py``;
+that directory was retired 2026-08-17 (Codex no longer in use) and this copy is now the
+only one. When a
 prompt looks like it introduces or renames a module / class / concept / doc,
 this queries the shared MemPalace and injects the top hits as additional
 context so Claude classifies the change (reuse / specialize / new / rename /
