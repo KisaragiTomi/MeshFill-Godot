@@ -67,14 +67,17 @@ static func readback_tile_snapshot(tile_store) -> Dictionary:
 		summary["complexity_field_values"] = PackedFloat32Array()
 		summary["collision_field_values"] = PackedFloat32Array()
 		return summary
-	var tile_record_bytes = tile_store._read_scene_voxel_tile_buffer_bytes(TILE_RECORD_BUFFER)
-	var summary_record_bytes = tile_store._read_scene_voxel_tile_buffer_bytes(TILE_SUMMARY_BUFFER)
-	var object_ref_bytes = tile_store._read_scene_voxel_tile_buffer_bytes(TILE_OBJECT_REF_BUFFER)
-	var dirty_flag_bytes = tile_store._read_scene_voxel_tile_buffer_bytes(TILE_DIRTY_FLAG_BUFFER)
-	var dirty_worklist_bytes = tile_store._read_scene_voxel_tile_buffer_bytes(TILE_DIRTY_WORKLIST_BUFFER)
-	var dirty_count_bytes = tile_store._read_scene_voxel_tile_buffer_bytes(TILE_DIRTY_COUNT_BUFFER)
-	var complexity_field_bytes = tile_store._read_scene_voxel_tile_buffer_bytes(TILE_COMPLEXITY_FIELD_BUFFER)
-	var collision_field_bytes = tile_store._read_scene_voxel_tile_buffer_bytes(TILE_COLLISION_FIELD_BUFFER)
+	# ⚠ 走**公开**口 `read_scene_voxel_tile_buffer_bytes()`，不是它转发的那个私有版：
+	# 公开口的注释是「常驻场是多兆字节的同步回读，绝不能进每帧循环」这条警示的唯一存放处，
+	# 越过它去调私有版等于绕开了唯一的告警位（本模块 8 处此前都在越界调用，2026-08-17 改回）。
+	var tile_record_bytes = tile_store.read_scene_voxel_tile_buffer_bytes(TILE_RECORD_BUFFER)
+	var summary_record_bytes = tile_store.read_scene_voxel_tile_buffer_bytes(TILE_SUMMARY_BUFFER)
+	var object_ref_bytes = tile_store.read_scene_voxel_tile_buffer_bytes(TILE_OBJECT_REF_BUFFER)
+	var dirty_flag_bytes = tile_store.read_scene_voxel_tile_buffer_bytes(TILE_DIRTY_FLAG_BUFFER)
+	var dirty_worklist_bytes = tile_store.read_scene_voxel_tile_buffer_bytes(TILE_DIRTY_WORKLIST_BUFFER)
+	var dirty_count_bytes = tile_store.read_scene_voxel_tile_buffer_bytes(TILE_DIRTY_COUNT_BUFFER)
+	var complexity_field_bytes = tile_store.read_scene_voxel_tile_buffer_bytes(TILE_COMPLEXITY_FIELD_BUFFER)
+	var collision_field_bytes = tile_store.read_scene_voxel_tile_buffer_bytes(TILE_COLLISION_FIELD_BUFFER)
 	summary["readback_snapshot"] = true
 	summary["tile_record_bytes"] = tile_record_bytes
 	summary["summary_record_bytes"] = summary_record_bytes

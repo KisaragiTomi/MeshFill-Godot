@@ -305,6 +305,20 @@ static func profile_samples_from_legacy_voxels(
 	return result
 
 
+## 这批样本里是否至少有一条带 `stage_flag` 位。
+##
+## ⚠ 收在这里而不是各消费方自己写：flags 的语义 SSOT（`SAMPLE_FLAG_*`、
+## `SAMPLE_FLAG_STAGE_MASK`、`SAMPLE_FLAG_KNOWN_MASK`）本来就住在本文件，判定式跟着走。
+## 此前 `asset_descriptor.gd:_profile_samples_have_stage()` 与
+## `auto_voxel_runtime_profile_container.gd:_has_sample_stage()` 是同体异名的两份逐字副本
+## ——同一个判定用两个名字，grep 任一个都只看得到一半（2026-08-17 收敛）。
+static func samples_have_stage(samples: Array[Dictionary], stage_flag: int) -> bool:
+	for sample in samples:
+		if (int(sample.get("flags", 0)) & stage_flag) != 0:
+			return true
+	return false
+
+
 ## Returns an empty string when a canonical sample is safe to bake.
 static func profile_sample_validation_error(sample: Dictionary) -> String:
 	var flags := int(sample.get("flags", 0))

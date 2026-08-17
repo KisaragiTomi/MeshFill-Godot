@@ -94,14 +94,9 @@ func live_element_count() -> int:
 
 
 ## 瓦片域的内容修订号 = store 的 GPU 修订号（V3 劈开前的现状，与 `SceneSVVolume` 同源）。
-##
-## ⚠ 不要改用基类的 `_revision`：本域今天没有独立的递增点，用它会得到恒 0，
-## 而消费方会把恒 0 当成"内容从没变过"并永久复用旧缓存。
+## 取法收在基类的 `_svtile_gpu_revision()`（含完整理由，包括为何不能改用 `_revision`）。
 func revision() -> int:
-	var spa := scene_placement_actor()
-	if spa == null:
-		return 0
-	return int(spa.get_svtile_gpu_status().get("gpu_revision", 0))
+	return _svtile_gpu_revision()
 
 
 ## 报告的 resident 位由 GPU 侧回答（store 的 runtime_ready），不是"节点在即在场"。

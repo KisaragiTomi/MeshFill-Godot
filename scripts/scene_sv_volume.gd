@@ -242,11 +242,6 @@ func _warn_if_summaries_are_stale(spa: ScenePlacementActor, voxel_count: int) ->
 
 ## SceneSV 的内容修订号来自 SVTile 的 GPU 修订号——两者今天是同一个对象的两半，
 ## 场对一变瓦片摘要必然跟着重算。V3 劈开后本域自己持有。
-##
-## ⚠ 基类的 `_revision` 在本域是**不用**的：它没有独立的递增点，用它会得到一个恒 0 的数，
-## 而消费方会把恒 0 当成"内容从没变过"并永久复用旧缓存。
+## 取法与 `SVTileVolume.revision()` 同源，收在基类的 `_svtile_gpu_revision()`（含完整理由）。
 func revision() -> int:
-	var spa := scene_placement_actor()
-	if spa == null:
-		return 0
-	return int(spa.get_svtile_gpu_status().get("gpu_revision", 0))
+	return _svtile_gpu_revision()

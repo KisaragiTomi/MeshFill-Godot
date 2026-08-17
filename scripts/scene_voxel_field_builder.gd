@@ -76,14 +76,7 @@ func teardown() -> void:
 	_grid_owner = null
 
 func _grid_size() -> Vector3i:
-	if _grid_owner != null:
-		return _grid_owner.grid_size
-	if _committer != null:
-		return _committer.grid_size
-	# 以前静默返回 Vector3i.ONE：所有 xz_res/体素数换算按 1x1x1 走，场内容全错位。
-	push_error("[SceneVoxelFieldBuilder] _grid_size(): _grid_owner 与 _committer 均为空 —— 无法确定体素网格尺寸（曾静默降级为 Vector3i.ONE）")
-	assert(false, "SceneVoxelFieldBuilder: no grid size owner (_grid_owner/_committer both null)")
-	return Vector3i.ZERO
+	return VoxelGeneral.grid_size_from_owner(_grid_owner, _committer, "SceneVoxelFieldBuilder")
 
 func _base_resolution() -> int:
 	if _grid_owner != null:

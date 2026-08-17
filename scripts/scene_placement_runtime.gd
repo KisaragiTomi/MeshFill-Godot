@@ -599,11 +599,9 @@ func register_autoobject_asset(autoobject_ref: AutoObject, mesh_ref: Mesh = null
 	return register_asset(descriptor, resolved_mesh, autoobject_ref)
 
 
-## 批量注册 AssetDescriptor 数组，返回各自 profile_id 列表；由外部传入 descriptor 列表时调用
-## Register multiple descriptors at once.  Returns an Array of profile_ids
-## (parallel to the input array).  -1 means registration failed for that entry.
-func register_assets(descriptors: Array[AssetDescriptor]) -> Array[int]:
-	return register_asset_batch(descriptors)
+# ⚠ 这里曾有 `register_assets()`：一行转发给 `register_asset_batch()` 的中间跳，唯一调用方
+# 是 SPA 门面。SPA 门面已直连 `register_asset_batch()`（2026-08-17）——公开 API 契约不变，
+# 对外仍是 `SPA.register_assets()`（doc/scene-placement-actor.md），只是少了一层同名跳板。
 
 
 ## 事务式整体替换资产注册表（固定槽位Profile共享Buffer实施计划 §7 / §8.1）。

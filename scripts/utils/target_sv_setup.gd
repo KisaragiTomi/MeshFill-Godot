@@ -31,10 +31,12 @@ const DisplayChannelUtils := preload("res://scripts/utils/display_channel_utils.
 ## 本常量只剩类内消费）。
 const DISPLAY_NODE := "TargetSVVoxels"
 
-## TargetSV 显示 cell 的填充比与高度下限。覆盖基类默认值——这两个数是 TargetSV 特有的
-## （笔刷那边是 0.9 / 0.03），收进基类后仍按域覆盖，但算式只有一份。
-const DISPLAY_FILL_RATIO := 0.72
-const MIN_CELL_HEIGHT := 0.02
+# ⚠ 这里曾有 `DISPLAY_FILL_RATIO := 0.72` / `MIN_CELL_HEIGHT := 0.02` 两个常量与配套的
+# `display_fill_ratio()` / `min_cell_height()` 覆写，注释自称"这两个数是 TargetSV 特有的"。
+# 实际与基类的 `DEFAULT_DISPLAY_FILL_RATIO` / `DEFAULT_MIN_CELL_HEIGHT` **完全相同**——
+# 系数上提进基类时，TargetSV 那份取值恰好被选作基类默认值，覆写自此零行为差异，
+# 只剩「让读者以为 TargetSV 有特殊显示参数」这一个效果。2026-08-17 删除，改用基类默认。
+# （真有差异的域仍然覆写：笔刷 0.9/0.03、SVTile 0.9/0.05。）
 
 @export_group("Display")
 @export_enum("Color", "Complexity", "Collision") var display_channel: int = DisplayChannelUtils.CHANNEL_COLOR
@@ -77,14 +79,6 @@ func domain_key() -> String:
 
 func display_node_name() -> String:
 	return DISPLAY_NODE
-
-
-func display_fill_ratio() -> float:
-	return DISPLAY_FILL_RATIO
-
-
-func min_cell_height() -> float:
-	return MIN_CELL_HEIGHT
 
 
 ## 地形相对带的高度跨度。基类的 `display_aabb()` 用它算 Y 上界——贴在高处地形上的体素
@@ -363,8 +357,8 @@ func _build_field_display() -> MultiMeshInstance3D:
 	var voxel_size: Vector3 = frame["voxel_size"]
 	# ⚠ cell 尺寸与可见性盒的推导已上交基类（§2.5-9 / §2.5-10）——此前这两段与
 	# meshfill_brush.gd 逐字重复、连注释都一样，且两处系数不同却谁也不知道对方存在。
-	# 本类只声明系数（DISPLAY_FILL_RATIO / MIN_CELL_HEIGHT）与高度跨度
-	# （display_height_span / display_scale_value），算式在 AutoVolumeField。
+	# 本类只声明高度跨度（display_height_span / display_scale_value），算式在 AutoVolumeField；
+	# 填充比与高度下限直接用基类默认值（本类的同值覆写已于 2026-08-17 删除）。
 	var cell := display_cell_size()
 	var aabb := display_aabb()
 	var instance := VoxelDisplayScript.build_field_gpu(

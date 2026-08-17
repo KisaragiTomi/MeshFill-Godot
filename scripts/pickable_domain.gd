@@ -120,17 +120,22 @@ func _require_spa() -> ScenePlacementActor:
 
 
 func _resolve_scene_placement_actor() -> ScenePlacementActor:
-	var cursor: Node = self
+	return resolve_spa_from(self)
+
+
+## 沿父链查找所属的 `ScenePlacementActor`；找不到返回 null（判错归调用方的 `_require_spa()`）。
+##
+## ⚠ 2026-08-10 这里删过一个同职能的静态版（`resolve_spa_from()`），理由是"全仓零调用"。
+## 现在前提变了：`SPASelectionHost`（不是 `PickableDomain`，extends Node3D）自己抄了一份
+## 逐字相同的父链循环。**重新静态化不是回退**——上次删是因为没有消费者，这次留是因为
+## 出现了第二个，而两份副本意味着任何一次遍历规则调整只会覆盖一半。
+static func resolve_spa_from(node: Node) -> ScenePlacementActor:
+	var cursor: Node = node
 	while cursor != null:
 		if cursor is ScenePlacementActor:
 			return cursor as ScenePlacementActor
 		cursor = cursor.get_parent()
 	return null
-
-
-# ⚠ 这里曾有静态版父链解析 `resolve_spa_from()`（给非 PickableDomain 调用方复用）。
-# 当初的消费者（scripts/checks/ 的两个静态套件）已不再引用，全仓零调用，
-# 已删除（2026-08-10，链路死码清除）。
 
 
 # ── 坐标框架：转发，不复制 ───────────────────────────────────────────────────
@@ -238,6 +243,22 @@ func _extend_ownership_report_entry(_entry: Dictionary) -> void:
 func revision() -> int:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	return _revision
+
+
+## SVTile store 的 GPU 修订号（受保护助手，供 `SceneSVVolume` / `SVTileVolume` 的
+## `revision()` 覆写共用）。
+##
+## ⚠ 这是一条 **V3 之前的临时耦合**：SceneSV 与 SVTile 今天是同一个对象的两半，场对一变
+## 瓦片摘要必然跟着重算，所以两域的内容修订号同取 store 的 `gpu_revision`。逐字重复写在
+## 两个文件里会让它看起来像两条独立事实；收在这里是为了 V3 真正劈开时**只有一个可搜索点**。
+##
+## ⚠ 这两个域都**不能**改用基类的 `_revision`：它们今天没有独立的递增点，用它会得到恒 0，
+## 而消费方会把恒 0 当成「内容从没变过」并永久复用旧缓存。
+func _svtile_gpu_revision() -> int:
+	var spa := scene_placement_actor()
+	if spa == null:
+		return 0
+	return int(spa.get_svtile_gpu_status().get("gpu_revision", 0))
 
 
 ## 内容变了就调它。**只有内容真的变了才调**——空转递增会让所有消费方白重建一次缓存。

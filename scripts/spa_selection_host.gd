@@ -200,13 +200,11 @@ func _scene_placement_actor() -> ScenePlacementActor:
 
 
 ## 沿父链查找所属的 ScenePlacementActor。
+##
+## ⚠ 本类不是 `PickableDomain`（extends Node3D），但父链遍历规则与它逐字相同，
+## 因此调它的静态版而不再抄一份：两份副本意味着遍历规则一改只会覆盖一半。
 func _resolve_scene_placement_actor() -> ScenePlacementActor:
-	var cursor: Node = self
-	while cursor != null:
-		if cursor is ScenePlacementActor:
-			return cursor as ScenePlacementActor
-		cursor = cursor.get_parent()
-	return null
+	return PickableDomain.resolve_spa_from(self)
 
 
 ## 网格参数的唯一来源 = 祖先 SPA。
@@ -643,10 +641,8 @@ func _free_pick_id_probe_camera() -> void:
 # 想恢复导出请从当前 record 的真实键集重写，别照这份键表取回。
 
 
-## 将 Vector3 转为可 JSON 序列化的数组。
-static func _vec3_to_array(value) -> Array:
-	var v: Vector3 = value if value is Vector3 else Vector3.ZERO
-	return [v.x, v.y, v.z]
+# ⚠ 这里曾有 `_vec3_to_array()`（Vector3 → JSON 数组）。它与下面的 `_vec3i_to_array()`
+# 是成对写下的，但只有 Vector3i 那份有消费者；Vector3 版全仓零调用（2026-08-17 删除）。
 
 
 ## 将 Vector3i 转为可 JSON 序列化的数组。

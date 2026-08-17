@@ -198,14 +198,7 @@ static func scene_voxel_tile_size() -> Vector3i:
 	return SceneVoxelTileCodecScript.configured_size(SCENE_VOXEL_TILE_SIZE_SETTING, DEFAULT_SCENE_VOXEL_TILE_SIZE)
 
 func _grid_size() -> Vector3i:
-	if _grid_owner != null:
-		return _grid_owner.grid_size
-	if _committer != null:
-		return _committer.grid_size
-	# 以前静默返回 Vector3i.ONE：整个 tile 拓扑会按 1x1x1 网格算，缓冲尺寸/索引全错位。
-	push_error("[SceneVoxelTileStore] _grid_size(): _grid_owner 与 _committer 均为空 —— 无法确定体素网格尺寸（曾静默降级为 Vector3i.ONE 并产出错位的 tile 拓扑）")
-	assert(false, "SceneVoxelTileStore: no grid size owner (_grid_owner/_committer both null)")
-	return Vector3i.ZERO
+	return VoxelGeneral.grid_size_from_owner(_grid_owner, _committer, "SceneVoxelTileStore")
 
 ## 根据网格尺寸与 tile 尺寸计算 tile 网格尺寸
 func _scene_voxel_tile_grid_size(tile_size: Vector3i = Vector3i.ZERO) -> Vector3i:
@@ -266,10 +259,6 @@ func reset_empty_scene_voxel_grid() -> void:
 func is_empty_scene_voxel_tile_staging() -> bool:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	return _pending_scene_voxel_tile_dirty_commands.is_empty()
-
-## 规范化体素边界并裁剪到网格范围内
-func _scene_voxel_tile_normalized_bounds(voxel_min: Vector3i, voxel_max: Vector3i) -> Dictionary:
-	return SceneVoxelTileCodecScript.normalized_bounds(voxel_min, voxel_max, _grid_size())
 
 ## 上传（或按需重建）全部 tile GPU 缓冲；常驻 field 对只保证存在，绝不用 CPU 内容覆盖
 func ensure_scene_voxel_tile_buffers_uploaded(force: bool = false) -> bool:

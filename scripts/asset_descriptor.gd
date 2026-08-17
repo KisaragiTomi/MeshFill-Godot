@@ -216,9 +216,9 @@ func get_profile_samples(
 	# 数组的增删改不会回写缓存（sample Dictionary 本身按只读契约共享）。
 	var result: Array[Dictionary] = []
 	result.append_array(_normalized_stored_profile_samples())
-	var has_coarse := _profile_samples_have_stage(
+	var has_coarse := ProfileRecordSchemaScript.samples_have_stage(
 		result, ProfileRecordSchemaScript.SAMPLE_FLAG_COARSE)
-	var has_fine := _profile_samples_have_stage(
+	var has_fine := ProfileRecordSchemaScript.samples_have_stage(
 		result, ProfileRecordSchemaScript.SAMPLE_FLAG_FINE)
 	# ⚠ 下面两个分支是 **legacy 数据格式兼容路径**，不是错误兜底：全部存量烘焙
 	# descriptor（scenes/asset-overview/baked_descriptors/*.tres、assets/vegetation/*.tres）
@@ -330,11 +330,9 @@ func _refresh_profile_sample_cache() -> void:
 		_sample_cache = {"token": token}
 
 
-static func _profile_samples_have_stage(samples: Array[Dictionary], stage_flag: int) -> bool:
-	for sample in samples:
-		if (int(sample.get("flags", 0)) & stage_flag) != 0:
-			return true
-	return false
+# ⚠ 这里曾有 `_profile_samples_have_stage()`：与 auto_voxel_runtime_profile_container.gd 的
+# `_has_sample_stage()` 同体异名的逐字副本。判定式已收进 flags 语义的 SSOT 所在地
+# `utils/profile_record_schema.gd:samples_have_stage()`（2026-08-17）。
 
 
 func set_pivot_variants(variants: Array) -> void:

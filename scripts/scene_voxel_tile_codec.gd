@@ -60,7 +60,7 @@ static func register_project_settings(setting_name: String, default_size: Vector
 ## 读取项目设置中的尺寸值（缺省用 default_size），并把每个分量下限钳到 1，返回合法的 Vector3i。
 static func configured_size(setting_name: String, default_size: Vector3i) -> Vector3i:
 	var value = ProjectSettings.get_setting(setting_name, default_size)
-	var size := vector3i_from_value(value, default_size)
+	var size := VoxelGeneral.vector3i_from_value(value, default_size)
 	return Vector3i(maxi(size.x, 1), maxi(size.y, 1), maxi(size.z, 1))
 
 ## 由体素网格尺寸和瓦片尺寸计算瓦片网格尺寸（每维向上取整、下限 1），即各维度上瓦片的数量。
@@ -244,15 +244,15 @@ static func flags_from_value(value, default_layer: String = "scene") -> Dictiona
 
 	return flags
 
-## 委托到 VoxelGeneral.vector3i_from_value（该版本已并入本函数原有的超集行为）。
-static func vector3i_from_value(value, fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
-	return VoxelGeneral.vector3i_from_value(value, fallback)
+# ⚠ 这里曾有 `vector3i_from_value()`：一行转发给 `VoxelGeneral.vector3i_from_value()` 的
+# 跨模块再导出别名（本类合并进 VoxelGeneral 时留下的过渡壳）。它让同一个函数在两个类名下
+# 可见，grep 任一个都只看得到一半的调用方。两个类内调用点已直接引用源模块（2026-08-17）。
 
 ## 按 keys 顺序在记录中查找第一个存在的键并解析为 Vector3i；全部缺失则返回 fallback。
 static func first_vector3i(record: Dictionary, keys: Array[String], fallback: Vector3i = Vector3i.ZERO) -> Vector3i:
 	for key in keys:
 		if record.has(key):
-			return vector3i_from_value(record.get(key), fallback)
+			return VoxelGeneral.vector3i_from_value(record.get(key), fallback)
 	return fallback
 
 

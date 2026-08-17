@@ -48,6 +48,24 @@ static func voxel_count(grid_size: Vector3i) -> int:
 	return maxi(grid_size.x, 0) * maxi(grid_size.y, 0) * maxi(grid_size.z, 0)
 
 
+## 从「网格所有者优先、committer 兜底」的两级来源取体素网格尺寸；两者都空则**硬失败**。
+##
+## ⚠ 硬失败是这个函数存在的全部理由。两处调用方（`SceneVoxelFieldBuilder._grid_size()` /
+## `SceneVoxelTileStore._grid_size()`）的注释记录的是**同一条**历史 bug：曾经静默返回
+## `Vector3i.ONE`，于是 xz_res / 体素数 / tile 拓扑全按 1×1×1 换算，缓冲尺寸与索引整体错位
+## 而零报错。两份逐字副本意味着下一次调整只会覆盖一半——收成一处（2026-08-17）。
+##
+## `log_name` 只进错误文案，用调用方的类名，便于从控制台直接定位是哪一侧缺所有者。
+static func grid_size_from_owner(grid_owner, committer, log_name: String) -> Vector3i:
+	if grid_owner != null:
+		return grid_owner.grid_size
+	if committer != null:
+		return committer.grid_size
+	push_error("[%s] _grid_size(): _grid_owner 与 _committer 均为空 —— 无法确定体素网格尺寸（曾静默降级为 Vector3i.ONE，缓冲尺寸/索引整体错位而零报错）" % log_name)
+	assert(false, "VoxelGeneral.grid_size_from_owner: no grid size owner (_grid_owner/_committer both null)")
+	return Vector3i.ZERO
+
+
 static func tile_grid_size_for_grid(grid_size: Vector3i, tile_size: int = DEFAULT_TILE_SIZE) -> Vector3i:
 	var safe_tile_size := maxi(tile_size, 1)
 	return Vector3i(

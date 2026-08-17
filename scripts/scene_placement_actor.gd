@@ -1799,12 +1799,14 @@ func get_selected_anchor_index() -> int:
 	return host.get_selected_anchor_index() if host != null else -1
 
 
-func get_editor_overlay_text() -> String:
-	return _selection_host.get_selection_overlay_text() if _selection_host != null else ""
-
-
+## 视口边角的选中信息叠层文本。插件按**本名**探测并调用
+## （`meshfill_editor_plugin.gd:245/246/254/256` 四处）。
+##
+## ⚠ 这里原本是一对方向倒置的转发：实现体挂在 `get_editor_overlay_text()` 上，而
+## `get_selection_overlay_text()`（插件唯一认的名字）只是转发给它。旧名全仓零调用，
+## 于是「真正的入口」反而是那个没人叫的名字。2026-08-17 并成一个。
 func get_selection_overlay_text() -> String:
-	return get_editor_overlay_text()
+	return _selection_host.get_selection_overlay_text() if _selection_host != null else ""
 
 
 func set_autoobject_pick_data(data: Dictionary) -> void:
@@ -2659,7 +2661,7 @@ func reset_shader_compile_stats() -> void: GodotComputeShaderBase.reset_shader_c
 func get_place_resource_lifecycle_summary() -> Dictionary: return _runtime.get_place_resource_lifecycle_summary() if _runtime != null else {}
 func register_asset(descriptor, mesh_ref = null, autoobject_ref = null) -> int: return _runtime.register_asset(descriptor, mesh_ref, autoobject_ref) if _runtime != null else -1
 func register_autoobject_asset(autoobject_ref, mesh_ref = null) -> int: return _runtime.register_autoobject_asset(autoobject_ref, mesh_ref) if _runtime != null else -1
-func register_assets(descriptors: Array) -> Array[int]: return _runtime.register_assets(descriptors) if _runtime != null else ([] as Array[int])
+func register_assets(descriptors: Array) -> Array[int]: return _runtime.register_asset_batch(descriptors) if _runtime != null else ([] as Array[int])
 func replace_all_assets(descriptors: Array, meshes: Array = [], autoobjects: Array = []) -> bool: return _runtime.replace_all_assets(descriptors, meshes, autoobjects) if _runtime != null else false
 func replace_all_autoobject_assets(autoobjects: Array) -> bool: return _runtime.replace_all_autoobject_assets(autoobjects) if _runtime != null else false
 func clear_assets() -> void:

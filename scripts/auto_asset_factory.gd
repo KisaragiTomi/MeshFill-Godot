@@ -15,11 +15,13 @@ static func load_mesh(mesh_path: String) -> Mesh:
 		push_error("[AutoAssetFactory] load_mesh(): %s 的 mesh_info 缺 \"transform\" 键 —— DemoAssets.load_mesh_info 契约被破坏，无法烘焙导入变换" % mesh_path)
 		assert(false, "AutoAssetFactory.load_mesh: mesh_info missing transform")
 		return null
-	return _bake_mesh_transform(mesh, mesh_info["transform"])
+	return DemoAssets.bake_mesh_xform(mesh, mesh_info["transform"], true)
 
 
-static func load_source_mesh(mesh_path: String) -> Mesh:
-	return DemoAssets.load_mesh(mesh_path)
+# ⚠ 这里曾有 `load_source_mesh()`：一行转发给 `DemoAssets.load_mesh()` 的再导出别名。
+# 与合并时留下的 `_bake_mesh_transform()`（转发 `DemoAssets.bake_mesh_xform(..., true)`）
+# 一并内联（2026-08-17）——两者都只有一个类内调用点，壳子的唯一效果是让读者以为
+# AutoAssetFactory 自己实现了这两件事。
 
 
 ## source mesh 解析共用核心(原 AssetDescriptor/AutoObject.get_source_mesh 逐字重复)。
@@ -31,7 +33,7 @@ static func resolve_source_mesh(
 	fallback_mesh: Mesh
 ) -> Dictionary:
 	if not source_mesh_path.is_empty() and (cached_source_mesh == null or cached_source_mesh == current_mesh):
-		var loaded := load_source_mesh(source_mesh_path)
+		var loaded := DemoAssets.load_mesh(source_mesh_path)
 		if loaded == null:
 			# 显式配了 source_mesh_path 却加载不出来 = 数据本应存在却缺失，
 			# 不能悄悄退回 cached/fallback mesh 冒充 source mesh。
@@ -56,6 +58,5 @@ static func resolve_cached_source_mesh(owner: Object, current_mesh: Mesh, fallba
 	return resolved_mesh
 
 
-## 网格树查找 / UE 碰撞辅助体过滤 / 变换烘焙已与 DemoAssets 合并(原三份近逐字重复)。
-static func _bake_mesh_transform(src_mesh: Mesh, mesh_transform: Transform3D) -> Mesh:
-	return DemoAssets.bake_mesh_xform(src_mesh, mesh_transform, true)
+# ⚠ 网格树查找 / UE 碰撞辅助体过滤 / 变换烘焙已与 DemoAssets 合并(原三份近逐字重复)；
+# 本处的 `_bake_mesh_transform()` 转发壳已内联回 load_mesh()（2026-08-17）。

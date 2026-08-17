@@ -1816,12 +1816,9 @@ func debug_placement_pivot_report() -> String:
 	return "\n".join(lines)
 
 
-func get_anchor_world_positions() -> PackedVector3Array:
-	return _anchor_world_positions()
-
-
-func get_anchor_marker_radius() -> float:
-	return _anchor_marker_radius()
+# ⚠ 这里曾有 `get_anchor_world_positions()` / `get_anchor_marker_radius()` 两个公开别名，
+# 各自只有一行、转发给同名私有版。两者全仓零调用（私有版分别有 10 / 3 个内部调用方，保留）。
+# 2026-08-17 删除：公开面不该挂没有消费者的转发口，它会让人以为存在一条外部契约。
 
 
 ## [{anchor_index, aabb}]：有有效胜出物体的锚点及其世界 AABB（SPA 射线点选目标）。
@@ -1951,25 +1948,11 @@ func _clear_selection() -> void:
 	_notify_spa_selected_anchor_changed()
 
 
-func _status(require_scored: bool) -> Dictionary:
-	var ok := _total_anchors() > 0
-	if require_scored:
-		ok = ok and _scored()
-	var status := {
-		"ok": ok,
-		"anchors": _total_anchors(),
-		"scored": _scored(),
-		"asset_count": _assets.size(),
-		"score_ms": float(_model.get("elapsed_ms", 0.0)),
-	}
-	# Fine 常驻交接原样上浮给 SPA（run_score → _publish_score_result → 只读点选交接）。
-	# 借用语义不变：RID 归 VPG，途经的任何一层都不得释放。
-	# 多区域 Score 走 merge_models，合并模型不带该键——此时 SPA 侧 scored=false，
-	# 点选只能用 anchor 层，这是有意的：合并结果没有单一常驻 winner buffer 可指。
-	var fine_handoff: Dictionary = _model.get("fine_score_handoff", {})
-	if not fine_handoff.is_empty():
-		status["fine_score_handoff"] = fine_handoff
-	return status
+# ⚠ 这里曾有 `_status(require_scored)`：{ok, anchors, scored, asset_count, score_ms}
+# 状态字典构造器，并把 `fine_score_handoff` 原样上浮。全仓零消费者（2026-08-17 删除）。
+# ⚠ 想恢复时注意那条仍然成立的语义：多区域 Score 走 merge_models，合并模型**不带**
+# `fine_score_handoff` 键 —— 此时 SPA 侧 scored=false、点选只能用 anchor 层，是有意的，
+# 因为合并结果没有单一常驻 winner buffer 可指。
 
 
 # ---- Diagnostics（细筛 residual breakdown + TargetSV 邻域）-------------------
@@ -3034,22 +3017,8 @@ func _fmt_match_scan(r: Dictionary) -> String:
 		int(r.get("ymin", 0)), int(r.get("ymax", 0))]
 
 
-## 选中锚点胜出物体的定向包围盒（供 SPA 画红色 sample-bounds 框）。
-func _selected_anchor_sample_bounds() -> Dictionary:
-	var pl := _winner_placement(_selected_anchor_idx)
-	if pl.is_empty():
-		return {}
-	var aabb: AABB = pl.aabb
-	var t: Transform3D = pl.transform
-	var obb_size: Vector3 = aabb.size * float(pl.fit_scale)
-	var obb_center: Vector3 = t * (aabb.position + aabb.size * 0.5)
-	return {
-		"has_obb": true,
-		"obb_center": obb_center,
-		"obb_size": obb_size,
-		"obb_yaw": float(pl.yaw),
-		"aabb": AABB(obb_center - obb_size * 0.5, obb_size),
-	}
+# ⚠ 这里曾有 `_selected_anchor_sample_bounds()`：选中锚点胜出物体的定向包围盒
+# （供 SPA 画红色 sample-bounds 框）。调用点已随重构消失，全仓零调用（2026-08-17 删除）。
 
 
 func _anchor_marker_radius() -> float:

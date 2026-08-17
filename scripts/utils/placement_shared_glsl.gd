@@ -232,7 +232,14 @@ const CONSUMERS := {
 
 
 static func block(name: String) -> String:
-	return String(BLOCKS.get(name, "")).strip_edges()
+	# 返回空串会让 glsl_gen_block_checks 把「区块名写错」误判成「区块正文恰好为空」。
+	# 同形 SSOT 的另外三处（AutoObjectInstanceRenderer.block / ProfileArenaLayout.block /
+	# ProfileRecordSchema.layout_anchor_block）都已有这道守卫，本处是唯一的漏网（2026-08-17 补）。
+	if not BLOCKS.has(name):
+		push_error("PlacementSharedGLSL.block: 未知的生成块名 '%s'（已知: %s）" % [name, str(BLOCKS.keys())])
+		assert(false, "PlacementSharedGLSL.block: unknown block name")
+		return ""
+	return String(BLOCKS[name]).strip_edges()
 
 
 static func block_names() -> Array:

@@ -647,7 +647,8 @@ func _t13_texture_3d() -> void:
 	var voxels := s * s * s
 	var g := _builder()
 	var vol := g.create_texture("Vol", RDGScript.texture_3d(s, s, s))
-	g.add_pass("FillVol", k_fill_tex3, [RDGScript.write(vol)], _push(s, 5.0, 1.0, s, s), _g3(k_fill_tex3, s, s, s))
+	g.add_pass("FillVol", k_fill_tex3, [RDGScript.write(vol)], _push(s, 5.0, 1.0, s, s),
+		k_fill_tex3.groups_3d(s, s, s, LOCAL_3D, LOCAL_3D, LOCAL_3D))
 	g.extract(vol)
 
 	_check(g.execute(), "execute 成功")
@@ -1195,8 +1196,9 @@ func _g2(k: ComputeKernelScript, w: int, h: int) -> Vector3i:
 	return k.groups_2d(w, h, LOCAL_2D, LOCAL_2D)
 
 
-func _g3(k: ComputeKernelScript, w: int, h: int, d: int) -> Vector3i:
-	return k.groups_3d(w, h, d, LOCAL_3D, LOCAL_3D, LOCAL_3D)
+# ⚠ 这里曾有 `_g3()`：与 _g1 / _g2 对称写下的三维版本，但只有一个调用点
+# （FillVol pass）。_g1 有 51 个调用方、_g2 有 14 个，值得留；_g3 已内联回唯一调用点
+# （2026-08-17）。再出现第二个三维 dispatch 时再抽回来。
 
 
 ## 按逻辑尺寸回读。必须传 size_bytes：池化的物理 buffer 通常比逻辑数据大（按 2 的幂分桶），

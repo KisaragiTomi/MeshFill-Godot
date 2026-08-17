@@ -502,14 +502,6 @@ func describe() -> String:
 	]
 
 
-func _aos_field_names() -> PackedStringArray:
-	var out := PackedStringArray()
-	for f in aos_fields:
-		if f is Dictionary:
-			out.append(str(f.get("name", "")))
-	return out
-
-
 func _to_string_array(value: Variant) -> Array[String]:
 	var out: Array[String] = []
 	if value is Array:

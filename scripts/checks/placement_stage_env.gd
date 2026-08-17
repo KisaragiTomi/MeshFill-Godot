@@ -774,24 +774,10 @@ func get_committed_sv() -> Dictionary:
 # 内部
 # ---------------------------------------------------------------------------
 
-## 高度场 → 地形基底碰撞图（R32F；值 = clamp(height/normalize_max, 0..1)）。
-## 纯打包胶水：种子语义（复制进整列 slice、epsilon 归零、grid 分辨率重采样）
-## 全部住在生产侧（terrain_collision_volume.glsl / field_builder._resample_collision_field）。
-func _terrain_base_collision_image(normalize_max: float) -> Image:
-	var res := maxi(_grid_size.x, 1)
-	var values := PackedFloat32Array()
-	values.resize(res * res)
-	var denom := maxf(normalize_max, 0.0001)
-	# 旧代码用 mini(values.size(), 高度场.size()) 静默截断：高度场短一截时余下的格子保持 0，
-	# 整块地形被当成"零高度"，种子图只覆盖了一角却看不出来。
-	if _terrain_height_field.size() < values.size():
-		push_error("[PlacementStageEnv] 地形高度场尺寸不足：height_field=%d 需要 %d（grid.x=%d），无法生成完整地形碰撞种子。" % [
-			_terrain_height_field.size(), values.size(), res])
-		assert(false, "PlacementStageEnv: terrain height field smaller than grid")
-		return null
-	for i in range(values.size()):
-		values[i] = clampf(_terrain_height_field[i] / denom, 0.0, 1.0)
-	return Image.create_from_data(res, res, false, Image.FORMAT_RF, values.to_byte_array())
+# ⚠ 这里曾有 `_terrain_base_collision_image(normalize_max)`：高度场 → 地形基底碰撞图
+# （R32F）的测试夹具。种子语义本就全在生产侧（terrain_collision_volume.glsl /
+# field_builder._resample_collision_field），它只是一层打包胶水，调用方已随重构消失，
+# 全仓零调用（2026-08-17 删除）。要重建请从生产侧那两处取语义，别照这份胶水抄。
 
 
 ## make 半途失败：只记录原因；借用 owner 永不由适配器释放。

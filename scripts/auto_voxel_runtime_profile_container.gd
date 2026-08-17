@@ -1369,11 +1369,9 @@ static func _normalized_profile_samples(raw_samples: Array) -> Array[Dictionary]
 	return result
 
 
-static func _has_sample_stage(samples: Array[Dictionary], stage_flag: int) -> bool:
-	for sample in samples:
-		if (int(sample.get("flags", 0)) & stage_flag) != 0:
-			return true
-	return false
+# ⚠ 这里曾有 `_has_sample_stage()`：与 asset_descriptor.gd 的
+# `_profile_samples_have_stage()` 同体异名的逐字副本。判定式已收进 flags 语义的 SSOT
+# 所在地 `utils/profile_record_schema.gd:samples_have_stage()`（2026-08-17）。
 
 
 ## 把任意 raw_profile 字典规整为标准 profile 记录：clamp complexity 并写入 color.a、归一化 collision/pivot/probes、clamp 密度与感知半径，并据规范字段计算稳定的 profile_hash。
@@ -1392,9 +1390,9 @@ static func _normalize_profile_record(raw_profile: Dictionary) -> Dictionary:
 	var pivots := AssetDescriptorScript.normalize_pivot_variants(_array_from_value(raw_profile.get("pivot_variants", [])))
 	var probes := SemanticProbeGeneratorScript.duplicate_probe_array(_array_from_value(raw_profile.get("semantic_probes", [])))
 	var profile_samples := _normalized_profile_samples(_array_from_value(raw_profile.get("profile_samples", [])))
-	if not _has_sample_stage(profile_samples, ProfileRecordSchemaScript.SAMPLE_FLAG_COARSE):
+	if not ProfileRecordSchemaScript.samples_have_stage(profile_samples, ProfileRecordSchemaScript.SAMPLE_FLAG_COARSE):
 		profile_samples.append_array(ProfileRecordSchemaScript.profile_samples_from_legacy_probes(probes))
-	if not _has_sample_stage(profile_samples, ProfileRecordSchemaScript.SAMPLE_FLAG_FINE):
+	if not ProfileRecordSchemaScript.samples_have_stage(profile_samples, ProfileRecordSchemaScript.SAMPLE_FLAG_FINE):
 		var legacy_voxel_size := maxf(float(raw_profile.get("collision_voxel_size", 1.0)), 1.0e-6)
 		profile_samples.append_array(_profile_samples_from_legacy_asset_voxels(
 			asset_voxels, Vector3.ONE * legacy_voxel_size))
