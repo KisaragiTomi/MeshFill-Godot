@@ -1,6 +1,6 @@
 # TargetSV Point Cloud Conversion
 
-源数据：`res://landscape/TargetSV_PT.bgeo.sc`、`res://textures/scene_height_0_1.png`
+源数据：`res://landscape/TargetSV_PT.bgeo.sc`、`res://assets/target_sv/scene_height_0_1.png`
 
 ## 用途
 

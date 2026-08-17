@@ -1,7 +1,7 @@
 # TargetSV Brush Overlay
 
 源契约：[`target-scene-voxel-projection.md`](target-scene-voxel-projection.md)
-源数据：`res://assets/target_sv/`（经 `TargetSVLoader` 加载）、`res://textures/scene_height_0_1.png`
+源数据：`res://assets/target_sv/`（经 `TargetSVLoader` 加载）、`res://assets/target_sv/scene_height_0_1.png`
 
 ## 用途
 

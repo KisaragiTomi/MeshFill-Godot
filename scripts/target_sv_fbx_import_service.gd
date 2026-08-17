@@ -56,7 +56,13 @@ const BufferUtils := preload("res://scripts/utils/buffer_utils.gd")
 ## 所以"不经过 SPA"并不会让两边的框架分家——真分家了由 TargetSVSetup 的接收门禁拦。
 const TerrainConfigScript := preload("res://scripts/terrain_config.gd")
 
-const DEFAULT_HEIGHT_TEXTURE := "res://textures/scene_height_0_1.png"
+## ⚠ 必须落在资源系统看得见的目录里。本文件曾指向 `res://textures/`，而那整个目录带
+## `.gdignore` —— 导入器根本不扫它，下面 `_load_height_image()` 的 `load()` 只是碰巧还能
+## 命中「加 `.gdignore` 之前遗留的 `.import` + `.godot/imported` 缓存」；缓存一失效
+## （换机器、清 `.godot/`、重导入）整条链就断在 `height_texture_unavailable`。
+## 2026-08-17 迁到 `assets/target_sv/`（TargetSV 输入的既有归属目录，无 `.gdignore`），
+## 与 `targetsv0.fbx` / 点云产物同住，导入链因此是真的活着而不是靠陈缓存。
+const DEFAULT_HEIGHT_TEXTURE := "res://assets/target_sv/scene_height_0_1.png"
 const DEFAULT_SLICE_COUNT := 24
 const DEFAULT_HEIGHT_SCALE := 120.0
 

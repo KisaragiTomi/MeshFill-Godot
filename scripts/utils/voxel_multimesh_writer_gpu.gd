@@ -79,7 +79,12 @@ func is_ready() -> bool:
 	return _ready
 
 
+## 与 `auto_object_instance_renderer.gd` / `utils/placed_instance_display.gd` 的同名实现对齐。
+## 三份里唯独本份此前是不带类型修复的一行版：软重载后 `_last_reason` 回来是 nil，返回值
+## 因此是 Nil 而不是空串——调用方拿它拼错误串会得到 "<null>"，做 `.is_empty()` 会崩。
 func last_reason() -> String:
+	if not (_last_reason is String):
+		_last_reason = ""
 	return _last_reason
 
 

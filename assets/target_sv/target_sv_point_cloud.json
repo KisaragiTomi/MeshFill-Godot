@@ -27,7 +27,7 @@
 		511.677032470703
 	],
 	"source_fbx": "res://assets/target_sv/targetsv0.fbx",
-	"source_height": "res://textures/scene_height_0_1.png",
+	"source_height": "res://assets/target_sv/scene_height_0_1.png",
 	"target_guidance_only": true,
 	"target_role": "TargetSV",
 	"texture_size": 256,
