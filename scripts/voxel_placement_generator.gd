@@ -174,9 +174,10 @@ const REDUCE_COMPACT_PUSH := [
 const CLEARANCE_FIXED_SCALE := 256.0
 const CLEARANCE_BIAS_VOXELS := 64.0
 ## 有符号余隙场的**画**侧 push（shaders/paint_placement_clearance.glsl）。
-## 一套 layout 服务两个记录源：compact 出的 placement_results（stride=4，资产号在
-## [base+1].y，条数来自 GPU 的 result_count）与 CPU 种子表（stride=1，资产号在 .w，
-## 条数由 push 直接给）。
+## 记录源只剩 compact 出的 placement_results（stride=4，资产号在 [base+1].y，条数来自
+## GPU 的 result_count）。曾有第二个源：CPU 种子表（stride=1，资产号在 .w，条数由 push
+## 直接给）——跨轮互斥实为 fine score × 上轮盖章 SV 的职责（2026-08-19 用户裁决），
+## 种子链已删；shader 侧模式位仍是有效契约、只是无人再用。
 const PAINT_CLEARANCE_PUSH := [
 	["record_capacity", "int"],         # 0
 	["record_stride", "int"],           # 4   以 vec4 为单位
@@ -391,8 +392,8 @@ var _pipeline_score_sum: RID
 ## 每个被接受的放置在自己周围画一个圆锥（paint_placement_clearance.glsl），后续 anchor
 ## 只读自己那一格即可 O(1) 判跨批互斥（init_anchor_atomic_reduce.glsl 的 clearance 段）。
 ## 编码 0 = 未画 = 无约束 ⇒ 零填充即合法初值，重新分配零缓冲就等于清场，无需 clear pass。
-## 生命周期：跨批**且跨轮**常驻。`clearance_field_reset` 只在「会话首批 × 世界为空」为 true
-## （判定在 PlacementStageEnv，按 runtime id 分配器）；其余一律沿用累积。
+## 生命周期：place session 作用域——`clearance_field_reset`（会话首批 / 未声明会话的
+## 单发调用）重建零场，批间累积不清；跨轮互斥不靠它（fine score × 上轮盖章 SV）。
 var _resident_clearance_field_buffer: RID
 var _resident_clearance_field_bytes := 0
 var _resident_place_candidate_buffer: RID
@@ -1033,9 +1034,11 @@ func _run_anchor_fine_pipeline(
 	# (0 = out, 1 = selected, 2 = undecided) and writes the direct XZ map; the
 	# arbitrate pass iterates that machine to its fixed point; compact accepts
 	# state 1 up to the result buffer's capacity.
-	# 余隙场跨轮常驻：被接受的放置在**接受当批**就由 paint pass 画进场里，轮间没有"需要
-	# 重放的历史"（已放置物的载体只有 SV/SVTile/runtime，host 不留副本，故无 CPU 种子表）。
-	# reset 只应在「世界为空」时发生（PlacementStageEnv 判定并显式传入），缺省 false。
+	# 跨轮互斥不在余隙场：fine score 每批都在**上一轮盖章后的 SceneSV** 上重算
+	# solid_collision / clearance_overlap（资产 profile 的 CLEARANCE 探针直采 CurSample）
+	# 与 residual gain，上一轮的放置天然被排斥（2026-08-19 用户裁决：互斥逻辑在
+	# fine score × 上轮 SV，与 autoobject 无关）。故 CPU 种子表及其首批重画已整个删除
+	#（2026-08-18 裁决：下一轮依赖项与上一轮一致，host 不留副本）。
 	var spacing_floats: PackedFloat32Array = asset_lookup.get("spacing_floats", PackedFloat32Array())
 	if spacing_floats.is_empty():
 		spacing_floats.resize(1)
@@ -1060,10 +1063,11 @@ func _run_anchor_fine_pipeline(
 	var nms_meta_buffer := storage_buffer_zero(16, SCOPE_FRAME, "reduce_nms_meta")
 	var nms_dispatch_args_buffer := dispatch_indirect_args_buffer_zero(SCOPE_FRAME, "reduce_nms_dispatch_args")
 
-	# ── 有符号余隙场：跨批**且跨轮**互斥的常驻载体 ──────────────────────────────
-	# 只有「会话首批 × 世界为空」才重建零场（判定在 PlacementStageEnv）；其余一律沿用，
-	# 内容全部来自 GPU 侧 paint pass 的原位累积，没有任何 CPU 回传/重放。
-	var clearance_field_reset := bool(common_settings.get("clearance_field_reset", false))
+	# ── 有符号余隙场：**会话作用域**的批间互斥载体 ──────────────────────────────
+	# 会话首批重建零场，之后各批沿用；内容全部来自 GPU 侧 paint pass 的原位累积，没有
+	# 任何 CPU 回传/重放。跨轮互斥不靠它（见上：fine score × 上轮 SV）。
+	# 缺省 true = 未声明会话的单发调用自成一个新会话。
+	var clearance_field_reset := bool(common_settings.get("clearance_field_reset", true))
 	var clearance_field_buffer := _ensure_resident_clearance_field_buffer(
 		pixel_count, clearance_field_reset)
 	if not clearance_field_buffer.is_valid():
@@ -1119,8 +1123,9 @@ func _run_anchor_fine_pipeline(
 		make_storage_uniform(6, result_count_buffer),
 	], _shader_reduce_compact, 0)
 	# 画侧唯一的记录源：compact 刚写完的本批 survivor（条数在 GPU 的 result_count 里）。
-	# 曾有第二个记录源 seeds（CPU 种子表重放上一轮）——随余隙场跨轮常驻一并删除，
-	# shader 侧 stride=1/count_source=1/asset_field=1 的模式位仍是有效契约、只是无人再用。
+	# 曾有第二个记录源 seeds（CPU 种子表跨轮重放）——跨轮互斥实为 fine score × 上轮 SV
+	# 的职责（2026-08-19 用户裁决），种子链已删；shader 侧 stride=1/count_source=1/
+	# asset_field=1 的模式位仍是有效契约、只是无人再用。
 	var paint_results_set0 := create_uniform_set([
 		make_storage_uniform(0, result_buffer),
 		make_storage_uniform(1, result_count_buffer),
@@ -2457,7 +2462,7 @@ func _ensure_resident_clearance_field_buffer(pixel_count: int, reset: bool) -> R
 
 ## 「一条记录 = 一个工作组」的组数铺法。paint_placement_clearance 按
 ## `wg.x + wg.y * gl_NumWorkGroups.x` 还原记录下标，所以这里可以随意折行——折行只是为了
-## 不撞单维组数上限（Vulkan 常见 65535），种子表是跨轮累积的，迟早会超。
+## 不撞单维组数上限（Vulkan 常见 65535），result_capacity 可以开得很大，迟早会超。
 const RECORD_GROUP_ROW_LENGTH := 32768
 
 func _record_group_layout(record_count: int) -> Vector3i:

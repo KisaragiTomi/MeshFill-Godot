@@ -82,10 +82,6 @@ var _prefilter_cache_key: Dictionary = {}
 var _place_session_common: Dictionary = {}
 var _place_session_active := false
 var _place_session_batch_index := 0
-# 会话首批是否重建余隙场。判据是**世界是否为空**（runtime id 分配器无一分配），在
-# begin_place_session 时定格——不是"是否新会话"：场与已放置物同生命周期，非空世界的
-# 会话首批必须沿用上一轮画好的场（CPU 种子重放已删，场就是跨轮间距约束的唯一载体）。
-var _place_session_clearance_reset := false
 
 
 # ---------------------------------------------------------------------------
@@ -448,8 +444,7 @@ func run_pipeline_once(placement_common := {}) -> Dictionary:
 
 ## Starts a persistent Place session over the existing stage environment. The
 ## target payload, target RIDs, registered profiles, and stable settings remain
-## shared across batches; only committed SV state (and the resident clearance
-## field it pairs with) advances.
+## shared across batches; only committed SV state advances between batches.
 func begin_place_session(placement_common := {}) -> Dictionary:
 	if _place_session_active:
 		end_place_session()
@@ -470,18 +465,11 @@ func begin_place_session(placement_common := {}) -> Dictionary:
 	_place_session_common = settings
 	_place_session_active = true
 	_place_session_batch_index = 0
-	# 世界空判据问 runtime 的 id 分配器（零 GPU 回读）。Clear All / reset_state 把分配器
-	# 清回全满 ⇒ 下一个会话自动判 fresh 并重建零场——余隙场不需要任何生命周期钩子来同步。
-	var gpu_runtime = _spa.get_gpu_runtime() if _spa != null else null
-	var allocated_object_count := int(gpu_runtime.get_allocated_object_count()) if gpu_runtime != null else 0
-	_place_session_clearance_reset = allocated_object_count <= 0
 	return {
 		"ok": true,
 		"target_revision": int(target.get("target_revision", -1)),
 		"target_cached": bool(target.get("cached", false)),
 		"stable_common_deep_copy_bytes": 0,
-		"clearance_field_reset": _place_session_clearance_reset,
-		"allocated_object_count": allocated_object_count,
 	}
 
 
@@ -493,13 +481,15 @@ func run_place_session_batch() -> Dictionary:
 	var orchestration_phases_ms := {}
 	var settings := _place_session_common.duplicate()
 	settings["incremental_fine_reset"] = _place_session_batch_index == 0
-	# ── 会话作用域的两个显式开关 ────────────────────────────────────────────────
-	# 1. 余隙场：**只有首批 × 世界为空**（判据见 _place_session_clearance_reset）才重建
-	#    零场；非空世界一律沿用现场——上一轮被接受的放置在接受当批就已由 paint pass 画进
-	#    场里，内容与旧"种子重放"能画出的逐位相同（同一批记录、同一套 paint 数学），所以
-	#    host 侧种子表已整个删除（2026-08-18 用户裁决：下一轮的依赖项必须与上一轮一致，
-	#    已放置物的载体只有 SV/SVTile/runtime）。本批被接受的放置仍由 paint pass 原位累积。
-	settings["clearance_field_reset"] = _place_session_batch_index == 0 and _place_session_clearance_reset
+	# ── 会话作用域的两个显式开关（都只在首批为「重来」，之后为「沿用」）──────────
+	# 1. 余隙场：**会话作用域**——首批重建零场，之后各批沿用，本批被接受的放置由 GPU 侧
+	#    paint pass 原位累积，服务轮内批间的原点间距门（reduce init 的 clearance 段）。
+	#    跨轮互斥**不在这里**：fine score 每批都在「上一轮盖章后的 SceneSV」上重算
+	#    solid_collision / clearance_overlap（资产 profile 的 CLEARANCE 探针直采 CurSample）
+	#    与 residual gain，上一轮的放置天然被排斥（2026-08-19 用户裁决：互斥逻辑在
+	#    fine score × 上轮 SV，与 autoobject 无关）。原先跨轮重放的 CPU 种子表因此删除
+	#    （2026-08-18 裁决：下一轮依赖项与上一轮一致，host 不留副本）。
+	settings["clearance_field_reset"] = _place_session_batch_index == 0
 	# 2. 锚点池：首批正常采集，之后**显式复用常驻锚点缓冲**。
 	#    ⚠ 别改成"把 dirty_epoch 从 collect 缓存键里删掉"。锚点缓冲本身是常驻的，逼它
 	#    逐批重采的是缓存键：每批盖章推进 dirty_epoch ⇒ 键变 ⇒ collect 在**已被上一批

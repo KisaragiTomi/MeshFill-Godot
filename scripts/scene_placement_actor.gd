@@ -2550,16 +2550,19 @@ func run_place(_settings := {}) -> Dictionary:
 	var batch_budget := maxi(place_max_batches, 1)
 	if place_anchor_interval_voxels > 0:
 		batch_budget = maxi(batch_budget, place_anchor_interval_voxels * place_anchor_interval_voxels)
-	# 容量帽基数问 runtime 的 id 分配器（begin_place_session 已带回，零额外回读）；
-	# host 不再自记 id——真相只有一份（2026-08-18 用户裁决：依赖项一致，host 不留副本）。
-	var placed_before_round := int(session.get("allocated_object_count", 0))
+	# 容量帽基数问 runtime 的 id 分配器（零 GPU 回读）。这是 autoobject 自己的记账域
+	# （槽位用量 vs autoobject_capacity），与互斥逻辑无关；host 不再自记 id
+	# （2026-08-18 用户裁决：依赖项一致，host 不留副本）。
+	var placement_gpu_runtime = get_gpu_runtime()
+	var placed_before_round := int(placement_gpu_runtime.get_allocated_object_count()) if placement_gpu_runtime != null else 0
 	for batch in range(batch_budget):
 		if placed_before_round + spawned_total + place_result_capacity > autoobject_capacity:
 			push_warning("[ScenePlacementActor] Place 停在容量帽：累计 %d 接近 runtime 容量 %d" % [
 				placed_before_round + spawned_total, autoobject_capacity])
 			break
 		var batch_total_t0_usec := Time.get_ticks_usec()
-		# 跨批与跨轮间距同源：常驻余隙场（上批/上轮的接受结果都已由 paint pass 画进去）
+		# 轮内批间原点间距靠会话作用域的余隙场（上批接受结果已由 paint pass 画进去）；
+		# 跨轮互斥由 fine score 在上一轮盖章后的 SV 上重算（与 autoobject 无关）
 		var result: Dictionary = _placement_env.run_place_session_batch()
 		if not bool(result.get("ok", false)):
 			var phase := str(result.get("phase", result.get("reason", "pipeline_failed")))
@@ -2705,9 +2708,9 @@ func get_placed_object_ids() -> Array[int]:
 
 
 ## 复位 Place 关联的评分侧缓存（cache key、模型、Fine 交接）。
-## 对象 id / 跨轮间距不再有 host 累积表可清：id 真相在 runtime 分配器（reset_state 归还
-## 全部 id），间距真相在常驻余隙场（下一个会话见分配器为空即自动重建零场）。
-## benchmark fixture 清场后仍要调它——剩下的职责是别让旧评分模型继续喂显示。
+## 对象 id / 跨轮互斥不再有 host 累积表可清：id 真相在 runtime 分配器（reset_state 归还
+## 全部 id），跨轮互斥在 fine score × 盖章后的 SV（清 SV 即清互斥），余隙场是会话作用域
+## （首批自重建）。benchmark fixture 清场后仍要调它——剩下的职责是别让旧评分模型继续喂显示。
 func reset_place_accumulation() -> void:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	_score_cache_key = {}
@@ -2724,8 +2727,8 @@ func reset_place_accumulation() -> void:
 ## 4. anchor 与 score 交接换代 + 广播下游作废（provider 的 _assets / env / 显示）
 ##
 ## ⚠ **不动 BrushSV**：那是用户手绘的输入而非放置产物，一并清掉会是个意外。
-## ⚠ 余隙场不需要单独清：reset_state 把 runtime id 分配器清回全满，下一个 Place 会话在
-##   begin_place_session 判「世界为空」即重建零场（判据与场同源，不存在漏清窗口）。
+## ⚠ 余隙场不需要单独清：它是 place session 作用域的，下一个会话首批重建零场；跨轮
+##   互斥本就不靠它——fine score 在盖章后的 SV 上重算（清掉 SV 即清掉互斥来源）。
 func clear_placement_state() -> Dictionary:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	var steps := {}
