@@ -155,7 +155,7 @@ ScenePlacementActor.handle_editor_input()
 | `Ctrl+Alt+1..6` | `scripts/scene_placement_actor.gd` → `_handle_domain_visibility_shortcut()` |
 | `Shift+` 系列 | `scripts/scene_placement_actor.gd` → `_handle_brush_shortcut()` |
 | 左键点选 / `Esc` | `scripts/spa_selection_host.gd` → `handle_viewport_input()` |
-| `G` / `Space` / `Ctrl+H` | `demos/placement-score-3d/volume_score_demo.gd` → `forward_editor_viewport_input()` |
+| `G` / `Space` / `Ctrl+H` | `scenes/placement-score-3d/volume_score_demo.gd` → `forward_editor_viewport_input()` |
 | 资产总览数字键 | `scenes/asset-overview/asset_overview.gd` → `_editor_viewport_input()` |
 | 飞行相机 | `scripts/fly_camera.gd` → `_unhandled_input()` / `_process()` |
 | 域槽位顺序 | `scripts/spa_editor_contract.gd` → `VOXEL_DOMAIN_BINDINGS` |

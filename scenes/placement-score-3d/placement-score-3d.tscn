@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://cd68vsvgsln40"]
 
 [ext_resource type="Script" uid="uid://bu8fti8x6nruw" path="res://scripts/core_demo_contract_fixture.gd" id="2_contract"]
-[ext_resource type="Script" uid="uid://bw8rtkkhbnd1h" path="res://demos/placement-score-3d/volume_score_demo.gd" id="3_vscore"]
+[ext_resource type="Script" uid="uid://bw8rtkkhbnd1h" path="res://scenes/placement-score-3d/volume_score_demo.gd" id="3_vscore"]
 [ext_resource type="Script" uid="uid://f3o5wwkxfw3j" path="res://scripts/scene_placement_actor.gd" id="10_spa"]
 [ext_resource type="Script" uid="uid://dwwguoeqikivf" path="res://scripts/utils/target_sv_setup.gd" id="11_target"]
 [ext_resource type="Script" uid="uid://dc813hws1gbit" path="res://scripts/spa_selection_host.gd" id="12_selection"]

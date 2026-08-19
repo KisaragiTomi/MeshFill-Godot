@@ -401,7 +401,14 @@ static func _file_modified_time(path: String) -> int:
 		# res:// 与绝对路径都读不到 mtime = 文件不存在/不可读，增量判断的输入本应存在。
 		push_error("[GeoAssetScanService] _file_modified_time(): 无法读取 %s 的修改时间（res:// 与绝对路径均失败）—— 文件缺失或不可读" % path)
 		assert(false, "GeoAssetScanService._file_modified_time: mtime unavailable")
-	return int(modified)
+		return int(modified)
+	# .import 侧车一并纳入（取两者较新）：只改导入参数时源 FBX 的 mtime 不动，增量扫描
+	# 会判"未变"而拿旧几何继续烘——与 2026-08-13 stone_01 同一类"场景与产物脱节"。
+	# 侧车缺席（尚未导入）按 0 处理，不改变原有的源文件硬失败语义。
+	var sidecar := FileAccess.get_modified_time(path + ".import")
+	if sidecar <= 0:
+		sidecar = FileAccess.get_modified_time(ProjectSettings.globalize_path(path + ".import"))
+	return int(maxi(int(modified), int(sidecar)))
 
 
 static func _node_and_descendants(node: Node) -> Array[Node]:

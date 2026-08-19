@@ -8,7 +8,7 @@ const HOST := "127.0.0.1"
 const PORT := 6800
 ## 2026-08-03 demo 场景清理：专用的 tools/anchor-timing-benchmark.tscn 已删除，
 ## 基准改跑 placement-score-3d（SPA/Volumes/VolumeScore 节点路径一致）。
-const SCENE_PATH := "res://demos/placement-score-3d/placement-score-3d.tscn"
+const SCENE_PATH := "res://scenes/placement-score-3d/placement-score-3d.tscn"
 const SCORE_NODE_PATH := "SPA/Volumes/VolumeScore"
 const BENCHMARK_TIMEOUT_MS := 600000
 

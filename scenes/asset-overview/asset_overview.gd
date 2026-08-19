@@ -118,6 +118,11 @@ var _voxel_channel := VOXEL_CHANNEL_NONE
 # inspection result cached until the selected source file or its timestamp changes.
 var _fbx_channel_overlay_cache_key := ""
 var _fbx_channel_overlay_cache_text := ""
+## _profile_samples_for_node 的解码缓存：source path -> {"mtime": int, "samples": Array}。
+## Inspector payload / pivots / 体素通道 / Bake 请求四路消费方此前各自触发一整趟 FBX
+## 通道解码；缓存按 (source, mtime[含 .import 侧车]) 判新鲜，命中时仍返回逐样本深拷贝
+## （语义与旧实现相同——baker 会把样本引用持进 descriptor）。
+var _profile_samples_cache := {}
 
 # G toggles every displayed asset container hidden so the probe / voxel overlays read
 # clearly (overlays live under the demo's own debug roots, so they stay visible).
@@ -669,14 +674,29 @@ func _profile_samples_for_node(node: Node3D) -> Array[Dictionary]:
 	var source := str(node.get_meta(GeoAssetScanService.GEO_SOURCE_META, ""))
 	if source.is_empty() or source.get_extension().to_lower() != "fbx":
 		return samples
+	# 软重载新增成员回来是 nil（判空必须用 is，见插件 _repair_soft_reloaded_members 的依据），
+	# 就地自愈成空缓存。
+	if not (_profile_samples_cache is Dictionary):
+		_profile_samples_cache = {}
+	# 新鲜度与 geo 增量扫描同一把尺（源 FBX 与 .import 侧车取较新者）。
+	var mtime := GeoAssetScanService._file_modified_time(source)
+	var cached: Variant = _profile_samples_cache.get(source)
+	if cached is Dictionary and int((cached as Dictionary).get("mtime", -1)) == mtime:
+		for raw in (cached as Dictionary).get("samples", []):
+			samples.append((raw as Dictionary).duplicate(true))
+		return samples
 	var channels := FbxVoxelImportService.embedded_channels_from_fbx(source)
 	if not bool(channels.get("ok", false)):
+		# 失败不进缓存：成因（导入未完成等）可能是瞬态的，且失败本身已在读取器里响过。
 		push_warning("[AssetOverview] FBX ProfileSample decode failed for %s: %s" % [
 			source, str(channels.get("reason", "unknown"))])
 		return samples
+	var canonical: Array = []
 	for raw in channels.get("profile_samples", []):
 		if raw is Dictionary:
+			canonical.append(raw)
 			samples.append((raw as Dictionary).duplicate(true))
+	_profile_samples_cache[source] = {"mtime": mtime, "samples": canonical}
 	return samples
 
 
@@ -891,9 +911,9 @@ func _make_pivot_marker(pivot_name: String, index: int) -> MeshInstance3D:
 #
 # 生产口径来自 `ScenePlacementActor._build_placement_asset_defs()`：
 #   spacing_radius_world = max(mesh_aabb.size.x, mesh_aabb.size.z) * 0.5
-# reduce（`shaders/invalidate_anchor_conflicts.glsl`）据此做成对判定——
+# reduce（`shaders/arbitrate_anchor_conflicts.glsl`）据此做成对判定——
 #   dist(a, b) < max(min_distance_voxels, (r_a + r_b) * asset_spacing_factor)
-# 时淘汰低优先级的一端。两端各画一个半径 r 的球 ⇒ **两球相交即这一对互斥**
+# 时淘汰得分较低的一端。两端各画一个半径 r 的球 ⇒ **两球相交即这一对互斥**
 # （`asset_spacing_factor` 默认 1.0；下界 `min_distance_voxels` 是 SPA 侧的全局
 # 兜底，与资产无关，本场景没有 SV 网格也就没有体素尺寸可换算，故不画）。
 #
@@ -1202,7 +1222,12 @@ func bake_scene_descriptors(ensure_fresh: bool = true) -> Dictionary:
 	for node in nodes:
 		requests.append(_bake_request_for_node(node))
 	var summary := AssetDescriptorBaker.bake_and_save_batch(requests, BAKED_DESCRIPTOR_DIR)
-	GeoAssetScanService.refresh_editor_filesystem()
+	# 新 .tres 逐个交还资源系统即可（.tres 不需要 reimport）。⚠ 这里曾是又一整趟
+	# fs.scan()——与 ensure_fresh 重扫里那趟叠加，一次 Bake 扫两遍全项目文件系统。
+	var editor_fs := EditorInterface.get_resource_filesystem()
+	if editor_fs != null:
+		for saved_path in summary.get("paths", []):
+			editor_fs.update_file(str(saved_path))
 	# ⚠ 原策略（计划 §11.5）是「Bake 只产出 Authoring 产物，不隐式改写 SPA 的 GPU Arena，
 	# 新版本一律由用户点 Reload 显式提交」。用户 2026-08-13 决定改为自动提交：
 	# 插件的 `_refresh_volume_score_after_bake()` 会刷新**所有已打开场景**里的 SPA。

@@ -2,16 +2,25 @@
 extends RefCounted
 
 const EmbeddedProfileSampleCodecScript := preload("res://scripts/utils/embedded_profile_sample_codec.gd")
+const DemoAssetsScript := preload("res://scripts/utils/demo_assets.gd")
 
 # FBX-embedded Fine Score / Probe channel reader (v3).
 #
 # UV set 0 and UV set 1 retain their existing collision/probe application data.
-# The last valid imported UV set is treated as Houdini's uv8. Fine Score owns
-# vertex color plus uv8.x; Probe owns normal plus uv8.y. Godot flips imported UV
-# V, so only the Probe boundary restores FBX uv8.y with 1-y. Missing UV slots
-# are represented by reader-local placeholders; imported mesh arrays are never
-# changed. Raw corner records remain available for inspection, while the
-# production result contains only validated ProfileSample records.
+# uv8 is strictly the 8th imported UV slot (index 7 → ARRAY_CUSTOM2.zw). Fine
+# Score owns vertex color plus uv8.x; Probe owns normal plus uv8.y. Godot flips
+# imported UV V, so only the Probe boundary restores FBX uv8.y with 1-y.
+# Missing UV slots are represented by reader-local placeholders; imported mesh
+# arrays are never changed. Raw corner records remain available for inspection,
+# while the production result contains only validated ProfileSample records.
+#
+# ⚠ 不足 8 个 UV set = 报错，不回退（2026-08-17 用户裁定）。旧规则"取最后一个有效
+# 槽当 uv8"会在只有贴图/lightmap UV 的普通网格上把 uv0/uv1 当门控通道读：三个角
+# 恰好压在 UV 边界线（u==1，或 FBX v==1）上的三角形被误判成数据三角形，再被
+# strip_embedded_data_triangles 从生产几何里静默剥掉。现存五个 geo 资产与
+# targetsv0.fbx 实测 uv8 全部落在 index 7（descriptor 的 provenance 与桥上
+# validate_fbx 双向证实），严格第 8 槽对两条链都无行为差异；差异只落在
+# 不合规网格上——它们现在会在生产读取路径被点名报错（碰撞辅助节点 UCX_ 等豁免）。
 #
 # Legacy fallback: one FBX carries two extra mesh objects recognised by name:
 #   MF_Voxels  — one vertex per occupied voxel; per-vertex data packed as
@@ -57,27 +66,35 @@ static func inspect_fbx(fbx_path: String, opts := {}) -> Dictionary:
 	if res is PackedScene:
 		var root := (res as PackedScene).instantiate()
 		if root != null:
-			_walk_inspection_meshes(root, Transform3D.IDENTITY, report["meshes"], opts, true)
+			var meshes: Array = report["meshes"]
+			walk_mesh_instances(root, Transform3D.IDENTITY,
+				func(node_name: String, mesh: Mesh, mesh_transform: Transform3D) -> void:
+					meshes.append(_inspect_mesh(node_name, mesh, mesh_transform, opts)),
+				true)
 			root.free()
 		_add_channel_summary(report)
 		return report
 	return {"ok": false, "reason": "not_scene_or_mesh", "resource_type": res.get_class()}
 
 
-static func _walk_inspection_meshes(
+## 唯一的递归 mesh 遍历器：累积节点变换，对每个带 mesh 的 MeshInstance3D 调
+## per_mesh(node_name, mesh, mesh_transform)。
+## ⚠ 这里曾有**四份**逐字相同的递归骨架（inspection / channel records / fine columns 各一份，
+## 外加 TargetSVFbxImportService 的结构收集），只差 per-mesh 那一行——2026-08-17 收敛到此。
+## is_scene_root=true 跳过根节点自身的 transform（场景根不属于 FBX 内容，与旧四份同口径）。
+static func walk_mesh_instances(
 	node: Node,
 	parent_transform: Transform3D,
-	out: Array,
-	opts: Dictionary,
+	per_mesh: Callable,
 	is_scene_root: bool = false
 ) -> void:
 	var node_transform := parent_transform
 	if node is Node3D and not is_scene_root:
 		node_transform = parent_transform * (node as Node3D).transform
 	if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
-		out.append(_inspect_mesh(str(node.name), (node as MeshInstance3D).mesh, node_transform, opts))
+		per_mesh.call(str(node.name), (node as MeshInstance3D).mesh, node_transform)
 	for child in node.get_children():
-		_walk_inspection_meshes(child, node_transform, out, opts)
+		walk_mesh_instances(child, node_transform, per_mesh)
 
 
 static func _inspect_mesh(
@@ -178,78 +195,107 @@ static func _inspect_mesh(
 	return out
 
 
-# Returns all eight positional UV slots as equally-sized reader-local arrays.
-# The highest slot with source content is uv8. Missing ordinary slots use zero;
-# if no UV exists at all, uv8 uses Godot-space (0, 1), which restores to FBX
-# (0, 0) and keeps both Fine and Probe gates disabled.
+# 三个 reader 视图：uv0 / uv1 / uv8。
+#
+# uv8 **严格取第 8 个 UV 槽**（index 7 = Houdini uv8 → ARRAY_CUSTOM2.zw；现存资产与
+# targetsv0.fbx 实测全部落在这里，见文件头）。缺第 8 槽时 uv8_set_index = -1，uv8 给
+# 全长禁用占位（Godot 空间 (0,1) → 还原到 FBX (0,0)，fine 与 probe 两道门都不可能武装）；
+# **是否报错归门控消费方**（生产读取路径报错、碰撞辅助节点豁免），本函数保持纯计算。
+#
+# ⚠ 这里曾把 8 个槽位全部物化成全长数组再挑一个：uv0/uv1 各一趟逐元素拷贝循环、
+# uv2..uv7 各一趟 CUSTOM 解交错循环，其中 5 趟的产物直接丢弃——108 万角的场景级 FBX 上
+# 是每 surface 约 8 趟百万级 GDScript 循环 + ~8 份全长数组分配，TargetSV 导入读段的
+# 主要浪费。现在只物化真正被消费的三份：uv0/uv1 覆盖满 vertex_count 时直接引用源数组
+# （CoW 零拷贝），只有 uv8 需要一趟 CUSTOM 解交错。
+#
+# uv8 必须是全长数组：fine/probe 门按顶点下标直索引（不经 source_count 守卫）。
+# 占位与补齐一律用 (0,1)——旧实现对"源比顶点短"的畸形面补的是零，而 Godot 空间 (0,0)
+# 还原到 FBX v=1 会**武装 probe 门**，(0,1) 才是真禁用。
 static func logical_uv_sets_from_surface_arrays(arrays: Array, vertex_count: int) -> Dictionary:
-	var uv_sets: Array = []
+	var safe_vertex_count := maxi(vertex_count, 0)
 	var source_counts := PackedInt32Array()
 	var placeholder_indices := PackedInt32Array()
-	var last_valid_index := -1
+	var populated_set_count := 0
 	for uv_set_index in range(MAX_IMPORTED_UV_SETS):
-		var logical := _logical_uv_set(arrays, uv_set_index, vertex_count, Vector2.ZERO)
-		uv_sets.append(logical["values"])
-		var source_count := int(logical["source_count"])
+		var source_count := _uv_slot_source_count(arrays, uv_set_index, safe_vertex_count)
 		source_counts.append(source_count)
 		if source_count > 0:
-			last_valid_index = uv_set_index
+			populated_set_count += 1
 		else:
 			placeholder_indices.append(uv_set_index)
+	var uv8_slot := MAX_IMPORTED_UV_SETS - 1
+	var uv8_source_count := source_counts[uv8_slot]
+	var uv8_set_index := uv8_slot if uv8_source_count > 0 else -1
 	var uv8 := PackedVector2Array()
-	var uv8_source_count := 0
-	if last_valid_index >= 0:
-		uv8 = uv_sets[last_valid_index]
-		uv8_source_count = source_counts[last_valid_index]
-	else:
-		uv8.resize(maxi(vertex_count, 0))
-		for i in range(uv8.size()):
-			uv8[i] = Vector2(0.0, 1.0)
+	uv8.resize(safe_vertex_count)
+	uv8.fill(Vector2(0.0, 1.0))
+	if uv8_source_count > 0:
+		_extract_custom_uv_pairs_into(uv8, arrays, uv8_slot, uv8_source_count)
 	return {
-		"sets": uv_sets,
-		"source_counts": source_counts,
 		"placeholder_indices": placeholder_indices,
-		"uv0": uv_sets[0],
-		"uv1": uv_sets[1],
+		"populated_set_count": populated_set_count,
+		"uv0": _tex_uv_view(arrays, Mesh.ARRAY_TEX_UV, source_counts[0], safe_vertex_count),
+		"uv1": _tex_uv_view(arrays, Mesh.ARRAY_TEX_UV2, source_counts[1], safe_vertex_count),
 		"uv8": uv8,
 		"uv0_source_count": source_counts[0],
 		"uv1_source_count": source_counts[1],
 		"uv8_source_count": uv8_source_count,
-		"uv8_set_index": last_valid_index,
-		"uv8_source": _uv_set_source_label(last_valid_index),
+		"uv8_set_index": uv8_set_index,
+		"uv8_source": _uv_set_source_label(uv8_set_index),
 	}
 
 
-static func _logical_uv_set(
-	arrays: Array, uv_set_index: int, vertex_count: int, placeholder_value: Vector2
-) -> Dictionary:
-	var values := PackedVector2Array()
-	values.resize(maxi(vertex_count, 0))
-	if placeholder_value != Vector2.ZERO:
-		for i in range(values.size()):
-			values[i] = placeholder_value
-	var source_count := 0
-	if uv_set_index == 0 or uv_set_index == 1:
+# 槽位覆盖数（不物化数据）。0/1 = TEX_UV/TEX_UV2；2..7 = CUSTOM 通道的成对分量。
+# 判据与旧实现逐位相同：PackedFloat32Array、按 vertex_count 整除出 stride、
+# stride 盖住分量对才算在场。
+static func _uv_slot_source_count(arrays: Array, uv_set_index: int, vertex_count: int) -> int:
+	if uv_set_index <= 1:
 		var array_index := Mesh.ARRAY_TEX_UV if uv_set_index == 0 else Mesh.ARRAY_TEX_UV2
 		if arrays.size() > array_index and arrays[array_index] is PackedVector2Array:
-			var source: PackedVector2Array = arrays[array_index]
-			source_count = mini(source.size(), values.size())
-			for i in range(source_count):
-				values[i] = source[i]
-	else:
-		var custom_array_index := Mesh.ARRAY_CUSTOM0 + ((uv_set_index - 2) / 2)
-		var component_offset := ((uv_set_index - 2) % 2) * 2
-		if arrays.size() > custom_array_index and arrays[custom_array_index] is PackedFloat32Array:
-			var source: PackedFloat32Array = arrays[custom_array_index]
-			var stride := 0
-			if vertex_count > 0 and source.size() % vertex_count == 0:
-				stride = source.size() / vertex_count
-			if stride >= component_offset + 2:
-				source_count = mini(vertex_count, source.size() / stride)
-				for i in range(source_count):
-					var base := i * stride + component_offset
-					values[i] = Vector2(source[base], source[base + 1])
-	return {"values": values, "source_count": source_count}
+			return mini((arrays[array_index] as PackedVector2Array).size(), vertex_count)
+		return 0
+	var custom_array_index := Mesh.ARRAY_CUSTOM0 + ((uv_set_index - 2) / 2)
+	var component_offset := ((uv_set_index - 2) % 2) * 2
+	if arrays.size() <= custom_array_index or not (arrays[custom_array_index] is PackedFloat32Array):
+		return 0
+	var source: PackedFloat32Array = arrays[custom_array_index]
+	if vertex_count <= 0 or source.size() % vertex_count != 0:
+		return 0
+	var stride := source.size() / vertex_count
+	if stride < component_offset + 2:
+		return 0
+	return mini(vertex_count, source.size() / stride)
+
+
+# TEX_UV / TEX_UV2 的 reader 视图。全覆盖时直接引用源数组（消费方只读，CoW 安全）；
+# 源比顶点短的畸形面 duplicate+resize 补零到全长（C++ 快路径，无 GDScript 循环）——
+# 越过 source_count 的下标不会被任何消费方索引，补齐只为直索引路径不越界。
+# 缺席给空数组：uv0/uv1 的全部消费方都按 source_count 守卫，不会索引进去。
+static func _tex_uv_view(
+	arrays: Array, array_index: int, source_count: int, vertex_count: int
+) -> PackedVector2Array:
+	if source_count <= 0:
+		return PackedVector2Array()
+	var source: PackedVector2Array = arrays[array_index]
+	if source.size() >= vertex_count:
+		return source
+	var padded := source.duplicate()
+	padded.resize(vertex_count)
+	return padded
+
+
+# 从 CUSTOM 通道解交错出成对分量，写进已按禁用占位预填充的全长数组。
+# 前置条件：_uv_slot_source_count 已判定该槽在场（stride 整除且盖住分量对）。
+static func _extract_custom_uv_pairs_into(
+	target: PackedVector2Array, arrays: Array, uv_set_index: int, source_count: int
+) -> void:
+	var custom_array_index := Mesh.ARRAY_CUSTOM0 + ((uv_set_index - 2) / 2)
+	var component_offset := ((uv_set_index - 2) % 2) * 2
+	var source: PackedFloat32Array = arrays[custom_array_index]
+	var stride := source.size() / source_count
+	for i in range(source_count):
+		var base := i * stride + component_offset
+		target[i] = Vector2(source[base], source[base + 1])
 
 
 static func _uv_set_source_label(uv_set_index: int) -> String:
@@ -364,7 +410,10 @@ static func embedded_channels_from_node(scene_root: Node, opts := {}) -> Diction
 		result["ok"] = false
 		result["reason"] = "null_scene_root"
 		return result
-	_walk_channel_meshes(scene_root, Transform3D.IDENTITY, result, opts, true)
+	walk_mesh_instances(scene_root, Transform3D.IDENTITY,
+		func(node_name: String, mesh: Mesh, mesh_transform: Transform3D) -> void:
+			_append_mesh_channel_records(mesh, mesh_transform, node_name, result, opts),
+		true)
 	return result
 
 
@@ -400,13 +449,16 @@ static func fine_columns_from_fbx(fbx_path: String, opts := {}) -> Dictionary:
 		return {"ok": false, "reason": "load_failed", "path": fbx_path}
 	var columns := _empty_fine_columns()
 	if res is Mesh:
-		_append_mesh_fine_columns(res as Mesh, Transform3D.IDENTITY, columns, opts)
+		_append_mesh_fine_columns(res as Mesh, Transform3D.IDENTITY, "(root Mesh)", columns, opts)
 	elif res is PackedScene:
 		var root := (res as PackedScene).instantiate()
 		if root == null:
 			push_error("[FbxVoxelImportService] fine_columns_from_fbx(): %s 的 PackedScene 实例化失败" % fbx_path)
 			return {"ok": false, "reason": "instantiate_failed", "path": fbx_path}
-		_walk_fine_columns(root, Transform3D.IDENTITY, columns, opts, true)
+		walk_mesh_instances(root, Transform3D.IDENTITY,
+			func(node_name: String, mesh: Mesh, mesh_transform: Transform3D) -> void:
+				_append_mesh_fine_columns(mesh, mesh_transform, node_name, columns, opts),
+			true)
 		root.free()
 	else:
 		push_error("[FbxVoxelImportService] fine_columns_from_fbx(): %s 既不是 PackedScene 也不是 Mesh（%s）" % [
@@ -432,30 +484,16 @@ static func _empty_fine_columns() -> Dictionary:
 	}
 
 
-static func _walk_fine_columns(
-	node: Node,
-	parent_transform: Transform3D,
-	columns: Dictionary,
-	opts: Dictionary,
-	is_scene_root: bool = false
-) -> void:
-	var node_transform := parent_transform
-	if node is Node3D and not is_scene_root:
-		node_transform = parent_transform * (node as Node3D).transform
-	if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
-		_append_mesh_fine_columns((node as MeshInstance3D).mesh, node_transform, columns, opts)
-	for child in node.get_children():
-		_walk_fine_columns(child, node_transform, columns, opts)
-
-
 static func _append_mesh_fine_columns(
-	mesh: Mesh, mesh_transform: Transform3D, columns: Dictionary, opts: Dictionary
+	mesh: Mesh, mesh_transform: Transform3D, node_name: String, columns: Dictionary, opts: Dictionary
 ) -> void:
 	for surface in range(mesh.get_surface_count()):
 		_append_surface_fine_columns(
 			mesh.surface_get_primitive_type(surface),
 			mesh.surface_get_arrays(surface),
 			mesh_transform,
+			node_name,
+			surface,
 			columns,
 			opts
 		)
@@ -465,6 +503,8 @@ static func _append_surface_fine_columns(
 	primitive: int,
 	arrays: Array,
 	mesh_transform: Transform3D,
+	node_name: String,
+	surface_index: int,
 	columns: Dictionary,
 	opts: Dictionary
 ) -> void:
@@ -476,6 +516,9 @@ static func _append_surface_fine_columns(
 		return
 	var vertex_count := vertices.size()
 	var uv_info := logical_uv_sets_from_surface_arrays(arrays, vertex_count)
+	if int(uv_info["uv8_set_index"]) < 0:
+		_report_missing_uv8_slot(node_name, surface_index, uv_info, vertex_count)
+		return
 	var uv0: PackedVector2Array = uv_info["uv0"]
 	var uv1: PackedVector2Array = uv_info["uv1"]
 	var uv8: PackedVector2Array = uv_info["uv8"]
@@ -596,21 +639,15 @@ static func _channel_read_opts(opts: Dictionary, read_fine_score: bool, read_pro
 	return channel_opts
 
 
-static func _walk_channel_meshes(
-	node: Node,
-	parent_transform: Transform3D,
-	out: Dictionary,
-	opts: Dictionary,
-	is_scene_root: bool = false
+## 不足 8 个 UV set 的统一报错口（fine columns 与 channel records 两条生产读取路径共用）。
+## 碰撞辅助节点（UCX_ 等）本就不带数据通道，静默跳过不报。
+static func _report_missing_uv8_slot(
+	node_name: String, surface_index: int, uv_info: Dictionary, vertex_count: int
 ) -> void:
-	var node_transform := parent_transform
-	if node is Node3D and not is_scene_root:
-		node_transform = parent_transform * (node as Node3D).transform
-	if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
-		_append_mesh_channel_records(
-			(node as MeshInstance3D).mesh, node_transform, str(node.name), out, opts)
-	for child in node.get_children():
-		_walk_channel_meshes(child, node_transform, out, opts)
+	if DemoAssetsScript.is_collision_helper_name(node_name):
+		return
+	push_error("[FbxVoxelImportService] %s / surface %d 缺第 8 个 UV 槽（实到 %d 个 UV set，vertex_count=%d）—— uv8 门控无处可读，该 surface 不产出任何数据三角形。数据 FBX 必须携带完整 uv..uv8 八个 UV set（2026-08-17 起不足即报错，不再回退到最后一个有效槽）" % [
+		node_name, surface_index, int(uv_info["populated_set_count"]), vertex_count])
 
 
 static func _append_mesh_channel_records(
@@ -673,6 +710,11 @@ static func _surface_channel_data(
 	if vertices.is_empty():
 		return result
 	var uv_info := logical_uv_sets_from_surface_arrays(arrays, vertices.size())
+	# 缺第 8 槽 = 门控通道不存在，报错并整面跳过（见 _report_missing_uv8_slot；uv8 此时是
+	# 禁用占位，就算继续扫也一个门都开不了——早退只是省掉那趟必然空手的逐三角形循环）。
+	if int(uv_info["uv8_set_index"]) < 0:
+		_report_missing_uv8_slot(node_name, surface_index, uv_info, vertices.size())
+		return result
 	var uv0: PackedVector2Array = uv_info["uv0"]
 	var uv1: PackedVector2Array = uv_info["uv1"]
 	var uv8: PackedVector2Array = uv_info["uv8"]
@@ -856,6 +898,12 @@ static func _restore_fbx_uv_y_at_probe_boundary(values: PackedVector2Array) -> P
 
 # Remove the union of Fine Score and Probe data triangles from render/collision
 # source geometry. Vertex/color/normal/UV arrays are never mutated in place.
+#
+# 剥离后的生产网格同时**丢掉 CUSTOM0..3 通道**（uv3..uv8 的载体）：数据三角形已移除，
+# 这些通道对保留几何没有任何消费方，留着只是把每顶点多出的浮点列一路胀进 descriptor
+# .tres 与顶点缓冲。⚠ 重建的 surface 不携带导入器 LOD（ArrayMesh 没有逐 surface 的
+# LOD 读回口）；下游 DemoAssets.bake_mesh_xform 重建时本就同样丢弃，且放置端走
+# MultiMesh 渲染不消费 mesh LOD——不在此补。
 static func strip_embedded_data_triangles(mesh: Mesh, opts := {}) -> Dictionary:
 	if mesh == null:
 		return {"ok": false, "reason": "null_mesh", "mesh": null}
@@ -943,8 +991,21 @@ static func _add_surface_copy(
 	if source is ArrayMesh:
 		source_format = (source as ArrayMesh).surface_get_format(surface)
 	var format_flags: int = source_format & ~((1 << Mesh.ARRAY_MAX) - 1)
+	# 剥掉 CUSTOM 通道（uv3..uv8 载体，见 strip_embedded_data_triangles 注释）。
+	# 对应的 3-bit 格式字段必须一起清：格式声明了通道而 arrays 里没有，add_surface 会报废。
+	var output_arrays := arrays
+	var arrays_copied := false
+	for custom_channel in range(4):
+		var array_index := Mesh.ARRAY_CUSTOM0 + custom_channel
+		if arrays.size() > array_index and arrays[array_index] != null:
+			if not arrays_copied:
+				output_arrays = arrays.duplicate()
+				arrays_copied = true
+			output_arrays[array_index] = null
+		format_flags &= ~(Mesh.ARRAY_FORMAT_CUSTOM_MASK << (
+			Mesh.ARRAY_FORMAT_CUSTOM_BASE + custom_channel * Mesh.ARRAY_FORMAT_CUSTOM_BITS))
 	var target_surface := target.get_surface_count()
-	target.add_surface_from_arrays(primitive, arrays, blend_shapes, lods, format_flags)
+	target.add_surface_from_arrays(primitive, output_arrays, blend_shapes, lods, format_flags)
 	target.surface_set_material(target_surface, source.surface_get_material(surface))
 	var surface_name := ""
 	if source.has_method("surface_get_name"):

@@ -148,11 +148,15 @@ enum LifecycleState {
 @export_range(64, 16384, 64) var place_result_capacity := 4096
 ## Place 单次命令最多自动跑的批数（每批整链 S5→S9）。上一批盖章 collision 使下一批
 ## 自然避开已放置足迹；收敛判据见 run_place 循环末尾（格点门关 = 某批 spawned == 0 即
-## 判定放满；格点门开 = 连续零产出计数 或 相位空间走完），正常情况下轮不到本上限。
-## ⚠ 本上限**小于**相位空间（`place_anchor_interval_voxels²` = 144）是刻意的（用户 2026-08-14
-## 定 32）：相位不走满，就意味着格点覆盖不完整。只有在「每批都能拿到完整锚点池」的前提下
-## 这才可接受——那时单批产出足够大，32 批已远超需要。若锚点池仍随批次塌缩（见
-## `_mark_score_region_dirty` 的注释与 collect 缓存键里的 dirty_epoch），32 批会显著少放。
+## 判定放满；格点门开 = 相位空间走完），正常情况下轮不到本上限。
+## ⚠ 格点门开着时，run_place 会把**实际批预算抬到相位空间大小**（`place_anchor_interval_voxels²`，
+## interval=12 即 144），本导出值只作为跑飞兜底的下界。原因是相位走法是批号的纯函数、
+## Place 之间不留游标：预算低于相位空间 ⇒ 剩下的格位不是「下次再放」，而是**再点几次
+## Place 也永远拿不到**（第二轮从同一个相位重走，吃的全是已填满的格位）。
+## ⚠ 此处曾写「上限小于相位空间是刻意的（用户 2026-08-14 定 32）……单批产出足够大，
+## 32 批已远超需要」。该前提与 2026-08-18 实测不符：同一场 32 批 = 2923 个，144 批 = 4713 个
+## （后 112 批补了 1790，+61%），而第 32 批仍有产出。导出默认值保持 32 未动，改的是
+## 门开着时的有效预算。
 ##
 ## ⚠ 保留它不是为了限流，是**跑飞兜底**：退出条件依赖管线单调收敛（每批盖章都缩小候选池），
 ## 而那是观测到的性质、不是被证明的不变量。去掉就等于 `while true`，管线一旦不收敛就把
@@ -187,6 +191,10 @@ enum LifecycleState {
 @export_tool_button("Anchors", "Add") var _generate_anchors_action: Callable = _generate_anchors_from_inspector
 @export_tool_button("Score", "Play") var _score_action: Callable = _score_from_inspector
 @export_tool_button("Place", "MeshInstance3D") var _place_action: Callable = _place_from_inspector
+## 把场清回「刚 init 完」的状态：GPU AutoObject 记录、已盖章的 committed SceneSV、
+## Place 的跨批累积、anchor/score 交接与下游派生缓存，一次全清。
+## ⚠ 不动 BrushSV —— 那是你手绘的**输入**，不是放置产物；要清它用 Shift+C。
+@export_tool_button("Clear All", "Clear") var _clear_all_action: Callable = _clear_all_from_inspector
 ## 只读的已加载资产列表（§11.2）：资产来源唯一是 Bake 目录，没有可手工维护的数组。
 @export_multiline var placement_assets_summary: String:
 	get:
@@ -217,11 +225,14 @@ enum LifecycleState {
 		_set_voxel_display_proxy("sv", value)
 	get:
 		return _voxel_display_proxy("sv")
+## ⚠ 五个复选框走**同一对**读写口，`target_sv_visible` 不再是特例（它此前单独直连
+## `set_volume_display` / `_target_sv.is_display_visible()`，也正因为如此，它曾是五个里
+## 唯一真正生效的那个——成因见 `_set_voxel_display_proxy()` 的注释）。
 @export var target_sv_visible: bool = true:
 	set(value):
-		set_volume_display(&"TargetSV", value)
+		_set_voxel_display_proxy("targetsv", value)
 	get:
-		return _target_sv.is_display_visible() if _target_sv != null else true
+		return _voxel_display_proxy("targetsv")
 @export_group("")
 
 var _lifecycle_state := LifecycleState.NEW
@@ -281,9 +292,6 @@ var _score_runner: RefCounted = null
 ## demo/HUD/golden 从这里取数，而不是各自再跑一遍评分。
 var _score_model: Dictionary = {}
 var _score_cache_key: Dictionary = {}
-## Place 跨批累积：已放置对象 id（渲染面）与 reduce 种子（批间间距约束）。
-var _placed_object_ids: Array[int] = []
-var _placed_seed_floats := PackedFloat32Array()
 var _make_count := 0
 var _dispose_count := 0
 var _ready_initialization_ms := 0.0
@@ -354,6 +362,10 @@ const ARENA_STATE_LOADING := "Loading"
 const ARENA_STATE_READY := "Ready"
 const ARENA_STATE_STALE := "Stale"
 const ARENA_STATE_FAILED := "Failed"
+
+
+func _clear_all_from_inspector() -> void:
+	_finish_inspector_action("Clear All", clear_placement_state())
 
 
 func _reload_baked_assets_from_inspector() -> void:
@@ -636,12 +648,36 @@ func _placement_assets_summary_text() -> String:
 	return "\n".join(lines)
 
 
+## Inspector「Voxel Display」五个复选框的**统一写口**。
+##
+## ⚠ 必须走本类自己的 `set_voxel_display_visible()`（它带卷路由），**不能**直接扎进
+## `_selection_host`。host 那一侧只有两样东西：记账位，以及「按显示组下发 node.visible」。
+## 而域族的显示由卷自己的 `display_visible` 决定——`PickableDomain.rebuild_display()`
+## 首句就是 `if not display_visible: _discard_display(); return`，于是**默认隐藏的域压根
+## 没有显示节点**，组下发无对象可改 ⇒ 复选框是彻底的空操作。
+##
+## 实测（2026-08-14，placement-score-3d + 桥）：
+##   * `set_node_property sv_tiles_visible = true` → `SPA/Volumes/SVTile.is_display_visible()` 仍 `false`
+##   * `call_method set_voxel_display_visible ["svtile", true]` → 变 `true`
+## SceneSV / SVTile 因此是「点了完全没反应」，Anchor / Brush / AutoObject 则是卷的
+## `display_visible` 静默陈旧（下一次 `rebuild_display()` 会把开关悄悄弹回去）。
+## `auto_object_domain.gd` 的 `is_display_visible()` 覆写记的就是这条陈旧的另一侧。
 func _set_voxel_display_proxy(display_key: String, visible: bool) -> void:
-	if _selection_host != null:
-		_selection_host.set_voxel_display_visible(display_key, visible)
+	set_voxel_display_visible(display_key, visible)
 
 
+## Inspector 五个复选框的**统一读口**。
+##
+## ⚠ 真值取**卷节点自己那份**，不读 host 的记账位：记账位由
+## `SPAEditorContract.default_voxel_display_state()` 播种成恒 true，而 SceneSV / SVTile /
+## BrushSV / TargetSV 的 `default_display_visible()` 都是 false —— 两者**开场就相反**，
+## 读记账位会让复选框显示「已勾选」而域其实是隐藏的。取真值的方式与
+## `_handle_domain_visibility_shortcut()` 一致（那里也明写了「不读 host 的记账位」）。
+## 没有对应卷的显示键才退回记账位；族外容器域（AutoObject）的卷会自己转发回记账位。
 func _voxel_display_proxy(display_key: String) -> bool:
+	var volume_node := _volume_for_display_key(display_key)
+	if volume_node != null:
+		return volume_node.is_display_visible()
 	return _selection_host.is_voxel_display_visible(display_key) if _selection_host != null else true
 
 
@@ -687,8 +723,6 @@ func _repair_soft_reloaded_members() -> void:
 	if not (_fine_score_handoff is Dictionary): _fine_score_handoff = {}
 	if not (_score_model is Dictionary): _score_model = {}
 	if not (_score_cache_key is Dictionary): _score_cache_key = {}
-	if not (_placed_object_ids is Array): _placed_object_ids = []
-	if not (_placed_seed_floats is PackedFloat32Array): _placed_seed_floats = PackedFloat32Array()
 	if not (_placement_env_error is String): _placement_env_error = ""
 	if not (_make_count is int): _make_count = 0
 	if not (_dispose_count is int): _dispose_count = 0
@@ -785,9 +819,38 @@ func initialize_runtime() -> bool:
 
 	if _selection_host != null:
 		_selection_host.attach_runtime_context(_sv_committer)
+		_sync_display_bookkeeping_from_volumes()
 	_ready_initialization_ms = float(Time.get_ticks_usec() - started_usec) / 1000.0
 	_lifecycle_state = LifecycleState.READY
 	return true
+
+
+## 把每个卷**自己那份** `display_visible` 播回 SelectionHost 的记账位。
+##
+## 记账位不是第二个真值源，它是两样东西：「按显示组下发 node.visible」的广播口，以及
+## 族外容器域（AutoObject 的 `PlacedAutoObjects`）的**唯一**开关。问题出在它的**初值**——
+## `SPAEditorContract.default_voxel_display_state()` 把六个键一律播种成 true，而
+## SceneSV / SVTile / BrushSV / TargetSV 的 `default_display_visible()` 都是 false：
+## 于是开场就有四个键在撒谎，`is_voxel_display_visible()`（桥、`tools/pick_id_click_types.js`
+## 读的就是它）会把隐藏域报成可见。这条不一致正是「点 Anchors 显示、TargetSV 自己被建
+## 出来」那个缺陷的根，成因详见 `spa_selection_host.gd` 的 `_refresh_selection_markers()`。
+##
+## ⚠ 方向恒为**卷 → 记账位**，绝不反向：卷才是真值（`rebuild_display()` 读的就是它）。
+## ⚠ 时机取 init 末尾而不是 `_ensure_owned_tree()` 里：卷是在 `_enter_tree` 建的，
+## 而写 `display_visible` 的是它们的 NOTIFICATION_READY，比建节点晚一步——在建的那一刻
+## 同步会读到尚未应用默认值的槽位。
+func _sync_display_bookkeeping_from_volumes() -> void:
+	if _selection_host == null or _volumes == null:
+		return
+	for child in _volumes.get_children():
+		if not (child is PickableDomain):
+			continue
+		var domain := child as PickableDomain
+		# 无显示键的卷（BlendSV：participates_in_picking() == false）没有记账位可写。
+		var domain_display_key := domain.display_key()
+		if domain_display_key.is_empty():
+			continue
+		_selection_host.set_voxel_display_visible(domain_display_key, domain.is_display_visible())
 
 
 func _shutdown(sync_before_free := true) -> void:
@@ -818,8 +881,6 @@ func _shutdown(sync_before_free := true) -> void:
 	_score_runner = null
 	_score_model = {}
 	_score_cache_key = {}
-	_placed_object_ids.clear()
-	_placed_seed_floats = PackedFloat32Array()
 	if _selection_host != null:
 		_selection_host.release_gpu_resources(sync_before_free)
 	_target_read_buffers.clear()
@@ -1028,7 +1089,7 @@ func get_identity_report() -> Dictionary:
 	# 表现是"放置成功但什么都没渲染、点选也拿不到对象"，且全程零报错。
 	var gpu_runtime = get_gpu_runtime()   # 无静态类型（RefCounted 子类），故不用 :=
 	var gpu_runtime_ready: bool = gpu_runtime != null and gpu_runtime.is_ready()
-	return {
+	var report := {
 		"lifecycle_state": lifecycle_state_name(),
 		"gpu_autoobject_runtime_ready": gpu_runtime_ready,
 		"gpu_autoobject_runtime_not_ready_reason": 			"" if gpu_runtime_ready else (
@@ -1044,10 +1105,11 @@ func get_identity_report() -> Dictionary:
 		"make_count": _make_count,
 		"dispose_count": _dispose_count,
 		"ready_initialization_ms": _ready_initialization_ms,
-		"grid_size": grid_size,
-		"voxel_size": voxel_size,
-		"grid_origin": grid_origin,
 	}
+	# grid_size / voxel_size / grid_origin —— 走权威读口，不在这里第二次手拼那三键
+	# （键名与 get_grid_frame() 同源；它的键集变了这里跟着变，这正是设立它的目的）。
+	report.merge(get_grid_frame())
+	return report
 
 
 func get_volume_ownership_report() -> Array[Dictionary]:
@@ -1157,7 +1219,7 @@ func get_placement_selection_handoff() -> Dictionary:
 	# 分支去点选会朝一个空 RID 建 uniform set。
 	var scored := bool(fine_handoff.get("ok", false)) \
 		and fine_candidate_rid.is_valid() and fine_winner_rid.is_valid()
-	return {
+	var handoff := {
 		"ok": true,
 		"scored": scored,
 		"anchor_revision": _anchor_revision,
@@ -1174,13 +1236,14 @@ func get_placement_selection_handoff() -> Dictionary:
 		"fine_record_stride_bytes": int(fine_handoff.get("fine_record_stride_bytes", 0)) if scored else 0,
 		"live_anchor_count": int(fine_handoff.get("live_anchor_count", -1)) if scored else -1,
 		"asset_stride": int(anchor_handoff.get("asset_stride", 1)),
-		"grid_size": grid_size,
-		"voxel_size": voxel_size,
-		"grid_origin": grid_origin,
 		"rendering_device": rd,
 		"borrowed": true,
 		"owner_path": get_path() if is_inside_tree() else NodePath(),
 	}
+	# grid_size / voxel_size / grid_origin —— 与 get_identity_report() 同理走权威读口，
+	# 借方按键名取（本记录带 RID / RenderingDevice，本来就不可 JSON 序列化，无键序依赖）。
+	handoff.merge(get_grid_frame())
+	return handoff
 
 
 ## Anchors 结果落库；只有**真的带交接**的那一层才换代。
@@ -1210,10 +1273,32 @@ func _publish_score_result(result: Dictionary) -> Dictionary:
 	return _last_score_result
 
 
-## Place 结果落库。Place 改写 SceneSV ⇒ 评分状态失效，Score 交接同批作废。
+## Place 结果落库。两件事：
+##
+## 1. **接力发布 Anchor 交接**：整链（run_placement_pipeline）每批都在共享 prefilter 实例上
+##    重跑 collect，缓存未命中时常驻 anchor/count 缓冲会被**释放重建**
+##    （AutoObjectProbePrefilterGPU._release_resident_collect_cache → 新 RID），已发布交接里的
+##    RID 随之变成死句柄；就算命中复用，atomicAdd 分配的槽位顺序也换了。所以带 prefilter
+##    交接的结果必须像 _publish_anchor_result 一样换代接力，否则借方按旧 revision 核对，
+##    读到的却是换代（甚至已释放）的缓冲——此前 Place 之后点选锚点就踩在这条上。
+##    ⚠ 取**嵌套**的 prefilter_result.anchor_candidate_handoff，不能用 _anchor_handoff_in：
+##    整链结果的顶层同名键是 RID-less 摘要（_anchor_candidate_handoff_summary），
+##    _anchor_handoff_in 会优先拿到它，发布出去点选侧全是空 RID。
+## 2. **作废评分状态**：Place 改写 SceneSV ⇒ score cache key、模型与 Score 交接同批作废。
+##    模型不清会让 demo 侧 `_sync_model_from_spa()` 把放置前的旧评分继续喂给显示/HUD。
+##    统一清在这里而不是 run_place 末尾：run_pipeline_once（bridge benchmark）等旁路
+##    也改写 SceneSV，走的同样是本出口。
 func _publish_place_result(result: Dictionary) -> Dictionary:
 	_last_place_result = result
+	var handoff: Dictionary = (result.get("prefilter_result", {}) as Dictionary).get("anchor_candidate_handoff", {})
+	if bool(handoff.get("ok", false)):
+		_anchor_revision += 1
+		_anchor_handoff = handoff
+		# 新锚点 = 旧评分的输入没了（与 _publish_anchor_result 同一理由）。
+		_invalidate_score_handoff()
 	if bool(result.get("ok", false)):
+		_score_cache_key = {}
+		_score_model = {}
 		_invalidate_score_handoff()
 	return _last_place_result
 
@@ -1844,17 +1929,25 @@ func is_voxel_display_visible(display_key: String) -> bool:
 	return _selection_host.is_voxel_display_visible(display_key) if _selection_host != null else false
 
 
+## 按**显示键**翻某个域的显示（桥 / Inspector 复选框 / 外部调用的统一入口）。
+##
+## ⚠ 有对应卷就必须转给 `set_volume_display()`：不走它的话只有 host 的记账位被翻，
+## 卷节点收不到通知、`rebuild_display()` 永远不跑（它首句就看卷自己的 `display_visible`），
+## 表现是「开关翻了但什么都没画」，而默认隐藏的域更是**点了完全没反应**。
+##
+## ⚠ 这里原本是一张手写的三分支表（targetsv→TargetSV / sv→SceneSV / svtile→SVTile），
+## 剩下三个显示键掉进下面的兜底、只翻记账位。这正是本函数注释在警告的那个坑，只是表
+## 漏了一半——而漏项无法被发现：卷的 `display_visible` 静默陈旧，界面上零提示。
+## 改成问 `_volume_for_display_key()`（每个 `PickableDomain` 自报 `display_key()`）之后
+## 六个域一视同仁，新增域也不必再记得来这里补一行。
 func set_voxel_display_visible(display_key: String, visible: bool) -> Dictionary:
 	if _selection_host == null:
 		return {"ok": false, "reason": "selection_host_unavailable"}
-	if display_key == "targetsv":
-		return set_volume_display(&"TargetSV", visible)
-	if display_key == "sv":
-		return set_volume_display(&"SceneSV", visible)
-	# ⚠ 与 "sv" 同理：不走 set_volume_display 的话，只有 host 的记账位被翻，
-	# SPA/Volumes/SVTile 节点收不到通知、rebuild_display() 永远不跑。
-	if display_key == "svtile":
-		return set_volume_display(&"SVTile", visible)
+	var volume_node := _volume_for_display_key(display_key)
+	if volume_node != null:
+		# 卷名就是 set_volume_display 收的键（同款取法见 _handle_domain_visibility_shortcut）。
+		return set_volume_display(StringName(volume_node.name), visible)
+	# 没有卷的显示键（纯族外容器）：只有记账位与组下发这一条路。
 	_selection_host.set_voxel_display_visible(display_key, visible)
 	return {"ok": true, "display_key": display_key, "visible": visible}
 
@@ -2215,6 +2308,17 @@ func _mark_score_region_dirty(region_rect: Rect2i) -> void:
 		{"id": "score_region", "source_id": "score_region"})
 
 
+## 单区域 S6：标脏 + ensure_prefilter。Anchors 与 Score 的逐区域循环共用这一段（此前各写
+## 一遍，且失败时把 env 的详细 reason 丢成字面量 "prefilter_failed"——现在原样透传）。
+## env 缓存命中时标脏只是滞留待消费，语义见 _mark_score_region_dirty。
+func _region_prefilter(region_rect: Rect2i) -> Dictionary:
+	_mark_score_region_dirty(region_rect)
+	var prefilter: Dictionary = _placement_env.ensure_prefilter(_prefilter_settings())
+	if not bool(prefilter.get("ok", false)):
+		return {"ok": false, "reason": str(prefilter.get("reason", "prefilter_failed"))}
+	return prefilter
+
+
 ## Anchors：只推进到 S6 并发布常驻 anchor handoff，不评分。
 ## anchors-only 模型（有锚点无分数，ok=false）供显示消费；排序与 Score 同口径。
 func run_anchors(_settings := {}) -> Dictionary:
@@ -2226,10 +2330,9 @@ func run_anchors(_settings := {}) -> Dictionary:
 		return {"ok": false, "reason": "no_score_regions"}
 	var region_models: Array = []
 	for _rect in region_rects:
-		_mark_score_region_dirty(_rect)
-		var prefilter: Dictionary = _placement_env.ensure_prefilter(_prefilter_settings())
+		var prefilter := _region_prefilter(_rect)
 		if not bool(prefilter.get("ok", false)):
-			return {"ok": false, "reason": str(prefilter.get("prefilter_reason", "prefilter_failed"))}
+			return prefilter
 		var handoff: Dictionary = prefilter.get("anchor_candidate_handoff", {})
 		# Anchors 命令本身就是"把锚点拿出来"，是真正需要 CPU 锚点坐标的消费方：
 		# 在这里按需读一次常驻缓冲，而不是让 prefilter 热路径顺带回读。
@@ -2320,10 +2423,9 @@ func _run_fine_scoring(
 	}
 	var region_models: Array = []
 	for _rect in region_rects:
-		_mark_score_region_dirty(_rect)
-		var prefilter: Dictionary = _placement_env.ensure_prefilter(_prefilter_settings())
+		var prefilter := _region_prefilter(_rect)
 		if not bool(prefilter.get("ok", false)):
-			return {"ok": false, "reason": str(prefilter.get("prefilter_reason", "prefilter_failed"))}
+			return prefilter
 		var region_model: Dictionary = _score_runner.run({
 			"spa": self,
 			"committer": _sv_committer,
@@ -2395,8 +2497,8 @@ func _score_status(require_scored: bool, extra: Dictionary = {}) -> Dictionary:
 
 ## Place：S5→S9 全链，多批直到放满。
 ## ⚠ Place 改写 committed SV：再次 Score 会在新场上重评（env 缓存已随会话失效）。
-## 每批先保留各 Anchor 的最佳 Fine 候选，再按稳定 random 优先级原子失效 Anchor 间冲突并
-## 提交至多 place_result_capacity 个；上一批盖章的 collision 使下一批候选在已放置足迹上
+## 每批先保留各 Anchor 的最佳 Fine 候选，再经迭代贪心得分 NMS 仲裁 Anchor 间冲突（高分优先
+## 存活，与串行贪心等价）并提交至多 place_result_capacity 个；上一批盖章的 collision 使下一批候选在已放置足迹上
 ## invalid（collision_limit 门）⇒ 批间自然互斥。收敛判据分「格点门开/关」两套，
 ## 写在循环末尾——⚠ 开着格点门时**单批零产出不等于放满**，别照搬旧判据。
 func run_place(_settings := {}) -> Dictionary:
@@ -2411,9 +2513,10 @@ func run_place(_settings := {}) -> Dictionary:
 		})
 	var common := PLACE_PIPELINE_COMMON.duplicate(true)
 	common["rotation_slots"] = rotation_slots
-	common["min_target_interest"] = min_target_interest
-	common["anchor_vertical_stride"] = anchor_vertical_stride
-	common["min_prefilter_score"] = min_prefilter_score
+	# prefilter 门限三键与 Anchors/Score 同一来源（_prefilter_settings），顺带显式带上
+	# debug_read_anchors=false：_apply_prefilter_settings 对该键是「缺席即沿用实例旧值」，
+	# 不带它，上一次诊断调用留在实例上的回读开关会悄悄漏进 Place。
+	common.merge(_prefilter_settings())
 	common["result_capacity"] = place_result_capacity
 	common["min_distance_voxels"] = place_min_distance_voxels
 	common["anchor_interval_voxels"] = place_anchor_interval_voxels
@@ -2433,20 +2536,31 @@ func run_place(_settings := {}) -> Dictionary:
 	var spawned_total := 0
 	var batches := 0
 	var batch_reports: Array = []
-	# 循环靠收敛判据自然退出（判据分两套，见循环末尾）；跑满 place_max_batches 属于
-	# **没收敛**，必须报出来——静默截断正是「点一次 Place 只铺一部分」那类问题的温床。
+	# 循环靠收敛判据自然退出（判据分两套，见循环末尾）；跑满批预算属于**没收敛**，
+	# 必须报出来——静默截断正是「点一次 Place 只铺一部分」那类问题的温床。
 	var converged := false
-	# 格点门开启时的「连续零产出」计数：单批零产出只说明那个相位不巧，不是放满，
-	# 必须连着若干批都零产出才作数。见循环末尾的收敛判据。
-	var consecutive_empty_batches := 0
-	for batch in range(maxi(place_max_batches, 1)):
-		if _placed_object_ids.size() + place_result_capacity > autoobject_capacity:
+	# 批预算：格点门开着时**下界抬到相位空间大小**（interval²），因为相位走法是批号的
+	# 纯函数（PlacementStageEnv 每次 begin_place_session 都把批号清 0），Place 之间不留
+	# 任何游标 ⇒ 每一轮都从同一个相位重走。于是「本轮能覆盖多少格位」完全等于「本轮跑了
+	# 多少批」：预算 32 < 144 就意味着有 112 个格位**永远**没机会参与评分，而且再点几次
+	# Place 也拿不回来——第二轮吃的还是第一轮已经填满的那 12 个相位（实测：2923 + 0 + 0，
+	# 同场把预算给到 144 是一次 4713）。
+	# 这样每一轮都是同一个纯函数 (锚点, 当前 SceneSV) → 放置：本轮尽力填满，
+	# 下一轮重跑得 0 才是「真的满了」而不是「没走到」。
+	var batch_budget := maxi(place_max_batches, 1)
+	if place_anchor_interval_voxels > 0:
+		batch_budget = maxi(batch_budget, place_anchor_interval_voxels * place_anchor_interval_voxels)
+	# 容量帽基数问 runtime 的 id 分配器（begin_place_session 已带回，零额外回读）；
+	# host 不再自记 id——真相只有一份（2026-08-18 用户裁决：依赖项一致，host 不留副本）。
+	var placed_before_round := int(session.get("allocated_object_count", 0))
+	for batch in range(batch_budget):
+		if placed_before_round + spawned_total + place_result_capacity > autoobject_capacity:
 			push_warning("[ScenePlacementActor] Place 停在容量帽：累计 %d 接近 runtime 容量 %d" % [
-				_placed_object_ids.size(), autoobject_capacity])
+				placed_before_round + spawned_total, autoobject_capacity])
 			break
 		var batch_total_t0_usec := Time.get_ticks_usec()
-		# 跨批间距：已放置种子预插 reduce 冲突哈希（per-asset 成对间距在批间同样成立）
-		var result: Dictionary = _placement_env.run_place_session_batch(_placed_seed_floats)
+		# 跨批与跨轮间距同源：常驻余隙场（上批/上轮的接受结果都已由 paint pass 画进去）
+		var result: Dictionary = _placement_env.run_place_session_batch()
 		if not bool(result.get("ok", false)):
 			var phase := str(result.get("phase", result.get("reason", "pipeline_failed")))
 			if batches == 0:
@@ -2466,26 +2580,6 @@ func run_place(_settings := {}) -> Dictionary:
 		batches += 1
 		spawned_total += batch_spawned
 		host_batch_phases_ms["result_extract"] = float(Time.get_ticks_usec() - host_phase_t0_usec) / 1000.0
-		host_phase_t0_usec = Time.get_ticks_usec()
-		# 累积渲染面 = 全部已放置活对象；本流程不 free 对象、spawn id 不复用，直接追加。
-		for raw_object_id in writeback.get("object_ids", []):
-			_placed_object_ids.append(int(raw_object_id))
-		host_batch_phases_ms["object_id_append"] = float(Time.get_ticks_usec() - host_phase_t0_usec) / 1000.0
-		host_phase_t0_usec = Time.get_ticks_usec()
-		# 种子累积：本批定选记录的 voxel 原点 + 资产号（reduce 记录 core 键，恒在）。
-		for asset_result in placement_result.get("asset_results", []):
-			if not (asset_result is Dictionary):
-				continue
-			var seed_asset := float(int((asset_result as Dictionary).get("asset_index", 0)))
-			for record in (asset_result as Dictionary).get("results", []):
-				if not (record is Dictionary):
-					continue
-				var voxel_origin: Vector3i = (record as Dictionary).get("voxel_origin", Vector3i.ZERO)
-				_placed_seed_floats.append(float(voxel_origin.x))
-				_placed_seed_floats.append(float(voxel_origin.y))
-				_placed_seed_floats.append(float(voxel_origin.z))
-				_placed_seed_floats.append(seed_asset)
-		host_batch_phases_ms["seed_assembly"] = float(Time.get_ticks_usec() - host_phase_t0_usec) / 1000.0
 		host_phase_t0_usec = Time.get_ticks_usec()
 		# VPG 的 GPU state-chain stamp 已经**原位**把本批盖章写进常驻场对了，但瓦片摘要要靠
 		# 单独一趟 reduce。管线里唯一会触发它的 `_commit_accepted_placements()` 被
@@ -2507,10 +2601,7 @@ func run_place(_settings := {}) -> Dictionary:
 			push_warning("[ScenePlacementActor] Place 批 %d 的瓦片摘要刷新失败（reason=%s）——本批盖章内容在 SceneSV/SVTile 的显示与点选里不可见" % [
 				batch, str(summary_refresh.get("reason", "unknown"))])
 		host_batch_phases_ms["sv_tile_summary_refresh"] = float(Time.get_ticks_usec() - host_phase_t0_usec) / 1000.0
-		host_batch_phases_ms["total"] = float(host_batch_phases_ms.get("result_extract", 0.0)) \
-			+ float(host_batch_phases_ms.get("object_id_append", 0.0)) \
-			+ float(host_batch_phases_ms.get("seed_assembly", 0.0)) \
-			+ float(host_batch_phases_ms.get("sv_tile_summary_refresh", 0.0))
+		host_batch_phases_ms["total"] = float(host_batch_phases_ms.get("result_extract", 0.0)) + float(host_batch_phases_ms.get("sv_tile_summary_refresh", 0.0))
 		# 逐批可观测性（benchmark_score_timing 聚合这几个键）。批循环随 Place 一起从 demo
 		# 迁到这里，报告键名保持不变——键名一变，聚合侧读到的就是空。
 		# demo_phases_ms 沿用旧名：它现在装的是 SPA 侧的编排分段，改名要同步改 benchmark。
@@ -2520,10 +2611,17 @@ func run_place(_settings := {}) -> Dictionary:
 			"environment_wall_ms": float(session_detail.get("environment_wall_usec", 0)) / 1000.0,
 			"total_wall_ms": float(Time.get_ticks_usec() - batch_total_t0_usec) / 1000.0,
 			"spawned": batch_spawned,
+			# 本批被接受放置的总得分。GPU 侧早就算好也回读了（placement_result_score_sum.glsl），
+			# 只是一直没转发出来。reduce 的容量天花板改成按得分裁剪之后，这是**唯一**能看出
+			# 「留下的是不是高分那批」的量：条数相同而总分更高，就说明裁剪口径生效了。
+			"score_sum": float(placement_result.get("placement_score_sum", 0.0)),
+			"score_valid_count": int(placement_result.get("placement_valid_count", 0)),
 			"anchor_count": int((result.get("prefilter_result", {}) as Dictionary).get("anchor_count", 0)),
 			"target_cache_hit": bool(session_detail.get("target_cache_hit", false)),
 			"target_revision": int(session_detail.get("target_revision", -1)),
-			"seed_count": int(session_detail.get("seed_count", 0)),
+			# NMS 实测轮数/未定型残留。预算耗尽 = 本批候选被 compact 静默丢弃，
+			# 除了这里没有第二处能看出来。
+			"nms_telemetry": fine_contract.get("reduce_nms_telemetry", {}),
 			"incremental_fine_active": bool(fine_contract.get("incremental_fine_active", false)),
 			"incremental_fine_cache_hit": bool(fine_contract.get("incremental_fine_cache_hit", false)),
 			"incremental_fine_force_full": bool(fine_contract.get("incremental_fine_force_full", false)),
@@ -2566,58 +2664,109 @@ func run_place(_settings := {}) -> Dictionary:
 				converged = true
 				break
 		else:
-			# 门开启：两条独立的收敛判据，任一成立即算真的放满，都**不该**触发下面那条
-			# 「跑满仍未收敛」的告警（那条是给跑飞兜底的，不是给正常收敛的）。
-			#   1. 连续零产出：连着 maxi(4, interval) 批都没产出，才认为不是相位不巧。
-			#      下界取 4 是防止 interval 很小时（例如 1、2）判据退化成单批零产出。
-			if batch_spawned <= 0:
-				consecutive_empty_batches += 1
-				if consecutive_empty_batches >= maxi(4, place_anchor_interval_voxels):
-					converged = true
-					break
-			else:
-				consecutive_empty_batches = 0
-			#   2. 相位空间走完：PlacementStageEnv.run_place_session_batch 用「与 interval²
-			#      互质的步长做模乘」推进相位，是完全置换 ⇒ interval² 批之内不重不漏地走完
-			#      全部格位。走完就等于每个格点都试过了，再跑只是重复相位。
-			#      注意循环上界仍是 place_max_batches（默认 256），而 interval=12 的相位空间
-			#      只有 144 < 256，所以正常情况下是从这里收敛的，轮不到跑满 256 批。
+			# 门开启：唯一的收敛判据是**相位空间走完**。
+			# PlacementStageEnv.run_place_session_batch 用「与 interval² 互质的步长做模乘」
+			# 推进相位，是完全置换 ⇒ interval² 批之内不重不漏地走完全部格位。走完就等于每个
+			# 格点都试过了，再跑只是重复相位。
+			#
+			# ⚠ 这里曾并列着第二条「连续 maxi(4, interval) 批零产出即收敛」。它在多轮场景下
+			# 是错的：一串零产出只证明**这几个相位**满了，证明不了其余相位也满——而 Place
+			# 之间不留相位游标，第二次点 Place 必然从头重走那几个已经填满的相位，于是恒定
+			# 12 批空转后「收敛」退出，剩下的 112 个格位一次都没被访问（实测 2923 + 0 + 0）。
+			# 相位空间本来就是 interval² 的硬上界，删掉它不会变成 `while true`。
 			if batches >= place_anchor_interval_voxels * place_anchor_interval_voxels:
 				converged = true
 				break
-	if not converged and batches >= maxi(place_max_batches, 1):
+	if not converged and batches >= batch_budget:
 		push_warning("[ScenePlacementActor] Place 跑满 %d 批仍未收敛（本次 spawned=%d）——还有候选没放完，调大 place_max_batches 再点一次。" % [
-			maxi(place_max_batches, 1), spawned_total])
+			batch_budget, spawned_total])
 	_placement_env.end_place_session()
-	# Place 改了 SceneSV ⇒ 上一轮评分的输入没了，cache key 与模型一起作废。
-	_score_cache_key = {}
+	# Place 改了 SceneSV ⇒ 评分 cache key/模型/交接作废——统一在 _publish_place_result
+	# （本 return 与批循环里的逐批发布走同一出口，不在这里重复清）。
 	return _publish_place_result({
 		"ok": true,
 		"spawned": spawned_total,
 		"batches": batches,
 		"total_placed": spawned_total,
-		"placed_object_ids": _placed_object_ids.duplicate(),
+		"placed_object_ids": get_placed_object_ids(),
 		"batch_reports": batch_reports,
 		"session": session,
 	})
 
 
-## 已放置对象 id 的只读视图（demo 渲染/回读用）。
+## 已放置对象 id 的只读视图（demo 渲染/回读用）。真相在 runtime 的 id 分配器
+## （分配失败即归还，与旧 host 记账逐位同义）；host 不再留平行副本。
 func get_placed_object_ids() -> Array[int]:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
-	return _placed_object_ids.duplicate()
+	var gpu_runtime = get_gpu_runtime()
+	if gpu_runtime == null:
+		return [] as Array[int]
+	return gpu_runtime.get_allocated_object_ids()
 
 
-## 复位 Place 的跨批累积（对象 id、reduce 种子、评分 cache key）。
-## benchmark fixture 重置这类"把场清回空"的路径必须调它：runtime 里的对象已经没了，
-## 累积表还留着就会让下一批 Place 拿一堆不存在的 id 去算容量帽与间距种子。
+## 复位 Place 关联的评分侧缓存（cache key、模型、Fine 交接）。
+## 对象 id / 跨轮间距不再有 host 累积表可清：id 真相在 runtime 分配器（reset_state 归还
+## 全部 id），间距真相在常驻余隙场（下一个会话见分配器为空即自动重建零场）。
+## benchmark fixture 清场后仍要调它——剩下的职责是别让旧评分模型继续喂显示。
 func reset_place_accumulation() -> void:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
-	_placed_object_ids.clear()
-	_placed_seed_floats = PackedFloat32Array()
 	_score_cache_key = {}
 	_score_model = {}
 	_invalidate_score_handoff()
+
+
+## 把场清回「刚 init 完」的状态。四件事按依赖顺序做，任何一步失败都继续往下走并汇总
+## 到返回值里——半清状态比全不清更难查，所以宁可尽力清完再报告哪一步没成。
+##
+## 1. GPU AutoObject 记录（reset_state：清光运行时记录，保留 buffer RID 与 RD）
+## 2. 已盖章的 committed SceneSV（reset_empty_fixture_state：回到地形播种的初态）
+## 3. Place 的跨批累积（对象 id / reduce 种子 / 评分 cache key）
+## 4. anchor 与 score 交接换代 + 广播下游作废（provider 的 _assets / env / 显示）
+##
+## ⚠ **不动 BrushSV**：那是用户手绘的输入而非放置产物，一并清掉会是个意外。
+## ⚠ 余隙场不需要单独清：reset_state 把 runtime id 分配器清回全满，下一个 Place 会话在
+##   begin_place_session 判「世界为空」即重建零场（判据与场同源，不存在漏清窗口）。
+func clear_placement_state() -> Dictionary:
+	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
+	var steps := {}
+
+	var gpu_runtime = get_gpu_runtime()
+	if gpu_runtime != null and gpu_runtime.has_method("reset_state"):
+		steps["autoobject"] = gpu_runtime.call("reset_state")
+	else:
+		steps["autoobject"] = {"ok": false, "reason": "gpu_runtime_unavailable"}
+
+	if _sv_committer != null:
+		steps["scene_sv"] = _sv_committer.reset_empty_fixture_state()
+	else:
+		steps["scene_sv"] = {"ok": false, "reason": "committer_unavailable"}
+
+	reset_place_accumulation()
+	steps["accumulation"] = {"ok": true}
+
+	# anchor 侧也要换代：只清累积而不推进 revision，下游会以为手里那份交接还有效。
+	_anchor_revision += 1
+	invalidate_score_cache(&"placement_state_cleared")
+	# ⚠ 先走 get_volume_provider()：它带惰性注册兜底。只遍历 _providers 的话，provider 尚未
+	# 注册时（用户还没跑过 Anchors/Score 就直接点清除）广播会一个都发不出去——数据清了、
+	# 显示器没收到通知，表现就是"点了没反应"。
+	var scored_provider := get_volume_provider(&"VolumeScore")
+	var notified := 0
+	for provider_key in _providers:
+		var provider := _providers[provider_key] as Node
+		if provider != null and is_instance_valid(provider) and provider.has_method("invalidate_asset_caches"):
+			provider.call("invalidate_asset_caches")
+			notified += 1
+	if notified == 0 and scored_provider != null and scored_provider.has_method("invalidate_asset_caches"):
+		scored_provider.call("invalidate_asset_caches")
+		notified = 1
+	steps["handoff"] = {"ok": true, "anchor_revision": _anchor_revision, "providers_notified": notified}
+
+	var ok := bool(steps["autoobject"].get("ok", false)) and bool(steps["scene_sv"].get("ok", false))
+	if not ok:
+		push_warning("[ScenePlacementActor] Clear All 未完全成功：autoobject=%s scene_sv=%s" % [
+			str(steps["autoobject"].get("reason", "ok")), str(steps["scene_sv"].get("reason", "ok"))])
+	return {"ok": ok, "reason": "ok" if ok else "partial", "steps": steps}
 
 
 ## 评分状态失效的公开入口（资产表换代、grid 参数变化、rotation contract 变化、

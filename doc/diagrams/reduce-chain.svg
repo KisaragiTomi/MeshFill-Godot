@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1130" viewBox="0 0 1500 1130" font-family="Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3F4A56"/>
+    </marker>
+    <marker id="ahb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2F5F92"/>
+    </marker>
+    <marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8A2E2E"/>
+    </marker>
+    <marker id="ahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3D7A5C"/>
+    </marker>
+    <marker id="aho" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#A85A18"/>
+    </marker>
+  </defs>
+
+  <rect width="1500" height="1130" fill="#FAFAF7"/>
+
+  <text x="44" y="42" font-size="25" font-weight="700" fill="#1B1F24">Reduce 链路 — 迭代式贪心得分 NMS</text>
+  <text x="44" y="70" font-size="14" fill="#5B646E">MeshFill-Godot · 一次 Place 批次内的 GPU 派发序列。全链无 CPU 回读、无排序、无关系缓冲；唯一的选择策略是仲裁的得分优先。</text>
+
+  <rect x="28" y="92" width="1444" height="1012" rx="14" fill="none" stroke="#9AA4B0" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="46" y="114" font-size="13" font-weight="700" fill="#5B646E">Place 会话批循环 × N　—— 收敛判据：本批 spawned == 0（格点门关闭时）；批间靠余隙场 + collision 盖章互斥</text>
+
+  <rect x="80" y="132" width="700" height="74" rx="9" fill="#FFFFFF" stroke="#3D7A5C" stroke-width="1.6"/>
+  <rect x="80" y="132" width="6" height="74" rx="3" fill="#3D7A5C"/>
+  <text x="102" y="156" font-size="15" font-weight="700" fill="#1B1F24">paint_placement_clearance　<tspan font-size="12" font-weight="400" fill="#3D7A5C">仅会话首批</tspan></text>
+  <text x="102" y="177" font-size="12.5" fill="#424A54">把上一会话遗留的种子放置烘进重建后的零余隙场。</text>
+  <text x="102" y="196" font-size="12" fill="#6B7480" font-family="monospace">写 clearance_field（atomicMax 圆锥）</text>
+
+  <line x1="430" y1="206" x2="430" y2="230" stroke="#3F4A56" stroke-width="1.8" marker-end="url(#ah)"/>
+
+  <rect x="80" y="232" width="700" height="200" rx="9" fill="#FFFFFF" stroke="#2F5F92" stroke-width="1.6"/>
+  <rect x="80" y="232" width="6" height="200" rx="3" fill="#2F5F92"/>
+  <text x="102" y="257" font-size="15" font-weight="700" fill="#1B1F24">① init_anchor_atomic_reduce<tspan font-size="12" font-weight="400" fill="#6B7480">　local 256×1×1 · ceil(anchor_capacity/256) 组</tspan></text>
+  <text x="102" y="280" font-size="12.5" fill="#424A54">每个 anchor 在自己的 top-K 里选最高分候选（同分取更小 slot），再过两道与他人无关的门：</text>
+  <text x="118" y="301" font-size="12.5" fill="#424A54">· 格点门　<tspan font-family="monospace" font-size="11.5">anchor_interval</tspan>：只让落在 (相位 + k·间隔) 上的参赛；≤ 0 关闭（现已非必需，仅用于稀释批次）</text>
+  <text x="118" y="322" font-size="12.5" fill="#424A54">· 跨批余隙　自身那一格 O(1) 读余隙场：<tspan font-family="monospace" font-size="11.5">clearance &gt; -half(self)</tspan> 即与已放置物冲突 → 不参赛</text>
+  <text x="102" y="345" font-size="12" fill="#8A5A00">被门挡下的 anchor 永远放不下，因此也不得压制别人 —— 它压根不进入仲裁。</text>
+  <line x1="102" y1="358" x2="758" y2="358" stroke="#E2E5E9" stroke-width="1"/>
+  <text x="102" y="378" font-size="12" fill="#6B7480" font-family="monospace">写 anchor_candidate_ref[i] = slot+1　·　anchor_valid[i] = UNDECIDED(2)</text>
+  <text x="102" y="397" font-size="12" fill="#6B7480" font-family="monospace">写 anchor_at_pixel[x + gx·z] = i+1　（每列至多一锚 ⇒ 无碰撞）</text>
+  <text x="102" y="416" font-size="12" fill="#6B7480" font-family="monospace">atomicAdd nms_valid_count　·　线程0 按活锚点数写 nms_dispatch_args</text>
+
+  <line x1="430" y1="432" x2="430" y2="456" stroke="#3F4A56" stroke-width="1.8" marker-end="url(#ah)"/>
+
+  <rect x="80" y="458" width="700" height="252" rx="9" fill="#FFFDF9" stroke="#A85A18" stroke-width="1.8"/>
+  <rect x="80" y="458" width="6" height="252" rx="3" fill="#A85A18"/>
+  <text x="102" y="483" font-size="15" font-weight="700" fill="#1B1F24">② arbitrate_anchor_conflicts<tspan font-size="12" font-weight="400" fill="#A85A18">　× reduce_nms_iter_budget（默认 64）· indirect dispatch</tspan></text>
+  <text x="102" y="506" font-size="12.5" fill="#424A54">同轮互斥。未定 anchor 扫保守 XZ 窗口、对窗口内每个参赛者做精确 3D 成对测试：</text>
+  <text x="118" y="527" font-size="12" fill="#424A54" font-family="monospace">dist² &lt; max( max(min_distance, (r_a+r_b)·factor)², 0.25 )</text>
+  <text x="102" y="551" font-size="12.5" fill="#424A54">优先级 =（得分降序，同分 anchor id 升序）—— 全序，无并列存活。三条转移：</text>
+  <text x="118" y="572" font-size="12.5" fill="#424A54">· 存在更高优先级且已 <tspan font-weight="700" fill="#2F5F92">SELECTED</tspan> 的冲突者　→　本 anchor <tspan font-weight="700" fill="#8A2E2E">OUT</tspan></text>
+  <text x="118" y="592" font-size="12.5" fill="#424A54">· 所有更高优先级冲突者都已 OUT（或不存在）　→　本 anchor <tspan font-weight="700" fill="#2F5F92">SELECTED</tspan></text>
+  <text x="118" y="612" font-size="12.5" fill="#424A54">· 否则保持 UNDECIDED，等下一轮</text>
+  <line x1="102" y1="626" x2="758" y2="626" stroke="#F0E4D4" stroke-width="1"/>
+  <text x="102" y="646" font-size="12.5" fill="#424A54">收敛控制留在 GPU：每轮最后完成的工作组比对 <tspan font-family="monospace" font-size="11.5">decided ≥ valid</tspan>，成立即把</text>
+  <text x="102" y="666" font-size="12.5" fill="#424A54"><tspan font-family="monospace" font-size="11.5">nms_dispatch_args[0]</tspan> 清零。宿主盲目入队 256 轮，收敛后剩余轮 launch 零工作组、零开销。</text>
+  <text x="102" y="690" font-size="12" fill="#8A2E2E">轮数由冲突图里最长的优先级依赖链决定：同分与空间结构化会把它拉长十倍，密度不影响。</text>
+
+  <path d="M80,672 L50,672 L50,496 L80,496" fill="none" stroke="#A85A18" stroke-width="1.8" marker-end="url(#aho)"/>
+
+  <line x1="430" y1="710" x2="430" y2="734" stroke="#3F4A56" stroke-width="1.8" marker-end="url(#ah)"/>
+
+  <rect x="80" y="736" width="700" height="180" rx="9" fill="#FFFFFF" stroke="#2F5F92" stroke-width="1.6"/>
+  <rect x="80" y="736" width="6" height="180" rx="3" fill="#2F5F92"/>
+  <text x="102" y="761" font-size="15" font-weight="700" fill="#1B1F24">③ compact_anchor_atomic_reduce<tspan font-size="12" font-weight="400" fill="#6B7480">　local 1×1×1 · 单线程走序</tspan></text>
+  <text x="102" y="784" font-size="12.5" fill="#424A54">按 anchor id 顺序复制 <tspan font-family="monospace" font-size="11.5">anchor_valid == SELECTED</tspan> 的 survivor 进结果槽，尾部空槽清零。</text>
+  <text x="102" y="806" font-size="12.5" fill="#424A54"><tspan font-weight="700">不含任何选择策略</tspan> —— 集合已由 ② 定死；这里只负责给出稳定的槽位序（= pick_id）。</text>
+  <text x="102" y="828" font-size="12.5" fill="#424A54">预算耗尽残留的 UNDECIDED 一律丢弃，绝不带着未解冲突放置。逐资产配额已整条退役。</text>
+  <line x1="102" y1="842" x2="758" y2="842" stroke="#E2E5E9" stroke-width="1"/>
+  <text x="102" y="862" font-size="12" fill="#6B7480" font-family="monospace">写 placement_results[]（stride 4×vec4）　·　result_count</text>
+  <text x="102" y="886" font-size="12" fill="#8A2E2E">⚠ result_capacity 是缓冲上界、不是选择口径：胜出者多于它时填满即停，余下留给下一批；</text>
+  <text x="102" y="904" font-size="12" fill="#8A2E2E">　 而 anchor id 来自无序 atomicAdd ⇒ 顶到上界那批「谁先落地」任意且逐次不稳定。</text>
+
+  <line x1="430" y1="916" x2="430" y2="940" stroke="#3F4A56" stroke-width="1.8" marker-end="url(#ah)"/>
+
+  <rect x="80" y="942" width="700" height="92" rx="9" fill="#FFFFFF" stroke="#3D7A5C" stroke-width="1.6"/>
+  <rect x="80" y="942" width="6" height="92" rx="3" fill="#3D7A5C"/>
+  <text x="102" y="966" font-size="15" font-weight="700" fill="#1B1F24">paint_placement_clearance　<tspan font-size="12" font-weight="400" fill="#3D7A5C">每批</tspan></text>
+  <text x="102" y="988" font-size="12.5" fill="#424A54">本批 survivor 各画一个圆锥进余隙场，供下一批 ① 的 O(1) 查询。必须排在 ③ 之后 ——</text>
+  <text x="102" y="1008" font-size="12.5" fill="#424A54">提前画会把被容量砍掉的候选也算进互斥关系。</text>
+  <text x="102" y="1027" font-size="12" fill="#6B7480" font-family="monospace">写 clearance_field（atomicMax）</text>
+
+  <path d="M780,988 L828,988 L828,318 L780,318" fill="none" stroke="#3D7A5C" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#ahg)"/>
+  <rect x="820" y="596" width="17" height="128" fill="#FAFAF7"/>
+  <text x="828" y="660" font-size="12" font-weight="700" fill="#3D7A5C" transform="rotate(-90 828 660)" text-anchor="middle">下一批的跨批互斥</text>
+
+  <rect x="860" y="132" width="600" height="252" rx="9" fill="#FFFFFF" stroke="#C9CDD3" stroke-width="1.4"/>
+  <text x="884" y="158" font-size="14" font-weight="700" fill="#1B1F24">anchor_valid 三态机（单调 · 就地更新单缓冲）</text>
+
+  <rect x="1042" y="180" width="132" height="42" rx="7" fill="#FFF6E6" stroke="#A85A18" stroke-width="1.5"/>
+  <text x="1108" y="199" font-size="13" font-weight="700" fill="#8A5A00" text-anchor="middle">UNDECIDED</text>
+  <text x="1108" y="215" font-size="11" fill="#8A5A00" text-anchor="middle" font-family="monospace">= 2</text>
+
+  <rect x="898" y="288" width="132" height="42" rx="7" fill="#FDECEC" stroke="#8A2E2E" stroke-width="1.5"/>
+  <text x="964" y="307" font-size="13" font-weight="700" fill="#8A2E2E" text-anchor="middle">OUT</text>
+  <text x="964" y="323" font-size="11" fill="#8A2E2E" text-anchor="middle" font-family="monospace">= 0</text>
+
+  <rect x="1186" y="288" width="132" height="42" rx="7" fill="#EAF1F9" stroke="#2F5F92" stroke-width="1.5"/>
+  <text x="1252" y="307" font-size="13" font-weight="700" fill="#2F5F92" text-anchor="middle">SELECTED</text>
+  <text x="1252" y="323" font-size="11" fill="#2F5F92" text-anchor="middle" font-family="monospace">= 1</text>
+
+  <path d="M1060,224 L978,286" fill="none" stroke="#8A2E2E" stroke-width="1.6" marker-end="url(#ahr)"/>
+  <path d="M1156,224 L1238,286" fill="none" stroke="#2F5F92" stroke-width="1.6" marker-end="url(#ahb)"/>
+  <text x="898" y="252" font-size="11.5" fill="#8A2E2E">被更高优先级的</text>
+  <text x="898" y="267" font-size="11.5" fill="#8A2E2E">SELECTED 覆盖</text>
+  <text x="1266" y="252" font-size="11.5" fill="#2F5F92">更高优先级冲突者</text>
+  <text x="1266" y="267" font-size="11.5" fill="#2F5F92">全部 OUT / 不存在</text>
+
+  <text x="884" y="356" font-size="12" fill="#424A54">状态一经定型不再改变 ⇒ 邻居读到旧值只推迟定型、读到新值只加速收敛，</text>
+  <text x="884" y="373" font-size="12" fill="#424A54">唯一不动点不变。结果与串行贪心「取最高分、淘汰重叠者、重复」等价。</text>
+
+  <rect x="860" y="404" width="600" height="356" rx="9" fill="#FFFFFF" stroke="#C9CDD3" stroke-width="1.4"/>
+  <text x="884" y="430" font-size="14" font-weight="700" fill="#1B1F24">缓冲区（SCOPE_FRAME = 每批新建、零填充即合法初值）</text>
+
+  <text x="884" y="456" font-size="11.5" font-weight="700" fill="#5B646E">名称</text>
+  <text x="1190" y="456" font-size="11.5" font-weight="700" fill="#5B646E">写 / 读</text>
+  <line x1="884" y1="463" x2="1436" y2="463" stroke="#E2E5E9" stroke-width="1"/>
+
+  <text x="884" y="483" font-size="11.5" font-family="monospace" fill="#424A54">fine_candidates[]</text>
+  <text x="1190" y="483" font-size="11.5" fill="#6B7480">Score 写 · ①②③ 读</text>
+  <text x="884" y="504" font-size="11.5" font-family="monospace" fill="#424A54">anchor_count_dyn[]</text>
+  <text x="1190" y="504" font-size="11.5" fill="#6B7480">collect 写 · ①②③ 读</text>
+  <text x="884" y="525" font-size="11.5" font-family="monospace" fill="#424A54">anchor_candidate_ref[]</text>
+  <text x="1190" y="525" font-size="11.5" fill="#6B7480">① 写 · ②③ 读</text>
+  <text x="884" y="546" font-size="11.5" font-family="monospace" fill="#424A54">anchor_valid[]</text>
+  <text x="1190" y="546" font-size="11.5" fill="#6B7480">① 播种 · ② 就地改 · ③ 读</text>
+  <text x="884" y="567" font-size="11.5" font-family="monospace" fill="#424A54">anchor_at_pixel[]</text>
+  <text x="1190" y="567" font-size="11.5" fill="#6B7480">① 写 · ② 读（邻域可见性）</text>
+  <text x="884" y="588" font-size="11.5" font-family="monospace" fill="#424A54">nms_meta[4]</text>
+  <text x="1190" y="588" font-size="11.5" fill="#6B7480">①② 原子累加 · <tspan fill="#8A2E2E" font-weight="700">无人回读</tspan></text>
+  <text x="884" y="609" font-size="11.5" font-family="monospace" fill="#424A54">nms_dispatch_args[3]</text>
+  <text x="1190" y="609" font-size="11.5" fill="#6B7480">① 定尺 · ② 收敛时自清零</text>
+  <text x="884" y="630" font-size="11.5" font-family="monospace" fill="#424A54">asset_spacing_radius[]</text>
+  <text x="1190" y="630" font-size="11.5" fill="#6B7480">宿主上传 · ①② 读</text>
+  <text x="884" y="651" font-size="11.5" font-family="monospace" fill="#3D7A5C">clearance_field[]</text>
+  <text x="1190" y="651" font-size="11.5" fill="#3D7A5C">常驻跨批累积 · paint 写 · ① 读</text>
+  <text x="884" y="672" font-size="11.5" font-family="monospace" fill="#424A54">placement_results[] / result_count</text>
+  <text x="1190" y="672" font-size="11.5" fill="#6B7480">③ 写 · paint / stamp 读</text>
+
+  <line x1="884" y1="688" x2="1436" y2="688" stroke="#E2E5E9" stroke-width="1"/>
+  <text x="884" y="709" font-size="12" fill="#424A54">段间 barrier 由 <tspan font-family="monospace" font-size="11">ComputePassChain</tspan> 逐对插入；② 的 48 次入队共用同一个</text>
+  <text x="884" y="726" font-size="12" fill="#424A54">描述符，每轮从 indirect args 读组数，barrier 保证「写 args → 读 args」的次序。</text>
+  <text x="884" y="748" font-size="12" fill="#424A54">每个候选的维度只有两个：<tspan font-weight="700">范围</tspan>（per-asset spacing radius）与<tspan font-weight="700">得分</tspan>。</text>
+
+  <rect x="860" y="780" width="600" height="254" rx="9" fill="#FFFBFB" stroke="#D8B4B4" stroke-width="1.4"/>
+  <text x="884" y="806" font-size="14" font-weight="700" fill="#8A2E2E">已知缺口</text>
+
+  <text x="884" y="832" font-size="12.5" fill="#424A54"><tspan font-weight="700">1. 收敛无遥测。</tspan> <tspan font-family="monospace" font-size="11">nms_meta</tspan> 的 decided / valid / iteration 三个字段</text>
+  <text x="900" y="850" font-size="12.5" fill="#424A54">从未回读，compact 也不数残留 UNDECIDED ⇒ 预算耗尽零信号。</text>
+  <text x="900" y="868" font-size="12.5" fill="#424A54">参照实现在这里有硬门禁（<tspan font-family="monospace" font-size="11">undecided &gt; 0</tspan> 直接抛异常）。</text>
+
+  <text x="884" y="896" font-size="12.5" fill="#424A54"><tspan font-weight="700">2. 默认预算 48 偏小。</tspan> 实测无门大批次需要 (48, 256] 轮；</text>
+  <text x="900" y="914" font-size="12.5" fill="#424A54">总数看着对是外层批循环兜回来的，掩盖很脆。参照用 256。</text>
+
+  <text x="884" y="942" font-size="12.5" fill="#424A54"><tspan font-weight="700">3. 同分 tie-break 不稳定。</tspan> 优先级的第二关键字是 anchor id，</text>
+  <text x="900" y="960" font-size="12.5" fill="#424A54">而它来自 <tspan font-family="monospace" font-size="11">collect_sv_anchors</tspan> 的无序 atomicAdd ⇒ 同分之间</text>
+  <text x="900" y="978" font-size="12.5" fill="#424A54">选谁任意且逐次不稳定（同输入重跑实测差 0.7%）。参照没有这个</text>
+  <text x="900" y="996" font-size="12.5" fill="#424A54">问题：它的 tie-break 是稳定的像素下标。</text>
+  <text x="884" y="1020" font-size="12" fill="#6B7480">修法：让 anchor id 变成位置的确定函数（如 z·grid_x + x）。</text>
+</svg>

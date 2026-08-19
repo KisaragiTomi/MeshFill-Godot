@@ -33,7 +33,6 @@ const ProfileArenaLayoutScript := preload("res://scripts/utils/profile_arena_lay
 var _placement_writeback = null
 
 ## Lazily creates the delegated placement writeback helper.
-## 中文说明：负责 _ensure_placement_writeback 函数的相关处理。
 func _ensure_placement_writeback():
 	if _placement_writeback == null:
 		_placement_writeback = VoxelPlacementWritebackScript.new()
@@ -43,7 +42,6 @@ func _ensure_placement_writeback():
 	return _placement_writeback
 
 
-## 中文说明：负责 _on_before_dispose 函数的相关处理。
 func _on_before_dispose() -> void:
 	if _placement_writeback == null:
 		return
@@ -136,35 +134,42 @@ const FINE_SCORE_PUSH := [
 const REDUCE_INIT_PUSH := [
 	["topk", "int"],             # 0
 	["anchor_capacity", "int"],  # 4
-	["seed_count", "int"],       # 8
+	["asset_count", "int"],      # 8   (was retired seed_count; init now needs it for clearance radii)
 	["grid_x", "int"],           # 12
 	["grid_z", "int"],           # 16
 	["anchor_interval", "int"],  # 20  格点门间隔（体素）；<=0 关闭
 	["anchor_phase_x", "int"],   # 24  本轮相位，[0, interval)
 	["anchor_phase_z", "int"],   # 28
+	["min_distance_voxels", "float"],   # 32  clearance query needs the pair-spacing knobs
+	["asset_spacing_factor", "float"],  # 36
+	["_padf0", "float"],         # 40
+	["_padf1", "float"],         # 44
 ]
-const REDUCE_INVALIDATE_PUSH := [
+const REDUCE_NMS_PUSH := [
 	["anchor_capacity", "int"],         # 0
 	["asset_count", "int"],             # 4
-	["_pad_seed_count", "int"],         # 8   （跨批间距已改走余隙场，槽位保留不再有语义）
-	["grid_x", "int"],                  # 12
-	["grid_z", "uint"],                 # 16
-	["random_seed", "uint"],            # 20
-	["_pad0", "uint"],                  # 24
-	["_pad1", "uint"],                  # 28
-	["min_distance_voxels", "float"],   # 32
-	["asset_spacing_factor", "float"],  # 36
-	["max_spacing_radius", "float"],    # 40
-	["_padf0", "float"],                # 44
+	["grid_x", "int"],                  # 8
+	["grid_z", "int"],                  # 12
+	["min_distance_voxels", "float"],   # 16
+	["asset_spacing_factor", "float"],  # 20
+	["max_spacing_radius", "float"],    # 24
+	["_padf0", "float"],                # 28
+	# 格点步进：仲裁的邻居扫描按 interval 跨步只访问参赛者所在列。
+	# ⚠ 必须与 REDUCE_INIT_PUSH 传给 init 的那组**逐位相同**——init 的格点门决定了
+	# 哪些像素有参赛者，扫描按同一组相位跨步才不会漏掉任何一个。
+	["anchor_interval", "int"],         # 32
+	["anchor_phase_x", "int"],          # 36
+	["anchor_phase_z", "int"],          # 40
+	["_pad0", "int"],                   # 44
 ]
 const REDUCE_COMPACT_PUSH := [
 	["anchor_capacity", "int"],  # 0
 	["result_capacity", "int"],  # 4
-	["asset_count", "int"],      # 8
+	["asset_count", "int"],      # 8   已退役（逐资产配额去掉后 shader 不再读），槽位保留
 	["_pad0", "int"],            # 12
 ]
 ## 有符号余隙场的定点编码常量。⚠ 必须与 shaders/paint_placement_clearance.glsl 与
-## shaders/invalidate_anchor_conflicts.glsl 里的同名 GLSL 常量逐位一致（那两处是画/查
+## shaders/init_anchor_atomic_reduce.glsl 里的同名 GLSL 常量逐位一致（那两处是画/查
 ## 两侧，这里只用于宿主侧的量程守卫）。
 const CLEARANCE_FIXED_SCALE := 256.0
 const CLEARANCE_BIAS_VOXELS := 64.0
@@ -256,8 +261,10 @@ var solid_threshold: float = 192.0 / 255.0
 var collision_limit: float = -1.0
 var clearance_limit: float = -1.0
 var min_distance_voxels: float = 2.0
-## 格点门：每轮只放间隔为本值（体素）的 anchor，同轮候选因此天然互不冲突。
-## 0 = 关闭，退回「全体候选 + 一趟保守仲裁」的旧行为。
+## Lattice gate: only anchors on the (phase + k*interval) lattice compete in a
+## batch. The exact greedy score-NMS reduce no longer needs it for correctness
+## (0 = off, every candidate competes in one batch); it survives as an optional
+## batch-thinning aid.
 var anchor_interval_voxels: int = 0
 var anchor_phase_x: int = 0
 var anchor_phase_z: int = 0
@@ -267,9 +274,18 @@ var anchor_phase_z: int = 0
 # per-asset spacing radii (asset_def.spacing_radius_world / voxel xz size).
 # 0 disables the pairwise term (flat min_distance only).
 var asset_spacing_factor: float = 1.0
-# Stable seed for the per-Anchor random priority used by atomic Reduce. The
-# conflict key is (hash(seed, anchor_id), anchor_id), lower first.
-var reduce_random_seed: int = 0
+# Iteration budget for the greedy score-NMS reduce
+# (arbitrate_anchor_conflicts.glsl). Converged rounds launch zero workgroups
+# (the GPU zeroes its own indirect args), so over-provisioning is near free
+# (~0.1-0.3 us per extra barrier cut).
+# 预算耗尽 = **丢弃**（用户口径 2026-08-19，刻意语义而非兜底）：仍 UNDECIDED 的
+# anchor 不被 compact 收走，既不放置也不参与后续裁决；由 reduce_nms_telemetry 的
+# budget_exhausted + push_warning 报出，不是静默的。
+# 实测轮数（2026-08-19）：全量 38009 锚点 → 59~62 轮（64 只剩个位数余量，且逐次会漂，
+# 因为无序 atomicAdd 分配的 anchor id 正是同分决胜键）；Place 批 interval=12 → 21 轮。
+# 轮数由冲突图里最长的优先级依赖链决定，与密度无关（ObjectReduce 实测：同分量化到
+# 8 级 13→131 轮，单调得分梯度 13→136 轮，选中数 ×2.7 反而 13→12 轮）。
+var reduce_nms_iter_budget: int = 64
 var scene_write_scale: float = 1.0
 var collision_write_scale: float = 1.0
 var rotation_slots: int = 12
@@ -305,11 +321,53 @@ var collision_match_max: float = 0.5
 # as the ratio 1 + N/100 into match_limits.z. Replaced the old absolute budget.
 var complexity_overfill_percent: float = 20.0
 
+## 上面那批评分/放置旋钮成员的**单一真相源**：成员名 → 声明初值。
+## 拆成两张表不是为了分类好看，而是因为两者的消费方不同：
+##   - FINE_SCORE_TUNING_DEFAULTS：进 FINE_SCORE_PUSH、决定细筛候选内容的旋钮。
+##     既被 `_repair_soft_reloaded_members()` 用于软重载归位，也被 `_tuning_snapshot()`
+##     整表快照进常驻候选缓冲的 cache key。
+##   - REDUCE_TUNING_DEFAULTS：只作用于细筛**之后**的仲裁/压缩/盖章段的旋钮。
+##     只被软重载归位消费，**刻意不进** cache key。
+## ⚠ 为什么第二张表不能并进 cache key：`anchor_phase_x/z` 由 PlacementStageEnv 逐批改写
+## （placement_stage_env.gd 的 `settings["anchor_phase_x"] = idx % anchor_interval`）。把
+## 逐批变动的相位写进键 ⇒ `_ensure_resident_place_candidate_buffer` 每批都 key 不匹配 ⇒
+## 每批 free + realloc 一次 SCOPE_PERSISTENT 候选缓冲（一次 Place 点击 144 批）。
+## ⚠ 新增任何**影响细筛评分结果**的成员，必须登记进 FINE_SCORE_TUNING_DEFAULTS，否则
+## 改该参数后 cache key 不变 → 静默复用上一批候选。新增只作用于仲裁段的旋钮登记进
+## REDUCE_TUNING_DEFAULTS。两张表里同一个名字只应出现一次。
+const FINE_SCORE_TUNING_DEFAULTS := {
+	"solid_threshold": 192.0 / 255.0,
+	"collision_limit": -1.0,
+	"clearance_limit": -1.0,
+	"scene_write_scale": 1.0,
+	"collision_write_scale": 1.0,
+	"rotation_slots": 12,
+	"min_match_fraction": 0.35,
+	"dim_weight_collision": 1.0,
+	"dim_weight_complexity": 1.0,
+	"dim_weight_color": 0.34,
+	"color_match_max_l1": 0.6,
+	"collision_match_max": 0.5,
+	"complexity_overfill_percent": 20.0,
+}
+## ⚠ `reduce_nms_iter_budget` 刻意**不在**这张表里：它的声明初值是 64，而
+## `_repair_soft_reloaded_members()` 的软重载归位值是 256（两者的分歧早于本次重构，
+## 见该函数里保留的手写行）。表里只能放一个值，放哪个都会悄悄改掉另一处的行为，
+## 所以留在手写行上，把分歧摆在明面而不是折进表里。
+const REDUCE_TUNING_DEFAULTS := {
+	"result_capacity": 8,
+	"min_distance_voxels": 2.0,
+	"anchor_interval_voxels": 0,
+	"anchor_phase_x": 0,
+	"anchor_phase_z": 0,
+	"asset_spacing_factor": 1.0,
+}
+
 var _shader_fine_finalize: RID
 var _shader_fine_score: RID
 var _shader_fine_winner: RID
 var _shader_reduce_init: RID
-var _shader_reduce_invalidate: RID
+var _shader_reduce_arbitrate: RID
 var _shader_reduce_compact: RID
 var _shader_init_stamp_bounds: RID
 var _shader_stamp: RID
@@ -321,7 +379,7 @@ var _pipeline_fine_finalize: RID
 var _pipeline_fine_score: RID
 var _pipeline_fine_winner: RID
 var _pipeline_reduce_init: RID
-var _pipeline_reduce_invalidate: RID
+var _pipeline_reduce_arbitrate: RID
 var _pipeline_reduce_compact: RID
 var _pipeline_init_stamp_bounds: RID
 var _pipeline_stamp: RID
@@ -331,23 +389,21 @@ var _pipeline_paint_clearance: RID
 var _pipeline_score_sum: RID
 ## 有符号余隙场（signed clearance field）：grid_x * grid_z 个 uint 的常驻 XZ 场。
 ## 每个被接受的放置在自己周围画一个圆锥（paint_placement_clearance.glsl），后续 anchor
-## 只在自己那一格 O(1) 读一次即可判跨批互斥（invalidate_anchor_conflicts.glsl）。
-## 编码 0 = 未画 = 无约束，所以**零填充即合法初值**：会话首批直接重新分配一块零缓冲
-## 就等于清场，不需要单独的 clear pass、也不需要任何 buffer_update。
-## 生命周期：`clearance_field_reset`（会话首批 / 未声明会话的单发调用）重建，批间累积不清。
+## 只读自己那一格即可 O(1) 判跨批互斥（init_anchor_atomic_reduce.glsl 的 clearance 段）。
+## 编码 0 = 未画 = 无约束 ⇒ 零填充即合法初值，重新分配零缓冲就等于清场，无需 clear pass。
+## 生命周期：跨批**且跨轮**常驻。`clearance_field_reset` 只在「会话首批 × 世界为空」为 true
+## （判定在 PlacementStageEnv，按 runtime id 分配器）；其余一律沿用累积。
 var _resident_clearance_field_buffer: RID
 var _resident_clearance_field_bytes := 0
 var _resident_place_candidate_buffer: RID
 var _resident_place_candidate_buffer_bytes := 0
 var _resident_place_candidate_cache_key: Dictionary = {}
 var _resident_place_candidate_initialized := false
-# Score（execution_mode=fine_candidates_only）的候选/胜出缓冲常驻交接。
-# 旧口径是 SCOPE_FRAME：run_multi_asset 一返回这两块就被 GC 掉，于是"想看结果就必须在
-# 函数内把整片 winner 回读成 CPU 字节"。改成常驻后 Score 只发布借用 RID，点选与显示在
-# 之后任意时刻按需借用，热路径回读降到 anchor_count(4B) + contract counter。
-# ⚠ 内容不跨 Score 复用（Score 每轮整批重写全部候选），所以 cache key 只描述**形状**；
-# 形状不变就一直复用同两块显存。释放点恰好三处：形状变化的下一次 Score、
-# release_resident_score_handoff()（显式失效）、dispose。
+# Score（execution_mode=fine_candidates_only）的候选/胜出缓冲常驻交接：Score 只发布
+# 借用 RID，点选与显示之后按需借用，热路径回读降到 anchor_count(4B) + contract counter。
+# ⚠ 内容不跨 Score 复用（每轮整批重写），所以 cache key 只描述**形状**；形状不变就复用
+# 同两块显存。释放点恰好三处：形状变化的下一次 Score、release_resident_score_handoff()、
+# dispose。
 var _resident_score_candidate_buffer: RID
 var _resident_score_candidate_bytes := 0
 var _resident_score_winner_buffer: RID
@@ -356,36 +412,33 @@ var _resident_score_shape_key: Dictionary = {}
 
 
 # ⚠ 编辑器软重载（@tool 脚本重新解析）后的成员修复，别当成冗余判空删掉。
-#
 # 事实依据（gdscript.cpp GDScriptInstance::reload_members）：软重载只把**重载前已存在**
-# 的成员按名字搬进新槽位（值原样保留，不回初始值）；本次重载**新增**的成员槽是默认构造
-# 的 Variant = nil，声明里的初始化器**不会**重跑。带静态类型也拦不住——实例槽本身是
-# Variant，nil 就这么躺在一个声明为 RID/int/float/Dictionary 的成员里。重载后第一次
-# Place 会炸在 `_pipeline_fine_winner.is_valid()`、
-# `_resident_place_candidate_cache_key.is_empty()` 这些"在 Nil 上找方法"的位置，
-# 评分阈值成员则会以 nil 身份被塞进 push constant 打包。
-#
-# ⚠ 必须用 `is` 而不是 `== null`：对静态类型已知的操作数 GDScript 会挑验证求值器，而
-# Variant 给 (RID, NIL)、(FLOAT, NIL) 这类组合注册的是 OperatorEvaluatorAlwaysFalse
-# （variant_op.cpp），`x == null` 会被编成恒 false，判空形同虚设。
-#
-# 语义：全部回到声明初值。shader/pipeline 句柄归零 ⇒ _load_shaders/_create_pipelines
-# 按既有的"无效就重建"路径重新编译（不会朝设备 free 一个假句柄）；常驻候选缓冲连同
-# bytes/cache_key/initialized 一起归零 ⇒ 下次 Place 重新分配并整批重算
-# （缓存只做"键相等才复用"的判定，清空只多算一次，不会误命中旧内容）。
-## 中文说明：负责 _repair_soft_reloaded_members 函数的相关处理。
+# 的成员按名搬进新槽位（值原样保留）；本次重载**新增**的成员槽是 Variant = nil，声明里的
+# 初始化器不会重跑，静态类型也拦不住。重载后第一次 Place 会炸在 `.is_valid()` /
+# `.is_empty()` 这类"在 Nil 上找方法"的位置，阈值成员则以 nil 身份进 push constant。
+# ⚠ 必须用 `is` 而不是 `== null`：Variant 给 (RID, NIL)、(FLOAT, NIL) 注册的是
+# OperatorEvaluatorAlwaysFalse（variant_op.cpp），`x == null` 被编成恒 false。
+# 语义：全部回到声明初值。归零的 shader/pipeline 句柄走既有"无效就重建"路径重编（不会
+# free 假句柄）；常驻候选缓冲连同 bytes/cache_key/initialized 一起归零 ⇒ 下次 Place 重算
+# （缓存只认"键相等才复用"，清空只多算一次，不会误命中旧内容）。
 func _repair_soft_reloaded_members() -> void:
-	if not (collision_limit is float): collision_limit = -1.0
-	if not (clearance_limit is float): clearance_limit = -1.0
-	if not (asset_spacing_factor is float): asset_spacing_factor = 1.0
-	if not (reduce_random_seed is int): reduce_random_seed = 0
-	if not (min_match_fraction is float): min_match_fraction = 0.35
-	if not (color_match_max_l1 is float): color_match_max_l1 = 0.6
-	if not (collision_match_max is float): collision_match_max = 0.5
-	if not (complexity_overfill_percent is float): complexity_overfill_percent = 20.0
+	# 旋钮成员整批按声明表归位。判据用 `typeof(...) != typeof(默认值)` 而不是 `== null`：
+	# 与上面那条说明同因——(FLOAT, NIL) 的 == 被编成恒 false，判不出 nil。typeof() 读的是
+	# Variant 的实际类型标签，nil 槽位返回 TYPE_NIL，与 TYPE_FLOAT/TYPE_INT 必不相等。
+	# 覆盖面即两张表的并集；从前这里是手写清单，漏了 solid_threshold / rotation_slots /
+	# 三个 dim_weight_* / 两个 write_scale / result_capacity / min_distance_voxels /
+	# 格点门三件套等 12 个成员——登记表制之后不会再漏。
+	for tuning_table in [FINE_SCORE_TUNING_DEFAULTS, REDUCE_TUNING_DEFAULTS]:
+		for member_name in tuning_table:
+			var declared_default = tuning_table[member_name]
+			if typeof(get(member_name)) != typeof(declared_default):
+				set(member_name, declared_default)
+	# ⚠ 归位值 256 与声明初值 64 的分歧是既有状态，原样保留（见 REDUCE_TUNING_DEFAULTS
+	# 上方说明）。要统一先决定哪个才是对的，不要顺手对齐。
+	if not (reduce_nms_iter_budget is int): reduce_nms_iter_budget = 256
 	if not (_shader_fine_winner is RID): _shader_fine_winner = RID()
 	if not (_shader_reduce_init is RID): _shader_reduce_init = RID()
-	if not (_shader_reduce_invalidate is RID): _shader_reduce_invalidate = RID()
+	if not (_shader_reduce_arbitrate is RID): _shader_reduce_arbitrate = RID()
 	if not (_shader_reduce_compact is RID): _shader_reduce_compact = RID()
 	if not (_shader_pack_field_pair is RID): _shader_pack_field_pair = RID()
 	if not (_shader_pack_sample_pairs is RID): _shader_pack_sample_pairs = RID()
@@ -393,7 +446,7 @@ func _repair_soft_reloaded_members() -> void:
 	if not (_shader_score_sum is RID): _shader_score_sum = RID()
 	if not (_pipeline_fine_winner is RID): _pipeline_fine_winner = RID()
 	if not (_pipeline_reduce_init is RID): _pipeline_reduce_init = RID()
-	if not (_pipeline_reduce_invalidate is RID): _pipeline_reduce_invalidate = RID()
+	if not (_pipeline_reduce_arbitrate is RID): _pipeline_reduce_arbitrate = RID()
 	if not (_pipeline_reduce_compact is RID): _pipeline_reduce_compact = RID()
 	if not (_pipeline_pack_field_pair is RID): _pipeline_pack_field_pair = RID()
 	if not (_pipeline_pack_sample_pairs is RID): _pipeline_pack_sample_pairs = RID()
@@ -414,10 +467,19 @@ func _repair_soft_reloaded_members() -> void:
 	if not (_resident_score_shape_key is Dictionary): _resident_score_shape_key = {}
 
 
+## 细筛评分旋钮的当前值快照，供常驻候选缓冲的 cache key 使用。
+## 键名逐字沿用成员名（历史 cache key 就是把这些成员摊平写的），登记表变化时快照自动跟随，
+## 不需要再同步维护第二份清单。只读快照，不做任何钳制。
+func _tuning_snapshot() -> Dictionary:
+	var snapshot := {}
+	for member_name in FINE_SCORE_TUNING_DEFAULTS:
+		snapshot[member_name] = get(member_name)
+	return snapshot
+
+
 ## Compiles the complete Place shader family without allocating per-run buffers
 ## or dispatching placement work. Scene bootstrap uses this before interaction
 ## timing so the first Place click does not own pipeline creation.
-## 中文说明：负责 prepare_placement_pipeline 函数的相关处理。
 func prepare_placement_pipeline() -> Dictionary:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	log_name = "VoxelPlacementGenerator"
@@ -438,7 +500,6 @@ func prepare_placement_pipeline() -> Dictionary:
 	}
 
 
-## 中文说明：负责 get_placement_pipeline_readiness 函数的相关处理。
 func get_placement_pipeline_readiness() -> Dictionary:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	return {
@@ -448,7 +509,6 @@ func get_placement_pipeline_readiness() -> Dictionary:
 	}
 
 
-## 中文说明：负责 get_resource_lifecycle_summary 函数的相关处理。
 func get_resource_lifecycle_summary() -> Dictionary:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	var scope_counts := {}
@@ -486,7 +546,6 @@ func get_resource_lifecycle_summary() -> Dictionary:
 ## Multi-asset placement over the anchor fine pipeline. All assets enter one
 ## common candidate pool (anchor x top-K asset x pivot x yaw). Fine Score picks
 ## one record per Anchor; cross-Anchor conflicts use stable random priority.
-## 中文说明：执行多资产候选评分、冲突消解和体素写入流程。
 func run_multi_asset(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
@@ -499,15 +558,14 @@ func run_multi_asset(
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	var run_result := _run_anchor_fine_pipeline(
 		complexity_field, collision_field, asset_defs, grid_size, voxel_size, grid_origin, common_settings)
-	# 只回收本 run 的 FRAME/PASS 资源；shader/pipeline（PERSISTENT）跨 run 常驻，
-	# 下次 _load_shaders 的 ready 守卫直接命中（省 ~18ms/run 的 8-shader 重编，
-	# 恢复 2026-07-13 anchor-fine 重写时丢失的既有优化）。全清走 dispose()——
-	# SPA/demo 的显式生命周期终点；dispose 后成员 RID 由 _on_after_dispose 清空。
+	# 只回收本 run 的 FRAME/PASS 资源；shader/pipeline（PERSISTENT）跨 run 常驻，下次
+	# _load_shaders 的 ready 守卫直接命中（省 ~18ms/run 的 8-shader 重编）。全清走
+	# dispose()——SPA/demo 的显式生命周期终点，之后成员 RID 由 _on_after_dispose 清空。
 	gc_frame()
 	return run_result
 
 
-## 中文说明：运行 Anchor 级细粒度候选评分 GPU 流程。
+## 运行 Anchor 级细粒度候选评分 GPU 流程。
 func _run_anchor_fine_pipeline(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
@@ -611,9 +669,8 @@ func _run_anchor_fine_pipeline(
 	var profile_count := int(container_binding.get("profile_count", 0))
 	# Explicit element capacities for the shader capacity gates (see the
 	# capacities push members in score_anchor_asset_residual/stamp_asset_voxels).
-	# ⚠ 这三个 push 字段是扁平 buffer 时代的容量门参数。Arena 化后 score/stamp 的
-	# 越界守卫全部用编译期常量，shader 侧已不再读它们；push 布局的字节位置属于冻结
-	# ABI，故保留字段本身，只把值换成 Arena 语义下的等价上限，避免留一串失效数字。
+	# ⚠ 扁平 buffer 时代的容量门参数：Arena 化后 shader 侧改用编译期常量守卫、已不读它们。
+	# push 布局的字节位置是冻结 ABI，故保留字段，只把值换成 Arena 语义下的等价上限。
 	var profile_table_capacity := ProfileArenaLayoutScript.PROFILE_CAPACITY
 	var profile_sample_record_capacity := ProfileArenaLayoutScript.MAX_SAMPLES_PER_PROFILE
 	var pivot_records_capacity := ProfileArenaLayoutScript.MAX_PIVOTS_PER_PROFILE
@@ -682,12 +739,10 @@ func _run_anchor_fine_pipeline(
 			{"target_read_buffer_summary": _target_read_buffer_summary(target_buffer_pack)})
 	_prof.mark("target_resolve")
 
-	# 细筛 scorer 私有读对融合（pack_fine_sample_pairs.glsl，批次 T6）：cur/target
-	# 各融成一条 uvec2 pair，scorer 内层每体素 4 次散射读 → 2 次。cur 侧两 word
-	# 原样拷贝（逐位保真）；target 侧 vec4 → rgba8 量化（demo target env 非 k/255
-	# 时 gain 有 ≤~2 q1000 预期微变）。常驻场与 stamp 读写完全不动——融合 buffer
-	# 是 scorer 私有只读派生。scorer set0 已改绑 pair，无旧路可退：pack 不可用即
-	# 契约阻断。
+	# 细筛 scorer 私有读对融合（pack_fine_sample_pairs.glsl）：cur/target 各融成一条 uvec2
+	# pair，scorer 内层每体素 4 次散射读 → 2 次。cur 侧两 word 原样拷贝（逐位保真）；
+	# target 侧 vec4 → rgba8 量化（target env 非 k/255 时 gain 有 ≤~2 q1000 微变）。融合
+	# buffer 是 scorer 私有只读派生，常驻场与 stamp 读写不动；pack 不可用即契约阻断。
 	if not _pipeline_pack_sample_pairs.is_valid() or not _shader_pack_sample_pairs.is_valid():
 		push_error("[VoxelPlacementGenerator] pack_fine_sample_pairs pipeline not ready")
 		return _gpu_contract_blocked_multi_asset_output(
@@ -741,19 +796,12 @@ func _run_anchor_fine_pipeline(
 		"asset_count": mini(asset_defs.size(), MAX_ASSETS),
 		"asset_lookup_bytes": asset_lookup_bytes,
 		"asset_score_params_bytes": asset_score_params_bytes,
-		"rotation_slots": rotation_slots,
-		"min_match_fraction": min_match_fraction,
-		"solid_threshold": solid_threshold,
-		"collision_limit": collision_limit,
-		"clearance_limit": clearance_limit,
-		"scene_write_scale": scene_write_scale,
-		"collision_write_scale": collision_write_scale,
-		"dim_weight_collision": dim_weight_collision,
-		"dim_weight_complexity": dim_weight_complexity,
-		"dim_weight_color": dim_weight_color,
-		"color_match_max_l1": color_match_max_l1,
-		"collision_match_max": collision_match_max,
-		"complexity_overfill_percent": complexity_overfill_percent,
+		# 评分旋钮成员从 FINE_SCORE_TUNING_DEFAULTS 整表快照（单一真相源），取代从前
+		# 摊在这里的 13 条手抄。Dictionary 的 == 会递归进子字典逐值比较
+		# （dictionary.cpp recursive_equal → Variant::hash_compare 的 DICTIONARY 分支），
+		# 嵌一层与摊平等价：任一旋钮变化仍让整个键不等。
+		# 其余键是每轮派生的局部量（RID / 尺寸 / 容量 / 字节数组），不是成员，逐条列在这里。
+		"tuning": _tuning_snapshot(),
 		"has_target": has_target,
 		"profile_count": profile_count,
 		"profile_table_capacity": profile_table_capacity,
@@ -980,27 +1028,14 @@ func _run_anchor_fine_pipeline(
 			score_contract_debug_buffer, gpu_contract, target_buffer_pack,
 			_prof, score_resource_profile)
 
-	# One-pass atomic Reduce working buffers. Fine Score keeps top-K records;
-	# init chooses one per Anchor and writes the direct XZ map. The invalidation pass
-	# only changes one uint per Anchor from 1 to 0, then compact applies quotas.
-	var seed_value = common_settings.get("reduce_seed_placements", PackedFloat32Array())
-	# 类型不符不再静默换成空数组：种子丢失会让 reduce 少掉全部既有放置的冲突约束，
-	# 结果是"看起来跑通了但间距全错"的脏放置。
-	if not (seed_value is PackedFloat32Array):
-		push_error("VoxelPlacementGenerator: reduce_seed_placements 类型非法 期望 PackedFloat32Array 实际 %s —— reduce 会丢失既有放置的间距约束" % type_string(typeof(seed_value)))
-		assert(false, "VoxelPlacementGenerator: reduce_seed_placements type invalid")
-		return _gpu_contract_blocked_multi_asset_output(
-			complexity_field, collision_field, asset_defs,
-			_gpu_contract_result(false, "reduce_seed_placements_type_invalid"), common_settings)
-	var seed_floats: PackedFloat32Array = seed_value
-	var seed_count := seed_floats.size() / 4
-	# 种子表现在只有一个消费者：会话首批把**上一次 Place 留下的**已放置物烘进新的余隙场。
-	# 之后各批的跨批约束全部由 GPU 侧的 paint pass 就地累积，种子表一个字节都用不上——
-	# 逐批照传的话，一次 Place 会白上传 seed_count × 16 B × 批数（实测量级 10 MB）。
-	var clearance_field_reset := bool(common_settings.get("clearance_field_reset", true))
-	var paint_seeds_needed := clearance_field_reset and seed_count > 0
-	var seed_buffer := storage_buffer_from_floats(seed_floats, SCOPE_FRAME, "reduce_seed_placements") \
-		if paint_seeds_needed else storage_buffer_zero(16, SCOPE_FRAME, "reduce_seed_placements_unused")
+	# Greedy score-NMS Reduce working buffers. Fine Score keeps top-K records;
+	# init chooses one per Anchor, seeds the three-state machine in anchor_valid
+	# (0 = out, 1 = selected, 2 = undecided) and writes the direct XZ map; the
+	# arbitrate pass iterates that machine to its fixed point; compact accepts
+	# state 1 up to the result buffer's capacity.
+	# 余隙场跨轮常驻：被接受的放置在**接受当批**就由 paint pass 画进场里，轮间没有"需要
+	# 重放的历史"（已放置物的载体只有 SV/SVTile/runtime，host 不留副本，故无 CPU 种子表）。
+	# reset 只应在「世界为空」时发生（PlacementStageEnv 判定并显式传入），缺省 false。
 	var spacing_floats: PackedFloat32Array = asset_lookup.get("spacing_floats", PackedFloat32Array())
 	if spacing_floats.is_empty():
 		spacing_floats.resize(1)
@@ -1008,12 +1043,27 @@ func _run_anchor_fine_pipeline(
 	var anchor_candidate_ref_buffer := storage_buffer_zero(maxi(anchor_capacity, 1) * 4, SCOPE_FRAME, "reduce_anchor_candidate_ref")
 	var anchor_valid_buffer := storage_buffer_zero(maxi(anchor_capacity, 1) * 4, SCOPE_FRAME, "reduce_anchor_valid")
 	var pixel_count := maxi(grid_size.x * grid_size.z, 1)
-	var anchor_at_pixel_buffer := storage_buffer_zero(pixel_count * 4, SCOPE_FRAME, "reduce_anchor_at_pixel")
+	# 仲裁的按像素索引紧凑表（init 写、arbitrate 读）。meta = ((anchor+1) << 8) | asset，
+	# record = 胜出 Fine 候选的 (origin.xyz, score)。把 NMS 邻居扫描（全链最热的读，每锚
+	# 每轮上百次探测）从「三层间接 + 对 100+ MB fine_candidates 随机 gather」压成两次连续
+	# 读；两张表在 256×256 网格上共 1.3 MB。
+	var arb_meta_buffer := storage_buffer_zero(pixel_count * 4, SCOPE_FRAME, "reduce_arb_meta_at_pixel")
+	var arb_record_buffer := storage_buffer_zero(pixel_count * 16, SCOPE_FRAME, "reduce_arb_record_at_pixel")
+	# 参赛者紧凑列表（槽位 -> 像素下标）。NMS 的间接派发规模由它决定，而不再由整个锚点池
+	# 决定：格点门开着时一批只有几十~几百个参赛者，按整池派发会让 99.3% 的线程一读状态
+	# 就退出（实测 38144 线程/轮 vs 最多 253 个真正参赛）。
+	var participant_list_buffer := storage_buffer_zero(maxi(anchor_capacity, 1) * 4, SCOPE_FRAME, "reduce_participant_pixels")
+	# NMS bookkeeping: meta = {decided, valid, iteration, finished_groups}
+	# (zero-filled is the correct initial state; init accumulates valid), and
+	# the indirect args the arbitrate pass reads each round and zeroes on
+	# convergence. init sizes the args from the live anchor count on the GPU.
+	var nms_meta_buffer := storage_buffer_zero(16, SCOPE_FRAME, "reduce_nms_meta")
+	var nms_dispatch_args_buffer := dispatch_indirect_args_buffer_zero(SCOPE_FRAME, "reduce_nms_dispatch_args")
 
-	# ── 有符号余隙场：跨批互斥的常驻载体 ────────────────────────────────────────
-	# `clearance_field_reset` 缺省 true = 每次调用都当"新会话"（重建零场 + 把传进来的种子
-	# 烘一遍）。Place 会话只在首批传 true，之后各批 false 让场跨批累积——累积的内容全部
-	# 来自 GPU 侧的 paint pass，不再需要任何 CPU 回传。
+	# ── 有符号余隙场：跨批**且跨轮**互斥的常驻载体 ──────────────────────────────
+	# 只有「会话首批 × 世界为空」才重建零场（判定在 PlacementStageEnv）；其余一律沿用，
+	# 内容全部来自 GPU 侧 paint pass 的原位累积，没有任何 CPU 回传/重放。
+	var clearance_field_reset := bool(common_settings.get("clearance_field_reset", false))
 	var clearance_field_buffer := _ensure_resident_clearance_field_buffer(
 		pixel_count, clearance_field_reset)
 	if not clearance_field_buffer.is_valid():
@@ -1038,43 +1088,45 @@ func _run_anchor_fine_pipeline(
 		make_storage_uniform(1, anchor_count_buffer),
 		make_storage_uniform(2, anchor_candidate_ref_buffer),
 		make_storage_uniform(3, anchor_valid_buffer),
-		make_storage_uniform(4, anchor_at_pixel_buffer),
-	], _shader_reduce_init, 0)
-	var reduce_invalidate_set0 := create_uniform_set([
-		make_storage_uniform(0, candidate_buffer),
-		make_storage_uniform(1, anchor_count_buffer),
-		make_storage_uniform(2, anchor_candidate_ref_buffer),
-		make_storage_uniform(3, anchor_valid_buffer),
-		make_storage_uniform(4, anchor_at_pixel_buffer),
+		make_storage_uniform(4, arb_meta_buffer),
+		make_storage_uniform(5, nms_meta_buffer),
+		make_storage_uniform(6, nms_dispatch_args_buffer),
 		make_storage_uniform(7, asset_spacing_buffer),
 		make_storage_uniform(8, clearance_field_buffer),
-	], _shader_reduce_invalidate, 0)
+		make_storage_uniform(9, arb_record_buffer),
+		make_storage_uniform(10, participant_list_buffer),
+	], _shader_reduce_init, 0)
+	# ⚠ binding 0/1/2 刻意不绑：仲裁改由 meta/record 取自身数据后，不再需要
+	# fine_candidates / anchor_count / anchor_candidate_ref（shader 侧同样留空洞）。
+	var reduce_arbitrate_set0 := create_uniform_set([
+		make_storage_uniform(3, anchor_valid_buffer),
+		make_storage_uniform(4, arb_meta_buffer),
+		make_storage_uniform(5, nms_meta_buffer),
+		make_storage_uniform(6, nms_dispatch_args_buffer),
+		make_storage_uniform(7, asset_spacing_buffer),
+		make_storage_uniform(8, arb_record_buffer),
+		make_storage_uniform(9, participant_list_buffer),
+	], _shader_reduce_arbitrate, 0)
+	# ⚠ binding 4 曾是 asset_lookup_buffer（逐资产配额），配额退役后 compact 不再读它，
+	# 这里也不再绑；shader 侧刻意留空洞不重排编号（本仓已有先例，退役的 invalidate 就是
+	# 0..4 + 7/8）。asset_lookup_buffer 本身仍被评分与 runtime writeback 用着，别顺手删。
 	var reduce_compact_set0 := create_uniform_set([
 		make_storage_uniform(0, candidate_buffer),
 		make_storage_uniform(1, anchor_count_buffer),
 		make_storage_uniform(2, anchor_candidate_ref_buffer),
 		make_storage_uniform(3, anchor_valid_buffer),
-		make_storage_uniform(4, asset_lookup_buffer),
 		make_storage_uniform(5, result_buffer),
 		make_storage_uniform(6, result_count_buffer),
 	], _shader_reduce_compact, 0)
-	# 画侧的两个记录源共用一个 shader，只在 binding 0/1 与 push 上分叉：
-	#   * results：compact 刚写完的本批 survivor（条数在 GPU 的 result_count 里）
-	#   * seeds  ：会话首批用来把**上一轮 Place 留下的**已放置物烘进新场（条数在 push 里）
+	# 画侧唯一的记录源：compact 刚写完的本批 survivor（条数在 GPU 的 result_count 里）。
+	# 曾有第二个记录源 seeds（CPU 种子表重放上一轮）——随余隙场跨轮常驻一并删除，
+	# shader 侧 stride=1/count_source=1/asset_field=1 的模式位仍是有效契约、只是无人再用。
 	var paint_results_set0 := create_uniform_set([
 		make_storage_uniform(0, result_buffer),
 		make_storage_uniform(1, result_count_buffer),
 		make_storage_uniform(2, clearance_field_buffer),
 		make_storage_uniform(3, asset_spacing_buffer),
 	], _shader_paint_clearance, 0)
-	var paint_seeds_set0 := RID()
-	if paint_seeds_needed:
-		paint_seeds_set0 = create_uniform_set([
-			make_storage_uniform(0, seed_buffer),
-			make_storage_uniform(1, result_count_buffer),
-			make_storage_uniform(2, clearance_field_buffer),
-			make_storage_uniform(3, asset_spacing_buffer),
-		], _shader_paint_clearance, 0)
 
 	var init_set0 := create_uniform_set([
 		make_storage_uniform(0, stamp_bounds_buffer),
@@ -1145,13 +1197,11 @@ func _run_anchor_fine_pipeline(
 	var stamp_pass := {pipeline = _pipeline_stamp, uniform_sets = [stamp_set0], push = stamp_push, groups = Vector3i(maxi(result_capacity, 1), 1, 1)}
 
 	# 生产路径（profile 关闭）整条管线只在收尾 submit_and_sync 一次：pack -> finalize ->
-	# fine_score -> reduce -> init_bounds -> stamp -> score_sum 各自录进独立 compute list，
+	# fine_score -> reduce -> init_bounds -> stamp -> score_sum 各录进独立 compute list，
 	# 段间依赖由 list 边界表达（compute_list_end/begin 即 compute_list_add_barrier 的实现），
-	# RenderingDevice 按资源追踪自动插屏障 —— 与 finalize 写 indirect args、fine_score 立刻
-	# 以 dispatch_indirect 读它是同一机制。段间不得插入任何回读、GPU 结果驱动的 CPU 分支或
+	# RenderingDevice 按资源追踪自动插屏障。⚠ 段间不得插入回读、GPU 结果驱动的 CPU 分支或
 	# buffer_zero/buffer_update；新增此类操作必须先在其前恢复一次 submit_and_sync。
-	# profile 模式（分段法见 ScoreTimingProfiler 类注释）在每段后额外 sync 再 mark，
-	# 相邻 mark 差即该 pass 的真实 GPU 耗时。
+	# profile 模式在每段后额外 sync 再 mark，相邻 mark 差即该 pass 的真实 GPU 耗时。
 	var fine_dispatched := ComputePassChain.run(self, [fine_pass], false)
 	if not fine_dispatched:
 		return _gpu_contract_blocked_multi_asset_output(
@@ -1184,11 +1234,17 @@ func _run_anchor_fine_pipeline(
 				_gpu_contract_result(false, "incremental_fine_winner_validation_dispatch_failed"),
 				common_settings)
 
-	# Fixed Reduce chain: [首批：把旧种子烘进新场] → select one Fine candidate and build
-	# the XZ map; discover every conflict and atomically clear its stable-priority
-	# loser; barrier; compact survivors; 把本批 survivor 画进余隙场供下一批 O(1) 查。
-	# No relationship buffer, sorting, rounds, convergence readback, or size-tier
-	# staging remains.
+	# Reduce chain: init (pick one Fine candidate per anchor, run lattice/clearance
+	# gates, seed the NMS states, size the indirect args) → iterate the greedy
+	# score-NMS until the GPU zeroes its own indirect args (the host blindly
+	# enqueues reduce_nms_iter_budget rounds; converged rounds launch zero
+	# workgroups) → compact survivors into result slots → paint this batch's
+	# survivors into the clearance field for the next batch's O(1) lookup.
+	# No relationship buffer, no sort, no convergence readback.
+	# ⚠ 选择策略只有一处：仲裁的得分优先。逐资产配额已退役（asset_lookup[].z 零消费方）。
+	# ⚠ result_capacity 是纯缓冲上界、不是选择口径：胜出者多于它时 compact 按 anchor id
+	# 走序填满就停。anchor id 来自 collect_sv_anchors 的无序 atomicAdd ⇒ 顶到上界那批
+	# 「谁先落地」是任意的（按用户要求不做得分排名裁剪）。要避免就把 result_capacity 开够大。
 	var asset_count_push := mini(asset_defs.size(), MAX_ASSETS)
 	var paint_clearance_common := {
 		grid_x = grid_size.x,
@@ -1199,57 +1255,54 @@ func _run_anchor_fine_pipeline(
 		max_spacing_radius = max_spacing_radius_voxels,
 	}
 	var reduce_passes: Array = []
-	if paint_seeds_set0.is_valid():
-		var paint_seeds_push := paint_clearance_common.duplicate()
-		paint_seeds_push["record_capacity"] = seed_count
-		paint_seeds_push["record_stride"] = 1     # 种子表一条 = 一个 vec4
-		paint_seeds_push["count_source"] = 1      # 条数由 push 给（CPU 已知）
-		paint_seeds_push["push_count"] = seed_count
-		paint_seeds_push["asset_field"] = 1       # 资产号在 .w
-		reduce_passes.append({
-			pipeline = _pipeline_paint_clearance,
-			uniform_sets = [paint_seeds_set0],
-			push = PushConstantLayout.new(PAINT_CLEARANCE_PUSH).pack(paint_seeds_push),
-			groups = _record_group_layout(seed_count),
-		})
 	reduce_passes.append({
 		pipeline = _pipeline_reduce_init,
 		uniform_sets = [reduce_init_set0],
 		push = PushConstantLayout.new(REDUCE_INIT_PUSH).pack({
 			topk = topk,
 			anchor_capacity = anchor_capacity,
-			seed_count = 0,   # 已退役：跨批间距走余隙场，init 不再建 seed_at_pixel
+			asset_count = asset_count_push,
 			grid_x = grid_size.x,
 			grid_z = grid_size.z,
 			anchor_interval = anchor_interval_voxels,
 			anchor_phase_x = posmod(anchor_phase_x, maxi(anchor_interval_voxels, 1)),
 			anchor_phase_z = posmod(anchor_phase_z, maxi(anchor_interval_voxels, 1)),
-		}),
-		groups = Vector3i(ceil_div(maxi(anchor_capacity, 1), 256), 1, 1),
-	})
-	reduce_passes.append({
-		pipeline = _pipeline_reduce_invalidate,
-		uniform_sets = [reduce_invalidate_set0],
-		push = PushConstantLayout.new(REDUCE_INVALIDATE_PUSH).pack({
-			anchor_capacity = anchor_capacity,
-			asset_count = asset_count_push,
-			_pad_seed_count = 0,
-			grid_x = grid_size.x,
-			grid_z = grid_size.z,
-			random_seed = reduce_random_seed,
 			min_distance_voxels = min_distance_voxels,
 			asset_spacing_factor = asset_spacing_factor,
-			max_spacing_radius = max_spacing_radius_voxels,
 		}),
 		groups = Vector3i(ceil_div(maxi(anchor_capacity, 1), 256), 1, 1),
 	})
+	# The same arbitrate descriptor is enqueued budget times: each round reads
+	# its group count from the indirect args (sized by init to the live anchor
+	# count) and the last finishing workgroup zeroes the args on convergence,
+	# so trailing rounds are zero-workgroup no-ops. The chain's barriers keep
+	# the write -> indirect-read ordering between rounds.
+	var reduce_nms_push := PushConstantLayout.new(REDUCE_NMS_PUSH).pack({
+		anchor_capacity = anchor_capacity,
+		asset_count = asset_count_push,
+		grid_x = grid_size.x,
+		grid_z = grid_size.z,
+		min_distance_voxels = min_distance_voxels,
+		asset_spacing_factor = asset_spacing_factor,
+		max_spacing_radius = max_spacing_radius_voxels,
+		anchor_interval = anchor_interval_voxels,
+		anchor_phase_x = posmod(anchor_phase_x, maxi(anchor_interval_voxels, 1)),
+		anchor_phase_z = posmod(anchor_phase_z, maxi(anchor_interval_voxels, 1)),
+	})
+	for _nms_round in range(maxi(reduce_nms_iter_budget, 1)):
+		reduce_passes.append({
+			pipeline = _pipeline_reduce_arbitrate,
+			uniform_sets = [reduce_arbitrate_set0],
+			push = reduce_nms_push,
+			indirect_args = nms_dispatch_args_buffer,
+		})
 	reduce_passes.append({
 		pipeline = _pipeline_reduce_compact,
 		uniform_sets = [reduce_compact_set0],
 		push = PushConstantLayout.new(REDUCE_COMPACT_PUSH).pack({
 			anchor_capacity = anchor_capacity,
 			result_capacity = result_capacity,
-			asset_count = asset_count_push,
+			asset_count = asset_count_push,   # 已退役，shader 不读
 		}),
 		groups = Vector3i(1, 1, 1),
 	})
@@ -1268,18 +1321,18 @@ func _run_anchor_fine_pipeline(
 		push = PushConstantLayout.new(PAINT_CLEARANCE_PUSH).pack(paint_results_push),
 		groups = _record_group_layout(result_capacity),
 	})
-	# 上面 score_resource_profile 里的 dispatch_count 是按"reduce 恒三段"写死的；余隙场
-	# 让这条链变成 3~5 段（首批多一趟种子烘焙、每批多一趟结果画入），据实补差。
+	# The chain length is dynamic (clearance paints + NMS budget), so patch the
+	# actual count into score_resource_profile's dispatch_count. Converged NMS
+	# rounds are zero-workgroup dispatches but still enqueued commands, so they count.
 	score_resource_profile["dispatch_count"] = int(
 		score_resource_profile.get("dispatch_count", 0)) + reduce_passes.size() - 3
 	# Keep the storage-buffer barrier contract explicit even though the helper's
 	# default is true: init -> invalidate -> compact must never be fused without it.
-	# 三段 reduce / init_bounds / stamp 的派发返回值不得再吞掉：任一段没派发，
-	# 后面的回读拿到的都是未初始化显存（result/bounds 都是 uninitialized 分配），
-	# 会被当成"有效放置"报出去并写进场。
+	# 三段 reduce / init_bounds / stamp 的派发返回值不得吞掉：任一段没派发，后面的回读
+	# 拿到的都是未初始化显存（result/bounds 均 uninitialized），会被当成"有效放置"写进场。
 	if not ComputePassChain.run(self, reduce_passes, false, true):
-		push_error("VoxelPlacementGenerator: reduce 链派发失败 passes=%d anchor_capacity=%d asset_count=%d seed_count=%d —— 结果缓冲仍是未初始化显存" % [
-			reduce_passes.size(), anchor_capacity, asset_count_push, seed_count])
+		push_error("VoxelPlacementGenerator: reduce 链派发失败 passes=%d anchor_capacity=%d asset_count=%d —— 结果缓冲仍是未初始化显存" % [
+			reduce_passes.size(), anchor_capacity, asset_count_push])
 		assert(false, "VoxelPlacementGenerator: reduce dispatch failed")
 		return _gpu_contract_blocked_multi_asset_output(
 			complexity_field, collision_field, asset_defs,
@@ -1317,6 +1370,28 @@ func _run_anchor_fine_pipeline(
 	# are always read — per-asset grouping and reports need them even when the
 	# resident buffers are also retained for the GPU-direct writeback.
 	var score_readback_bytes := 0
+	# NMS 遥测（16 B）。收敛控制整条在 GPU 上、宿主只盲目入队 budget 轮 ⇒ 没有这份遥测时
+	# **预算耗尽是完全静默的**（残留 UNDECIDED 被 compact 丢弃，只表现为"这批少放了几个"）。
+	# 同时暴露实际轮数 = 冲突图里最长的优先级依赖链，是调整 reduce_nms_iter_budget 的唯一依据。
+	var nms_meta_bytes := _rd.buffer_get_data(nms_meta_buffer, 0, 16)
+	score_readback_bytes += nms_meta_bytes.size()
+	var nms_telemetry := {}
+	if nms_meta_bytes.size() >= 16:
+		var nms_decided := nms_meta_bytes.decode_u32(0)
+		var nms_valid := nms_meta_bytes.decode_u32(4)
+		var nms_iterations := nms_meta_bytes.decode_u32(8)
+		var nms_undecided := maxi(nms_valid - nms_decided, 0)
+		nms_telemetry = {
+			"iterations": nms_iterations,
+			"valid": nms_valid,
+			"decided": nms_decided,
+			"undecided": nms_undecided,
+			"budget": reduce_nms_iter_budget,
+			"budget_exhausted": nms_undecided > 0,
+		}
+		if nms_undecided > 0:
+			push_warning("[VoxelPlacementGenerator] NMS 预算耗尽：%d 轮跑完仍有 %d/%d 个 anchor 未定型 —— 这些候选被 compact 直接丢弃（本批少放了这么多）。调大 reduce_nms_iter_budget（当前 %d）。" % [
+				nms_iterations, nms_undecided, nms_valid, reduce_nms_iter_budget])
 	var result_readback := BufferUtils.read_records_by_count(
 		_rd, result_count_buffer, result_buffer, RECORD_STRIDE * 16, result_capacity)
 	score_readback_bytes += int(result_readback["readback_bytes"])
@@ -1513,9 +1588,14 @@ func _run_anchor_fine_pipeline(
 			"topk": topk,
 			"asset_count": mini(asset_defs.size(), MAX_ASSETS),
 			"candidate_pool": "anchor_x_topk_asset_x_pivot_x_yaw",
-			"reduce_model": "single_pass_atomic_anchor_invalidation",
-			"reduce_priority": "hash_seed_anchor_id_ascending",
-			"reduce_random_seed": reduce_random_seed,
+			"reduce_model": "iterative_greedy_score_nms",
+			"reduce_priority": "score_desc_anchor_id_ascending",
+			"reduce_capacity_cut": "none_buffer_bound_only",
+			"reduce_per_asset_quota": false,
+			"reduce_nms_iter_budget": reduce_nms_iter_budget,
+			# 实测轮数/未定型残留。空 = 回读短了；budget_exhausted 为 true 表示本批
+			# 有候选被静默丢弃（同时已 push_warning）。
+			"reduce_nms_telemetry": nms_telemetry,
 			"reduce_relationship_buffer": false,
 			"score_model": "match_fraction",
 			"min_match_fraction": min_match_fraction,
@@ -1617,7 +1697,6 @@ func _run_anchor_fine_pipeline(
 ## Score observation mode: Fine is the terminal GPU pass. It returns the same
 ## debug candidate dictionaries consumed by VolumeScoreFineSelection, while
 ## deliberately omitting every Reduce/Stamp/placement allocation and dispatch.
-## 中文说明：负责 _finish_fine_candidates_only 函数的相关处理。
 func _finish_fine_candidates_only(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
@@ -1849,11 +1928,10 @@ func _resolve_profile_container_buffers(settings: Dictionary) -> Dictionary:
 	}
 
 
-## 容量守卫用的显式元素数（等价于 shader 侧原 buffer.length()）：优先容器的
-## get_gpu_record_count，缺失时退回 get_gpu_buffer_summary 的 record_count。
-## 两条都拿不到时返回 -1（硬失败信号，由 _resolve_profile_container_buffers 向上
-## 阻断）——绝不再兜底成 0：0 会让 shader 的容量门把所有采样/枢轴读全部丢弃，
-## 表现为"跑通了但一个都没放置"。
+## 容量守卫用的显式元素数：优先容器的 get_gpu_record_count，缺失时退回
+## get_gpu_buffer_summary 的 record_count。两条都拿不到时返回 -1（硬失败信号，由
+## _resolve_profile_container_buffers 向上阻断）——绝不兜底成 0：0 会让 shader 的容量门
+## 丢弃所有采样/枢轴读，表现为"跑通了但一个都没放置"。
 func _container_record_count(container, buffer_name: String) -> int:
 	if container.has_method("get_gpu_record_count"):
 		return maxi(int(container.get_gpu_record_count(buffer_name)), 0)
@@ -1965,12 +2043,10 @@ func _build_asset_lookup(asset_defs: Array, container, common_settings: Dictiona
 	}
 
 
-## Resolves the TargetSV field + collision buffer pair from the target reader
-## pack. **resident-GPU-only**：VoxelPlacementTargetReader.pack 只会产出借用常驻对
-## （非借用一律 ready=false 阻断在上游），所以这里不再保留 CPU 上传分支，也不再
-## 在缺 collision 时补零缓冲——零 target collision 会让整条评分链把"无碰撞目标"
-## 当成真值，静默评出一批错误放置。任何不合规都硬失败（返回无效 RID 对，
-## 调用方据此阻断）。
+## Resolves the TargetSV field + collision buffer pair from the target reader pack.
+## **resident-GPU-only**：pack 只产出借用常驻对，故无 CPU 上传分支、缺 collision 也不补零
+## ——零 target collision 会被评分链当成"无碰撞目标"的真值，静默评出一批错误放置。
+## 任何不合规都硬失败（返回无效 RID 对，调用方据此阻断）。
 func _resolve_target_buffers(target_buffer_pack: Dictionary, _settings: Dictionary, voxel_count: int) -> Dictionary:
 	var target_field_buffer: RID = target_buffer_pack.get("target_field_buffer", RID())
 	var target_collision_buffer: RID = target_buffer_pack.get("target_collision_buffer", RID())
@@ -1993,13 +2069,11 @@ func _resolve_target_buffers(target_buffer_pack: Dictionary, _settings: Dictiona
 
 
 
-## GPU 打包非常驻 CurrentSV 读对（pack_placement_field_pair.glsl）：fitted scalar
-## 场原样 memcpy 上传，一线程一体素量化写 complexity rgba8 + collision u32 读对。
-## 替代 codec CPU 逐体素循环（256³ 网格实测 1110ms → GPU 化后为上传 memcpy 量级）。
-## 量化语义同 codec scalar 分支，容差 = 单向 1 LSB（f32/f64 舍入差，~9ppm；见
-## shader 头注释，golden 实测逐字一致）。pipeline / uniform set / dispatch 任一
-## 不可用即硬失败（返回空字典，调用方阻断）——原来的 CPU codec 回退会把
-## "pack shader 编译/绑定坏了" 悄悄降级成 1110ms 的 CPU 路径，问题永远暴露不出来。
+## GPU 打包非常驻 CurrentSV 读对（pack_placement_field_pair.glsl）：fitted scalar 场原样
+## memcpy 上传，一线程一体素量化写 complexity rgba8 + collision u32 读对。替代 codec 的
+## CPU 逐体素循环（256³ 实测 1110ms → 上传 memcpy 量级）。量化语义同 codec scalar 分支，
+## 容差 = 单向 1 LSB。pipeline / uniform set / dispatch 任一不可用即硬失败（返回空字典，
+## 调用方阻断）——CPU codec 回退已撤除，否则编译/绑定故障会静默降级成 1110ms 的 CPU 路径。
 func _dispatch_pack_field_pair(complexity_data: PackedFloat32Array, collision_data: PackedFloat32Array, voxel_count: int) -> Dictionary:
 	if not _pipeline_pack_field_pair.is_valid() or not _shader_pack_field_pair.is_valid():
 		push_error("VoxelPlacementGenerator: pack_placement_field_pair 管线未就绪 shader_valid=%s pipeline_valid=%s" % [
@@ -2046,7 +2120,6 @@ func _dispatch_pack_field_pair(complexity_data: PackedFloat32Array, collision_da
 
 ## 当 GPU 运行时契约校验失败时，为 run_multi_asset 构造统一的"已阻断"空结果：
 ## 为每个资产生成占位失败结果，并原样返回输入的 complexity/collision 字段。
-## 中文说明：负责 _gpu_contract_blocked_multi_asset_output 函数的相关处理。
 func _gpu_contract_blocked_multi_asset_output(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
@@ -2092,7 +2165,6 @@ func _gpu_contract_blocked_multi_asset_output(
 
 
 ## 空候选/空资产形状时的空结果（非契约阻断，正常空帧）。
-## 中文说明：负责 _empty_placement_output 函数的相关处理。
 func _empty_placement_output(
 	complexity_field: PackedFloat32Array,
 	collision_field: PackedFloat32Array,
@@ -2170,7 +2242,7 @@ func _apply_settings(settings: Dictionary) -> void:
 	anchor_phase_x = int(settings.get("anchor_phase_x", anchor_phase_x))
 	anchor_phase_z = int(settings.get("anchor_phase_z", anchor_phase_z))
 	asset_spacing_factor = maxf(float(settings.get("asset_spacing_factor", asset_spacing_factor)), 0.0)
-	reduce_random_seed = int(settings.get("reduce_random_seed", settings.get("global_seed", reduce_random_seed)))
+	reduce_nms_iter_budget = maxi(int(settings.get("reduce_nms_iter_budget", reduce_nms_iter_budget)), 1)
 	scene_write_scale = float(settings.get("scene_write_scale", scene_write_scale))
 	collision_write_scale = float(settings.get("collision_write_scale", collision_write_scale))
 	rotation_slots = maxi(int(settings.get("rotation_slots", rotation_slots)), 1)
@@ -2253,7 +2325,6 @@ func _validate_gpu_runtime_profile_contract(settings: Dictionary) -> Dictionary:
 
 ## 构造标准化的 GPU 契约结果字典（ok/reason/gpu_first 等字段），
 ## 可选附加运行时提供者与 profile 容器的调试摘要信息。
-## 中文说明：负责 _gpu_contract_result 函数的相关处理。
 func _gpu_contract_result(
 	ok: bool,
 	reason: String,
@@ -2302,10 +2373,6 @@ func _object_bool(object: Object, primary_method: String, secondary_method: Stri
 
 
 ## 调用 object 的 get_gpu_buffer_summary，取得其调试摘要字典的副本。
-## 2026-08-07：原先还有一条 has_method("get_debug_summary") 的鸭子类型回退分支。
-## 两个实际调用方（GPUAutoObjectRuntime / AutoVoxelRuntimeProfileContainer）都实现了
-## get_gpu_buffer_summary，回退从未命中；GPUAutoObjectRuntime.get_debug_summary 现已删除，
-## 不再留一个指向不存在方法的字符串探测。
 func _object_summary(object: Object) -> Dictionary:
 	if object == null:
 		return {}
@@ -2372,12 +2439,9 @@ func _release_resident_place_candidate_buffer() -> void:
 
 
 ## 有符号余隙场的常驻缓冲（grid_x * grid_z 个 uint）。
-##
-## `reset` = true（会话首批 / 未声明会话的单发调用）或尺寸变化时**整块重建成零缓冲**。
-## 这里刻意不用 buffer_clear / buffer_update：场的编码把 0 定义成"未画 = 无约束"，
-## 所以一块新的零缓冲本身就是合法初值，重建即清场。上一批的 dispatch 早已在
-## run_multi_asset 收尾的 submit_and_sync 之后完成，重建不存在跨提交的写后读冒险。
-## 256×256 网格 = 256 KB / 会话，重建成本可以忽略。
+## `reset` = true（会话首批 / 单发调用）或尺寸变化时**整块重建成零缓冲**——0 = 未画 =
+## 无约束，新零缓冲本身就是合法初值，故刻意不用 buffer_clear / buffer_update。上一批的
+## dispatch 已在 run_multi_asset 收尾的 submit_and_sync 后完成，重建无跨提交写后读冒险。
 func _ensure_resident_clearance_field_buffer(pixel_count: int, reset: bool) -> RID:
 	var safe_bytes := maxi(pixel_count, 1) * 4
 	if _resident_clearance_field_buffer.is_valid() \
@@ -2451,14 +2515,12 @@ func _release_resident_score_buffers() -> void:
 
 ## 显式失效 Score 常驻交接。调用方（SPA）在 score cache 失效、Anchor handoff 换代或
 ## 场景卸载时调用；之后 fine_score_handoff 里的 RID 立即作废，不得再借。
-## 中文说明：负责 release_resident_score_handoff 函数的相关处理。
 func release_resident_score_handoff() -> void:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	_release_resident_score_buffers()
 
 
 ## Score 常驻交接的当前状态（借用方/审计用；不含 RID，取 RID 走 run 返回的 handoff）。
-## 中文说明：负责 get_resident_score_handoff_summary 函数的相关处理。
 func get_resident_score_handoff_summary() -> Dictionary:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
 	return {
@@ -2470,7 +2532,6 @@ func get_resident_score_handoff_summary() -> Dictionary:
 
 
 ## fine_candidates_only 的回读口径标签（进 anchor_fine_contract.readback_mode）。
-## 中文说明：负责 _fine_readback_mode 函数的相关处理。
 static func _fine_readback_mode(read_winner: bool, read_candidates: bool) -> String:
 	if read_candidates:
 		return "winner_plus_full_diagnostics" if read_winner else "full_candidate_diagnostics_only"
@@ -2479,7 +2540,6 @@ static func _fine_readback_mode(read_winner: bool, read_candidates: bool) -> Str
 
 ## 加载各计算着色器并创建对应的计算管线（fine finalize/score、公共 reduce、
 ## stamp bounds 初始化、mixed-asset stamp、目标场解包）。
-## 中文说明：负责 _load_shaders 函数的相关处理。
 func _load_shaders() -> void:
 	if _placement_pipeline_ready():
 		return
@@ -2487,7 +2547,7 @@ func _load_shaders() -> void:
 	_shader_fine_score = load_compute_shader("res://shaders/score_anchor_asset_residual.glsl")
 	_shader_fine_winner = load_compute_shader("res://shaders/select_anchor_winners.glsl")
 	_shader_reduce_init = load_compute_shader("res://shaders/init_anchor_atomic_reduce.glsl")
-	_shader_reduce_invalidate = load_compute_shader("res://shaders/invalidate_anchor_conflicts.glsl")
+	_shader_reduce_arbitrate = load_compute_shader("res://shaders/arbitrate_anchor_conflicts.glsl")
 	_shader_reduce_compact = load_compute_shader("res://shaders/compact_anchor_atomic_reduce.glsl")
 	_shader_init_stamp_bounds = load_compute_shader("res://shaders/init_stamp_bounds.glsl")
 	_shader_stamp = load_compute_shader("res://shaders/stamp_asset_voxels.glsl")
@@ -2502,8 +2562,8 @@ func _load_shaders() -> void:
 		_pipeline_fine_winner = create_compute_pipeline(_shader_fine_winner)
 	if _shader_reduce_init.is_valid():
 		_pipeline_reduce_init = create_compute_pipeline(_shader_reduce_init)
-	if _shader_reduce_invalidate.is_valid():
-		_pipeline_reduce_invalidate = create_compute_pipeline(_shader_reduce_invalidate)
+	if _shader_reduce_arbitrate.is_valid():
+		_pipeline_reduce_arbitrate = create_compute_pipeline(_shader_reduce_arbitrate)
 	if _shader_reduce_compact.is_valid():
 		_pipeline_reduce_compact = create_compute_pipeline(_shader_reduce_compact)
 	if _shader_init_stamp_bounds.is_valid():
@@ -2521,7 +2581,6 @@ func _load_shaders() -> void:
 ## Score observation only needs the field/sample preparation and Fine family.
 ## Keeping this contract separate lets Score survive an unrelated Place shader
 ## import failure and documents that Reduce/Stamp are not part of this mode.
-## 中文说明：负责 _fine_pipeline_ready 函数的相关处理。
 func _fine_pipeline_ready() -> bool:
 	return _shader_fine_finalize.is_valid() \
 		and _shader_fine_score.is_valid() \
@@ -2534,13 +2593,12 @@ func _fine_pipeline_ready() -> bool:
 
 
 ## 检查放置流程所需的全部着色器与计算管线是否均已有效创建。
-## 中文说明：负责 _placement_pipeline_ready 函数的相关处理。
 func _placement_pipeline_ready() -> bool:
 	return _shader_fine_finalize.is_valid() \
 		and _shader_fine_score.is_valid() \
 		and _shader_fine_winner.is_valid() \
 		and _shader_reduce_init.is_valid() \
-		and _shader_reduce_invalidate.is_valid() \
+		and _shader_reduce_arbitrate.is_valid() \
 		and _shader_reduce_compact.is_valid() \
 		and _shader_init_stamp_bounds.is_valid() \
 		and _shader_stamp.is_valid() \
@@ -2550,7 +2608,7 @@ func _placement_pipeline_ready() -> bool:
 		and _pipeline_fine_score.is_valid() \
 		and _pipeline_fine_winner.is_valid() \
 		and _pipeline_reduce_init.is_valid() \
-		and _pipeline_reduce_invalidate.is_valid() \
+		and _pipeline_reduce_arbitrate.is_valid() \
 		and _pipeline_reduce_compact.is_valid() \
 		and _pipeline_init_stamp_bounds.is_valid() \
 		and _pipeline_stamp.is_valid() \
@@ -2560,7 +2618,6 @@ func _placement_pipeline_ready() -> bool:
 
 ## 在常驻 result 记录上调度分数求和 pass，输出 8 字节控制标量（residual gain
 ## 总和 + 有效数），供报告消费，免除额外回读。
-## 中文说明：负责 _dispatch_placement_score_sum 函数的相关处理。
 func _dispatch_placement_score_sum(result_buffer: RID, result_count_buffer: RID, capacity: int) -> RID:
 	# 惰性常驻（仅 retain 路径用到）：与主 shader 家族同为 PERSISTENT 跨 run 复用。
 	# 基类的 SPIR-V 缓存只去重前端编译；每次 load_compute_shader 仍会新建常驻
@@ -2593,7 +2650,6 @@ func _dispatch_placement_score_sum(result_buffer: RID, result_count_buffer: RID,
 
 ## 释放 run_multi_asset 交接出的常驻 placement 缓冲区 RID（untrack 后由调用方负责生命周期），
 ## 幂等：释放后清空 handoff 字典。gpu_out 可为 run_multi_asset 输出或 asset_result。
-## 中文说明：负责 _release_placement_result_buffers 函数的相关处理。
 func _release_placement_result_buffers(gpu_out: Dictionary) -> void:
 	if gpu_out.is_empty():
 		return
@@ -2612,10 +2668,9 @@ func _release_placement_result_buffers(gpu_out: Dictionary) -> void:
 	gpu_out["placement_result_buffers"] = {}
 
 
-## 释放本生成器持有的 GPU 资源（各计算管线与着色器 RID 全部重置），并调用 dispose 清理其余借用资源。
-## dispose 后清空 shader/pipeline 成员 RID：底层 RID 已被基类 gc_all 释放，成员
-## 必须同步清空——否则 dispose 后再 run 时 ready 守卫会拿非零旧句柄误判已就绪。
-## 中文说明：负责 _on_after_dispose 函数的相关处理。
+## 释放本生成器持有的 GPU 资源，并调用 dispose 清理其余借用资源。
+## dispose 后必须清空 shader/pipeline 成员 RID（底层已被基类 gc_all 释放）——否则再次
+## run 时 ready 守卫会拿非零旧句柄误判已就绪。
 func _on_after_dispose() -> void:
 	_resident_clearance_field_buffer = RID()
 	_resident_clearance_field_bytes = 0
@@ -2634,7 +2689,7 @@ func _on_after_dispose() -> void:
 	_pipeline_fine_score = RID()
 	_pipeline_fine_winner = RID()
 	_pipeline_reduce_init = RID()
-	_pipeline_reduce_invalidate = RID()
+	_pipeline_reduce_arbitrate = RID()
 	_pipeline_reduce_compact = RID()
 	_pipeline_init_stamp_bounds = RID()
 	_pipeline_stamp = RID()
@@ -2646,7 +2701,7 @@ func _on_after_dispose() -> void:
 	_shader_fine_score = RID()
 	_shader_fine_winner = RID()
 	_shader_reduce_init = RID()
-	_shader_reduce_invalidate = RID()
+	_shader_reduce_arbitrate = RID()
 	_shader_reduce_compact = RID()
 	_shader_init_stamp_bounds = RID()
 	_shader_stamp = RID()
@@ -2658,7 +2713,6 @@ func _on_after_dispose() -> void:
 
 ## 将 score 着色器写回的原始调试计数缓冲区字节解码为带命名字段的字典，
 ## 字段名称对应 DebugBufferSet(SCORE_CONTRACT_STATS) 定义的 48 槽布局。
-## 中文说明：负责 _decode_score_contract_debug 函数的相关处理。
 func _decode_score_contract_debug(bytes: PackedByteArray) -> Dictionary:
 	var decoded := DebugBufferSetScript.new(DebugBufferSetScript.SCORE_CONTRACT_STATS).readback(self, bytes)
 	var words: PackedInt32Array = decoded.get("words", PackedInt32Array())
@@ -2696,7 +2750,6 @@ func _decode_score_contract_debug(bytes: PackedByteArray) -> Dictionary:
 
 
 ## 生成用于重置的 score 调试缓冲区字节数据，仅写入用于校验的魔数（magic）。
-## 中文说明：负责 _pack_score_contract_debug_reset 函数的相关处理。
 func _pack_score_contract_debug_reset() -> PackedByteArray:
 	return DebugBufferSetScript.new(DebugBufferSetScript.SCORE_CONTRACT_STATS).reset_bytes()
 
@@ -2732,7 +2785,6 @@ func _annotate_score_contract_debug(gpu_contract: Dictionary, score_contract_deb
 	return annotated
 
 
-## 中文说明：负责 _sha256_bytes 函数的相关处理。
 func _sha256_bytes(bytes: PackedByteArray) -> String:
 	var context := HashingContext.new()
 	context.start(HashingContext.HASH_SHA256)
@@ -2740,7 +2792,6 @@ func _sha256_bytes(bytes: PackedByteArray) -> String:
 	return context.finish().hex_encode()
 
 
-## 中文说明：负责 _fine_workload_report 函数的相关处理。
 func _fine_workload_report(
 	candidate_bytes: PackedByteArray,
 	record_count: int,
@@ -2801,10 +2852,9 @@ func _fine_workload_report(
 	}
 
 
-## 将 GPU 结果缓冲区中的原始字节解码为放置结果记录数组（Array[Dictionary]）。
-## 记录布局（4 × vec4 = 64 B）是 GPU ABI，字段偏移与键序由 PlacementResultCodec
-## 单一真值源持有；本处只负责“可用记录条数”的裁剪与遍历。
-## 中文说明：负责 _decode_records 函数的相关处理。
+## 将 GPU 结果缓冲区中的原始字节解码为放置结果记录数组。
+## 记录布局（4 × vec4 = 64 B）是 GPU ABI，字段偏移与键序的单一真值源是
+## PlacementResultCodec；本处只负责"可用记录条数"的裁剪与遍历。
 func _decode_records(bytes: PackedByteArray, record_count: int) -> Array[Dictionary]:
 	var records: Array[Dictionary] = []
 	var byte_stride := RECORD_STRIDE * 16
@@ -2815,7 +2865,6 @@ func _decode_records(bytes: PackedByteArray, record_count: int) -> Array[Diction
 
 
 ## 将 GPU stamp 着色器输出的原始字节解码为体素增量（stamp delta）记录数组。
-## 中文说明：负责 _decode_stamp_deltas 函数的相关处理。
 func _decode_stamp_deltas(bytes: PackedByteArray, delta_count: int) -> Array[Dictionary]:
 	var deltas: Array[Dictionary] = []
 	var byte_stride := DELTA_STRIDE * 16
@@ -2837,7 +2886,6 @@ func _decode_stamp_deltas(bytes: PackedByteArray, delta_count: int) -> Array[Dic
 
 
 ## 将 GPU stamp bounds 缓冲区的原始字节解码为每次 stamp 写入的包围盒记录。
-## 中文说明：负责 _decode_stamp_bounds 函数的相关处理。
 func _decode_stamp_bounds(bytes: PackedByteArray, bound_count: int, grid_size: Vector3i) -> Array[Dictionary]:
 	var bounds: Array[Dictionary] = []
 	var byte_stride := STAMP_BOUNDS_STRIDE * 16

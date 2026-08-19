@@ -3,7 +3,7 @@
 `ScenePlacementActor`（SPA）是 placement 场景中唯一的生命周期、网格和
 RenderingDevice 所有者。它是 `@tool Node3D`（`scripts/scene_placement_actor.gd`），
 由使用它的场景直接实例化并常驻场景树（例如
-`res://demos/placement-score-3d/placement-score-3d.tscn` 的 `SPA` 节点）；没有独立的
+`res://scenes/placement-score-3d/placement-score-3d.tscn` 的 `SPA` 节点）；没有独立的
 SPA 预制场景文件。SPA 本身已收敛为 facade——编排主体住在
 `scripts/scene_placement_runtime.gd` 与 `scripts/spa_selection_host.gd`
 （第三个宿主 `scripts/spa_interaction_host.gd` 已删除，见
@@ -240,12 +240,13 @@ rendering_device / borrowed / owner_path
 | `run_autoobject_prefilter()` | 经 `_publish_anchor_result()` 发布 Anchor 交接并 `_anchor_revision += 1`，同时作废 Score 交接 |
 | `run_anchors()` | 同样过 `_publish_anchor_result()`，但传入的是不带 `anchor_candidate_handoff` 的薄状态字典 ⇒ **不换代**（交接已由内层 prefilter 发布过） |
 | `run_score()` | 经 `_publish_score_result()` 发布 `fine_score_handoff` 并 `_score_revision += 1` |
-| `run_place()` / `run_placement_pipeline()` | 经 `_publish_place_result()`——**不发布 anchor 交接**，只在 `ok` 时 `_invalidate_score_handoff()` |
+| `run_place()` / `run_placement_pipeline()` | 经 `_publish_place_result()`——结果带嵌套 `prefilter_result.anchor_candidate_handoff` 时**接力发布 Anchor 交接**并 `_anchor_revision += 1`（整链逐批重跑 collect，缓存未命中会释放重建常驻 anchor/count 缓冲——不接力则已发布交接持**死 RID**）；`ok` 时作废 score cache key/模型并 `_invalidate_score_handoff()` |
 
-换句话说，Anchor 交接的唯一换代点是 `_publish_anchor_result()`，而它只在结果里真的带
-`anchor_candidate_handoff`（或嵌套的 `prefilter_result.anchor_candidate_handoff`）时才递增。
-**新增第三处真正跑 prefilter 的生产路径必须一并登记**，否则那条路径产出的 anchor 对点选侧
-不可见——而且是静默不可见，不报错。
+换句话说，Anchor 交接只有两个换代点：`_publish_anchor_result()`（Anchors/Score 路径）与
+`_publish_place_result()`（整链路径），都只在结果里真的带交接（前者顶层或嵌套、后者只认
+嵌套的 `prefilter_result.anchor_candidate_handoff`——整链结果的**顶层**同名键是 RID-less
+摘要，不能发布）时才递增。**新增第三处真正跑 prefilter 的生产路径必须一并登记**，
+否则那条路径产出的 anchor 对点选侧不可见——而且是静默不可见，不报错。
 
 作废是私有的：`_invalidate_score_handoff()` 无参、只解除发布（换代 + 丢键），不释放显存
 （Fine candidate/winner 的 owner 是 VPG）。anchor 侧没有对应的对外作废方法——
@@ -253,12 +254,15 @@ rendering_device / borrowed / owner_path
 
 ### 为什么必须比对 revision，不能只看 RID
 
-prefilter 的 anchor/count/topk 三块缓冲是**复用**的：再跑一次 prefilter 会把内容整体覆写，
-而 RID 一个不变。消费规则：读取前后各取一次 revision，中途变化 ⇒ 丢弃结果、最多重试一次；
+prefilter 的 topk 缓冲**跨 run 复用**（只在 dispose 释放）：再跑一次 prefilter 内容整体覆写
+而 RID 不变，只看 RID 分不出新旧。anchor/count 两块则由 **collect 缓存键**驱动
+（`_release_resident_collect_cache`）：键变时释放重建，RID 会换——而释放后的 RID 数值
+`is_valid()` 照样为真，只看 RID 连「死没死」都分不出。revision 比对同时覆盖这两种换代。
+消费规则：读取前后各取一次 revision，中途变化 ⇒ 丢弃结果、最多重试一次；
 RID 是借的，消费方不得 `free_rid()` / `release_rid()` / buffer update / dispatch。
 
 ## 测试场景
 
 | 场景 | 说明 | Godot 场景 |
 | --- | --- | --- |
-| [Placement Score 3D](placement-score-3d.md) | 仓库中唯一仍在的 placement demo 场景，覆盖本文的 GPU 常驻路径 | [`placement-score-3d.tscn`](../demos/placement-score-3d/placement-score-3d.tscn) |
+| [Placement Score 3D](placement-score-3d.md) | 仓库中唯一仍在的 placement demo 场景，覆盖本文的 GPU 常驻路径 | [`placement-score-3d.tscn`](../scenes/placement-score-3d/placement-score-3d.tscn) |

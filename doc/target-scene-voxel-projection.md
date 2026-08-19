@@ -2,7 +2,7 @@
 
 本文定义 `TargetSceneVoxel`（简称 `TargetSV`）、`BrushSV` 和 `TargetSV_B` 的职责边界。`TargetSV_B` 是 prefilter / routing / scoring / result feedback 的 target guidance 输入，不是 committed `SceneVoxel`，也不是资产选择结果。
 
-![当前 TargetSV GPU 生成、持久化与调试显示流程](../demos/target-sv-point-cloud-conversion-c/diagrams/target-scene-voxel-current.svg)
+![当前 TargetSV GPU 生成、持久化与调试显示流程](diagrams/target-scene-voxel-current.svg)
 
 ## 语义边界
 
@@ -83,7 +83,7 @@ AutoObject probe prefilter
   -> VoxelPlacementGenerator.run_multi_asset()
 ```
 
-交接不做区域扩张：每个 anchor 就是一个候选 origin（`one_origin_per_anchor`）。collision 采样、clearance 和 target fit 仍由 `score_anchor_asset_residual.glsl` 精筛；三阶段 Reduce 在每个 anchor 内选唯一 Fine 候选，再按稳定 random 优先级原子失效 Anchor 间冲突。
+交接不做区域扩张：每个 anchor 就是一个候选 origin（`one_origin_per_anchor`）。collision 采样、clearance 和 target fit 仍由 `score_anchor_asset_residual.glsl` 精筛；三阶段 Reduce 在每个 anchor 内选唯一 Fine 候选，再经迭代贪心得分 NMS 仲裁 Anchor 间冲突（高分优先存活）。
 
 ## Stamp 计划
 

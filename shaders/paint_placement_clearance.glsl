@@ -6,7 +6,7 @@
 // 跨批互斥的旧口径是「把已放置物当种子，逐个 anchor 在 XZ 邻域里扫一遍 seed_at_pixel
 // 做成对距离测试」。本 pass 把那层关系**预先烘进一张常驻 XZ 场**：每个被接受的放置在
 // 自己周围画一个圆锥，后续 anchor 只需在自己那一格 O(1) 读一次即可判互斥
-// （查询侧见 shaders/invalidate_anchor_conflicts.glsl 的 clearance 段）。
+// （查询侧见 shaders/init_anchor_atomic_reduce.glsl 的 clearance 段）。
 //
 // ── 场的编码 ────────────────────────────────────────────────────────────────
 // 每格一个 uint（XZ 平面，grid_x * grid_z 个）：
@@ -17,7 +17,7 @@
 // 偏置存在的唯一理由就是让 0 能表示"未画"；GLSL 没有 float 的原子 max，定点 uint +
 // atomicMax 才能让"多个已放置物画同一格时取最紧的那个约束"无锁成立。
 //
-// ── 半径口径（必须与 invalidate 的 conflicts() 同源）──────────────────────────
+// ── 半径口径（必须与 arbitrate 的 conflicts() 同源）──────────────────────────
 // 旧成对判据：dist < max(min_distance_voxels, (r_a + r_b) * asset_spacing_factor)
 // 场是单边量，判据必须拆成「画侧半径 + 查侧半径」。拆法：
 //   half(x) = max(r_x * asset_spacing_factor, max(min_distance_voxels * 0.5, 0.25))
@@ -61,7 +61,7 @@ layout(push_constant, std430) uniform Params {
 
 const uint MAX_ASSETS = 256u;
 // ⚠ 这两个常量是**画侧与查侧的共同约定**，改一处就必须同步改
-// shaders/invalidate_anchor_conflicts.glsl 里同名的两个常量，否则场会被按错口径解码。
+// shaders/init_anchor_atomic_reduce.glsl 里同名的两个常量，否则场会被按错口径解码。
 const float CLEARANCE_FIXED_SCALE = 256.0;
 const float CLEARANCE_BIAS_VOXELS = 64.0;
 
@@ -69,7 +69,7 @@ float spacing_radius_of(uint asset, uint asset_count) {
     return asset < asset_count ? max(asset_spacing_radius[asset], 0.0) : 0.0;
 }
 
-// 见文件头「半径口径」。与 invalidate_anchor_conflicts.glsl 的同名函数逐字相同。
+// 见文件头「半径口径」。与 init_anchor_atomic_reduce.glsl 的同名函数逐字相同。
 float clearance_half_radius(uint asset, uint asset_count, float min_distance, float factor) {
     float half_floor = max(min_distance * 0.5, 0.25);
     return max(spacing_radius_of(asset, asset_count) * factor, half_floor);

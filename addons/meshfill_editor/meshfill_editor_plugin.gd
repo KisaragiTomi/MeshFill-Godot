@@ -12,6 +12,9 @@ var _bake_descriptor_btn: Button
 var _import_fbx_btn: Button
 var _reimport_targetsv_btn: Button
 var _targetsv_import_dialog: EditorFileDialog
+## _scene_spa_host() 的每帧 memo（见该函数注释）。frame 号不相等即失效，无跨帧状态。
+var _spa_host_cache_frame := -1
+var _spa_host_cached: ScenePlacementActor = null
 var _asset_info_inspector: EditorInspectorPlugin
 var _spa_inspector: EditorInspectorPlugin
 const GEO_SCAN_METHOD := &"_scan_geo_assets"
@@ -236,6 +239,9 @@ func _repair_soft_reloaded_members() -> void:
 	if not (_reimport_targetsv_btn is Button): _reimport_targetsv_btn = null
 	# 同上；置空后 _ensure_targetsv_import_dialog() 会按结点名把既有对话框认领回来。
 	if not (_targetsv_import_dialog is EditorFileDialog): _targetsv_import_dialog = null
+	# memo 成员：软重载回来是 nil，按"本帧还没查过"复位即可。
+	if not (_spa_host_cache_frame is int): _spa_host_cache_frame = -1
+	if not (_spa_host_cached is ScenePlacementActor): _spa_host_cached = null
 
 
 func _sync_selection_overlay() -> void:
@@ -342,13 +348,22 @@ func _sync_brush_btn_visibility() -> void:
 
 
 func _scene_spa_host() -> ScenePlacementActor:
+	# 每帧 memo：_process 的三条工具栏 sync + overlay 各自独立解析宿主，一帧内曾是
+	# 3 趟全场景树递归收集——收敛为 1 趟。只在帧内复用、跨帧必重查：场景切换/节点增删
+	# 没有专用信号钩在这里，帧粒度已把成本压到无感，还不引入失效问题。
+	var frame := Engine.get_process_frames()
+	if _spa_host_cache_frame == frame:
+		return _spa_host_cached if is_instance_valid(_spa_host_cached) else null
+	_spa_host_cache_frame = frame
+	_spa_host_cached = null
 	var root := get_editor_interface().get_edited_scene_root()
 	if root == null:
 		return null
 	var matches: Array[ScenePlacementActor] = []
 	_collect_scene_placement_actors(root, matches)
 	if matches.size() == 1:
-		return matches[0]
+		_spa_host_cached = matches[0]
+		return _spa_host_cached
 	if matches.size() > 1:
 		push_error("[MeshFill Plugin] placement scene must contain exactly one ScenePlacementActor")
 	return null

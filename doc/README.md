@@ -29,7 +29,7 @@ This folder is the single home for MeshFill architecture notes, data schemas, de
 | [`placement-score-3d.md`](placement-score-3d.md) | 3D residual-gain volume-score contract |
 
 The two live scene files remain with their runtime assets:
-[`placement-score-3d.tscn`](../demos/placement-score-3d/placement-score-3d.tscn) and
+[`placement-score-3d.tscn`](../scenes/placement-score-3d/placement-score-3d.tscn) and
 [`asset-overview.tscn`](../scenes/asset-overview/asset-overview.tscn).
 
 ## Plans
@@ -37,8 +37,7 @@ The two live scene files remain with their runtime assets:
 | File | Purpose |
 | --- | --- |
 | [`auto-volume-base-class-plan.md`](auto-volume-base-class-plan.md) | Shared `AutoVolume` base-class plan |
-| [`volume-display-domain-audit.md`](../volume-display-domain-audit.md) | Per-domain audit of the five Voxel Display domains: what each still implements for itself vs what belongs in the AutoVolume base chain (kept at repo root) |
-| [`项目优化方案去冗余清理的计划.md`](../项目优化方案去冗余清理的计划.md) | Repo-wide redundancy-cleanup plan (2026-08-14 scan): orphan files, dead code, stale doc references, and the per-batch validation protocol (kept at repo root) |
+| [`../voxel-asset-matching-scaling-plan.md`](../voxel-asset-matching-scaling-plan.md) | 高维体素 × 多资产匹配扩展：感受野聚合 vs 深度学习（按用户要求存仓库根目录） |
 
 Four plans previously listed here were deleted along with the work they described and are
 **not** being recreated: `ui-click-test-plan.md`, `gpu-direct-rendering-plan.md`,
@@ -47,28 +46,37 @@ been rewritten to be self-contained.
 
 ## Diagrams
 
+`doc/diagrams/` 是全仓文档配图的唯一存放处 —— 新增 `.svg` 一律放这里，文件名保持全仓唯一，
+正文用 `diagrams/<名>.svg`（`doc/` 内）或 `doc/diagrams/<名>.svg`（仓库根的 `README.md` /
+`CLAUDE.md`）引用。该目录带一个 `.gdignore`：没有它，Godot 会把 `.svg` 当纹理资源导入并生成
+`.import` 文件，所以**不要删掉它**。
+
+（2026-08-18 起。此前配图散在各 demo 子目录的 `diagrams/` 与 `scenes/asset-overview/diagrams/`
+下；顶层 demo 目录已整体撤销，其中唯一可运行的场景搬到了 `scenes/placement-score-3d/`。）
+
 | Path | Purpose |
 | --- | --- |
-| [`../scenes/asset-overview/diagrams/autoobject_asset_properties.svg`](../scenes/asset-overview/diagrams/autoobject_asset_properties.svg) | Descriptor-owned semantics, descriptor-owned fields, shared fields, `instance_stamp_write_spec` / `ISWS`, and public `SceneVoxel` payload boundaries |
-| [`../scenes/asset-overview/diagrams/autoobject_descriptor_relationship.svg`](../scenes/asset-overview/diagrams/autoobject_descriptor_relationship.svg) | Focused `AutoObject` runtime and `AssetDescriptor` authority relationship |
-| [`core-SPA-scene-placement-actor/diagrams/autoobject_gpu_runtime_architecture.svg`](../demos/core-SPA-scene-placement-actor/diagrams/autoobject_gpu_runtime_architecture.svg) | GPU-owned million-scale `AutoObject` runtime, CPU command/debug control plane, profile container, tile-level object refs, and SV commit boundary |
-| [`../scenes/asset-overview/diagrams/autoassetfactory_relationships.svg`](../scenes/asset-overview/diagrams/autoassetfactory_relationships.svg) | Scaffold JSON, `AutoAssetFactory` normalization, saved object/vegetation assets, and runtime write path |
-| [`core-SPA-scene-placement-actor/diagrams/scene-placement-actor.svg`](../demos/core-SPA-scene-placement-actor/diagrams/scene-placement-actor.svg) | SPA-owned asset registry and runtime profile container with borrowed SV/runtime owners and the placement pipeline |
-| [`core-SPA-scene-placement-actor/diagrams/asset-descriptor-bake-to-score-chain.svg`](../demos/core-SPA-scene-placement-actor/diagrams/asset-descriptor-bake-to-score-chain.svg) | End-to-end `AssetDescriptor` chain from `geo/*.FBX` through authoring-side scan/bake to the runtime load, profile-arena upload, and score display, annotated with the failure points that were hit and fixed along it |
-| [`placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg`](../demos/placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter, dirty-region anchor collection, per-anchor top-K, and the resident anchor_candidate_handoff |
-| [`placement-autoobject-probe-prefilter/diagrams/autoobject_probe_scoring_logic.svg`](../demos/placement-autoobject-probe-prefilter/diagrams/autoobject_probe_scoring_logic.svg) | Descriptor probe generation, profile-arena packing, SV/TargetSV_B sampling, weighted fit, and candidate-only top-K boundary |
-| [`core-scene-voxel-field-system/diagrams/scene-voxel-flow.svg`](../demos/core-scene-voxel-field-system/diagrams/scene-voxel-flow.svg) | `instance_stamp_write_spec` / `ISWS`, stamp-only commit (`commit_scene_voxels()`), BrushSV overlay / BlendSV compose, accepted `SceneVoxel` fields, feedback, and SV resident fields |
-| [`core-scenevoxeltile/diagrams/scenevoxeltile.svg`](../demos/core-scenevoxeltile/diagrams/scenevoxeltile.svg) | `SceneVoxelTile` coarse SV cell index, dirty triggers, SV owner boundary, object-ref slots, summaries, and consumers |
-| [`core-SPA-scene-placement-actor/diagrams/spa_selection_mode_transition.svg`](../demos/core-SPA-scene-placement-actor/diagrams/spa_selection_mode_transition.svg) | ⚠ **历史产物**：SPA selection-mode state machine。该机制已删除（状态机 2026-08-07、模式号 2026-08-10），准入只看显示开关；图中 API 全仓不存在 |
-| [`core-SPA-scene-placement-actor/diagrams/voxel-pick-flow.svg`](../demos/core-SPA-scene-placement-actor/diagrams/voxel-pick-flow.svg) | Full GPU voxel-pick path: world ray to resident buffer reuse keys to pick shader to readback decode |
-| [`core-meshfill-framework/meshfill_current_framework.svg`](../demos/core-meshfill-framework/meshfill_current_framework.svg) | Current end-to-end MeshFill framework overview |
-| [`target-sv-point-cloud-conversion-c/diagrams/target-scene-voxel-current.svg`](../demos/target-sv-point-cloud-conversion-c/diagrams/target-scene-voxel-current.svg) | `TargetSV`, `BrushSV`, `TargetSV_B`, target read buffers, consumer boundaries, and planned guidance sources |
-| [`target-sv-point-cloud-conversion-c/diagrams/target-sv-point-cloud-conversion-overview.svg`](../demos/target-sv-point-cloud-conversion-c/diagrams/target-sv-point-cloud-conversion-overview.svg) | TargetSV point cloud conversion viewport alignment, height texture sampling, and preview output path |
-| [`placement-voxel-semantic-routing/voxel-semantic-routing.svg`](../demos/placement-voxel-semantic-routing/voxel-semantic-routing.svg) | Candidate voxel-region routing, conservative readback expansion, empty-route skip, same-type exclusion, and physical scoring boundary |
+| [`diagrams/autoobject_asset_properties.svg`](diagrams/autoobject_asset_properties.svg) | Descriptor-owned semantics, descriptor-owned fields, shared fields, `instance_stamp_write_spec` / `ISWS`, and public `SceneVoxel` payload boundaries |
+| [`diagrams/autoobject_descriptor_relationship.svg`](diagrams/autoobject_descriptor_relationship.svg) | Focused `AutoObject` runtime and `AssetDescriptor` authority relationship |
+| [`core-SPA-scene-placement-actor/diagrams/autoobject_gpu_runtime_architecture.svg`](diagrams/autoobject_gpu_runtime_architecture.svg) | GPU-owned million-scale `AutoObject` runtime, CPU command/debug control plane, profile container, tile-level object refs, and SV commit boundary |
+| [`diagrams/autoassetfactory_relationships.svg`](diagrams/autoassetfactory_relationships.svg) | Scaffold JSON, `AutoAssetFactory` normalization, saved object/vegetation assets, and runtime write path |
+| [`core-SPA-scene-placement-actor/diagrams/scene-placement-actor.svg`](diagrams/scene-placement-actor.svg) | SPA-owned asset registry and runtime profile container with borrowed SV/runtime owners and the placement pipeline |
+| [`core-SPA-scene-placement-actor/diagrams/asset-descriptor-bake-to-score-chain.svg`](diagrams/asset-descriptor-bake-to-score-chain.svg) | End-to-end `AssetDescriptor` chain from `geo/*.FBX` through authoring-side scan/bake to the runtime load, profile-arena upload, and score display, annotated with the failure points that were hit and fixed along it |
+| [`placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg`](diagrams/autoobject_probe_prefilter_pipeline.svg) | GPU-only AutoObject probe prefilter, dirty-region anchor collection, per-anchor top-K, and the resident anchor_candidate_handoff |
+| [`placement-autoobject-probe-prefilter/diagrams/autoobject_probe_scoring_logic.svg`](diagrams/autoobject_probe_scoring_logic.svg) | Descriptor probe generation, profile-arena packing, SV/TargetSV_B sampling, weighted fit, and candidate-only top-K boundary |
+| [`core-scene-voxel-field-system/diagrams/scene-voxel-flow.svg`](diagrams/scene-voxel-flow.svg) | `instance_stamp_write_spec` / `ISWS`, stamp-only commit (`commit_scene_voxels()`), BrushSV overlay / BlendSV compose, accepted `SceneVoxel` fields, feedback, and SV resident fields |
+| [`core-scenevoxeltile/diagrams/scenevoxeltile.svg`](diagrams/scenevoxeltile.svg) | `SceneVoxelTile` coarse SV cell index, dirty triggers, SV owner boundary, object-ref slots, summaries, and consumers |
+| [`core-SPA-scene-placement-actor/diagrams/spa_selection_mode_transition.svg`](diagrams/spa_selection_mode_transition.svg) | ⚠ **历史产物**：SPA selection-mode state machine。该机制已删除（状态机 2026-08-07、模式号 2026-08-10），准入只看显示开关；图中 API 全仓不存在 |
+| [`core-SPA-scene-placement-actor/diagrams/voxel-pick-flow.svg`](diagrams/voxel-pick-flow.svg) | Full GPU voxel-pick path: world ray to resident buffer reuse keys to pick shader to readback decode |
+| [`core-meshfill-framework/meshfill_current_framework.svg`](diagrams/meshfill_current_framework.svg) | Current end-to-end MeshFill framework overview |
+| [`target-sv-point-cloud-conversion-c/diagrams/target-scene-voxel-current.svg`](diagrams/target-scene-voxel-current.svg) | `TargetSV`, `BrushSV`, `TargetSV_B`, target read buffers, consumer boundaries, and planned guidance sources |
+| [`target-sv-point-cloud-conversion-c/diagrams/target-sv-point-cloud-conversion-overview.svg`](diagrams/target-sv-point-cloud-conversion-overview.svg) | TargetSV point cloud conversion viewport alignment, height texture sampling, and preview output path |
+| [`placement-voxel-semantic-routing/voxel-semantic-routing.svg`](diagrams/voxel-semantic-routing.svg) | Candidate voxel-region routing, conservative readback expansion, empty-route skip, same-type exclusion, and physical scoring boundary |
 
 ## Documentation Rules
 
 - Keep ordinary project documentation in `doc/`; keep only conventional tooling and entry files at the repository root.
+- Keep every documentation diagram in `doc/diagrams/` (see the Diagrams section above); never place `.svg` next to a scene, and keep that directory's `.gdignore`.
 - Markdown file names use lowercase ASCII kebab-case, except conventional `README.md`, `CLAUDE.md`, and `mempalace.md` files.
 - Keep prose language consistent with the document being edited.
 - Read and write documentation files as UTF-8 to preserve Chinese text.
@@ -92,7 +100,7 @@ Use these terms consistently in voxel, placement, and compute-shader docs:
 ## `## 测试场景` 契约
 
 `tools/test_core_demo_contracts.gd`（已于 2026-08-07 删除：只能经 --script 启动，本仓禁跑 = 从来没跑过，此约束现无守卫）曾硬编码四份 core 文档，要求每份都带一个
-`## 测试场景` 表格，且表格行同时链接一个存在的 `doc/*.md` 与一个存在的 `demos/**/*.tscn`：
+`## 测试场景` 表格，且表格行同时链接一个存在的 `doc/*.md` 与一个存在的 `scenes/**/*.tscn`：
 
 - [`auto-object-gpu-runtime-architecture.md`](auto-object-gpu-runtime-architecture.md)
 - [`scene-placement-actor.md`](scene-placement-actor.md)
@@ -100,6 +108,6 @@ Use these terms consistently in voxel, placement, and compute-shader docs:
 - [`scene-voxel-tile.md`](scene-voxel-tile.md)
 
 demo 场景清理后，这四份的表格统一指向仅存的
-[`placement-score-3d.tscn`](../demos/placement-score-3d/placement-score-3d.tscn)，
+[`placement-score-3d.tscn`](../scenes/placement-score-3d/placement-score-3d.tscn)，
 该 `.tscn` 的 `DemoSetup` 节点用 `metadata/source_docs`（`;` 分隔）登记这四份来源文档。
 其余文档不受该契约约束，已移除各自的 `## 测试场景` 与运行步骤章节。

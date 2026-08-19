@@ -2,9 +2,9 @@
 
 本文记录 AutoObject probe 粗筛的当前实现契约。粗筛从 `TargetSV_B` 目标体积内部提取 position-only anchors（两门合取，见「Anchor 规则」），用 descriptor-backed semantic probes 给可用 `AutoObject` 打分，为每个 anchor 选出 top-K asset，并以 GPU 常驻 `anchor_candidate_handoff`（anchor / anchor_count / topk buffer）交接给细筛。最终 asset/pivot/yaw 由 `score_anchor_asset_residual.glsl` 以 anchor 为 origin 计算五维 residual gain 完成精筛。
 
-![AutoObject probe prefilter pipeline](../demos/placement-autoobject-probe-prefilter/diagrams/autoobject_probe_prefilter_pipeline.svg)
+![AutoObject probe prefilter pipeline](diagrams/autoobject_probe_prefilter_pipeline.svg)
 
-![AutoObject probe scoring logic](../demos/placement-autoobject-probe-prefilter/diagrams/autoobject_probe_scoring_logic.svg)
+![AutoObject probe scoring logic](diagrams/autoobject_probe_scoring_logic.svg)
 
 当前实现已稳定：GPU pipeline、Host、Anchor、Probe source、resident anchor handoff 均已实现，CPU scoring path 已删除。以下输入/输出契约仅作为架构参考。
 
@@ -210,9 +210,9 @@ prefilter 常驻 anchor_candidate_handoff（anchor / anchor_count / topk buffer�
   -> VoxelPlacementGenerator.run_multi_asset()   # 一条 GPU 链跑完全部 asset，无 CPU fallback
   -> fine_score_dispatch_finalize.glsl           # anchor_count -> 间接派发（origin_count == anchor_count）
   -> score_anchor_asset_residual.glsl            # score 细筛：anchor x top-K asset 槽 x pivot x yaw 五维 residual gain
-  -> init_anchor_atomic_reduce.glsl              # 每个 Anchor 选唯一 Fine 候选并建立 XZ 直接索引
-  -> invalidate_anchor_conflicts.glsl            # 稳定 random 优先级 + atomicAnd 单轮失效
-  -> compact_anchor_atomic_reduce.glsl           # barrier 后按 Anchor ID 应用 quota/capacity 并写出
+  -> init_anchor_atomic_reduce.glsl              # 每个 Anchor 选唯一 Fine 候选、建 XZ 索引、播种 NMS 状态
+  -> arbitrate_anchor_conflicts.glsl (x 预算轮)  # 迭代贪心得分 NMS，GPU 自检收敛并自清零间接派发参数
+  -> compact_anchor_atomic_reduce.glsl           # 只接受 SELECTED 态，按 Anchor ID 应用 quota/capacity 并写出
   -> init_stamp_bounds -> stamp_asset_voxels.glsl  # mixed-asset stamp（state-chain 原位提交）
   -> accepted placements
   -> optional GPUAutoObjectRuntime writeback（GPU-direct 常驻）

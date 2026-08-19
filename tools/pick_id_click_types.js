@@ -25,7 +25,7 @@ const net = require('net');
 
 const HOST = '127.0.0.1';
 const PORT = 6800;
-const SCENE = 'res://demos/placement-score-3d/placement-score-3d.tscn';
+const SCENE = 'res://scenes/placement-score-3d/placement-score-3d.tscn';
 const HOST_PATH = 'SPA/Interaction/SelectionHost';
 const DEMO_PATH = 'SPA/Volumes/VolumeScore';
 const VIEWPORT = [1440, 900];

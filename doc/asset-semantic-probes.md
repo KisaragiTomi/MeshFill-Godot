@@ -4,7 +4,7 @@
 
 Descriptor 通过 SPA（`ScenePlacementActor`）注册到 GPU profile container，使其 probes/collision/pivots 即刻 GPU 可读；SPA 生命周期和访问接口见 [`scene-placement-actor.md`](scene-placement-actor.md)。
 
-![AutoObject probe scoring logic](../demos/placement-autoobject-probe-prefilter/diagrams/autoobject_probe_scoring_logic.svg)
+![AutoObject probe scoring logic](diagrams/autoobject_probe_scoring_logic.svg)
 
 ## 当前边界
 

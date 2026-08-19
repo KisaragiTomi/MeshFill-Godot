@@ -6,7 +6,7 @@
 
 本文是 runtime contract / architecture 文档。当前 `scripts/gpu_autoobject_runtime.gd`、`scripts/auto_voxel_runtime_profile_container.gd`、`scripts/auto_object.gd`、`scripts/scene_voxel_committer.gd`、`scripts/autoobject_probe_prefilter_gpu.gd`、`scripts/voxel_placement_generator.gd` 和 `scripts/scene_placement_actor.gd` 提供 GPU-first 对象命令/批量写回/debug 入口；GDScript 字典、snapshot 和 debug range 只用于上传准备或回查，不是验收用的 CPU 替代路径。`AssetDescriptor` 定义见 [`asset-descriptor.md`](asset-descriptor.md)；SV commit / resident state 见 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)；tile dirty 规则见 [`scene-voxel-tile.md`](scene-voxel-tile.md)。
 
-![AutoObject GPU runtime architecture](../demos/core-SPA-scene-placement-actor/diagrams/autoobject_gpu_runtime_architecture.svg)
+![AutoObject GPU runtime architecture](diagrams/autoobject_gpu_runtime_architecture.svg)
 
 ## 核心契约
 
@@ -205,4 +205,4 @@ CPU authoring / import
 
 | 场景 | 说明 | Godot 场景 |
 | --- | --- | --- |
-| [Placement Score 3D](placement-score-3d.md) | 仓库中唯一仍在的 placement demo 场景，覆盖本文的 GPU 常驻路径 | [`placement-score-3d.tscn`](../demos/placement-score-3d/placement-score-3d.tscn) |
+| [Placement Score 3D](placement-score-3d.md) | 仓库中唯一仍在的 placement demo 场景，覆盖本文的 GPU 常驻路径 | [`placement-score-3d.tscn`](../scenes/placement-score-3d/placement-score-3d.tscn) |

@@ -118,7 +118,13 @@ static func find_mesh_info_in_tree(
 
 
 static func is_collision_helper_node(node: Node) -> bool:
-	var node_name := str(node.name).to_upper()
+	return is_collision_helper_name(str(node.name))
+
+
+## 字符串版：给只拿得到 node_name 的调用方用（FbxVoxelImportService 的通道读取按它
+## 豁免碰撞辅助网格——UCX 等本就不带 uv8 数据通道，不该按"缺 8 个 UV set"报错）。
+static func is_collision_helper_name(raw_name: String) -> bool:
+	var node_name := raw_name.to_upper()
 	return node_name.begins_with("UCX_") \
 		or node_name.begins_with("UBX_") \
 		or node_name.begins_with("UCP_") \

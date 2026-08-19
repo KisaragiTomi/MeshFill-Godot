@@ -37,6 +37,14 @@ static var _visual_bytes: PackedByteArray
 static var _collision_bytes: PackedByteArray
 static var _decoded: Dictionary
 static var _loaded := false
+## 装载成功时三个源文件（meta/visual/collision）的 mtime 快照，ensure_fresh() 的判据。
+## 容器型 static 不吃"Object 初始化器被重置为 null"的陷阱；脚本重载归零到 {} 时
+## _loaded 也一并归 false，两者恒同步。
+static var _source_mtimes: Dictionary = {}
+## decode() 的失败 latch：失败结果不缓存进 _decoded（空字典 = "还没解"会引发每次调用
+## 重试整趟解码/设备探测），也不该把 invalid 字典当正常结果缓存——latch 单独记，
+## reload() 时清。
+static var _decode_failed := false
 ## 静态字节内容的代号：每次真正从磁盘装载（首次或 reload()）都取一个新值。
 ## 取递增时钟而非自增计数，是为了让编辑器脚本重载把 static 清零后的新代号也不会
 ## 与重载前发出去的旧代号相撞——消费方可能是重载中存活下来的实例（如 VoxelPickGPU
@@ -80,13 +88,60 @@ static func _ensure_loaded() -> bool:
 			assert(false, "TargetSVLoader: target_sv metadata missing path key")
 			return false
 
+	# voxel_count 有两个消费口径：本 loader 的 voxel_count() 按 ts²×slices 现算，
+	# TargetSVSetup 却直读元数据值——两者不一致时各下游会按不同尺寸解读同一份缓冲，
+	# 此前无人校验。手编/损坏的元数据在这里就拦下。
+	var meta_texture_size := int(_metadata.get("texture_size", 0))
+	var meta_slice_count := int(_metadata.get("slice_count", 0))
+	if meta_texture_size <= 0 or meta_slice_count <= 0 \
+			or int(_metadata.get("voxel_count", -1)) != meta_texture_size * meta_texture_size * meta_slice_count:
+		push_error("[TargetSVLoader] 元数据 voxel_count=%s 与 texture_size²×slice_count（%d²×%d）不一致（%s）—— 拒绝按矛盾的网格尺寸装载" % [
+			str(_metadata.get("voxel_count", "<缺>")), meta_texture_size, meta_slice_count, meta_path])
+		assert(false, "TargetSVLoader: metadata voxel_count inconsistent")
+		_metadata = {}
+		return false
+
 	# ⚠ 这里曾还有 `_preview_image = _read_image(preview_path)`（连同 `_read_image()` 与
 	# 公开的 `preview_image()` 访问器）。preview.png 是给人看的产物，**全仓零消费方**——
 	# 每次加载/reload 白解一张 256² PNG。2026-08-12 三者一并删除；文件本身照写照拷，
 	# `preview_path` 也仍是必需键（`import_dataset` 要按它搬运）。
 	_visual_bytes = _read_file_bytes(str(_metadata["visual_path"]))
 	_collision_bytes = _read_file_bytes(str(_metadata["collision_path"]))
+	_record_source_mtimes(meta_path)
 	return not _metadata.is_empty()
+
+
+static func _record_source_mtimes(meta_path: String) -> void:
+	_source_mtimes = {
+		meta_path: _path_mtime(meta_path),
+		str(_metadata["visual_path"]): _path_mtime(str(_metadata["visual_path"])),
+		str(_metadata["collision_path"]): _path_mtime(str(_metadata["collision_path"])),
+	}
+
+
+static func _path_mtime(path: String) -> int:
+	return int(FileAccess.get_modified_time(ProjectSettings.globalize_path(path)))
+
+
+## 静态缓存仍新鲜（按三个源文件的 mtime 判）就直接复用，不新鲜才整块重读。
+##
+## TargetSVSetup 的**首载**路径用它替代此前的无条件 reload()：每次开场景 / 插件重挂载
+## （SPA 双 bootstrap 一次开场景就是两遍）不再白读 5 MiB 级缓冲，也不再无谓换代
+## content_generation——下游按代号缓存的 GPU 上传（VoxelPickGPU）随之保留。
+##
+## ⚠ mtime 是秒级分辨率：同秒内的重导出可能漏判。**显式换新一律走 reload()**——
+## TargetSVSetup.reimport() 就是这么做的，那颗按钮的语义不吃本判据。
+## 上次装载失败（_loaded 且 metadata 空）时保持失败态不自动重试，同样只有 reload() 能清。
+static func ensure_fresh() -> bool:
+	if not _loaded:
+		return _ensure_loaded()
+	if _metadata.is_empty():
+		return false
+	for path in _source_mtimes:
+		if _path_mtime(str(path)) != int(_source_mtimes[path]):
+			reload()
+			return not _metadata.is_empty()
+	return true
 
 
 static func _read_file_bytes(path: String) -> PackedByteArray:
@@ -156,19 +211,25 @@ static func voxel_count() -> int:
 static func decode() -> Dictionary:
 	if not _decoded.is_empty():
 		return _decoded
+	# 失败 latch：解码失败的成因（缓冲/格式坏、字节数对不上）不会自己好，重试只是
+	# 每次调用再付一整趟解码；此前 GPU 失败缓存 {}（= 下次照样重试），CPU 侧的 invalid
+	# 结果却被当正常结果永久缓存——两条失败路径行为相反。现在统一：失败即 latch，
+	# reload()（新数据到位）才清。
+	if _decode_failed:
+		return {}
 
 	_ensure_loaded()
 	if _metadata.is_empty() or _visual_bytes.is_empty() or _collision_bytes.is_empty():
-		_decoded = {}
 		return {}
 
 	var ts := texture_size()
 	var sc := slice_count()
 	var TargetSceneVoxelGeneratorScript := load("res://scripts/target_scene_voxel_generator.gd")
 
-	var rd := RenderingServer.create_local_rendering_device()
-	if rd != null:
-		rd.free()
+	# 可用性判据 = 主 RenderingDevice 在不在（只有 headless 缺）。⚠ 此前这里
+	# create_local_rendering_device() 建了一整个 Vulkan 局部设备又立刻 free，
+	# 只为探测可用性——数十 ms 白付，且每次 reload 后首个 decode 都要再付一遍。
+	if RenderingServer.get_rendering_device() != null:
 		var gpu_result: Dictionary = TargetSceneVoxelGeneratorScript.decode_target_read_buffers_gpu(
 			_visual_bytes, _collision_bytes, ts, sc
 		)
@@ -179,15 +240,18 @@ static func decode() -> Dictionary:
 		# 格式本身有问题，CPU 路径只会把同一份坏数据再解一遍并被当成正常结果缓存。
 		push_error("[TargetSVLoader] GPU 解码失败（texture_size=%d slice_count=%d visual=%d 字节 collision=%d 字节 原因=%s）—— 拒绝回退 CPU 解码" % [ts, sc, _visual_bytes.size(), _collision_bytes.size(), str(gpu_result.get("reason", "unknown"))])
 		assert(false, "TargetSVLoader: GPU decode failed")
-		_decoded = {}
+		_decode_failed = true
 		return {}
 
 	# 无 RenderingDevice（本项目正常运行路径下不应出现）时仍走 CPU 解码。
 	var result: Dictionary = TargetSceneVoxelGeneratorScript.decode_target_read_buffers(
 		_visual_bytes, _collision_bytes, ts, sc
 	)
-	_decoded = result
-	return _decoded
+	if bool(result.get("valid", false)):
+		_decoded = result
+		return _decoded
+	_decode_failed = true
+	return {}
 
 
 static func reload() -> void:
@@ -195,6 +259,8 @@ static func reload() -> void:
 	_visual_bytes = PackedByteArray()
 	_collision_bytes = PackedByteArray()
 	_decoded = {}
+	_decode_failed = false
+	_source_mtimes = {}
 	_loaded = false
 	_ensure_loaded()
 
@@ -229,18 +295,44 @@ static func import_dataset(src_meta_path: String) -> Dictionary:
 			return {"ok": false, "reason": "source_metadata_missing_key", "key": required_key,
 				"path": src_meta_path, "source_keys": meta.keys()}
 
+	# 数值一致性同样在覆盖之前拦（与 _ensure_loaded 的装载校验同判据）：
+	# voxel_count 必须等于 ts²×slices，两个缓冲的字节数必须与之吻合
+	# （visual = rgba8 每格 4 字节，collision = r8 每格 1 字节）。这三条全是零成本检查，
+	# 少一条就是"先盖掉好数据、再在解码端才发现尺寸不对"。preview.png 是给人看的，不验。
+	var src_texture_size := int(meta["texture_size"])
+	var src_slice_count := int(meta["slice_count"])
+	var src_voxel_count := int(meta["voxel_count"])
+	if src_texture_size <= 0 or src_slice_count <= 0 \
+			or src_voxel_count != src_texture_size * src_texture_size * src_slice_count:
+		return {"ok": false, "reason": "source_metadata_voxel_count_inconsistent",
+			"path": src_meta_path, "texture_size": src_texture_size,
+			"slice_count": src_slice_count, "voxel_count": src_voxel_count}
+
 	var src_dir := src_meta_path.get_base_dir()
 	var transfers := [
-		{"key": "visual_path", "dst": SHARED_DIR.path_join(VISUAL_NAME)},
-		{"key": "collision_path", "dst": SHARED_DIR.path_join(COLLISION_NAME)},
-		{"key": "preview_path", "dst": SHARED_DIR.path_join(PREVIEW_NAME)},
+		{"key": "visual_path", "dst": SHARED_DIR.path_join(VISUAL_NAME), "expected_bytes": src_voxel_count * 4},
+		{"key": "collision_path", "dst": SHARED_DIR.path_join(COLLISION_NAME), "expected_bytes": src_voxel_count},
+		{"key": "preview_path", "dst": SHARED_DIR.path_join(PREVIEW_NAME), "expected_bytes": -1},
 	]
-	# 三个源缓冲先整体验在，再开始复制：不允许"复制到一半失败"的半份数据集落地。
+	# 三个源缓冲先整体验在、验尺寸，再开始复制：不允许"复制到一半失败"的半份数据集落地。
 	for transfer in transfers:
 		var src_buffer := _resolve_dataset_path(str(meta[transfer["key"]]), src_dir)
 		if not FileAccess.file_exists(src_buffer):
 			return {"ok": false, "reason": "source_buffer_missing",
 				"key": transfer["key"], "path": src_buffer, "metadata": src_meta_path}
+		var expected_bytes := int(transfer["expected_bytes"])
+		if expected_bytes >= 0:
+			var src_buffer_file := FileAccess.open(src_buffer, FileAccess.READ)
+			if src_buffer_file == null:
+				return {"ok": false, "reason": "source_buffer_unreadable",
+					"key": transfer["key"], "path": src_buffer, "file_error": FileAccess.get_open_error()}
+			var actual_bytes := src_buffer_file.get_length()
+			src_buffer_file.close()
+			if int(actual_bytes) != expected_bytes:
+				return {"ok": false, "reason": "source_buffer_size_mismatch",
+					"key": transfer["key"], "path": src_buffer,
+					"expected_bytes": expected_bytes, "actual_bytes": int(actual_bytes),
+					"metadata": src_meta_path}
 		transfer["src"] = src_buffer
 
 	var dst_meta := SHARED_DIR.path_join(META_NAME)
@@ -249,8 +341,12 @@ static func import_dataset(src_meta_path: String) -> Dictionary:
 	for transfer in transfers:
 		# 路径键无条件改写成规范目标，源就是目标时也照写（元数据可能本来指向别处）。
 		meta[transfer["key"]] = transfer["dst"]
-		if transfer["src"] == transfer["dst"]:
-			continue   # 选中的就是当前这一份：自我复制会把文件截成 0 字节
+		# 自我复制会把文件截成 0 字节（copy 先以 WRITE 打开目标 = 截断，再读已空的源）。
+		# ⚠ 判据必须按**globalize 后的物理路径**比：res:// 与绝对路径写法可以指向同一个
+		# 文件，裸字符串相等比不出来；Windows 不分大小写，用 nocasecmp。
+		if ProjectSettings.globalize_path(str(transfer["src"])).simplify_path().nocasecmp_to(
+				ProjectSettings.globalize_path(str(transfer["dst"])).simplify_path()) == 0:
+			continue
 		var err := DirAccess.copy_absolute(str(transfer["src"]), str(transfer["dst"]))
 		if err != OK:
 			return {"ok": false, "reason": "buffer_copy_failed", "key": transfer["key"],

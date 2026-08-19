@@ -2,7 +2,7 @@
 
 本文定义 `SceneVoxelTile`：由 `SceneVoxelCommitter` / SV owner 持有的粗粒度 cell index / dirty record，用来统一管理 dirty、局部 voxel 范围、AutoObject 引用和增量更新边界。点选 voxel 时，所属 `SceneVoxelTile` 由 voxel 坐标和 `scene_voxel_tile_size` 直接推导，不从 provenance 或公开 sidecar 查询。`SceneVoxel` / SV committed payload 见 [`scene-voxel-field-system.md`](scene-voxel-field-system.md)；资产默认语义见 [`asset-descriptor.md`](asset-descriptor.md)，字段归属边界见 [`asset-properties.md`](asset-properties.md)；GPU-first AutoObject 方向见 [`auto-object-gpu-runtime-architecture.md`](auto-object-gpu-runtime-architecture.md)。SPA（`ScenePlacementActor`）借用 `SceneVoxelCommitter` 引用编排 commit，不直接管理 tile dirty sidecar；详见 [`scene-placement-actor.md`](scene-placement-actor.md)。
 
-![SceneVoxelTile coarse SV cell index](../demos/core-scenevoxeltile/diagrams/scenevoxeltile.svg)
+![SceneVoxelTile coarse SV cell index](diagrams/scenevoxeltile.svg)
 
 ## 目标
 
@@ -266,4 +266,4 @@ placement/exclusion 的邻域查询走 tile 级 object refs 的粗过滤，不�
 
 | 场景 | 说明 | Godot 场景 |
 | --- | --- | --- |
-| [Placement Score 3D](placement-score-3d.md) | 仓库中唯一仍在的 placement demo 场景，覆盖本文的 GPU 常驻路径 | [`placement-score-3d.tscn`](../demos/placement-score-3d/placement-score-3d.tscn) |
+| [Placement Score 3D](placement-score-3d.md) | 仓库中唯一仍在的 placement demo 场景，覆盖本文的 GPU 常驻路径 | [`placement-score-3d.tscn`](../scenes/placement-score-3d/placement-score-3d.tscn) |

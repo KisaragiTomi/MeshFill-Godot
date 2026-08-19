@@ -151,6 +151,21 @@ func get_registration_diagnostics() -> Dictionary:
 	return _registration_diagnostics.duplicate(true)
 
 
+## 诊断计数器的唯一自增口（键由 reset_registration_diagnostics() 声明；缺键按 0 起算，
+## 与原先散在四处手写的 `int(_registration_diagnostics.get(k, 0)) + 1` 逐字同义）。
+## ⚠ 保持 int：计数项与 *_ms 项在同一个字典里，用一个通吃的 float 版会把计数值变成 1.0。
+func _bump_registration_diagnostic(key: String) -> void:
+	_registration_diagnostics[key] = int(_registration_diagnostics.get(key, 0)) + 1
+
+
+## 诊断耗时累加的唯一入口（毫秒；原先在两处手写同一段 float 累加）。
+## ⚠ 传的是**已算好的** elapsed_usec 而不是 t0：取时刻仍留在调用点，
+## 不会把这一层调用开销记进被测区间。
+func _accumulate_registration_diagnostic_ms(key: String, elapsed_usec: int) -> void:
+	_registration_diagnostics[key] = float(_registration_diagnostics.get(key, 0.0)) \
+		+ float(elapsed_usec) / 1000.0
+
+
 ## 释放 GPU buffer 并销毁容器；sync_before_free 为 true 时先 submit/sync，仅在拥有 rendering device 时才 free 该设备。
 func dispose(sync_before_free: bool = false) -> void:
 	_repair_soft_reloaded_members()   # 软重载新增成员为 nil，见 _repair_soft_reloaded_members()
@@ -527,17 +542,14 @@ func register_descriptor(
 		if cache_entry.get("descriptor_ref") is WeakRef else null
 	var normalized: Dictionary
 	if cached_descriptor == descriptor and cache_entry.get("normalized") is Dictionary:
-		_registration_diagnostics["normalized_descriptor_cache_hits"] = \
-			int(_registration_diagnostics.get("normalized_descriptor_cache_hits", 0)) + 1
+		_bump_registration_diagnostic("normalized_descriptor_cache_hits")
 		normalized = cache_entry.get("normalized") as Dictionary
 	else:
-		_registration_diagnostics["normalized_descriptor_cache_misses"] = \
-			int(_registration_diagnostics.get("normalized_descriptor_cache_misses", 0)) + 1
+		_bump_registration_diagnostic("normalized_descriptor_cache_misses")
 		var normalize_t0_usec := Time.get_ticks_usec()
 		normalized = normalize_descriptor(descriptor, default_radius, density_override, world_scale, mesh)
-		_registration_diagnostics["descriptor_normalize_ms"] = \
-			float(_registration_diagnostics.get("descriptor_normalize_ms", 0.0)) \
-			+ float(Time.get_ticks_usec() - normalize_t0_usec) / 1000.0
+		_accumulate_registration_diagnostic_ms(
+			"descriptor_normalize_ms", Time.get_ticks_usec() - normalize_t0_usec)
 		_normalized_descriptor_cache[cache_key] = {
 			"descriptor_ref": weakref(descriptor),
 			"normalized": normalized,
@@ -618,8 +630,7 @@ func _register_pre_normalized_profile(normalized: Dictionary) -> int:
 	var profile_index := _profile_order.size()
 	var registration: Dictionary = _profile_registration_cache.get(profile_hash, {})
 	if registration.is_empty():
-		_registration_diagnostics["profile_registration_cache_misses"] = \
-			int(_registration_diagnostics.get("profile_registration_cache_misses", 0)) + 1
+		_bump_registration_diagnostic("profile_registration_cache_misses")
 		var coarse_samples: Array[Dictionary] = []
 		var fine_samples: Array[Dictionary] = []
 		for raw_sample in normalized.get("profile_samples", []):
@@ -641,8 +652,7 @@ func _register_pre_normalized_profile(normalized: Dictionary) -> int:
 		}
 		_profile_registration_cache[profile_hash] = registration
 	else:
-		_registration_diagnostics["profile_registration_cache_hits"] = \
-			int(_registration_diagnostics.get("profile_registration_cache_hits", 0)) + 1
+		_bump_registration_diagnostic("profile_registration_cache_hits")
 	var coarse_samples: Array = registration.get("coarse_samples", [])
 	var fine_samples: Array = registration.get("fine_samples", [])
 	var coarse_sample_range := _append_profile_sample_group(coarse_samples)
@@ -683,9 +693,8 @@ func _register_pre_normalized_profile(normalized: Dictionary) -> int:
 	_profile_order.append(profile_id)
 	_staging_profile_table.append(table_entry)
 	_mark_staging_changed()
-	_registration_diagnostics["profile_stage_ms"] = \
-		float(_registration_diagnostics.get("profile_stage_ms", 0.0)) \
-		+ float(Time.get_ticks_usec() - stage_t0_usec) / 1000.0
+	_accumulate_registration_diagnostic_ms(
+		"profile_stage_ms", Time.get_ticks_usec() - stage_t0_usec)
 	return profile_id
 
 
@@ -1439,27 +1448,30 @@ func _profile_id_from_hash(profile_hash: String) -> int:
 	return profile_id
 
 
+## {start, count, end} 三元组的唯一构造口（原先两个 _append_* 各手写一份）。
+## end 是**导出量**而不是第三个自由字段：两处原先分别写成 target.size() 与
+## _staging_profile_sample_record_count，都恰是各自 append 之后的新长度 = start + count。
+static func _range_dict(start: int, count: int) -> Dictionary:
+	return {
+		"start": start,
+		"count": count,
+		"end": start + count,
+	}
+
+
 ## Appends immutable normalized records to the staging array and returns their range.
 func _append_range(target: Array[Dictionary], source) -> Dictionary:
 	var start := target.size()
 	if source is Array:
 		target.append_array(source)
-	return {
-		"start": start,
-		"count": target.size() - start,
-		"end": target.size(),
-	}
+	return _range_dict(start, target.size() - start)
 
 
 func _append_profile_sample_group(source: Array) -> Dictionary:
 	var start := _staging_profile_sample_record_count
 	_staging_profile_sample_groups.append(source)
 	_staging_profile_sample_record_count += source.size()
-	return {
-		"start": start,
-		"count": source.size(),
-		"end": _staging_profile_sample_record_count,
-	}
+	return _range_dict(start, source.size())
 
 
 ## 构建带 profile_id/profile_index 标识的 range 条目（start/count/end 来自 range_data）。

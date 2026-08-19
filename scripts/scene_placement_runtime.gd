@@ -2126,6 +2126,29 @@ func run_autoobject_prefilter(
 		"ok": false,
 		"reason": "scene_voxel_tile_store_unavailable",
 	}
+	# ── 读取场与整链 Phase 0 同口径（run_placement_pipeline 的 BlendSV 分支）────────────
+	# 有笔刷内容时，把调用方注入的 committed 常驻读对换成 BlendSV（SV+Brush）临时对再进
+	# prefilter。此前只有整链会合成：BrushSV 对 Place 的粗筛可见、对 Anchors/Score 的粗筛
+	# 不可见——粗筛淘汰暂停 + 资产数 ≤ TOPK 期间两边结果恰好一致，但恢复淘汰或资产超
+	# TOPK 时这就是「分开跑与整合跑评分分叉」的现成入口。合成失败与整链同判（硬失败）：
+	# 继续跑等于让 Anchors/Score 静默漏掉笔刷内容。
+	# 无常驻读对（CPU 数组窄测试路径）不合成，维持原语义。
+	var raw_read_complexity = sv.get("resident_complexity_field_read_rid", RID())
+	var raw_read_collision = sv.get("resident_collision_field_read_rid", RID())
+	var base_complexity_rid: RID = raw_read_complexity if raw_read_complexity is RID else RID()
+	var base_collision_rid: RID = raw_read_collision if raw_read_collision is RID else RID()
+	var blend_sv_active := false
+	if has_brush_sv_content() and base_complexity_rid.is_valid() and base_collision_rid.is_valid():
+		var blend := compose_blend_sv_fields(base_complexity_rid, base_collision_rid)
+		if blend.is_empty():
+			push_error("ScenePlacementActor.run_autoobject_prefilter: BrushSV 有内容但 BlendSV 合成失败（brush_revision=%d, brush_voxel_count=%d）——继续跑等于让 Anchors/Score 静默漏掉笔刷内容。" % [
+				_brush_sv_revision, _brush_sv_voxel_count()])
+			assert(false, "ScenePlacementActor.run_autoobject_prefilter: blend sv compose failed")
+			return _pipeline_error("blend_sv_compose_failed")
+		sv = sv.duplicate()
+		sv["resident_complexity_field_read_rid"] = blend.get("complexity_field_buffer", RID())
+		sv["resident_collision_field_read_rid"] = blend.get("collision_field_buffer", RID())
+		blend_sv_active = true
 	var result := prefilter.run_probe_prefilter(
 		sv,
 		autoobjects,
@@ -2133,6 +2156,18 @@ func run_autoobject_prefilter(
 		_runtime_profile_container,
 		target_read_buffers.duplicate()
 	)
+	if blend_sv_active:
+		# 项目惯例：BlendSV 的 release 恒在一次设备 stall 之后（compose 的 _gpu_dispatch_and_sync、
+		# feedback 的 buffer_get_data、整链里 VPG 的结果回读，皆同）。prefilter 的三段 dispatch
+		# 全部 sync=false（compute list 只录不提交），成功返回时 score pass 还没消费完 BlendSV——
+		# 回读 4 字节 anchor_count 当屏障（buffer_get_data 自带 flush+stall，
+		# read_resident_anchor_count 同一机制）再释放。失败路径全部发生在 dispatch begin 失败
+		# 或分配失败处（无在途消费），直接释放。
+		if bool(result.get("ok", false)):
+			var count_rid: RID = (result.get("anchor_candidate_handoff", {}) as Dictionary).get("anchor_count_buffer_rid", RID())
+			if count_rid.is_valid():
+				_rd.buffer_get_data(count_rid, 0, 4)
+		release_blend_sv_fields()
 	if bool(result.get("ok", false)) and _tile_store != null:
 		result["dirty_finalize_ok"] = _tile_store.finalize_consumed_dirty_tiles()
 	result["dirty_worklist_handoff"] = {
@@ -2240,15 +2275,11 @@ func run_placement_pipeline(
 	# 无 committer 时保留 CPU 数组接口（调用方自带 SV 场，见 scene-placement-actor.md）。
 	if _sv_committer != null and not bool(resident_field_handoff.get("ok", false)):
 		push_error("ScenePlacementActor: committer present but resident complexity/collision field handoff unavailable: %s" % str(resident_field_handoff.get("reason", "unknown")))
-		_last_pipeline_result = {
-			"ok": false,
+		_last_pipeline_result = _pipeline_failure({
 			"phase": "resident_complexity_field_handoff",
 			"resident_complexity_field_handoff": resident_field_handoff,
 			"scene_voxel_tile_resident_field_handoff": resident_field_handoff,
-			"profile_probe_pack": {},
-			"mesh_description": get_mesh_description_gpu_buffer_summary(),
-			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}),
-		}
+		}, get_mesh_description_gpu_buffer_summary(), {})
 		return _last_pipeline_result
 
 	# 读取场（prefilter / target prep / 3D score 采样）：有 brush 内容时为 BlendSV 临时对，
@@ -2264,16 +2295,12 @@ func run_placement_pipeline(
 			push_error("ScenePlacementActor.run_placement_pipeline: BrushSV 有内容但 BlendSV 合成失败（brush_revision=%d, brush_voxel_count=%d）——继续跑等于静默丢掉笔刷内容。" % [
 				_brush_sv_revision, _brush_sv_voxel_count()])
 			assert(false, "ScenePlacementActor.run_placement_pipeline: blend sv compose failed")
-			_last_pipeline_result = {
-				"ok": false,
+			_last_pipeline_result = _pipeline_failure({
 				"phase": "blend_sv_compose",
 				"reason": "blend_sv_compose_failed",
 				"resident_complexity_field_handoff": resident_field_handoff,
 				"scene_voxel_tile_resident_field_handoff": resident_field_handoff,
-				"profile_probe_pack": {},
-				"mesh_description": get_mesh_description_gpu_buffer_summary(),
-				"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}),
-			}
+			}, get_mesh_description_gpu_buffer_summary(), {})
 			return _last_pipeline_result
 		field_read_complexity_rid = blend.get("complexity_field_buffer", RID())
 		field_read_collision_rid = blend.get("collision_field_buffer", RID())
@@ -2303,14 +2330,10 @@ func run_placement_pipeline(
 	resident_pipeline_phases_ms["target_prepare"] = float(Time.get_ticks_usec() - phase_t0_usec) / 1000.0
 	phase_t0_usec = Time.get_ticks_usec()
 	if not bool(target_buffers.get("ok", false)):
-		_last_pipeline_result = {
-			"ok": false,
+		_last_pipeline_result = _pipeline_failure({
 			"phase": "target_read_buffers",
 			"target_read_buffers": target_buffers,
-			"profile_probe_pack": {},
-			"mesh_description": get_mesh_description_gpu_buffer_summary(),
-			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}),
-		}
+		}, get_mesh_description_gpu_buffer_summary(), {})
 		if blend_sv_active:
 			release_blend_sv_fields()
 		return _last_pipeline_result
@@ -2342,29 +2365,21 @@ func run_placement_pipeline(
 	phase_t0_usec = Time.get_ticks_usec()
 
 	if not bool(prefilter_result.get("ok", false)):
-		_last_pipeline_result = {
-			"ok": false,
+		_last_pipeline_result = _pipeline_failure({
 			"phase": "prefilter",
 			"prefilter_result": prefilter_result,
-			"profile_probe_pack": prefilter_result.get("profile_probe_pack", {}),
-			"mesh_description": mesh_description_summary,
-			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}),
-		}
+		}, mesh_description_summary, prefilter_result.get("profile_probe_pack", {}))
 		if blend_sv_active:
 			release_blend_sv_fields()
 		return _last_pipeline_result
 
 	var anchor_candidate_handoff: Dictionary = prefilter_result.get("anchor_candidate_handoff", {})
 	if not _anchor_candidate_handoff_ready(anchor_candidate_handoff, prefilter):
-		_last_pipeline_result = {
-			"ok": false,
+		_last_pipeline_result = _pipeline_failure({
 			"phase": "anchor_candidate_handoff",
 			"prefilter_result": prefilter_result,
 			"anchor_candidate_handoff": _anchor_candidate_handoff_summary(anchor_candidate_handoff, false),
-			"profile_probe_pack": prefilter_result.get("profile_probe_pack", {}),
-			"mesh_description": mesh_description_summary,
-			"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}),
-		}
+		}, mesh_description_summary, prefilter_result.get("profile_probe_pack", {}))
 		if blend_sv_active:
 			release_blend_sv_fields()
 		return _last_pipeline_result
@@ -2385,17 +2400,13 @@ func run_placement_pipeline(
 			push_error("ScenePlacementActor.run_placement_pipeline: 无常驻场且 CPU 场尺寸不符（expected=%d, complexity_field=%d, collision_field=%d, grid_size=%s）——补零等于在空场上放置。" % [
 				sv_voxel_count, cpu_complexity_field.size(), cpu_collision_field.size(), str(sv_grid_size)])
 			assert(false, "ScenePlacementActor.run_placement_pipeline: cpu field size mismatch")
-			_last_pipeline_result = {
-				"ok": false,
+			_last_pipeline_result = _pipeline_failure({
 				"phase": "cpu_field_input",
 				"reason": "cpu_field_size_mismatch",
 				"expected_voxel_count": sv_voxel_count,
 				"complexity_field_size": cpu_complexity_field.size(),
 				"collision_field_size": cpu_collision_field.size(),
-				"profile_probe_pack": prefilter_result.get("profile_probe_pack", {}),
-				"mesh_description": mesh_description_summary,
-				"accepted_placement_writeback_summary": _accepted_placement_writeback_summary_from_placement({}),
-			}
+			}, mesh_description_summary, prefilter_result.get("profile_probe_pack", {}))
 			return _last_pipeline_result
 		complexity_field = cpu_complexity_field
 		collision_field = cpu_collision_field
@@ -2757,6 +2768,26 @@ static func _make_lightweight_autoobject(descriptor: AssetDescriptor, mesh_ref: 
 	obj.set_meta("profile_id", profile_id)
 	obj.set_meta("asset_index", asset_index)
 	return obj
+
+
+## run_placement_pipeline **中途**失败时的结果字典工厂（入口前的失败走 _pipeline_error）。
+## 形状恒为「`ok:false` 打头 + 分支自带的 `fields` + 固定三键收尾」，六个失败分支此前把这
+## 三个收尾键各手抄一遍，其中 accepted_placement_writeback_summary 六处完全同值。
+##
+## ⚠ 刻意**不**给 `fields` 里的字段兜任何默认值，也不补齐成「完整键集」：现状是 `reason`
+## 只出现在 blend_sv_compose / cpu_field_input 两个分支上，`prefilter_result` 只出现在
+## prefilter 之后的分支上。补齐会把「缺键」变成「有键且为默认值」——消费方今天全是
+## `.get(key, 默认值)`（已全仓 grep 确认无 has() / `in` 判分支），但一旦有人改用 has()
+## 判分支，补齐过的版本就会静默换行为。键的集合与插入顺序与手写版逐字一致。
+##
+## `fields` 不覆盖 `ok`：merge 默认不覆盖已有键，`ok:false` 在这里是权威的。
+static func _pipeline_failure(fields: Dictionary, mesh_description: Dictionary, profile_probe_pack: Dictionary) -> Dictionary:
+	var result := {"ok": false}
+	result.merge(fields)
+	result["profile_probe_pack"] = profile_probe_pack
+	result["mesh_description"] = mesh_description
+	result["accepted_placement_writeback_summary"] = _accepted_placement_writeback_summary_from_placement({})
+	return result
 
 
 static func _pipeline_error(reason: String) -> Dictionary:

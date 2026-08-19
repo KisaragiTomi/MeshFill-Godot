@@ -30,7 +30,7 @@
 | --- | --- | --- |
 | Shared semantic fields | `color`、`complexity`、`collision`、`get_color()`、`get_complexity()`、`get_collision()` | 写入 shared fields、`ISWS`、source voxel 和 committed `SceneVoxel` 的默认语义来源。 |
 | Placement shape | `collision`、`VoxelGeneral.normalize_collision_samples()`、`pivot_variants`、`get_pivot_variants()` | placement collision 采样、anchor/pivot variants 和 profile collision records。 |
-| Placement spacing | `spacing_radius_scale` | 逐资产互斥半径乘数。`ScenePlacementActor._build_placement_asset_defs()` 算 `spacing_radius_world = mesh AABB 的 XZ 半长 × 本乘数`，reduce（`shaders/invalidate_anchor_conflicts.glsl`）按 `dist < max(min_distance_voxels, (r_a + r_b) * asset_spacing_factor)` 淘汰。Asset Overview 面板的「exclusion radius ×」写它，同一个值也是那里互斥球的半径。 |
+| Placement spacing | `spacing_radius_scale` | 逐资产互斥半径乘数。`ScenePlacementActor._build_placement_asset_defs()` 算 `spacing_radius_world = mesh AABB 的 XZ 半长 × 本乘数`，reduce（`shaders/arbitrate_anchor_conflicts.glsl`）按 `dist < max(min_distance_voxels, (r_a + r_b) * asset_spacing_factor)` 淘汰得分较低一端。Asset Overview 面板的「exclusion radius ×」写它，同一个值也是那里互斥球的半径。 |
 | Semantic probes | `semantic_probe_generator`、`semantic_probe_density`、`context_sensing_radius`、`get_semantic_probes()` | prefilter 对 `anchor x asset` 打分的 descriptor-backed probes。 |
 | Asset identity / grouping | `asset_id`、`object_type` | asset/debug/profile lookup 和粗分组；不表达新的资产语义层级。 |
 | Profile fallback | `voxel_profile`、`from_profile()` | 导入或旧 preset 的 shared-field fallback；不覆盖显式 descriptor 字段。 |

@@ -1,5 +1,8 @@
 """
-SPA UI 点击测试 — 按照 doc/ui-click-test-plan.md 的可自动化入口执行
+SPA UI 点击测试 — 经编辑器桥（127.0.0.1:6800）驱动 SPA 的可自动化点击入口。
+
+原先的计划文档 doc/ui-click-test-plan.md 已随该批计划一并删除且不再重建
+（见 doc/README.md「Plans」小节），本脚本自身即入口清单。
 """
 import socket, json, re, time, sys
 

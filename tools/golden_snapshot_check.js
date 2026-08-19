@@ -18,7 +18,7 @@ const net = require('net');
 const fs = require('fs');
 const path = require('path');
 
-const SCENE_PATH = 'res://demos/placement-score-3d/placement-score-3d.tscn';
+const SCENE_PATH = 'res://scenes/placement-score-3d/placement-score-3d.tscn';
 const SCENE_ROOT = 'PlacementScore3DScene';
 const RUNNER_NODE = 'SPA/Volumes/VolumeScore';
 const RUNNER_SCRIPT = 'volume_score_demo.gd';

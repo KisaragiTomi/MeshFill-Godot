@@ -4,7 +4,7 @@
 
 committed `SceneVoxel` 采用 **stamp-only commit**：常驻 complexity/collision field buffer 对是持久 stamp 写入目标，VPG 的 GPU state-chain stamp（`stamp_asset_voxels.glsl`，mixed-asset）在 placement 期间原位提交。CPU 入口盖章链（`apply_instance_stamp_write_spec()` 及其 pending 散射半边）已于 2026-08-10 整链删除（全仓零调用核实）；`scatter_sv_field_records.glsl` 的现役消费者是 SPA 笔刷层的 `write_brush_sv_records()` 散射。不存在 per-voxel source-candidate 裁决/blend 提交管线。`BrushSV`（场景笔刷层）常驻挂在 SPA 上、不进提交；`BlendSV` 是 committed SV + `BrushSV` 的按需合成读取产物（`compose_blend_sv_fields.glsl`），供 3D score 物理采样与 TargetSV 对比使用，用完即删。
 
-![SceneVoxel / SV source commit and resident GPU field flow](../demos/core-scene-voxel-field-system/diagrams/scene-voxel-flow.svg)
+![SceneVoxel / SV source commit and resident GPU field flow](diagrams/scene-voxel-flow.svg)
 
 ## 本文范围
 
@@ -70,7 +70,7 @@ AssetDescriptor / AutoVoxelProfile
 | 侧 | 当前职责 | 不拥有 |
 | --- | --- | --- |
 | CPU / GDScript | descriptor / `ISWS` 归一化、pending field 散射记录收集、`SceneVoxelTile` command staging、`commit_scene_voxels()` 编排、debug buffer readback 解码和 persisted target decode。 | GPU object pool hot state、field 数值写入（stamp/散射在 GPU 上完成）、shader 内临时 same-batch duplicate buffers。 |
-| GPU compute | `stamp_asset_voxels.glsl` mixed-asset state-chain stamp（读 BlendSV 工作场时双写 committed SV）、`scatter_sv_field_records.glsl` CPU 入口记录散射、`compose_blend_sv_fields.glsl` BlendSV 合成、`score_blendsv_feedback.glsl` 结果级对比、`score_anchor_asset_residual.glsl` residual-gain 细筛（probe prefilter 直读常驻 rgba8 场，原 `pack_prefilter_field_pair.glsl` 恒等往返转换已删），以及 init/map → atomic invalidate → compact 三阶段 Reduce。 | `SceneVoxelTile` source of truth、TargetSV source write、GDScript staging/debug Dictionary 投影。 |
+| GPU compute | `stamp_asset_voxels.glsl` mixed-asset state-chain stamp（读 BlendSV 工作场时双写 committed SV）、`scatter_sv_field_records.glsl` CPU 入口记录散射、`compose_blend_sv_fields.glsl` BlendSV 合成、`score_blendsv_feedback.glsl` 结果级对比、`score_anchor_asset_residual.glsl` residual-gain 细筛（probe prefilter 直读常驻 rgba8 场，原 `pack_prefilter_field_pair.glsl` 恒等往返转换已删），以及 init → arbitrate（迭代贪心得分 NMS，×预算轮）→ compact 三阶段 Reduce。 | `SceneVoxelTile` source of truth、TargetSV source write、GDScript staging/debug Dictionary 投影。 |
 | Boundary buffer | `complexity_field` / `collision_field`、`target_completeness` / `target_color`、resident anchor candidate handoff buffers、placement result buffers。 | `collision_field` 不是第二套 collision source of truth；它由 committed `SceneVoxel.collision` 与 terrain base collision 发布。 |
 
 GPU pass 读取 `BlendSV` 读取场生成候选；被接受的 placement 由 stamp pass 原位提交进 committed SV 常驻 field（stamp 即提交）。
@@ -280,4 +280,4 @@ SV resident state 字段含义维护在 `SceneVoxelCommitter._rebuild_sv()` 的 
 
 | 场景 | 说明 | Godot 场景 |
 | --- | --- | --- |
-| [Placement Score 3D](placement-score-3d.md) | 仓库中唯一仍在的 placement demo 场景，覆盖本文的 GPU 常驻路径 | [`placement-score-3d.tscn`](../demos/placement-score-3d/placement-score-3d.tscn) |
+| [Placement Score 3D](placement-score-3d.md) | 仓库中唯一仍在的 placement demo 场景，覆盖本文的 GPU 常驻路径 | [`placement-score-3d.tscn`](../scenes/placement-score-3d/placement-score-3d.tscn) |

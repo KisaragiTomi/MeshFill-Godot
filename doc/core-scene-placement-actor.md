@@ -8,7 +8,7 @@ GPU AutoObject 并改写 committed SV。
 源文档：
 - [`scene-placement-actor.md`](scene-placement-actor.md)（`res://doc/scene-placement-actor.md`）— SPA 编排契约
 - [`auto-object-gpu-runtime-architecture.md`](auto-object-gpu-runtime-architecture.md)（`res://doc/auto-object-gpu-runtime-architecture.md`）— GPU Runtime 架构
-- [`../placement-score-3d/placement-score-3d.md`](placement-score-3d.md) — volume-score provider（Anchors/Score/Place 语义本体）
+- [`placement-score-3d.md`](placement-score-3d.md)（`res://doc/placement-score-3d.md`）— volume-score provider（Anchors/Score/Place 语义本体）
 
 > **2026-08-07：这套检查已删除。** `spa_checks.gd`（API 合约）、`spa_pipeline_checks.gd`
 > （E2E 真实链）与它们唯一的在仓入口 `tools/test_spa_scene_resident.gd` 一并移除 ——
@@ -21,7 +21,7 @@ GPU AutoObject 并改写 committed SV。
 
 > ⚠ **它们当前没有场景侧桥入口。** 原先的 `run_all_tests()` /
 > `run_resident_placement_writeback_check()` / `run_stamp_only_commit_check()` 住在
-> `SPAInteractionHost` 上，由 `res://demos/placement-score-3d/placement-score-3d.tscn`
+> `SPAInteractionHost` 上，由 `res://scenes/placement-score-3d/placement-score-3d.tscn`
 > 的 `SPA/Interaction/DemoHost` 节点承载。该节点先被移除：它在 `_editor_init` 里**无条件**
 > 造第二份 `PlacementStageEnv`，而两份 env 挂同一个 SPA 会互相释放对方的常驻 target 缓冲
 > （`ensure_target_ready()` 重建时释放上一份），谁后跑谁把对方手里的 RID 变成野指针。
@@ -80,9 +80,13 @@ y=-13.7 埋地样本挡回 y∈[0.9,5.2]）已按"地下一律不打分"策略�
 跨批由上一批盖章后的 collision/clearance 使后续 Fine 候选失效。
 
 Reduce 固定为三阶段：每个 Anchor 先选 gain 最高的有效 Fine 候选并建立 XZ 直接索引；所有 Anchor
-按稳定 random 优先级用 `atomicAnd` 单向清除冲突 loser；barrier 后按 Anchor ID 应用 per-asset quota
-与容量并紧凑写出。它不排序、不建立关系表、不做多轮补空，因此结果可复现但不保证 maximal，
-`spawned < capacity` 也不表示空间已被理论上放满。单批耗时仍打印
+经迭代式贪心得分 NMS 仲裁同轮冲突（得分降序、同分 anchor id 升序，结果与串行贪心一致；GPU 自检
+收敛并自清零间接派发参数，宿主盲目入队 `reduce_nms_iter_budget` 轮）；然后按 Anchor ID 紧凑写出（只剩
+结果缓冲容量这一道界；per-asset quota 已于 2026-08-18 整条退役，reduce 不再有资产维度，
+每个候选就是「一个范围 + 一个得分」）。它不排序、不建立关系表、不做多轮补空，同轮内
+保证"高分优先存活"。⚠ 但**结果并不逐次可复现**：优先级的第二关键字是 anchor id，
+而它来自 `collect_sv_anchors.glsl` 的无序 `atomicAdd`，同分之间选谁是任意的（同输入
+重跑实测总数差 ~0.7%）。但 `spawned < capacity` 仍不表示空间已被理论上放满。单批耗时仍打印
 `[VolumeScore] Place batch k/N: spawned=… (… ms)`。
 放置累积上限 = SPA 的 `@export var autoobject_capacity`（默认 `65536`，`scripts/scene_placement_actor.gd`）；仓库中**没有** `PLACEMENT_AUTOOBJECT_CAPACITY` / `PLACE_AUTOOBJECT_CAPACITY` 这样的常量；
 大批量对象态回读走 `GPUAutoObjectRuntime.readback_object_states_bulk`（每缓冲整读一次，
@@ -133,12 +137,14 @@ target/prefilter 缓存失效——放置后再点 `Score`，会在**新场**上
 > **选择模式已整体退役**：状态机（`set_selection_mode()` / `get_selection_mode()` / Shift+0..5 热键）
 > 于 2026-08-07 删除，模式号（`MODE_*` / `SelectionMode` 枚举）于 2026-08-10 删除，域标识只用
 > `SELECTION_DOMAIN_*` 字符串。`.tscn` 里没有 `selection_mode` 属性可设。
-> 图 `spa_selection_mode_transition.svg` 画的是那套已删除的状态机，**已不再引用**，
-> 保留仅作历史记录。删除注记见 `scripts/scene_placement_actor.gd` 与 `scripts/spa_selection_host.gd`。
+> 图 [`diagrams/spa_selection_mode_transition.svg`](diagrams/spa_selection_mode_transition.svg)
+> 画的是那套已删除的状态机，**正文不再内嵌它**（只在 [`README.md`](README.md) 的 Diagrams
+> 表里带 ⚠ 标注登记），保留仅作历史记录。删除注记见 `scripts/scene_placement_actor.gd`
+> 与 `scripts/spa_selection_host.gd`。
 
 ### 点选一个 voxel 的完整链路
 
-![GPU 体素拾取全链路](../demos/core-SPA-scene-placement-actor/diagrams/voxel-pick-flow.svg)
+![GPU 体素拾取全链路](diagrams/voxel-pick-flow.svg)
 
 > ⚠ **上图是历史产物**：它画的是已于 2026-08-10 删除的 GPU 射线求交路径
 > （`VoxelPickGPU` + `shaders/pick_scene_voxel.glsl`，按 `content_key` / `terrain_key`

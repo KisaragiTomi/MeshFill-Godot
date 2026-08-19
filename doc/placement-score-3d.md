@@ -7,8 +7,8 @@ asset 的 Fine `ProfileSample` 集，对 CurrentSV 与 TargetSV 求五维 residu
 
 ## 场景与上游文档
 
-场景：`res://demos/placement-score-3d/placement-score-3d.tscn`（脚本
-`demos/placement-score-3d/volume_score_demo.gd`）。这是仓库中仅存的 placement demo 场景，
+场景：`res://scenes/placement-score-3d/placement-score-3d.tscn`（脚本
+`scenes/placement-score-3d/volume_score_demo.gd`）。这是仓库中仅存的 placement demo 场景，
 下列 core 文档的 `## 测试场景` 段都指向它：
 
 - `res://doc/auto-object-gpu-runtime-architecture.md`
@@ -25,7 +25,7 @@ asset 的 Fine `ProfileSample` 集，对 CurrentSV 与 TargetSV 求五维 residu
   `(anchor, top-K asset 槽)` 候选对，16 线程（`local_size_x = 16`）分摊 `pivot × yaw` 组合（每原点扫
   `rotation_slots`，默认 `12` 个 yaw），`ProfileSample` 分批流过 shared memory 并在同一次
   遍历里累计五维 residual gain。三阶段 Reduce 为每个 Anchor 选出 gain 最高的有效 Fine 候选，
-  按稳定 random 优先级原子清除冲突 loser，再紧凑写出；`shaders/stamp_asset_voxels.glsl` 按记录里的 profile/pivot/yaw 做 mixed-asset 盖章
+  经迭代贪心得分 NMS 仲裁同轮冲突（高分优先存活，与串行贪心等价），再紧凑写出；`shaders/stamp_asset_voxels.glsl` 按记录里的 profile/pivot/yaw 做 mixed-asset 盖章
   （写值与 compose 是共享的 `@@GEN ad_voxel_compose` 规则，评分预测 == 盖章结果）；旋转经
   record→`results_to_world_gpu`→实例 yaw 以同一 Godot `Basis(UP, θ)` 约定贯通。生产路径
   （SPA → `run_multi_asset`）一条 GPU 链跑完全部 asset。
@@ -35,7 +35,7 @@ asset 的 Fine `ProfileSample` 集，对 CurrentSV 与 TargetSV 求五维 residu
   `scripts/object_volume_score_gpu.gd`（`score_object_subtile.glsl` +
   `reduce_object_rotation_scores.glsl`）及其 **CPU 预烘 per-rotation sample records** 方案亦已
   **删除**——体素记录烘一次（容器注册期）、shader 内旋转采样。2.5D heightfield 路径亦已废弃移除。
-- **Demo provider（真实链版，批 3b）**：`demos/placement-score-3d/volume_score_demo.gd` 是一个
+- **Demo provider（真实链版，批 3b）**：`scenes/placement-score-3d/volume_score_demo.gd` 是一个
   volume-score provider，作为真实 `ScenePlacementActor` 的常驻 Volume 子节点
   `register_volume_provider` 注册，响应 `SPA` Inspector 的「Anchors」「Score」「Place」按钮与
   Anchor 模式点选。SPA 在 ready 期间一次构建真实上游；`PlacementStageEnv`
@@ -66,8 +66,8 @@ asset 的 Fine `ProfileSample` 集，对 CurrentSV 与 TargetSV 求五维 residu
     （**改写 committed SV**），随后回读活对象态、按各 descriptor 真实 mesh 实例化渲染实际放置结果
     （注册到 `GPU Objects` 显示组，与 Anchor 组的评分预览分离，可按模式独立观察）。门限
     （`rotation_slots` / `min_target_interest` / `min_prefilter_score`）与 Anchors/Score 同导出、评分
-    shader 同源。Score 展示每个 Anchor 的 Fine 胜者；Place 再按稳定 random 优先级清除 Anchor 间
-    冲突，并按 quota / `result_capacity` 紧凑写出，且与 Anchors/Score 一样走**单次全图
+    shader 同源。Score 展示每个 Anchor 的 Fine 胜者；Place 再经迭代贪心得分 NMS 清除 Anchor 间
+    冲突（高分优先存活），并按 quota / `result_capacity` 紧凑写出，且与 Anchors/Score 一样走**单次全图
     prefilter**（`dirty_tile_ids=[]`）；超出 `131072` 时按同一不变量错误终止。
     Place 后 committed SV 已变，再 Score 在新场上重评。整条流程的端到端测试场景见
     [`core-scene-placement-actor.md`](core-scene-placement-actor.md)。
@@ -141,9 +141,12 @@ anchor_candidate_handoff (anchor / anchor_count / topk buffer) + 常驻 Profile 
          记录 offset 减 pivot、按 yaw 旋转并 voxel-snap（与 stamp 同一映射，NO CPU 预烘）
          -> 读 CurrentSV / TargetSV 同一体素 -> 一次遍历累计五维 loss_before / loss_after
        取最优 pivot x yaw，写 fine-candidate 记录（可选写 per-voxel debug buffer）
-  -> init_anchor_atomic_reduce：每个 Anchor 选唯一 Fine 候选并建立 XZ 直接索引
-  -> invalidate_anchor_conflicts：扫描冲突并 atomicAnd 清除稳定 random 优先级较低者
-  -> compact_anchor_atomic_reduce：barrier 后按 Anchor ID 应用 quota/capacity 并写出
+  -> init_anchor_atomic_reduce：每个 Anchor 选唯一 Fine 候选、建立 XZ 直接索引，
+       过格点门与跨批 clearance 后播种三态 NMS 状态机并按活跃 anchor 数写间接派发参数
+  -> arbitrate_anchor_conflicts：迭代式贪心得分 NMS（得分降序、同分 anchor id 升序），
+       每轮由最后完成的工作组做 GPU 收敛检查，收敛后自清零间接参数、剩余轮次零工作组空转；
+       结果与"按得分逐个取、淘汰冲突者"的串行贪心完全一致
+  -> compact_anchor_atomic_reduce：只接受 SELECTED 态，按 Anchor ID 应用 quota/capacity 并写出
   -> init_stamp_bounds -> stamp_asset_voxels.glsl 生产盖章
   -> demo：debug_read_fine_candidates 回读候选池得每锚点 x 每资产 {score, valid, yaw_slot}
 ```

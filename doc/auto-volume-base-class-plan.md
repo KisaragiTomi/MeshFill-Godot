@@ -16,8 +16,8 @@
 > ⚠ **该上游文档已删除，不重建**（随其描述的工作一并退役）。文中所有「《点选统一》§x.y」因此是
 > **悬空的历史指针**：它们记录某条决定当初出自哪里，但那份原文已不可读，别去 `doc/` 里找。
 > 已落地的部分以代码为准——ID 拾取机制看 `scripts/utils/pick_id_pass.gd` 与
-> `scripts/pickable_domain.gd` 的头注释，逐域现状看
-> [`volume-display-domain-audit.md`](../volume-display-domain-audit.md)。
+> `scripts/pickable_domain.gd` 的头注释；逐域现状原本记在
+> `volume-display-domain-audit.md`，该文档已删除，现以各域的 `resolve_pick()` 实现为准。
 
 ## 实施进度（2026-08-07）
 
@@ -135,7 +135,7 @@ N 个 Anchor 合并为一次 dispatch，若 Anchor 持有管线所有权，则�
 - **胜出物体网格**（资产真实 mesh）：放置后，显示该锚点最终放置的物体
 - **profile 盒**（`BoxMesh`）：Ctrl+H 观察态，显示锚点关联的体素轮廓
 
-三个 drawable 归 `demos/placement-score-3d/volume_score_demo.gd`，挂在借用节点下的自建显示根
+三个 drawable 归 `scenes/placement-score-3d/volume_score_demo.gd`，挂在借用节点下的自建显示根
 `SPA/Volumes/VolumeScore/VolumeScoreDisplay`（`volume_score_demo.gd:3293`），Buffer 同为 `anchor_index`。
 
 ### 1.4 `BrushSV` 是纯 GPU 卷，与插件输入严格分离
@@ -440,7 +440,7 @@ func get_instance_list() -> PackedInt32Array:
 
 ## 3. 类型结构
 
-![AutoVolume 类关系与 Buffer 归属](../demos/core-SPA-scene-placement-actor/diagrams/autovolume-class-and-buffer-ownership.svg)
+![AutoVolume 类关系与 Buffer 归属](diagrams/autovolume-class-and-buffer-ownership.svg)
 
 图里三条泳道分别是**基类层 / 卷节点 / Buffer 事实源持有者**。实线 = 继承，虚线 = 转发 RID。
 ⚠ 图要连着两条一起读：① 卷节点是转发者不是所有者（§3 末尾）；

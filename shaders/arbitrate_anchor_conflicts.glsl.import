@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://svw3gq1ki2uk"
+path="res://.godot/imported/arbitrate_anchor_conflicts.glsl-62de4572c7bc2f9cb452edda5518310c.res"
+
+[deps]
+
+source_file="res://shaders/arbitrate_anchor_conflicts.glsl"
+dest_files=["res://.godot/imported/arbitrate_anchor_conflicts.glsl-62de4572c7bc2f9cb452edda5518310c.res"]
+
+[params]
+

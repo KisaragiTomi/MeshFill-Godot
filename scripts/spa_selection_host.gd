@@ -1947,6 +1947,30 @@ func _pick_id_select_at_screen_position(cam: Camera3D, screen_pos: Vector2) -> D
 	return out
 
 
+## 记录建好之后的**统一落地口**：打 `pick_backend` → 写选中态 → 拼命中返回。
+## 这三步就是 `_commit_volume_score_anchor` 注释里那句「与其余五域完全同构」的那条链——
+## 此前 autoobject / targetsv / sv / svtile / brush 五个分支各手写一遍（同形状、
+## 逐字重复），漏掉其中任一步都只表现为「点得中但没选中」，无报错。
+##
+## ⚠ 键名固定：`status` / `payload_index` 由 `_pick_id_select_at_screen_position` 读进
+## `_last_pick_id_click`（`tools/pick_id_click_types.js` 断言 `pick_id_click.status`、
+## `selected.payload_index`），`result` 由 `_select_current_mode_at_screen_position` 读。
+## `result.geometry` 沿用原五处的 `str(record.get("geometry", …))` 口径：五个记录构建函数
+## 写进去的正是各自域的几何常量（autoobject 分支此前直接写字面量，同值）。
+func _pick_id_commit_record(domain: String, payload_index: int, record: Dictionary) -> Dictionary:
+	record["pick_backend"] = "pick_id"
+	set_active_selection(record)
+	return {
+		"status": "hit", "payload_index": payload_index,
+		"result": {
+			"ok": true,
+			"domain": domain,
+			"geometry": str(record.get("geometry", SELECTION_GEOMETRY_VOXEL)),
+			"record": record,
+		},
+	}
+
+
 ## 将 ID 命中提交为选择记录。
 func _pick_id_commit_hit(hit: Dictionary) -> Dictionary:
 	var domain := str(hit.get("domain", ""))
@@ -1970,17 +1994,7 @@ func _pick_id_commit_hit(hit: Dictionary) -> Dictionary:
 			var record := _make_autoobject_selection_record(object_index, 0.0)
 			if record.is_empty():
 				return {"status": "unavailable", "reason": "autoobject_record_failed", "payload_index": object_index}
-			record["pick_backend"] = "pick_id"
-			set_active_selection(record)
-			return {
-				"status": "hit", "payload_index": object_index,
-				"result": {
-					"ok": true,
-					"domain": SELECTION_DOMAIN_AUTOOBJECT,
-					"geometry": SELECTION_GEOMETRY_AUTOOBJECT,
-					"record": record,
-				},
-			}
+			return _pick_id_commit_record(SELECTION_DOMAIN_AUTOOBJECT, object_index, record)
 		SELECTION_DOMAIN_ANCHOR:
 			# 载荷已统一为 element_index（= anchor_index，AnchorVolume 经 provider 解出，
 			# winner 档含视距剔除的压缩表）。三档共用同一条记录构建。
@@ -2002,17 +2016,7 @@ func _pick_id_commit_hit(hit: Dictionary) -> Dictionary:
 			if tsv_record.is_empty():
 				return {"status": "unavailable", "reason": "targetsv_record_failed",
 					"payload_index": element_index}
-			tsv_record["pick_backend"] = "pick_id"
-			set_active_selection(tsv_record)
-			return {
-				"status": "hit", "payload_index": element_index,
-				"result": {
-					"ok": true,
-					"domain": SELECTION_DOMAIN_TARGETSV,
-					"geometry": str(tsv_record.get("geometry", SELECTION_GEOMETRY_VOXEL)),
-					"record": tsv_record,
-				},
-			}
+			return _pick_id_commit_record(SELECTION_DOMAIN_TARGETSV, element_index, tsv_record)
 		SELECTION_DOMAIN_SV:
 			# 载荷只给 element_index（= 线性体素下标）；坐标问域自己的寻址口。
 			var sv_element := int(payload.get("element_index", -1))
@@ -2029,17 +2033,7 @@ func _pick_id_commit_hit(hit: Dictionary) -> Dictionary:
 			if sv_record.is_empty():
 				return {"status": "unavailable", "reason": "sv_record_failed",
 					"payload_index": sv_element}
-			sv_record["pick_backend"] = "pick_id"
-			set_active_selection(sv_record)
-			return {
-				"status": "hit", "payload_index": sv_element,
-				"result": {
-					"ok": true,
-					"domain": SELECTION_DOMAIN_SV,
-					"geometry": str(sv_record.get("geometry", SELECTION_GEOMETRY_VOXEL)),
-					"record": sv_record,
-				},
-			}
+			return _pick_id_commit_record(SELECTION_DOMAIN_SV, sv_element, sv_record)
 		SELECTION_DOMAIN_SVTILE:
 			# 载荷只给 element_index（= tile_index）；覆盖范围问域的 voxel_range_of()。
 			# ⚠ 瓦片域**没有**代表体素这回事（八面体是瓦片尺度的），记录构建按既有约定
@@ -2057,17 +2051,7 @@ func _pick_id_commit_hit(hit: Dictionary) -> Dictionary:
 			if svtile_record.is_empty():
 				return {"status": "unavailable", "reason": "svtile_record_failed",
 					"payload_index": svtile_index}
-			svtile_record["pick_backend"] = "pick_id"
-			set_active_selection(svtile_record)
-			return {
-				"status": "hit", "payload_index": svtile_index,
-				"result": {
-					"ok": true,
-					"domain": SELECTION_DOMAIN_SVTILE,
-					"geometry": str(svtile_record.get("geometry", SELECTION_GEOMETRY_VOXEL)),
-					"record": svtile_record,
-				},
-			}
+			return _pick_id_commit_record(SELECTION_DOMAIN_SVTILE, svtile_index, svtile_record)
 		SELECTION_DOMAIN_BRUSH:
 			# 载荷只给 element_index（= 线性体素下标）；坐标与绘制属性都问域自己要。
 			var brush_element := int(payload.get("element_index", -1))
@@ -2079,17 +2063,7 @@ func _pick_id_commit_hit(hit: Dictionary) -> Dictionary:
 			if brush_record.is_empty():
 				return {"status": "unavailable", "reason": "brush_record_failed",
 					"payload_index": brush_element}
-			brush_record["pick_backend"] = "pick_id"
-			set_active_selection(brush_record)
-			return {
-				"status": "hit", "payload_index": brush_element,
-				"result": {
-					"ok": true,
-					"domain": SELECTION_DOMAIN_BRUSH,
-					"geometry": str(brush_record.get("geometry", SELECTION_GEOMETRY_VOXEL)),
-					"record": brush_record,
-				},
-			}
+			return _pick_id_commit_record(SELECTION_DOMAIN_BRUSH, brush_element, brush_record)
 	# 新增接管域时必须同步本分派。
 	push_error("[SPA Selection] 已切换域 \"%s\" 没有记录构建分支 —— 该域点得中却建不出记录。" % domain)
 	assert(false, "SPASelectionHost: switched domain without a record branch")

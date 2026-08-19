@@ -97,8 +97,41 @@ func read_field_bytes(buffer_name: String) -> PackedByteArray:
 	return read_buffer_bytes(rid_of(buffer_name), 0, byte_size_of(buffer_name))
 
 
+## 一条 buffer 状态条目的**唯一形状定义**：报告里 8 块缓冲（6 个瓦片 + 2 块场对）
+## 共用这 9 键。此前 `SceneVoxelTileStore.get_scene_voxel_tile_gpu_buffer_status()`
+## 与本类的 `status_entries()` 各手写了一份同形状字面量，「两份必须逐字一致」全靠
+## 注释约束 —— 改一边漏一边的表现是报告里 6 项与 2 项的字段集悄悄分叉，且不报任何错。
+##
+## ⚠ 键名与**插入顺序**都是对外契约：`scene_placement_runtime.gd` 按
+## `logical_byte_size` / `upload_byte_size` / `initialization_source` 取值。改名前先全仓 grep。
+## ⚠ `logical_byte_size` 与 `byte_size` 是同一个事实的两个键名（历史消费方各用一个），
+## 不是两份数据 —— 收敛到这里后它们再也不可能对不上。
+static func make_buffer_status_entry(
+	rid: RID,
+	record_count: int,
+	stride_bytes: int,
+	byte_size: int,
+	upload_byte_size: int,
+	initialization_source: String,
+	content_hash: int,
+	reused_last_upload: bool
+) -> Dictionary:
+	return {
+		"rid_valid": rid.is_valid(),
+		"record_count": record_count,
+		"stride_bytes": stride_bytes,
+		"byte_size": byte_size,
+		"logical_byte_size": byte_size,
+		"upload_byte_size": upload_byte_size,
+		"initialization_source": initialization_source,
+		"content_hash": content_hash,
+		"reused_last_upload": reused_last_upload,
+	}
+
+
 ## 两块场的状态条目，**形状与 SceneVoxelTileStore 报告里的其余 6 项逐字一致**——
 ## store 直接把它 merge 进 `buffers`，报告的外观因此完全不变。
+## 那份「逐字一致」现在由 `make_buffer_status_entry()` 结构性保证，不再靠注释。
 ##
 ## ⚠ `reused_names` 必须由 store 传进来：「上一次上传有没有复用这块 buffer」是**上传时序**的
 ## 事实，事实源是 store 的 `_scene_voxel_tile_gpu_last_reused_buffers`（它按
@@ -112,19 +145,19 @@ func status_entries(reused_names: Array = []) -> Dictionary:
 		var entry: Dictionary = _fields.get(buffer_name, {})
 		var rid: RID = entry.get("rid", RID())
 		var byte_size := int(entry.get("byte_size", 0))
-		out[buffer_name] = {
-			"rid_valid": rid.is_valid(),
-			"record_count": int(entry.get("record_count", 0)),
-			"stride_bytes": int(entry.get("stride", 0)),
-			"byte_size": byte_size,
-			"logical_byte_size": byte_size,
-			"upload_byte_size": int(entry.get("upload_byte_size", 0)),
-			"initialization_source": str(entry.get("init_source", "unknown")),
-			"content_hash": int(entry.get("hash", 0)),
-			"reused_last_upload": reused_names.has(buffer_name),
-			"format": COMPLEXITY_FIELD_FORMAT if buffer_name == COMPLEXITY_FIELD_BUFFER else COLLISION_FIELD_FORMAT,
-			"upload_stride_bytes": COMPLEXITY_STRIDE_BYTES if buffer_name == COMPLEXITY_FIELD_BUFFER else COLLISION_FIELD_UPLOAD_STRIDE_BYTES,
-		}
+		var status_entry := make_buffer_status_entry(
+			rid,
+			int(entry.get("record_count", 0)),
+			int(entry.get("stride", 0)),
+			byte_size,
+			int(entry.get("upload_byte_size", 0)),
+			str(entry.get("init_source", "unknown")),
+			int(entry.get("hash", 0)),
+			reused_names.has(buffer_name))
+		# 场对**独有**的两键（瓦片那 6 项没有）；追加在共用 9 键之后，键序与合并前一致。
+		status_entry["format"] = COMPLEXITY_FIELD_FORMAT if buffer_name == COMPLEXITY_FIELD_BUFFER else COLLISION_FIELD_FORMAT
+		status_entry["upload_stride_bytes"] = COMPLEXITY_STRIDE_BYTES if buffer_name == COMPLEXITY_FIELD_BUFFER else COLLISION_FIELD_UPLOAD_STRIDE_BYTES
+		out[buffer_name] = status_entry
 	return out
 
 
@@ -240,18 +273,39 @@ func _create_from_bytes(buffer_name: String, bytes: PackedByteArray, record_coun
 	if not rid.is_valid():
 		_last_error = "storage_buffer_create_failed:%s" % buffer_name
 		return false
+	_register_field(
+		buffer_name, rid, logical_byte_size, upload_bytes.size(),
+		"cpu_upload", record_count, stride_bytes)
+	return true
+
+
+## 登记一块场的元数据。`_fields` 条目的 7 键形状**只在这里定义一次**。
+##
+## CPU 上传路径（`_create_from_bytes`）与 GPU 直写路径（`_create_collision_field`）
+## 此前各手写了一份同形状字面量；而读端有五处（`rid_of` / `byte_size_of` /
+## `_is_current` / `status_entries` / `release_fields`）都按这组键取值——
+## 两个写点漏改一个，表现是那块场的某项元数据恒为默认值，报告照常报「成功」。
+##
+## ⚠ `hash` 恒 0 是刻意的，不是忘了算：常驻场由 GPU stamp/scatter pass 就地改写，
+## 对上传载荷做哈希既昂贵又立刻过期。
+func _register_field(
+	buffer_name: String,
+	rid: RID,
+	byte_size: int,
+	upload_byte_size: int,
+	init_source: String,
+	record_count: int,
+	stride_bytes: int
+) -> void:
 	_fields[buffer_name] = {
 		"rid": rid,
-		"byte_size": logical_byte_size,
-		"upload_byte_size": upload_bytes.size(),
-		"init_source": "cpu_upload",
+		"byte_size": byte_size,
+		"upload_byte_size": upload_byte_size,
+		"init_source": init_source,
 		"record_count": record_count,
 		"stride": stride_bytes,
-		# ⚠ 常驻场由 GPU stamp/scatter pass 就地改写，对它们的上传载荷做哈希既昂贵
-		# 又立刻过期 —— 恒 0 是刻意的，不是忘了算。
 		"hash": 0,
 	}
-	return true
 
 
 ## 碰撞场的创建 + 地形基底播种。双路径：
@@ -271,15 +325,10 @@ func _create_collision_field(voxel_count: int, collision_byte_count: int) -> boo
 			and builder._write_terrain_base_collision_volume_buffer_gpu(
 				terrain_base_img, maxi(_grid_size().x, 1), maxi(_grid_size().y, 1), collision_rid)
 		if seeded_on_gpu:
-			_fields[COLLISION_FIELD_BUFFER] = {
-				"rid": collision_rid,
-				"byte_size": collision_byte_count,
-				"upload_byte_size": 0,
-				"init_source": "gpu_full_write",
-				"record_count": voxel_count,
-				"stride": COLLISION_STRIDE_BYTES,
-				"hash": 0,
-			}
+			# GPU 直写没有上传载荷，upload_byte_size 恒 0（与 CPU 路径的差别只在这两个实参）。
+			_register_field(
+				COLLISION_FIELD_BUFFER, collision_rid, collision_byte_count, 0,
+				"gpu_full_write", voxel_count, COLLISION_STRIDE_BYTES)
 			return true
 		if collision_rid.is_valid():
 			release_rid(collision_rid, false)

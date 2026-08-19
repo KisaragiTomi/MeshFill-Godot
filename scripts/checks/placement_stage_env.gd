@@ -82,6 +82,10 @@ var _prefilter_cache_key: Dictionary = {}
 var _place_session_common: Dictionary = {}
 var _place_session_active := false
 var _place_session_batch_index := 0
+# 会话首批是否重建余隙场。判据是**世界是否为空**（runtime id 分配器无一分配），在
+# begin_place_session 时定格——不是"是否新会话"：场与已放置物同生命周期，非空世界的
+# 会话首批必须沿用上一轮画好的场（CPU 种子重放已删，场就是跨轮间距约束的唯一载体）。
+var _place_session_clearance_reset := false
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +358,9 @@ func ensure_target_ready(extra_settings := {}) -> Dictionary:
 ## anchor/count/topk 常驻 RID，owner=SPA._prefilter）。
 ## ⚠ 常驻场注入：run_autoobject_prefilter 不做 run_placement_pipeline Phase 0 的
 ## resident field handoff——committed sv 已无 CPU field，必须把 committer 常驻对
-## 注入 sv（resident-or-error，与 SPA 私有 handoff 消费的是同一对 buffer）。
+## 注入 sv 作为**基底**（resident-or-error，与 SPA 私有 handoff 消费的是同一对 buffer）。
+## 有笔刷内容时 runtime 会在这对基底上合成 BlendSV 再进 prefilter（与整链 Phase 0
+## 同口径），因此缓存键必须带 brush 修订号（见函数体内注释）。
 ## 参数（批 3 扩参，向后兼容）：
 ##   prefilter_settings_override — 覆盖 make options 的 prefilter_settings（同键调用方优先；
 ##                                 debug_read_anchors 等诊断键由此透传）
@@ -365,6 +371,10 @@ func ensure_prefilter(prefilter_settings_override := {}) -> Dictionary:
 	for key in prefilter_settings_override:
 		effective_settings[key] = prefilter_settings_override[key]
 	var cache_key := _prefilter_cache_key_from(effective_settings)
+	# S6 的读取场在 runtime 侧含 BlendSV（有笔刷内容时合成，与整链 Phase 0 同口径）：
+	# 笔刷内容换代 ⇒ 上一次 prefilter 的粗筛得分作废。键里不带它，画完笔刷再点
+	# Anchors/Score 会命中旧结果。
+	cache_key["brush_sv_revision"] = _spa.get_brush_sv_revision()
 	if not _prefilter_cache.is_empty() and _prefilter_cache_key == cache_key:
 		return _prefilter_cache
 	var target := ensure_target_ready()
@@ -431,15 +441,15 @@ func run_pipeline_once(placement_common := {}) -> Dictionary:
 	var session := begin_place_session(placement_common)
 	if not bool(session.get("ok", false)):
 		return session
-	var result := run_place_session_batch(
-		placement_common.get("reduce_seed_placements", PackedFloat32Array()))
+	var result := run_place_session_batch()
 	end_place_session()
 	return result
 
 
 ## Starts a persistent Place session over the existing stage environment. The
 ## target payload, target RIDs, registered profiles, and stable settings remain
-## shared across batches; only seed placements and committed SV state advance.
+## shared across batches; only committed SV state (and the resident clearance
+## field it pairs with) advances.
 func begin_place_session(placement_common := {}) -> Dictionary:
 	if _place_session_active:
 		end_place_session()
@@ -460,27 +470,36 @@ func begin_place_session(placement_common := {}) -> Dictionary:
 	_place_session_common = settings
 	_place_session_active = true
 	_place_session_batch_index = 0
+	# 世界空判据问 runtime 的 id 分配器（零 GPU 回读）。Clear All / reset_state 把分配器
+	# 清回全满 ⇒ 下一个会话自动判 fresh 并重建零场——余隙场不需要任何生命周期钩子来同步。
+	var gpu_runtime = _spa.get_gpu_runtime() if _spa != null else null
+	var allocated_object_count := int(gpu_runtime.get_allocated_object_count()) if gpu_runtime != null else 0
+	_place_session_clearance_reset = allocated_object_count <= 0
 	return {
 		"ok": true,
 		"target_revision": int(target.get("target_revision", -1)),
 		"target_cached": bool(target.get("cached", false)),
 		"stable_common_deep_copy_bytes": 0,
+		"clearance_field_reset": _place_session_clearance_reset,
+		"allocated_object_count": allocated_object_count,
 	}
 
 
-func run_place_session_batch(reduce_seed_placements := PackedFloat32Array()) -> Dictionary:
+func run_place_session_batch() -> Dictionary:
 	if not _place_session_active:
 		return _stage_fail("place_session_not_active")
 	var total_t0_usec := Time.get_ticks_usec()
 	var phase_t0_usec := total_t0_usec
 	var orchestration_phases_ms := {}
 	var settings := _place_session_common.duplicate()
-	settings["reduce_seed_placements"] = reduce_seed_placements
 	settings["incremental_fine_reset"] = _place_session_batch_index == 0
-	# ── 会话作用域的两个显式开关（都只在首批为「重来」，之后为「沿用」）──────────
-	# 1. 余隙场：首批重建成零场并把传进来的种子（= 上一次 Place 留下的物件）烘进去；
-	#    之后各批复用同一张场，本批被接受的放置由 GPU 侧的 paint pass 直接累积上去。
-	settings["clearance_field_reset"] = _place_session_batch_index == 0
+	# ── 会话作用域的两个显式开关 ────────────────────────────────────────────────
+	# 1. 余隙场：**只有首批 × 世界为空**（判据见 _place_session_clearance_reset）才重建
+	#    零场；非空世界一律沿用现场——上一轮被接受的放置在接受当批就已由 paint pass 画进
+	#    场里，内容与旧"种子重放"能画出的逐位相同（同一批记录、同一套 paint 数学），所以
+	#    host 侧种子表已整个删除（2026-08-18 用户裁决：下一轮的依赖项必须与上一轮一致，
+	#    已放置物的载体只有 SV/SVTile/runtime）。本批被接受的放置仍由 paint pass 原位累积。
+	settings["clearance_field_reset"] = _place_session_batch_index == 0 and _place_session_clearance_reset
 	# 2. 锚点池：首批正常采集，之后**显式复用常驻锚点缓冲**。
 	#    ⚠ 别改成"把 dirty_epoch 从 collect 缓存键里删掉"。锚点缓冲本身是常驻的，逼它
 	#    逐批重采的是缓存键：每批盖章推进 dirty_epoch ⇒ 键变 ⇒ collect 在**已被上一批
@@ -513,8 +532,6 @@ func run_place_session_batch(reduce_seed_placements := PackedFloat32Array()) -> 
 		"wall_usec": wall_usec,
 		"target_revision": int(target_buffers.get("target_revision", -1)),
 		"target_cache_hit": bool(target_buffers.get("cached", false)),
-		"seed_count": int((reduce_seed_placements as PackedFloat32Array).size() / 4) \
-			if reduce_seed_placements is PackedFloat32Array else 0,
 		"stable_common_deep_copy_bytes": 0,
 	}
 	orchestration_phases_ms["session_result"] = float(Time.get_ticks_usec() - phase_t0_usec) / 1000.0

@@ -20,6 +20,7 @@ const ACTION_PROPERTIES := [
 	&"_generate_anchors_action",
 	&"_score_action",
 	&"_place_action",
+	&"_clear_all_action",
 ]
 
 
@@ -68,6 +69,9 @@ func _build_action_row(spa: Object) -> Control:
 	row.add_child(_make_action_button(spa, ACTION_PROPERTIES[0], "Anchors", "Add", blocked_reason))
 	row.add_child(_make_action_button(spa, ACTION_PROPERTIES[1], "Score", "Play", blocked_reason))
 	row.add_child(_make_action_button(spa, ACTION_PROPERTIES[2], "Place", "MeshInstance3D", blocked_reason))
+	# Clear All **不吃 blocked_reason**：Arena 未就绪恰恰是最想清场的时候之一
+	# （比如资产表换代后想把旧放置结果一次抹掉），把它一起禁掉等于把出口锁上。
+	row.add_child(_make_action_button(spa, ACTION_PROPERTIES[3], "Clear All", "Clear"))
 	return row
 
 

@@ -444,6 +444,13 @@ func invalidate_asset_caches() -> void:
 	_diag_target_completeness = PackedFloat32Array()
 	_diag_target_collision = PackedFloat32Array()
 	_diag_target_color = PackedColorArray()
+	# ⚠ 放置实例的 MultiMesh 必须一并重同步，否则「数据清了、画面没变」。
+	# 它只在 Place 路径（_run_place_pipeline → :1360）被同步过一次，此后没有任何自愈：
+	# SPA.clear_placement_state() 把 GPU runtime 的记录清空后，若不来这一趟，
+	# 场上那批实例会原样留着——表现就是「点了全部清除没反应」。
+	# force=true 绕开 revision 短路：runtime 侧 revision 确实变了，但显示器的判据是
+	# 自己上次上传的那一版，不强制就可能判成"无需重传"。
+	_sync_placed_instances_gpu(Vector3(INF, INF, INF), true)
 
 
 ## 完整管线：env（S0..S5 底座）→ 真实 S6 prefilter → S7 细筛 → 可视化
@@ -622,6 +629,9 @@ func benchmark_score_stamp_once_json(profile_stages = true, result_capacity = 64
 		"profile_contract_ok": bool(profile_contract.get("ok", false)),
 		"profile_contract_reason": str(profile_contract.get("reason", "missing")),
 		"timing": placement_result.get("score_timing_profile", {}),
+		# NMS 实测轮数/未定型残留（VPG 的 reduce_nms_telemetry）。预算耗尽本来是静默的。
+		"nms": (placement_result.get("anchor_fine_contract", {}) as Dictionary).get(
+			"reduce_nms_telemetry", {}),
 	}
 	_dispose_pipeline()
 	return JSON.stringify(report)
@@ -1320,9 +1330,10 @@ static func _usec_values_to_ms(values: Array[int]) -> Array[float]:
 ## 冻结名（SPA run_place → provider.call("place_final_autoobjects") → 此方法）。
 ## ⚠ Place 改写了 committed SV：再次 Score 会在新场上重评（run_pipeline_once 已失效 env 缓存，
 ## coherent）。门限（rotation_slots / min_target_interest / min_prefilter_score）与 Anchors/Score
-## 同导出、评分 shader 同源。每批先保留各 Anchor 的最佳 Fine 候选，再按稳定 random 优先级
-## 原子失效 Anchor 间冲突并提交至多 `place_result_capacity` 个；Score 展示的是冲突裁决前的
-## per-Anchor Fine 胜者。单轮 Reduce 不保证把可用空间填满。
+## 同导出、评分 shader 同源。每批先保留各 Anchor 的最佳 Fine 候选，再经迭代贪心得分 NMS
+## （得分降序、同分 anchor id 升序，与串行贪心等价）裁决 Anchor 间冲突并提交至多
+## `place_result_capacity` 个；Score 展示的是冲突裁决前的 per-Anchor Fine 胜者。
+## 单轮 Reduce 不保证把可用空间填满。
 ## 单次全图 prefilter（run_pipeline_once 恒 dirty_tile_ids=[]，与 Anchors/Score 同口径）。collect
 ## 在地形高度采样目标体积发锚（anchor_vertical_stride 决定地表之上再叠几层），上限 ANCHOR_CAPACITY=131072；
 ## raw count 超限属于不变量错误并终止。

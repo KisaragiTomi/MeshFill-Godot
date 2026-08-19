@@ -207,12 +207,6 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 		_field_builder.gc_scope(collision_summary_buffer_scope)
 		return {}
 	var collision_summary_field := PackedFloat32Array()
-	var tile_grid_size := Vector3i(
-		ceili(float(grid_size.x) / float(tile_size)),
-		ceili(float(grid_size.y) / float(tile_size)),
-		ceili(float(grid_size.z) / float(tile_size))
-	)
-	var total_tiles := tile_grid_size.x * tile_grid_size.y * tile_grid_size.z
 	# 两个 buffer 到这里都已断言有效，contract 恒完整（缺键会让 reduce 走已删除的兜底路径）。
 	var summary_buffer_contract := {
 		"voxel_count": expected_complexity_field_count,
@@ -233,31 +227,15 @@ func _rebuild_sv(tile_size: int = SV_RESIDENT_TILE_SIZE) -> Dictionary:
 		_field_builder.gc_scope(collision_summary_buffer_scope)
 		return {}
 	_field_builder.gc_scope(collision_summary_buffer_scope)
-	# Tile records, summaries and dirty state remain GPU-resident. The public SV
-	# dictionary carries topology only and never mirrors writable tile state.
-	_sv = {
-		"type": "SV",
-		"grid_size": grid_size,
-		"voxel_size": voxel_size,
-		"grid_origin": grid_origin,
-		"commit_tick": _committed_tick,
-		"generation_tick": _generation_tick,
-		"tile_grid_size": tile_grid_size,
-		"total_tiles": total_tiles,
-	}
-	_sv_dirty = false
-	return _sv.duplicate(true)
+	return _publish_sv(tile_size)
 
 
-func _publish_initial_empty_sv(tile_size: int) -> Dictionary:
-	var field_buffers: Dictionary = _tile_store.ensure_resident_field_buffers()
-	var complexity_field_buffer: RID = field_buffers.get("complexity_field_buffer", RID())
-	var collision_field_buffer: RID = field_buffers.get("collision_field_buffer", RID())
-	if not complexity_field_buffer.is_valid() or not collision_field_buffer.is_valid():
-		push_error("[SceneVoxelCommitter] _publish_initial_empty_sv: 初始常驻 field buffer 不可用（grid_size=%s complexity_valid=%s collision_valid=%s）" % [str(grid_size), str(complexity_field_buffer.is_valid()), str(collision_field_buffer.is_valid())])
-		assert(false, "SceneVoxelCommitter: initial resident field buffers unavailable")
-		_sv = {}
-		return {}
+## `_sv` 的唯一发布点。两条路径（增量重建 / 初始空场）此前各手写一份同形状的八键字典
+## 与同一套 tile 网格 ceili 公式；键集漂移不会报错，只会让消费方读到缺省值。
+##
+## Tile records, summaries and dirty state remain GPU-resident. The public SV
+## dictionary carries topology only and never mirrors writable tile state.
+func _publish_sv(tile_size: int) -> Dictionary:
 	var tile_grid_size := Vector3i(
 		ceili(float(grid_size.x) / float(tile_size)),
 		ceili(float(grid_size.y) / float(tile_size)),
@@ -275,6 +253,18 @@ func _publish_initial_empty_sv(tile_size: int) -> Dictionary:
 	}
 	_sv_dirty = false
 	return _sv.duplicate(true)
+
+
+func _publish_initial_empty_sv(tile_size: int) -> Dictionary:
+	var field_buffers: Dictionary = _tile_store.ensure_resident_field_buffers()
+	var complexity_field_buffer: RID = field_buffers.get("complexity_field_buffer", RID())
+	var collision_field_buffer: RID = field_buffers.get("collision_field_buffer", RID())
+	if not complexity_field_buffer.is_valid() or not collision_field_buffer.is_valid():
+		push_error("[SceneVoxelCommitter] _publish_initial_empty_sv: 初始常驻 field buffer 不可用（grid_size=%s complexity_valid=%s collision_valid=%s）" % [str(grid_size), str(complexity_field_buffer.is_valid()), str(collision_field_buffer.is_valid())])
+		assert(false, "SceneVoxelCommitter: initial resident field buffers unavailable")
+		_sv = {}
+		return {}
+	return _publish_sv(tile_size)
 
 var _sv: Dictionary = {}
 

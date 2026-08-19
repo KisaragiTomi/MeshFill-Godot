@@ -104,7 +104,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 - **固定槽位 Profile Arena**：Header/Samples/Pivots 同住一个定长 slot（Mesh 区保留占位不写：mesh 是每资产的），一个 RID / 一个 Binding / 一个单调 Revision；地址按 `profile_index`（稠密）直接算出，容量守卫是编译期常量。布局权威见 `ProfileArenaLayout`
 - **Stamp-only 提交**：committed `SceneVoxel` 纯 auto，stamp 即提交（`stamp_asset_voxels.glsl` / `scatter_sv_field_records.glsl`）；`BrushSV` 常驻挂 SPA，`BlendSV` = SV + BrushSV 按需合成（`compose_blend_sv_fields.glsl`），供 3D score 与 TargetSV 对比，用完即删
 - **Anchor 采集与选择**：`collect_sv_anchors.glsl`（在地形高度采样目标体积，采到即发锚；`anchor_vertical_stride` 决定地表之上再叠几层）→ `select_anchor_topk.glsl`（每 anchor `TOPK = 4`）→ `select_anchor_winners.glsl`（Score-only 分支的 per-anchor 胜者）
-- **Reduce 三阶段**：`init_anchor_atomic_reduce.glsl` → `invalidate_anchor_conflicts.glsl` → `compact_anchor_atomic_reduce.glsl`
+- **Reduce 三阶段**：`init_anchor_atomic_reduce.glsl`（选候选 + 格点门/跨批 clearance + 播种 NMS 状态）→ `arbitrate_anchor_conflicts.glsl` × 预算轮（迭代贪心得分 NMS，GPU 自检收敛并自清零间接派发参数，结果与串行贪心逐个取高分等价）→ `compact_anchor_atomic_reduce.glsl`（只接受 SELECTED 态，应用配额与容量）
 - **点选**：生产路径只有 ID 拾取——各域经 `PickableDomain.register_pick_drawable()` 登记显示用的 `MultiMeshInstance3D`，`PickIdPass` 镜像它们到独立 World3D 的 SubViewport 用 `pick_id.gdshader` 重画一遍，回读点击像素得 `pick_id`，再按分配区间反查域与实例下标（`resolve_pick()`）。旧的 GPU 射线求交路径（`pick_scene_voxel.glsl` / `pick_unified.glsl`）已于 2026-08-10 删除
 - **瓦片管理**：`scene_voxel_tile_object_ref_update.glsl` dirty 追踪与 tile 级固定槽位（每 tile 8 槽）对象引用更新，配合 `init_scene_voxel_tile_summaries.glsl` / `reduce_scene_voxel_tile_summaries.glsl` / `compact_scene_voxel_tile_summaries.glsl`
 
@@ -135,7 +135,7 @@ TargetSV（目标画布） + BrushSV（笔刷覆盖）
 - [`doc/auto-object-gpu-runtime-architecture.md`](doc/auto-object-gpu-runtime-architecture.md) — GPU 端百万级运行时架构
 - [`doc/target-scene-voxel-projection.md`](doc/target-scene-voxel-projection.md) — TargetSV 目标画布边界
 - [`doc/auto-object-probe-prefilter.md`](doc/auto-object-probe-prefilter.md) — 语义探针粗筛流程
-- [`demos/placement-voxel-semantic-routing/voxel-semantic-routing.svg`](demos/placement-voxel-semantic-routing/voxel-semantic-routing.svg) — 候选资产路由契约图
+- [`doc/diagrams/voxel-semantic-routing.svg`](doc/diagrams/voxel-semantic-routing.svg) — 候选资产路由契约图
 
 ## 技术栈
 

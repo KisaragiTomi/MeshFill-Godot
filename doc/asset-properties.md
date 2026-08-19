@@ -1,10 +1,10 @@
 # Asset Properties
 
-![AutoObject asset properties map](../scenes/asset-overview/diagrams/autoobject_asset_properties.svg)
+![AutoObject asset properties map](diagrams/autoobject_asset_properties.svg)
 
-![AutoObject and AssetDescriptor relationship](../scenes/asset-overview/diagrams/autoobject_descriptor_relationship.svg)
+![AutoObject and AssetDescriptor relationship](diagrams/autoobject_descriptor_relationship.svg)
 
-![AutoAssetFactory relationships](../scenes/asset-overview/diagrams/autoassetfactory_relationships.svg)
+![AutoAssetFactory relationships](diagrams/autoassetfactory_relationships.svg)
 
 本文是资产字段、descriptor 入口、runtime write record 和 metadata 边界的速查。`AssetDescriptor` 的统一定义见 [`asset-descriptor.md`](asset-descriptor.md)；源码已在 export 字段旁维护逐项含义，本页只写跨层契约和归属边界。
 

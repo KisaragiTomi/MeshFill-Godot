@@ -57,6 +57,28 @@ const SCENE_VOXEL_TILE_REDUCE_SUMMARY_UINT_STRIDE := 6
 const SCENE_VOXEL_TILE_COMPACT_SUMMARY_UINT_STRIDE := 8
 const SCENE_VOXEL_TILE_REDUCE_QUANT_SCALE := 1000000.0
 
+## object-ref 更新统计 → 报告字段的键名映射（`[报告键, stats 键]`）。
+##
+## 三处报告出口逐字共用这一组、同一顺序、同一 `int(..., 0)` 口径：
+##   * `get_scene_voxel_tile_gpu_buffer_status()`
+##   * `get_gpu_autoobject_object_ref_range_policy_diagnostics()`
+##   * `_assemble_object_ref_update_result()`
+## 以前是三份手抄，加一个计数器要三处同改；漏一处的表现是某个出口少一个字段、
+## 或该字段恒 0，而**不报任何错**。此表是它们唯一的定义点。
+##
+## ⚠ 报告键名是对外契约，改名前先全仓 grep（tools/*.js、addons/、scenes/、其余 scripts/）。
+## ⚠ `overflow` 不在表里：三处的溢出计数来源各不相同（成员累计 / 本次统计），
+##    带条件与累加，不是原样搬运。
+const OBJECT_REF_STAT_COUNTER_FIELDS := [
+	["object_ref_non_numeric_count", "non_numeric"],
+	["object_ref_duplicate_count", "duplicate"],
+	["object_ref_touched_count", "touched"],
+	["object_ref_removed_slot_count", "removed_slots"],
+	["object_ref_inserted_slot_count", "inserted_slots"],
+	["object_ref_invalid_bounds_count", "invalid_bounds"],
+	["object_ref_skipped_count", "skipped"],
+]
+
 # --- push-constant schemas (std430; all-scalar blocks pack to sequential 4-byte offsets) ---
 # object-ref update push (80 bytes; offsets 56 & 64 were literal 0 -> _pad)
 const OBJECT_REF_UPDATE_PUSH := [
@@ -677,6 +699,14 @@ func _fail_object_ref_update_stats(reason: String) -> Dictionary:
 	_scene_voxel_tile_object_ref_last_update_stats = _empty_scene_voxel_tile_object_ref_update_stats(reason)
 	return _scene_voxel_tile_object_ref_last_update_stats.duplicate(true)
 
+## 把一份 object-ref 更新统计投影成报告计数字段。键名/键序/取值口径全部由
+## OBJECT_REF_STAT_COUNTER_FIELDS 单点定义，三处报告出口共用。
+func _object_ref_stat_counter_fields(stats: Dictionary) -> Dictionary:
+	var out := {}
+	for field in OBJECT_REF_STAT_COUNTER_FIELDS:
+		out[field[0]] = int(stats.get(field[1], 0))
+	return out
+
 ## 安全读取统计字数组的指定索引值
 func _scene_voxel_tile_object_ref_update_stat(words: PackedInt32Array, index: int) -> int:
 	if index < 0 or index >= words.size():
@@ -1008,17 +1038,17 @@ func get_scene_voxel_tile_gpu_buffer_status() -> Dictionary:
 		var rid: RID = _scene_voxel_tile_gpu_buffers.get(buffer_name, RID())
 		var byte_size := int(_scene_voxel_tile_gpu_buffer_byte_sizes.get(buffer_name, 0))
 		var upload_byte_size := int(_scene_voxel_tile_gpu_buffer_upload_byte_sizes.get(buffer_name, 0))
-		buffers[buffer_name] = {
-			"rid_valid": rid.is_valid(),
-			"record_count": int(_scene_voxel_tile_gpu_record_counts.get(buffer_name, 0)),
-			"stride_bytes": int(_scene_voxel_tile_gpu_strides.get(buffer_name, 0)),
-			"byte_size": byte_size,
-			"logical_byte_size": byte_size,
-			"upload_byte_size": upload_byte_size,
-			"initialization_source": str(_scene_voxel_tile_gpu_buffer_initialization_sources.get(buffer_name, "unknown")),
-			"content_hash": int(_scene_voxel_tile_gpu_buffer_hashes.get(buffer_name, 0)),
-			"reused_last_upload": _scene_voxel_tile_gpu_last_reused_buffers.has(buffer_name),
-		}
+		# 条目形状（9 键 + 键序）由 SceneSVFieldStore.make_buffer_status_entry() 单点定义，
+		# 场对那两项走同一个工厂 —— 「6 项与 2 项必须逐字一致」不再靠注释约束。
+		buffers[buffer_name] = SceneSVFieldStoreScript.make_buffer_status_entry(
+			rid,
+			int(_scene_voxel_tile_gpu_record_counts.get(buffer_name, 0)),
+			int(_scene_voxel_tile_gpu_strides.get(buffer_name, 0)),
+			byte_size,
+			upload_byte_size,
+			str(_scene_voxel_tile_gpu_buffer_initialization_sources.get(buffer_name, "unknown")),
+			int(_scene_voxel_tile_gpu_buffer_hashes.get(buffer_name, 0)),
+			_scene_voxel_tile_gpu_last_reused_buffers.has(buffer_name))
 	# 两块场对来自它自己的所有者（V3 劈开）。`status_entries()` 产出的形状与上面逐字一致，
 	# 所以报告的 `buffers` 字典外观完全不变——键序也保持「6 个瓦片在前、2 个场对在后」，
 	# 与 SCENE_VOXEL_TILE_GPU_BUFFER_NAMES 的原顺序相同。
@@ -1034,7 +1064,7 @@ func get_scene_voxel_tile_gpu_buffer_status() -> Dictionary:
 		bool(collision_field_buffer.get("rid_valid", false))
 	)
 	var object_ref_last_stats := _scene_voxel_tile_object_ref_last_update_stats.duplicate(true)
-	return {
+	var status := {
 		"runtime_ready": runtime_ready,
 		"gpu_first": true,
 		"cpu_fallback": false,
@@ -1070,13 +1100,11 @@ func get_scene_voxel_tile_gpu_buffer_status() -> Dictionary:
 		"object_ref_update_source": str(object_ref_last_stats.get("source", "none")),
 		"object_ref_update_reason": str(object_ref_last_stats.get("reason", "not_dispatched")),
 		"object_ref_update_gpu_dispatched": bool(object_ref_last_stats.get("gpu_dispatched", false)),
-		"object_ref_non_numeric_count": int(object_ref_last_stats.get("non_numeric", 0)),
-		"object_ref_duplicate_count": int(object_ref_last_stats.get("duplicate", 0)),
-		"object_ref_touched_count": int(object_ref_last_stats.get("touched", 0)),
-		"object_ref_removed_slot_count": int(object_ref_last_stats.get("removed_slots", 0)),
-		"object_ref_inserted_slot_count": int(object_ref_last_stats.get("inserted_slots", 0)),
-		"object_ref_invalid_bounds_count": int(object_ref_last_stats.get("invalid_bounds", 0)),
-		"object_ref_skipped_count": int(object_ref_last_stats.get("skipped", 0)),
+	}
+	# ⚠ 分三段构造只为把这 7 键插在**原来的位置**上（Dictionary 按插入序迭代），
+	# 直接在末尾 merge 会改变报告键序。新增字段请按它排在计数组之前/之后放对半边。
+	status.merge(_object_ref_stat_counter_fields(object_ref_last_stats), true)
+	status.merge({
 		"resident_field_voxel_count": int(complexity_field_buffer.get("record_count", 0)),
 		"complexity_field_voxel_count": int(complexity_field_buffer.get("record_count", 0)),
 		"collision_field_voxel_count": int(collision_field_buffer.get("record_count", 0)),
@@ -1098,7 +1126,8 @@ func get_scene_voxel_tile_gpu_buffer_status() -> Dictionary:
 		"last_upload_resident_voxel_count": _scene_voxel_tile_last_upload_resident_voxel_count,
 		"last_upload_range_count": _scene_voxel_tile_last_upload_range_count,
 		"buffers": buffers,
-	}
+	}, true)
+	return status
 
 ## 回读瓦片GPU缓冲的调试快照
 func readback_scene_voxel_tile_debug_snapshot() -> Dictionary:
@@ -1512,7 +1541,7 @@ func get_gpu_autoobject_object_ref_range_policy_diagnostics(refs_per_tile: int =
 	var last_stats := _scene_voxel_tile_object_ref_last_update_stats.duplicate(true)
 	var last_dispatched := bool(last_stats.get("gpu_dispatched", false))
 
-	return {
+	var diagnostics := {
 		"object_ref_range_policy": "fixed_per_tile_object_ref_update_pass" if shader_ready else "fixed_per_tile_pending_shader",
 		"object_ref_range_owner": "SceneVoxelCommitter",
 		"object_ref_range_shader": SCENE_VOXEL_TILE_OBJECT_REF_UPDATE_SHADER_NAME if shader_ready else "none",
@@ -1531,16 +1560,13 @@ func get_gpu_autoobject_object_ref_range_policy_diagnostics(refs_per_tile: int =
 		"object_ref_update_gpu_dispatched": last_dispatched,
 		"object_ref_update_dispatch_count": int(last_stats.get("dispatch_group_count", 0)) if last_dispatched else 0,
 		"object_ref_overflow_count": _scene_voxel_tile_object_ref_overflow_count,
-		"object_ref_non_numeric_count": int(last_stats.get("non_numeric", 0)),
-		"object_ref_duplicate_count": int(last_stats.get("duplicate", 0)),
-		"object_ref_touched_count": int(last_stats.get("touched", 0)),
-		"object_ref_removed_slot_count": int(last_stats.get("removed_slots", 0)),
-		"object_ref_inserted_slot_count": int(last_stats.get("inserted_slots", 0)),
-		"object_ref_invalid_bounds_count": int(last_stats.get("invalid_bounds", 0)),
-		"object_ref_skipped_count": int(last_stats.get("skipped", 0)),
-		"gpu_autoobject_ref_key_schema": "u32_numeric_ref_key_v1",
-		"gpu_autoobject_ref_key_schema_note": "Use u32 ref_key entries; 0 is empty, numeric GPU AutoObject object_id + 1 is the pending runtime key, and legacy CPU string hashes remain debug-only.",
 	}
+	# ⚠ 分三段构造只为把这 7 键插在**原来的位置**上（Dictionary 按插入序迭代）：
+	# 直接在末尾 merge 会把它们排到 gpu_autoobject_ref_key_schema* 之后，改变报告键序。
+	diagnostics.merge(_object_ref_stat_counter_fields(last_stats), true)
+	diagnostics["gpu_autoobject_ref_key_schema"] = "u32_numeric_ref_key_v1"
+	diagnostics["gpu_autoobject_ref_key_schema_note"] = "Use u32 ref_key entries; 0 is empty, numeric GPU AutoObject object_id + 1 is the pending runtime key, and legacy CPU string hashes remain debug-only."
+	return diagnostics
 
 ## 构造对象引用更新通道的初始结果字典：默认未派发态 + range 策略诊断合并 +
 ## shader 就绪实况覆盖。两条 try_apply 通道共用的公共前奏。
@@ -1623,13 +1649,9 @@ func _assemble_object_ref_update_result(update_stats: Dictionary, result: Dictio
 	result["object_ref_tile_count"] = int(update_stats.get("object_ref_tile_count", result.get("object_ref_tile_count", 0)))
 	result["object_ref_tile_grid_size"] = update_stats.get("object_ref_tile_grid_size", result.get("object_ref_tile_grid_size", Vector3i.ZERO))
 	result["object_ref_overflow_count"] = int(update_stats.get("overflow", 0))
-	result["object_ref_non_numeric_count"] = int(update_stats.get("non_numeric", 0))
-	result["object_ref_duplicate_count"] = int(update_stats.get("duplicate", 0))
-	result["object_ref_touched_count"] = int(update_stats.get("touched", 0))
-	result["object_ref_removed_slot_count"] = int(update_stats.get("removed_slots", 0))
-	result["object_ref_inserted_slot_count"] = int(update_stats.get("inserted_slots", 0))
-	result["object_ref_invalid_bounds_count"] = int(update_stats.get("invalid_bounds", 0))
-	result["object_ref_skipped_count"] = int(update_stats.get("skipped", 0))
+	# 这 7 键在 result 里已由 range policy 诊断播种过（见 _new_object_ref_update_pass_result），
+	# 覆盖写不改变它们在字典里的位置，键序与逐条赋值时完全一致。
+	result.merge(_object_ref_stat_counter_fields(update_stats), true)
 	_merge_scene_voxel_tile_object_ref_transient_dirty_result(result, update_stats)
 
 	if int(result.get("object_ref_overflow_count", 0)) > 0:

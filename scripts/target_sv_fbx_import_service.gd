@@ -13,7 +13,7 @@ extends RefCounted
 ## 同值"——烘错了会静默按第一个角取值。要那道守卫走读取器的逐三角形出口，判定归它所有
 ## （EmbeddedProfileSampleCodec.fine_corner_disagreement），本模块不复制一份。
 ##
-## **空间契约照搬点云转换器**（demos/target-sv-point-cloud-conversion-c 记录的那一份，也是
+## **空间契约照搬点云转换器**（doc/target-sv-point-cloud-conversion.md 记录的那一份，也是
 ## 现存 assets/target_sv 的产出规则），只把载体从点换成三角形重心：
 ##   * texture_size 取自高度图宽度（必须是方图），不是随便取的常数
 ##   * capture_size 缺省 = `TerrainConfig.CAPTURE_SIZE`（世界网格的固定跨度）
@@ -105,7 +105,8 @@ const HEIGHT_MODE_ABSOLUTE := "absolute"
 ## （走 dry_run，与真正导入同一条列式路径，数字因此逐项一致）。
 ##
 ## 结构级判定的依据就是 fine 通道的构成：Cd（顶点色）、uv0、uv1 必须在，且必须存在 uv8
-## 槽位（fine 门 uv8.x 的载体）。缺任何一项，这份 FBX 一个体素都出不来。
+## 槽位（fine 门 uv8.x 的载体；**严格第 8 槽** index 7——读取器 2026-08-17 起不足
+## 8 个 UV set 即报错，不再把"最后一个有效槽"当 uv8）。缺任何一项，这份 FBX 一个体素都出不来。
 static func validate_fbx(fbx_path: String, opts: Dictionary = {}) -> Dictionary:
 	var res: Variant = ResourceLoader.load(fbx_path)
 	if res == null:
@@ -117,7 +118,10 @@ static func validate_fbx(fbx_path: String, opts: Dictionary = {}) -> Dictionary:
 		var root := (res as PackedScene).instantiate()
 		if root == null:
 			return {"ok": false, "reason": "instantiate_failed", "fbx": fbx_path}
-		_collect_structure_from_node(root, surfaces)
+		FbxVoxelImportServiceScript.walk_mesh_instances(root, Transform3D.IDENTITY,
+			func(node_name: String, mesh: Mesh, _mesh_transform: Transform3D) -> void:
+				_collect_surface_structure(mesh, node_name, surfaces),
+			true)
 		root.free()
 	else:
 		return {"ok": false, "reason": "not_scene_or_mesh", "resource_type": res.get_class()}
@@ -170,11 +174,8 @@ static func _merged_dry_run_opts(opts: Dictionary) -> Dictionary:
 	return merged
 
 
-static func _collect_structure_from_node(node: Node, out: Array) -> void:
-	if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
-		_collect_surface_structure((node as MeshInstance3D).mesh, str(node.name), out)
-	for child in node.get_children():
-		_collect_structure_from_node(child, out)
+# ⚠ 这里曾有 `_collect_structure_from_node()`——全仓四份逐字相同的递归 mesh 遍历骨架
+# 之一，2026-08-17 并入 FbxVoxelImportService.walk_mesh_instances（本收集不消费变换）。
 
 
 ## 只取尺寸与"通道在不在"，不建任何逐三角形结构——这是本校验便宜的原因。
@@ -191,7 +192,7 @@ static func _collect_surface_structure(mesh: Mesh, node_name: String, out: Array
 		out.append({
 			"name": node_name,
 			"index": surface_index,
-			"primitive_name": _primitive_name(primitive),
+			"primitive_name": FbxVoxelImportServiceScript._prim_name(primitive),
 			"is_triangles": primitive == Mesh.PRIMITIVE_TRIANGLES,
 			"vertex_count": vertices.size(),
 			"index_count": index_count,
@@ -204,13 +205,8 @@ static func _collect_surface_structure(mesh: Mesh, node_name: String, out: Array
 		})
 
 
-static func _primitive_name(primitive: int) -> String:
-	match primitive:
-		Mesh.PRIMITIVE_TRIANGLES: return "TRIANGLES"
-		Mesh.PRIMITIVE_TRIANGLE_STRIP: return "TRIANGLE_STRIP"
-		Mesh.PRIMITIVE_POINTS: return "POINTS"
-		Mesh.PRIMITIVE_LINES: return "LINES"
-	return "OTHER(%d)" % primitive
+# ⚠ 这里曾有 `_primitive_name()`——与 FbxVoxelImportService._prim_name 同功能的第二份
+# （仅未知枚举的文案差一个词），2026-08-17 删除，调用点直用读取器那份。
 
 
 ## fbx_path: res:// 下的 FBX。opts 见下方 _resolved_options，缺省值即上面注释里那套契约。
@@ -243,11 +239,11 @@ static func import_fbx_as_target_sv(fbx_path: String, opts: Dictionary = {}) -> 
 	var positions: PackedVector3Array = columns["positions"]
 	var colors: PackedColorArray = columns["colors"]
 	var collisions: PackedFloat32Array = columns["collision"]
-	if positions.is_empty():
-		return {"ok": false, "reason": "no_valid_fine_samples", "fbx": fbx_path,
-			"triangle_count": int(columns["gated_triangle_count"]),
-			"rejected_triangle_count": int(columns["rejected_triangle_count"]),
-			"hint": "三角形都被读取器判废：fine 门 uv8.x 需为 1，且三个角的 Cd / uv0.x / uv1.x 必须同值"}
+	# ⚠ 这里曾有 `positions.is_empty()` → "no_valid_fine_samples" 分支，hint 还在讲
+	# "三个角必须同值"——那是读取器还会判废三角形的旧时代。改成"只计数不丢弃"后，
+	# gated 只对已产出样本的三角形计数（越界 continue 在计数之前），
+	# gated > 0 ⇒ positions 非空，上面的 no_fine_score_triangles 门已盖住空集，
+	# 该分支不可达且文案误导排障方向，2026-08-17 删除。
 	positions = _scaled_positions(positions, float(settings["position_scale"]))
 	var read_ms := Time.get_ticks_msec() - read_started
 
@@ -324,6 +320,16 @@ static func import_fbx_as_target_sv(fbx_path: String, opts: Dictionary = {}) -> 
 		return _binning_report(fbx_path, columns, binned, report_frame,
 			{"ok": true, "written": PackedStringArray(), "non_empty_voxel_count": -1, "dry_run": true})
 
+	# ⚠ 写前硬门（2026-08-17）：一个三角形都没落进网格还写盘，写出去的就是一整块空场，
+	# 会把现有 TargetSV 静默换掉且没有备份可回。此前这个判定在 `_binning_report` 里、
+	# 发生在 `_write_dataset` **之后**——警告喊出来的时候好数据已经被盖了。与上面
+	# `no_fine_score_triangles` 的写前硬失败同一条哲学；dry_run 不受影响（校验就是要看数字）。
+	if int(binned["used_count"]) == 0:
+		var aborted := _binning_report(fbx_path, columns, binned, report_frame,
+			{"ok": true, "written": PackedStringArray(), "non_empty_voxel_count": -1, "dry_run": false})
+		aborted["ok"] = false
+		return aborted
+
 	var write_started := Time.get_ticks_msec()
 	var write_info := report_frame.duplicate()
 	write_info["fbx"] = fbx_path
@@ -393,7 +399,8 @@ static func _binning_report(
 		"written": write_result["written"],
 	}
 	# 一个三角形都没落进网格 ⇒ 多半是 FBX 的空间尺度/轴向与本契约不符（比如资产级 FBX
-	# 而非场景级），真写盘时写出去的就是一整块空场。照常返回，但把结论喊出来。
+	# 而非场景级）。写盘路径已被 import_fbx_as_target_sv 的写前硬门拦下（2026-08-17，
+	# ok=false 且不落一个字节）；本报告带此 reason 的只有 dry_run 与那条被拦的路径。
 	if int(binned["used_count"]) == 0:
 		push_warning("[TargetSVFbxImport] %s 没有任何三角形落进网格（越界 %d / 低于地形 %d）—— 检查 FBX 是否为场景尺度、height_mode 与 P.y 的高度语义是否对得上" % [
 			fbx_path, int(binned["dropped_out_of_bounds"]), int(binned["below_terrain_count"])])
@@ -442,7 +449,19 @@ static func _load_height_image(path: String) -> Image:
 	if texture == null:
 		push_error("[TargetSVFbxImport] 高度图无法加载: %s" % path)
 		return null
-	return texture.get_image()
+	var image := texture.get_image()
+	if image == null:
+		push_error("[TargetSVFbxImport] 高度图取不出 Image: %s" % path)
+		return null
+	# 导入设置若被翻成 VRAM 压缩，压缩 Image 上的 get_pixel 会对每个样本各刷一条错误
+	# （场景级 FBX 上是六位数条）。统一在入口解压，导入参数漂移就只在这里响一次。
+	if image.is_compressed():
+		var decompress_error := image.decompress()
+		if decompress_error != OK:
+			push_error("[TargetSVFbxImport] 高度图解压失败（err=%d，格式=%d）: %s" % [
+				decompress_error, image.get_format(), path])
+			return null
+	return image
 
 
 ## 读取器交回来的是**列式** fine 通道（FbxVoxelImportService.fine_columns_from_fbx）：
@@ -506,6 +525,18 @@ static func _prepare_samples(
 	# 倒数预乘：逐样本两次除法在三十万样本上是白付的。
 	var inv_cell_x := 1.0 / maxf(voxel_size.x, EXTENT_EPSILON)
 	var inv_cell_z := 1.0 / maxf(voxel_size.z, EXTENT_EPSILON)
+	# 高度图预展平成每列一个数（已乘 height_scale）：get_pixel 每次调用都带格式分派开销，
+	# 逐样本查 36 万次远贵过先按 6.5 万个像素铺一遍；展平下标 = z * ts + x，与列下标同式。
+	# ⚠ 必须存 Float64：GDScript 浮点运算全程 double，`r × height_scale` 的乘积截成 fp32
+	# 再相减会让切片边界上的样本翻进邻格——实测 targetsv0.fbx 上 distinct 漂 125 格、
+	# below_terrain 漂 297 条。Float64 逐位还原原式 `p.y - r * scale` 的运算顺序与精度。
+	var column_heights := PackedFloat64Array()
+	if absolute:
+		column_heights.resize(texture_size * texture_size)
+		for pixel_z in range(texture_size):
+			var row_base := pixel_z * texture_size
+			for pixel_x in range(texture_size):
+				column_heights[row_base + pixel_x] = height_image.get_pixel(pixel_x, pixel_z).r * height_scale
 
 	var sample_count := positions.size()
 	var columns := PackedInt32Array(); columns.resize(sample_count)
@@ -530,12 +561,13 @@ static func _prepare_samples(
 			z = texture_size - 1 - z
 		if x < 0 or x >= texture_size or z < 0 or z >= texture_size:
 			continue
+		var column := z * texture_size + x
 		var relative := p.y
 		if absolute:
-			relative = p.y - height_image.get_pixel(x, z).r * height_scale
+			relative = p.y - column_heights[column]
 		if not is_finite(relative):
 			continue
-		columns[index] = z * texture_size + x
+		columns[index] = column
 		heights[index] = relative
 		if relative > max_value:
 			max_value = relative

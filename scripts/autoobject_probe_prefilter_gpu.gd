@@ -1124,7 +1124,10 @@ func _decode_results(
 		"topk": TOPK,
 		"asset_count": asset_count,
 		"asset_stride": maxi(maxi(asset_stride, asset_count), 1),
-		"anchor_stride_bytes": 16,
+		# 与本函数上面切 anchors_packed 用的是**同一个** stride（BufferUtils.IVEC4_BYTES）：
+		# 抄一份字面量 16 的话，交接声明的 stride 与生产者实际解码用的 stride 是两个独立事实，
+		# 改一处漏一处时下游会按错误步长切锚点缓冲（不报错，只错位）。
+		"anchor_stride_bytes": anchor_stride_bytes,
 		"topk_stride_bytes": 8,
 		"origin_contract": "one_origin_per_anchor",
 		"producer": "AutoObjectProbePrefilterGPU",

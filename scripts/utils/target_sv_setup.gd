@@ -45,6 +45,15 @@ const DISPLAY_NODE := "TargetSVVoxels"
 @export var fresnel_enabled: bool = true
 
 var _ready_ok := false
+## 加载失败 latch。_ensure_loaded 被十来个访问器高频调用，而失败时 _ready_ok 恒 false——
+## 没有 latch 的年代，每次访问都是一整趟磁盘 reload + push_error + assert 刷屏
+## （缺元数据 / frame 断言不过的会话里，ownership report、点选、显示各路一起风暴）。
+## 显式重试入口只有 reimport()：它清本 latch 并强制 loader.reload()。
+var _load_failed := false
+## _prepare_display_fields 的产物缓存键（"revision|content_generation|threshold"）。
+## 三个显示字段只依赖这三样，与显示频道无关——切频道不再重付 16 MiB 级重解包
+## 与百万级占用计数，只重建实例缓冲。
+var _display_fields_cache_key := ""
 var _metadata: Dictionary = {}
 # ⚠ 这里曾有 `_visual_bytes` / `_collision_bytes`（只写不读，2026-08-10 删）、
 # `_grid_size`（框架成员副本，直接违反 PickableDomain.grid_frame() 的"不得抄三项"——
@@ -111,13 +120,18 @@ func rebuild() -> void:
 ##
 ## _ready_ok 必须先落回 false：_ensure_loaded() 第一句就是 `if _ready_ok: return`，
 ## 不清它则整块重读与修订号自增（基类 bump_revision）都不会发生——按钮点了等于没点。
-## 落回 false 之后 _ensure_loaded() 内部本来就会调 TargetSVLoader.reload()，把**进程级**
-## 静态字节 / _decoded / content_generation 一并换新，这里不必也不该再调一次。
+## _load_failed 同清：上次失败的会话里不清它，_ensure_loaded 会按 latch 直接返回。
+##
+## ⚠ loader 的换新在**这里显式 reload()**（2026-08-17 起）：_ensure_loaded 的首载路径
+## 已改走 ensure_fresh()（mtime 没变就复用静态缓存），而 mtime 是秒级分辨率——同秒内
+## 的重导出可能被判成"没变"。本按钮的语义是"无条件拿最新的"，不吃那个判据。
 ##
 ## 只负责本节点自己那一份：笔刷等下游持有各自的解码缓存，由调用方（SPA.reimport_target_sv）
 ## 配对刷新。GPU 点选缓存不用管——它按 content_revision + content_generation 做键。
 func reimport() -> Dictionary:
 	_ready_ok = false
+	_load_failed = false
+	TargetSVLoaderScript.reload()
 	rebuild()
 	if not _ready_ok:
 		return {"ok": false, "reason": "targetsv_load_failed"}
@@ -141,7 +155,14 @@ func reimport() -> Dictionary:
 func _ensure_loaded() -> void:
 	if _ready_ok:
 		return
-	TargetSVLoaderScript.reload()
+	if _load_failed:
+		return
+	# 先按失败记账：中途任何 return / assert 中断都停在失败态，成功路径末尾统一翻回。
+	_load_failed = true
+	# 首载走 ensure_fresh：静态缓存仍新鲜（mtime 判据）就直接复用——每次开场景 / 插件
+	# 重挂载（SPA 双 bootstrap 一次开场景就是两遍）不再整块重读 5 MiB 级缓冲，也不再
+	# 无谓换代 content_generation。显式换新走 reimport() 的强制 reload()，不经此判据。
+	TargetSVLoaderScript.ensure_fresh()
 	_metadata = TargetSVLoaderScript.metadata()
 	if _metadata.is_empty():
 		push_error("[TargetSVSetup] TargetSV metadata not found —— TargetSV 资产未烘焙或路径错误")
@@ -160,11 +181,14 @@ func _ensure_loaded() -> void:
 	# 网格不再抄成员（§2.3：框架三项一律经基类 grid_frame() 现取）；这里只确认宿主在。
 	var spa := _require_spa()
 	if spa == null:
+		# SPA 还没进树只是场景装载顺序问题，不是数据失败——放行下次访问重试。
+		_load_failed = false
 		return
 	_assert_target_frame_matches_bake(spa)
 	_voxel_count = int(_metadata["voxel_count"])
 	_height_span = float(_metadata["max_height"])
 	_ready_ok = true
+	_load_failed = false
 	bump_revision()
 
 
@@ -280,6 +304,31 @@ func _prepare_display_fields() -> bool:
 	if _voxel_count <= 0:
 		_last_display_reason = "empty_voxel_count"
 		return false
+	# 字段缓存：三个显示字段只依赖 (内容修订号, loader 静态字节代号, 占用阈值)，与显示
+	# 频道无关。_display_cache_intact() 恒 false 是为了不吞频道/显示参数变更——代价曾是
+	# 每次 rebuild_display 都重付 16 MiB 级重解包 + 百万级占用计数；现在键没变就跳过
+	# 字段构建，只有下方的地形检查每次照跑（地形节点可能随时被删，失败原因保持可达）。
+	var fields_key := "%d|%d|%s" % [
+		revision(), TargetSVLoaderScript.content_generation(), var_to_str(occupancy_threshold)]
+	if fields_key != _display_fields_cache_key or _occupancy.is_empty():
+		if not _build_display_fields():
+			return false
+		_display_fields_cache_key = fields_key
+	var terrain := TerrainInitializerScript.find_edit_time_terrain(self) as MeshInstance3D
+	if terrain == null or terrain.mesh == null:
+		# 无地形时旧行为是拿一整块 0 高度场继续显示（体素全贴在 y=0）；如实报失败，不造假地形。
+		_last_display_reason = "missing_edit_time_terrain"
+		return false
+	# 高度场走基类缓存（分辨率 = 规范网格 XZ 边、跨度 = display_height_span() 即资产
+	# max_height——与此前本地那份逐参数相同）。先显式查地形是为保住上面那条独立失败原因。
+	if display_terrain_height_field().is_empty():
+		_last_display_reason = "terrain_height_field_unavailable"
+		return false
+	_last_display_reason = "ok"
+	return true
+
+
+func _build_display_fields() -> bool:
 	var decoded := TargetSVLoaderScript.decode()
 	if not bool(decoded.get("valid", false)):
 		_last_display_reason = str(decoded.get("reason", "target_decode_failed"))
@@ -331,18 +380,6 @@ func _prepare_display_fields() -> bool:
 	for value in _occupancy:
 		if value > occupancy_threshold:
 			_active_voxel_count += 1
-
-	var terrain := TerrainInitializerScript.find_edit_time_terrain(self) as MeshInstance3D
-	if terrain == null or terrain.mesh == null:
-		# 无地形时旧行为是拿一整块 0 高度场继续显示（体素全贴在 y=0）；如实报失败，不造假地形。
-		_last_display_reason = "missing_edit_time_terrain"
-		return false
-	# 高度场走基类缓存（分辨率 = 规范网格 XZ 边、跨度 = display_height_span() 即资产
-	# max_height——与此前本地那份逐参数相同）。先显式查地形是为保住上面那条独立失败原因。
-	if display_terrain_height_field().is_empty():
-		_last_display_reason = "terrain_height_field_unavailable"
-		return false
-	_last_display_reason = "ok"
 	return true
 
 
@@ -509,6 +546,11 @@ func _repair_soft_reloaded_domain_members() -> void:
 	if not (_height_span is float): _height_span = 0.0
 	if not (_active_voxel_count is int): _active_voxel_count = 0
 	if not (_last_display_reason is String): _last_display_reason = ""
+	# 新增成员软重载回来是 nil；latch 归 false = "还没试过"，允许重新加载。
+	if not (_load_failed is bool): _load_failed = false
+	# 字段缓存键与三个字段是一对：任一字段丢了键就必须作废，否则键匹配会跳过重建、
+	# 拿空数组去铺显示。
+	if not (_display_fields_cache_key is String) or decoded_lost: _display_fields_cache_key = ""
 	if not (_ready_ok is bool) or decoded_lost: _ready_ok = false
 
 

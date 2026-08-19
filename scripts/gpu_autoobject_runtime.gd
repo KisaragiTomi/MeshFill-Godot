@@ -768,11 +768,7 @@ func _dispatch_accepted_placement_resident_shader(
 		# Production path: no readback, trust GPU execution after submit+sync barrier.
 		gc_frame()
 		_dirty_delta_count = dirty_base + record_count
-		result["accepted_placement_record_shader_stats"] = {
-			"ok": true,
-			"reason": "deferred_no_readback",
-			"readback_source": "none",
-		}
+		result["accepted_placement_record_shader_stats"] = _deferred_shader_stats()
 	return result
 
 
@@ -982,11 +978,7 @@ func _try_apply_accepted_placement_record_shader(
 		_dirty_delta_count = dirty_base + record_count
 		base_result["pending_dirty_delta_count"] = _dirty_delta_count
 		base_result["accepted_placement_record_shader_dispatch_count"] = group_count
-		base_result["accepted_placement_record_shader_stats"] = {
-			"ok": true,
-			"reason": "deferred_no_readback",
-			"readback_source": "none",
-		}
+		base_result["accepted_placement_record_shader_stats"] = _deferred_shader_stats()
 
 	base_result["ok"] = true
 	base_result["reason"] = "ok"
@@ -1064,6 +1056,18 @@ func _pack_accepted_placement_uniforms(base_binding: int, stats_buffer: RID) -> 
 		# 静默平移记录路径 set0 里 accepted_buffer 之后的每一个 binding。
 		make_storage_uniform(base_binding + 13, _asset_index_buffer),
 	]
+
+
+## 生产路径（debug_read_stats=false）的 stats 占位报告：两条 dispatch 路径
+## （_dispatch_accepted_placement_resident_shader / _try_apply_accepted_placement_record_shader）
+## 原先各手写一份逐字相同的三键字面量，这里收成唯一来源。
+## 不用 const Dictionary：Godot 4 的 const 字典是只读的，塞进返回报告后消费方一改就报错。
+static func _deferred_shader_stats() -> Dictionary:
+	return {
+		"ok": true,
+		"reason": "deferred_no_readback",
+		"readback_source": "none",
+	}
 
 
 ## 从 stats 缓冲区读回接受放置着色器的统计信息（调试路径）。
@@ -1187,51 +1191,45 @@ func _try_flush_resident_dirty_delta_buffer_to_scene_voxel_committer(tile_store,
 	return result
 
 
+## flush_to_scene_voxel_committer 三处失败出口的同形底座（原先三份逐字手抄）。
+## 只发三处**共有**的那 17 个键；各出口自己多出来的键（pending_dirty_delta_count /
+## dirty_scene_voxel_tile_count / failed_readback_source / ..._blocked_reason）仍由各自
+## 的 return 前补齐 —— 工厂绝不替它们发，否则会给某条出口凭空加键、改掉对外报告形状。
+## runtime_ready 恒取 _gpu_ready：not_ready 出口的守卫就是 `if not _gpu_ready`，
+## 那里原先写死的 false 与 _gpu_ready 在该分支同值。
+func _flush_failure_report(reason: String) -> Dictionary:
+	# results 保持 Array[Dictionary]：missing_tile_store 出口原先传的就是一个类型化空数组。
+	var empty_results: Array[Dictionary] = []
+	return {
+		"ok": false,
+		"reason": reason,
+		"dirty_deltas": [],
+		"dirty_delta_count": 0,
+		"results": empty_results,
+		"commit_result_count": 0,
+		"failed_commit_result_count": 0,
+		"runtime_ready": _gpu_ready,
+		"gpu_first": true,
+		"cpu_fallback": false,
+		"readback_source": "none",
+		"dirty_delta_bridge_mode": "none",
+		"dirty_delta_apply_api": "none",
+		"resident_gpu_dirty_delta_update_pass": false,
+		"resident_gpu_dirty_delta_update_pass_owner": "none",
+		"resident_gpu_dirty_delta_update_pass_shader": "none",
+		"resident_gpu_dirty_delta_update_pass_dispatch_count": 0,
+	}
+
+
 ## 将所有 dirty delta 提交给 SPA-owned SceneVoxelTileStore；不提供 CPU bridge。
 func flush_to_scene_voxel_committer(tile_store, options: Dictionary = {}) -> Dictionary:
 	if not _gpu_ready:
-		return {
-			"ok": false,
-			"reason": "runtime_not_ready",
-			"dirty_deltas": [],
-			"dirty_delta_count": 0,
-			"results": [],
-			"commit_result_count": 0,
-			"failed_commit_result_count": 0,
-			"runtime_ready": false,
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"readback_source": "none",
-			"dirty_delta_bridge_mode": "none",
-			"dirty_delta_apply_api": "none",
-			"resident_gpu_dirty_delta_update_pass": false,
-			"resident_gpu_dirty_delta_update_pass_owner": "none",
-			"resident_gpu_dirty_delta_update_pass_shader": "none",
-			"resident_gpu_dirty_delta_update_pass_dispatch_count": 0,
-	}
-	var results: Array[Dictionary] = []
+		return _flush_failure_report("runtime_not_ready")
 	var has_resident_buffer_api: bool = tile_store != null and tile_store.has_method("try_apply_gpu_autoobject_object_ref_update_pass_from_buffer")
 	if tile_store == null or not has_resident_buffer_api:
-		return {
-			"ok": false,
-			"reason": "missing_tile_store",
-			"dirty_deltas": [],
-			"dirty_delta_count": 0,
-			"results": results,
-			"commit_result_count": 0,
-			"failed_commit_result_count": 0,
-			"pending_dirty_delta_count": get_pending_dirty_delta_count(),
-			"runtime_ready": _gpu_ready,
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"readback_source": "none",
-			"dirty_delta_bridge_mode": "none",
-			"dirty_delta_apply_api": "none",
-			"resident_gpu_dirty_delta_update_pass": false,
-			"resident_gpu_dirty_delta_update_pass_owner": "none",
-			"resident_gpu_dirty_delta_update_pass_shader": "none",
-			"resident_gpu_dirty_delta_update_pass_dispatch_count": 0,
-		}
+		var missing_report := _flush_failure_report("missing_tile_store")
+		missing_report["pending_dirty_delta_count"] = get_pending_dirty_delta_count()
+		return missing_report
 
 	var resident_result := _try_flush_resident_dirty_delta_buffer_to_scene_voxel_committer(tile_store, options)
 	if bool(resident_result.get("resident_gpu_dirty_delta_update_pass", false)):
@@ -1239,29 +1237,14 @@ func flush_to_scene_voxel_committer(tile_store, options: Dictionary = {}) -> Dic
 		return resident_result
 
 	var blocked_reason := str(resident_result.get("reason", "resident_dirty_delta_update_pass_blocked"))
-	return {
-		"ok": false,
-		"reason": blocked_reason,
-		"dirty_deltas": [],
-		"dirty_delta_count": 0,
-		"results": [],
-		"commit_result_count": 0,
-		"failed_commit_result_count": 0,
-		"pending_dirty_delta_count": int(resident_result.get("pending_dirty_delta_count", get_pending_dirty_delta_count())),
-		"dirty_scene_voxel_tile_count": 0,
-		"runtime_ready": _gpu_ready,
-		"gpu_first": true,
-		"cpu_fallback": false,
-		"readback_source": "none",
-		"failed_readback_source": "none",
-		"dirty_delta_bridge_mode": "none",
-		"dirty_delta_apply_api": "none",
-		"resident_gpu_dirty_delta_update_pass": false,
-		"resident_gpu_dirty_delta_update_pass_owner": "none",
-		"resident_gpu_dirty_delta_update_pass_shader": "none",
-		"resident_gpu_dirty_delta_update_pass_dispatch_count": 0,
-		"resident_gpu_dirty_delta_update_pass_blocked_reason": blocked_reason,
-	}
+	var blocked_report := _flush_failure_report(blocked_reason)
+	# ⚠ .get() 的默认值是**即时求值**的：get_pending_dirty_delta_count() 无论 resident_result
+	# 有没有该键都会跑一次，与重构前逐字相同，别顺手改成"缺键才算"。
+	blocked_report["pending_dirty_delta_count"] = int(resident_result.get("pending_dirty_delta_count", get_pending_dirty_delta_count()))
+	blocked_report["dirty_scene_voxel_tile_count"] = 0
+	blocked_report["failed_readback_source"] = "none"
+	blocked_report["resident_gpu_dirty_delta_update_pass_blocked_reason"] = blocked_reason
+	return blocked_report
 
 
 ## 批量回读对象状态（渲染/pick 消费面：object_id/alive/profile_id/bounds/transform）。
@@ -1408,6 +1391,36 @@ func get_live_count() -> int:
 		if bytes.decode_s32(offset) != 0:
 			live_count += 1
 	return live_count
+
+
+## CPU 侧 id 分配器视角的已分配对象数。零 GPU 回读：分配失败的 id 当场归还
+## （见 spawn 两条路径的失败出口），所以它与 GPU alive 数的偏差只剩「dispatch 成功但
+## 个别记录被 skip」这一既有窄缝——与旧的 host 记账（_placed_object_ids，已删）逐位同义。
+## 消费方：PlacementStageEnv 的余隙场 reset 判据（=0 即世界为空）、SPA 的容量帽。
+func get_allocated_object_count() -> int:
+	_repair_soft_reloaded_members()
+	if max_objects <= 0:
+		return 0
+	return maxi(max_objects - _free_ids.size(), 0)
+
+
+## 已分配对象 id 的升序清单（_free_ids 的补集）。放置流程不逐个 free 对象 ⇒ 这就是
+## 活对象集；id 唯一真相在分配器，host 不再留平行副本。O(max_objects)，仅 CPU。
+func get_allocated_object_ids() -> Array[int]:
+	_repair_soft_reloaded_members()
+	var out: Array[int] = []
+	if max_objects <= 0 or _free_ids.size() >= max_objects:
+		return out
+	var free_mask := PackedByteArray()
+	free_mask.resize(max_objects)
+	for free_id in _free_ids:
+		var idx := int(free_id)
+		if idx >= 0 and idx < max_objects:
+			free_mask[idx] = 1
+	for object_id in range(max_objects):
+		if free_mask[object_id] == 0:
+			out.append(object_id)
+	return out
 
 
 ## 返回指定 GPU 缓冲区名称对应的每条记录字节步长。
@@ -1600,47 +1613,47 @@ func _read_dirty_delta_count() -> int:
 	return -1
 
 
+## _read_dirty_delta_count_result 三处失败出口的同形结果（原先三份逐字手抄同一组 7 键）。
+## ok/gpu_first/cpu_fallback 三项在三处恒为 false/true/false，因此不开参数；
+## 两个 *_readback_source 的默认值取"三处中出现两次"的那个值。
+func _dirty_count_result_failure(
+	reason: String,
+	count: int,
+	failed_readback_source: String = "gpu_dirty_count_buffer",
+	readback_source: String = "none"
+) -> Dictionary:
+	return {
+		"ok": false,
+		"reason": reason,
+		"count": count,
+		"gpu_first": true,
+		"cpu_fallback": false,
+		"readback_source": readback_source,
+		"failed_readback_source": failed_readback_source,
+	}
+
+
 ## 从 GPU dirty count 缓冲区读回计数值，返回包含 ok/count 的结果字典。
 func _read_dirty_delta_count_result() -> Dictionary:
 	if not _gpu_ready or not _dirty_count_buffer.is_valid():
-		return {
-			"ok": false,
-			"reason": "runtime_not_ready" if not _gpu_ready else "dirty_count_buffer_invalid",
-			"count": _dirty_delta_count,
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"readback_source": "none",
-			"failed_readback_source": "none" if not _gpu_ready else "gpu_dirty_count_buffer",
-		}
+		return _dirty_count_result_failure(
+			"runtime_not_ready" if not _gpu_ready else "dirty_count_buffer_invalid",
+			_dirty_delta_count,
+			"none" if not _gpu_ready else "gpu_dirty_count_buffer")
 	var bytes := read_buffer_bytes(_dirty_count_buffer, 0, OBJECT_SCALAR_STRIDE_BYTES)
 	if bytes.size() < OBJECT_SCALAR_STRIDE_BYTES:
 		push_error("[GPUAutoObjectRuntime] _read_dirty_delta_count_result(): 回读字节不足（期望 %d，实得 %d）。" % [
 			OBJECT_SCALAR_STRIDE_BYTES, bytes.size()])
 		assert(false, "GPUAutoObjectRuntime._read_dirty_delta_count_result: short readback")
-		return {
-			"ok": false,
-			"reason": "dirty_count_readback_failed",
-			"count": -1,
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"readback_source": "none",
-			"failed_readback_source": "gpu_dirty_count_buffer",
-		}
+		return _dirty_count_result_failure("dirty_count_readback_failed", -1)
 	var count := bytes.decode_s32(0)
 	if count < 0 or count > dirty_delta_capacity:
 		# 旧行为静默 clamp 到容量，会把 shader 侧的 dirty delta 溢出伪装成"刚好写满"。
 		push_error("[GPUAutoObjectRuntime] _read_dirty_delta_count_result(): GPU 报告的 dirty count 越界 (count=%d, capacity=%d) —— 不 clamp。" % [
 			count, dirty_delta_capacity])
 		assert(false, "GPUAutoObjectRuntime._read_dirty_delta_count_result: count out of range")
-		return {
-			"ok": false,
-			"reason": "dirty_count_out_of_range",
-			"count": count,
-			"gpu_first": true,
-			"cpu_fallback": false,
-			"readback_source": "gpu_dirty_count_buffer",
-			"failed_readback_source": "gpu_dirty_count_buffer",
-		}
+		return _dirty_count_result_failure(
+			"dirty_count_out_of_range", count, "gpu_dirty_count_buffer", "gpu_dirty_count_buffer")
 	_dirty_delta_count = count
 	return {
 		"ok": true,
